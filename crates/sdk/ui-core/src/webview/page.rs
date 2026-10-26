@@ -6,6 +6,11 @@
 //! [`PageRequest::Outline`] printed. A ref names one element of one document,
 //! so a ref from a page the tab has since left is refused rather than
 //! resolved against whatever now sits at the same position.
+//!
+//! A page inside a frame is addressed by the frame id its parent's outline
+//! printed (`[frame=1]`, `[frame=1.2]` for a frame of a frame): a request with
+//! that id runs in the frame's own document, and its refs and outline describe
+//! that document alone.
 
 use super::KeyModifiers;
 
@@ -16,8 +21,12 @@ pub const MAX_DATA_BYTES: usize = 256 * 1024;
 /// Bounds of a settle wait, milliseconds.
 pub const MIN_SETTLE_QUIET_MS: u32 = 50;
 pub const MAX_SETTLE_MS: u32 = 20_000;
-/// Largest viewport coordinate an `At` names, CSS pixels.
+/// Largest viewport coordinate a point may name, CSS pixels.
 const MAX_COORDINATE: f64 = 100_000.0;
+/// Upper bound on the points of one pointer path, and the steps of one
+/// drag, so a gesture is always a bounded amount of work for the engine.
+pub const MAX_PATH_POINTS: usize = 1024;
+pub const MAX_DRAG_STEPS: usize = 64;
 /// Upper bound on the text one fill may insert.
 pub const MAX_FILL_BYTES: usize = 64 * 1024;
 /// Upper bound on the options one select may choose.
@@ -33,16 +42,49 @@ pub const MAX_POINTER_STEPS: usize = 256;
 /// Upper bound on the button names a gesture may name.
 const POINTER_BUTTONS: &[&str] = &["left", "right"];
 const MAX_REF_BYTES: usize = 40;
+/// A frame id is a dotted path of small decimal numbers, such as `1` or `1.2`.
+const MAX_FRAME_BYTES: usize = 16;
+const MAX_FRAME_DEPTH: usize = 8;
 const MAX_MESSAGE_BYTES: usize = 1024;
 const MAX_CODE_BYTES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PageRequest {
     /// A compact accessibility outline of the document. Interactive elements
-    /// carry the refs every other request addresses.
-    Outline,
+    /// carry the refs every other request addresses, and a frame carries the
+    /// id that addresses its own document.
+    Outline { frame: Option<FrameId> },
     /// A trusted pointer click at the element's visible centre.
-    Click { element: String },
+    Click {
+        element: String,
+        frame: Option<FrameId>,
+    },
+    /// A trusted pointer move to the element's visible centre, or to the
+    /// viewport point (`x`, `y`) when no element is named: moving the pointer
+    /// alone, with no button, so the page's hover styles apply.
+    Hover {
+        element: Option<String>,
+        point: Option<(f64, f64)>,
+    },
+    /// A trusted press, move and release on the element's visible centre, or
+    /// on the viewport point when no element is named: the drag and drop
+    /// gesture of a person holding the pointer down and moving it.
+    Drag {
+        from: Option<String>,
+        from_point: Option<(f64, f64)>,
+        to: Option<String>,
+        to_point: Option<(f64, f64)>,
+        steps: u8,
+    },
+    /// A trusted contact path: press at the first point, move through the
+    /// rest and release at the last, for drawing on canvases and other
+    /// surfaces that read pointer contact. Points are viewport CSS pixels
+    /// when the element is named and are measured from its padding box,
+    /// otherwise from the viewport's top left.
+    Path {
+        element: Option<String>,
+        points: Vec<(f64, f64)>,
+    },
     /// Replace an editable element's contents with `text`. A password or
     /// card field is refused unless `secret` says the caller means it, and
     /// then the text is a secret the caller keeps out of logs.
@@ -50,11 +92,13 @@ pub enum PageRequest {
         element: String,
         text: String,
         secret: bool,
+        frame: Option<FrameId>,
     },
     /// Choose `<select>` options by value or visible label.
     Select {
         element: String,
         values: Vec<String>,
+        frame: Option<FrameId>,
     },
     /// Choose the files of an `<input type=file>`, by absolute path.
     ///
@@ -63,26 +107,43 @@ pub enum PageRequest {
     /// picker would, dispatching `input` and `change`. A path that names no
     /// readable regular file, or one the element's `accept` refuses, is
     /// refused rather than silently dropped.
-    FillFiles { element: String, paths: Vec<String> },
+    FillFiles {
+        element: String,
+        paths: Vec<String>,
+        frame: Option<FrameId>,
+    },
     /// A trusted key press, after focusing `element` when one is named.
     Press {
         element: Option<String>,
         key: PageKey,
+        frame: Option<FrameId>,
     },
     /// Submit the element's form through the page's own validation. A form
     /// that sends its data to another site than the page's is refused unless
     /// `cross_origin` says the caller means it.
-    Submit { element: String, cross_origin: bool },
+    Submit {
+        element: String,
+        cross_origin: bool,
+        frame: Option<FrameId>,
+    },
     /// What changed in the outline since this tab's last read or changes:
     /// lines added (`+`) and removed (`-`), or the whole outline when the
     /// document is new.
-    Changes,
+    Changes { frame: Option<FrameId> },
     /// The element a click at viewport point (`x`, `y`) in CSS pixels would
     /// hit, and the nearest interactive element holding it.
-    At { x: f64, y: f64 },
+    At {
+        x: f64,
+        y: f64,
+        frame: Option<FrameId>,
+    },
     /// Wait until the document has stopped changing for `quiet_ms` and has
     /// loaded, or `timeout_ms` passed.
-    Settle { quiet_ms: u32, timeout_ms: u32 },
+    Settle {
+        quiet_ms: u32,
+        timeout_ms: u32,
+        frame: Option<FrameId>,
+    },
     /// Console messages and uncaught errors after sequence number `since`.
     Console { since: u64 },
     /// Network requests after sequence number `since`: method, URL, type,
@@ -112,6 +173,9 @@ pub struct PointerStep {
     /// The element the step is placed against. A gesture that keeps naming
     /// the same element keeps stepping inside the same box.
     pub element: Option<String>,
+    /// The frame the step names, when its element lives in one: the step's
+    /// point is then moved by the frame's place, as a click is.
+    pub frame: Option<FrameId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,14 +236,17 @@ impl PointerButton {
 impl PageRequest {
     pub const fn action(&self) -> &'static str {
         match self {
-            Self::Outline => "outline",
+            Self::Outline { .. } => "outline",
             Self::Click { .. } => "click",
+            Self::Hover { .. } => "hover",
+            Self::Drag { .. } => "drag",
+            Self::Path { .. } => "path",
             Self::Fill { .. } => "fill",
             Self::Select { .. } => "select",
             Self::FillFiles { .. } => "fill_files",
             Self::Press { .. } => "press",
             Self::Submit { .. } => "submit",
-            Self::Changes => "changes",
+            Self::Changes { .. } => "changes",
             Self::At { .. } => "at",
             Self::Settle { .. } => "settle",
             Self::Console { .. } => "console",
@@ -189,18 +256,71 @@ impl PageRequest {
         }
     }
 
+    /// What the request does, in the words an answer that a dialog it opened
+    /// cut short repeats: `Clicked element d1e5`, `Submitted form d1e7`.
+    pub fn described(&self) -> String {
+        match self {
+            Self::Outline { .. } => "Read the page".to_string(),
+            Self::Click { element, .. } => format!("Clicked element {element}"),
+            Self::Hover {
+                element: Some(element),
+                ..
+            } => format!("Moved the pointer over element {element}"),
+            Self::Hover { element: None, .. } => "Moved the pointer".to_string(),
+            Self::Drag { .. } => "Dragged on the page".to_string(),
+            Self::Path { .. } => "Drew on the page".to_string(),
+            Self::Fill { element, .. } => format!("Filled element {element}"),
+            Self::Select {
+                element, values, ..
+            } => {
+                format!("Chose {} on element {element}", values.join(", "))
+            }
+            Self::FillFiles { element, paths, .. } => {
+                format!("Chose {} file(s) for element {element}", paths.len())
+            }
+            Self::Press {
+                element: None, key, ..
+            } => format!("Pressed {}", key.chord()),
+            Self::Press {
+                element: Some(element),
+                key,
+                ..
+            } => format!("Pressed {} on element {element}", key.chord()),
+            Self::Submit { element, .. } => format!("Submitted form {element}"),
+            Self::Changes { .. } => "Read what changed".to_string(),
+            Self::At { x, y, .. } => format!("Read the element at {x}, {y}"),
+            Self::Settle {
+                quiet_ms,
+                timeout_ms,
+                ..
+            } => format!("Waited for the page to settle ({quiet_ms} ms, up to {timeout_ms} ms)"),
+            Self::Console { .. } => "Read the console".to_string(),
+            Self::Network { .. } => "Read the network".to_string(),
+            Self::Reader { enabled: true } => "Showed the article alone".to_string(),
+            Self::Reader { enabled: false } => "Put the page back as it was".to_string(),
+            Self::Pointer { steps, .. } => format!("Moved the pointer ({} steps)", steps.len()),
+        }
+    }
+
     pub fn element(&self) -> Option<&str> {
         match self {
-            Self::Outline
+            Self::Outline { .. }
             | Self::Press { element: None, .. }
-            | Self::Changes
+            | Self::Changes { .. }
             | Self::At { .. }
             | Self::Settle { .. }
             | Self::Console { .. }
             | Self::Network { .. }
             | Self::Reader { .. }
-            | Self::Pointer { .. } => None,
-            Self::Click { element }
+            | Self::Pointer { .. }
+            | Self::Hover { element: None, .. }
+            | Self::Drag {
+                from: None,
+                to: None,
+                ..
+            }
+            | Self::Path { element: None, .. } => None,
+            Self::Click { element, .. }
             | Self::Fill { element, .. }
             | Self::Select { element, .. }
             | Self::FillFiles { element, .. }
@@ -208,11 +328,124 @@ impl PageRequest {
                 element: Some(element),
                 ..
             }
-            | Self::Submit { element, .. } => Some(element),
+            | Self::Submit { element, .. }
+            | Self::Hover {
+                element: Some(element),
+                ..
+            }
+            | Self::Drag {
+                from: Some(element),
+                ..
+            }
+            | Self::Drag {
+                from: None,
+                to: Some(element),
+                ..
+            }
+            | Self::Path {
+                element: Some(element),
+                ..
+            } => Some(element),
         }
     }
 
+    /// The frame's document this request runs in, or the main document's.
+    pub fn frame(&self) -> Option<&FrameId> {
+        match self {
+            Self::Outline { frame }
+            | Self::Click { frame, .. }
+            | Self::Fill { frame, .. }
+            | Self::Select { frame, .. }
+            | Self::FillFiles { frame, .. }
+            | Self::Press { frame, .. }
+            | Self::Submit { frame, .. }
+            | Self::Changes { frame }
+            | Self::At { frame, .. }
+            | Self::Settle { frame, .. } => frame.as_ref(),
+            Self::Console { .. }
+            | Self::Network { .. }
+            | Self::Reader { .. }
+            | Self::Hover { .. }
+            | Self::Drag { .. }
+            | Self::Path { .. }
+            | Self::Pointer { .. } => None,
+        }
+    }
+
+    /// The same request run in the main document again.
+    #[must_use]
+    pub fn main_frame(self) -> Self {
+        match self {
+            Self::Outline { .. } => Self::Outline { frame: None },
+            Self::Click { element, .. } => Self::Click {
+                element,
+                frame: None,
+            },
+            Self::Fill {
+                element,
+                text,
+                secret,
+                ..
+            } => Self::Fill {
+                element,
+                text,
+                secret,
+                frame: None,
+            },
+            Self::Select {
+                element, values, ..
+            } => Self::Select {
+                element,
+                values,
+                frame: None,
+            },
+            Self::FillFiles { element, paths, .. } => Self::FillFiles {
+                element,
+                paths,
+                frame: None,
+            },
+            Self::Press { element, key, .. } => Self::Press {
+                element,
+                key,
+                frame: None,
+            },
+            Self::Submit {
+                element,
+                cross_origin,
+                ..
+            } => Self::Submit {
+                element,
+                cross_origin,
+                frame: None,
+            },
+            Self::Changes { .. } => Self::Changes { frame: None },
+            Self::At { x, y, .. } => Self::At { x, y, frame: None },
+            Self::Settle {
+                quiet_ms,
+                timeout_ms,
+                ..
+            } => Self::Settle {
+                quiet_ms,
+                timeout_ms,
+                frame: None,
+            },
+            other => other,
+        }
+    }
+
+    /// Whether this request names a frame the page outline could have
+    /// printed. A caller that makes one up is refused, never silently run
+    /// against the main document instead.
+    pub fn frame_valid(&self) -> bool {
+        self.frame()
+            .is_none_or(|frame| FrameId::parse(frame.as_str()) == Some(frame.clone()))
+    }
+
     /// Whether every field is within the bounds an engine accepts.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match names every request's bounds, so none can be forgotten"
+    )]
     pub fn valid(&self) -> bool {
         let refs: Vec<&str> = match self {
             Self::Pointer { steps, .. } => {
@@ -223,7 +456,47 @@ impl PageRequest {
         if refs.iter().any(|element| !is_element_ref(element)) {
             return false;
         }
+        // Structured so that `FrameId::malformed` fails here rather than
+        // running the request in the main document instead.
+        if self
+            .frame()
+            .is_some_and(|frame| FrameId::parse(frame.as_str()) != Some(frame.clone()))
+        {
+            return false;
+        }
         match self {
+            Self::Hover { element, point } => {
+                matches!((element, point), (Some(_), None) | (None, Some(_)))
+            }
+            Self::Drag {
+                from,
+                from_point,
+                to,
+                to_point,
+                steps,
+            } => {
+                let known = |element: &Option<String>, point: &Option<(f64, f64)>| {
+                    matches!((element, point), (Some(_), None) | (None, Some(_)))
+                };
+                known(from, from_point)
+                    && known(to, to_point)
+                    && from_point
+                        .iter()
+                        .chain(to_point)
+                        .all(|point| point_is_viewport(*point))
+                    && (1..=MAX_DRAG_STEPS).contains(&usize::from(*steps))
+            }
+            Self::Path { element, points } => {
+                let relative = element.is_some();
+                (2..=MAX_PATH_POINTS).contains(&points.len())
+                    && points.iter().all(|&point| {
+                        if relative {
+                            point.0.is_finite() && point.1.is_finite()
+                        } else {
+                            point_is_viewport(point)
+                        }
+                    })
+            }
             Self::Fill { text, .. } => text.len() <= MAX_FILL_BYTES,
             Self::Select { values, .. } => {
                 !values.is_empty()
@@ -240,12 +513,13 @@ impl PageRequest {
                         .all(|path| path.len() <= MAX_FILE_PATH_BYTES && path.starts_with('/'))
             }
             Self::Press { key, .. } => PageKey::parse(&key.chord()).as_ref() == Some(key),
-            Self::At { x, y } => [x, y]
+            Self::At { x, y, .. } => [x, y]
                 .iter()
                 .all(|v| v.is_finite() && (0.0..=MAX_COORDINATE).contains(*v)),
             Self::Settle {
                 quiet_ms,
                 timeout_ms,
+                ..
             } => {
                 (MIN_SETTLE_QUIET_MS..=MAX_SETTLE_MS).contains(quiet_ms)
                     && (*quiet_ms..=MAX_SETTLE_MS).contains(timeout_ms)
@@ -259,16 +533,67 @@ impl PageRequest {
                         [x, y]
                             .iter()
                             .all(|v| v.is_finite() && (0.0..=MAX_COORDINATE).contains(v))
+                            && step.frame.as_ref().is_none_or(|frame| {
+                                FrameId::parse(frame.as_str()) == Some(frame.clone())
+                            })
                     })
             }
-            Self::Outline
+            Self::Outline { .. }
             | Self::Click { .. }
             | Self::Submit { .. }
-            | Self::Changes
+            | Self::Changes { .. }
             | Self::Console { .. }
             | Self::Network { .. }
             | Self::Reader { .. } => true,
         }
+    }
+}
+
+/// A finite point inside the viewport coordinate bounds.
+fn point_is_viewport((x, y): (f64, f64)) -> bool {
+    [x, y]
+        .iter()
+        .all(|v| v.is_finite() && (0.0..=MAX_COORDINATE).contains(v))
+}
+
+/// A frame's place in the page: the id its parent's outline printed, a dot
+/// between the numbers of nested frames (`2`, then `2.1`), at most eight deep.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameId(String);
+
+impl FrameId {
+    /// Reads a frame id the outline printed, refusing anything else so an id
+    /// can never smuggle selector or script syntax to the engine.
+    pub fn parse(value: &str) -> Option<Self> {
+        let parts: Vec<&str> = value.split('.').collect();
+        let digit = |part: &str| {
+            !part.is_empty()
+                && part.len() <= 3
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && !part.starts_with('0')
+        };
+        (value.len() <= MAX_FRAME_BYTES
+            && !parts.is_empty()
+            && parts.len() <= MAX_FRAME_DEPTH
+            && parts.iter().all(|part| digit(part)))
+        .then(|| Self(value.to_string()))
+    }
+
+    /// A frame id no outline printed, standing in for one the caller wrote
+    /// wrongly: it fails the request rather than being read as the main
+    /// document.
+    pub fn malformed() -> Self {
+        Self(String::new())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for FrameId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -441,6 +766,15 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
     if let Some(element) = request.element() {
         command["element"] = element.into();
     }
+    if let PageRequest::Drag {
+        to: Some(target), ..
+    } = request
+    {
+        command["to"] = target.as_str().into();
+    }
+    if let Some(frame) = request.frame() {
+        command["frame"] = frame.as_str().into();
+    }
     match request {
         PageRequest::Fill { text, secret, .. } => {
             command["text"] = text.as_str().into();
@@ -458,13 +792,14 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
         PageRequest::Submit { cross_origin, .. } => {
             command["cross_origin"] = (*cross_origin).into()
         }
-        PageRequest::At { x, y } => {
+        PageRequest::At { x, y, .. } => {
             command["x"] = (*x).into();
             command["y"] = (*y).into();
         }
         PageRequest::Settle {
             quiet_ms,
             timeout_ms,
+            ..
         } => {
             command["quiet_ms"] = (*quiet_ms).into();
             command["timeout_ms"] = (*timeout_ms).into();
@@ -487,11 +822,51 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
                     if let Some(element) = &step.element {
                         encoded["element"] = element.as_str().into();
                     }
+                    if let Some(frame) = &step.frame {
+                        encoded["frame"] = frame.as_str().into();
+                    }
                     encoded
                 })
                 .collect();
         }
-        PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Changes => {}
+        PageRequest::Hover { element, point } => {
+            // An unnamed element hovers a viewport point instead.
+            if element.is_none()
+                && let Some((x, y)) = point
+            {
+                command["action"] = "at".into();
+                command["hover"] = true.into();
+                command["x"] = (*x).into();
+                command["y"] = (*y).into();
+            }
+        }
+        PageRequest::Drag {
+            from_point,
+            to_point,
+            steps,
+            ..
+        } => {
+            // A named element travels as its ref under `element`; the
+            // destination element under `to`; unnamed ends as points.
+            if let Some((x, y)) = from_point {
+                command["x"] = (*x).into();
+                command["y"] = (*y).into();
+            }
+            if let Some((x, y)) = to_point {
+                command["to_x"] = (*x).into();
+                command["to_y"] = (*y).into();
+            }
+            command["steps"] = (*steps).into();
+        }
+        PageRequest::Path { points, .. } => {
+            command["points"] = serde_json::Value::Array(
+                points
+                    .iter()
+                    .map(|&(x, y)| serde_json::json!([x, y]))
+                    .collect(),
+            );
+        }
+        PageRequest::Outline { .. } | PageRequest::Click { .. } | PageRequest::Changes { .. } => {}
     }
     command
 }
@@ -560,6 +935,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_request_says_what_it_did_in_the_words_its_answer_repeats() {
+        let element = || "d1e5".to_string();
+        let described = |request: PageRequest| request.described();
+        assert_eq!(
+            described(PageRequest::Click {
+                element: element(),
+                frame: None,
+            }),
+            "Clicked element d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Fill {
+                element: element(),
+                text: "Maria".into(),
+                secret: false,
+                frame: None,
+            }),
+            "Filled element d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Submit {
+                element: element(),
+                cross_origin: false,
+                frame: None,
+            }),
+            "Submitted form d1e5"
+        );
+        assert_eq!(
+            described(PageRequest::Select {
+                element: element(),
+                values: vec!["a".into(), "b".into()],
+                frame: None,
+            }),
+            "Chose a, b on element d1e5"
+        );
+        let enter = PageKey::parse("Enter").unwrap();
+        assert_eq!(
+            described(PageRequest::Press {
+                element: None,
+                key: enter.clone(),
+                frame: None,
+            }),
+            "Pressed Enter"
+        );
+        assert_eq!(
+            described(PageRequest::Press {
+                element: Some(element()),
+                key: enter,
+                frame: None,
+            }),
+            "Pressed Enter on element d1e5"
+        );
+    }
+
+    #[test]
     fn requests_are_bounded_and_round_trip_to_the_wire() {
         // phase: element_refs_accept_only_document_and_element_numbers
         {
@@ -595,12 +1025,13 @@ mod tests {
         // phase: invalid_requests_are_refused_before_the_engine
         {
             let element = "d1e2".to_string();
-            assert!(PageRequest::Outline.valid());
+            assert!(PageRequest::Outline { frame: None }.valid());
             assert!(
                 PageRequest::Fill {
                     element: element.clone(),
                     text: "hello".into(),
                     secret: false,
+                    frame: None,
                 }
                 .valid()
             );
@@ -609,19 +1040,22 @@ mod tests {
                     element: element.clone(),
                     text: "x".repeat(MAX_FILL_BYTES + 1),
                     secret: false,
+                    frame: None,
                 }
                 .valid()
             );
             assert!(
                 !PageRequest::Select {
                     element: element.clone(),
-                    values: Vec::new()
+                    values: Vec::new(),
+                    frame: None,
                 }
                 .valid()
             );
             assert!(
                 !PageRequest::Click {
-                    element: "#submit".into()
+                    element: "#submit".into(),
+                    frame: None,
                 }
                 .valid()
             );
@@ -631,6 +1065,7 @@ mod tests {
                 PageRequest::FillFiles {
                     element: element.clone(),
                     paths: vec!["/var/home/you/scan.pdf".into()],
+                    frame: None,
                 }
                 .valid()
             );
@@ -647,6 +1082,7 @@ mod tests {
                     !PageRequest::FillFiles {
                         element: element.clone(),
                         paths,
+                        frame: None,
                     }
                     .valid()
                 );
@@ -658,6 +1094,7 @@ mod tests {
                 kind,
                 at: PointerPoint::InElement { x, y },
                 element: element.map(str::to_owned),
+                frame: None,
             };
             let gesture = |steps: Vec<PointerStep>, button| PageRequest::Pointer { steps, button };
             let drag = gesture(
@@ -668,6 +1105,7 @@ mod tests {
                         kind: PointerStepKind::Up,
                         at: PointerPoint::Viewport { x: 40.0, y: 90.0 },
                         element: None,
+                        frame: None,
                     },
                 ],
                 PointerButton::Left,
@@ -694,6 +1132,7 @@ mod tests {
                     kind: PointerStepKind::Down,
                     at: PointerPoint::Viewport { x: 1.0, y: 2.0 },
                     element: None,
+                    frame: None,
                 }],
                 PointerButton::Right,
             );
@@ -710,6 +1149,7 @@ mod tests {
                             y: 0.0,
                         },
                         element: None,
+                        frame: None,
                     }],
                     PointerButton::Left,
                 ),
@@ -721,6 +1161,7 @@ mod tests {
                             y: MAX_COORDINATE + 1.0,
                         },
                         element: None,
+                        frame: None,
                     }],
                     PointerButton::Left,
                 ),
@@ -753,6 +1194,7 @@ mod tests {
                 &PageRequest::Press {
                     element: Some("d1e2".into()),
                     key: PageKey::parse("Shift+Enter").unwrap(),
+                    frame: None,
                 },
             );
             assert_eq!(
@@ -765,13 +1207,57 @@ mod tests {
                 &PageRequest::Select {
                     element: "d1e3".into(),
                     values: vec!["NL".into()],
+                    frame: None,
                 },
             );
             assert_eq!(command["values"], serde_json::json!(["NL"]));
         }
+        // phase: a_frame_is_named_only_as_the_outline_prints_it
+        {
+            for good in ["1", "2", "12", "1.2", "3.10.4"] {
+                assert_eq!(FrameId::parse(good).unwrap().as_str(), good);
+            }
+            for bad in [
+                "", "0", "01", ".", "1.", ".1", "1..2", "a", "1e2", " 1", "1 ", "1234",
+            ] {
+                assert!(FrameId::parse(bad).is_none(), "{bad:?}");
+            }
+            let deep = (1..=9).map(|n| n.to_string()).collect::<Vec<_>>().join(".");
+            assert!(FrameId::parse(&deep).is_none());
+            let frame = FrameId::parse("1.2").unwrap();
+            let in_frame = PageRequest::Click {
+                element: "d4e9".into(),
+                frame: Some(frame.clone()),
+            };
+            assert!(in_frame.valid());
+            assert_eq!(in_frame.frame(), Some(&frame));
+            assert_eq!(in_frame.clone().main_frame().frame(), None);
+            assert_eq!(
+                encode_request(13, &in_frame)["frame"],
+                serde_json::json!("1.2")
+            );
+            assert_eq!(
+                encode_request(13, &PageRequest::Outline { frame: None })["frame"],
+                serde_json::Value::Null
+            );
+            // A frame id the caller made up never reaches the engine as the
+            // main document.
+            let invented = PageRequest::Outline {
+                frame: Some(FrameId::malformed()),
+            };
+            assert!(!invented.valid());
+            assert!(invented.main_frame().valid());
+        }
         // phase: agent_requests_name_their_arguments_and_bounds
         {
-            let at = encode_request(9, &PageRequest::At { x: 12.5, y: 40.0 });
+            let at = encode_request(
+                9,
+                &PageRequest::At {
+                    x: 12.5,
+                    y: 40.0,
+                    frame: None,
+                },
+            );
             assert_eq!(
                 at,
                 serde_json::json!({"op":"page","request_id":9,"action":"at","x":12.5,"y":40.0})
@@ -779,6 +1265,7 @@ mod tests {
             let settle = PageRequest::Settle {
                 quiet_ms: 500,
                 timeout_ms: 10_000,
+                frame: None,
             };
             assert!(settle.valid());
             assert_eq!(encode_request(10, &settle)["timeout_ms"], 10_000);
@@ -792,32 +1279,183 @@ mod tests {
                     &PageRequest::Submit {
                         element: "d1e2".into(),
                         cross_origin: true,
+                        frame: None,
                     }
                 )["cross_origin"],
                 true
             );
             for bad in [
-                PageRequest::At { x: -1.0, y: 0.0 },
+                PageRequest::At {
+                    x: -1.0,
+                    y: 0.0,
+                    frame: None,
+                },
                 PageRequest::At {
                     x: f64::NAN,
                     y: 0.0,
+                    frame: None,
                 },
                 PageRequest::Settle {
                     quiet_ms: 10,
                     timeout_ms: 1000,
+                    frame: None,
                 },
                 PageRequest::Settle {
                     quiet_ms: 500,
                     timeout_ms: 100,
+                    frame: None,
                 },
                 PageRequest::Settle {
                     quiet_ms: 500,
                     timeout_ms: MAX_SETTLE_MS + 1,
+                    frame: None,
                 },
             ] {
                 assert!(!bad.valid(), "{bad:?}");
             }
-            assert!(PageRequest::Changes.element().is_none());
+            assert!(PageRequest::Changes { frame: None }.element().is_none());
+        }
+        // phase: pointer_gestures_are_bounded_and_name_their_two_ends
+        {
+            let hover = PageRequest::Hover {
+                element: Some("d1e4".into()),
+                point: None,
+            };
+            assert!(hover.valid());
+            assert_eq!(hover.element(), Some("d1e4"));
+            assert_eq!(
+                encode_request(20, &hover),
+                serde_json::json!({"op":"page","request_id":20,"action":"hover","element":"d1e4"})
+            );
+            // A point without an element hovers there instead of clicks.
+            let at = PageRequest::Hover {
+                element: None,
+                point: Some((30.0, 44.5)),
+            };
+            assert!(at.valid());
+            assert_eq!(
+                encode_request(21, &at),
+                serde_json::json!({"op":"page","request_id":21,"action":"at","hover":true,
+                    "x":30.0,"y":44.5})
+            );
+            for bad in [
+                PageRequest::Hover {
+                    element: None,
+                    point: None,
+                },
+                PageRequest::Hover {
+                    element: Some("#menu".into()),
+                    point: None,
+                },
+                PageRequest::Hover {
+                    element: Some("d1e4".into()),
+                    point: Some((1.0, 1.0)),
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+            let drag = PageRequest::Drag {
+                from: Some("d1e4".into()),
+                from_point: None,
+                to: Some("d1e6".into()),
+                to_point: None,
+                steps: 8,
+            };
+            assert!(drag.valid());
+            assert_eq!(
+                encode_request(22, &drag),
+                serde_json::json!({"op":"page","request_id":22,"action":"drag","element":"d1e4",
+                    "to":"d1e6","steps":8})
+            );
+            let by_point = PageRequest::Drag {
+                from: None,
+                from_point: Some((10.0, 20.0)),
+                to: None,
+                to_point: Some((70.0, 80.0)),
+                steps: 4,
+            };
+            assert!(by_point.valid());
+            assert_eq!(
+                encode_request(23, &by_point),
+                serde_json::json!({"op":"page","request_id":23,"action":"drag","x":10.0,"y":20.0,
+                    "to_x":70.0,"to_y":80.0,"steps":4})
+            );
+            for bad in [
+                PageRequest::Drag {
+                    from: None,
+                    from_point: None,
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 4,
+                },
+                PageRequest::Drag {
+                    from: Some("d1e4".into()),
+                    from_point: None,
+                    to: None,
+                    to_point: None,
+                    steps: 4,
+                },
+                PageRequest::Drag {
+                    from: Some("d1e4".into()),
+                    from_point: None,
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 0,
+                },
+                PageRequest::Drag {
+                    from: Some("d1e4".into()),
+                    from_point: None,
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 65,
+                },
+                PageRequest::Drag {
+                    from: None,
+                    from_point: Some((f64::INFINITY, 0.0)),
+                    to: Some("d1e6".into()),
+                    to_point: None,
+                    steps: 4,
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+            let path = PageRequest::Path {
+                element: Some("d1e9".into()),
+                points: vec![(1.0, 2.0), (3.5, 4.5), (60.0, 70.0)],
+            };
+            assert!(path.valid());
+            let wire = encode_request(24, &path);
+            assert_eq!(
+                wire["points"],
+                serde_json::json!([[1.0, 2.0], [3.5, 4.5], [60.0, 70.0]])
+            );
+            assert_eq!(wire["element"], "d1e9");
+            let free = PageRequest::Path {
+                element: None,
+                points: vec![(1.0, 2.0), (3.0, 4.0)],
+            };
+            assert!(free.valid());
+            assert!(encode_request(25, &free).get("element").is_none());
+            for bad in [
+                PageRequest::Path {
+                    element: Some("d1e9".into()),
+                    points: vec![(1.0, 2.0)],
+                },
+                PageRequest::Path {
+                    element: Some("d1e9".into()),
+                    points: vec![(1.0, 2.0); MAX_PATH_POINTS + 1],
+                },
+                PageRequest::Path {
+                    element: None,
+                    points: vec![(-1.0, 2.0), (3.0, 4.0)],
+                },
+                PageRequest::Path {
+                    element: Some("d1e9".into()),
+                    points: vec![(f64::NAN, 2.0), (3.0, 4.0)],
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
         }
         // phase: findings_decode_as_data_within_their_bound
         {

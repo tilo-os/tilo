@@ -56,6 +56,36 @@ class CanonicalPackaging(unittest.TestCase):
             self.assertIn(b'1 MiB release compute budget', result.stderr)
             self.assertFalse((release / 'build.json').exists())
 
+            # The module built apart, without git, and a bundle assembled around it that
+            # compiles nothing and takes the pages from the tree.
+            wasm = temp / 'wasm'
+            subprocess.run(['bash', str(ROOT / 'crates/browser/tilo-browser-runtime/scripts/build.sh'),
+                            str(wasm), '--profile', 'dev', '--wasm-only'], cwd=ROOT, env=env, check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertTrue((wasm / 'pkg/compute/tilo_browser_compute_bg.wasm').is_file())
+            self.assertFalse((wasm / 'compute-worker.mjs').exists())
+            self.assertFalse((wasm / 'build.json').exists())
+            self.assertEqual(json.loads((wasm / 'wasm.json').read_text())['profile'], 'dev')
+            compiled = (temp / 'cargo.log').read_text()
+            assembled = temp / 'assembled'
+            subprocess.run(['bash', str(ROOT / 'crates/browser/tilo-browser-runtime/scripts/build.sh'),
+                            str(assembled), '--profile', 'dev', '--wasm-from', str(wasm)], cwd=ROOT, env=env,
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual((temp / 'cargo.log').read_text(), compiled)
+            for name in ASSETS:
+                self.assertTrue((assembled / name).is_file(), name)
+            self.assertTrue((assembled / 'entry-page.mjs').is_file())
+            metadata = json.loads((assembled / 'build.json').read_text())
+            self.assertEqual(metadata['profile'], 'dev')
+            self.assertEqual(metadata['wasmBindgen'], 'wasm-bindgen 0.2.108')
+            for name in ASSETS:
+                self.assertIn(name, metadata['files'])
+            refused = subprocess.run(['bash', str(ROOT / 'crates/browser/tilo-browser-runtime/scripts/build.sh'),
+                                      str(temp / 'other'), '--profile', 'release', '--wasm-from', str(wasm)],
+                                     cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn(b'is a dev runtime module, not release runtime', refused.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()

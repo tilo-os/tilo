@@ -3678,8 +3678,10 @@ dependencies = [
 name = "discord-worker"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "chat",
+ "collab-types",
  "davey",
  "discord",
  "discord-wire",
@@ -4372,6 +4374,7 @@ dependencies = [
 name = "fake-discord"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "davey",
  "futures-util",
@@ -16844,14 +16847,17 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app-package",
+ "tilo-automation",
  "tilo-caps",
  "tilo-files",
  "tilo-headless-schema",
  "tilo-history",
  "tilo-lock",
  "tilo-paths",
+ "tilo-relay-session",
  "tilo-test-env",
  "tilo-ui-graph",
+ "tilo-user-identity",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "wasmparser 0.239.0",
@@ -19511,6 +19517,7 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-ui",
  "tilo-user-identity",
+ "tilo-workspace-emoji",
  "tokio",
  "tokio-rustls",
  "toml 1.0.6+spec-1.1.0",
@@ -19590,6 +19597,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",

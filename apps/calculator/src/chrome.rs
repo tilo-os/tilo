@@ -53,7 +53,7 @@ impl Header {
 /// A formula row is a math field between its visibility and delete targets,
 /// so the panel needs about this much before it is a row rather than a
 /// stack of buttons; below docked width plus the plot's it floats instead.
-const PANEL_MIN_WIDTH: f64 = 340.0;
+const PANEL_MIN_WIDTH: f64 = 340.0; // allow-breakpoint: the narrowest the panel may be, not a breakpoint
 
 /// A collapsible side panel: its geometry and its remembered state, both
 /// from the shared drawer. Its show/hide button is the window bar's.

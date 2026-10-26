@@ -77,7 +77,7 @@ fn mount(config: &crate::support::ScratchConfig) -> Framed<SettingsApp> {
 fn mount_on(config: &crate::support::ScratchConfig, category: Category) -> Framed<SettingsApp> {
     Framed::new(
         ui::State::new(),
-        config.app().with_category(category).with_width_hint(W),
+        config.app().with_category(category),
         viewport((W, H)),
         ui::Theme::dark(),
     )

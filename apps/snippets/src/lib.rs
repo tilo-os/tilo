@@ -10,6 +10,14 @@
 //!
 //! The app is [`SnippetsShell`], a framework app over the [`Snippets`]
 //! resource: every host mounts it through [`definition`].
+//!
+//! **How a snippet leaves this library is the clipboard, and that is the
+//! contract.** There is no system-wide "insert snippet" action yet: the
+//! text-expander behaviour such an action would give every text field is a
+//! platform capability, not an app's. So the way to use a snippet is to copy
+//! it — through the fill-in dialog when its body has `${placeholders}` — and
+//! paste it where it is needed. When a system-level insert action exists,
+//! this library is what it should offer.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot

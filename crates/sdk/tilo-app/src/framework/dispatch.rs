@@ -202,6 +202,10 @@ impl std::ops::DerefMut for DispatchCore {
 pub(crate) struct DispatchState {
     app_id: &'static str,
     resource_id: Rc<str>,
+    /// The route of the record the resource is, as the room names its node
+    /// (empty for the app's own record of the room): an action on an item
+    /// of it is decided at that item's node.
+    record: Rc<str>,
     /// [`Resource::KIND`] and [`Resource::LABEL`] of the resource.
     kind: &'static str,
     label: &'static str,
@@ -284,6 +288,7 @@ impl Clone for DispatchCore {
         Self(std::mem::ManuallyDrop::new(DispatchState {
             app_id: self.app_id,
             resource_id: self.resource_id.clone(),
+            record: self.record.clone(),
             kind: self.kind,
             label: self.label,
             applied_as: self.applied_as,
@@ -369,6 +374,7 @@ impl DispatchCore {
         Self(std::mem::ManuallyDrop::new(DispatchState {
             app_id,
             resource_id: Rc::from(resource_id),
+            record: Rc::from(""),
             kind,
             label,
             resource_label: LocalState::new(label.to_owned()),
@@ -412,6 +418,7 @@ impl DispatchCore {
             me: self.me.clone(),
             custody: self.custody.clone(),
             resource_id: Rc::from(id),
+            record: Rc::from(""),
             kind,
             label,
             resource_label: LocalState::new(label.to_owned()),
@@ -545,7 +552,7 @@ impl DispatchCore {
     }
 
     fn may(&self, need: &ActionNeed) -> bool {
-        let mut node = TreePath::root().app(self.app_id);
+        let mut node = self.node();
         if let Some(field) = &need.field {
             node = node.field(field);
         }
@@ -553,6 +560,33 @@ impl DispatchCore {
             node,
             kind: need.kind,
         })
+    }
+
+    /// The node below the room where the room decides this resource's
+    /// changes, as far as a decision here can name it: an item of the
+    /// record for a resource nested in one at `<kind>/<field>/<item>` (a
+    /// note's body), so what the room grants on that item alone (an item
+    /// shared to edit) lets it be changed here too; else the app's.
+    fn node(&self) -> TreePath {
+        let app = TreePath::root().app(self.app_id);
+        if self.applied_as.is_none() {
+            return app;
+        }
+        match self
+            .resource_id
+            .rsplit_once('/')
+            .and_then(|(collection, item)| Some((collection.split_once('/')?, item)))
+        {
+            Some(((kind, field), item))
+                if !kind.is_empty()
+                    && !field.is_empty()
+                    && !field.contains('/')
+                    && !item.is_empty() =>
+            {
+                app.kind(kind).resource(&*self.record).item(item)
+            }
+            _ => app,
+        }
     }
 
     /// Whether the participant may react here: never in a past version,
@@ -974,6 +1008,13 @@ impl<R: Resource> Dispatcher<R> {
     /// ever applied.
     pub(crate) fn past(mut self) -> Self {
         self.core.past();
+        self
+    }
+
+    /// The dispatcher of the record the room names by `route` (empty for
+    /// the app's own record of the room).
+    pub(crate) fn on_record(mut self, route: &str) -> Self {
+        self.core.record = Rc::from(route);
         self
     }
 
@@ -1445,6 +1486,60 @@ impl<R: Resource> Dispatcher<R> {
             self.core.represent.set(true);
         }
         applied
+    }
+
+    /// [`Self::submit_gesture`] of a choice the person picked that is
+    /// confirmed before it goes ahead, though Undo would take it back:
+    /// Delete in a message's context menu. The host asks with the same
+    /// question it asks for any confirmation; holding Shift skips it, and
+    /// the choice applies at once as the person's gesture, if and only if
+    /// Undo takes it back ([`ui_core::widget::shift_skips_confirmation`]).
+    /// What Undo cannot take back is asked, Shift or not.
+    ///
+    /// A control the person presses is its own confirmation
+    /// ([`Self::submit_gesture`]); this is for a choice made from a list of
+    /// them, where a slip of the pointer picks the neighbour.
+    ///
+    /// # Errors
+    /// As [`Self::submit_gesture`].
+    pub fn submit_confirming(
+        &self,
+        edits: &mut Edits<'_>,
+        submit: impl Submit<R>,
+    ) -> Result<(), ActionError> {
+        if !self.gesture_is_own() {
+            return self.submit_now(edits, submit);
+        }
+        let invoke = submit.into_invoke().map_err(ActionError::Refused)?;
+        if invoke.is_group() {
+            return self.group_now(edits, &invoke);
+        }
+        let action = invoke
+            .build(tilo_resource::origin_now_ms())
+            .map_err(ActionError::Refused)?;
+        if asks(&action) {
+            // The contract asks already: the door's question, which Shift
+            // skips there for what Undo takes back.
+            return self.ask_first(invoke, &action);
+        }
+        let undoable = tilo_actions::undo_takes_back(
+            tilo_actions::Action::action_kind(&action),
+            tilo_actions::Action::change_kind(&action),
+            tilo_actions::Action::irreversible(&action),
+        );
+        if ui_core::widget::shift_skips_confirmation(undoable) {
+            return self.submit_gesture(edits, invoke);
+        }
+        if let Some(reason) = self.core.unreadable() {
+            return Err(ActionError::Refused(reason));
+        }
+        if !self.may_apply(&action) {
+            return Err(self.not_allowed(&action));
+        }
+        let before = self.core.asking.replace(Origin::PersonConfirming);
+        self.submit_invoke(invoke);
+        self.core.asking.set(before);
+        Ok(())
     }
 
     fn ask_first(&self, invoke: Invoke<R>, action: &R::Action) -> Result<(), ActionError> {

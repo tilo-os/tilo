@@ -819,6 +819,7 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
         let content = tilo_content::ContentStore::memory();
 
         {
+            let mut bells = 0u32;
             let mut performer = TerminalPerformer {
                 screen: &mut screen,
                 content: &content,
@@ -835,6 +836,7 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
                 next_link_id: &mut next_link_id,
                 current_link_id: 0,
                 title_out: &mut title_out,
+                bells: &mut bells,
                 allow_osc52_clipboard: true,
                 responses: &mut responses,
                 print_buf: None,
@@ -4818,5 +4820,54 @@ fn fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows() {
     assert!(
         lines.iter().any(|line| line.contains("line 199")),
         "the live output is in view: {lines:?}"
+    );
+}
+
+/// A program's bell is visible: the pane flashes, and the flash asks for the
+/// frames that fade it. With the bell off it changes nothing — which is what
+/// a bell used to do even when it was on.
+#[test]
+fn the_bell_flashes_the_pane_when_it_is_turned_on() {
+    use crate::preferences::{Bell, Preferences};
+
+    let (mut widget, _writes) = build_test_widget();
+    widget.use_preferences(Preferences::none());
+    widget.feed(b"ready\x07");
+    assert_eq!(
+        widget.bell_flash_for_test(),
+        0.0,
+        "the bell is off by default: nothing happens"
+    );
+
+    widget.set_bell(Bell::Visual);
+    widget.feed(b"\x07");
+    assert!(
+        widget.bell_flash_for_test() > 0.0,
+        "the bell flashes the pane"
+    );
+    assert!(
+        widget.needs_animation_frame(),
+        "the flash keeps frames coming while it fades"
+    );
+}
+
+/// Copy-on-select is remembered by the settings store, so the next terminal
+/// opens with it on instead of the person turning it on again.
+#[test]
+fn copy_on_select_is_kept_for_the_next_terminal() {
+    use crate::preferences::Preferences;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let (mut first, _writes) = build_test_widget();
+    first.use_preferences(Preferences::at(&path));
+    assert!(!first.selects_to_copy_for_test(), "off until asked");
+    first.set_select_to_copy(true);
+
+    let (mut second, _writes) = build_test_widget();
+    second.use_preferences(Preferences::at(&path));
+    assert!(
+        second.selects_to_copy_for_test(),
+        "a new terminal opens with the choice already made"
     );
 }

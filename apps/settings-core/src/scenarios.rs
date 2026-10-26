@@ -325,6 +325,7 @@ impl ui::linked_accounts::LinkedAccountsHost for CaptureBridge {
             app: "so.tilo.discord".into(),
             service: "Discord".into(),
             state: self.0.clone(),
+            problem: None,
         }]
     }
     fn revision(&self) -> u64 {
@@ -336,10 +337,22 @@ impl ui::linked_accounts::LinkedAccountsHost for CaptureBridge {
     fn unlink(&self, _app: &str) {}
 }
 
-fn capture_link_code() -> ui::linked_accounts::LinkCode {
-    ui::linked_accounts::LinkCode {
-        code: "K7QMW2XRB4TD".into(),
-        instruction: "In Discord, type /link with this code. It works for 10 minutes.".into(),
+/// The Discord account a capture shows offered or linked.
+fn capture_link_state(scenario: Option<&str>) -> Option<ui::linked_accounts::LinkState> {
+    let quinn = ui::linked_accounts::AccountName {
+        user_name: "quinn.davis".into(),
+        display_name: Some("Quinn".into()),
+    };
+    match scenario {
+        Some(ACCOUNTS_LINKING) => Some(ui::linked_accounts::LinkState::Offered(
+            ui::linked_accounts::OfferReading {
+                service: "Discord".into(),
+                account: quinn,
+                started_here: false,
+            },
+        )),
+        Some(ACCOUNTS_LINKED) => Some(ui::linked_accounts::LinkState::Linked(quinn)),
+        _ => None,
     }
 }
 
@@ -389,18 +402,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         } else {
             Vec::new()
         },
-        linked_account: match fixture.scenario() {
-            Some(ACCOUNTS_LINKING) => {
-                Some(ui::linked_accounts::LinkState::Linking(capture_link_code()))
-            }
-            Some(ACCOUNTS_LINKED) => Some(ui::linked_accounts::LinkState::Linked(
-                ui::linked_accounts::AccountName {
-                    user_name: "quinn.davis".into(),
-                    display_name: Some("Quinn".into()),
-                },
-            )),
-            _ => None,
-        },
+        linked_account: capture_link_state(fixture.scenario()),
         device_removal: fixture.scenario() == Some(DEVICES_REMOVE),
         home_relay: (fixture.scenario() == Some(Category::DeviceMesh.slug()))
             .then(home_relay_fixture),

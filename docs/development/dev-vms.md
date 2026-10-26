@@ -77,21 +77,11 @@ input and the distinction between compositor snapshots and hypervisor shots.
 
 ## Changed the image, not a component?
 
-Units, packages, Containerfiles and boot configuration can require an image
-upgrade, which reboots **every** session. Coordinate with other users first. Use
-a published, reviewed dev-image reference to avoid a local image build:
-
-```sh
-tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:REVIEWED_TAG
-tilo-vm vm rollback-image
-```
-
-Replace `REVIEWED_TAG` with the published artifact's tag or use its digest.
-`--from sha:COMMIT` can fall back to building a dev layer locally if only a base
-image exists; it is not a guaranteed download-only route. See
-`tilo-vm guide images` for image compatibility and retained layers, and
-[the image checks](../../t.toml) for remote build inputs. Image publication is
-explicit; do not assume a push produced one.
+Units, packages, Containerfiles and boot configuration reach a VM as an image, the
+way they reach every device: `tilo-vm vm upgrade --ref BRANCH` has t build and
+publish your branch's image and moves the VM onto it, which reboots **every**
+session; coordinate with other users first. [Development devices](devices.md)
+describes channels, pinned builds and going back.
 
 ## Inspect and finish
 

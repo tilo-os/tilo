@@ -24,7 +24,10 @@ use std::rc::Rc;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash};
 
-use super::{RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOwners, RecordStore};
+use super::{
+    HistoryUnavailable, RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOwners,
+    RecordStore,
+};
 use crate::history_mode::HistoryOwner;
 use crate::history_mode::owner::LegacyHistoryLifetime;
 use crate::permissions::UserId;
@@ -318,10 +321,27 @@ impl PersonRecord {
         undoable: bool,
         edit: impl FnOnce(&mut AutoCommit) -> Result<T, String>,
     ) -> Result<T, String> {
+        match self.try_edit(undoable, edit) {
+            Ok(result) => result,
+            Err(unavailable) => Err(unavailable.to_string()),
+        }
+    }
+
+    /// [`Self::edit`], telling a record that cannot be changed right now
+    /// ([`HistoryUnavailable`]) from an edit that refused: `edit` did not
+    /// run then, and may run once whatever holds the record lets go.
+    ///
+    /// # Errors
+    /// Why the record cannot be changed now.
+    pub fn try_edit<T>(
+        &self,
+        undoable: bool,
+        edit: impl FnOnce(&mut AutoCommit) -> Result<T, String>,
+    ) -> Result<Result<T, String>, HistoryUnavailable> {
         let author = self.author.clone();
         let result = self
             .store
-            .with_history(&self.checkout.id, |doc, history| {
+            .with_history_or_why(&self.checkout.id, |doc, history| {
                 let before = doc.get_heads();
                 let value = edit(doc)?;
                 // The closure writes the record directly, naming no finer
@@ -336,10 +356,9 @@ impl PersonRecord {
                     history.rebase(doc);
                 }
                 Ok(value)
-            })
-            .ok_or_else(|| "the record is not open".to_owned())?;
+            })?;
         self.store.schedule_committed_history(&self.checkout.id);
-        result
+        Ok(result)
     }
 
     /// Undo the person's last edit of this record. Whether there was one.

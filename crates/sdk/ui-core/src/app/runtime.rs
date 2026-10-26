@@ -303,6 +303,12 @@ pub(super) struct ActionRuntime {
     /// Requests to the session action host awaiting their answer, keyed by
     /// the answer they expect, to the local request id they correlate with.
     pub(super) broker_requests: std::collections::HashMap<BrokerReply, u64>,
+    /// Invocations of this app's own actions, in the order they were made,
+    /// waiting for the route to carry the surface that offers them. The host
+    /// resolves an invocation against the surface it last received from this
+    /// connection, so one sent ahead of that surface is refused as unknown.
+    pub(super) held_own_invocations:
+        std::collections::VecDeque<tilo_actions::remote::InvokeRequest>,
     /// Why the session action host last refused an invocation outright, so
     /// a fixture fails on the refusal instead of waiting out what it asked.
     #[cfg(any(test, feature = "test-support"))]
@@ -366,6 +372,7 @@ impl ActionRuntime {
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
+            held_own_invocations: std::collections::VecDeque::new(),
             #[cfg(any(test, feature = "test-support"))]
             refused_broker_receipt: None,
             next_broker_request_id: Some(0),

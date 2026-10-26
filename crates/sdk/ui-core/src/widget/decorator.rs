@@ -513,6 +513,8 @@ decorator_trait! {
         fn damage_covers_own_box() -> bool;
         fn is_layout_dirty() -> bool;
         fn layout_needs_measure() -> bool;
+        #[doc(hidden)]
+        fn relaid_layout_node() -> Option<NodeId>;
         fn is_default_keyboard_focus() -> bool;
         fn keyboard_input_scope() -> Option<crate::application::InstanceId>;
         fn primary_vertical_scroll() -> Option<PrimaryScrollRegion>;

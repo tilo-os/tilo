@@ -50,6 +50,53 @@ pub enum NativeFieldId {
     /// A shell password prompt: the compositor's sheet or Quick Settings'
     /// Wi-Fi prompt.
     Prompt,
+    /// The lock screen's own password field: the one field an input method may
+    /// serve while the session is locked, so a password in a composed script
+    /// can be typed at all.
+    Lock,
+}
+
+/// Which field the seat's input method serves, and as what.
+///
+/// While the session is locked the only answer is the lock screen's field, and
+/// only when no client still holds the keyboard: serving a client's text input
+/// there would hand a locked machine's keystrokes to a process. A lock with no
+/// composer available serves nothing, which is the safe answer. Unlocked, the
+/// order is the palette, then a shell password prompt, then the focused field —
+/// unchanged.
+#[must_use]
+pub fn field_owner(
+    locked: bool,
+    client_holds_keyboard: bool,
+    lock_field: Option<ui::ime::ImeWindowState>,
+    shell_prompt_up: bool,
+    receipts_only: bool,
+    speech_field_needed: bool,
+    focused_field: Option<ui::ime::ImeWindowState>,
+    focus: Option<u64>,
+    palette_visible: bool,
+) -> Option<(ui::ime::ImeWindowState, NativeFieldId)> {
+    if locked {
+        return (!client_holds_keyboard)
+            .then_some(lock_field)
+            .flatten()
+            .map(|field| (field, NativeFieldId::Lock));
+    }
+    if client_holds_keyboard && !shell_prompt_up {
+        return None;
+    }
+    if receipts_only && !speech_field_needed {
+        return None;
+    }
+    if palette_visible {
+        return focused_field.map(|field| (field, NativeFieldId::Palette));
+    }
+    if shell_prompt_up {
+        return focused_field.map(|field| (field, NativeFieldId::Prompt));
+    }
+    focused_field
+        .zip(focus)
+        .map(|(field, node)| (field, NativeFieldId::Widget(node)))
 }
 
 /// Private opaque edit metadata, never surrounding text or a persisted hash.
@@ -497,5 +544,62 @@ mod tests {
             assert_eq!(key_of(&event), (key, false), "{keysym:#x}");
         }
         assert!(translate_key(k::KEY_Shift_L, true).is_none());
+    }
+
+    /// The whole truth table of who an input method may serve. The locked rows
+    /// are the security ones: while the session is locked, only the lock
+    /// screen's own field may be served, and only when no client still holds
+    /// the keyboard — a locked machine must not hand its keystrokes to a
+    /// process, and a password in a composed script must still be typeable.
+    #[test]
+    fn only_the_lock_field_is_served_while_locked() {
+        use ui::ime::{ImeWindowState, InputContent};
+        let field = || ImeWindowState::from_rect(InputContent::PASSWORD, Default::default());
+        let owner = |locked,
+                     client_keyboard,
+                     lock_field,
+                     prompt,
+                     palette,
+                     focused: Option<ImeWindowState>| {
+            super::field_owner(
+                locked,
+                client_keyboard,
+                lock_field,
+                prompt,
+                false,
+                false,
+                focused,
+                Some(7),
+                palette,
+            )
+        };
+
+        // Locked: the lock's own field, and nothing else.
+        assert!(matches!(
+            owner(true, false, Some(field()), true, true, Some(field())),
+            Some((_, NativeFieldId::Lock))
+        ));
+        // Locked with a client still holding the keyboard: nothing at all,
+        // even though the lock has a field ready.
+        assert!(owner(true, true, Some(field()), false, false, Some(field())).is_none());
+        // Locked with no field (verifying): nothing, and no chrome field is a
+        // substitute for it.
+        assert!(owner(true, false, None, true, true, Some(field())).is_none());
+
+        // Unlocked, the order is unchanged: palette, prompt, focused widget.
+        assert!(matches!(
+            owner(false, false, None, true, true, Some(field())),
+            Some((_, NativeFieldId::Palette))
+        ));
+        assert!(matches!(
+            owner(false, false, None, true, false, Some(field())),
+            Some((_, NativeFieldId::Prompt))
+        ));
+        assert!(matches!(
+            owner(false, false, None, false, false, Some(field())),
+            Some((_, NativeFieldId::Widget(7)))
+        ));
+        // A client with the keyboard and no shell prompt keeps it.
+        assert!(owner(false, true, None, false, false, Some(field())).is_none());
     }
 }

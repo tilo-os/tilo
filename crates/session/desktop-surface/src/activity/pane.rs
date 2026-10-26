@@ -2958,6 +2958,58 @@ fn detail_provenance(detail: &HistorySelectionDetail) -> String {
 /// Turn Automerge's structural patch vocabulary into a small, stable set of
 /// phrases suitable for the human-facing comparison preview. Resource-native
 /// renderers can still use the complete before/after documents when opened.
+/// The fields a comparison changed, with what each held either side, read
+/// from the before and after documents the comparison kept.
+pub(crate) fn comparison_field_changes(
+    comparison: &ui::history_source::HistoryComparison,
+) -> Vec<tilo_actions::remote::workspace_activity::FieldChange> {
+    let before = automerge::AutoCommit::load(&comparison.before_document).ok();
+    let after = automerge::AutoCommit::load(&comparison.after_document).ok();
+    let (Some(before), Some(after)) = (before, after) else {
+        return Vec::new();
+    };
+    let mut changes: Vec<tilo_actions::remote::workspace_activity::FieldChange> = Vec::new();
+    for patch in &comparison.patches {
+        let automerge::PatchAction::PutMap { key, .. } = &patch.action else {
+            continue;
+        };
+        let field = humanize_field(key);
+        if changes.iter().any(|change| change.field == field) {
+            continue;
+        }
+        changes.push(tilo_actions::remote::workspace_activity::FieldChange {
+            before: map_value(&before, &patch.obj, key),
+            after: map_value(&after, &patch.obj, key),
+            field,
+        });
+    }
+    changes
+}
+
+/// What `key` of the map `object` holds in `doc`, as a person reads it.
+fn map_value(doc: &automerge::AutoCommit, object: &automerge::ObjId, key: &str) -> String {
+    match doc.get(object, key).ok().flatten() {
+        None => String::new(),
+        Some((automerge::Value::Scalar(value), _)) => match value.as_ref() {
+            automerge::ScalarValue::Str(text) => text.to_string(),
+            automerge::ScalarValue::Int(number) => number.to_string(),
+            automerge::ScalarValue::Uint(number) => number.to_string(),
+            automerge::ScalarValue::F64(number) => format!("{number}"),
+            automerge::ScalarValue::Boolean(flag) => {
+                if *flag {
+                    "yes".into()
+                } else {
+                    "no".into()
+                }
+            }
+            automerge::ScalarValue::Null => String::new(),
+            other => format!("{other:?}"),
+        },
+        // A list or a map reads as what it holds, not as its identity.
+        Some(_) => t("activity-change-content"),
+    }
+}
+
 fn comparison_change_labels(patches: &[automerge::Patch]) -> Vec<String> {
     let mut labels = Vec::new();
     for patch in patches {

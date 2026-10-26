@@ -215,8 +215,8 @@ pub enum AccountsEffect {
     #[effect(row, job, idempotent, label = "Recover mode change")]
     RecoverCloudMode { account: String },
     /// Link your account with a service this room is connected to (a
-    /// Discord server it bridges): the room's host makes the code to send
-    /// from there, which shows here once it answered.
+    /// Discord server it bridges): the page goes to the service's consent
+    /// page, which comes back here linked.
     #[effect(label = "Link account")]
     LinkService {
         #[param("The connector's app id")]
@@ -225,6 +225,18 @@ pub enum AccountsEffect {
     /// Unlink your account with a service this room is connected to.
     #[effect(destructive, label = "Unlink account")]
     UnlinkService {
+        #[param("The connector's app id")]
+        app: String,
+    },
+    /// Link the account a link from the service offers (Discord's /link).
+    #[effect(label = "Link offered account")]
+    AcceptService {
+        #[param("The connector's app id")]
+        app: String,
+    },
+    /// Turn down the account a link from the service offers.
+    #[effect(label = "Turn down offered account")]
+    DeclineService {
         #[param("The connector's app id")]
         app: String,
     },
@@ -296,6 +308,20 @@ pub(crate) fn answer(
                 .unlink(&service);
             return Ok(Effected::done());
         }
+        AccountsEffect::AcceptService { app: service } => {
+            crate::panes::accounts::area(app)
+                .ok_or_else(crate::area::missing)?
+                .linked()
+                .accept(&service);
+            return Ok(Effected::done());
+        }
+        AccountsEffect::DeclineService { app: service } => {
+            crate::panes::accounts::area(app)
+                .ok_or_else(crate::area::missing)?
+                .linked()
+                .decline(&service);
+            return Ok(Effected::done());
+        }
         _ => {}
     }
     answer_model(app, effect, cx)
@@ -364,7 +390,9 @@ fn answer_model(
         | AccountsEffect::SetBrowserIdentityEnabled { .. }
         | AccountsEffect::RemoveBrowserIdentity { .. }
         | AccountsEffect::LinkService { .. }
-        | AccountsEffect::UnlinkService { .. } => {
+        | AccountsEffect::UnlinkService { .. }
+        | AccountsEffect::AcceptService { .. }
+        | AccountsEffect::DeclineService { .. } => {
             return Err("Identity publication was not handled".into());
         }
         AccountsEffect::AddAccount { kind } => {
@@ -2047,8 +2075,8 @@ impl AccountsPane {
     }
 
     /// The person's accounts with the services this room is connected to
-    /// (a Discord server it bridges), as the profile card shows them: link
-    /// one, which shows the code to send from there, or unlink it. `None`
+    /// (a Discord server it bridges), as the profile card shows them:
+    /// connect one, confirm one a link offers, or unlink it. `None`
     /// where the room is connected to none.
     fn linked_accounts_card(&self) -> Option<SettingsSection> {
         let accounts = self.cx.as_ref()?.linked.accounts();
@@ -2060,51 +2088,74 @@ impl AccountsPane {
             let service = || account.service.clone().into();
             let app = account.app.clone();
             body.push(match &account.state {
-                ui::linked_accounts::LinkState::Unlinked => setting_row(
-                    &account.service,
-                    Box::new(self.bound(
-                        Button::new(
-                            &format!("settings.linked.link:{app}"),
-                            &t_args("accounts-linked-link", &[("service", service())]),
-                        ),
-                        AccountsEffect::LinkService { app },
-                    )),
-                ),
-                ui::linked_accounts::LinkState::Linking(code) => {
-                    let copy = code.code.clone();
-                    let chip = ui::widget::Container::new()
-                        .with_background()
-                        .hug()
-                        .with_inset(ui::tokens::Rhythm::Tight)
-                        .with_child(Box::new(
-                            ui::widget::Text::new(&code.code)
-                                .with_id(format!("settings.linked.code:{app}"))
-                                .with_role(ui::TextRole::Code),
-                        ));
-                    setting_row_described(
-                        &account.service,
-                        &code.instruction,
+                ui::linked_accounts::LinkState::Unlinked { connect, elsewhere } => {
+                    let button = connect.then(|| -> Box<dyn Widget> {
                         Box::new(
-                            Row::new()
-                                .no_wrap()
-                                .with_rhythm(ui::tokens::Rhythm::Sibling)
-                                .with_align_items(taffy::AlignItems::Center)
-                                .with_justify(taffy::JustifyContent::FlexEnd)
-                                .push(Box::new(chip))
-                                .push(Box::new(
-                                    Button::new(
-                                        &format!("settings.linked.copy:{app}"),
-                                        &t("accounts-linked-copy"),
-                                    )
-                                    .with_icon(ui::icons::Icon::Copy)
-                                    .on_effect(move || ui::text_selection::clipboard_copy(&copy)),
-                                )),
-                        ),
-                    )
+                            self.bound(
+                                Button::new(
+                                    &format!("settings.linked.link:{app}"),
+                                    &t_args("accounts-linked-link", &[("service", service())]),
+                                )
+                                .with_icon(ui::linked_accounts::service_icon(&app))
+                                .role(ui::widget::ButtonRole::Primary),
+                                AccountsEffect::LinkService { app: app.clone() },
+                            ),
+                        )
+                    });
+                    match (button, elsewhere) {
+                        (Some(button), Some(elsewhere)) => {
+                            setting_row_described(&account.service, elsewhere, button)
+                        }
+                        (Some(button), None) => setting_row(&account.service, button),
+                        (None, elsewhere) => note(elsewhere.as_deref().unwrap_or_default()),
+                    }
                 }
+                ui::linked_accounts::LinkState::Connecting => note(&t_args(
+                    "accounts-linked-connecting",
+                    &[("service", service())],
+                )),
+                ui::linked_accounts::LinkState::Looking => note(&t_args(
+                    "accounts-linked-looking",
+                    &[("service", service())],
+                )),
+                ui::linked_accounts::LinkState::Offered(offer) => setting_row_described(
+                    &account.service,
+                    &t_args(
+                        "accounts-linked-offer",
+                        &[
+                            ("service", service()),
+                            ("account", offer.account.label().into()),
+                        ],
+                    ),
+                    Box::new(
+                        Row::new()
+                            .no_wrap()
+                            .with_rhythm(ui::tokens::Rhythm::Sibling)
+                            .with_align_items(taffy::AlignItems::Center)
+                            .with_justify(taffy::JustifyContent::FlexEnd)
+                            .push(Box::new(self.bound(
+                                Button::new(
+                                    &format!("settings.linked.decline:{app}"),
+                                    &t("accounts-linked-decline"),
+                                ),
+                                AccountsEffect::DeclineService { app: app.clone() },
+                            )))
+                            .push(Box::new(
+                                self.bound(
+                                    Button::new(
+                                        &format!("settings.linked.accept:{app}"),
+                                        &t("accounts-linked-accept"),
+                                    )
+                                    .with_icon(ui::linked_accounts::service_icon(&app))
+                                    .role(ui::widget::ButtonRole::Primary),
+                                    AccountsEffect::AcceptService { app: app.clone() },
+                                ),
+                            )),
+                    ),
+                ),
                 ui::linked_accounts::LinkState::Linked(name) => setting_row_described(
                     &account.service,
-                    &name.label(),
+                    &t_args("accounts-linked-as", &[("account", name.label().into())]),
                     Box::new(self.bound(
                         Button::new(
                             &format!("settings.linked.unlink:{app}"),
@@ -4777,12 +4828,20 @@ mod tests {
     /// A room bridged to a Discord server, its host answering at once.
     struct Bridged(std::cell::RefCell<ui::linked_accounts::LinkState>);
 
+    fn ada() -> ui::linked_accounts::AccountName {
+        ui::linked_accounts::AccountName {
+            user_name: "ada.l".into(),
+            display_name: Some("Ada L".into()),
+        }
+    }
+
     impl ui::linked_accounts::LinkedAccountsHost for Bridged {
         fn accounts(&self) -> Vec<ui::linked_accounts::LinkedAccount> {
             vec![ui::linked_accounts::LinkedAccount {
                 app: "so.tilo.discord".into(),
                 service: "Discord".into(),
                 state: self.0.borrow().clone(),
+                problem: None,
             }]
         }
 
@@ -4793,16 +4852,18 @@ mod tests {
         fn refresh(&self) {}
 
         fn link(&self, _app: &str) {
-            *self.0.borrow_mut() =
-                ui::linked_accounts::LinkState::Linking(ui::linked_accounts::LinkCode {
-                    code: "ABCDEFGHJKLM".into(),
-                    instruction: "In Discord, type /link with this code. It works for 10 minutes."
-                        .into(),
-                });
+            *self.0.borrow_mut() = ui::linked_accounts::LinkState::Connecting;
         }
 
         fn unlink(&self, _app: &str) {
-            *self.0.borrow_mut() = ui::linked_accounts::LinkState::Unlinked;
+            *self.0.borrow_mut() = ui::linked_accounts::LinkState::Unlinked {
+                connect: true,
+                elsewhere: None,
+            };
+        }
+
+        fn accept(&self, _app: &str) {
+            *self.0.borrow_mut() = ui::linked_accounts::LinkState::Linked(ada());
         }
     }
 
@@ -4835,36 +4896,50 @@ mod tests {
         );
 
         let host = Rc::new(Bridged(std::cell::RefCell::new(
-            ui::linked_accounts::LinkState::Unlinked,
+            ui::linked_accounts::LinkState::Unlinked {
+                connect: true,
+                elsewhere: Some("In the Discord server, type /link to link from there.".into()),
+            },
         )));
         let linked = ui::linked_accounts::LinkedAccounts::new(host.clone());
         let pane = AccountsPane::from_dir_in(root, AccountDirectory::default(), false)
             .with_host(cx.with_linked_accounts(linked.clone()));
         let shown = said(&pane);
         assert!(shown.contains(&t("accounts-linked-title")), "{shown:?}");
+        assert!(shown.contains(&"Connect Discord".to_owned()), "{shown:?}");
         assert!(
-            shown.contains(&"Link Discord account".to_owned()),
-            "{shown:?}"
+            shown.iter().any(|line| line.contains("type /link")),
+            "how to link from Discord's side: {shown:?}"
         );
 
         linked.link("so.tilo.discord");
         let shown = said(&pane);
         assert!(
-            shown
-                .iter()
-                .any(|line| line.contains("In Discord, type /link with this code")),
+            shown.iter().any(|line| line.contains("Opening Discord")),
             "{shown:?}"
         );
-        assert!(shown.contains(&"ABCDEFGHJKLM".to_owned()), "{shown:?}");
-        assert!(shown.contains(&t("accounts-linked-copy")), "{shown:?}");
 
         *host.0.borrow_mut() =
-            ui::linked_accounts::LinkState::Linked(ui::linked_accounts::AccountName {
-                user_name: "ada.l".into(),
-                display_name: Some("Ada L".into()),
+            ui::linked_accounts::LinkState::Offered(ui::linked_accounts::OfferReading {
+                service: "Discord".into(),
+                account: ada(),
+                started_here: false,
             });
         let shown = said(&pane);
-        assert!(shown.contains(&"Ada L · ada.l".to_owned()), "{shown:?}");
+        assert!(
+            shown
+                .iter()
+                .any(|line| line.contains("Link Discord Ada L · @ada.l to you?")),
+            "{shown:?}"
+        );
+        assert!(shown.contains(&t("accounts-linked-decline")), "{shown:?}");
+
+        linked.accept("so.tilo.discord");
+        let shown = said(&pane);
+        assert!(
+            shown.contains(&"Linked as Ada L · @ada.l".to_owned()),
+            "{shown:?}"
+        );
         assert!(shown.contains(&t("accounts-linked-unlink")), "{shown:?}");
     }
 }

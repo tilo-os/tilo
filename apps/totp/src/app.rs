@@ -23,9 +23,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use ui::time::{Duration, Instant};
 
-/// How long a copied code stays on the clipboard: one code period, after
-/// which it is useless anyway.
-const CODE_ON_CLIPBOARD_FOR: Duration = Duration::from_secs(30);
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -147,6 +144,9 @@ pub struct AuthenticatorApp {
     account_count: Option<ui::LocalState<usize>>,
     /// A capture's clock was moved to its scenario's step already.
     clock_staged: bool,
+    /// Why codes may be rejected because this device's clock is not
+    /// synchronised, when the platform can say so.
+    clock_warning: Option<&'static str>,
 }
 
 impl Default for AuthenticatorApp {
@@ -192,6 +192,7 @@ impl AuthenticatorApp {
             has_accounts: None,
             account_count: None,
             clock_staged: false,
+            clock_warning: totp::clock_drift_warning(),
         }
     }
 
@@ -348,9 +349,13 @@ impl AuthenticatorApp {
                 return;
             }
             let code = totp::current_code(&acc);
+            // A copied code is useful for exactly the account's own period,
+            // not a fixed thirty seconds: a 60-second code would otherwise be
+            // wiped while still valid.
+            let lifetime = Duration::from_secs(u64::from(acc.period.max(1)));
             if !self
                 .copy
-                .watch(ui::try_clipboard_copy_secret(&code, CODE_ON_CLIPBOARD_FOR))
+                .watch(ui::try_clipboard_copy_secret(&code, lifetime))
             {
                 self.toast("Could not copy to the clipboard", ToastKind::Error);
                 return;
@@ -452,6 +457,11 @@ impl AuthenticatorApp {
             ListEvent::Copy(id) => {
                 self.selected = Some(id);
                 self.copy_account(id);
+                self.list_dirty = true;
+            }
+            ListEvent::Reveal(id) => {
+                self.selected = Some(id);
+                self.list.show_code(id);
                 self.list_dirty = true;
             }
             ListEvent::Select(id) => {
@@ -581,6 +591,7 @@ impl AuthenticatorApp {
         }
         let event = match verb {
             "totp.select" => ListEvent::Select(id),
+            "totp.reveal" => ListEvent::Reveal(id),
             "totp.copy" => ListEvent::Copy(id),
             "totp.edit" => ListEvent::Edit(id),
             "totp.move-up" => ListEvent::MoveUp(id),
@@ -846,9 +857,9 @@ impl AuthenticatorApp {
         let mut top = self.rect.y0;
         self.banner_rect = Rect::ZERO;
         self.retry_rect = Rect::ZERO;
-        if self.persistence_pending() {
-            // The banner spans the column the rows stand in and holds Retry:
-            // beside its text when it fits, under it inside the box when not.
+        if self.persistence_pending() || self.clock_warning.is_some() {
+            // The banner spans the column the rows stand in; the unsaved
+            // changes banner holds Retry, the clock warning holds no action.
             let content = self.banner_content();
             let banner_h = Banner::height(&content, self.column.width(), ctx.text, theme);
             let y0 = top + f64::from(spacing.s2);
@@ -864,19 +875,24 @@ impl AuthenticatorApp {
         self.list.set_viewport(list_rect, self.column);
     }
 
-    /// The unsaved-changes banner, with Retry inside it.
+    /// The banner in the window: unsaved changes with Retry, or the clock
+    /// warning that explains codes every server may reject.
     fn banner_content(&self) -> BannerContent<'_> {
-        BannerContent::new(BannerKind::Warning, UNSAVED_TITLE)
-            .with_message(Some(
-                self.persistence_message
-                    .as_deref()
-                    .unwrap_or(UNSAVED_DETAIL),
-            ))
-            .action(RETRY_LABEL)
+        if self.persistence_pending() {
+            return BannerContent::new(BannerKind::Warning, UNSAVED_TITLE)
+                .with_message(Some(
+                    self.persistence_message
+                        .as_deref()
+                        .unwrap_or(UNSAVED_DETAIL),
+                ))
+                .action(RETRY_LABEL);
+        }
+        BannerContent::new(BannerKind::Warning, "This device’s clock may be off")
+            .with_message(self.clock_warning)
     }
 
     fn paint_banner(&self, ctx: &mut PaintCtx<'_>) {
-        if !self.persistence_pending() {
+        if !self.persistence_pending() && self.clock_warning.is_none() {
             return;
         }
         Banner::paint(
@@ -1053,7 +1069,8 @@ impl Widget for AuthenticatorApp {
                 button: winit::event::MouseButton::Left,
                 ..
             }
-        ) && self.retry_rect.contains(self.last_mouse)
+        ) && self.persistence_pending()
+            && self.retry_rect.contains(self.last_mouse)
             && self.retry_persist()
         {
             *ctx.handled = true;
@@ -1145,7 +1162,23 @@ impl Widget for AuthenticatorApp {
                 let row = self.list.account_bounds(account.id)?;
                 let name = Self::accessible_account_name(account);
                 let id = account.id;
+                let revealed = self.list.is_revealed(id);
                 let mut row_children = vec![
+                    AccessNode::new(Role::Button)
+                        .with_name(if revealed {
+                            format!("Hide code for {name}")
+                        } else {
+                            format!("Reveal code for {name}")
+                        })
+                        .with_description(
+                            "Codes are hidden until you ask to see one; they stay readable for a few seconds.",
+                        )
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .disabled(!account.secret_is_valid()),
+                        )
+                        .with_action_target(format!("totp.reveal:{id}")),
                     AccessNode::new(Role::Button)
                         .with_name(format!("Copy code for {name}"))
                         .with_description(if account.secret_is_valid() {

@@ -10,7 +10,7 @@ use ui::prelude::*;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::items::item_resource_id;
 
-use crate::app::{ClocksApp, Controls, Shown, duration, repeat_summary};
+use crate::app::{ClocksApp, Controls, Shown, duration, repeat_summary, wall_now};
 use crate::model::Clocks;
 use crate::schedule::OnThisDevice;
 
@@ -31,6 +31,13 @@ pub enum ClocksEffect {
     },
     /// Dismiss the due alarm or timer notice on this device.
     DismissNotice,
+    /// Ring this device's alarm again after a few minutes.
+    SnoozeAlarm {
+        #[param("The alarm's id")]
+        alarm: String,
+        #[param("Minutes to wait before ringing again")]
+        minutes: u32,
+    },
     /// Float a timer above other windows.
     FloatTimer {
         #[param("The timer's id")]
@@ -56,12 +63,14 @@ const SCENARIOS: &[&str] = &[
     "ringing",
     "world",
     "alarms",
+    "ringing-alarm",
     "stopwatch",
     "timers",
     "running-narrow",
     "ringing-narrow",
     "world-narrow",
     "alarms-narrow",
+    "ringing-alarm-narrow",
     "stopwatch-narrow",
     "timers-narrow",
 ];
@@ -180,6 +189,12 @@ impl ResourceApp for ClocksShell {
                 Clocks::ADD_ALARM.with(("Wake up".to_owned(), 7, 0, vec![Mon, Tue, Wed, Thu, Fri])),
                 Clocks::ADD_ALARM.with(("Gym".to_owned(), 18, 30, Vec::new())),
             ],
+            "ringing-alarm" => vec![Clocks::ADD_ALARM.with((
+                "Wake up".to_owned(),
+                7,
+                0,
+                vec![Mon, Tue, Wed, Thu, Fri],
+            ))],
             _ => Vec::new(),
         }
     }
@@ -202,6 +217,14 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
         match scene(scenario) {
             "world" => self.set_mode(crate::app::WORLD),
             "alarms" => self.set_mode(crate::app::ALARMS),
+            "ringing-alarm" => {
+                self.set_mode(crate::app::ALARMS);
+                let alarm = self
+                    .state
+                    .with(|shown| shown.clocks.alarms.ids().next().cloned());
+                self.notice
+                    .set(Some(("Alarm".to_owned(), "Wake up".to_owned(), alarm)));
+            }
             "stopwatch" => self.set_mode(crate::app::STOPWATCH),
             "running" => {
                 self.set_mode(crate::app::TIMERS);
@@ -218,7 +241,7 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
             "ringing" => {
                 self.set_mode(crate::app::TIMERS);
                 self.notice
-                    .set(Some(("Timer finished".to_owned(), "Tea".to_owned())));
+                    .set(Some(("Timer finished".to_owned(), "Tea".to_owned(), None)));
             }
             _ => self.set_mode(crate::app::TIMERS),
         }
@@ -246,6 +269,21 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
                 }
             }),
             ClocksEffect::DismissNotice => self.notice.set(None),
+            ClocksEffect::SnoozeAlarm { alarm, minutes } => {
+                let id = Id::from_raw(alarm.as_str());
+                let now_ms = wall_now().timestamp_millis();
+                let mut delivery = self.device.get().delivery;
+                self.state.with(|shown| {
+                    let alarm = shown
+                        .clocks
+                        .alarms
+                        .get(&id)
+                        .ok_or_else(|| format!("there is no alarm `{alarm}`"))?;
+                    crate::schedule::snooze(&mut delivery, &id, alarm, now_ms, minutes)
+                })?;
+                self.update_device(|device| device.delivery = delivery);
+                self.notice.set(None);
+            }
             ClocksEffect::FloatTimer { timer, floating } => {
                 if !self
                     .state

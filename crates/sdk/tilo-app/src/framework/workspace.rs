@@ -50,11 +50,38 @@ struct Shared<P: Resource> {
     /// The same state as view state: a view that read it is built again
     /// when another app's or device's change arrives.
     state: LocalState<Rc<P::State>>,
+    /// Wakes the window: for an action that waits for the record.
+    wake: Option<WakeHandle>,
+    /// Actions asked for while the record could not be changed (its store
+    /// in use by whatever runs now), applied in order once it can.
+    waiting: RefCell<Vec<Waiting<P>>>,
+}
+
+/// An action that waits for its record ([`WorkspaceRecord::invoke_then`]),
+/// with what to do once it was applied or refused.
+struct Waiting<P: Resource> {
+    action: P::Action,
+    then: Box<dyn FnOnce(Result<(), ActionError>)>,
+    /// The window's refreshes it asked for: a few, so a record held
+    /// throughout them waits for the window's next refresh of its own
+    /// instead of keeping the window busy.
+    woken: u8,
+}
+
+/// How many refreshes an action that waits for its record asks for.
+const WAITING_WAKES: u8 = 4;
+
+/// What became of an action applied to the record.
+enum Applied {
+    Done(Result<(), ActionError>),
+    /// The record cannot be changed right now; nothing ran.
+    Waits,
 }
 
 impl<P: Resource> Shared<P> {
     /// Follow the record when it moved. Whether it did.
     fn refresh(&self) -> bool {
+        self.apply_waiting();
         let moved = match self.record.read(|doc| self.live.sync(doc)) {
             Some(Ok(moved)) => moved,
             Some(Err(error)) => {
@@ -68,6 +95,69 @@ impl<P: Resource> Shared<P> {
             self.state.set(self.live.get());
         }
         moved
+    }
+
+    /// Apply the actions that wait for the record, in order, while it can
+    /// be changed: what still cannot waits on, asking the window for a
+    /// refresh a few times.
+    fn apply_waiting(&self) {
+        let Ok(mut waiting) = self.waiting.try_borrow_mut() else {
+            return;
+        };
+        if waiting.is_empty() {
+            return;
+        }
+        let queue = std::mem::take(&mut *waiting);
+        drop(waiting);
+        let mut left = Vec::new();
+        for entry in queue {
+            // Order is kept: once one waits, the ones after it wait too.
+            if !left.is_empty() {
+                left.push(entry);
+                continue;
+            }
+            match self.apply(&entry.action) {
+                Applied::Done(result) => (entry.then)(result),
+                Applied::Waits => left.push(entry),
+            }
+        }
+        let Some(first) = left.first_mut() else {
+            return;
+        };
+        let wake = first.woken < WAITING_WAKES;
+        if wake {
+            first.woken = first.woken.saturating_add(1);
+        }
+        let mut waiting = self.waiting.borrow_mut();
+        left.append(&mut waiting);
+        *waiting = left;
+        drop(waiting);
+        if wake && let Some(window) = &self.wake {
+            window.wake();
+        }
+    }
+
+    fn apply(&self, action: &P::Action) -> Applied {
+        let encoded = match tilo_resource::encode::<P>(action) {
+            Ok(encoded) => encoded,
+            Err(error) => return Applied::Done(Err(error)),
+        };
+        let change = action.change_kind();
+        let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
+            .with_app(self.app_id, self.app_title)
+            .with_invoker(ActionInvoker::actor(&self.me))
+            .with_change(change);
+        let edited = self.record.try_edit(change == ChangeKind::Content, |doc| {
+            let writer = ui_core::history_source::authors::device_actor(&self.me, doc.get_actor());
+            tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+        match edited {
+            Ok(result) => Applied::Done(result.map_err(ActionError::Refused)),
+            Err(unavailable) if unavailable.is_momentary() => Applied::Waits,
+            Err(unavailable) => Applied::Done(Err(ActionError::Refused(unavailable.to_string()))),
+        }
     }
 }
 
@@ -104,8 +194,8 @@ impl<P: Resource> WorkspaceRecord<P> {
             .read(tilo_resource::Reader::<P>::read)?
             .map_err(|error| tracing::warn!(kind = P::KIND, %error, "workspace record unreadable"))
             .ok()?;
-        if let Some(wake) = wake {
-            record.wake_on_arrival(wake);
+        if let Some(wake) = &wake {
+            record.wake_on_arrival(wake.clone());
         }
         let live = Live::new(reader);
         Some(Self {
@@ -118,6 +208,8 @@ impl<P: Resource> WorkspaceRecord<P> {
                 permissions,
                 state: LocalState::new(live.get()),
                 live,
+                wake,
+                waiting: RefCell::default(),
             }),
         })
     }
@@ -167,18 +259,61 @@ impl<P: Resource> WorkspaceRecord<P> {
     /// person, in its history and one undo step of theirs.
     ///
     /// # Errors
-    /// The arguments do not build the action, the grants refuse it, or the
-    /// record does.
+    /// The arguments do not build the action, the grants refuse it, the
+    /// record does, or the record cannot be changed right now (for that,
+    /// [`Self::invoke_then`] waits).
     pub fn invoke(&self, invoke: &Invoke<P>) -> Result<(), ActionError> {
+        let action = self.admit(invoke)?;
+        match self.shared.apply(&action) {
+            Applied::Done(result) => {
+                self.shared.refresh();
+                result
+            }
+            Applied::Waits => Err(ActionError::Refused(
+                ui_core::record::HistoryUnavailable::StoreInUse.to_string(),
+            )),
+        }
+    }
+
+    /// [`Self::invoke`], and `then` with what became of it: at once, or,
+    /// where the record cannot be changed right now (its store in use by
+    /// whatever runs as this is asked), once it can, on a refresh of the
+    /// window. Actions that wait are applied in the order they were asked
+    /// for, after the ones that waited before them.
+    pub fn invoke_then(
+        &self,
+        invoke: &Invoke<P>,
+        then: impl FnOnce(Result<(), ActionError>) + 'static,
+    ) {
+        let action = match self.admit(invoke) {
+            Ok(action) => action,
+            Err(error) => return then(Err(error)),
+        };
+        let shared = &self.shared;
+        let first = shared
+            .waiting
+            .try_borrow()
+            .is_ok_and(|waiting| waiting.is_empty());
+        if first && let Applied::Done(result) = shared.apply(&action) {
+            shared.refresh();
+            return then(result);
+        }
+        shared.waiting.borrow_mut().push(Waiting {
+            action,
+            then: Box::new(then),
+            woken: 0,
+        });
+        if let Some(window) = &shared.wake {
+            window.wake();
+        }
+    }
+
+    /// The action `invoke` names, once the room's grants admit it.
+    fn admit(&self, invoke: &Invoke<P>) -> Result<P::Action, ActionError> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
-        self.apply(&action)
-    }
-
-    fn apply(&self, action: &P::Action) -> Result<(), ActionError> {
-        let shared = &self.shared;
-        if let Some(verb) = verb_of::<P>(action)
+        if let Some(verb) = verb_of::<P>(&action)
             && !self.may(&verb)
         {
             return Err(ActionError::Refused(format!(
@@ -186,24 +321,7 @@ impl<P: Resource> WorkspaceRecord<P> {
                 P::LABEL.to_lowercase()
             )));
         }
-        let encoded = tilo_resource::encode::<P>(action)?;
-        let change = action.change_kind();
-        let context = ActionContext::for_resource(P::KIND, P::KIND, P::LABEL)
-            .with_app(shared.app_id, shared.app_title)
-            .with_invoker(ActionInvoker::actor(&shared.me))
-            .with_change(change);
-        shared
-            .record
-            .edit(change == ChangeKind::Content, |doc| {
-                let writer =
-                    ui_core::history_source::authors::device_actor(&shared.me, doc.get_actor());
-                tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            })
-            .map_err(ActionError::Refused)?;
-        shared.refresh();
-        Ok(())
+        Ok(action)
     }
 
     /// The record underneath, for a test or host that carries it between
@@ -260,6 +378,12 @@ impl WorkspaceState {
             owners: RefCell::default(),
             refreshers: RefCell::default(),
         }
+    }
+
+    /// What wakes the window: for an answer that arrives later, such as a
+    /// chooser's.
+    pub(crate) fn wake(&self) -> Option<&WakeHandle> {
+        self.wake.as_ref()
     }
 
     /// The window's app.

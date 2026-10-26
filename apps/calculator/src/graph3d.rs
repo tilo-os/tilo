@@ -5,7 +5,6 @@
 //! pass so surfaces occlude each other correctly), and paints each cell in its
 //! function's series colour with a Lambert shade. Drag orbits, scroll zooms.
 
-use ui::ColorCompat;
 use ui::charts::ChartPalette;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -497,8 +496,14 @@ fn stroke_path(scene: &mut Scene, t: Affine, width: f64, color: Color, path: &Be
 }
 
 fn scale_rgb(c: Color, f: f64) -> Color {
-    let s = |x: u8| (f64::from(x) * f).round().clamp(0.0, 255.0) as u8;
-    Color::from_rgba8(s(c.r()), s(c.g()), s(c.b()), c.a())
+    let [r, g, b, a] = c.components;
+    let factor = f as f32;
+    vello::peniko::color::AlphaColor::<vello::peniko::color::Srgb>::new([
+        (r * factor).clamp(0.0, 1.0),
+        (g * factor).clamp(0.0, 1.0),
+        (b * factor).clamp(0.0, 1.0),
+        a,
+    ])
 }
 
 fn normalize3(x: f64, y: f64, z: f64) -> (f64, f64, f64) {

@@ -55,8 +55,11 @@ pub fn register_feedback_startup(
 /// It also has the frame loop render the pixels apps ask for, which the
 /// page cannot wait for the GPU to read back
 /// ([`ui::offscreen::pixels`]).
+///
+/// And it has the page's `tracing` warnings and errors reach the console.
 #[cfg(target_arch = "wasm32")]
 pub fn start() {
+    console_log::install();
     let _ = ui::rt::cpu_pool();
     browser::start_pixels();
 }
@@ -75,6 +78,8 @@ pub fn first_frame_presented() -> bool {
 }
 #[cfg(target_arch = "wasm32")]
 mod clipboard;
+#[cfg(target_arch = "wasm32")]
+mod console_log;
 #[cfg(target_arch = "wasm32")]
 mod crash;
 #[cfg(target_arch = "wasm32")]
@@ -132,7 +137,7 @@ mod semantics_status;
 #[cfg(target_arch = "wasm32")]
 mod settings;
 #[cfg(target_arch = "wasm32")]
-mod shell;
+pub(crate) mod shell;
 #[cfg(target_arch = "wasm32")]
 mod storage;
 #[cfg(target_arch = "wasm32")]
@@ -155,3 +160,10 @@ mod first_frame;
     allow(dead_code, reason = "only the browser draws; the host runs its tests")
 )]
 mod viewport;
+// How many frames the GPU may still be drawing: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser draws; the host runs its tests")
+)]
+mod frame_pacing;

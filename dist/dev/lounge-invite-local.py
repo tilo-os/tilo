@@ -281,6 +281,13 @@ def main() -> int:
         check("join", session_b is not None and len(held_now) == 1,
               f"B holds {[(w['id'], w['room']) for w in held_now]} of room {room}")
         if session_b is None:
+            # Where B's join stands: its join card, what it is joining.
+            try:
+                state = probe.state()
+                print("B join card:", json.dumps(state["chrome"].get("peer_sync")), flush=True)
+                print("B joining:", state["workspace_tree"].get("joining_rooms"), flush=True)
+            except (OSError, Failed, ValueError, KeyError) as e:
+                print("B's join state is unreadable:", e, flush=True)
             raise Failed("B never held the room")
         try:
             session_b.shell_action(f"workspace.select.{room}")

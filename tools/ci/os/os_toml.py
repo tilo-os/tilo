@@ -45,6 +45,13 @@ TOOLS = ["os/image/build-layer.sh", "os/image/layers.toml", "os/image/args.Conta
 KERNEL_PIN = "os/kernel-snapshot.env"
 KERNEL_VERIFIER = "os/dev/verify-kernel-provenance.sh"
 KERNEL_FROM = "FROM ${KERNEL_RPMS_REF}"
+# What the browser's engine is built from (os/image/compile.sh --chromium): its host's sources,
+# the build script and the CEF pin, and the blocker crate it links with what cargo reads to
+# build that.
+CHROMIUM_SOURCES = ["os/image/compile.sh", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json",
+                    "apps/browser/chromium/**", "crates/browser/chromium-blocker/**", "crates/workspace-hack/**",
+                    "vendor/**", "Cargo.lock", "**/Cargo.toml", ".cargo/**", "rust-toolchain.toml",
+                    "os/external-assets/github-assets.tsv"]
 # What measures a built image and judges it against os/image-size-budget.toml.
 IMAGE_SIZE_TOOLS = ["tools/ci/os/image-size.sh", "tools/perf/image_size.py",
                     "os/tests/image_size_budget.py", "os/image-size-budget.toml"]
@@ -238,7 +245,8 @@ def flavour_checks(plan, arch, req, tools, flavour, layer):
         needs = [f"os-base-{arch}", "os-assets", "signing-tools", f"image-rpms-{arch}"] + below
         for g in l.get("given", []):
             if g == "compiled":
-                needs.append(f"{compiled}-{arch}")
+                # With the browser's engine, which the development compile leaves out.
+                needs += [f"{compiled}-{arch}", f"os-chromium-{arch}"]
                 continue
             what = g.split(":", 1)[0]
             if any(i["name"] == what for i in plan.get("image", [])):
@@ -307,9 +315,12 @@ def block():
 # from your tree (no LTO, the apps and desktop of the commit, its UKI sealing a placeholder
 # composefs digest) and leaves it as an OCI layout (`t outputs`).
 """,
+           # Fetched by the cache script itself, not through build-layer.sh: a change to how
+           # layers are built would otherwise fetch them again, and rebuild the RPM snapshot,
+           # the assembler and every image above them, which take these as needs.
            check([("name", '"os-assets"'),
-                  ("run", '"bash os/image/build-layer.sh assets"'),
-                  ("inputs", arr(["os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/image/build-layer.sh"])),
+                  ("run", '"bash os/dev/cache-github-assets.sh"'),
+                  ("inputs", arr(["os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh"])),
                   ("outputs", arr(["os/external-assets/cache/**"])),
                   ("cost", '"minutes"'), ("default", "false")]),
            signing_tools_check(),
@@ -350,18 +361,38 @@ def block():
                 ("requires", req), ("isolation", '"vm"'), ("writable_sources", "true"),
                 ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "7200"),
                 ("default", "false")]))
+        # The browser's engine, which reads its own sources and the blocker crate it links, not
+        # the workspace's: the compiles take it as it is, so a changed crate never builds it again.
+        out.append(check([
+            ("name", f'"os-chromium-{arch}"'),
+            ("image", BUILDER_IMAGE.format(arch=arch)),
+            ("run", f'"bash os/image/compile.sh --chromium /target/os/{arch}/chromium"'),
+            ("inputs", arr(CHROMIUM_SOURCES)),
+            ("needs", arr(["os-assets"])),
+            ("env", '{ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", '
+                    'CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }'),
+            ("outputs", arr([f"/target/os/{arch}/chromium/**"])),
+            ("requires", arr([node])),
+            ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "10800"),
+            ("default", "false")]))
         # The development image's compile: no LTO and no line tables. A build to ship, not a
-        # lint gate: warnings stay warnings, as in every image build. A release's: thin LTO,
-        # whose links of the large binaries take up to 8 GiB each, so 8 at a time.
+        # lint gate: warnings stay warnings, as in every image build. It needs the verified
+        # fixtures, and not the browser's engine, which the image layer takes from
+        # os-chromium-<arch> itself: it starts once the OS builder is there, not after the
+        # engine's own build. A release's: thin LTO, whose links of the large binaries take up
+        # to 8 GiB each, so 8 at a time, with the engine in its tree.
         for suffix, lto, debuginfo, memory, jobs in (("", "off", "0", "32GiB", ""),
                                                      ("-release", "thin", "line-tables-only", "64GiB", "8")):
+            release = bool(suffix)
             out.append(check([
                 ("name", f'"os-compile{suffix}-{arch}"'),
                 ("image", BUILDER_IMAGE.format(arch=arch)),
                 ("run", f'"bash os/image/compile.sh /target/os/{arch}/compiled{suffix}"'),
                 ("inputs", arr(sorted(set(builder_sources + ["os/image/compile.sh"])))),
-                ("needs", arr(["os-assets", "test-assets"])),
+                ("needs", arr(["test-assets"] + ([f"os-chromium-{arch}"] if release else []))),
                 ("env", f'{{ TILO_RUST_LTO = "{lto}", TILO_RUST_DEBUGINFO = "{debuginfo}", TILO_WITH_BROWSER = "1", '
+                        + (f'TILO_CHROMIUM_ENGINE = "/target/os/{arch}/chromium", ' if release
+                           else 'TILO_CHROMIUM_ENGINE = "apart", ')
                         + (f'TILO_CARGO_BUILD_JOBS = "{jobs}", ' if jobs else "")
                         + f'TILO_TEST_ASSET_SEED = "{TEST_ASSET_SEED}", '
                         'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", '

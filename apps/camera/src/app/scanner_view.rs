@@ -285,7 +285,7 @@ impl CameraApp {
                     self.live_view = Some((cur_gen, frame_image_cover(fb)));
                     let Some(generation) = self.scan_generation.checked_add(1) else {
                         self.toast
-                            .show("Code scan counter exhausted; restart Camera".into());
+                            .show("Code scan counter exhausted; restart Camera");
                         return;
                     };
                     let id = format!("live:{cur_gen}");

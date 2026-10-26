@@ -87,8 +87,22 @@ struct CardParts {
     header: Rect,
     /// Where the miniature goes; none on a share that ended.
     view: Option<Rect>,
-    /// The sharer's "Stop sharing", under the card.
-    stop: Option<Rect>,
+    /// The sharer's controls under the card: what the others may do,
+    /// switched in place, and "Stop sharing".
+    controls: Option<SharerControls>,
+}
+
+/// The sharer's row under a live share's card.
+struct SharerControls {
+    /// "View only" and "Can edit", the share's own pressed.
+    access: [(ShareAccess, Rect); 2],
+    stop: Rect,
+}
+
+impl SharerControls {
+    fn bottom(&self) -> f64 {
+        self.stop.y1
+    }
 }
 
 impl ChatApp {
@@ -110,7 +124,10 @@ impl ChatApp {
             return 0.0;
         }
         let parts = self.share_card_parts(m, Point::ZERO, width, tr, theme);
-        let bottom = parts.stop.map_or(parts.card.y1, |stop| stop.y1);
+        let bottom = parts
+            .controls
+            .as_ref()
+            .map_or(parts.card.y1, SharerControls::bottom);
         bottom + f64::from(theme.tokens.spacing.s2)
     }
 
@@ -146,21 +163,46 @@ impl ChatApp {
             origin.x + w,
             view.map_or(header.y1, |view| view.y1 + f64::from(sp.s1)),
         );
-        let stop = self.is_my_live_share(m).then(|| {
-            let h = ButtonFace::height(ControlSize::Small, theme);
-            let label = crate::i18n::t("chat-share-stop");
-            let bw = ButtonFace::new(Rect::ZERO, &label)
-                .control_size(ControlSize::Small)
-                .intrinsic_width(tr, theme)
-                .min(w);
+        let controls = self.is_my_live_share(m).then(|| {
+            let button_h = ButtonFace::height(ControlSize::Small, theme);
             let y = card.y1 + f64::from(sp.s2);
-            Rect::new(origin.x, y, origin.x + bw, y + h)
+            let mut width = |label: &str| {
+                ButtonFace::new(Rect::ZERO, label)
+                    .control_size(ControlSize::Small)
+                    .intrinsic_width(tr, theme)
+            };
+            let view_button = Rect::new(
+                origin.x,
+                y,
+                origin.x + width(&access_label(ShareAccess::View)),
+                y + button_h,
+            );
+            let x = view_button.x1 + f64::from(sp.s1);
+            let edit_button = Rect::new(
+                x,
+                y,
+                x + width(&access_label(ShareAccess::Edit)),
+                y + button_h,
+            );
+            // Stopping stands apart from the choice of what others may do.
+            let x = edit_button.x1 + f64::from(sp.s3);
+            let stop = Rect::new(
+                x,
+                y,
+                x + width(&crate::i18n::t("chat-share-stop")),
+                y + button_h,
+            );
+            let access = [
+                (ShareAccess::View, view_button),
+                (ShareAccess::Edit, edit_button),
+            ];
+            SharerControls { access, stop }
         });
         CardParts {
             card,
             header,
             view,
-            stop,
+            controls,
         }
     }
 
@@ -203,21 +245,39 @@ impl ChatApp {
         if !share.ended {
             ChatApp::push_hit(hits, parts.card, Hit::OpenShare(m.id.clone()));
         }
-        if let Some(stop) = parts.stop {
+        if let Some(controls) = &parts.controls {
+            for (access, rect) in controls.access {
+                let label = access_label(access);
+                Button::paint(
+                    paint.scene,
+                    paint.transform,
+                    paint.text,
+                    theme,
+                    &ButtonFace::new(rect, &label)
+                        .control_size(ControlSize::Small)
+                        .toggled(share.access == access)
+                        .hovered(self.hovered(rect)),
+                );
+                ChatApp::push_hit(hits, rect, Hit::SwitchShare(m.id.clone(), access));
+            }
             let label = crate::i18n::t("chat-share-stop");
             Button::paint(
                 paint.scene,
                 paint.transform,
                 paint.text,
                 theme,
-                &ButtonFace::new(stop, &label)
+                &ButtonFace::new(controls.stop, &label)
                     .control_size(ControlSize::Small)
                     .role(ButtonRole::Secondary)
-                    .hovered(self.hovered(stop)),
+                    .hovered(self.hovered(controls.stop)),
             );
-            ChatApp::push_hit(hits, stop, Hit::StopShare(m.id.clone()));
+            ChatApp::push_hit(hits, controls.stop, Hit::StopShare(m.id.clone()));
         }
-        *y = parts.stop.map_or(parts.card.y1, |stop| stop.y1) + f64::from(theme.tokens.spacing.s2);
+        *y = parts
+            .controls
+            .as_ref()
+            .map_or(parts.card.y1, SharerControls::bottom)
+            + f64::from(theme.tokens.spacing.s2);
     }
 
     /// The card's head: the app's mark, the title, what the others may do,
@@ -435,6 +495,31 @@ impl ChatApp {
             self.live_shares.grants.ask_again(message);
             self.open_shared_resource(message);
         }
+    }
+
+    /// Let the others do `access` with what `message` shares, in place:
+    /// the share stays live, and the room's grant follows.
+    pub(crate) fn switch_share(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        message: &str,
+        access: ShareAccess,
+    ) {
+        let Some(m) = self.message(message) else {
+            return;
+        };
+        if !self.is_my_live_share(m) || m.share.as_ref().is_some_and(|share| share.access == access)
+        {
+            return;
+        }
+        self.apply_part(
+            doc,
+            ChatPart::SET_SHARE_ACCESS.with(chat_part::SetShareAccess {
+                message: ui::tilo_resource::Id::from_raw(message),
+                access,
+            }),
+        );
+        self.request_relayout();
     }
 
     /// Stop sharing what `message` shares.

@@ -41,7 +41,7 @@ const REDIAL_LONGEST: Duration = Duration::from_secs(60);
 
 #[path = "mcp_admission.rs"]
 mod mcp_admission;
-pub(super) use mcp_admission::SessionAdmission;
+pub(super) use mcp_admission::{Refusal, SessionAdmission};
 
 pub(super) struct Joined {
     executions: Arc<super::execution::ExecutionPins>,
@@ -566,6 +566,28 @@ fn room_topic(room: RoomId) -> Result<u64, String> {
 #[cfg(test)]
 #[path = "joined_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "mcp_admission_tests.rs"]
+mod mcp_admission_tests;
+
+#[cfg(test)]
+impl Joined {
+    /// Read this profile's custody from `paths` from now on, before any run
+    /// is admitted: the tests that make one read of it fail compare the same
+    /// custody, read and unread.
+    ///
+    /// The fixture is the only holder here; every run is admitted after.
+    pub(in crate::standalone) fn install_custody_paths(
+        &self,
+        paths: tilo_user_identity::persist::IdentityPaths,
+    ) {
+        let custody = &raw const self.custody;
+        // SAFETY: no run has been admitted yet, so nothing reads this store
+        // concurrently; each admission afterwards pins what it reads.
+        unsafe { (*(custody.cast_mut())).identity_paths = Some(paths) };
+    }
+}
 
 #[cfg(test)]
 #[path = "admission_tests.rs"]

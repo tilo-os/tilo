@@ -512,6 +512,81 @@ class FirstTexturedTests(unittest.TestCase):
     def test_the_threshold_itself_is_still_flat(self):
         self.assertEqual(self.run_samples([FLAT_STDDEV], timeout=0.0)[:2], (FLAT_STDDEV, 1))
 
+    def test_a_terminal_filling_its_output_with_only_a_prompt_is_drawn(self):
+        # foot on a 1920x1080 output: its background, a prompt and a cursor.
+        stats, attempts = first_textured(lambda: {"stddev": 0.018, "ink": 425}, 5.0)
+        self.assertEqual((stats["ink"], attempts), (425, 1))
+
+    def test_a_cursor_on_a_blank_window_is_still_flat(self):
+        self.assertFalse(apps.textured({"stddev": 0.006, "ink": 91}))
+
+
+class FullscreenTests(unittest.TestCase):
+    """Super+F on glxgears: its lone tile already spans 1856 of the output's 1920 px."""
+    TILE = {"x": 32.0, "y": 80.0, "w": 1856.0, "h": 988.0}
+    FULL = {"x": 0.0, "y": 0.0, "w": 1920.0, "h": 1080.0}
+
+    def run_fullscreen(self, full_rect, restored_rect):
+        gid, sid = 7, 70
+        phase = {"fs": False, "rect": self.TILE}
+
+        def frames():
+            r = phase["rect"]
+            return [{"surface_id": sid, "rect": r, "buffer": {"w": int(r["w"]), "h": int(r["h"])}}]
+
+        def key(combo):
+            phase["fs"] = not phase["fs"]
+            phase["rect"] = full_rect if phase["fs"] else restored_rect
+
+        def state():
+            return {"chrome": {"displays": [{"id": 0, "groups": [gid]}],
+                               "fullscreen_group": gid if phase["fs"] else None},
+                    "workspace_tree": {"outputs": {"displays": [{"id": 0, "x": 0, "y": 0,
+                                                                 "width": 1920, "height": 1080}]},
+                                       "workspaces": []}}
+
+        vm = SimpleNamespace(foreign_frames=frames, key=key, state=state)
+
+        def wait_state(predicate, timeout, what):
+            s = state()
+            if not predicate(s):
+                raise core.CheckFailed(f"{what} not reached")
+            return s
+
+        ctx = SimpleNamespace(vm=vm, state=state, wait_state=wait_state, shot=lambda label: label)
+        res = SimpleNamespace(metrics={})
+        with patch.object(daily_apps, "wait_until", lambda predicate, *_: predicate() or None), \
+                patch.object(core, "load_image", lambda path: None), \
+                patch.object(core, "region_stats", lambda img, rect: {"mean": 0.1, "stddev": 0.15}):
+            daily_apps._fullscreen(ctx, res, daily_apps.GLXGEARS, sid, gid)
+        return res.metrics
+
+    def test_full_screen_and_back_to_a_tile_that_spans_most_of_the_output(self):
+        metrics = self.run_fullscreen(self.FULL, self.TILE)
+        self.assertEqual(metrics["restored_rect"], self.TILE)
+
+    def test_a_window_left_at_its_tile_size_is_not_full_screen(self):
+        with self.assertRaisesRegex(core.CheckFailed, "does not cover output"):
+            self.run_fullscreen(self.TILE, self.TILE)
+
+    def test_a_window_that_stays_full_screen_is_not_back_in_its_tile(self):
+        with self.assertRaisesRegex(core.CheckFailed, "back in a tile"):
+            self.run_fullscreen(self.FULL, self.FULL)
+
+
+class HistogramInkTests(unittest.TestCase):
+    def test_counts_what_stands_off_the_background(self):
+        hist = [0] * 256
+        hist[36] = 1_800_000  # foot's #242424
+        hist[40] = 500        # antialiasing next to it
+        hist[220] = 400       # the prompt's glyphs
+        self.assertEqual(core.histogram_ink(hist), 400)
+
+    def test_a_flat_fill_has_none(self):
+        hist = [0] * 256
+        hist[200] = 1000
+        self.assertEqual(core.histogram_ink(hist), 0)
+
 
 ROOMS = "/home/tds-a/.local/share/tilo-rooms/personal/so.tilo.file-explorer/.local/state"
 

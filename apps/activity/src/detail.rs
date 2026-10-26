@@ -10,7 +10,7 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ListRow, ObjectHeader, Property, PropertyList, Section};
 
-use crate::{Filter, Nav, Provider, tr};
+use crate::{Filter, Nav, Provider, tr, trf};
 
 pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> Element {
     let nav = nav.clone();
@@ -71,6 +71,31 @@ fn content(cx: &ViewCx<Filter>, nav: &Nav, range: &wire::Range, detail: &wire::D
     parts.push(Box::new(PropertyList::new(facts)));
     if !detail.offers.is_empty() {
         parts.push(offers(&provider, nav, range, detail));
+    }
+    // What each field held either side, before the lines that only name the
+    // change: "Title — was Q3 budget" says nothing a person can act on.
+    if !detail.changes.is_empty() {
+        let rows: Vec<Element> = detail
+            .changes
+            .iter()
+            .enumerate()
+            .map(|(index, change)| {
+                let mut row = ListRow::new(format!("activity-field-{index}"), &change.field)
+                    .value(change.after.clone())
+                    .secondary(trf(
+                        "activity-was",
+                        &[("before", change.before.clone().into())],
+                    ));
+                if change.after.is_empty() {
+                    row = row.secondary(tr("activity-removed"));
+                }
+                Box::new(row) as Element
+            })
+            .collect();
+        parts.push(Box::new(Section::titled(
+            tr("activity-changed-fields"),
+            rows,
+        )));
     }
     match &detail.comparison {
         Some(wire::Comparison::Changes { lines }) => {

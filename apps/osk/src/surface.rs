@@ -39,6 +39,8 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "url",
     "pin",
     "french",
+    "compact",
+    "large",
     "emoji",
     "composing",
 ];
@@ -316,6 +318,8 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
     fn stage(&mut self, scenario: Option<&str>) {
         let staged = match scenario {
             Some("french") => Some(SetPreference::Layout("azerty".into())),
+            Some("compact") => Some(SetPreference::Size("compact".into())),
+            Some("large") => Some(SetPreference::Size("large".into())),
             Some("emoji") => Some(SetPreference::EmojiRecents(
                 [
                     "thumbs up",

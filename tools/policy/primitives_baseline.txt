@@ -74,7 +74,7 @@ glyph-join 1 apps/totp/src/model.rs
 glyph-join 1 apps/totp/src/resource.rs
 glyph-join 1 apps/tube/src/actions.rs
 glyph-join 1 apps/tube/src/api.rs
-glyph-join 2 apps/tube/src/app.rs
+glyph-join 1 apps/tube/src/app.rs
 glyph-join 6 apps/tube/src/model.rs
 glyph-join 7 apps/tube/src/sample.rs
 glyph-join 1 apps/typst-editor/src/app.rs
@@ -129,7 +129,6 @@ glyph-join 1 crates/session/shell/src/shell/workspace_drop.rs
 glyph-join 1 crates/session/tray-host/src/item.rs
 hand-rolled 1 apps/feeds/src/reader_pane.rs
 hand-rolled 1 apps/pdf-viewer/src/render.rs
-hand-rolled 1 apps/themes/src/draw.rs
 hand-rolled 2 apps/word-processor/src/widget/paint.rs
 hand-rolled 2 apps/word-processor/src/widget/panels.rs
 hand-rolled 1 crates/session/desktop-surface/src/notifications/center.rs
@@ -137,8 +136,6 @@ hand-rolled 1 crates/session/desktop/src/overview_panel.rs
 hand-rolled 1 crates/session/desktop/src/topbar.rs
 hand-rolled 2 crates/session/desktop/src/workspace_settings.rs
 hand-rolled 1 crates/session/shell/src/shell/display_confirm.rs
-raw-colour 1 apps/calculator/src/app.rs
-raw-colour 1 apps/calculator/src/graph3d.rs
 raw-colour 1 apps/canvas/src/panels/inspector.rs
 raw-colour 8 apps/canvas/src/render.rs
 raw-colour 2 apps/canvas/src/view_ops.rs

@@ -379,3 +379,6 @@ store-remote-url = Adresse der Quelle
 store-remote-url-help = Quellen müssen HTTPS verwenden.
 store-remote-remove = Quelle entfernen
 store-remotes-configured = Eingerichtete Quellen
+
+# The installed list, with what the apps on it take on this device in all.
+store-installed-total = { $count } installiert, { $size } insgesamt

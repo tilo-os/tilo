@@ -210,6 +210,9 @@ fn list_row(row: &Row, engine: &str) -> Suggestion {
     let (icon, subtitle) = match row.kind {
         RowKind::Go => (Icon::Globe, None),
         RowKind::History => (Icon::History, Some(row.detail.clone())),
+        // The star is the toolbar's mark for a saved page; the line under the
+        // title names that source and the address it opens.
+        RowKind::Bookmark => (Icon::Star, Some(bookmark_detail(row))),
         RowKind::Search => (
             Icon::Search,
             (!engine.is_empty()).then(|| {
@@ -230,10 +233,19 @@ fn list_row(row: &Row, engine: &str) -> Suggestion {
     }
 }
 
+/// What marks a saved page's row as one, in the person's language: its source
+/// (a bookmark) and the address it opens.
+fn bookmark_detail(row: &Row) -> String {
+    crate::resource::CATALOG.t_args(
+        "browser-suggestion-bookmark",
+        &[("url", ui::i18n::ArgValue::Text(row.detail.clone()))],
+    )
+}
+
 /// Stable identity of a row across relayouts: what it is and what it opens.
 fn row_key(row: &Row) -> String {
     match row.kind {
-        RowKind::History => row.url.clone(),
+        RowKind::History | RowKind::Bookmark => row.url.clone(),
         kind => format!("{kind:?}:{}", row.url),
     }
 }
@@ -241,6 +253,7 @@ fn row_key(row: &Row) -> String {
 fn describe(row: &Row) -> String {
     match row.kind {
         RowKind::History | RowKind::Extension => row.detail.clone(),
+        RowKind::Bookmark => bookmark_detail(row),
         RowKind::Go => format!("Open {}", row.detail),
         RowKind::Search | RowKind::Suggestion => format!("Search for {}", row.title),
     }

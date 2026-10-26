@@ -914,7 +914,11 @@ mod tests {
             tilo_files::native::held::read(path, MAX_PROJECTION_BYTES)
                 .unwrap()
                 .map(|bytes| {
-                    serde_json::from_slice::<AppActionAuthorityProjection>(&bytes).unwrap()
+                    let read =
+                        serde_json::from_slice::<AppActionAuthorityProjection>(&bytes).unwrap();
+                    // As the launcher and the app judge it before using it.
+                    read.validate().unwrap();
+                    read
                 })
         };
         // Written under `published`: it must never wait for the disk.
@@ -980,7 +984,11 @@ mod tests {
             tilo_files::native::held::read(&path, MAX_PROJECTION_BYTES)
                 .unwrap()
                 .map(|bytes| {
-                    serde_json::from_slice::<AppActionAuthorityProjection>(&bytes).unwrap()
+                    let read =
+                        serde_json::from_slice::<AppActionAuthorityProjection>(&bytes).unwrap();
+                    // As the launcher and the app judge it before using it.
+                    read.validate().unwrap();
+                    read
                 })
         };
         let before = read().expect("the projection is current while held");

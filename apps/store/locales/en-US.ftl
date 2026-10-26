@@ -379,3 +379,6 @@ store-remote-url = Repository URL
 store-remote-url-help = Repositories must use HTTPS.
 store-remote-remove = Remove repository
 store-remotes-configured = Configured repositories
+
+# The installed list, with what the apps on it take on this device in all.
+store-installed-total = { $count } installed, { $size } in all

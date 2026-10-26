@@ -35,12 +35,12 @@ the packages nothing requires (`rpm -q --whatrequires`, transitively).
 
     python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci@sha256:... \\
         --json report.json --markdown report.md
-    python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci --arch x86_64 \\
+    python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:x86_64-ci --arch x86_64 \\
         --records image.jsonl --runner none
     python3 tools/perf/image_size.py --oci-layout DIR --why python3-botocore
 
 `--dev-base` measures the production-layout base (`tilo-ci`) a dev image
-names in its `org.opencontainers.image.base.digest` label: tilo-vm:main-ci
+names in its `org.opencontainers.image.base.digest` label: tilo-vm:<arch>-ci
 moves forward with main, so the nightly measures main's newest image. The
 records carry the image's own source revision as their commit.
 
@@ -58,7 +58,7 @@ that has one, named by TEMPLATE in the image's repository. The nightly records
 that update as `footprint.image.update_bytes.<arch>` (what a device on main's
 previous build downloads), under a ceiling in tools/perf/kpi-budgets.toml:
 
-    python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci --arch x86_64 \\
+    python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:x86_64-ci --arch x86_64 \\
         --update-from-previous 'main-{sha7}-{arch}' --records image.jsonl --runner none
 
 zstd layers need Python 3.14's `compression.zstd` or the `zstd` command. A

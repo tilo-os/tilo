@@ -545,6 +545,11 @@ impl MergeView {
         self.dirty = true;
     }
 
+    /// The change under review, if any: what taking a side acts on.
+    pub(crate) fn active_hunk(&self) -> Option<usize> {
+        self.active_hunk
+    }
+
     /// Navigate the active hunk among the real-change hunks.
     pub fn navigate(&mut self, forward: bool) -> bool {
         let changes = self.model.change_indices();

@@ -103,6 +103,7 @@ mod tests {
                 origin: Origin::Discord,
                 persona: None,
                 root: None,
+                picture: None,
             });
         }
         guild.links.push(Link {

@@ -24,7 +24,7 @@ by directory, by file and by installed package (from the image's own rpmdb).
 package in:
 
 ```bash
-python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
+python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:x86_64-ci \
   --arch x86_64 --markdown image.md --json image.json --why python3-botocore
 python3 tools/perf/image_size.py --image registry.tilo.so/tilo/tilo-ci:<ref>-<sha7>-x86_64 --markdown image.md
 ```

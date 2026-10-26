@@ -35,6 +35,7 @@ impl OrdinaryConfirmation {
             snapshot,
             context,
             asked: None,
+            confirming: false,
         })
     }
 
@@ -54,6 +55,21 @@ impl OrdinaryConfirmation {
             ));
         }
         self
+    }
+
+    /// This request as the app asked for it: the person's pick is asked
+    /// before it goes ahead though the action declares no confirmation
+    /// (Delete in a message's menu), in the action's own words.
+    #[must_use]
+    pub(crate) fn confirming(mut self) -> Self {
+        self.confirming = true;
+        self
+    }
+
+    /// Whether Undo takes the action back, by its contract: what lets Shift
+    /// skip its question ([`crate::widget::shift_skips_confirmation`]).
+    pub(crate) fn can_be_undone(&self) -> bool {
+        self.snapshot.contract.can_be_undone()
     }
 
     /// Why the person is asked, when the room's grants ask rather than the
@@ -163,7 +179,7 @@ impl OrdinaryConfirmation {
     }
     pub(crate) fn confirmation(&self) -> &tilo_actions::ConfirmationPolicy {
         static ASKED: tilo_actions::ConfirmationPolicy = tilo_actions::ConfirmationPolicy::Confirm;
-        if self.asked.is_some() {
+        if self.asked.is_some() || self.confirming {
             &ASKED
         } else {
             &self.snapshot.contract.confirmation

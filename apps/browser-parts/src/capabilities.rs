@@ -1,9 +1,19 @@
 //! Device-local permission and download surfaces backed by engine outcomes.
 use std::collections::BTreeMap;
+use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::tokens::TextRole;
 use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::{Button, Column, Container, EmptyState, ListRow, Row, Text, Widget};
+
+/// How long a site's permission question stands before the engine withdraws
+/// it. The question says so, in the person's words: the number lives here
+/// once.
+const PERMISSION_SECONDS: u32 = 60;
+
+/// The window's row for a site's permission request, published as part of
+/// the page that waits on it.
+pub const RESOURCE: &str = "browser.page-permission";
 
 /// An extension's request for more access (`chrome.permissions.request`),
 /// as the person is asked it: its name and what it could then do, one line
@@ -89,7 +99,7 @@ fn open_download(
     reveal: bool,
 ) -> Result<ui::portal::LaunchChannel, String> {
     if !path.is_absolute() || !path.is_file() {
-        return Err("The downloaded file is no longer available.".into());
+        return Err(crate::CATALOG.t("browser-download-unavailable"));
     }
     let request = if reveal {
         ui::portal::LaunchRequest::reveal(path)
@@ -112,7 +122,7 @@ fn launch_download(path: &std::path::Path, reveal: bool, notice: &ui::LocalState
                     notice.set(match channel.recv() {
                         Ok(ui::portal::LaunchOutcome::Opened) => String::new(),
                         Ok(ui::portal::LaunchOutcome::Failed(reason)) => reason,
-                        Err(_) => "Could not open the download. Try revealing its folder.".into(),
+                        Err(_) => crate::CATALOG.t("browser-download-open-failed"),
                     });
                 });
         }
@@ -201,14 +211,17 @@ impl Capabilities {
                     .checked_div(total)
                     .unwrap_or(0)
                     .min(100);
-                return Some(format!(
-                    "{count} {} at {percent}%",
-                    if count == 1 { "download" } else { "downloads" }
+                return Some(crate::CATALOG.t_args(
+                    "browser-downloads-progress-status",
+                    &[
+                        ("count", ArgValue::Number(count as f64)),
+                        ("percent", ArgValue::Number(percent as f64)),
+                    ],
                 ));
             }
-            return Some(format!(
-                "{count} active {}",
-                if count == 1 { "download" } else { "downloads" }
+            return Some(crate::CATALOG.t_args(
+                "browser-downloads-active-status",
+                &[("count", ArgValue::Number(count as f64))],
             ));
         }
         (!downloads.terminal_notice.is_empty()).then(|| downloads.terminal_notice.clone())
@@ -329,9 +342,9 @@ impl Capabilities {
                     }
                     if state != "progress" {
                         downloads.terminal_notice = match state.as_str() {
-                            "complete" => "Download complete".into(),
-                            "failed" => "Download failed".into(),
-                            "cancelled" => "Download cancelled".into(),
+                            "complete" => crate::CATALOG.t("browser-download-complete"),
+                            "failed" => crate::CATALOG.t("browser-download-failed-notice"),
+                            "cancelled" => crate::CATALOG.t("browser-download-cancelled"),
                             _ => String::new(),
                         };
                     }
@@ -370,7 +383,7 @@ impl Capabilities {
                     error.clone_into(&mut record.error);
                 }
             }
-            downloads.terminal_notice = "Download failed".into();
+            downloads.terminal_notice = crate::CATALOG.t("browser-download-failed-notice");
         }
     }
     pub fn prompt(&self, engine: &SharedEngine) -> Option<Box<dyn Widget>> {
@@ -382,13 +395,26 @@ impl Capabilities {
             if let Some((&id, (origin, rights))) = self.permissions.first_key_value() {
                 (
                     id,
-                    format!("{origin} requests {rights}. Expires in 60 seconds."),
+                    crate::CATALOG.t_args(
+                        "browser-permission-request",
+                        &[
+                            ("origin", ArgValue::Text(origin.clone())),
+                            ("rights", ArgValue::Text(rights.clone())),
+                            ("seconds", ArgValue::Number(f64::from(PERMISSION_SECONDS))),
+                        ],
+                    ),
                     true,
                 )
             } else if let Some((&id, (url, name))) = downloads.prompts.first_key_value() {
                 (
                     id,
-                    format!("Download {name} from {url}? Save in a new folder in Downloads."),
+                    crate::CATALOG.t_args(
+                        "browser-download-prompt",
+                        &[
+                            ("name", ArgValue::Text(name.clone())),
+                            ("url", ArgValue::Text(url.clone())),
+                        ],
+                    ),
                     false,
                 )
             } else {
@@ -397,14 +423,21 @@ impl Capabilities {
         drop(downloads);
         let mut row = Row::new();
         for (label, allow) in [
-            (if permission { "Allow" } else { "Save" }, true),
-            ("Deny", false),
+            (
+                crate::CATALOG.t(if permission {
+                    "browser-permission-allow"
+                } else {
+                    "browser-download-save"
+                }),
+                true,
+            ),
+            (crate::CATALOG.t("browser-permission-deny"), false),
         ] {
             let engine = engine.clone();
             row = row.push(Box::new(
                 Button::new(
                     &format!("browser.decision.{permission}.{id}.{allow}"),
-                    label,
+                    &label,
                 )
                 .control_size(ui::widget::ControlSize::Regular)
                 .on_effect(move || {
@@ -450,13 +483,16 @@ impl Capabilities {
             ));
         }
         let mut row = Row::new();
-        for (label, allow) in [("Allow", true), ("Deny", false)] {
+        for (label, allow) in [
+            (crate::CATALOG.t("browser-permission-allow"), true),
+            (crate::CATALOG.t("browser-permission-deny"), false),
+        ] {
             let engine = engine.clone();
             let questions = self.extension_questions.clone();
             row = row.push(Box::new(
                 Button::new(
                     &format!("browser.decision.extension.{request}.{allow}"),
-                    label,
+                    &label,
                 )
                 .control_size(ui::widget::ControlSize::Regular)
                 .on_effect(move || questions.borrow_mut().answer(&engine, request, allow)),
@@ -472,6 +508,73 @@ impl Capabilities {
     /// extension's, rather than a file the page offers.
     pub fn prompt_is_permission(&self) -> bool {
         !self.permissions.is_empty() || self.asks_for_extension()
+    }
+    /// The site's request waiting for an answer, oldest first: its id, the
+    /// site that asks, and what it asks for.
+    pub fn pending(&self) -> Option<(u32, &str, &str)> {
+        self.permissions
+            .first_key_value()
+            .map(|(&id, (origin, rights))| (id, origin.as_str(), rights.as_str()))
+    }
+    /// The site's request, published as part of the page it belongs to: the
+    /// site, what it asks for, and the same two answers the person's prompt
+    /// offers. Refused here, the site's request is denied as its Block
+    /// button denies it.
+    pub fn resource(&self) -> Option<ui::tilo_actions::Resource> {
+        use ui::tilo_resource::Effect as _;
+        let (request, origin, rights) = self.pending()?;
+        let mut row = ui::tilo_actions::Resource::new(
+            RESOURCE,
+            RESOURCE,
+            crate::CATALOG.t_args(
+                "browser-permission-request",
+                &[
+                    ("origin", ArgValue::Text(origin.to_owned())),
+                    ("rights", ArgValue::Text(rights.to_owned())),
+                    ("seconds", ArgValue::Number(f64::from(PERMISSION_SECONDS))),
+                ],
+            ),
+        );
+        for (key, allow) in [
+            ("browser-permission-allow", true),
+            ("browser-permission-deny", false),
+        ] {
+            let mut action =
+                crate::effects::BrowserEffect::AnswerPermission { request, allow }.bound();
+            action.label = crate::CATALOG.t(key);
+            row.actions.push(action);
+        }
+        Some(row)
+    }
+    /// The answers to the site's waiting request, for the page whose own
+    /// outline names it: the page's Allow and Deny, about this request only.
+    #[must_use]
+    pub fn permission_answers(&self) -> Vec<ui::tilo_actions::ActionSpec> {
+        use ui::tilo_resource::Effect as _;
+        let Some((request, _, _)) = self.pending() else {
+            return Vec::new();
+        };
+        [
+            ("browser-permission-allow", true),
+            ("browser-permission-deny", false),
+        ]
+        .into_iter()
+        .map(|(key, allow)| {
+            let mut action =
+                crate::effects::BrowserEffect::AnswerPermission { request, allow }.bound();
+            action.label = crate::CATALOG.t(key);
+            action
+        })
+        .collect()
+    }
+    /// Answer the site's request `request`: grant it when `allow`, else
+    /// refuse it. An answer for a request no longer waiting is ignored.
+    pub fn answer(&self, engine: &SharedEngine, request: u32, allow: bool) -> Result<(), String> {
+        if !self.permissions.contains_key(&request) {
+            return Err("the site's permission request is no longer waiting".into());
+        }
+        engine.send(WebViewCommand::PermissionDecision { id: request, allow });
+        Ok(())
     }
     /// An extension asked to open the engine's download `id`, or show it in
     /// its folder (`chrome.downloads.open`, `show`), as the person's Open and
@@ -540,9 +643,12 @@ impl Capabilities {
         }
         if downloads.records.is_empty() {
             drop(downloads);
-            return Box::new(column.push(Box::new(
-                EmptyState::new("No downloads yet").with_icon(Icon::Download),
-            )));
+            return Box::new(
+                column.push(Box::new(
+                    EmptyState::new(crate::CATALOG.t("browser-downloads-empty"))
+                        .with_icon(Icon::Download),
+                )),
+            );
         }
         let mut rows: Vec<Box<dyn Widget>> = Vec::new();
         for (&id, d) in downloads.records.iter().rev().filter(|(_, item)| {
@@ -551,16 +657,22 @@ impl Capabilities {
                 &[&item.name, &item.url, &item.path, &item.state],
             )
         }) {
+            let size = |bytes: u64| ArgValue::Text(ui::format::size(bytes));
             let status = match d.state.as_str() {
-                "progress" if d.total > 0 => format!(
-                    "{} of {}",
-                    ui::format::size(d.received),
-                    ui::format::size(d.total)
+                "progress" if d.total > 0 => crate::CATALOG.t_args(
+                    "browser-download-progress",
+                    &[("received", size(d.received)), ("total", size(d.total))],
                 ),
-                "progress" => format!("{} downloaded", ui::format::size(d.received)),
-                "complete" => format!("Saved to {}", d.path),
-                "cancelled" => "Cancelled".to_owned(),
-                _ if d.error.is_empty() => "The download failed".to_owned(),
+                "progress" => crate::CATALOG.t_args(
+                    "browser-download-received",
+                    &[("received", size(d.received))],
+                ),
+                "complete" => crate::CATALOG.t_args(
+                    "browser-download-saved-to",
+                    &[("path", ArgValue::Text(d.path.clone()))],
+                ),
+                "cancelled" => crate::CATALOG.t("browser-download-cancelled"),
+                _ if d.error.is_empty() => crate::CATALOG.t("browser-download-failed"),
                 _ => d.error.clone(),
             };
             let mut row = ListRow::new(format!("browser.download.row.{id}"), &d.name);
@@ -573,21 +685,25 @@ impl Capabilities {
                     (d.total > 0).then_some(d.total),
                 ));
                 buttons.push(
-                    Button::new(&format!("browser.download.cancel.{id}"), "Cancel").on_effect(
-                        move || {
-                            engine.send(WebViewCommand::CancelNativeDownload { id });
-                        },
-                    ),
+                    Button::new(
+                        &format!("browser.download.cancel.{id}"),
+                        &crate::CATALOG.t("browser-download-cancel"),
+                    )
+                    .on_effect(move || {
+                        engine.send(WebViewCommand::CancelNativeDownload { id });
+                    }),
                 );
             }
             if d.state == "complete" && !d.path.is_empty() {
-                for (name, label, reveal) in
-                    [("open", "Open", false), ("reveal", "Show in Files", true)]
-                {
+                for (name, key, reveal) in [
+                    ("open", "browser-download-open", false),
+                    ("reveal", "browser-download-reveal", true),
+                ] {
+                    let label = crate::CATALOG.t(key);
                     let path = std::path::PathBuf::from(&d.path);
                     let notice = self.notice.writer();
                     buttons.push(
-                        Button::new(&format!("browser.download.{name}.{id}"), label)
+                        Button::new(&format!("browser.download.{name}.{id}"), &label)
                             .on_effect(move || launch_download(&path, reveal, &notice)),
                     );
                 }
@@ -596,14 +712,16 @@ impl Capabilities {
                 if d.retryable {
                     let engine = engine.clone();
                     buttons.push(
-                        Button::new(&format!("browser.download.retry.{id}"), "Retry").on_effect(
-                            move || {
-                                engine.send(WebViewCommand::RetryDownload { id });
-                            },
-                        ),
+                        Button::new(
+                            &format!("browser.download.retry.{id}"),
+                            &crate::CATALOG.t("browser-download-retry"),
+                        )
+                        .on_effect(move || {
+                            engine.send(WebViewCommand::RetryDownload { id });
+                        }),
                     );
                 } else {
-                    row = row.meta("Can’t retry");
+                    row = row.meta(crate::CATALOG.t("browser-download-cannot-retry"));
                 }
             }
             row = row.secondary(status);
@@ -611,7 +729,10 @@ impl Capabilities {
             rows.push(match bar {
                 Some(bar) => crate::rows::with_progress(
                     line,
-                    bar.with_label(format!("Downloading {}", d.name)),
+                    bar.with_label(crate::CATALOG.t_args(
+                        "browser-download-downloading",
+                        &[("name", ArgValue::Text(d.name.clone()))],
+                    )),
                     theme,
                 ),
                 None => Box::new(line),
@@ -619,9 +740,12 @@ impl Capabilities {
         }
         drop(downloads);
         if rows.is_empty() {
-            return Box::new(column.push(Box::new(
-                EmptyState::new("No matching items").with_icon(Icon::Search),
-            )));
+            return Box::new(
+                column.push(Box::new(
+                    EmptyState::new(crate::CATALOG.t("browser-library-no-match"))
+                        .with_icon(Icon::Search),
+                )),
+            );
         }
         Box::new(column.push(crate::rows::separated(rows, theme)))
     }
@@ -985,6 +1109,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_sites_permission_request_is_published_with_the_page_and_answered_once() {
+        let capture = ui::webview::test_engine::TestEngine::new();
+        let engine: SharedEngine = capture.clone();
+        let mut capabilities = Capabilities::default();
+        assert!(capabilities.resource().is_none(), "nothing is asked");
+        capabilities.apply(WebViewEvent::PermissionRequested {
+            id: 7,
+            origin: "https://site.test".into(),
+            permissions: "location".into(),
+        });
+        // The window publishes the request as a row of its own, naming the
+        // site and what it asks for, with both answers bound to it.
+        let row = capabilities.resource().unwrap();
+        assert_eq!(row.id.as_str(), RESOURCE);
+        assert!(row.label.contains("https://site.test"), "{}", row.label);
+        let names: Vec<&str> = row
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(names, ["answer-permission", "answer-permission"]);
+        // An agent's answer crosses the site's privacy boundary, so it is
+        // asked first, with the authority the person's own prompt has.
+        for action in &row.actions {
+            assert_ne!(
+                action.contract.risk,
+                ui::tilo_actions::RiskLevel::None,
+                "granting a site a capability asks first"
+            );
+        }
+        // The page itself lists them too, so reading the page finds the answer.
+        let page_answers = capabilities.permission_answers();
+        let names: Vec<&str> = page_answers
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(names, ["answer-permission", "answer-permission"]);
+        // A request the page no longer waits on is not answered twice.
+        capabilities
+            .answer(&engine, 7, true)
+            .expect("the waiting request is answered");
+        assert_eq!(
+            capture.commands(),
+            [WebViewCommand::PermissionDecision { id: 7, allow: true }]
+        );
+        capabilities.apply(WebViewEvent::PermissionClosed { id: 7 });
+        assert!(capabilities.resource().is_none());
+        assert!(capabilities.permission_answers().is_empty());
+        assert!(capabilities.answer(&engine, 7, false).is_err());
+        assert_eq!(capture.commands().len(), 1);
+    }
     #[test]
     fn an_extension_opens_only_a_complete_download_the_engine_reported() {
         let mut capabilities = Capabilities::default();

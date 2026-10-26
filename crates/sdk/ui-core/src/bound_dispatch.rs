@@ -2177,6 +2177,9 @@ pub(crate) struct OrdinaryConfirmation {
     /// Why the person is asked when the action declares no confirmation of
     /// its own: the room's grants ask first ([`Self::asking_first`]).
     asked: Option<String>,
+    /// Asked because the app asked for the person's pick to be confirmed
+    /// ([`Self::confirming`]).
+    confirming: bool,
 }
 
 fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
@@ -2237,7 +2240,6 @@ pub(crate) struct ControlIdentity {
     operation_type: Option<String>,
     risk: tilo_actions::RiskLevel,
     retry: tilo_actions::RetryPolicy,
-    reversible: bool,
     execution: tilo_actions::ExecutionMode,
     result: tilo_actions::ResultSpec,
     tags: Vec<String>,
@@ -2479,7 +2481,6 @@ fn control_identity_from_spec(
         operation_type: spec.operation_type.clone(),
         risk: spec.contract.risk,
         retry: spec.contract.retry,
-        reversible: spec.contract.reversible,
         execution: spec.contract.execution.clone(),
         result: spec.contract.result.clone(),
         tags: spec.contract.tags.clone(),

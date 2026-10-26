@@ -345,6 +345,20 @@ for pcrlock_unit in \
     exit 1
   }
 done
+# NvPCRs: anchored on every boot and copied to the read-only ESP, which fails
+# systemd-tpm2-setup.service; nothing in Tilo uses them.
+for containerfile in "$repo/os/Containerfile" "$repo/os/image/system.Containerfile"; do
+  for nvpcr_mask in \
+    'ln -sfn /dev/null "/etc/nvpcr/${f##*/}"' \
+    'test "$(readlink /etc/nvpcr/hardware.nvpcr)" = /dev/null' \
+    'test "$(readlink /etc/nvpcr/cryptsetup.nvpcr)" = /dev/null' \
+    'systemctl mask systemd-pcrproduct.service'; do
+    grep -Fq "$nvpcr_mask" "$containerfile" || {
+      echo "unused NvPCR setup can fail systemd-tpm2-setup again: ${containerfile#"$repo"/} lacks $nvpcr_mask" >&2
+      exit 1
+    }
+  done
+done
 shell_firstboot_unit="$repo/os/usr/lib/systemd/system/shell-firstboot.service"
 if grep -Eq '^(After|Wants)=.*network-online.target' "$shell_firstboot_unit"; then
   echo 'local-only machine firstboot setup still waits for network readiness' >&2

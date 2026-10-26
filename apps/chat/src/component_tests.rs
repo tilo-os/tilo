@@ -225,6 +225,49 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
     );
 }
 #[test]
+fn idle_chat_asks_no_frame_to_solve_its_layout() {
+    // Chat paints inside the box its window gives it: a frame that something
+    // else on the desktop asked for (an animation, another window opening, a
+    // peer's pointer) re-solves nothing in Chat.
+    let mut doc = AutoCommit::new();
+    let me = LocalIdentity::demo();
+    crate::testing::starter(&mut doc, &me.id, &me.name, &me.initials);
+    doc.commit();
+    let mut app = projection(&doc, me);
+    let _ = app.update(&doc, &ROOT);
+    app.mark_drawn();
+    assert!(
+        !app.layout_needs_measure(),
+        "idle Chat asks for no layout solve"
+    );
+    remote_change(&mut doc, "remote-change", "newer");
+    doc.commit();
+    app.sync(&doc, &ROOT);
+    assert!(
+        !app.layout_needs_measure(),
+        "a new message is painted inside Chat's box, which keeps its size"
+    );
+    app.call.expanded = true;
+    assert!(
+        app.layout_needs_measure(),
+        "the expanded call's tile follows the participant grid"
+    );
+}
+
+#[test]
+fn a_mounted_chat_at_rest_is_no_frames_layout_requester() {
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-layout-at-rest");
+    for _ in 0..6 {
+        let _ = frame.poll_frame().unwrap();
+    }
+    let requesters = frame.layout_measure_requesters();
+    assert!(
+        !requesters.iter().any(|path| path.contains("ChatApp")),
+        "Chat at rest asks the next frame to solve its layout: {requesters:?}"
+    );
+}
+
+#[test]
 fn canonical_composer_exports_ime_content_through_app_root() {
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
@@ -1330,4 +1373,226 @@ fn catalogue_poll_cannot_deliver_queued_media_after_its_owner_closes() {
 /// A change to the record from elsewhere: one field written, not committed.
 fn remote_change(doc: &mut AutoCommit, key: &str, value: &str) {
     ui::tilo_resource::write_key(doc, &ROOT, key, &ui::tilo_resource::Atom(value.into())).unwrap();
+}
+
+thread_local! {
+    /// How many times Chat described itself to assistive technology.
+    pub(crate) static ACCESSIBILITY_BUILDS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// The semantics tree of a long channel, per keystroke: built by asking Chat
+/// for its description once (placing each node without bounds of its own
+/// asked for the whole description again, a build quadratic in the
+/// channel), and sent to a mirror as the composer alone.
+#[test]
+fn a_keystroke_in_a_long_channel_describes_chat_once_and_patches_the_composer_alone() {
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-semantics-keystroke");
+    let chain = crate::testing::chain();
+    for index in 0..300 {
+        frame
+            .call_on(
+                &chain,
+                "post",
+                serde_json::json!({"channel": "c_chat", "text": format!("Message {index}, long enough to wrap onto a second line")}),
+            )
+            .unwrap();
+    }
+    let inspection = frame.inspection();
+    let composer = semantic_target_rect(&inspection.root, "chat.composer")
+        .unwrap()
+        .center();
+    frame.click_at(composer.x, composer.y);
+    frame.type_text("a");
+    let mut held = frame.inspection();
+    let nodes = |node: &ui::headless::InspectionNode| {
+        fn access(node: &ui::a11y::AccessNode) -> usize {
+            1 + node.children.iter().map(access).sum::<usize>()
+        }
+        fn widget(node: &ui::headless::InspectionNode) -> usize {
+            node.semantics.as_ref().map_or(0, access)
+                + node.children.iter().map(widget).sum::<usize>()
+        }
+        widget(node)
+    };
+    let total = nodes(&held.root);
+    assert!(total > 40, "a long channel describes many nodes ({total})");
+    for (index, key) in ["b", "c", "d"].into_iter().enumerate() {
+        frame.type_text(key);
+        ACCESSIBILITY_BUILDS.set(0);
+        let started = ui::time::Instant::now();
+        let mut next = frame.inspection();
+        let built = started.elapsed();
+        assert_eq!(
+            ACCESSIBILITY_BUILDS.get(),
+            1,
+            "key {index}: one description per build"
+        );
+        let mut patch = Vec::new();
+        let started = ui::time::Instant::now();
+        let stats = ui::headless::write_inspection_patch(&held, &mut next, &mut patch);
+        let compared = started.elapsed();
+        let patch = String::from_utf8(patch).unwrap();
+        // Timing is reported, not asserted: the counts above and below
+        // hold on any machine.
+        eprintln!(
+            "key {index}: {total} nodes built in {built:?}, a {} byte patch written in {compared:?}",
+            patch.len()
+        );
+        assert_eq!(
+            (stats.added, stats.removed),
+            (0, 0),
+            "key {index}: typing adds or removes no node: {patch}"
+        );
+        assert!(
+            (1..=3).contains(&stats.changed),
+            "key {index}: {} of {total} nodes sent again: {patch}",
+            stats.changed
+        );
+        assert!(
+            patch.len() < 2_000,
+            "key {index}: a {} byte patch for a {} byte tree: {patch}",
+            patch.len(),
+            serde_json::to_vec(&next).unwrap().len()
+        );
+        held = next;
+    }
+    frame.close_components();
+}
+
+/// What a keystroke into the composer of a long channel costs before its
+/// frame: the event handled, the draft written. Timing is reported, the
+/// scopes it ran with it.
+#[test]
+fn a_keystroke_in_the_composer_of_a_long_channel_handled() {
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-composer-keystroke");
+    let chain = crate::testing::chain();
+    for index in 0..300 {
+        frame
+            .call_on(
+                &chain,
+                "post",
+                serde_json::json!({"channel": "c_chat", "text": format!("Message {index}, long enough to wrap onto a second line")}),
+            )
+            .unwrap();
+    }
+    let inspection = frame.inspection();
+    let composer = semantic_target_rect(&inspection.root, "chat.composer")
+        .unwrap()
+        .center();
+    frame.click_at(composer.x, composer.y);
+    frame.type_text("ab");
+    frame.set_coalesce_input_frames(true);
+    for _ in 0..8 {
+        if !frame.poll_frame().unwrap() {
+            break;
+        }
+    }
+    let mut handled = Vec::new();
+    let mut report = String::new();
+    for key in "hello there".chars() {
+        let (elapsed, scopes) = ui::tilo_resource::profiling::observe(|| {
+            let started = ui::time::Instant::now();
+            frame.key(&key.to_string());
+            started.elapsed()
+        });
+        handled.push(elapsed);
+        let mut scopes: Vec<_> = scopes
+            .iter()
+            .map(|sample| (sample.phase, sample.calls, sample.elapsed_ns / 1000))
+            .collect();
+        scopes.sort_by_key(|(_, _, us)| std::cmp::Reverse(*us));
+        report.push_str(&format!(
+            "key {key:?}: handled in {elapsed:?}; scopes (name, calls, us): {scopes:?}\n"
+        ));
+        for _ in 0..8 {
+            if !frame.poll_frame().unwrap() {
+                break;
+            }
+        }
+    }
+    handled.sort();
+    frame.close_components();
+    eprintln!(
+        "{report}composer keystroke handled: p50 {:?}, max {:?}",
+        handled[handled.len() / 2],
+        handled[handled.len() - 1]
+    );
+}
+
+/// A new message in an open Chat over a long channel, as the browser host
+/// takes it: the post's own frame, then whatever the window's components
+/// were woken for, served when the host idles, until the window rests. After
+/// the post's frame the window rests within a frame or two, and no layout
+/// tree is built again for it.
+#[test]
+fn a_new_message_leaves_the_window_at_rest() {
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-new-message");
+    let chain = crate::testing::chain();
+    let post = |frame: &mut ui::headless::FrameHarness, text: String| {
+        frame
+            .call_on(
+                &chain,
+                "post",
+                serde_json::json!({"channel": "c_chat", "text": text}),
+            )
+            .unwrap();
+    };
+    for index in 0..300 {
+        post(
+            &mut frame,
+            format!("Message {index}, long enough to wrap onto a second line"),
+        );
+    }
+    // As the browser host does: serve what woke the window, then draw until
+    // it rests. Each frame's time.
+    let settle = |frame: &mut ui::headless::FrameHarness| {
+        let mut frames = Vec::new();
+        for _ in 0..30 {
+            let started = ui::time::Instant::now();
+            let _ = frame.service_pending_owner_models();
+            if !frame.poll_frame().unwrap() {
+                break;
+            }
+            frames.push(started.elapsed());
+        }
+        frames
+    };
+    settle(&mut frame);
+    let mut report = String::new();
+    for index in 0..3 {
+        let rebuilt = frame.rebuilt_frames();
+        let ((posted, frames), scopes) = ui::tilo_resource::profiling::observe(|| {
+            let started = ui::time::Instant::now();
+            post(&mut frame, format!("News {index}"));
+            (started.elapsed(), settle(&mut frame))
+        });
+        let mut scopes: Vec<_> = scopes
+            .iter()
+            .map(|sample| (sample.phase, sample.calls, sample.elapsed_ns / 1000))
+            .collect();
+        scopes.sort_by_key(|(_, _, us)| std::cmp::Reverse(*us));
+        report.push_str(&format!(
+            "message {index}: posted and drawn in {posted:?}, then frames {frames:?}; scopes: {scopes:?}\n"
+        ));
+        assert_eq!(
+            frame.rebuilt_frames(),
+            rebuilt,
+            "a new message builds no layout tree again: {report}"
+        );
+        let misses = scopes
+            .iter()
+            .find(|(phase, ..)| *phase == "ui.bound_discovery_miss")
+            .map_or(0, |(_, calls, _)| *calls);
+        assert!(
+            misses <= 1,
+            "the post rediscovers the bound components once, where the record changed: {report}"
+        );
+        assert!(
+            frames.len() <= 2,
+            "a new message is drawn in a frame or two, then the window rests: {report}"
+        );
+    }
+    frame.close_components();
+    eprintln!("{report}");
 }

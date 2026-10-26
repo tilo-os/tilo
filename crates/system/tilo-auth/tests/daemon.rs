@@ -449,6 +449,35 @@ fn the_admins_typed_password_adds_the_keyslot_when_it_is_the_disk_passphrase() {
 }
 
 #[test]
+fn an_admin_whose_volume_is_not_found_is_not_recorded_as_unlocking_it() {
+    let m = machine!(true, &[("ada", "123456")]);
+    m.leave_proof();
+    let lockout_auth = lockout::new_reset_auth().unwrap();
+    std::fs::write(m.path("lockout-auth"), &*lockout_auth).unwrap();
+    let lost = m.daemon_with(Config {
+        volume: Locate::Absent,
+        ..m.config()
+    });
+    assert_eq!(verify(&lost, ADA, "ada", "123456"), Reply::success());
+    let record = m.record(ADA.uid).unwrap();
+    assert!(record.enrolled());
+    assert!(!record.unlocks_system);
+    assert_eq!(record.system_keyslot, None);
+    assert_eq!(m.slots(), ["0", "1"]);
+    assert!(
+        m.path("lockout.json").exists(),
+        "the admin still holds the lockout authorisation"
+    );
+
+    let found = m.daemon();
+    assert_eq!(verify(&found, ADA, "ada", "123456"), Reply::success());
+    let record = m.record(ADA.uid).unwrap();
+    assert!(record.unlocks_system);
+    assert!(record.system_keyslot.is_some());
+    assert_eq!(m.slots().len(), 3);
+}
+
+#[test]
 fn without_anything_that_opens_the_volume_the_keyslot_waits_for_a_later_sign_in() {
     let m = machine!(true, &[("ada", "123456")]);
     let daemon = m.daemon();
