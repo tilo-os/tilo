@@ -323,6 +323,28 @@ find(mail.Message, text: "83(b)", where: { from: "@ycombinator.com", received: 2
    unread state. It exists to prove the defaults on the richest common case, and it is the target
    of the agent example ("what does YC legal say are our next steps?").
 
+## 5.1 The model across domains
+
+These are the acceptance cases. Each must be expressible with only the three rules of §2.2.1,
+with no domain knowledge in search. Each becomes a test over sample packages.
+
+| Domain | Query a person or agent writes | What makes it work |
+|---|---|---|
+| Mail | `@ycombinator.com is:unread received:-30d` | `MailAddress` shorthand; `Bool` and `Time` filters |
+| Chat across services | `Message author.identity.member:false in:c4` | Discord, Matrix and Tilo messages share a `Message` type with a service-specific `author`; the identity link is an optional path |
+| Files across stores | `File type:pdf modified:-7d store:drive` | `MediaType` shorthand (`pdf`); `store` is a reference to the account it came from |
+| Calendar | `Event attendees:@acme.com starts:next week room.floor:3` | `MailAddress` on attendees; a path through the room reference |
+| Code and issues | `Issue state:open assignee:me label:bug repo.org:tilo` | enum, reference to `me`, and paths |
+| Payments | `Payment amount:>500EUR paid:-90d invoice:none` | `Money` shorthand; an absent reference as a filter (`none`) |
+| Invoices | `Invoice due:<today paid_by:none client.country:DE` | an absent link is a fact you can filter on |
+| Photos | `Photo taken:2026-08 place.city:Lisbon people:@jane` | `Place` path; a set of references whose type declares a shorthand |
+| Media | `Track artist:~"Nils" duration:>5m played:none` | `Duration` shorthand; an absent "played" record |
+| Notes | `Note ~"83(b)" edited_by:me tag:legal` | text, a person reference, tags |
+| Web history and bookmarks | `Visit url:github.com/tilo visited:-1d` | `Url` shorthand by host and path |
+| Contacts | `Contact phone:+49 email:none` | `PhoneNumber` country shorthand; absent values |
+
+`none` and `any` are general: every optional field and every set accepts them.
+
 ## 6. Open
 
 - **Following a link in reverse.** "Everything from Jane" means every value linked to her, then
