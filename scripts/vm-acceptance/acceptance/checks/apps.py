@@ -13,8 +13,13 @@ from ..vm import VmError, wait_until
 AREA = "apps"
 
 CLOSE_GRACE_S = 20
-# A first frame whose luminance spread stays at or below this is a flat fill.
+# A first frame whose luminance spread stays at or below this is a flat fill...
 FLAT_STDDEV = 0.02
+# ...unless at least this many of its pixels stand off its background. A terminal
+# filling a 1920x1080 output with only its prompt drawn spreads too little to pass
+# the threshold above (foot: stddev 0.018), yet that prompt is a few hundred pixels
+# of text; a cursor alone is about a hundred.
+MIN_INK_PX = 256
 # A client can present a clear before its first real buffer: how long to wait for content.
 FIRST_FRAME_WAIT_S = 5.0
 LAUNCHER = "tilo-launcher"
@@ -111,6 +116,12 @@ def lingering(procs: dict, launch: AppLaunch, owned: dict) -> dict:
     return left
 
 
+def textured(stats) -> bool:
+    """Whether a sample of a window's pixels (`region_stats`, with `ink` from
+    `region_ink` when measured) shows something drawn rather than a flat fill."""
+    return stats["stddev"] > FLAT_STDDEV or stats.get("ink", 0) >= MIN_INK_PX
+
+
 def first_textured(sample, timeout: float, interval: float = 0.5,
                    clock=time.monotonic, sleep=time.sleep):
     """Sample a window's pixels until they are not a flat fill or `timeout` passes.
@@ -120,7 +131,7 @@ def first_textured(sample, timeout: float, interval: float = 0.5,
     while True:
         stats = sample()
         attempts += 1
-        if stats["stddev"] > FLAT_STDDEV or clock() >= deadline:
+        if textured(stats) or clock() >= deadline:
             return stats, attempts
         sleep(interval)
 
@@ -197,7 +208,8 @@ def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign:
                 ctx.vm.shot(shot)
             latest["fresh"] = False
             r = latest["frame"]["rect"]
-            return core.region_stats(core.load_image(shot), (r["x"], r["y"], r["w"], r["h"]))
+            img, rect = core.load_image(shot), (r["x"], r["y"], r["w"], r["h"])
+            return {**core.region_stats(img, rect), "ink": core.region_ink(img, rect)}
 
         stats, attempts = first_textured(sample, FIRST_FRAME_WAIT_S)
         r = latest["frame"]["rect"]
@@ -207,8 +219,9 @@ def _lifecycle(ctx, res, app_id: str, provider: str, label: str, expect_foreign:
         res.metrics["surface_pixels"] = stats
         res.metrics["first_frame_samples"] = attempts
         expect(core.rect_inside(rect, drect, slack=2), f"{label}'s surface {rect} lies inside its output {drect}")
-        expect(stats["stddev"] > FLAT_STDDEV,
-               f"{label}'s first frame is a flat fill (stddev {stats['stddev']}) "
+        expect(textured(stats),
+               f"{label}'s first frame is a flat fill (stddev {stats['stddev']}, "
+               f"{stats.get('ink', 0)} px off its background) "
                f"for {FIRST_FRAME_WAIT_S:g} s ({attempts} samples)")
     launch, app_procs, now = _app_procs(ctx, before, app_id)
     res.metrics["launchers"] = sorted(launch.roots)
