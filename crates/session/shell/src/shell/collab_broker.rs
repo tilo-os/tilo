@@ -300,6 +300,7 @@ pub fn spawn_native_offloading(
         CertificateProvisioning::Production,
         None,
         action_offload,
+        None,
     )
 }
 
@@ -323,6 +324,7 @@ pub fn spawn_native_harness(
         CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), None),
         None,
         None,
+        None,
     )
 }
 
@@ -344,6 +346,22 @@ pub(crate) fn spawn_native_owner_harness_with_reads(
     network: &Arc<ShellNetwork>,
     reads: Option<NativeReadHarnessWrapper>,
 ) -> std::io::Result<BrokerHandle> {
+    spawn_device_harness(socket, membership, trusted_devices, network, reads, None)
+}
+
+#[cfg(test)]
+/// [`spawn_native_owner_harness_with_reads`] for a device whose channel
+/// state is kept in `channel_store`, as a session's is under its secret
+/// store: the broker's channel service opens it, so the device has the
+/// keys of channels another device stewards.
+pub(crate) fn spawn_device_harness(
+    socket: PathBuf,
+    membership: crate::shell::state::WorkspaceTreeHandle,
+    trusted_devices: Vec<[u8; 32]>,
+    network: &Arc<ShellNetwork>,
+    reads: Option<NativeReadHarnessWrapper>,
+    channel_store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
+) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::with_optional_owner_commit(
         Some(network.clone()),
         Arc::new(super::broker_services::NativeOwnerCommitService::new(
@@ -359,6 +377,7 @@ pub(crate) fn spawn_native_owner_harness_with_reads(
         CertificateProvisioning::HarnessDevices(Arc::new(trusted_devices), reads),
         None,
         None,
+        channel_store,
     )
 }
 
@@ -389,6 +408,7 @@ pub fn spawn_native_peer(
         Some(membership),
         CertificateProvisioning::Production,
         Some(config),
+        None,
         None,
     )
 }
@@ -882,12 +902,18 @@ fn spawn_inner(
     certificate_provisioning: CertificateProvisioning,
     config: Option<&crate::shell::peer_actions::NativePeerBrokerConfig>,
     action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
+    channel_store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
     // A configured peer broker runs without the session's vault.
-    let channel_encryption =
-        open_session_services(membership.as_ref(), peer_sync, &channels, config.is_none());
+    let channel_encryption = open_session_services(
+        membership.as_ref(),
+        peer_sync,
+        &channels,
+        config.is_none(),
+        channel_store,
+    );
     // Who is waiting on a cooperative scrollback answer, keyed by
     // artifact — a `ScrollbackResponse` off gossip carries an
     // artifact id and nothing else, so without this the drain thread
@@ -1140,13 +1166,14 @@ fn open_session_services(
     peer_sync: Option<&Arc<ShellNetwork>>,
     channels: &Arc<Mutex<BrokerChannels>>,
     own_channels: bool,
+    channel_store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
 ) -> SessionServices {
     open_session_history(channels);
     if !own_channels {
         return None;
     }
     let workspaces = membership?.clone();
-    let store = session_channel_store();
+    let store = channel_store.or_else(session_channel_store);
     // With neither a store nor a room host to ask, no channel has keys.
     if store.is_none() && peer_sync.is_none() {
         return None;
