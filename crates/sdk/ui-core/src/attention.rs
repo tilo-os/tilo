@@ -96,15 +96,6 @@ pub fn recorded() -> usize {
     ledger::len()
 }
 
-/// One test at a time: the stack and the ledger are the process's, as the
-/// real ones are, so two tests running at once would see each other's rows.
-#[cfg(test)]
-pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-    use crate::lock::MutexRecover as _;
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock_recover()
-}
-
 /// A registered watcher of the waiting stack; dropping it stops the wakes.
 pub struct Watch {
     id: u64,
