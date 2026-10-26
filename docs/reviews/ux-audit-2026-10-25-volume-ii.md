@@ -1840,22 +1840,31 @@ Everything else in the range is conventionally correct and its body says why.
 
 ## 7.4 What is still open
 
-- `SHELL-01`, the blocker: no input method on the lock screen. In flight, and the only finding
-  where "not fixed" means some people cannot use the product.
-- `T11` withdrawn (§4.12): captures are not byte-reproducible (`T10`), but repeated runs are
-  layout-identical, so the gate is viable. What is left is `T1`'s class in canvas, typst-editor and
-  Settings' tablet width.
-- `SHELL-02..17` (17), and the creation and utility app clusters.
-- `T10`: one antialiased pixel still differs between identical runs of the calculator's graph.
-- **A toolkit gap found while integrating.** `policy/app-toolbars` fails on `apps/activity`'s own
-  find field, and the app is not at fault: Activity is a function-based `ResourceApp`, so it has no
-  root widget for `ui::widget::SearchableWindow` to reach, and the bar's search has no other way in.
-  A history feed without search is worse than a field in the wrong place, so the field stayed and
-  the gap is recorded here: **the toolkit owes a `ResourceApp` a query view**, and that is
-  `M5`'s missing piece rather than an app's defect. It is the one policy step in this tree that is
-  red for a reason worth naming.
-- Two policy steps fail on a clean base and are not ours: `capnp` bindings (unavailable in a
-  worktree) and one suite test about a fetched bundle.
+- **Emoji and mentions as a field's defaults** (in flight): the catalogue becomes the toolkit's, so
+  no app links one to have emoji; text fields resolve `:name:` and `@mention` by default, and a
+  field opts out with its reason at the call site (HIG §3, `docs/design-language.md`).
+- **A `ResourceApp` cannot be searched from the window bar** (in flight): Activity draws its own
+  find field because `SearchableWindow` needs a root widget and a function-based app has none.
+  That is the last `app-toolbars` finding, and its fix is a query view in the toolkit.
+- **Size ceilings**: thirteen files were over their ceiling on main before this work; several more
+  after. Pure structure, no behaviour in it, and the least valuable thing left.
+- **`T10`**: one antialiased pixel still differs between identical runs of the calculator's graph.
+- **The lock suite is flaky on main** — 18/1, then 16/3, then 15/4 on identical trees, failing at
+  "compositor did not start". A login-adjacent suite that fails a third of the time teaches people
+  to ignore it.
+- **`chat` links `tilo-emoji-catalogue`** until the toolkit owns the catalogue; that dependency is
+  the whole of the `D2 = 7` portability finding.
+
+## 7.5 What the blocker cost
+
+`SHELL-01` — no input method on the lock screen — was the audit's only blocker, and it took four
+attempts. The first reading found the guard (`native.rs` gated the whole text-input path on
+`!session.is_locked()`); an implementation followed; main then rewrote the lock screen to
+`SecretPrompt` underneath it, so the branch could not merge; and the final version is a third of the
+size of the first, because main had meanwhile built the receiving end (`handle_event` already routed
+`WindowEvent::Ime` and had `composing()`). What remains mine is the decision — `field_owner`, a pure
+function whose truth table says that while locked only the lock's own field is served, and nothing
+at all while a client still holds the keyboard.
 
 # Closing: what "finished" means here, and where the head-room ran out
 
