@@ -27,10 +27,13 @@ use super::{Project, TargetPackageRequest};
 /// The oldest macOS the SDK's Metal renderer supports.
 const MINIMUM_SYSTEM_VERSION: &str = "13.0";
 
-/// The runtime daemon's executable name. The SDK looks for it beside the
-/// app's executable before `PATH`, so a bundle carrying it in
-/// `Contents/MacOS` joins (or starts) the shared runtime wherever it runs.
-pub(super) const RUNTIME_HOST: &str = "tilo-runtime-mcp";
+/// The runtime daemon's executable names, in the SDK's order of preference.
+/// It looks for one beside the app's executable before `PATH`, so a bundle
+/// carrying it in `Contents/MacOS` joins (or starts) the shared runtime
+/// wherever it runs. `build --target macos` bundles the standalone runtime
+/// (`tilo-runtime`), the one a stock Mac runs; `bundle-macos` keeps the name
+/// of the host it is given.
+pub(super) const RUNTIME_HOSTS: [&str; 2] = ["tilo-runtime", "tilo-runtime-mcp"];
 
 /// Write `<output>/<Name>.app` around `binary` and the runtime daemon
 /// `runtime_host`, with its entitlements beside it. Returns the bundle path.
@@ -40,6 +43,17 @@ pub(super) fn assemble(
     runtime_host: &Path,
     output: &Path,
 ) -> Result<PathBuf> {
+    let host_name = runtime_host
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|name| RUNTIME_HOSTS.contains(name))
+        .with_context(|| {
+            format!(
+                "the runtime host {} is not named {}",
+                runtime_host.display(),
+                RUNTIME_HOSTS.join(" or ")
+            )
+        })?;
     let app = output.join(format!("{}.app", project.display_name()));
     let contents = app.join("Contents");
     let macos = contents.join("MacOS");
@@ -52,7 +66,7 @@ pub(super) fn assemble(
     let executable = macos.join(&project.bin);
     std::fs::copy(binary, &executable)
         .with_context(|| format!("copying {} into the bundle", binary.display()))?;
-    std::fs::copy(runtime_host, macos.join(RUNTIME_HOST))
+    std::fs::copy(runtime_host, macos.join(host_name))
         .with_context(|| format!("copying {} into the bundle", runtime_host.display()))?;
     let icon = project.app_dir.join("assets/AppIcon.icns");
     let has_icon = icon.is_file();
@@ -75,7 +89,12 @@ pub(super) fn executable(app: &Path, project: &Project) -> PathBuf {
 }
 
 fn runtime_host(app: &Path) -> PathBuf {
-    app.join("Contents/MacOS").join(RUNTIME_HOST)
+    let macos = app.join("Contents/MacOS");
+    RUNTIME_HOSTS
+        .iter()
+        .map(|name| macos.join(name))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| macos.join(RUNTIME_HOSTS[0]))
 }
 
 /// The entitlements file written beside `app` (codesign reads it; it is not
@@ -547,7 +566,7 @@ mod tests {
         std::fs::write(&project.manifest_path, "manifest fixture").unwrap();
         std::fs::write(project.app_dir.join("assets/AppIcon.icns"), b"icon").unwrap();
         let binary = root.path().join("unsigned app input");
-        let daemon = root.path().join("unsigned helper input");
+        let daemon = root.path().join("tilo-runtime");
         std::fs::write(&binary, b"app fixture, not executable").unwrap();
         std::fs::write(&daemon, b"helper fixture, not executable").unwrap();
         let output = root.path().join("new output");
@@ -632,7 +651,7 @@ mod tests {
         std::fs::create_dir_all(&project.app_dir).unwrap();
         std::fs::write(&project.manifest_path, "").unwrap();
         let binary = root.path().join("hello");
-        let daemon = root.path().join("daemon");
+        let daemon = root.path().join("tilo-runtime");
         std::fs::write(&binary, "app").unwrap();
         std::fs::write(&daemon, "daemon").unwrap();
         let app = assemble(&project, &binary, &daemon, &root.path().join("out")).unwrap();
@@ -641,7 +660,7 @@ mod tests {
             "app"
         );
         assert_eq!(
-            std::fs::read_to_string(executable(&app, &project).with_file_name(RUNTIME_HOST))
+            std::fs::read_to_string(executable(&app, &project).with_file_name("tilo-runtime"))
                 .unwrap(),
             "daemon",
             "the SDK finds the daemon beside the executable"
