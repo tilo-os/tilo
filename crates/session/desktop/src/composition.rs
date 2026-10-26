@@ -159,6 +159,7 @@ pub fn build_group(
                     title: tab.title.clone(),
                     app_kind: Some(tile_app_kind(&tab.tile)),
                     icon: resolver.tab_icon(tab),
+                    attention: false,
                 },
                 host,
             )
@@ -928,6 +929,7 @@ impl DesktopSurface {
                         title: tab.title.clone(),
                         app_kind: Some(tile_app_kind(&tab.tile)),
                         icon: resolver.tab_icon(tab),
+                        attention: false,
                     };
                     if let Some(from) = live.tabs().iter().position(|t| t.id == tab.id) {
                         changed |= live.reorder_tab(from, index);

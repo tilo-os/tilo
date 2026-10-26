@@ -1672,6 +1672,14 @@ impl TextInput {
             .then(|| (self.core.anchor(), self.core.caret()))
     }
 
+    /// The selection a host mirroring this field should paint after a
+    /// pointer event: the anchor and caret, collapsed to the caret when
+    /// nothing is selected. A click that collapses a selection has to reach
+    /// the host too, or it keeps painting the selection it used to show.
+    pub fn selection_anchor_focus_or_caret(&self) -> (usize, usize) {
+        (self.core.anchor(), self.core.caret())
+    }
+
     /// Capture only private editor state for an authenticated ephemeral handoff.
     /// The caller must never publish this value as an action argument.
     pub fn private_draft_editor(&self) -> crate::private_draft::Editor {
@@ -4406,6 +4414,55 @@ impl TextInput {
     /// For `BlockEditor`'s cross-block drag coordinator.
     pub fn is_dragging(&self) -> bool {
         self.is_dragging
+    }
+
+    /// Handle a pointer event for a chrome surface that owns this field
+    /// outside the retained widget tree: the chrome lays the field out
+    /// itself but still wants the toolkit's caret placement, drag selection,
+    /// double-click words and right-click menu. Returns whether the field
+    /// took the event.
+    ///
+    /// The caller keeps its own text and selection; read the selection back
+    /// with [`Self::selection_anchor_focus_or_caret`] after a `true` answer.
+    pub fn handle_chrome_pointer(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+    ) -> bool {
+        let mut handled = false;
+        let mut focus = None;
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.handle_cursor_moved(*position, scale_factor, &mut handled);
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.handle_left_click(*state, modifiers, &mut focus, NodeId::new(0), &mut handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                self.handle_right_click(&mut focus, NodeId::new(0), &mut handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                self.handle_middle_click(&mut focus, NodeId::new(0), &mut handled);
+            }
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                self.handle_mouse_wheel(delta, *phase, scale_factor, &mut handled);
+            }
+            _ => {}
+        }
+        handled
     }
 
     /// For `BlockEditor`'s cross-block drag coordinator, painting a selection

@@ -89,6 +89,21 @@ impl ShellOverlayHost {
             facts.full_screen = st.fullscreen_group() == Some(target.group);
             let tree = st.tree();
             facts.renamable = crate::shell::tab_binding::may_rename_tab(&tree, target.tab);
+            let surface = tree
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .find(|tab| tab.id == target.tab)
+                .and_then(|tab| match &tab.tile {
+                    crate::shell::state::TileContent::Foreign { surface_id, .. } => {
+                        Some(*surface_id)
+                    }
+                    _ => None,
+                });
+            facts.attention = crate::shell::attention::is_asking(target.tab, surface);
             let home = tree
                 .desktop
                 .workspaces
@@ -108,6 +123,32 @@ impl ShellOverlayHost {
                     .iter()
                     .filter(|workspace| workspace.id != home.id)
                     .map(|workspace| (workspace.id, workspace.name.clone()))
+                    .collect();
+                // The other displays, in the order a person reads them:
+                // the menu is the discoverable "where can this go?" list,
+                // and the second panel on the desk belongs in it.
+                let here = tree.desktop.outputs.display_of(target.group);
+                let order = tree.desktop.outputs.reading_order();
+                facts.displays = order
+                    .iter()
+                    .filter(|id| Some(**id) != here)
+                    .enumerate()
+                    .map(|(index, id)| {
+                        // Numbered by where it stands among the displays
+                        // this window is not on, as the display settings
+                        // name one it cannot identify.
+                        let number = order
+                            .iter()
+                            .position(|candidate| candidate == id)
+                            .map_or(index + 1, |place| place + 1);
+                        (
+                            *id,
+                            crate::shell::i18n::t_args(
+                                "display-identify-unnamed",
+                                &[("number", number.into())],
+                            ),
+                        )
+                    })
                     .collect();
             }
         }
@@ -353,6 +394,12 @@ impl ShellOverlayHost {
         action: WindowMenuAction,
     ) -> bool {
         match action {
+            WindowMenuAction::Reveal => {
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                chrome.borrow_mut().show_tab(target.tab)
+            }
             // The `✕` and the keyboard chord's own durable lifecycle: tree
             // and document first, then the widget's close animation.
             WindowMenuAction::CloseTab => self.close_tab_in_group(target.group, Some(target.tab)),
@@ -381,6 +428,58 @@ impl ShellOverlayHost {
             }
             WindowMenuAction::MoveToWorkspace(workspace) => {
                 self.move_to_workspace_from_menu(target, workspace)
+            }
+            WindowMenuAction::MoveToDisplay(display) => {
+                let moved = self.chrome.as_ref().is_some_and(|chrome| {
+                    chrome
+                        .borrow()
+                        .tree_mut()
+                        .move_group_to_display(target.group, display)
+                });
+                if moved {
+                    self.reframe_desktop();
+                    self.bump_chrome();
+                }
+                moved
+            }
+            WindowMenuAction::Width(width) => {
+                let changed = self.set_group_width(target.group, width);
+                self.bump_chrome();
+                changed
+            }
+            WindowMenuAction::EqualizeWidths => {
+                let groups = self
+                    .chrome
+                    .as_ref()
+                    .map(|chrome| {
+                        let st = chrome.borrow();
+                        let tree = st.tree();
+                        tree.desktop
+                            .workspaces
+                            .iter()
+                            .flat_map(|workspace| workspace.strips.iter())
+                            .find(|strip| strip.id == target.strip)
+                            .map(|strip| {
+                                strip
+                                    .window_groups
+                                    .iter()
+                                    .map(|group| group.id)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                if groups.is_empty() {
+                    return false;
+                }
+                let share = 1000 / u32::try_from(groups.len()).unwrap_or(1).max(1);
+                let mut changed = false;
+                for group in groups {
+                    changed |= self
+                        .set_group_width(group, crate::shell::state::WindowWidth::Fraction(share));
+                }
+                self.bump_chrome();
+                changed
             }
             WindowMenuAction::NewTab => self.new_tab_from_menu(target),
             WindowMenuAction::RenameTab => self.begin_tab_rename(target),

@@ -442,6 +442,9 @@ impl ScheduleStore {
                 IncomingNotification {
                     dbus_id: bridge.alloc_id(),
                     app_name: entry.app.clone(),
+                    app_icon: None,
+                    desktop_entry: None,
+                    image_data: None,
                     summary: entry.title.clone(),
                     body: entry.body.clone(),
                     actions: Vec::new(),

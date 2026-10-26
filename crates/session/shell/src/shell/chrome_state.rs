@@ -1149,6 +1149,8 @@ pub struct ChromeState {
     /// Toasts that undo a workspace deletion, by toast id: where the
     /// workspace was and what it held.
     workspace_undo_toasts: BTreeMap<u64, (usize, crate::shell::state::Workspace)>,
+    /// A close window's Undo toast, mapped to the remembered close it restores.
+    group_undo_toasts: BTreeMap<u64, u64>,
     /// Notices of an app that ran out of memory, by toast id: the closed-tab
     /// serials of its windows, which Reopen puts back where they were.
     memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
@@ -1350,6 +1352,7 @@ impl ChromeState {
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
             pending_closed_tabs: Vec::new(),
             workspace_undo_toasts: BTreeMap::new(),
+            group_undo_toasts: BTreeMap::new(),
             memory_reopen_toasts: BTreeMap::new(),
             device_asking_toasts: BTreeMap::new(),
             consent_notices: BTreeMap::new(),
@@ -2602,11 +2605,12 @@ impl ChromeState {
     }
 
     /// Publish the reopen entry only after removal. A live client may
-    /// refuse its close request and keep the tab present.
+    /// refuse its close request and keep the tab present. Returns the new
+    /// close's serial when this entry was the one published now.
     pub fn remember_closed_tab_after_removal(
         &mut self,
         entry: crate::shell::closed_tabs::ClosedTab,
-    ) {
+    ) -> Option<u64> {
         if self.pending_closed_tabs.iter().any(|pending| {
             pending
                 .tabs
@@ -2614,13 +2618,21 @@ impl ChromeState {
                 .map(|content| content.tab.id)
                 .eq(entry.tabs.iter().map(|content| content.tab.id))
         }) {
-            return;
+            return None;
         }
+        let ids = entry
+            .tabs
+            .iter()
+            .map(|content| content.tab.id)
+            .collect::<Vec<_>>();
         self.pending_closed_tabs.push(entry);
-        self.publish_completed_closes();
+        self.publish_completed_closes()
+            .into_iter()
+            .find(|(_, published)| published == &ids)
+            .map(|(serial, _)| serial)
     }
 
-    fn publish_completed_closes(&mut self) {
+    fn publish_completed_closes(&mut self) -> Vec<(u64, Vec<crate::shell::state::TabId>)> {
         let present: std::collections::HashSet<_> = self
             .tree()
             .desktop
@@ -2632,6 +2644,7 @@ impl ChromeState {
             .map(|tab| tab.id)
             .collect();
         let entries = std::mem::take(&mut self.pending_closed_tabs);
+        let mut published = Vec::new();
         for entry in entries {
             if entry
                 .tabs
@@ -2640,15 +2653,46 @@ impl ChromeState {
             {
                 self.pending_closed_tabs.push(entry);
             } else {
-                self.remember_closed_tab(entry);
+                let ids = entry
+                    .tabs
+                    .iter()
+                    .map(|content| content.tab.id)
+                    .collect::<Vec<_>>();
+                let serial = self.remember_closed_tab(entry);
+                published.push((serial, ids));
             }
         }
+        published
     }
 
     /// Remember a close for the normal Reopen Closed Tab action. Closing is
     /// direct visual feedback; it must not create an interruption or history.
     pub fn remember_closed_tab(&mut self, entry: crate::shell::closed_tabs::ClosedTab) -> u64 {
         self.closed_tabs.push(entry)
+    }
+
+    /// Offer the same Undo a workspace deletion offers after a whole window
+    /// closes. The close is already remembered for Reopen Closed Tab; the
+    /// toast names what went and restores all of it until it lapses.
+    pub fn push_group_undo_toast(&mut self, serial: u64, title: &str, count: usize) -> u64 {
+        use crate::shell::i18n::{t, t_args};
+        let title = if count == 1 {
+            t_args("tab-closed-toast", &[("title", title.into())])
+        } else {
+            t_args(
+                "tab-closed-group-toast",
+                &[("count", count.to_string().into())],
+            )
+        };
+        let mut toast = Notification::new(title, String::new())
+            .with_severity(NotificationSeverity::Info)
+            .with_icon_kind(NotificationIconKind::Generic);
+        toast.dismiss_after = crate::shell::closed_tabs::UNDO_WINDOW;
+        toast.actions = vec![("default".into(), t("tab-closed-undo"))];
+        toast.bypass_dnd = true;
+        toast.show_on_lock_screen = false;
+        self.group_undo_toasts.insert(toast.id, serial);
+        self.push_notification_full(toast)
     }
 
     /// Delete the workspace on screen, here and on the person's other
@@ -3350,7 +3394,17 @@ impl ChromeState {
             1 => focused.saturating_add(1).min(count.saturating_sub(1)),
             _ => focused,
         };
-        self.focus_strip_index(next)
+        let changed = self.focus_strip_index(next);
+        if !changed && dir != 0 {
+            // As with the workspaces: a step past the end says so instead
+            // of looking like a chord that reached nothing.
+            self.acknowledge(crate::shell::i18n::t(if dir < 0 {
+                "strip-first-reached"
+            } else {
+                "strip-last-reached"
+            }));
+        }
+        changed
     }
 
     /// Focus `strip` of the active workspace. `false` when it is already
@@ -3586,6 +3640,15 @@ impl ChromeState {
         tracing::info!(target: "tilo::shortcut", dir, changed, "workspace switch");
         if changed {
             self.bump();
+        } else if dir != 0 {
+            // Nothing moved. Say where the person already is, so "I am at
+            // the end" cannot read as "the chord did not register" — and on
+            // a one-workspace desktop, as "this key is broken".
+            self.acknowledge(crate::shell::i18n::t(if dir < 0 {
+                "workspace-first-reached"
+            } else {
+                "workspace-last-reached"
+            }));
         }
         changed
     }
@@ -3730,6 +3793,9 @@ impl ChromeState {
         if self.workspace_undo_toasts.remove(&n.id).is_some() {
             return;
         }
+        if self.group_undo_toasts.remove(&n.id).is_some() {
+            return;
+        }
         self.device_asking_toasts.remove(&n.id);
         // The windows stay among the closed tabs; only the notice's offer lapses.
         self.memory_reopen_toasts.remove(&n.id);
@@ -3809,6 +3875,13 @@ impl ChromeState {
         };
         if self.workspace_undo_toasts.contains_key(&id) {
             self.undo_deleted_workspace(id);
+            return true;
+        }
+        if let Some(serial) = self.group_undo_toasts.remove(&id) {
+            if let Some(entry) = self.closed_tabs.take(serial) {
+                self.restore_closed_tab(entry);
+            }
+            self.bump();
             return true;
         }
         if let Some(key) = removed.default_action_key()
@@ -3974,23 +4047,34 @@ impl ChromeState {
     pub fn notification_badge_total(&self) -> u32 {
         self.notification_badges
             .iter()
-            .filter(|(app_id, _)| {
-                self.notification_policy
-                    .per_app
-                    .get(*app_id)
-                    .and_then(|rule| rule.badges)
-                    .unwrap_or(self.notification_policy.show_badges)
-            })
+            .filter(|(app_id, _)| self.badges_shown_for(app_id))
             .map(|(_, count)| *count)
             .fold(0_u32, u32::saturating_add)
             .min(9_999)
     }
 
+    /// How many notifications the app with this verified id is showing as
+    /// unread: what its own icon and tab say. The count is kept even while
+    /// this person has app badges off, so turning them back on shows the
+    /// real number rather than whatever was last painted.
     pub fn notification_badge_for(&self, verified_app_id: &str) -> u32 {
+        if !self.badges_shown_for(verified_app_id) {
+            return 0;
+        }
         self.notification_badges
             .get(verified_app_id)
             .copied()
             .unwrap_or(0)
+    }
+
+    /// Whether this app's unread count is shown: its own `badges` setting,
+    /// else the desktop's.
+    fn badges_shown_for(&self, verified_app_id: &str) -> bool {
+        self.notification_policy
+            .per_app
+            .get(verified_app_id)
+            .and_then(|rule| rule.badges)
+            .unwrap_or(self.notification_policy.show_badges)
     }
 
     /// Clear the history log (the "Clear all" affordance in the
@@ -5044,14 +5128,54 @@ mod active_tab_tests {
             assert!(st.switch_strip(-1));
             assert_eq!(st.strip_focus().1, 1);
 
-            // Clamps rather than wrapping, matching workspace switching.
+            // Clamps rather than wrapping, matching workspace switching —
+            // and a step past the end says where the person is instead of
+            // looking like a chord that reached nothing.
             while st.switch_strip(-1) {}
             assert_eq!(st.strip_focus().1, 0);
             assert!(!st.switch_strip(-1), "focus wrapped past the first strip");
+            assert_eq!(
+                st.acknowledger
+                    .current(std::time::Instant::now())
+                    .map(|ack| ack.text().to_string()),
+                Some(crate::shell::i18n::t("strip-first-reached")),
+                "the refused step says it is the first strip"
+            );
 
             while st.switch_strip(1) {}
             assert_eq!(st.strip_focus().1, count - 1);
             assert!(!st.switch_strip(1), "focus wrapped past the last strip");
+            assert_eq!(
+                st.acknowledger
+                    .current(std::time::Instant::now())
+                    .map(|ack| ack.text().to_string()),
+                Some(crate::shell::i18n::t("strip-last-reached"))
+            );
+        }
+
+        /// A workspace step past either end is answered, not swallowed: the
+        /// person cannot otherwise tell "I am at the end" from "the chord
+        /// did not register", and on one workspace the chord is a permanent
+        /// no-op.
+        fn stepping_past_the_workspace_list_says_where_the_person_is() {
+            let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
+            let mut st = cell.borrow_mut();
+            while st.switch_workspace(-1) {}
+            assert!(!st.switch_workspace(-1));
+            assert_eq!(
+                st.acknowledger
+                    .current(std::time::Instant::now())
+                    .map(|ack| ack.text().to_string()),
+                Some(crate::shell::i18n::t("workspace-first-reached"))
+            );
+            while st.switch_workspace(1) {}
+            assert!(!st.switch_workspace(1));
+            assert_eq!(
+                st.acknowledger
+                    .current(std::time::Instant::now())
+                    .map(|ack| ack.text().to_string()),
+                Some(crate::shell::i18n::t("workspace-last-reached"))
+            );
         }
 
         fn focusing_a_strip_by_index_selects_that_strip() {
@@ -5082,6 +5206,7 @@ mod active_tab_tests {
         no_active_returns_none_instead_of_first_group();
         without_active_strip_returns_none_not_first_strip();
         switching_strips_moves_focus_and_clamps_at_the_ends();
+        stepping_past_the_workspace_list_says_where_the_person_is();
         focusing_a_strip_by_index_selects_that_strip();
     }
 

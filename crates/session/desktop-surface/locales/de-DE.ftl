@@ -29,6 +29,9 @@ topbar-watching-description = { $count } { $count ->
        *[other] Personen schauen
     } zu, ohne teilzunehmen
 topbar-tilo-menu = Tilo-Menü
+# A running application's icon in the bar, when the item that named it is gone.
+topbar-app-tray-item = Laufende Anwendung
+topbar-app-tray-unread = { $count } ungelesen
 topbar-open-quick-settings = Schnelleinstellungen öffnen
 topbar-open-notifications = Benachrichtigungen
 topbar-bell = { $unread ->
