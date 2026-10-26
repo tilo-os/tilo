@@ -571,7 +571,28 @@ impl RoomActivityPane {
         } else {
             None
         };
-        let run = self.selected_agent_run().map(|indexed| {
+        wire::Detail {
+            title: detail.title.clone(),
+            provenance: detail_provenance(&detail),
+            authors: detail.authors.clone(),
+            resources: detail.resources.iter().map(target).collect(),
+            group: detail.group_id.clone(),
+            group_label: detail.group_label.clone(),
+            offers: self.offers(&detail),
+            run: self.detail_run(),
+            comparison,
+            changes: self
+                .comparison
+                .as_ref()
+                .map_or_else(Vec::new, comparison_field_changes),
+            gone: false,
+        }
+    }
+
+    /// The agent task the selection is, as its detail shows it: what was
+    /// asked, by whom, each record it changed and what Undo can reach.
+    fn detail_run(&self) -> Option<wire::Run> {
+        self.selected_agent_run().map(|indexed| {
             let run = &indexed.run;
             wire::Run {
                 instruction: run.instruction.clone().unwrap_or_else(|| run.label.clone()),
@@ -628,23 +649,7 @@ impl RoomActivityPane {
                     Vec::new()
                 },
             }
-        });
-        wire::Detail {
-            title: detail.title.clone(),
-            provenance: detail_provenance(&detail),
-            authors: detail.authors.clone(),
-            resources: detail.resources.iter().map(target).collect(),
-            group: detail.group_id.clone(),
-            group_label: detail.group_label.clone(),
-            offers: self.offers(&detail),
-            run,
-            comparison,
-            changes: self
-                .comparison
-                .as_ref()
-                .map_or_else(Vec::new, comparison_field_changes),
-            gone: false,
-        }
+        })
     }
 
     /// What can be done with the selected run, worded for it.

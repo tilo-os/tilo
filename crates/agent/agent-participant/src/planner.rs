@@ -508,6 +508,11 @@ pub struct PlanContext {
     /// ([`rendered_picture`]), oldest first: a re-plan's model that sees is
     /// shown the newest with its first turn.
     pub pictures: Vec<String>,
+    /// The content addresses of the pictures the task's steps read as
+    /// content since its last plan ([`crate::vision::read_picture`]),
+    /// oldest first: a re-plan's model that sees is shown them with its
+    /// first turn, the room's own only where [`Self::room_pictures`] allows.
+    pub read_pictures: Vec<String>,
     /// The content addresses apps rendered or made for this task (its
     /// steps' looks and exports): pictures shown to a model that sees,
     /// whatever [`Self::room_pictures`] says.
@@ -808,6 +813,13 @@ pub trait Planner: Send {
     /// items each done by an agent of their own. A planner that does not
     /// say, does not.
     fn decomposes(&self) -> bool {
+        false
+    }
+
+    /// Whether the model this planner plans with is shown pictures
+    /// ([`crate::PlanModel::sees`]): a step that reads a picture is refused
+    /// where it is not. A planner that does not say, is not.
+    fn sees(&self) -> bool {
         false
     }
 }

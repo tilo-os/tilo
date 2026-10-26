@@ -205,6 +205,59 @@ pad.onpointerdown = e => {
 '''
 
 
+RICH = rb'''<!doctype html><title>Rich text</title>
+<label id="note-label">Note</label>
+<div id="note" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="note-label"></div>
+<label id="draft-label">Draft</label>
+<div id="draft" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="draft-label"></div>
+<label id="report-label">Report</label>
+<div id="report" contenteditable="true" role="textbox" aria-multiline="true" aria-labelledby="report-label"></div>
+<label>Steps <textarea id="steps" aria-label="Steps"></textarea></label>
+<script>
+// What a page hears from a person, as "field:type:what", kept for the test.
+window.heard = [];
+function hear(element, name) {
+  for (const type of ['beforeinput', 'input', 'keydown'])
+    element.addEventListener(type, e => heard.push(name + ':' + type + ':' +
+      (e.inputType || e.key || '') + (typeof e.data === 'string' ? '=' + e.data : '')));
+}
+hear(document.getElementById('note'), 'note');
+hear(document.getElementById('steps'), 'steps');
+
+// An editor whose own document is the truth: it rebuilds from beforeinput,
+// as a page that never reads the DOM it is drawn into does.
+const draftEl = document.getElementById('draft');
+let draft = '';
+function drawDraft() {
+  draftEl.innerHTML = draft.split('\n').map(line => '<p>' + (line || '<br>') + '</p>').join('');
+  const range = document.createRange(); range.selectNodeContents(draftEl); range.collapse(false);
+  const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+}
+draftEl.addEventListener('beforeinput', e => {
+  if (!e.cancelable) return;
+  if (e.inputType === 'insertText' && typeof e.data === 'string') { e.preventDefault(); draft += e.data; drawDraft(); }
+  else if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') { e.preventDefault(); draft += '\n'; drawDraft(); }
+});
+hear(draftEl, 'draft');
+
+// A block editor: each typed line becomes a block of its own.
+const reportEl = document.getElementById('report');
+const blocks = [];
+function drawReport() {
+  reportEl.innerHTML = blocks.map(b => '<div>' + (b || '<br>') + '</div>').join('') + '<div><br></div>';
+  const range = document.createRange(); range.selectNodeContents(reportEl.lastElementChild); range.collapse(true);
+  const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
+}
+drawReport();
+reportEl.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.isComposing) return;
+  e.preventDefault();
+  blocks.push(reportEl.textContent); reportEl.textContent = ''; drawReport();
+});
+hear(reportEl, 'report');
+</script>
+'''
+
 SCROLL = b'''<!doctype html><title>Long conditions</title>
 <style>p{margin:0 0 200px} #lazy{display:block;min-height:200px}
 .invoices{height:124px;overflow:auto} .invoices div{height:40px}</style>
@@ -255,6 +308,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else FRAMED if path == '/framed' else WIDGET if path == '/widget' \
             else LATE if path == '/late' else WIDGET_LATE if path == '/widget-late' \
             else NESTED if path == '/nested' else OUTER if path == '/outer' \
+            else RICH if path == '/rich' \
             else SCROLL if path == '/scroll' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
@@ -325,10 +379,27 @@ class PageActions(unittest.TestCase):
         return re.search(r'\[ref=(d\d+e\d+)\]', regions[-1]).group(1)
 
     def main_world(self, expression):
-        self.h.send(op='scripts', scripts=['document.title=JSON.stringify({value:(' + expression + '),nonce:' + str(time.monotonic_ns()) + '})'])
-        value = json.loads(self.h.until(lambda e: e['event'] == 'title' and e['title'].startswith('{'))['title'])['value']
+        # An answer is known by its own nonce: a title the page wrote for an
+        # earlier question may still be on its way.
+        nonce = str(time.monotonic_ns())
+        self.h.send(op='scripts', scripts=['document.title=JSON.stringify({value:(' + expression + '),nonce:' + nonce + '})'])
+        answered = self.h.until(lambda e: e['event'] == 'title' and self._answer(e['title']) == nonce)
         self.h.send(op='scripts', scripts=[])
-        return value
+        return json.loads(re.sub(r',"nonce":\d+}$', '}', answered['title']))['value']
+
+    def _blocks(self, element):
+        # What a region holds, a line to each block: an offscreen page lays
+        # nothing out, so innerText would run the blocks into one.
+        return json.loads(self.main_world(
+            'JSON.stringify(Array.from(document.getElementById("%s").children)'
+            '.map(b => b.textContent).filter(t => t))' % element))
+
+    @staticmethod
+    def _answer(title):
+        # The nonce of a value the page wrote into its title, if it is one:
+        # the text it carries may hold what JSON would escape.
+        found = re.search(r'"nonce":(\d+)}$', title) if title.startswith('{') else None
+        return found.group(1) if found else None
 
     def test_outline_lists_structure_with_refs_and_hides_secrets(self):
         self.h.navigate(self.url + '/form')
@@ -515,6 +586,51 @@ class PageActions(unittest.TestCase):
         self.assertEqual((query['email'], query['q']), (['ada@example.test'], ['tea']))
         stale = self.page('click', element=search)
         self.assertEqual((stale['ok'], stale['code']), (False, 'stale_element'), stale)
+
+    def test_fill_a_region_writes_the_text_as_a_person_types_it(self):
+        self.h.navigate(self.url + '/rich')
+        outline = self.outline()
+        filled = self.ok('fill', element=self.ref(outline, 'textbox "Note"'), text='The rent is going up\nfrom October.')
+        self.assertTrue(filled['ok'], filled)
+        self.assertEqual(self.main_world('document.getElementById("note").textContent'),
+                         'The rent is going upfrom October.')
+        self.assertEqual(self.main_world('document.getElementById("note").children[0].textContent'),
+                         'from October.')
+        # The page heard each key, and heard the edit before it was made.
+        heard = self.main_world("window.heard.filter(e => e.startsWith('note:'))")
+        self.assertIn('note:keydown:Enter', heard)
+        self.assertIn('note:beforeinput:insertParagraph', heard)
+        typed = [e.split('=', 1)[1] if '=' in e else '\n' for e in heard
+                 if e.startswith('note:beforeinput:')]
+        self.assertEqual(''.join(typed), 'The rent is going up\nfrom October.', heard[:6])
+
+    def test_fill_reaches_editors_with_a_model_and_blocks_of_their_own(self):
+        self.h.navigate(self.url + '/rich')
+        outline = self.outline()
+        self.ok('fill', element=self.ref(outline, 'textbox "Draft"'), text='First line\nSecond line')
+        self.ok('fill', element=self.ref(outline, 'textbox "Report"'), text='What I did\nWhat I will do')
+        self.assertEqual(self._blocks('draft'), ['First line', 'Second line'])
+        heard = self.main_world("window.heard.filter(e => e.startsWith('draft:'))")
+        self.assertTrue(any(e.startswith('draft:beforeinput:insertText') for e in heard), heard[:4])
+        self.assertIn('draft:beforeinput:insertParagraph', heard)
+        # A block editor heard a real Enter, and started a block for each line.
+        self.assertEqual(self._blocks('report'), ['What I did', 'What I will do'])
+        self.assertIn('report:keydown:Enter', self.main_world(
+            "window.heard.filter(e => e.startsWith('report:'))"))
+
+    def test_enter_in_a_textarea_starts_a_new_line(self):
+        self.h.navigate(self.url + '/rich')
+        outline = self.outline()
+        steps = self.ref(outline, 'textbox "Steps"')
+        self.ok('fill', element=steps, text='Sand the frame\nApply two coats')
+        # A press after the fill adds a line rather than submitting anything.
+        pressed = self.ok('press', element=steps, key='Enter', ctrl=False, shift=False, alt=False, meta=False)
+        self.assertFalse(pressed['navigated'], pressed)
+        self.ok('fill', element=steps, text='Sand the frame\nApply two coats\nReassemble')
+        self.assertEqual(self.main_world('document.getElementById("steps").value'),
+                         'Sand the frame\nApply two coats\nReassemble')
+        self.assertIn('steps:keydown:Enter', self.main_world(
+            "window.heard.filter(e => e.startsWith('steps:'))"))
 
     def test_clicking_a_link_reports_the_navigation_it_started(self):
         self.h.navigate(self.url + '/form')

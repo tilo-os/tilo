@@ -62,7 +62,7 @@ STEP_KEYS = {"run", "test", "containerfile", "context", "build_args", "name", "a
 # Fields the generator writes itself, so a product can't set them by accident.
 OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secrets"}
 # The order fields appear in, as the hand-written checks of t.toml have them.
-FIELD_ORDER = ["name", "image", "run", "inputs", "cargo_packages", "cargo_dev_dependencies", "needs",
+FIELD_ORDER = ["name", "image", "run", "setup", "inputs", "cargo_packages", "cargo_dev_dependencies", "needs",
                "optional_needs", "outputs", "pointers", "id_token", "env", "git", "requires",
                "isolation", "privileged", "writable_sources", "cost", "requirement", "timeout_secs", "on",
                "default"]

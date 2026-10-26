@@ -2604,6 +2604,8 @@ impl ChatApp {
 
 #[cfg(test)]
 mod identity_on_screen_tests;
+#[cfg(test)]
+mod sidebar_tests;
 
 mod a11y;
 mod agent_route;

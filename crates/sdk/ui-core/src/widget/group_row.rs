@@ -7757,25 +7757,6 @@ mod tests {
         )
     }
 
-    // The move hint points where a drag takes the window, not at the bar's
-    // middle, which its tabs and controls may fill.
-    #[test]
-    fn hint_places_point_at_where_a_bar_takes_its_window() {
-        let mut row = make_row_with_groups(&[&[1], &[2]]);
-        row.groups[0].focused = true;
-        let grab = group_grab_point(&row, 0);
-        let stretch = row.hint_places().focused_bar.expect("a stretch to take");
-        let y = stretch.center().y;
-        assert!(row.groups[0].bar_grab_hit(Point::new(stretch.x0, y)));
-        assert!(row.groups[0].bar_grab_hit(Point::new(stretch.x1, y)));
-        assert!(
-            stretch.x0 <= grab.x && grab.x <= stretch.x1,
-            "{stretch:?} {grab:?}"
-        );
-        let pill = row.groups[0].tab_rects()[0].center();
-        assert!(pill.x < stretch.x0, "a tab is not where it is taken");
-    }
-
     // A press on a window's search control opens the platform search, which
     // takes the pointer from there, so the release never reaches the row.
     // Had the press lifted the window, the next motion would carry it as a

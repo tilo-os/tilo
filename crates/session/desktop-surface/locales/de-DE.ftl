@@ -141,7 +141,8 @@ profile-control-hints = Bedienhinweise zeigen
 control-hint-open = Alles öffnen
 control-hint-move = Zum Verschieben ziehen
 control-hint-resize = Größe per Ziehen ändern
-control-hint-pan = Freie Fläche ziehen
+control-hint-pan = Seitwärts scrollen
+control-hint-pan-touch = Links oder rechts wischen
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich

@@ -400,7 +400,7 @@ available; the tools an environment already has keep working.
 
 `perm trust-dir ~/src` applies `grant-dir`, which mints a
 `collab_types::caps::CapOverride` — `Subject::App("so.tilo.ush")`,
-`Scope::FsPath`, `Effect::Grant`, `Verb::Write` — into the record, and every
+`Scope::FsPath`, `Effect::Grant`, `Access::Write` — into the record, and every
 question is `decide_capability`. That is the same record the compositor stores,
 renders in its permissions panel and can revoke. A `Restrict` written elsewhere
 narrows the bind here, and an expired grant does not survive into the next

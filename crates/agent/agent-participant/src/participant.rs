@@ -307,6 +307,8 @@ pub struct AgentParticipant {
     /// Whether the agent may show the room's own pictures to its model
     /// ([`PlanContext::room_pictures`]).
     room_pictures: crate::vision::RoomPictures,
+    /// Whether its planner's model is shown pictures ([`Planner::sees`]).
+    sight: crate::vision::Sight,
     /// Whether each item of a task's checklist is done by an agent of its
     /// own ([`crate::profile::DECOMPOSE_ENV`]).
     mode: decompose::Mode,
@@ -360,6 +362,7 @@ impl AgentParticipant {
             return Err("the agent is not delegated this room".into());
         }
         let checks_work = planner.checks_work();
+        let sight = crate::vision::Sight::from(planner.sees());
         // Its planner's profile, or a setting naming this agent.
         let itemised = planner.decomposes()
             || crate::profile::named_on(
@@ -442,6 +445,7 @@ impl AgentParticipant {
             remote: Vec::new(),
             answered: actions::Answered::default(),
             room_pictures,
+            sight,
             mode: if itemised {
                 decompose::Mode::Itemised
             } else {
@@ -881,6 +885,7 @@ impl AgentParticipant {
         outcome: Result<Option<ActionOutput>, String>,
         edited: bool,
     ) -> bool {
+        let outcome = self.picture_outcome(step, outcome);
         let (resource, action) = step.log_names();
         let content = match &outcome {
             Ok(Some(output)) => produced(output),
@@ -922,6 +927,84 @@ impl AgentParticipant {
                 false
             }
         }
+    }
+
+    /// `outcome` of `step` as the task takes it where a picture is
+    /// concerned. A read that answered content as a picture
+    /// ([`crate::vision::read_picture`]) is refused where the model would not
+    /// be shown it: a model not shown pictures, or one of the room's own
+    /// where the agent may not show them. An import that failed on content
+    /// that is a picture says so, and how the picture is seen.
+    fn picture_outcome(
+        &self,
+        step: &Step,
+        outcome: Result<Option<ActionOutput>, String>,
+    ) -> Result<Option<ActionOutput>, String> {
+        let rendered = |address: &str| {
+            self.running
+                .as_ref()
+                .is_some_and(|running| running.rendered(address))
+        };
+        let refusal = |address: &str| {
+            if self.sight == crate::vision::Sight::Blind {
+                Some(crate::vision::NOT_SEEING)
+            } else if !rendered(address) && self.room_pictures != crate::vision::RoomPictures::Shown
+            {
+                Some(crate::vision::ROOM_WITHHELD)
+            } else {
+                None
+            }
+        };
+        match outcome {
+            Ok(Some(output)) => {
+                let Some(value) = &output.value else {
+                    return Ok(Some(output));
+                };
+                let Some(picture) = crate::vision::read_picture(value) else {
+                    return Ok(Some(output));
+                };
+                match refusal(&picture) {
+                    Some(why) => Err(crate::vision::withheld(
+                        &crate::vision::read_picture_name(value, &picture),
+                        why,
+                    )),
+                    None => Ok(Some(output)),
+                }
+            }
+            Err(error) if running::imports(step) => {
+                let StepAction::Invoke { arguments, .. } = &step.action else {
+                    return Err(error);
+                };
+                let Some(picture) = arguments
+                    .values()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter_map(crate::vision::content_hash)
+                    .find(|hash| self.content_is_picture(hash))
+                    .map(|hash| crate::vision::content_address(&hash))
+                else {
+                    return Err(error);
+                };
+                let seen = match refusal(&picture) {
+                    Some(why) => format!(", and {why}"),
+                    None => format!(": look at it with {}", crate::vision::LOOK_CONTENT),
+                };
+                Err(format!(
+                    "{error}; {picture} is a picture, not a document{seen}"
+                ))
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// Whether the room's content at `hash` is a picture, from its first
+    /// bytes.
+    fn content_is_picture(&self, hash: &str) -> bool {
+        use std::io::Read as _;
+        let Some(reader) = self.content.open(hash) else {
+            return false;
+        };
+        let mut head = Vec::new();
+        reader.take(16).read_to_end(&mut head).is_ok() && crate::vision::is_picture(&head)
     }
 
     /// Start the next queued task and have it planned. A record of an app
@@ -1021,6 +1104,10 @@ impl AgentParticipant {
             running.waits.woken = None;
         }
         let mut context = self.plan_context(text, request);
+        // A plan is shown the pictures its steps read since the one before.
+        if let Some(running) = self.running.as_mut().filter(|running| running.id == id) {
+            context.read_pictures = std::mem::take(&mut running.read_pictures);
+        }
         // A check, or the turn after reads, may find nothing left to do.
         context.may_plan_nothing = continues
             && self.running.as_ref().is_some_and(|running| {
@@ -1505,13 +1592,13 @@ impl AgentParticipant {
         // step with nothing to consume is refused, not half done.
         let arguments = match &step.action {
             StepAction::Invoke { address, arguments } => Some(
-                tilo_agent::plan::carried_arguments(arguments, step.carries.as_deref(), previous)
+                tilo_agent::plan::carried_arguments(arguments, self.carries(step), previous)
                     .map_err(|error| {
-                    format!(
-                        "{} takes what the step before it produced: {error}",
-                        address.action
-                    )
-                })?,
+                        format!(
+                            "{} takes what the step before it produced: {error}",
+                            address.action
+                        )
+                    })?,
             ),
             StepAction::Open | StepAction::Continue(_) | StepAction::Wait(_) => None,
         };
@@ -1568,6 +1655,28 @@ impl AgentParticipant {
             }
             outcome => Performed::Done(outcome.map_err(actions::Refusal::into_text)),
         })
+    }
+
+    /// The parameter `step` is given what the step before it produced
+    /// under, if any. Content that step only handed on (an import answers
+    /// with the source it imported) was made for no step after it: content
+    /// the room keeps that `step` names outright is what it means, as with
+    /// nothing before it. Otherwise a PDF import planned after a DOCX
+    /// import, in one plan or as the next item of a coordinated task, is
+    /// given the DOCX.
+    fn carries<'a>(&self, step: &'a Step) -> Option<&'a str> {
+        let param = step.carries.as_deref()?;
+        let StepAction::Invoke { arguments, .. } = &step.action else {
+            return Some(param);
+        };
+        let handed_on = self
+            .running
+            .as_ref()
+            .is_some_and(|running| running.last.is_some() && running.last_handed_on);
+        let named = handed_on
+            && tilo_agent::plan::named_content(arguments, param)
+                .is_some_and(|hash| self.content.has(&hash));
+        (!named).then_some(param)
     }
 
     /// The operation `address` names on the record at `route`, as the record

@@ -1,7 +1,9 @@
 use super::*;
 use std::collections::HashMap;
 use tilo_peer_state::join;
-use tilo_relay_protocol::rooms::private::{PrivateConversation, PrivateOperation, PrivateReply};
+use tilo_relay_protocol::rooms::private::{
+    PrivateContact, PrivateConversation, PrivateOperation, PrivateReply,
+};
 use tilo_relay_session::rooms::private::{PRIVATE_ALPN, PrivateClient};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -898,6 +900,64 @@ async fn people_name_themselves_and_the_spectator_is_nobody() {
             .iter()
             .any(|contact| contact.public_key == watcher_key_hex),
         "the spectator is nobody's contact"
+    );
+    let contact_of = |contacts: &[PrivateContact], cert: &DeviceCert| {
+        contacts
+            .iter()
+            .find(|contact| contact.public_key == hex::encode(cert.user_public_key))
+            .cloned()
+            .unwrap()
+    };
+    // A device's label never names its person, and nobody has written yet.
+    let PrivateReply::Contacts(of_alice) = ask(&alice, PrivateOperation::Contacts).await else {
+        panic!("contacts");
+    };
+    let unnamed = contact_of(&of_alice, &bob);
+    assert_ne!(
+        unnamed.display_name.as_deref(),
+        Some(bob.device_label.as_str()),
+        "a person is not called by their device"
+    );
+    assert!(!unnamed.conversation && !contact_of(&contacts, &alice).conversation);
+    let bob_hex = hex::encode(bob.user_public_key);
+    let opened = ask(
+        &alice,
+        PrivateOperation::Open {
+            peer: bob_hex.clone(),
+        },
+    )
+    .await;
+    assert!(matches!(opened, PrivateReply::Conversation(_)));
+    let PrivateReply::Contacts(of_alice) = ask(&alice, PrivateOperation::Contacts).await else {
+        panic!("contacts");
+    };
+    assert!(
+        !contact_of(&of_alice, &bob).conversation,
+        "an opened conversation without messages lists nobody"
+    );
+    let sent = ask(
+        &alice,
+        PrivateOperation::Send {
+            peer: bob_hex,
+            invocation: uuid::Uuid::new_v4(),
+            text: "hello".into(),
+        },
+    )
+    .await;
+    assert!(matches!(sent, PrivateReply::Sent), "sent");
+    let PrivateReply::Contacts(of_alice) = ask(&alice, PrivateOperation::Contacts).await else {
+        panic!("contacts");
+    };
+    let PrivateReply::Contacts(of_bob) = ask(&bob, PrivateOperation::Contacts).await else {
+        panic!("contacts");
+    };
+    assert!(
+        contact_of(&of_alice, &bob).conversation,
+        "the writer lists them"
+    );
+    assert!(
+        contact_of(&of_bob, &alice).conversation,
+        "so does the one written to"
     );
     let open_watcher = PrivateOperation::Open {
         peer: watcher_key_hex,

@@ -204,20 +204,56 @@ use_cosign() {
   PATH=$tools/tilo-cosign-tools:$PATH
 }
 
-# The manifest digest of the single image an OCI index.json (on stdin, from $1) names.
+# The manifest digest of the single image an OCI index.json (on stdin, from $1) names. Read
+# with grep, not a JSON parser: the publishing checks run in the skopeo image, which has neither
+# python3 nor jq. An index's only "digest" members are its manifests' (descriptors' annotations
+# and platforms have none), and whitespace never matters to them, so compact (podman's) and
+# spaced (Python's json.dump, as tools/ci/os/oci_layers.py writes layouts) read alike.
 index_digest() {
-  python3 -c '
-import json, sys
-manifests = json.load(sys.stdin).get("manifests", [])
-if len(manifests) != 1:
-    sys.exit(f"publish: {sys.argv[1]} names {len(manifests)} images, not one")
-print(manifests[0]["digest"], end="")
-' "$1"
+  local digests count
+  digests=$(tr -d '[:space:]' | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | cut -d'"' -f4) || true
+  count=$(printf '%s' "$digests" | grep -c .) || true
+  [[ $count == 1 ]] || die "$1 names $count images, not one"
+  printf '%s' "$digests"
 }
 
 # The manifest digest of the single image in an OCI archive, from its index.json.
 archive_digest() {
   tar -xOf "$1" index.json | index_digest "$1 index.json"
+}
+
+# The frozen RPM snapshot a build installs from (rpm-snapshot-ref.sh wrote SNAPSHOT): the
+# published snapshot in SNAPSHOT/rpms-ref, or, where this package set is not published yet (off
+# stable, before stable publishes it), this run's image-rpms-ARCH in RPMS, loaded unsigned into
+# the store `b` runs on (use_buildah first). Sets rpms_ref, what the Containerfile's FROM takes,
+# and rpms_source, what the build records beside its output: the published reference, or
+# "unsigned image-rpms-ARCH DIGEST", which require_published_snapshot refuses, so a build of an
+# unpublished package set is tested everywhere and signed or published nowhere.
+snapshot_for_build() {
+  local snapshot=$1 rpms=$2 arch=$3 digest
+  if [[ -f $snapshot/rpms-ref ]]; then
+    rpms_ref=$(cat "$snapshot/rpms-ref")
+    [[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || die "unexpected snapshot $rpms_ref"
+    rpms_source=$rpms_ref
+    return
+  fi
+  [[ -f $snapshot/unpublished ]] || die "$snapshot names no snapshot: neither rpms-ref nor unpublished"
+  digest=$(cat "$rpms/digest")
+  [[ $(archive_digest "$rpms/image.oci.tar") == "$digest" ]] || die "$rpms/image.oci.tar is not the build $digest"
+  rpms_ref=localhost/tilo-rpms:unpublished-$arch
+  b tag "$(b pull -q "oci-archive:$rpms/image.oci.tar")" "$rpms_ref"
+  rpms_source="unsigned image-rpms-$arch $digest"
+  printf 'the RPM snapshot %s is not published: building from image-rpms-%s (%s), unsigned; nothing signs or publishes this build\n' \
+    "$(cat "$snapshot/unpublished")" "$arch" "$digest"
+}
+
+# Refuse a build whose recorded snapshot (FILE, as snapshot_for_build set rpms_source) is not
+# the published, signed one.
+require_published_snapshot() {
+  local source
+  source=$(cat "$1")
+  [[ $source =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] \
+    || die "$1: built from $source, not the published RPM snapshot: refusing to sign or publish it"
 }
 
 # The image a build left in OUT, as an OCI archive (OUT/image.oci.tar) or an OCI layout

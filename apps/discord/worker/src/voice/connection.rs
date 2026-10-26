@@ -34,7 +34,7 @@ use super::dave::{self, Dave, Frame};
 use super::mix::Mixer;
 use super::rtp::{self, Cipher, Sender};
 use crate::Ctx;
-use crate::egress::Purpose;
+use crate::egress::{Egress, Purpose};
 use crate::gateway::{Socket, connect};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -97,7 +97,7 @@ struct Link {
 )]
 pub async fn run(ctx: Arc<Ctx>, join: Join, links: mpsc::UnboundedSender<LinkEvent>) {
     let attempt = join.attempt;
-    let url = match voice_url(&ctx, &join.endpoint) {
+    let url = match voice_url(ctx.config.egress, &join.endpoint) {
         Ok(url) => url,
         Err(reason) => {
             let _ = links.send(LinkEvent::Refused { attempt, reason });
@@ -163,23 +163,27 @@ pub async fn run(ctx: Arc<Ctx>, join: Join, links: mpsc::UnboundedSender<LinkEve
     }
 }
 
-/// `wss://<endpoint>/?v=8`, checked against the voice egress rule. A
-/// loopback endpoint, allowed only for tests, is plain `ws://`.
-fn voice_url(ctx: &Ctx, endpoint: &str) -> Result<Url, String> {
+/// `wss://<endpoint>/?v=8`, checked against the voice egress rule. Discord
+/// names the endpoint with a port (`c-sjc01-….discord.media:2096`) that
+/// its voice servers also answer on 443, so the port is dropped, as
+/// Discord's own clients do. A loopback endpoint, allowed only for tests,
+/// is plain `ws://` and keeps its port.
+fn voice_url(egress: Egress, endpoint: &str) -> Result<Url, String> {
     let mut url = Url::parse(&format!("wss://{endpoint}"))
         .map_err(|_| format!("Discord named a voice server that is not a host: {endpoint}"))?;
     let loopback = url
         .host_str()
         .is_some_and(|h| h == "localhost" || h.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()));
-    if loopback && ctx.config.egress.allow_loopback {
+    if loopback && egress.allow_loopback {
         let _ = url.set_scheme("ws");
+    } else {
+        let _ = url.set_port(None);
     }
     if url.path().is_empty() || url.path() == "/" {
         url.set_path("/");
     }
     url.set_query(Some("v=8"));
-    ctx.config
-        .egress
+    egress
         .check(&url, Purpose::Voice)
         .map_err(|error| format!("voice server refused: {error}"))?;
     Ok(url)
@@ -561,7 +565,11 @@ fn closed(code: u16, reason: &str) -> End {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::panic, reason = "in a test this is the assertion")]
+    #![allow(
+        clippy::panic,
+        clippy::unwrap_used,
+        reason = "in a test these are the assertion"
+    )]
 
     use super::*;
 
@@ -575,5 +583,20 @@ mod tests {
             panic!("4017 ends the call");
         };
         assert!(reason.contains("E2EE/DAVE protocol required (4017)"));
+    }
+
+    #[test]
+    fn a_voice_endpoint_with_a_port_is_reached_on_443() {
+        let discord = Egress::default();
+        let url = voice_url(discord, "c-sjc01-1371dab6.discord.media:2096").unwrap();
+        assert_eq!(url.as_str(), "wss://c-sjc01-1371dab6.discord.media/?v=8");
+        let url = voice_url(discord, "c-sjc01-1371dab6.discord.media").unwrap();
+        assert_eq!(url.as_str(), "wss://c-sjc01-1371dab6.discord.media/?v=8");
+        assert!(voice_url(discord, "evil.example:2096").is_err());
+        let fake = Egress {
+            allow_loopback: true,
+        };
+        let url = voice_url(fake, "127.0.0.1:34187").unwrap();
+        assert_eq!(url.as_str(), "ws://127.0.0.1:34187/?v=8");
     }
 }

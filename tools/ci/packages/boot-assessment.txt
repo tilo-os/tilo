@@ -1,0 +1,18 @@
+# What tools/ci/boot-assessment.sh needs beside the builder image: the dev image installed
+# with build-image.sh and booted under KVM with vm.sh.
+qemu-kvm
+qemu-img
+edk2-ovmf
+ipxe-roms-qemu
+openssh-clients
+sshpass
+socat
+btrfs-progs
+dosfstools
+e2fsprogs
+fuse-overlayfs
+podman
+jq
+skopeo
+systemd
+util-linux

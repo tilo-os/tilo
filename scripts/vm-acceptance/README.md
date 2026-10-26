@@ -54,15 +54,22 @@ shell exit handling and app-workload prerequisites without starting a VM.
 
 ## Run it in CI
 
-t's `vm-acceptance` check (`tools/ci/vm-acceptance.sh`) runs the suite in a micro-VM with
-KVM on a `disk-100g` x86-64 node, so a run needs no laptop memory:
+t's `vm-acceptance` check (`tools/ci/vm-acceptance.sh`) runs the suite in micro-VMs with
+KVM on `disk-100g` x86-64 nodes, so a run needs no laptop memory. It runs in shards
+(`SHARDS` in run.py: `session`, `apps`, `window`, `shell`), each a check of its own,
+`vm-acceptance/<shard>`, booting a VM of its own: t runs them side by side where there is
+room, caches each on its own and runs only a failed one again. The checks that judge a whole
+session (P03, R07, A16) judge each shard's.
 
 ```bash
 t test vm-acceptance                                          # the checks your tree's changes select
 t dispatch vm-acceptance --ref main                           # every check on main
 t dispatch vm-acceptance --ref my-branch --input only=window --input gl=off
-t outputs vm-acceptance                                       # the report
+t outputs vm-acceptance/window                                # a shard's report
 ```
+
+A t that dispatches one check at a time takes a shard by its name
+(`t dispatch vm-acceptance/window --input only=W08`).
 
 A working tree's run checks only what its changes reach (`ci_select.py`): the checks of the
 changed check modules (and of the modules importing from them), just `provenance` when only
@@ -70,8 +77,8 @@ this README or unit tests changed, and every check when anything else in this di
 `tools/ci/vm-acceptance.sh` changed. A dispatched run, and `vm-acceptance-perf`, run every
 check unless `only` names some.
 
-The disk is the tree's own dev image as `os-dev-gate-x86_64` installed it with
-`os/dev/build-image.sh` (the disk the dev channel publishes, which the gate never boots
+The disk is the tree's own dev image as `os-dev-disk-x86_64` installed it with
+`os/dev/build-image.sh` (the disk the dev channel publishes, which nothing boots
 itself); each run boots a throwaway overlay of it, so R06 times a cold boot. tilo-vm is
 `tilo-vm-binary-x86_64`'s. Both come from t's cache when their inputs are unchanged, and
 so does the run itself when the suite, its driver and the files the scenarios read are

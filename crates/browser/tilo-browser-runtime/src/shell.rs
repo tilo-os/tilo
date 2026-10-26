@@ -614,6 +614,9 @@ pub(crate) struct BrowserShell {
     /// them.
     hints: tilo_desktop::control_hints::ControlHints,
     hints_frame: tilo_desktop::control_hints::HintFrame,
+    /// How the person points, as the page last learned it: hints name what
+    /// a finger does once they touch the screen.
+    interaction: ui::InteractionEnvironment,
     /// What the hints painted in the frame before the last one drawn: a
     /// moving hint damages only there and where it is now.
     hints_painted_before: Option<Rect>,
@@ -733,6 +736,7 @@ impl BrowserShell {
             picker: crate::feedback_pick::PagePicker::default(),
             hints,
             hints_frame: tilo_desktop::control_hints::HintFrame::default(),
+            interaction: ui::InteractionEnvironment::default(),
             hints_painted_before: None,
         }
     }
@@ -2569,6 +2573,13 @@ impl Widget for BrowserShell {
             request.visit(child)?;
         }
         Ok(())
+    }
+
+    fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
+        self.interaction = environment;
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {

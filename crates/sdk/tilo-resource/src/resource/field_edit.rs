@@ -90,7 +90,10 @@ fn edit_spec(
     judged: Option<(crate::Shape, FieldValues)>,
 ) -> ActionSpec {
     let read = move |value: &serde_json::Map<String, serde_json::Value>| {
-        let edit = Edit::<()>::from_json(serde_json::Value::Object(value.clone()))?;
+        let mut edit = Edit::<()>::from_json(serde_json::Value::Object(value.clone()))?;
+        if prefix.is_empty() {
+            edit = vocabulary.rooted_edit(edit)?;
+        }
         let mut path = prefix.clone();
         path.extend(edit.path().iter().cloned());
         match (vocabulary.edit)(Edit::new(path, edit.op().clone())) {

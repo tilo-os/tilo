@@ -23,7 +23,7 @@
 //! of its own in the first strip, and a group or strip whose parent was
 //! removed is placed in the first one, so nothing anyone opened vanishes.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
@@ -107,8 +107,20 @@ impl<D: ReadDoc> At<'_, D> {
     /// Every entry of the containers at `ROOT[key]`, each id once: the
     /// entry's map, in whichever container holds it first.
     fn entries(&self, key: &str) -> BTreeMap<u64, ObjId> {
+        self.placed_entries(key)
+            .into_iter()
+            .map(|(id, (entry, _))| (id, entry))
+            .collect()
+    }
+
+    /// [`Self::entries`], each saying whether it was written blind: held
+    /// by a container concurrent with the winning one. Only a document
+    /// that did not hold the room's record yet makes a container of its
+    /// own, so what such a container holds was written without seeing the
+    /// room's desktop.
+    fn placed_entries(&self, key: &str) -> BTreeMap<u64, (ObjId, bool)> {
         let mut entries = BTreeMap::new();
-        for container in self.containers(key) {
+        for (index, container) in self.containers(key).into_iter().enumerate() {
             for id in self.keys(&container) {
                 let Ok(parsed) = id.parse::<u64>() else {
                     continue;
@@ -117,7 +129,7 @@ impl<D: ReadDoc> At<'_, D> {
                     continue;
                 }
                 if let Some((Value::Object(ObjType::Map), entry)) = self.get(&container, &id) {
-                    entries.insert(parsed, entry);
+                    entries.insert(parsed, (entry, index > 0));
                 }
             }
         }
@@ -155,13 +167,53 @@ struct Parts {
     groups: HashMap<Option<u64>, Vec<(f64, u64, GroupId)>>,
     /// Windows by the group they name.
     windows: HashMap<u64, Vec<(f64, u64, Tab)>>,
+    /// Workspaces and strips written blind ([`At::placed_entries`]).
+    blind: HashSet<u64>,
+}
+
+/// `items` with every blind one that shares its name with another folded
+/// into that one: the first not blind of that name, else the first of it.
+/// Returns what is kept, and where each folded id went.
+fn fold<T>(
+    items: Vec<T>,
+    blind: &HashSet<u64>,
+    key: impl Fn(&T) -> (u64, &str),
+) -> (Vec<T>, HashMap<u64, u64>) {
+    let into = |name: &str| {
+        let named = || items.iter().map(&key).filter(move |(_, n)| *n == name);
+        named()
+            .find(|(id, _)| !blind.contains(id))
+            .or_else(|| named().next())
+            .map(|(id, _)| id)
+    };
+    let mut folded = HashMap::new();
+    let mut keep = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let (id, name) = key(item);
+        match into(name) {
+            Some(target) if target != id && blind.contains(&id) => {
+                folded.insert(id, target);
+            }
+            _ => keep.push(index),
+        }
+    }
+    let kept = items
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| keep.contains(index))
+        .map(|(_, item)| item)
+        .collect();
+    (kept, folded)
 }
 
 impl Parts {
     fn of<D: ReadDoc>(at: &At<'_, D>) -> Self {
         let mut parts = Self::default();
         let mut workspaces = Vec::new();
-        for (id, entry) in at.entries(WORKSPACES) {
+        for (id, (entry, blind)) in at.placed_entries(WORKSPACES) {
+            if blind {
+                parts.blind.insert(id);
+            }
             let Some(mut workspace) = at
                 .text(&entry, WORKSPACE)
                 .and_then(|json| workspace_from(&json))
@@ -173,7 +225,10 @@ impl Parts {
             workspaces.push((at.number(&entry, ORDER).unwrap_or(0.0), id, workspace));
         }
         parts.workspaces = sorted(workspaces);
-        for (id, entry) in at.entries(STRIPS) {
+        for (id, (entry, blind)) in at.placed_entries(STRIPS) {
+            if blind {
+                parts.blind.insert(id);
+            }
             if let Some(author) = at.text(&entry, AUTHOR) {
                 parts.authors.insert(id, author);
             }
@@ -217,18 +272,40 @@ impl Parts {
 
     /// Put the parts together, adopting what lost its parent meanwhile
     /// into the first workspace or strip.
+    ///
+    /// A page that publishes before the room's desktop reached it writes
+    /// its own fresh one (a workspace named after the room, a "Main"
+    /// strip) into maps of its own, concurrent with the room's; read side
+    /// by side, every such page added another workspace of the room's
+    /// name. A workspace or strip written blind like that folds into the
+    /// one of its name the room has, and what it held moves there.
     fn assemble(mut self) -> Option<SharedDesktop> {
+        let (workspaces, folded_workspaces) =
+            fold(std::mem::take(&mut self.workspaces), &self.blind, |w| {
+                (w.id.0, w.name.as_str())
+            });
+        self.workspaces = workspaces;
         let first_workspace = self.workspaces.first()?.id.0;
         let workspace_ids: Vec<u64> = self.workspaces.iter().map(|w| w.id.0).collect();
         let mut strips: HashMap<u64, Vec<(f64, u64, Strip)>> = HashMap::new();
         for (parent, list) in self.strips.drain() {
             let parent = parent
+                .map(|id| folded_workspaces.get(&id).copied().unwrap_or(id))
                 .filter(|id| workspace_ids.contains(id))
                 .unwrap_or(first_workspace);
             strips.entry(parent).or_default().extend(list);
         }
+        let mut folded_strips = HashMap::new();
         for workspace in &mut self.workspaces {
-            workspace.strips = sorted(strips.remove(&workspace.id.0).unwrap_or_default());
+            let list = sorted(strips.remove(&workspace.id.0).unwrap_or_default());
+            let (list, folded) = fold(list, &self.blind, |s| (s.id.0, s.name.as_str()));
+            workspace.strips = list;
+            folded_strips.extend(folded);
+        }
+        let groups = std::mem::take(&mut self.groups);
+        for (parent, list) in groups {
+            let parent = parent.map(|id| folded_strips.get(&id).copied().unwrap_or(id));
+            self.groups.entry(parent).or_default().extend(list);
         }
         let strip_ids: Vec<u64> = self
             .workspaces

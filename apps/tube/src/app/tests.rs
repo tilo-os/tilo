@@ -1047,3 +1047,78 @@ fn unreachable_sources_settle_pages_without_claiming_offline() {
         );
     }
 }
+
+#[test]
+fn youtube_answers_the_platform_search_as_it_is_typed_and_stale_answers_drop() {
+    let mut app = TubeApp::new().online();
+    let results = app.script_worker_for_test();
+    let found = |id: &str, title: &str| crate::model::Video {
+        id: id.into(),
+        title: title.into(),
+        dearrow_title: None,
+        channel_name: "Cat channel".into(),
+        ..crate::sample::model().videos[0].clone()
+    };
+    app.follow_palette_query("ca");
+    assert!(app.suggestions_pending(), "YouTube is asked");
+    app.follow_palette_query("cats");
+    results
+        .send(Update::Suggestions {
+            query: "ca".into(),
+            videos: vec![found("yt_old", "Cars of the year")],
+        })
+        .unwrap();
+    app.pump();
+    assert!(
+        app.suggestions_pending(),
+        "an answer for an older query is not the newer one's"
+    );
+    results
+        .send(Update::Suggestions {
+            query: "cats".into(),
+            videos: vec![
+                found("yt_cat_1", "Funniest kittens compilation"),
+                found("yt_cat_2", "Big cat rescue"),
+            ],
+        })
+        .unwrap();
+    app.pump();
+    assert!(!app.suggestions_pending(), "the latest answer is in");
+
+    let provider = ui::framework::testing::search_source::<crate::resource::Library>(
+        app.search_entries_of_model(),
+    );
+    let hits = ui::search::SearchProvider::search(&provider, "cats");
+    let youtube: Vec<_> = hits
+        .iter()
+        .filter(|hit| hit.action_id.starts_with("tube."))
+        .map(|hit| hit.action_id.as_str())
+        .collect();
+    assert_eq!(
+        youtube.get(..3),
+        Some(
+            &[
+                "tube.search:cats",
+                "tube.video:yt_cat_1",
+                "tube.video:yt_cat_2"
+            ][..]
+        ),
+        "Enter still searches; YouTube's videos follow in its order: {hits:#?}"
+    );
+    assert!(
+        hits.iter().all(|hit| hit.action_id != "tube.video:yt_old"),
+        "the stale answer never shows"
+    );
+    let effect = crate::search_type::opened("tube.video:yt_cat_2").expect("the row opens");
+    app.perform(effect).unwrap();
+    assert_eq!(app.model.route, Route::Watch("yt_cat_2".into()));
+
+    app.follow_palette_query("  ");
+    assert!(!app.suggestions_pending(), "an empty query asks nothing");
+    assert!(
+        app.search_entries_of_model()
+            .iter()
+            .all(|entry| entry.group.as_deref() != Some("YouTube")),
+        "and offers nothing from YouTube"
+    );
+}

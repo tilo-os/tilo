@@ -58,13 +58,21 @@ impl ChatApp {
 
     /// What a contact is called: the name they go by here now, as
     /// everyone here sees it (they may have renamed themself since the
-    /// room's list was read), else the name the room keeps for them.
+    /// room's list was read), else the name the room keeps for them, else
+    /// the unnamed person's tag. Never blank.
     pub(crate) fn contact_name(&self, contact: &ui::person_chat::Contact) -> String {
-        self.room_names
-            .get(contact.public_key.as_str())
-            .map(|name| name.trim())
-            .filter(|name| !name.is_empty())
-            .map_or_else(|| contact.display_name.clone(), str::to_owned)
+        [
+            self.room_names.get(contact.public_key.as_str()),
+            Some(&contact.display_name),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|name| name.trim())
+        .find(|name| !name.is_empty())
+        .map_or_else(
+            || crate::identity::unnamed_label(&contact.public_key),
+            str::to_owned,
+        )
     }
 
     fn require_person_contact(&self, public_key: &str) -> Result<(), String> {
@@ -172,13 +180,7 @@ impl ChatApp {
         // Native contacts hydrate after the first mounted frame. Keep the
         // semantic rows current even before any conversation is selected.
         let contacts = ui::person_chat::contacts();
-        let changed = contacts.len() != self.person_contacts.len()
-            || contacts
-                .iter()
-                .zip(&self.person_contacts)
-                .any(|(new, old)| {
-                    new.public_key != old.public_key || new.display_name != old.display_name
-                });
+        let changed = contacts != self.person_contacts;
         self.person_contacts = contacts;
         if changed {
             self.request_relayout();
@@ -347,10 +349,15 @@ impl ChatApp {
         ui::person_chat::contacts_snapshot()
             .iter()
             .map(|contact| {
+                let name = if contact.display_name.trim().is_empty() {
+                    crate::identity::unnamed_label(&contact.public_key)
+                } else {
+                    contact.display_name.clone()
+                };
                 LiveRow::new(
                     format!("chat.person:{}", contact.public_key),
                     "chat.person",
-                    &contact.display_name,
+                    &name,
                 )
                 .effect(&ChatEffect::OpenDirectConversation {
                     public_key: contact.public_key.clone(),

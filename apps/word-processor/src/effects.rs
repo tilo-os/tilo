@@ -64,7 +64,9 @@ pub enum WordProcessorEffect {
     /// Answers with what a document kept as content says (an attachment, a
     /// shared file), as Markdown, as `read-file` reads a file: its name tells
     /// its format. A long one answers in parts: read on from the `next` an
-    /// answer gives.
+    /// answer gives. A picture (a scan, a photo) has no text: it answers with
+    /// `format` `picture`, its type and size, and an agent whose model sees
+    /// is shown it.
     #[effect(kind = "read", returns, idempotent, audience = "agents")]
     ReadContent {
         #[param("The document's content address, `tilo.content:<hash>`")]
