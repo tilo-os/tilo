@@ -2924,20 +2924,26 @@ enum SdkConnectSource {
 }
 
 impl SdkConnectSource {
-    fn build_client(self) -> Result<runtime_collab::CollabClient, runtime_portal::NotAvailable> {
+    fn build_client(
+        self,
+    ) -> Result<
+        (runtime_collab::CollabClient, runtime_portal::ConnectionEnd),
+        runtime_portal::NotAvailable,
+    > {
         match self {
             SdkConnectSource::Host(_, _) => Err(runtime_portal::NotAvailable::ConnectionFailed(
                 std::io::Error::other("host session requires worker-side identity admission"),
             )),
-            SdkConnectSource::Env => runtime_collab::try_connect(),
+            SdkConnectSource::Env => runtime_collab::try_connect_until_closed(),
             SdkConnectSource::Fd(fd) => {
                 use capnp_rpc::rpc_twoparty_capnp;
                 let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
                     fd,
                     rpc_twoparty_capnp::Side::Client,
                 )?;
-                let raw: runtime_collab::CollabServiceClient = unix.bootstrap();
-                Ok(runtime_collab::CollabClient::from_raw(raw))
+                let (raw, end): (runtime_collab::CollabServiceClient, _) =
+                    unix.bootstrap_until_closed();
+                Ok((runtime_collab::CollabClient::from_raw(raw), end))
             }
         }
     }
@@ -4268,11 +4274,11 @@ fn run_shovel(
                                             collaboration_stream,
                                             capnp_rpc::rpc_twoparty_capnp::Side::Client,
                                         );
-                                        let raw: runtime_collab::CollabServiceClient =
-                                            rpc.bootstrap();
+                                        let (raw, end): (runtime_collab::CollabServiceClient, _) =
+                                            rpc.bootstrap_until_closed();
                                         let client = runtime_collab::CollabClient::from_raw(raw)
                                             .with_optional_descriptors(lane);
-                                        Ok((client, identity))
+                                        Ok(((client, end), identity))
                                     }
                                     Err(error) => Err(error),
                                 }
@@ -4289,9 +4295,9 @@ fn run_shovel(
                     )),
                 }
             }
-            source => source.build_client().and_then(|client| {
+            source => source.build_client().and_then(|connection| {
                 identity
-                    .map(|identity| (client, identity.into()))
+                    .map(|identity| (connection, identity.into()))
                     .ok_or_else(|| {
                         runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
                             std::io::ErrorKind::PermissionDenied,
@@ -4300,7 +4306,7 @@ fn run_shovel(
                     })
             }),
         };
-        let (client, identity) = match session {
+        let ((client, connection_end), identity) = match session {
             Ok(session) => session,
             Err(e) => {
                 report_init(&state, &init_tx, InitStatus::Failed(e));
@@ -4311,7 +4317,15 @@ fn run_shovel(
         // `PrimaryReady` barrier are the first commands the shovel serves.
         report_init(&state, &init_tx, InitStatus::Ready);
 
-        drive_shovel(client, identity, outbound_rx, media_rx, inbound_tx).await;
+        drive_shovel(
+            client,
+            connection_end,
+            identity,
+            outbound_rx,
+            media_rx,
+            inbound_tx,
+        )
+        .await;
     });
     // However the shovel ended, the owner must look again: an unanswered
     // primary-route barrier now reads as a stopped worker.
@@ -4385,6 +4399,7 @@ fn follow_channel_keys(
 )]
 async fn drive_shovel(
     client: runtime_collab::CollabClient,
+    mut connection_end: runtime_portal::ConnectionEnd,
     identity: LocalSdkJoinIdentity,
     mut outbound_rx: tokio_mpsc::Receiver<QueuedSdkCommand>,
     media_rx: native_media::Receiver,
@@ -4441,6 +4456,18 @@ async fn drive_shovel(
             && key_schedule.timed(any_route_asking_on_timer(&routes));
         let queued = tokio::select! {
             queued = outbound_rx.recv() => queued,
+            // The broker hung up: every call on this connection now fails,
+            // and nothing reconnects it (a host retry is a new connector).
+            // Collaboration ends here, once, so the app goes offline instead
+            // of retrying calls that cannot succeed.
+            _ = &mut connection_end => {
+                tracing::warn!(
+                    primary = primary.as_deref().unwrap_or(""),
+                    "collab: the broker closed this app's connection"
+                );
+                inbound_tx.state.fail_closed("broker connection closed");
+                break;
+            }
             Some(signal) = key_signal_rx.recv() => {
                 key_schedule.note(signal);
                 if key_fetch.is_none()
