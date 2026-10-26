@@ -405,17 +405,21 @@ def host_wayland(ctx, res):
 
 @check("A07", AREA, "An X11 app opens through Xwayland and exits on close")
 def x11(ctx, res):
-    cands = {a["id"]: a for a in ctx.vm.actions("xterm") + ctx.vm.actions("xeyes")
-             if a["provider"] == "host-applications"}
+    def x11_clients():
+        return {a["id"]: a for a in ctx.vm.actions("xterm") + ctx.vm.actions("xeyes")
+                if a["provider"] == "host-applications"}
+
+    cands = x11_clients()
     if not cands and not ctx.facts.get("apps_installed"):
         try:
             ctx.vm.run("slot", "apps", "install", "--set", "verification", timeout=900)
             ctx.facts["apps_installed"] = True
-            time.sleep(3)
+            # The install restarts the session, whose app catalogue lists the new
+            # packages only once its scan has run: wait for it, not a fixed pause.
+            cands = wait_until(lambda: x11_clients() or None, 30, 2.0) or {}
         except Exception as exc:  # noqa: BLE001
             res.metrics["verification_install_error"] = str(exc).splitlines()[:3]
-        cands = {a["id"]: a for a in ctx.vm.actions("xterm") + ctx.vm.actions("xeyes")
-                 if a["provider"] == "host-applications"}
+            cands = x11_clients()
     app = next((i for i in ("xterm", "org.xfce.xterm", "xeyes") if i in cands), None) or next(iter(cands), None)
     if app is None:
         wine = [a["id"] for a in ctx.vm.actions("Wine File") if a["provider"] == "host-applications"]
@@ -424,10 +428,22 @@ def x11(ctx, res):
         raise Unobservable("no X11 app available: xterm/xeyes not installable and no Wine File entry")
     res.metrics["x11_app"] = app
     key = app.split("-")[-1].lower()
-    gid, procs, toasts0 = _lifecycle(ctx, res, app, "host-applications", "A07-x11", True,
-                                     match=lambda f: key in (f.get("app_id") or "").lower()
-                                     or "x11" in (f.get("app_id") or "").lower()
-                                     or f.get("app_id") not in (None, "", "so.tilo.settings"))
+    try:
+        gid, procs, toasts0 = _lifecycle(ctx, res, app, "host-applications", "A07-x11", True,
+                                         match=lambda f: key in (f.get("app_id") or "").lower()
+                                         or "x11" in (f.get("app_id") or "").lower()
+                                         or f.get("app_id") not in (None, "", "so.tilo.settings"))
+    except CheckFailed:
+        # Whether the program started, and what the launcher, the X11 bridge and
+        # the compositor said about it.
+        ctx.shot("A07-x11-no-window")
+        res.metrics["running"] = [c.cmd[:200] for c in _procs(ctx).values()
+                                  if key in c.cmd.lower() or "wine" in c.cmd.lower()][:6]
+        ctx.write("A07-x11-no-window.log", ctx.vm.exec(
+            "sed 's/\\x1b\\[[0-9;]*m//g' \"$HOME/.local/state/tilo/session-logs/latest.log\" 2>/dev/null "
+            f"| grep -aiE '{key}|{app}|wine|xwayland|x11' | tail -n 80 | cut -c1-400; "
+            "ls -ld \"$HOME/.wine\" 2>&1; true", check=False))
+        raise
     xw = [c.cmd for c in _procs(ctx).values() if "Xwayland" in c.cmd or "xwayland" in c.cmd]
     res.metrics["xwayland"] = xw[:2]
     expect(xw, "no Xwayland server is running while an X11 app is open")
