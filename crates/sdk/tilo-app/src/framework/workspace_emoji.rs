@@ -24,6 +24,8 @@ const MAX_CHOSEN_BYTES: usize = 8 * 1024 * 1024;
 
 /// A window's source of the workspace's emoji.
 pub(crate) struct WindowEmoji {
+    /// This source, for what settles after the call that asked for it.
+    me: std::rc::Weak<Self>,
     state: Rc<WorkspaceState>,
     /// The record, once a view asked for it: a window that draws no emoji
     /// opens none.
@@ -40,7 +42,8 @@ pub(crate) struct WindowEmoji {
 
 impl WindowEmoji {
     pub(crate) fn new(state: Rc<WorkspaceState>) -> Rc<Self> {
-        Rc::new(Self {
+        Rc::new_cyclic(|me| Self {
+            me: me.clone(),
             state,
             record: RefCell::default(),
             read: RefCell::default(),
@@ -99,19 +102,37 @@ impl WindowEmoji {
                 .name
                 .rsplit_once('.')
                 .map_or(file.name.as_str(), |(stem, _)| stem);
-            let added = self
+            let Some((record, name)) = self
                 .record()
-                .and_then(|record| record.get().free_name(stem))
-                .ok_or_else(unavailable)
-                .and_then(|name| self.add_small(&name, small).map(|()| name));
-            match added {
-                Ok(name) => self.settled(Adding::Added(name)),
-                Err(error) => {
-                    tracing::warn!(%error, file = %file.name, "the chosen picture was not added as an emoji");
-                    self.settled(Adding::Failed(error));
+                .and_then(|record| Some((record.clone(), record.get().free_name(stem)?)))
+            else {
+                self.failed(&file.name, unavailable());
+                continue;
+            };
+            let Small::Ready(png) = small else {
+                let refusal = small.refusal();
+                self.failed(&file.name, refusal.unwrap_or_default());
+                continue;
+            };
+            // The record's store may be in use by whatever runs this
+            // refresh: the emoji is added once it is free, and settled then.
+            let me = self.me.clone();
+            let file = file.name;
+            record.invoke_then(&add_emoji(&name, png), move |added| {
+                let Some(me) = me.upgrade() else {
+                    return;
+                };
+                match added {
+                    Ok(()) => me.settled(Adding::Added(name)),
+                    Err(error) => me.failed(&file, error.to_string()),
                 }
-            }
+            });
         }
+    }
+
+    fn failed(&self, file: &str, error: String) {
+        tracing::warn!(%error, %file, "the chosen picture was not added as an emoji");
+        self.settled(Adding::Failed(error));
     }
 
     fn settled(&self, adding: Adding) {
@@ -127,10 +148,7 @@ impl WindowEmoji {
         };
         let record = self.record().ok_or_else(unavailable)?;
         record
-            .invoke(&Record::ADD_EMOJI.with(actions::AddEmoji {
-                name: name.to_owned(),
-                image: tilo_workspace_emoji::EmojiImage(png).to_base64(),
-            }))
+            .invoke(&add_emoji(name, png))
             .map_err(|error| error.to_string())
     }
 }
@@ -229,6 +247,14 @@ impl EmojiSource for WindowEmoji {
     fn last_added(&self) -> (u64, Option<Adding>) {
         self.added.borrow().clone()
     }
+}
+
+/// The action adding `png` as the emoji `name`.
+fn add_emoji(name: &str, png: Vec<u8>) -> tilo_resource::Invoke<Record> {
+    Record::ADD_EMOJI.with(actions::AddEmoji {
+        name: name.to_owned(),
+        image: tilo_workspace_emoji::EmojiImage(png).to_base64(),
+    })
 }
 
 /// Why nothing of the workspace's emoji can change: its record is not open.
