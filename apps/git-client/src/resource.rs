@@ -1127,6 +1127,39 @@ mod tests {
         }
     }
 
+    /// Writing the message on a phone-width window: `c` focuses the field,
+    /// and the list column that holds it is the drawer there, so focusing it
+    /// reveals the drawer. Otherwise the person types into a field the width
+    /// of the window does not show.
+    #[test]
+    fn writing_the_message_reveals_the_column_it_is_written_in() {
+        let mut app = TestApp::<GitClientShell>::capture_at(Some("changes"), (390, 844)).unwrap();
+        app.settle();
+        let field = |app: &mut TestApp<GitClientShell>| {
+            app.harness()
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some(t("git-commit-message").as_str()))
+                .and_then(|(_, node)| node.bounds())
+                .map(|bounds| (bounds.x0, bounds.x1))
+        };
+        assert_eq!(
+            field(&mut app),
+            None,
+            "a closed drawer does not paint the column at all"
+        );
+        app.harness().key("c");
+        app.settle();
+        let open = field(&mut app);
+        let Some((left, right)) = open else {
+            panic!("focusing the message field did not reveal its column");
+        };
+        assert!(
+            right > 0.0 && left < 390.0,
+            "the column the field is written in came into the window: {left}..{right}"
+        );
+    }
+
     /// The window bar's layout item and the palette's effect switch the
     /// person's diff preference: kept beside the document, changing no
     /// document and on nobody's undo stack.
