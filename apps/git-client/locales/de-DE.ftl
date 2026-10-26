@@ -175,6 +175,15 @@ git-conflict-theirs = ihre Seite
 git-conflict-take-ours = Unsere nehmen
 git-conflict-take-theirs = Ihre nehmen
 git-conflict-explainer = Diese Datei ist im Konflikt.
+# The choice above a conflicted file, costing each side: $ours is how many
+# lines only your side has, $theirs how many only theirs does.
+git-conflict-cost = Beide Seiten haben diese Datei geändert. Unsere zu behalten verwirft { $theirs ->
+    [one] eine Zeile der anderen Seite
+   *[other] { $theirs } Zeilen der anderen Seite
+}; ihre zu behalten verwirft { $ours ->
+    [one] eine Ihrer Zeilen
+   *[other] { $ours } Ihrer Zeilen
+}.
 git-back-to-commit = Zurück zum Commit
 git-commit-file-heading = { $file } in { $commit }
 git-commit-file-name = { $file } ({ $kind })

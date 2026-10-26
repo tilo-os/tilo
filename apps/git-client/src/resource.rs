@@ -70,7 +70,7 @@ ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// Every `--scenario` the screenshot renderer stages.
 pub const SCENARIOS: &[&str] = &[
-    "changes", "split", "history", "branches", "commit", "discard", "empty", "narrow",
+    "changes", "split", "history", "branches", "commit", "conflict", "discard", "empty", "narrow",
 ];
 
 /// Framework app: the git client widget over [`GitClient`].
@@ -133,10 +133,17 @@ impl ResourceApp for GitClientShell {
     /// Every scenario but the first-run `empty` one shows the bundled
     /// repository.
     fn fixture(fixture: &mut Fixture<GitClient>) {
-        if fixture.scenario() != Some("empty") {
-            let (model, diffs) = crate::sample::model();
-            fixture.provide(SampleRepository { model, diffs });
+        if fixture.scenario() == Some("empty") {
+            return;
         }
+        // The conflict capture is a repository mid-merge: one file both
+        // sides changed, waiting for the person to say which one wins.
+        let (model, diffs) = if fixture.scenario() == Some("conflict") {
+            crate::sample::model_with_conflict()
+        } else {
+            crate::sample::model()
+        };
+        fixture.provide(SampleRepository { model, diffs });
     }
 
     /// `discard` presses "Discard file" on a changed file: the host asks to
@@ -230,6 +237,93 @@ mod tests {
             .unwrap();
         std::fs::write(path.join("new.txt"), "new\n").unwrap();
         (dir, path)
+    }
+
+    /// A repository whose working tree is mid-merge: `file.txt` was rewritten
+    /// on both sides, so it waits for the person to say which one wins.
+    fn conflicted_repository(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let (dir, path) = scratch_repository(name);
+        std::fs::remove_file(path.join("new.txt")).unwrap();
+        crate::repo::create_branch(&path, "feature", None, true).unwrap();
+        std::fs::write(
+            path.join("file.txt"),
+            "one\ntheirs\ntheirs again\ntheirs once more\n",
+        )
+        .unwrap();
+        crate::repo::stage_file(&path, "file.txt").unwrap();
+        crate::repo::commit(&path, "their side").unwrap();
+        crate::repo::checkout_branch(&path, "master").unwrap();
+        std::fs::write(path.join("file.txt"), "one\nours\n").unwrap();
+        crate::repo::stage_file(&path, "file.txt").unwrap();
+        crate::repo::commit(&path, "our side").unwrap();
+        {
+            let repo = git2::Repository::open(&path).unwrap();
+            let tip = repo
+                .find_branch("feature", git2::BranchType::Local)
+                .unwrap()
+                .into_reference()
+                .peel_to_commit()
+                .unwrap();
+            let annotated = repo.find_annotated_commit(tip.id()).unwrap();
+            repo.merge(&[&annotated], None, None).unwrap();
+            assert!(
+                repo.index().unwrap().has_conflicts(),
+                "the fixture is conflicted"
+            );
+        }
+        (dir, path)
+    }
+
+    /// The only file a merge left conflicted is the change the window shows,
+    /// and the choice above it says what each side costs before it is made.
+    /// `o` keeps our side from the keyboard, which settles the file.
+    #[test]
+    fn a_conflict_says_what_each_side_costs_and_settles_by_key() {
+        let (_dir, path) = conflicted_repository("conflict-cost");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+
+        let labels: Vec<String> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect();
+        let note = labels
+            .iter()
+            .find(|label| label.contains("Both sides changed this file"))
+            .unwrap_or_else(|| panic!("the choice names its cost: {labels:?}"));
+        assert!(
+            note.contains("3 lines of theirs") && note.contains("one of your lines"),
+            "each side's cost is named: {note:?}"
+        );
+        for expected in [t("git-conflict-take-ours"), t("git-conflict-take-theirs")] {
+            assert!(
+                app.harness().a11y_node_named(&expected).is_some(),
+                "{expected:?} is offered"
+            );
+        }
+        assert!(
+            app.harness()
+                .a11y_node_named(&t("git-stage-file"))
+                .is_none(),
+            "the markers are not something to stage"
+        );
+
+        app.harness().key("o");
+        app.settle();
+        assert!(
+            !git2::Repository::open(&path)
+                .unwrap()
+                .index()
+                .unwrap()
+                .has_conflicts(),
+            "keeping our side settled the conflict"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path.join("file.txt")).unwrap(),
+            "one\nours\n"
+        );
     }
 
     #[test]
