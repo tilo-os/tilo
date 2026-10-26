@@ -844,57 +844,33 @@ fn accessibility_exposes_editor_state_and_toolbar_controls() {
         );
         assert!(tree.children.iter().all(|node| node.semantic_key.is_some()));
     }
-    // The retained toolbar's actual published controls keep file/compile
-    // actions accessible; focusing a pane selector never invokes it.
+    // The app's own tree is the two panes: the commands and the views are
+    // the window bar's slots, which the window publishes, not the editor.
     {
-        let mut app = live_fixture((560, 720));
-        let id = app
-            .harness()
-            .a11y_node_named("Preview")
-            .expect("shared preview selector");
-        app.harness()
-            .perform_a11y_action(id, &ui::a11y::Action::Focus)
-            .unwrap();
-        app.settle();
+        let (mut app, _doc) = fresh();
+        app.layout_in(Rect::new(0.0, 0.0, 560.0, 720.0));
+        render_once(&mut app);
+        let tree = app.accessibility().expect("Typst semantics");
+        assert_eq!(tree.role, ui::a11y::Role::Document);
         assert!(
-            app.with_widget(|surface: &mut TypstApp| matches!(
-                surface.compact_view,
-                CompactPane::Editor
-            ))
-            .unwrap(),
-            "focus does not activate"
+            tree.children
+                .iter()
+                .all(|node| node.role != ui::a11y::Role::Button),
+            "no command or view switch is drawn in the body: {:?}",
+            tree.children
+                .iter()
+                .map(|node| node.role)
+                .collect::<Vec<_>>()
         );
-        let id = app
-            .harness()
-            .a11y_node_named("Preview")
-            .expect("shared preview selector");
-        app.harness()
-            .perform_a11y_action(id, &ui::a11y::Action::Activate)
-            .unwrap();
-        app.settle();
+        let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+        assert!(declared.views.is_some(), "the panes are the bar's views");
         assert!(
-            app.with_widget(|surface: &mut TypstApp| matches!(
-                surface.compact_view,
-                CompactPane::Preview
-            ))
-            .unwrap()
+            declared.location.is_some(),
+            "the document is the bar's location"
         );
-        app.harness().resize((390, 720)).unwrap();
-        let more = app
-            .harness()
-            .a11y_node_named("More commands")
-            .expect("shared toolbar overflow");
-        app.harness()
-            .perform_a11y_action(more, &ui::a11y::Action::Activate)
-            .unwrap();
-        for command in ["Open", "Save", "Export PDF", "Compile"] {
-            assert!(
-                app.harness().a11y_node_named(command).is_some(),
-                "published command {command}"
-            );
-        }
     }
 }
+
 fn control_rects(app: &TypstApp) -> Vec<(String, Rect)> {
     app.chrome
         .children()
@@ -938,8 +914,11 @@ fn an_empty_document_previews_as_empty_not_as_a_blank_page() {
     assert_eq!(app.status_right_label(), "1 page, 125%");
 }
 
+/// The window bar holds the editor's controls, so the body holds none: the
+/// panes have the window from its top edge to the status bar at every width,
+/// which is what the 40 px row above them used to take.
 #[test]
-fn controls_stay_in_the_bar_and_never_overlap_at_any_width() {
+fn the_panes_have_the_window_from_its_top_edge() {
     for width in [320.0, 360.0, 390.0, 480.0, 560.0, 720.0, 800.0, 1280.0] {
         for (errors, warnings) in [(0, 0), (1, 1)] {
             let (mut app, _) = fresh();
@@ -947,38 +926,103 @@ fn controls_stay_in_the_bar_and_never_overlap_at_any_width() {
             app.warn_count = warnings;
             app.layout_in(Rect::new(0.0, 0.0, width, 760.0));
             render_once(&mut app);
-            let rects = control_rects(&app);
-            assert!(
-                rects.len() >= if app.compact { 3 } else { 2 },
-                "the document heading, toolbar and compact view switch show at {width}px"
+            let top = app.editor_rect.union(app.preview_rect).union(app.diag_rect);
+            assert_eq!(top.y0, 0.0, "no row stands above the panes at {width}px");
+            assert_eq!(
+                top.y1, app.status_rect.y0,
+                "the panes reach the status bar at {width}px"
             );
-            // The name sits centred in the band beside the controls'
-            // labels, not hung from the window's top edge.
-            let name = app.chrome.children()[0].get_rect();
-            assert!(
-                (name.center().y - app.bar_rect.center().y).abs() < 1.0,
-                "the document name {name:?} is centred in the bar {:?} at {width}px",
-                app.bar_rect
-            );
-            for (index, (left_name, left)) in rects.iter().enumerate() {
-                assert!(
-                    left.x0 >= app.bar_rect.x0
-                        && left.x1 <= app.bar_rect.x1
-                        && left.y0 >= app.bar_rect.y0
-                        && left.y1 <= app.bar_rect.y1,
-                    "{left_name} {left:?} leaves the bar {:?} at {width}px",
-                    app.bar_rect
-                );
-                for (right_name, right) in rects.iter().skip(index + 1) {
-                    assert!(
-                        left.intersect(*right).area() <= 0.0,
-                        "{left_name} {left:?} overlaps {right_name} {right:?} at {width}px"
-                    );
-                }
-            }
+            assert_eq!(top.width(), width, "the panes span the window");
         }
     }
 }
+
+/// The bar says where the window is — the document's name, in the one place
+/// a person looks first — and holds every command the row used to.
+#[test]
+fn the_bar_says_where_the_window_is_and_holds_every_command() {
+    let (mut app, _) = fresh();
+    app.layout_in(Rect::new(0.0, 0.0, 1280.0, 760.0));
+    render_once(&mut app);
+    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    let name = app.current_name();
+    let location = declared.location.expect("the document is the location");
+    assert_eq!(location.label, name);
+    assert!(location.editable, "the name is renamed in place");
+    let ids: Vec<&str> = declared
+        .actions
+        .iter()
+        .flat_map(|action| {
+            std::iter::once(action.id.as_str())
+                .chain(action.items.iter().map(|item| item.id.as_str()))
+        })
+        .collect();
+    for wanted in [
+        "typst.compile",
+        "typst.problems",
+        "typst.outline",
+        "typst.zoom-in",
+        "typst.zoom-out",
+        "typst.fit",
+        "typst.save",
+        "typst.open",
+        "typst.export-pdf",
+    ] {
+        assert!(ids.contains(&wanted), "{wanted} is a slot in {ids:?}");
+    }
+    let views = declared
+        .views
+        .expect("the source and the preview are views");
+    assert_eq!(
+        views.choices.len(),
+        2,
+        "one view per pane, at every width: no switch of the app's own"
+    );
+}
+
+/// A document with changes nobody has written yet says so beside its name;
+/// writing it to a file says no more.
+#[test]
+fn the_bar_marks_an_unsaved_document_until_it_is_saved() {
+    let mut app = ui::framework::testing::TestApp::<TypstEditorShell>::new().unwrap();
+    app.harness().resize((1280, 800)).unwrap();
+    app.settle();
+    let file = app.state().files.ids().next().expect("a file").clone();
+    let source = Workspace::paths().files.item(&file).source;
+    app.with_surface::<TypstApp, _>(|view| {
+        assert!(!view.unsaved(), "a document nobody typed in is not unsaved")
+    })
+    .unwrap();
+
+    // Typing is a splice into the source field, as the editor's keys make it.
+    app.invoke(ui::tilo_resource::Invoke::edit(&source.splice(0, 0, "= Typed\n")).unwrap())
+        .unwrap();
+    app.harness()
+        .wait_for_visuals(tilo_test_env::hang_bound())
+        .unwrap();
+    app.with_surface::<TypstApp, _>(|view| assert!(view.unsaved(), "typed text is unsaved work"))
+        .unwrap();
+    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert!(
+        declared
+            .location
+            .expect("the document is the location")
+            .edited,
+        "the bar says so after the document's name"
+    );
+
+    // Writing it where it can go ends that.
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("typed.typ");
+    app.with_surface::<TypstApp, _>(|view| view.save_typ_to(&path).expect("the file is written"))
+        .unwrap();
+    app.settle();
+    app.with_surface::<TypstApp, _>(|view| {
+        assert!(!view.unsaved(), "the source as written is not unsaved work")
+    })
+    .unwrap();
+}
+
 #[test]
 fn resize_reflows_between_split_and_compact() {
     // The responsive contract: layout is re-derived from the *current* width
@@ -1005,11 +1049,12 @@ fn resize_reflows_between_split_and_compact() {
     assert!(!app.compact, "reflowed back to split after widening");
     assert!(app.preview_rect.area() > 0.0);
 }
+/// Larger text narrows what fits in one pane: the compact layout is chosen
+/// from the space the text leaves, and the panes still have the whole window.
 #[test]
-fn text_scale_grows_the_bar_and_compacts_before_controls_collide() {
+fn text_scale_compacts_before_the_panes_collide() {
     let (mut app, _doc) = fresh();
     app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
-    let normal = app.frame.bar_h;
     let mut tr = TextRenderer::new();
     tr.set_text_scale(2.0);
     let mut theme = Theme::dark();
@@ -1022,26 +1067,25 @@ fn text_scale_grows_the_bar_and_compacts_before_controls_collide() {
         &PresenceCtx::empty(),
     );
 
-    assert!(
-        app.bar_rect.height() > normal,
-        "the bar grows with the text"
-    );
     assert!(app.compact, "1280px is compact at 200% text scale");
-    assert_eq!(app.editor_rect.y0, app.bar_rect.y1);
+    assert_eq!(app.editor_rect.y0, 0.0, "the pane starts at the top edge");
     for (_, rect) in control_rects(&app) {
         assert!(
-            rect.y1 <= app.bar_rect.y1,
-            "every control fits the grown bar"
+            rect.y1 <= app.status_rect.y0,
+            "the only control left in the body is the panel's close button"
         );
     }
 }
 
+/// The bar's views pick the pane a narrow window shows, and its slots run
+/// the commands the row's buttons ran — zoom among them.
 #[test]
-fn compact_view_switch_and_overflow_menu_act_and_stay_reachable() {
+fn the_bars_views_pick_the_pane_and_its_slots_run_the_commands() {
     let mut app = live_fixture((560, 720));
-    let switch = app.harness().targets()["typst.view"];
     app.harness()
-        .click_at(switch.x1 - switch.width() / 4.0, switch.center().y);
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "typst.view.preview".to_owned(),
+        });
     app.settle();
     assert!(
         app.with_widget(|surface: &mut TypstApp| matches!(
@@ -1052,7 +1096,9 @@ fn compact_view_switch_and_overflow_menu_act_and_stay_reachable() {
             .unwrap()
     );
     app.harness()
-        .click_at(switch.x0 + switch.width() / 4.0, switch.center().y);
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "typst.view.editor".to_owned(),
+        });
     app.settle();
     assert!(
         app.with_widget(|surface: &mut TypstApp| matches!(
@@ -1061,45 +1107,39 @@ fn compact_view_switch_and_overflow_menu_act_and_stay_reachable() {
         ))
         .unwrap()
     );
+
+    // Every command is a slot at any width, and the zoom ones zoom.
     for theme in [Theme::dark(), Theme::dark().with_text_scale(2.0)] {
         app.harness().relayout_themed((390, 520), theme).unwrap();
-        let chip = app
-            .with_widget(|surface: &mut TypstApp| surface.chrome.toolbar_chip())
-            .unwrap()
-            .expect("commands fold into the shared More menu");
-        app.harness().click_at(chip.center().x, chip.center().y);
-        let names = app
-            .with_widget(|surface: &mut TypstApp| surface.chrome.toolbar_names())
-            .unwrap();
+        app.settle();
+        let declared = ui::window_toolbar::declared().expect("the window declares its slots");
         for wanted in [
-            "Compile",
-            "Save",
-            "Open",
-            "Export PDF",
-            "Zoom out",
-            "Zoom in",
-            "Fit width",
-            "Problems",
+            "typst.compile",
+            "typst.save",
+            "typst.open",
+            "typst.export-pdf",
+            "typst.zoom-out",
+            "typst.zoom-in",
+            "typst.fit",
+            "typst.problems",
         ] {
             assert!(
-                names.iter().any(|name| name == wanted),
-                "{wanted} remains reachable in {names:?}"
+                declared.actions.iter().any(|action| action.id == wanted),
+                "{wanted} remains a slot at 390px"
             );
         }
-        let zoom = app
-            .harness()
-            .a11y_node_named("Zoom in")
-            .expect("the shared menu exposes Zoom in");
         let before = app
             .with_widget(|surface: &mut TypstApp| surface.preview.zoom())
             .unwrap();
         app.harness()
-            .perform_a11y_action(zoom, &ui::a11y::Action::Activate)
-            .unwrap();
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+                id: "typst.zoom-in".to_owned(),
+            });
         app.settle();
         assert!(
             app.with_widget(|surface: &mut TypstApp| surface.preview.zoom() > before)
-                .unwrap()
+                .unwrap(),
+            "the bar's zoom in zooms the preview"
         );
     }
 }
