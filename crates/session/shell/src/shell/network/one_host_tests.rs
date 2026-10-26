@@ -37,6 +37,7 @@ use crate::shell::state::{
 
 mod adopted_fields;
 mod channels;
+mod edit_latency;
 mod failover;
 mod history_across_admission;
 mod home_relay;
