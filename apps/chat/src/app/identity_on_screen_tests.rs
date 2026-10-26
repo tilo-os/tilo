@@ -255,3 +255,72 @@ fn a_call_names_each_person_once_by_their_devices_name() {
         .count();
     assert_eq!(offered, 1, "the @ picker offers them once");
 }
+
+/// A document whose chat record no longer reads: what a newer or broken
+/// writer leaves behind.
+fn unreadable(doc: &mut AutoCommit) {
+    use automerge::transaction::Transactable as _;
+    doc.put(automerge::ROOT, "channels", "not a keyed collection")
+        .expect("the field is written");
+}
+
+#[test]
+fn an_unreadable_record_keeps_the_window_that_last_read_whole() {
+    let mut app = ChatApp::new_ephemeral();
+    let mut state = ui::State::new();
+    crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
+    Widget::sync(&mut app, &state.doc, &state.root);
+    let channels: Vec<String> = app.channels.iter().map(|c| c.id.clone()).collect();
+    let messages: Vec<String> = app.messages.iter().map(|m| m.id.clone()).collect();
+    assert!(!channels.is_empty(), "the starter room has a channel");
+
+    unreadable(&mut state.doc);
+    app.reload(&state.doc);
+
+    assert!(app.chat_read.failed(), "the record does not read as a chat");
+    assert_eq!(
+        app.channels
+            .iter()
+            .map(|c| c.id.clone())
+            .collect::<Vec<_>>(),
+        channels,
+        "the channels that last read whole stay, not an empty room"
+    );
+    assert_eq!(
+        app.messages
+            .iter()
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>(),
+        messages,
+        "the messages that last read whole stay"
+    );
+}
+
+#[test]
+fn an_unreadable_record_announces_nobody_from_an_empty_roster() {
+    let mut app = ChatApp::new(
+        crate::identity::LocalIdentity::for_participant("person-1"),
+        ChatRuntime::Unavailable,
+        ContentStore::memory(),
+    )
+    .announcing();
+    app.attach_framework(ui::framework::Dispatcher::detached(
+        "so.tilo.chat",
+        "person-1",
+    ));
+    let mut state = ui::State::new();
+    crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
+    unreadable(&mut state.doc);
+
+    Widget::sync(&mut app, &state.doc, &state.root);
+    app.land(&mut state.doc);
+
+    assert!(
+        app.last_dispatched().is_none(),
+        "who is already in the room is not known from a record that does not read"
+    );
+    assert!(
+        app.announce.is_some(),
+        "the introduction waits for a record that reads"
+    );
+}

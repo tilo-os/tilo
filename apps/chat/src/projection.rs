@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
-use ui::tilo_resource::{Id, Identified, Resource};
+use ui::tilo_resource::{Id, Identified, ModelError, Resource};
 
 use crate::model::{AgentStep, AgentWork, Category, Channel, EditRecord, Message, User};
 use crate::record::Chat;
@@ -23,10 +23,22 @@ pub fn is_started(doc: &AutoCommit) -> bool {
     Chat::read(doc).is_ok_and(|chat| !chat.channels.is_empty() || !chat.people.is_empty())
 }
 
-/// The chat record in `doc`; an empty one when `doc` holds none.
+/// The chat record in `doc`, or why it does not read as one. A document that
+/// does not read is not an empty chat: whatever acts on it — a projection the
+/// window shows, a write derived from one — takes this result and not a
+/// default `Chat`.
+///
+/// # Errors
+/// Returns [`ModelError`] when `doc` does not hold a chat record.
 #[must_use]
-pub fn read(doc: &AutoCommit) -> Chat {
-    Chat::read(doc).unwrap_or_default()
+pub fn try_read(doc: &AutoCommit) -> Result<Chat, ModelError> {
+    Chat::read(doc)
+}
+
+/// The chat record in `doc`, or `None` when it does not read as one.
+#[must_use]
+pub fn read(doc: &AutoCommit) -> Option<Chat> {
+    Chat::read(doc).ok()
 }
 
 impl Chat {
@@ -293,4 +305,47 @@ pub fn draft_text(doc: &AutoCommit, key: &str) -> String {
 #[must_use]
 pub fn has_draft(doc: &AutoCommit, key: &str) -> bool {
     draft(doc, key).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read, try_read};
+    use automerge::{ROOT, ReadDoc, transaction::Transactable as _};
+
+    /// A started chat: one channel, as a room's document holds it.
+    fn started() -> automerge::AutoCommit {
+        let mut doc = automerge::AutoCommit::new();
+        crate::demo::start(&mut doc, "me", "Me", "ME").expect("a room starts");
+        doc
+    }
+
+    /// `doc` with its channels no longer a keyed collection: what a document
+    /// a newer or broken writer left behind reads as.
+    fn corrupt(doc: &mut automerge::AutoCommit) {
+        assert!(doc.get(ROOT, "channels").unwrap().is_some());
+        doc.put(ROOT, "channels", "not a keyed collection")
+            .expect("the field is written");
+    }
+
+    #[test]
+    fn a_document_that_does_not_read_is_not_an_empty_chat() {
+        let mut doc = started();
+        assert!(try_read(&doc).is_ok(), "a room's document reads");
+        assert!(!read(&doc).expect("a chat record").channels.is_empty());
+
+        corrupt(&mut doc);
+        let why = try_read(&doc).expect_err("a broken document does not read");
+        assert!(
+            why.to_string().contains("channels"),
+            "the read says where it failed: {why}"
+        );
+        assert!(
+            read(&doc).is_none(),
+            "a document that does not read yields no chat, not an empty one"
+        );
+        assert!(
+            !super::is_started(&doc),
+            "a chat that cannot be read has not been shown to be started"
+        );
+    }
 }

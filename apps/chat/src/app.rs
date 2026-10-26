@@ -852,6 +852,11 @@ pub struct ChatApp {
     /// chain reads where its actions are invoked.
     #[cfg(test)]
     pub(crate) last_read: std::rc::Rc<std::cell::RefCell<std::rc::Rc<crate::record::Chat>>>,
+    /// Why the newest read of the record did not read, while the channels,
+    /// messages and drafts above keep what last read whole. The framework
+    /// shows that reason in place of the view; this keeps every write derived
+    /// from the projection waiting for a read that succeeds.
+    pub(crate) chat_read: ui::tilo_resource::DocumentRead,
     /// The voice channel a started call joins once it is in the document.
     pub(crate) pending_call: Option<Id>,
     /// Ephemeral opt-in to publishing Chat navigation through viewport presence.
@@ -1176,6 +1181,7 @@ impl ChatApp {
             staged_scenario: None,
             #[cfg(test)]
             last_read: std::rc::Rc::default(),
+            chat_read: ui::tilo_resource::DocumentRead::default(),
             pending_call: None,
             sharing_context: false,
             following_context: false,
@@ -3064,7 +3070,12 @@ impl ChatApp {
 
     pub(crate) fn reload(&mut self, doc: &AutoCommit) {
         self.read_kept_messages(doc);
-        let chat = crate::projection::read(doc);
+        // A document that does not read is not an empty chat: the channels,
+        // messages and drafts that last read whole stay, and every write
+        // derived from this projection waits for a read that succeeds.
+        let Some(chat) = self.chat_read.adopt(crate::projection::try_read(doc)) else {
+            return;
+        };
         #[cfg(test)]
         {
             *self.last_read.borrow_mut() = std::rc::Rc::new(chat.clone());
@@ -3261,7 +3272,13 @@ impl ChatApp {
         let Some(me) = self.announce.take() else {
             return;
         };
-        let chat = crate::projection::read(doc);
+        // Introducing this person is derived from the roster the document
+        // holds: an unreadable document says nothing about who is already in
+        // the room, so nothing is written on its word.
+        let Some(chat) = crate::projection::read(doc) else {
+            self.announce = Some(me);
+            return;
+        };
         let color = u32::try_from(me.color_idx).unwrap_or_default();
         if (chat.channels.is_empty() && chat.people.is_empty())
             || chat.people.iter().any(|person| {
@@ -3291,7 +3308,9 @@ impl ChatApp {
         if self.direct_person.is_some() || self.active_channel.is_empty() || !self.timeline_at_end {
             return;
         }
-        let chat = crate::projection::read(doc);
+        let Some(chat) = crate::projection::read(doc) else {
+            return;
+        };
         let read = self
             .held_messages()
             .read_to_end(&ui::tilo_resource::Id::from_raw(
@@ -5252,17 +5271,24 @@ impl Widget for ChatApp {
         if matches!(hit, Hit::Send) && self.direct_person.is_some() {
             return self.send_person_focused();
         }
-        let messages_before = matches!(hit, Hit::Send).then(|| {
-            crate::projection::read(state)
-                .message_rows(&self.held_messages(), &self.active_channel)
-                .len()
-        });
+        let messages_before = if matches!(hit, Hit::Send) {
+            crate::projection::read(state).map(|chat| {
+                chat.message_rows(&self.held_messages(), &self.active_channel)
+                    .len()
+            })
+        } else {
+            None
+        };
         self.on_hit(hit, state);
+        // A document that does not read says nothing about what the send did;
+        // it was performed, and the record's own refusal is the answer.
         messages_before.is_none_or(|before| {
             crate::projection::read(state)
-                .message_rows(&self.held_messages(), &self.active_channel)
-                .len()
-                == before.saturating_add(1)
+                .map(|chat| {
+                    chat.message_rows(&self.held_messages(), &self.active_channel)
+                        .len()
+                })
+                .is_none_or(|after| after == before.saturating_add(1))
         })
     }
 

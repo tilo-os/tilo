@@ -657,7 +657,7 @@ impl Room {
     /// The chat record as it stands.
     #[must_use]
     pub fn read(&self) -> Chat {
-        crate::projection::read(&self.chat)
+        crate::projection::read(&self.chat).expect("the demo room's record reads")
     }
 
     /// The parts of the messages, read.
@@ -738,7 +738,9 @@ impl Room {
         if let Some(refusal) = invoke.refusal() {
             return Err(DoorError::InvalidArguments(refusal.to_owned()));
         }
-        *self.base.borrow_mut() = std::rc::Rc::new(crate::projection::read(&self.chat));
+        *self.base.borrow_mut() = std::rc::Rc::new(
+            crate::projection::read(&self.chat).expect("the demo room's record reads"),
+        );
         chain
             .stage_at(&invoke, author, now_ms)
             .map_err(|error| DoorError::Failed(error.to_string()))

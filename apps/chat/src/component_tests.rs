@@ -925,7 +925,12 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
             let reply = crate::testing::messages_in(&records, "c_chat")
                 .pop()
                 .unwrap();
-            (reply.author, crate::projection::read(doc).agent_authors())
+            (
+                reply.author,
+                crate::projection::read(doc)
+                    .expect("a chat record")
+                    .agent_authors(),
+            )
         })
         .unwrap();
     assert_eq!(author, "agent-task:reading");

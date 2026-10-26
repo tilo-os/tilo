@@ -115,13 +115,13 @@ impl ChatApp {
         else {
             return false;
         };
+        let Some(chat) = crate::projection::read(doc) else {
+            return false;
+        };
         if !continuation.valid()
-            || !crate::projection::read(doc)
-                .channel_rows()
-                .iter()
-                .any(|channel| {
-                    channel.id == continuation.channel_id && channel.kind == ChannelKind::Voice
-                })
+            || !chat.channel_rows().iter().any(|channel| {
+                channel.id == continuation.channel_id && channel.kind == ChannelKind::Voice
+            })
         {
             return false;
         }
