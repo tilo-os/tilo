@@ -17,6 +17,8 @@ topbar-watching-description = { $count } { $count ->
        *[other] people
     } watching without joining
 topbar-tilo-menu = Tilo menu
+# A running application's icon in the bar, when the item that named it is gone.
+topbar-app-tray-item = Running application
 topbar-open-quick-settings = Open quick settings
 topbar-open-notifications = Notifications
 topbar-bell = { $unread ->

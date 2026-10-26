@@ -251,7 +251,7 @@ struct CacheFingerprint {
     tilo_mark: Option<bool>,
     own: Option<crate::chrome::OwnChip>,
     /// The bar control under the pointer: it lifts.
-    hovered_control: Option<&'static str>,
+    hovered_control: Option<String>,
     /// Whether the bar offers its invite button.
     can_invite: bool,
     /// What the bar says about a wave at this person, while it does.
@@ -277,6 +277,9 @@ struct FaceLook {
 struct AppTraySlot {
     key: String,
     id: String,
+    /// What the item is called: the application's own title for it, else
+    /// its id.
+    title: String,
     item_is_menu: bool,
     rect: Rect,
 }
@@ -1098,7 +1101,7 @@ impl TopBarChrome {
 
     /// The bar control under the pointer, from the hit rects the last paint
     /// laid down: plain at rest, it lifts while the pointer is over it.
-    fn hovered_control(&self) -> Option<&'static str> {
+    fn hovered_control(&self) -> Option<String> {
         let point = self.last_cursor?;
         if !self.rect.contains(point) {
             return None;
@@ -1564,6 +1567,19 @@ impl TopBarChrome {
     const CONTROL_MEDIA: &'static str = "topbar:media";
     const CONTROL_CONTINUITY: &'static str = "topbar:continuity";
     const CONTROL_CONTINUITY_DISMISS: &'static str = "topbar:continuity-dismiss";
+    /// A running application's tray item stands on the bar as its own
+    /// control: `tray:<key>` names the one the host addresses.
+    const APP_TRAY_TARGET: &'static str = "tray:";
+
+    /// The bar target naming the tray item addressed by `key`.
+    fn tray_target(key: &str) -> String {
+        format!("{}{key}", Self::APP_TRAY_TARGET)
+    }
+
+    /// The tray key a bar target names, when it names one.
+    fn tray_target_key(target: &str) -> Option<&str> {
+        target.strip_prefix(Self::APP_TRAY_TARGET)
+    }
     fn collaborators_visible(&self) -> bool {
         !self.collaborator_initials.is_empty()
             || self.collaborator_overflow > 0
@@ -1766,38 +1782,46 @@ impl TopBarChrome {
             .collect()
     }
 
-    fn control_targets(&self) -> Vec<&'static str> {
-        let mut controls = Vec::new();
+    fn control_targets(&self) -> Vec<String> {
+        let mut controls: Vec<String> = Vec::new();
         if self.tilo_mark.is_some() {
-            controls.push(Self::CONTROL_TILO_MARK);
+            controls.push(Self::CONTROL_TILO_MARK.to_string());
         }
-        controls.push(Self::CONTROL_WORKSPACE_SETTINGS);
+        controls.push(Self::CONTROL_WORKSPACE_SETTINGS.to_string());
         if self.shows_strip_name() {
-            controls.push(Self::CONTROL_STRIP_NAME);
+            controls.push(Self::CONTROL_STRIP_NAME.to_string());
         }
         if self.is_compact() {
             return controls;
         }
-        controls.push(Self::CONTROL_QUICK_SETTINGS);
+        controls.push(Self::CONTROL_QUICK_SETTINGS.to_string());
         if self.collaborators_visible() {
-            controls.push(Self::CONTROL_COLLABORATORS);
+            controls.push(Self::CONTROL_COLLABORATORS.to_string());
         }
         if !self.invite_rect.is_zero_area() {
-            controls.push(Self::CONTROL_INVITE);
+            controls.push(Self::CONTROL_INVITE.to_string());
         }
         if !self.ask.pill.is_zero_area() {
-            controls.push(Self::CONTROL_ASK_LATER);
-            controls.push(Self::CONTROL_ASK_ANSWER);
+            controls.push(Self::CONTROL_ASK_LATER.to_string());
+            controls.push(Self::CONTROL_ASK_ANSWER.to_string());
         }
         if self.own_chip().is_some() {
-            controls.push(Self::CONTROL_PROFILE);
+            controls.push(Self::CONTROL_PROFILE.to_string());
         }
         if !self.media_indicator_rect.is_zero_area() {
-            controls.push(Self::CONTROL_MEDIA);
+            controls.push(Self::CONTROL_MEDIA.to_string());
         }
+        // Each running application's tray icon is a control of the bar like
+        // any other: Tab reaches it, a reader names it, and it lifts under
+        // the pointer.
+        controls.extend(
+            self.app_tray
+                .iter()
+                .map(|slot| Self::tray_target(&slot.key)),
+        );
         if self.continuity_label().is_some() {
-            controls.push(Self::CONTROL_CONTINUITY);
-            controls.push(Self::CONTROL_CONTINUITY_DISMISS);
+            controls.push(Self::CONTROL_CONTINUITY.to_string());
+            controls.push(Self::CONTROL_CONTINUITY_DISMISS.to_string());
         }
         controls
     }
@@ -1831,7 +1855,14 @@ impl TopBarChrome {
             Self::CONTROL_CONTINUITY_DISMISS => self.continuity_dismiss_rect,
             Self::CONTROL_ASK_ANSWER => self.ask.answer,
             Self::CONTROL_ASK_LATER => self.ask.later,
-            _ => Rect::ZERO,
+            target => Self::tray_target_key(target)
+                .and_then(|key| {
+                    self.app_tray
+                        .iter()
+                        .find(|slot| slot.key == key)
+                        .map(|slot| slot.rect)
+                })
+                .unwrap_or(Rect::ZERO),
         }
     }
 
@@ -1870,6 +1901,17 @@ impl TopBarChrome {
     }
 
     fn control_name(&self, target: &str) -> String {
+        if let Some(key) = Self::tray_target_key(target) {
+            // The application's own name for its icon, never its bus
+            // address: an item is one app's window or state, said in the
+            // words that app chose.
+            return self
+                .app_tray
+                .iter()
+                .find(|slot| slot.key == key)
+                .map(|slot| slot.title.clone())
+                .unwrap_or_else(|| t("topbar-app-tray-item"));
+        }
         match target {
             Self::CONTROL_TILO_MARK => t("topbar-tilo-menu"),
             Self::CONTROL_WORKSPACE_SETTINGS => t_args(
@@ -2131,7 +2173,7 @@ impl TopBarChrome {
             &RoundedRect::from_rect(self.tilo_mark_rect, f64::from(theme.tokens.radii.control)),
             ui::chrome::SelectionState::new(
                 open,
-                self.hovered_control() == Some(Self::CONTROL_TILO_MARK),
+                self.hovered_control().as_deref() == Some(Self::CONTROL_TILO_MARK),
                 false,
             ),
             theme,
@@ -2235,7 +2277,7 @@ impl TopBarChrome {
             .as_ref()
             .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings);
         let name = self.control_name(Self::CONTROL_WORKSPACE_SETTINGS);
-        let hovered = self.hovered_control() == Some(Self::CONTROL_WORKSPACE_SETTINGS);
+        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_WORKSPACE_SETTINGS);
         let face = ui::widget::BarControlFace::new(&name)
             .label(&ws_label)
             .trailing(Self::WORKSPACE_MENU_ICON)
@@ -2550,7 +2592,7 @@ impl TopBarChrome {
             &tray,
             ui::chrome::SelectionState::new(
                 false,
-                self.hovered_control() == Some(Self::CONTROL_QUICK_SETTINGS),
+                self.hovered_control().as_deref() == Some(Self::CONTROL_QUICK_SETTINGS),
                 false,
             ),
             theme,
@@ -3542,6 +3584,25 @@ impl TopBarChrome {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        if let Some(key) = Self::tray_target_key(target) {
+            // A key or a reader's activation does what a left click does:
+            // the item's primary action, or its own menu when it has none.
+            let rect = self.control_rect(target);
+            let (x, y) = pointer_coordinates(rect.center());
+            let item_is_menu = self
+                .app_tray
+                .iter()
+                .find(|slot| slot.key == key)
+                .is_some_and(|slot| slot.item_is_menu);
+            return chrome.intent(ChromeIntent::AppTray {
+                key: key.to_string(),
+                request: if item_is_menu {
+                    AppTrayRequest::ContextMenu { x, y }
+                } else {
+                    AppTrayRequest::Activate { x, y }
+                },
+            });
+        }
         let intent = match target {
             Self::CONTROL_TILO_MARK if self.tilo_mark.is_some() => ChromeIntent::ToggleTiloMenu,
             Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceMenu,
@@ -3609,6 +3670,19 @@ impl TopBarChrome {
                 center_y + BAR_CONTROL_PX / 2.0,
             );
             let icon_rect = Rect::from_center_size(hit.center(), (icon_px, icon_px));
+            // A tray icon is a bar control: it lifts under the pointer and,
+            // reached from the keyboard, shows the bar's focus ring through
+            // `control_rect`. Its own picture replaces the glyph.
+            let hovered = self
+                .last_cursor
+                .is_some_and(|point| hit.contains(point) && self.rect.contains(point));
+            paint_bar_selector(
+                scene,
+                transform,
+                &RoundedRect::from_rect(hit, f64::from(tokens.radii.control)),
+                ui::chrome::SelectionState::new(false, hovered, false),
+                theme,
+            );
             self.draw_app_tray_icon(scene, transform, theme, text_renderer, item, icon_rect);
             if item.status == AppTrayStatus::NeedsAttention {
                 scene.fill(
@@ -3622,6 +3696,7 @@ impl TopBarChrome {
             self.app_tray.push(AppTraySlot {
                 key: item.key.clone(),
                 id: item.id.clone(),
+                title: item.title.clone(),
                 item_is_menu: item.item_is_menu,
                 rect: hit,
             });
@@ -3830,7 +3905,7 @@ impl TopBarChrome {
             _ => None,
         };
         if let Some(target) = focus.and_then(|index| controls.get(index)) {
-            self.focused_control = Some((*target).into());
+            self.focused_control = Some(target.clone());
             *handled = true;
             return;
         }
@@ -4572,11 +4647,12 @@ impl Widget for TopBarChrome {
             .into_iter()
             .map(|target| {
                 let mut node = AccessNode::new(Role::Button)
-                    .with_action_target(target)
-                    .with_name(self.control_name(target))
-                    .with_bounds(self.control_rect(target))
+                    .with_action_target(target.clone())
+                    .with_name(self.control_name(&target))
+                    .with_bounds(self.control_rect(&target))
                     .with_state(AccessState {
-                        focused: self.focused && self.focused_control.as_deref() == Some(target),
+                        focused: self.focused
+                            && self.focused_control.as_deref() == Some(target.as_str()),
                         focusable: true,
                         ..Default::default()
                     });
@@ -4651,7 +4727,7 @@ impl Widget for TopBarChrome {
         let Some(index) = path.first().copied() else {
             return false;
         };
-        let Some(target) = self.control_targets().get(index).copied() else {
+        let Some(target) = self.control_targets().get(index).cloned() else {
             return false;
         };
         self.focused_control = Some(target.to_string());
@@ -4716,7 +4792,7 @@ impl Widget for TopBarChrome {
         }
         self.control_targets()
             .into_iter()
-            .any(|target| self.control_rect(target).contains(point))
+            .any(|target| self.control_rect(&target).contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
     }
 
@@ -4735,10 +4811,7 @@ impl Widget for TopBarChrome {
             self.focus_origin = FocusOrigin::Placed;
         }
         if focused && self.focused_control.is_none() {
-            self.focused_control = self
-                .control_targets()
-                .first()
-                .map(|target| (*target).into());
+            self.focused_control = self.control_targets().first().map(|target| target.clone());
         }
     }
 
@@ -5764,6 +5837,68 @@ mod tests {
         );
     }
 
+    /// A running application's icon stands on the bar as its own control:
+    /// it is in the focus order, a reader names it with the name the
+    /// application chose, and Enter does what a click does.
+    #[test]
+    fn an_applications_tray_icon_is_a_named_control_the_keyboard_reaches() {
+        let workspace = Workspace::new(WorkspaceId(1), "A");
+        let tree = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert!(
+            !bar.control_targets()
+                .iter()
+                .any(|target| target.starts_with(TopBarChrome::APP_TRAY_TARGET)),
+            "no running application, no tray control"
+        );
+
+        let key = "org.keepassxc.KeePassXC/StatusNotifierItem";
+        let rect = Rect::new(1100.0, 4.0, 1132.0, 36.0);
+        bar.app_tray.push(AppTraySlot {
+            key: key.to_string(),
+            id: "keepassxc".into(),
+            title: "KeePassXC".into(),
+            item_is_menu: false,
+            rect,
+        });
+        let target = TopBarChrome::tray_target(key);
+        assert!(
+            bar.control_targets().contains(&target),
+            "the icon is a bar control"
+        );
+        assert_eq!(bar.control_name(&target), "KeePassXC");
+        assert_eq!(bar.control_rect(&target), rect);
+
+        let node = bar.accessibility().expect("topbar semantics");
+        let tray = node
+            .children
+            .iter()
+            .find(|child| child.action_target.as_deref() == Some(target.as_str()))
+            .expect("a reader finds the icon among the bar's buttons");
+        assert_eq!(tray.name.as_deref(), Some("KeePassXC"));
+        assert!(tray.state.focusable);
+
+        // Keyboard: the bar's last stop is the icon, and Enter activates it.
+        bar.set_focus(true);
+        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::End));
+        assert_eq!(bar.focused_control.as_deref(), Some(target.as_str()));
+        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
+        assert_eq!(
+            chrome.borrow().intents.last(),
+            Some(&ChromeIntent::AppTray {
+                key: key.to_string(),
+                request: AppTrayRequest::Activate { x: 1116, y: 20 },
+            }),
+            "Enter does what a click on the icon does"
+        );
+    }
+
     #[test]
     fn keyboard_navigation_is_one_focus_stop_with_optional_controls() {
         let mut bar = sample_chrome();
@@ -5778,12 +5913,12 @@ mod tests {
             Some(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
         );
 
-        let second = bar.control_targets()[1];
+        let second = bar.control_targets()[1].clone();
         assert!(press_named_key(
             &mut bar,
             winit::keyboard::NamedKey::ArrowRight
         ));
-        assert_eq!(bar.focused_control.as_deref(), Some(second));
+        assert_eq!(bar.focused_control.as_deref(), Some(second.as_str()));
         assert!(press_named_key(
             &mut bar,
             winit::keyboard::NamedKey::ArrowLeft
@@ -5890,7 +6025,7 @@ mod tests {
         assert_eq!(bar.strip_name(), None);
         assert!(
             !bar.control_targets()
-                .contains(&TopBarChrome::CONTROL_STRIP_NAME)
+                .contains(&TopBarChrome::CONTROL_STRIP_NAME.to_string())
         );
         assert!(bar.ws_strip_rect.is_zero_area());
     }
@@ -5961,9 +6096,9 @@ mod tests {
             let child = node
                 .children
                 .iter()
-                .find(|child| child.action_target.as_deref() == Some(target))
+                .find(|child| child.action_target.as_deref() == Some(target.as_str()))
                 .unwrap_or_else(|| panic!("missing semantic child {target}"));
-            let expected_name = bar.control_name(target);
+            let expected_name = bar.control_name(&target);
             assert_eq!(child.name.as_deref(), Some(expected_name.as_str()));
             assert!(child.state.focusable);
             assert!(child.bounds.is_some(), "{target} needs a hit target");
@@ -5972,7 +6107,7 @@ mod tests {
                 bounds.width() > 0.0 && bounds.height() > 0.0,
                 "{target}: {bounds:?}"
             );
-            assert_eq!(child.semantic_key.as_deref(), Some(target));
+            assert_eq!(child.semantic_key.as_deref(), Some(target.as_str()));
         }
 
         let workspace = node
@@ -6024,7 +6159,7 @@ mod tests {
         assert!(
             !plain
                 .control_targets()
-                .contains(&TopBarChrome::CONTROL_TILO_MARK)
+                .contains(&TopBarChrome::CONTROL_TILO_MARK.to_string())
         );
         assert_eq!(plain.tilo_mark_rect(), Rect::ZERO);
 
@@ -6033,7 +6168,7 @@ mod tests {
             .with_tilo_mark();
         lay_out_and_draw(&mut bar, 1280.0);
         assert_eq!(
-            bar.control_targets().first().copied(),
+            bar.control_targets().first().map(String::as_str),
             Some(TopBarChrome::CONTROL_TILO_MARK)
         );
         let mark = bar.tilo_mark_rect();
@@ -6091,13 +6226,13 @@ mod tests {
 
         let targets = bar.control_targets();
         assert_eq!(
-            &targets[..2],
-            &[
+            targets[..2].iter().map(String::as_str).collect::<Vec<_>>(),
+            [
                 TopBarChrome::CONTROL_TILO_MARK,
                 TopBarChrome::CONTROL_WORKSPACE_SETTINGS
             ]
         );
-        assert!(targets.contains(&TopBarChrome::CONTROL_PROFILE));
+        assert!(targets.contains(&TopBarChrome::CONTROL_PROFILE.to_string()));
         let mark = bar.tilo_mark_rect();
         let menu = bar.workspace_menu_rect();
         let own = bar.own_avatar_rect();
@@ -7407,7 +7542,7 @@ mod narrow_tests {
         let visible: Vec<_> = bar
             .control_targets()
             .into_iter()
-            .map(|target| (target, bar.control_rect(target)))
+            .map(|target| (target.clone(), bar.control_rect(&target)))
             .filter(|(_, rect)| !rect.is_zero_area())
             .collect();
         assert!(
