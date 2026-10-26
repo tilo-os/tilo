@@ -46,7 +46,7 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
 
     // A host, a bot or an agent opens what the room kept: it is brought up
     // to the app's version as a window brings it up.
-    let held = Replica::open(
+    let mut held = Replica::open(
         &catalogue,
         app,
         ROOM,
@@ -58,6 +58,11 @@ fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
         },
     )
     .expect("an older record opens");
+    assert_eq!(held.read(stored_version), Some(current));
+    // The room still keeps the older document; the host brings the replica
+    // up to it before each run, and the replica stays at its version.
+    held.apply(&DocumentMutation::Snapshot(kept.save()))
+        .expect("the room's older document merges into the brought-up replica");
     assert_eq!(held.read(stored_version), Some(current));
 }
 
