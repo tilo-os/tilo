@@ -387,13 +387,13 @@ async fn link_answers_with_a_private_button_and_reports_only_its_check() {
     // Once linked, the bridge edits the reply to the outcome, once.
     let answer = DiscordOp::AnswerInteraction(AnswerInteractionOp {
         interaction: interaction.clone(),
-        content: "Linked to Ada Lovelace ✓".into(),
+        content: "Linked to Ada Lovelace.".into(),
     });
     let outcome = host.perform(&answer).await;
     assert!(matches!(outcome, Outcome::Done { .. }), "{outcome:?}");
     let edits = host.fake.interaction_edits();
     assert_eq!(edits[0]["interaction"], interaction.as_str());
-    assert_eq!(edits[0]["edit"]["content"], "Linked to Ada Lovelace ✓");
+    assert_eq!(edits[0]["edit"]["content"], "Linked to Ada Lovelace.");
     assert_eq!(
         edits[0]["edit"]["components"],
         json!([]),

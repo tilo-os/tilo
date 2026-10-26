@@ -1314,6 +1314,20 @@ impl PeopleOverlay {
         children
     }
 
+    /// Carry out what assistive technology asked of one of
+    /// [`Self::accessibility_children`] (its action target), as a press
+    /// on it would: what the host applies, if anything.
+    pub fn perform_semantic_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        target: &str,
+    ) -> Option<PeopleHit> {
+        if !self.targets.perform_semantic_action(action, target) {
+            return None;
+        }
+        self.take_activated()
+    }
+
     /// What the last frame showed of the rows.
     #[must_use]
     pub fn shown_rows(&self) -> &[RosterRow] {

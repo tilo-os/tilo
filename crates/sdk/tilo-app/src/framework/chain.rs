@@ -102,6 +102,17 @@ pub trait Chained: Resource {
         let _ = (action, base);
         Ok(())
     }
+
+    /// Where in the app's own record `action` happens, named as everyone
+    /// the record is shared with sees that place (a post's channel,
+    /// `#general`): history keeps it on the step
+    /// ([`tilo_actions::PLACE_FACET`]), so what someone is doing can say
+    /// where. `None` for an action of no such place, and for a place not
+    /// everyone sees (a direct conversation).
+    fn place(action: &Self::Action, base: &<Self::Base as Resource>::State) -> Option<String> {
+        let _ = (action, base);
+        None
+    }
 }
 
 /// What a window holds a chain with: the store of the app's records, who
@@ -406,7 +417,10 @@ impl<P: Chained> ChainState<P> {
         invoker: &ActionInvoker,
     ) -> Result<(u64, Vec<String>), ActionError> {
         let mut action = action.clone();
-        P::prepare(&mut action, &(self.base)()).map_err(ActionError::Refused)?;
+        let base = (self.base)();
+        P::prepare(&mut action, &base).map_err(ActionError::Refused)?;
+        let place = P::place(&action, &base);
+        drop(base);
         let index = P::part_for(&action, &self.parts()).map_err(ActionError::Refused)?;
         if let Some(permissions) = &self.room.permissions {
             // Decided where the chain publishes the action, as the door
@@ -444,7 +458,7 @@ impl<P: Chained> ChainState<P> {
         }
         self.start(index).map_err(ActionError::Refused)?;
         let encoded = tilo_resource::encode::<P>(&action)?;
-        let created = self.write(index, &action, encoded, invoker)?;
+        let created = self.write(index, &action, encoded, invoker, place)?;
         Ok((index, created))
     }
 
@@ -477,7 +491,7 @@ impl<P: Chained> ChainState<P> {
         }
         self.hold(edit.part).map_err(ActionError::Refused)?;
         let encoded = edit.encoded().map_err(ActionError::Refused)?;
-        self.write(edit.part, &edit.action::<P>(), encoded, invoker)?;
+        self.write(edit.part, &edit.action::<P>(), encoded, invoker, None)?;
         let now = self
             .room
             .store
@@ -489,19 +503,27 @@ impl<P: Chained> ChainState<P> {
     }
 
     /// Write `action` into part `index`, which is open here, attributed to
-    /// `invoker` and recorded in the part's history. The item resources it
-    /// created.
+    /// `invoker` and recorded in the part's history, with where in the
+    /// app's record it happened (`place`, [`Chained::place`]). The item
+    /// resources it created.
     fn write(
         &self,
         index: u64,
         action: &dyn tilo_actions::Action,
         encoded: tilo_actions::EncodedAction,
         invoker: &ActionInvoker,
+        place: Option<String>,
     ) -> Result<Vec<String>, ActionError> {
-        let context = ActionContext::for_resource(&self.id, P::KIND, P::LABEL)
+        let mut context = ActionContext::for_resource(&self.id, P::KIND, P::LABEL)
             .with_app(self.room.app_id, self.room.app_title)
             .with_invoker(invoker.clone())
             .with_change(action.change_kind());
+        if let Some(place) = place.filter(|place| !place.trim().is_empty()) {
+            context = context.with_facet(tilo_actions::ActionFacet::new(
+                tilo_actions::PLACE_FACET,
+                place,
+            ));
+        }
         let id = P::chain().part(index);
         let created = self
             .room

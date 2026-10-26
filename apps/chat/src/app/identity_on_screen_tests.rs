@@ -255,3 +255,28 @@ fn a_call_names_each_person_once_by_their_devices_name() {
         .count();
     assert_eq!(offered, 1, "the @ picker offers them once");
 }
+
+/// Someone who renamed themself is listed among Contacts by the name they
+/// go by here now, the one presence carries for their person, not the one
+/// the room's list was read with; once they are gone, by the room's.
+#[test]
+fn a_contact_goes_by_the_name_they_go_by_here_now() {
+    use ui::permissions::UserId;
+    let mut app = ChatApp::new_ephemeral();
+    let listed = ui::person_chat::Contact {
+        public_key: "ada-root".into(),
+        display_name: "Swift Lynx".into(),
+    };
+    let mut presence = PresenceCtx::default();
+    presence.set_display_name(UserId("ada-device".into()), "Ada");
+    presence.set_persons([(UserId("ada-device".into()), UserId("ada-root".into()))]);
+    app.adopt_room(&presence);
+    assert_eq!(app.contact_name(&listed), "Ada");
+
+    app.adopt_room(&PresenceCtx::default());
+    assert_eq!(
+        app.contact_name(&listed),
+        "Swift Lynx",
+        "gone: the room's name"
+    );
+}

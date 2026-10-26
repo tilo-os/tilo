@@ -163,6 +163,9 @@ pub(crate) struct Room {
     /// Content the open records' windows lacked and the page asked the
     /// room for, by the wire `(app, record)` that references it.
     content: ContentWants<(String, String)>,
+    /// Records a peer's change reached since the desktop last looked for
+    /// mentions in them ([`take_touched`]), as wire `(app, record)`.
+    touched: BTreeSet<(String, String)>,
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -224,6 +227,7 @@ pub(crate) fn open(
         members: None,
         in_flight: HashMap::new(),
         content: ContentWants::default(),
+        touched: BTreeSet::new(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
@@ -282,6 +286,45 @@ pub(crate) fn records(id: u32) -> Vec<(String, String)> {
     let mut records = room.stored.clone();
     records.extend(room.open_records());
     records.into_iter().collect()
+}
+
+/// The records a peer's change reached since this was last taken, as wire
+/// `(app, record)`, and whether the room had replayed what it held by then:
+/// before that, what arrives is what the room already held.
+pub(crate) fn take_touched(id: u32) -> (bool, Vec<(String, String)>) {
+    let Some(room) = room(id) else {
+        return (false, Vec::new());
+    };
+    let mut room = room.borrow_mut();
+    let touched = std::mem::take(&mut room.touched);
+    (room.ready, touched.into_iter().collect())
+}
+
+/// Wire record `record` of `app` as peer `id` holds it now: the open
+/// record a mount has, else the document the page keeps for it.
+pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
+    let room = room(id)?;
+    let room = room.borrow();
+    for mounted in room.mounts.values() {
+        for store in mounted.attachment.stores.borrow().iter() {
+            if store.package_and_home().0 != app {
+                continue;
+            }
+            let Some(checkout) = store
+                .open_records()
+                .into_iter()
+                .find(|checkout| wire_record(&checkout.id) == record)
+            else {
+                continue;
+            };
+            if let Some(doc) = store.read(&checkout.id, AutoCommit::clone) {
+                return Some(doc);
+            }
+        }
+    }
+    let key = storage_key(app, &room.uuid, record).ok()?;
+    let stored = room.store.read(&key).ok().flatten()?;
+    AutoCommit::load(&stored.bytes).ok()
 }
 
 /// The name of the workspace in front on peer `id`'s room desktop, once the
@@ -1076,6 +1119,7 @@ impl Room {
         let app = route.app_id.clone();
         let record = route.record.clone();
         let key = (app.clone(), record.clone());
+        self.touched.insert(key.clone());
         // What waited for the changes it builds on goes with what arrived:
         // after it, so a snapshot that may hold those changes comes first.
         let mutations = snapshots_first(

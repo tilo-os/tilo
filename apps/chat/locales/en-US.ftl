@@ -288,7 +288,6 @@ chat-sheet-category = Category
 chat-sheet-no-category = None
 chat-sheet-topic = Topic
 chat-sheet-topic-placeholder = What this channel is for (optional)
-chat-mention-alert = { $name } mentioned you in #{ $channel }
 
 # What kind of thing a message row is, for assistive technology and the
 # feedback picker ("Message in Chat").

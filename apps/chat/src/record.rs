@@ -1672,6 +1672,8 @@ impl Chat {
 }
 
 #[cfg(test)]
+mod mention_tests;
+#[cfg(test)]
 mod migration_tests;
 #[cfg(test)]
 mod terminal_tests;

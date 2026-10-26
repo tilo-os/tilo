@@ -1,11 +1,12 @@
 //! Who is here, in the bar: the others' faces (a "+N" badge when crowded),
-//! a quiet count of spectators, and the invite button.
+//! the people button, a quiet count of spectators, and the invite button.
 //!
 //! One who's-here bar. Each face is the person as everyone looking sees
-//! them (one initials rule, one colour source) and opens who is here at
-//! them; the badge and the spectators' count open the whole list. The
-//! invite button stays beside the faces however many people are present,
-//! and invites in one step: the host's own invite flow, not the list.
+//! them (one initials rule, one colour source) and opens their card. The
+//! people button beside the faces opens everyone here (the panel, which
+//! can be kept on screen); so do the badge and the spectators' count. The
+//! invite button stays beside them however many people are present, and
+//! invites in one step: the host's own invite flow, not the list.
 use super::{
     Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, RoundedRect, SMALL_GLYPH_PX, Scene, Stroke,
     TextRenderer, TextRole, TextWeight, Theme, TopBarChrome, at, paint_bar_selector, t_args,
@@ -58,8 +59,62 @@ impl TopBarChrome {
         if let Some(id) = self.face_at(point) {
             return Some(ChromeIntent::ShowPerson(id));
         }
-        (self.avatar_stack_rect.contains(point) || self.sharing_indicator_rect.contains(point))
-            .then_some(ChromeIntent::ToggleCollaborators)
+        (self.people_button_rect.contains(point)
+            || self.avatar_stack_rect.contains(point)
+            || self.sharing_indicator_rect.contains(point))
+        .then_some(ChromeIntent::ToggleCollaborators)
+    }
+
+    /// Where the people button was last drawn; zero when it is not shown.
+    #[must_use]
+    pub fn people_button_rect(&self) -> Rect {
+        self.people_button_rect
+    }
+
+    /// The people button, ending at `right_x`: the people glyph in a round
+    /// seat, plain at rest and lifting under the pointer like the bar's
+    /// other controls. It opens everyone here; the faces beside it each
+    /// open one person's card. Returns where the controls before it end.
+    fn draw_people_button(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        center_y: f64,
+        right_x: f64,
+    ) -> f64 {
+        let colors = &theme.tokens.colors;
+        let seat = BAR_CONTROL_PX;
+        let pill = Rect::new(
+            right_x - seat,
+            center_y - seat / 2.0,
+            right_x,
+            center_y + seat / 2.0,
+        );
+        let hovered = self.hovered_control() == Some(Self::CONTROL_COLLABORATORS)
+            && self.last_cursor.is_some_and(|point| pill.contains(point));
+        paint_bar_selector(
+            scene,
+            transform,
+            &RoundedRect::from_rect(pill, seat / 2.0),
+            ui::chrome::SelectionState::new(false, hovered, false),
+            theme,
+        );
+        let glyph = SMALL_GLYPH_PX;
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            Rect::from_center_size(pill.center(), (glyph, glyph)),
+            ui::icons::Icon::Users,
+            if hovered {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            },
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        self.people_button_rect = pill;
+        pill.x0 - f64::from(theme.tokens.spacing.s1)
     }
 
     /// The invite button, ending at `right_x`: a person-plus glyph in an
@@ -233,8 +288,8 @@ impl TopBarChrome {
     }
 
     /// The people cluster, right to left from `right_x`: the invite
-    /// button, the spectators' count, then the faces. Returns its left
-    /// edge, where the controls before it end.
+    /// button, the spectators' count, the people button, then the faces.
+    /// Returns its left edge, where the controls before it end.
     pub(super) fn draw_people_cluster(
         &mut self,
         scene: &mut Scene,
@@ -252,23 +307,34 @@ impl TopBarChrome {
         } else {
             watching.x0 - gap
         };
+        // Anyone here, or watching, can be shown all together: the button
+        // that does it stands beside the faces whatever else is there.
+        let anyone = !self.collaborator_initials.is_empty()
+            || self.collaborator_overflow > 0
+            || !watching.is_zero_area();
+        let right_x = if anyone {
+            self.draw_people_button(scene, transform, theme, center_y, right_x)
+        } else {
+            self.people_button_rect = Rect::ZERO;
+            right_x
+        };
         let slot_count =
             self.draw_avatar_chips(scene, transform, theme, text_renderer, center_y, right_x);
         self.set_avatar_stack_bounds((center_y, right_x), slot_count);
-        // Spectators and faces are one People control: the count alone
-        // still opens who is here.
-        if !watching.is_zero_area() {
-            self.avatar_stack_rect = if slot_count > 0 {
-                self.avatar_stack_rect.union(watching)
-            } else {
-                watching
-            };
+        // The spectators' count is part of the people button: it opens who
+        // is here too.
+        if !watching.is_zero_area() && !self.people_button_rect.is_zero_area() {
+            self.people_button_rect = self.people_button_rect.union(watching);
         }
-        [self.avatar_stack_rect, self.invite_rect]
-            .into_iter()
-            .filter(|rect| !rect.is_zero_area())
-            .map(|rect| rect.x0)
-            .fold(right_x, f64::min)
+        [
+            self.avatar_stack_rect,
+            self.people_button_rect,
+            self.invite_rect,
+        ]
+        .into_iter()
+        .filter(|rect| !rect.is_zero_area())
+        .map(|rect| rect.x0)
+        .fold(right_x, f64::min)
     }
 }
 
@@ -351,10 +417,53 @@ mod tests {
         super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
         assert!(!bar.invite_rect().is_zero_area());
         assert!(
-            !bar.avatar_stack_rect.is_zero_area(),
+            !bar.people_button_rect().is_zero_area(),
             "the count opens who is here"
         );
-        assert!(bar.avatar_stack_rect.x1 <= bar.invite_rect().x0);
+        assert!(bar.people_button_rect().x1 <= bar.invite_rect().x0);
+    }
+
+    /// With few people here, every face opens a card: the people button
+    /// beside them is how the whole panel (and its pin) is reached by
+    /// pointer, and the bar names it so to a reader.
+    #[test]
+    fn the_people_button_opens_everyone_beside_faces_that_open_cards() {
+        let tree = room(&[("ada", "Ada Lovelace")]);
+        let (mut bar, chrome) = bar_over(&tree, true);
+        let button = bar.people_button_rect();
+        assert!(!button.is_zero_area(), "shown beside one face");
+        let face = bar.face_rect("ada").expect("Ada's face");
+        assert!(face.x1 <= button.x0, "faces, then the people button");
+        assert!(
+            button.x1 <= bar.invite_rect().x0,
+            "then the seat the next person takes"
+        );
+        assert!(press(&mut bar, face.center()));
+        assert_eq!(
+            chrome.borrow().intents.last(),
+            Some(&ChromeIntent::ShowPerson("ada".into()))
+        );
+        assert!(press(&mut bar, button.center()));
+        assert_eq!(
+            chrome.borrow().intents.last(),
+            Some(&ChromeIntent::ToggleCollaborators)
+        );
+        assert_eq!(bar.collaborators_rect(), button, "the panel opens from it");
+        let node = ui::widget::Widget::accessibility(&bar).expect("bar semantics");
+        assert!(
+            node.children.iter().any(|child| {
+                child.bounds.is_some_and(|b| (b.x0 - button.x0).abs() < 0.5)
+                    && child.name.as_deref()
+                        == Some(super::super::t("topbar-show-collaborators").as_str())
+            }),
+            "a reader finds it by its name"
+        );
+
+        let (bar, _) = bar_over(&room(&[]), true);
+        assert!(
+            bar.people_button_rect().is_zero_area(),
+            "nobody else here: nothing to show"
+        );
     }
 
     /// A press on someone's face opens who is here at them; the badge

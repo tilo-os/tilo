@@ -416,13 +416,11 @@ pub(crate) fn own_recent_actions(
             let (action, resource) = match &entry.context {
                 Some(context) => (
                     ui::history_source::sentence::step_title(context),
-                    context.resource.as_ref().and_then(|r| {
-                        if in_tree {
-                            shared_part(r)
-                        } else {
-                            Some(r.label.clone())
-                        }
-                    }),
+                    if in_tree {
+                        shared_part(context)
+                    } else {
+                        context.resource.as_ref().map(|r| r.label.clone())
+                    },
                 ),
                 None => (None, None),
             };
@@ -459,10 +457,21 @@ pub(crate) fn own_recent_actions(
 }
 
 /// The part of a window's tree a step went to, named where everyone the
-/// window is shared with sees it too: a channel, as `#general`. A private
-/// part (a direct conversation) is never named; the window's title stands
-/// in for it.
-fn shared_part(resource: &tilo_actions::ActionResource) -> Option<String> {
+/// window is shared with sees it too: the place its app recorded on the
+/// step ([`tilo_actions::PLACE_FACET`], a post's channel), or a channel
+/// it was done to, as `#general`. A private part (a direct conversation)
+/// is never named; the window's title stands in for it.
+fn shared_part(context: &tilo_actions::ActionContext) -> Option<String> {
+    if let Some(place) = context
+        .facets
+        .iter()
+        .find(|facet| facet.key == tilo_actions::PLACE_FACET)
+        .map(|facet| facet.value.trim())
+        .filter(|place| !place.is_empty())
+    {
+        return Some(place.to_owned());
+    }
+    let resource = context.resource.as_ref()?;
     let label = resource.label.trim();
     if label.is_empty() || !resource.kind.ends_with(".channel") {
         return None;
@@ -589,7 +598,7 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
 
 #[cfg(test)]
 mod tests {
-    use super::is_doing;
+    use super::{is_doing, shared_part};
     use tilo_actions::{ActionContext, ChangeKind};
     use ui::widget::{ArtifactKind, EntryKind, HistoryAuthor, HistoryEntry, HistoryEntryId};
 
@@ -621,5 +630,20 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    /// A step in a window's tree is named by the place its app recorded
+    /// (a post's channel), else a channel it was done to; anything else
+    /// (a direct conversation) is not named at all.
+    #[test]
+    fn a_step_is_named_by_the_shared_place_it_went_to() {
+        let post = ActionContext::for_resource("chain", "chat.messages", "Messages").with_facet(
+            tilo_actions::ActionFacet::new(tilo_actions::PLACE_FACET, "#general"),
+        );
+        assert_eq!(shared_part(&post).as_deref(), Some("#general"));
+        let channel = ActionContext::for_resource("c1", "chat.channel", "design");
+        assert_eq!(shared_part(&channel).as_deref(), Some("#design"));
+        let direct = ActionContext::for_resource("chain", "chat.messages", "Messages");
+        assert_eq!(shared_part(&direct), None);
     }
 }
