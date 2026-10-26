@@ -203,13 +203,29 @@ case ${1:-} in
     # runs; the OS image's own clock is its base's and RPM snapshot's, so the commit's time
     # orders dev bases, as it did in Build / OS dev. The dev components come compiled
     # (os-compile-dev-<arch>): nothing compiles here. While stable has not published this tree's
-    # env-runtime the OS image ships none, and the dev image ships the one env-runtime-preview
-    # sealed in this run with a throwaway key instead, trusted by the dev image alone.
+    # env-runtime the OS image ships none; the dev image then ships one built here from the run's
+    # snapshot and sealed with a throwaway key, trusted by the dev image alone.
+    env_runtime=$scratch/dev-env-runtime
+    rm -rf "$env_runtime"
+    mkdir -p "$env_runtime"
+    status=0
+    bash os/dev/resolve-env-runtime.sh --exists || status=$?
+    case $status in
+      0) ;;
+      1)
+        # The packer the OS image ships, built for this architecture with the rest of it.
+        mkdir -p "$scratch/env-runtime-packer"
+        packer_from=$(podman create localhost/tilo:ci)
+        podman cp "$packer_from:/usr/libexec/tilo/tilo-app-package" "$scratch/env-runtime-packer/tilo-app-package"
+        podman rm "$packer_from" >/dev/null
+        bash tools/ci/publish/env-runtime.sh dev "$arch" "$RPMS_REF" "$scratch/env-runtime-packer" "$env_runtime" ;;
+      *) die 'could not ask the registry for the published env-runtime' ;;
+    esac
     phase build
     TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
       TILO_DEV_BASE_CREATED=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ) \
       TILO_COMPILED_DEV=$compiled \
-      TILO_DEV_ENV_RUNTIME=/target/publish/env-runtime/preview \
+      TILO_DEV_ENV_RUNTIME=$env_runtime \
       TILO_DISTROBOX= TILO_OUTPUT=$scratch/dev-output TMPDIR=/var/tmp \
       bash os/dev/build-dev-image.sh
     # Kept as the layers it added over the OS image's, composed with them: the OS image's
