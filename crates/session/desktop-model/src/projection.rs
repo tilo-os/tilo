@@ -11,6 +11,11 @@
 //! This is the one room schema every host reads and writes. Versioning is
 //! additive and per key: a key a build does not know is left alone, and a
 //! key's shape never changes under the same name.
+//!
+//! Every read here takes optional heads: a host that shows a document's
+//! history (Activity, Replay, a page catching up) reads the layout as it
+//! stood at a change, not as it stands now, through the same functions a
+//! live read uses.
 
 use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
@@ -57,6 +62,17 @@ pub const ROOM_GRANTS_KEY: &str = "grants";
 pub const ROOM_SANDBOX_KEY: &str = "sandbox";
 /// Key a room document stores its schedule claims under.
 pub const ROOM_SCHEDULE_CLAIMS_KEY: &str = "schedule_claims_v1";
+/// Key of the map from a request id to a request that another device's
+/// window be rearranged ([`LayoutRequest`]). It is room state, retained by
+/// the host while the window's owner is offline.
+pub const ROOM_LAYOUT_REQUESTS_KEY: &str = "layout_requests_v1";
+/// Key of the map recording which requests each layout owner applied, in
+/// that owner's own namespace: `"<salt>/<request id>" → 1`.
+pub const ROOM_LAYOUT_APPLIED_KEY: &str = "layout_applied_v1";
+/// Key on a strip or tab entry naming the person id of the device that
+/// published it. Only the entry's owner writes its own entries, so it
+/// cannot be claimed by someone else.
+pub const LAYOUT_AUTHOR_KEY: &str = "author";
 
 /// One tab as a room's replication document carries it. Deliberately not
 /// a [`Tab`]: no field here for anything a person's own session decided.
@@ -185,47 +201,18 @@ fn sweep_stale(
     }
 }
 
-/// Every `(id, copies)` entry across `containers`, each id once, its copies
-/// in candidate order (the first supplies its fields).
-fn joined_entries(
-    doc: &AutoCommit,
-    containers: &[automerge::ObjId],
-) -> Vec<(u64, Vec<automerge::ObjId>)> {
-    let mut out: Vec<(u64, Vec<automerge::ObjId>)> = Vec::new();
-    for container in containers {
-        for key in doc.keys(container) {
-            let Some(id) = contents_key_id(&key) else {
-                continue;
-            };
-            if out.iter().any(|(seen, _)| *seen == id) {
-                continue;
-            }
-            let copies = child_candidates(doc, containers, key.as_str());
-            if !copies.is_empty() {
-                out.push((id, copies));
-            }
-        }
-    }
-    out
-}
-
 /// Every tab entry in a room document's `contents`, joined across concurrent
 /// containers at every level: `(strip, group, tab, tab entry)`.
 pub(crate) fn tab_entries(doc: &AutoCommit) -> Vec<(u64, u64, u64, automerge::ObjId)> {
-    let mut out = Vec::new();
-    let contents = map_candidates(doc, &automerge::ROOT, ROOM_CONTENTS_KEY);
-    for (strip, strip_copies) in joined_entries(doc, &contents) {
-        let groups = child_candidates(doc, &strip_copies, "groups");
-        for (group, group_copies) in joined_entries(doc, &groups) {
-            let tabs = child_candidates(doc, &group_copies, "tabs");
-            for (tab, tab_copies) in joined_entries(doc, &tabs) {
-                if let Some(entry) = tab_copies.into_iter().next() {
-                    out.push((strip, group, tab, entry));
-                }
-            }
-        }
-    }
-    out
+    Reads { doc, heads: None }.tab_entries()
+}
+
+/// [`tab_entries`] as the document stood at `heads` (`None`: now).
+pub(crate) fn tab_entries_at(
+    doc: &AutoCommit,
+    heads: Option<&[automerge::ChangeHash]>,
+) -> Vec<(u64, u64, u64, automerge::ObjId)> {
+    Reads { doc, heads }.tab_entries()
 }
 
 /// Project a workspace's shortcuts as one map value per shortcut id, so two
@@ -648,6 +635,22 @@ pub enum EmptyStrips {
     Retain,
 }
 
+/// Name `author` on `entry`, or leave it naming nobody: only the entry's
+/// owner writes it, so a layout cannot claim someone else's work.
+fn put_author(doc: &mut AutoCommit, entry: &automerge::ObjId, author: Option<&str>) {
+    use automerge::transaction::Transactable as _;
+    match author {
+        Some(author) => {
+            let _ = doc.put_str_if_changed(entry, LAYOUT_AUTHOR_KEY, author);
+        }
+        None => {
+            if doc.get(entry, LAYOUT_AUTHOR_KEY).ok().flatten().is_some() {
+                let _ = doc.delete(entry, LAYOUT_AUTHOR_KEY);
+            }
+        }
+    }
+}
+
 /// Project the strips, window groups and tabs this machine owns into
 /// the room document's `contents` map. The `active_*` pointers are
 /// excluded — projecting them would drag a colleague off the page
@@ -670,6 +673,24 @@ pub fn project_owned_contents(
     local_salt: u16,
     share_floor: Option<u64>,
     empty: EmptyStrips,
+) -> Result<(), automerge::AutomergeError> {
+    project_owned_contents_as(doc, strips, local_salt, share_floor, empty, None)
+}
+
+/// [`project_owned_contents`], naming `author` (a person id) on every strip
+/// and tab entry it publishes: the attribution a shared layout carries, in
+/// the entry its owner alone writes. `None` names nobody.
+///
+/// # Errors
+///
+/// The document's error when the root `contents` map cannot be created.
+pub fn project_owned_contents_as(
+    doc: &mut AutoCommit,
+    strips: &[Strip],
+    local_salt: u16,
+    share_floor: Option<u64>,
+    empty: EmptyStrips,
+    author: Option<&str>,
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::ROOT;
     use std::collections::HashSet;
@@ -722,12 +743,13 @@ pub fn project_owned_contents(
             }
             let _ = doc.put_str_if_changed(&strip_entry, "name", &strip.name);
             let _ = doc.put_uint_if_changed(&strip_entry, "order", si as u64);
+            put_author(doc, &strip_entry, author);
         }
 
         // A strip whose groups cannot be written is skipped; the sweep
         // below still runs.
         let strip_all = or_created(strip_all, &strip_entry);
-        let _ = project_owned_groups_in(doc, &strip_all, strip, &mine);
+        let _ = project_owned_groups_in(doc, &strip_all, strip, &mine, author);
     }
     sweep_stale(doc, &contents_all, &live_strips, &mine);
     Ok(())
@@ -780,7 +802,7 @@ pub fn project_owned_groups(
     strip: &Strip,
     mine: &impl Fn(u64) -> bool,
 ) -> Result<(), automerge::AutomergeError> {
-    project_owned_groups_in(doc, std::slice::from_ref(strip_entry), strip, mine)
+    project_owned_groups_in(doc, std::slice::from_ref(strip_entry), strip, mine, None)
 }
 
 /// [`project_owned_groups`] over every candidate entry of one strip (the
@@ -790,6 +812,7 @@ fn project_owned_groups_in(
     strip_entries: &[automerge::ObjId],
     strip: &Strip,
     mine: &impl Fn(u64) -> bool,
+    author: Option<&str>,
 ) -> Result<(), automerge::AutomergeError> {
     use std::collections::HashSet;
 
@@ -825,7 +848,7 @@ fn project_owned_groups_in(
         }
 
         let group_copies = or_created(group_copies, &group_entry);
-        let _ = project_owned_tabs_in(doc, &group_copies, group, mine);
+        let _ = project_owned_tabs_in(doc, &group_copies, group, mine, author);
     }
     sweep_stale(doc, &groups_all, &live_groups, mine);
     Ok(())
@@ -846,7 +869,7 @@ pub fn project_owned_tabs(
     group: &WindowGroup,
     mine: &impl Fn(u64) -> bool,
 ) -> Result<(), automerge::AutomergeError> {
-    project_owned_tabs_in(doc, std::slice::from_ref(group_entry), group, mine)
+    project_owned_tabs_in(doc, std::slice::from_ref(group_entry), group, mine, None)
 }
 
 /// [`project_owned_tabs`] over every candidate entry of one group (the
@@ -856,6 +879,7 @@ fn project_owned_tabs_in(
     group_entries: &[automerge::ObjId],
     group: &WindowGroup,
     mine: &impl Fn(u64) -> bool,
+    author: Option<&str>,
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::{ScalarValue, transaction::Transactable};
     use std::collections::HashSet;
@@ -879,6 +903,7 @@ fn project_owned_tabs_in(
         };
         let _ = doc.put_uint_if_changed(&tab_entry, "order", ti as u64);
         let _ = doc.put_str_if_changed(&tab_entry, "title", &tab.title);
+        put_author(doc, &tab_entry, author);
         match &tab.app_title {
             Some(app_title) => {
                 let _ = doc.put_str_if_changed(&tab_entry, "app_title", app_title);
@@ -904,17 +929,112 @@ fn project_owned_tabs_in(
     Ok(())
 }
 
-/// Read a room document's `contents` back into plain values. Every
-/// level sorts by `(order, id)`; an entry with no `order` sorts
-/// last so it can't displace one whose owner did state a position.
-/// Concurrently created containers are joined at every level; for an
-/// entry present in several, the winning copy supplies its fields.
-pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
-    use automerge::{ROOT, ScalarValue, Value};
+/// Reads of a room document as it stands (`heads` is `None`) or as it stood
+/// at some heads. Every container a key names is joined, at every level, so
+/// a historical read sees the concurrent copies a live one does.
+#[derive(Clone, Copy)]
+struct Reads<'a> {
+    doc: &'a AutoCommit,
+    heads: Option<&'a [automerge::ChangeHash]>,
+}
 
-    let uint = |obj: &automerge::ObjId, key: &str| -> Option<u64> {
-        match doc.get(obj, key).ok().flatten() {
-            Some((Value::Scalar(v), _)) => match v.as_ref() {
+impl Reads<'_> {
+    /// Every map stored under `obj[key]`, Automerge's order: the winner
+    /// first, then the concurrent losers, each once.
+    fn maps(&self, obj: &automerge::ObjId, key: &str) -> Vec<automerge::ObjId> {
+        use automerge::{ObjType, Value};
+        let found = match self.heads {
+            Some(heads) => self.doc.get_all_at(obj, key, heads),
+            None => self.doc.get_all(obj, key),
+        };
+        let mut out: Vec<automerge::ObjId> = Vec::new();
+        for (value, id) in found.unwrap_or_default() {
+            if matches!(value, Value::Object(ObjType::Map)) && !out.contains(&id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    /// [`Self::maps`] of `key` under each of `parents`, in order.
+    fn children(&self, parents: &[automerge::ObjId], key: &str) -> Vec<automerge::ObjId> {
+        let mut out: Vec<automerge::ObjId> = Vec::new();
+        for parent in parents {
+            for id in self.maps(parent, key) {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
+        out
+    }
+
+    fn keys(&self, obj: &automerge::ObjId) -> Vec<String> {
+        match self.heads {
+            Some(heads) => self.doc.keys_at(obj, heads).collect(),
+            None => self.doc.keys(obj).collect(),
+        }
+    }
+
+    /// Every `(id, copies)` entry across `containers`, each id once, its
+    /// copies in candidate order.
+    fn entries(&self, containers: &[automerge::ObjId]) -> Vec<(u64, Vec<automerge::ObjId>)> {
+        let mut out: Vec<(u64, Vec<automerge::ObjId>)> = Vec::new();
+        for container in containers {
+            for key in self.keys(container) {
+                let Some(id) = contents_key_id(&key) else {
+                    continue;
+                };
+                if out.iter().any(|(seen, _)| *seen == id) {
+                    continue;
+                }
+                let copies = self.children(std::slice::from_ref(container), key.as_str());
+                if !copies.is_empty() {
+                    out.push((id, copies));
+                }
+            }
+        }
+        out
+    }
+
+    fn text(&self, obj: &automerge::ObjId, key: &str) -> Option<String> {
+        use automerge::{ScalarValue, Value};
+        let value = match self.heads {
+            Some(heads) => self.doc.get_at(obj, key, heads),
+            None => self.doc.get(obj, key),
+        };
+        match value.ok().flatten()? {
+            (Value::Scalar(scalar), _) => match scalar.as_ref() {
+                ScalarValue::Str(text) => Some(text.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn bytes(&self, obj: &automerge::ObjId, key: &str) -> Option<Vec<u8>> {
+        use automerge::{ScalarValue, Value};
+        let value = match self.heads {
+            Some(heads) => self.doc.get_at(obj, key, heads),
+            None => self.doc.get(obj, key),
+        };
+        match value.ok().flatten()? {
+            (Value::Scalar(scalar), _) => match scalar.as_ref() {
+                ScalarValue::Bytes(bytes) => Some(bytes.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn uint(&self, obj: &automerge::ObjId, key: &str) -> Option<u64> {
+        use automerge::{ScalarValue, Value};
+        let value = match self.heads {
+            Some(heads) => self.doc.get_at(obj, key, heads),
+            None => self.doc.get(obj, key),
+        };
+        match value.ok().flatten()? {
+            (Value::Scalar(scalar), _) => match scalar.as_ref() {
                 ScalarValue::Uint(n) => Some(*n),
                 // A negative `Int` has no sane `order`/id reading, so
                 // treat it as absent rather than wrapping it into a
@@ -924,37 +1044,57 @@ pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
             },
             _ => None,
         }
-    };
-    let text = |obj: &automerge::ObjId, key: &str| -> Option<String> { doc.str_at(obj, key) };
+    }
 
-    let contents_all = map_candidates(doc, &ROOT, ROOM_CONTENTS_KEY);
+    /// Every strip, group and tab entry of `contents`: `(strip, group, tab,
+    /// tab entry)`, joined at every level.
+    fn tab_entries(&self) -> Vec<(u64, u64, u64, automerge::ObjId)> {
+        let mut out = Vec::new();
+        let contents = self.maps(&automerge::ROOT, ROOM_CONTENTS_KEY);
+        for (strip, strip_copies) in self.entries(&contents) {
+            let groups = self.children(&strip_copies, "groups");
+            for (group, group_copies) in self.entries(&groups) {
+                let tabs = self.children(&group_copies, "tabs");
+                for (tab, tab_copies) in self.entries(&tabs) {
+                    if let Some(entry) = tab_copies.into_iter().next() {
+                        out.push((strip, group, tab, entry));
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The strips, window groups and tabs `reads` carries, every level sorted by
+/// `(order, id)`; an entry with no `order` sorts last so it can't displace
+/// one whose owner did state a position.
+fn contents_in(reads: &Reads<'_>) -> Vec<ReplicatedStrip> {
+    let text = |entry: &automerge::ObjId, key: &str| reads.text(entry, key);
     let mut strips: Vec<ReplicatedStrip> = Vec::new();
-    for (sid, strip_copies) in joined_entries(doc, &contents_all) {
+    let contents_all = reads.maps(&automerge::ROOT, ROOM_CONTENTS_KEY);
+    for (sid, strip_copies) in reads.entries(&contents_all) {
         let Some(strip_entry) = strip_copies.first() else {
             continue;
         };
         let mut groups: Vec<ReplicatedGroup> = Vec::new();
-        let groups_all = child_candidates(doc, &strip_copies, "groups");
-        for (gid, group_copies) in joined_entries(doc, &groups_all) {
+        let groups_all = reads.children(&strip_copies, "groups");
+        for (gid, group_copies) in reads.entries(&groups_all) {
             let Some(group_entry) = group_copies.first() else {
                 continue;
             };
             let mut tabs: Vec<ReplicatedTab> = Vec::new();
-            let tabs_all = child_candidates(doc, &group_copies, "tabs");
-            for (tid, tab_copies) in joined_entries(doc, &tabs_all) {
+            let tabs_all = reads.children(&group_copies, "tabs");
+            for (tid, tab_copies) in reads.entries(&tabs_all) {
                 let Some(tab_entry) = tab_copies.first() else {
                     continue;
                 };
-                let tile = match doc.get(tab_entry, "tile_json").ok().flatten() {
-                    Some((Value::Scalar(v), _)) => match v.as_ref() {
-                        ScalarValue::Bytes(b) => serde_json::from_slice(b).ok(),
-                        _ => None,
-                    },
-                    _ => None,
-                };
+                let tile = reads
+                    .bytes(tab_entry, "tile_json")
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok());
                 tabs.push(ReplicatedTab {
                     id: tid,
-                    order: uint(tab_entry, "order").unwrap_or(u64::MAX),
+                    order: reads.uint(tab_entry, "order").unwrap_or(u64::MAX),
                     title: text(tab_entry, "title").unwrap_or_default(),
                     app_title: text(tab_entry, "app_title"),
                     tile,
@@ -963,20 +1103,67 @@ pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
             tabs.compact_sort_by_key(|t| (t.order, t.id));
             groups.push(ReplicatedGroup {
                 id: gid,
-                order: uint(group_entry, "order").unwrap_or(u64::MAX),
+                order: reads.uint(group_entry, "order").unwrap_or(u64::MAX),
                 tabs,
             });
         }
         groups.compact_sort_by_key(|g| (g.order, g.id));
         strips.push(ReplicatedStrip {
             id: sid,
-            order: uint(strip_entry, "order").unwrap_or(u64::MAX),
+            order: reads.uint(strip_entry, "order").unwrap_or(u64::MAX),
             name: text(strip_entry, "name"),
             groups,
         });
     }
     strips.compact_sort_by_key(|s| (s.order, s.id));
     strips
+}
+
+/// Read a room document's `contents` back into plain values. Every
+/// level sorts by `(order, id)`; an entry with no `order` sorts
+/// last so it can't displace one whose owner did state a position.
+/// Concurrently created containers are joined at every level; for an
+/// entry present in several, the winning copy supplies its fields.
+pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
+    contents_at(doc, None)
+}
+
+/// [`contents_of`] as the document stood at `heads` (`None`: now).
+///
+/// # Panics
+///
+/// Never: the reads it makes are the infallible ones [`contents_of`] uses.
+pub fn contents_at(
+    doc: &AutoCommit,
+    heads: Option<&[automerge::ChangeHash]>,
+) -> Vec<ReplicatedStrip> {
+    contents_in(&Reads { doc, heads })
+}
+
+/// The person each strip and tab entry names as its publisher, by strip or
+/// tab id: the attribution a room's layout carries without asking its
+/// governance for each device's person. Entries published before this key
+/// existed name nobody.
+pub fn layout_authors_at(
+    doc: &AutoCommit,
+    heads: Option<&[automerge::ChangeHash]>,
+) -> std::collections::BTreeMap<u64, String> {
+    let reads = Reads { doc, heads };
+    let mut authors = std::collections::BTreeMap::new();
+    for (id, strip_copies) in reads.entries(&reads.maps(&automerge::ROOT, ROOM_CONTENTS_KEY)) {
+        if let Some(author) = strip_copies
+            .first()
+            .and_then(|e| reads.text(e, LAYOUT_AUTHOR_KEY))
+        {
+            authors.insert(id, author);
+        }
+    }
+    for (_, _, tab, entry) in reads.tab_entries() {
+        if let Some(author) = reads.text(&entry, LAYOUT_AUTHOR_KEY) {
+            authors.insert(tab, author);
+        }
+    }
+    authors
 }
 
 /// Every value in `doc`'s `contents` that this machine owns, as a
@@ -1535,19 +1722,77 @@ pub fn apply_admitted_room(
 /// digits) that owns it. Malformed entries are skipped; salt `0` is never a
 /// namespace.
 pub fn contents_owners_of(doc: &AutoCommit) -> std::collections::BTreeMap<u16, String> {
+    contents_owners_at(doc, None)
+}
+
+/// [`contents_owners_of`] as the document stood at `heads` (`None`: now).
+pub fn contents_owners_at(
+    doc: &AutoCommit,
+    heads: Option<&[automerge::ChangeHash]>,
+) -> std::collections::BTreeMap<u16, String> {
     use automerge::ROOT;
-    let Some((_, owners)) = doc.get(&ROOT, ROOM_CONTENTS_OWNERS_KEY).ok().flatten() else {
-        return std::collections::BTreeMap::new();
-    };
-    doc.keys(&owners)
-        .filter_map(|key| {
-            let salt = u16::from_str_radix(&key, 16)
-                .ok()
-                .filter(|salt| *salt != 0)?;
-            let (value, _) = doc.get(&owners, key.as_str()).ok().flatten()?;
-            Some((salt, value.as_str()?.to_owned()))
-        })
-        .collect()
+    let reads = Reads { doc, heads };
+    let mut owners = std::collections::BTreeMap::new();
+    for map in reads.maps(&ROOT, ROOM_CONTENTS_OWNERS_KEY) {
+        for key in reads.keys(&map) {
+            let Some(salt) = u16::from_str_radix(&key, 16).ok().filter(|salt| *salt != 0) else {
+                continue;
+            };
+            if owners.contains_key(&salt) {
+                continue;
+            }
+            if let Some(device) = reads.text(&map, &key) {
+                owners.insert(salt, device);
+            }
+        }
+    }
+    owners
+}
+
+/// One request that a window another device owns be rearranged, as a room
+/// carries it: room state the host retains until the owner next holds the
+/// room ([`ROOM_LAYOUT_REQUESTS_KEY`]), so a person can arrange the windows
+/// of their other devices, offline ones included.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LayoutRequest {
+    /// Content id, [`LayoutRequest::id`]: one request the room holds once.
+    pub id: String,
+    /// The person who asked, as their person id.
+    pub from: String,
+    /// The id salt of the device whose entries the command rearranges.
+    pub to_salt: u16,
+    /// When it was asked, Unix milliseconds.
+    pub at: i64,
+    /// The command, as `tilo_desktop_model::commands::BoundCommand` JSON
+    /// bytes: the owner applies it against the revision it saw.
+    pub command: Vec<u8>,
+}
+
+impl LayoutRequest {
+    /// The id of a request `from` makes to `to_salt` at `at` for
+    /// `command`: its content, so the same request asked twice is the same
+    /// one and a retried page never multiplies it.
+    #[must_use]
+    pub fn id(from: &str, to_salt: u16, at: i64, command: &[u8]) -> String {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"tilo layout request\0");
+        hasher.update(from.as_bytes());
+        hasher.update(&to_salt.to_le_bytes());
+        hasher.update(&at.to_le_bytes());
+        hasher.update(command);
+        hasher.finalize().to_hex().to_string()
+    }
+}
+
+/// The key recording that `salt`'s owner applied request `id`: under the
+/// owner's own namespace, so nobody else's claim can stand in for it.
+///
+/// # Panics
+///
+/// Never: the salt is at most four hex digits.
+#[must_use]
+pub fn layout_applied_key(salt: u16, id: &str) -> String {
+    format!("{salt:04x}/{id}")
 }
 
 /// Key of the room's layout scope in its governance document

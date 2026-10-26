@@ -7,7 +7,7 @@ use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, ScalarValue, Value, transactio
 use crate::app::AppId;
 use crate::ids::{GroupId, StripId, TabId};
 use crate::layout::TileContent;
-use crate::projection::{ROOM_CONTENTS_KEY, contents_key, tab_entries};
+use crate::projection::{ROOM_CONTENTS_KEY, contents_key, tab_entries_at};
 
 /// Key on a room document's tab entry naming the record the tab shows.
 pub const TAB_RECORD_KEY: &str = "record_id";
@@ -31,9 +31,22 @@ pub fn canonical_app_id(tile: &TileContent) -> Option<AppId> {
 /// raw record id string. Parsing it is the reader's business. Concurrently
 /// created containers are joined, as [`crate::projection::contents_of`] does.
 pub fn record_routes(doc: &AutoCommit) -> BTreeMap<TabId, String> {
+    record_routes_at(doc, None)
+}
+
+/// [`record_routes`] as the document stood at `heads` (`None`: now): a host
+/// showing a room's history reads which record each window showed then.
+pub fn record_routes_at(
+    doc: &AutoCommit,
+    heads: Option<&[automerge::ChangeHash]>,
+) -> BTreeMap<TabId, String> {
     let mut routes = BTreeMap::new();
-    for (_, _, tab, entry) in tab_entries(doc) {
-        if let Some((Value::Scalar(value), _)) = doc.get(&entry, TAB_RECORD_KEY).ok().flatten()
+    for (_, _, tab, entry) in tab_entries_at(doc, heads) {
+        let held = match heads {
+            Some(heads) => doc.get_at(&entry, TAB_RECORD_KEY, heads),
+            None => doc.get(&entry, TAB_RECORD_KEY),
+        };
+        if let Some((Value::Scalar(value), _)) = held.ok().flatten()
             && let ScalarValue::Str(record) = value.as_ref()
         {
             routes.insert(tab, record.to_string());
