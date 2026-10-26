@@ -7793,6 +7793,90 @@ mod tests {
             assert_eq!(value["navigated"], true);
         }
 
+        // Phase `a_page_action_never_leaves_its_invocation_pending`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            // The page is mid-load when the action arrives, so the action waits
+            // for it to settle and is never sent: the wait has to end anyway.
+            engine.push_page_reply(Ok(PageReply {
+                url: "https://shop.test/".into(),
+                message: "Clicked button \"Pay\"".into(),
+                outline: None,
+                data: None,
+                navigated: false,
+                loading: false,
+            }));
+            widget.set_loading_progress(0.4);
+            let click = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "click-page",
+                &serde_json::json!({"element": "d1e4"}),
+            )
+            .unwrap();
+            widget.sync(&doc, &root);
+            assert!(
+                page_requests(&engine).is_empty(),
+                "the click waits for the page to settle"
+            );
+            // The click's own wait: nothing else wakes the window for it.
+            let page = widget.page_operation.as_mut().expect("a page action waits");
+            page.deadline = std::time::Instant::now() - std::time::Duration::from_millis(1);
+            let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+                widget.poll_invocation(click)
+            else {
+                panic!("an action that never reached the page must not stay pending");
+            };
+            assert_eq!(error.code, "browser.page.timeout");
+            assert!(
+                error.retryable,
+                "nothing was written, but the page may have moved on"
+            );
+        }
+
+        // Phase `an_answered_action_leaves_no_operation_behind`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+            // The page answers the click itself, without navigating.
+            engine.push_page_reply(Ok(PageReply {
+                url: "https://shop.test/".into(),
+                message: "Clicked button \"Pay\"".into(),
+                outline: None,
+                data: None,
+                navigated: false,
+                loading: false,
+            }));
+            let click = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "click-page",
+                &serde_json::json!({"element": "d1e4"}),
+            )
+            .unwrap();
+            widget.sync(&doc, &root);
+            assert!(
+                page_requests(&engine).len() == 1,
+                "the click reached the page"
+            );
+            // A click the page answers at once is done, and the next action is
+            // taken rather than refused: answer in hand, no wait remains.
+            widget.set_loading_progress(0.2);
+            widget.sync(&doc, &root);
+            assert!(
+                widget.page_operation.is_none(),
+                "the click the page answered is no longer running"
+            );
+            // The click's answer is still there for whoever asks for it.
+            let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+                widget.poll_invocation(click)
+            else {
+                panic!("the answered click must settle its invocation");
+            };
+            assert_eq!(output.value.unwrap()["message"], "Clicked button \"Pay\"");
+        }
+
         // Phase `engine_refusals_become_typed_invocation_failures`.
         {
             let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
