@@ -27,11 +27,42 @@ otherwise spends tokens, calls or guesses on.
 - **Output is input.** Every ref, filter and literal in an answer is valid in the next
   request.
 
-The door is one MCP tool, `tilo`, taking a line or a block. The same language is the `tilo`
-command in a terminal. The existing path tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`)
-become spellings of the same requests and keep working.
+The door is one MCP tool, `tilo`, taking a **program**. This is code mode, not one action per call:
+- **Packages are mounted.** Every installed app's types, actions and views are packages
+  inside the program.
+- **Programs chain.** They query, read, filter, loop and act without a round trip per step. Their
+  output is what they `print`.
+- **The session is a REPL.** `let` values survive between calls, so results pass from one
+  call to the next without being copied through the model.
+- **Sandboxed under the task's authority.** Programs run under the task's authority in the wasm
+  sandbox, so a program can do no more than its single calls could. Its effects are one task
+  step: one preview, one undo, and asks still ask.
+
+```
+let hits = find("launch video")
+print(hits | group type | take 5)
+for n in hits.of(Note) { print(read(n, matching: "video", around: 1)) }
+for m in find("video in:#launch received:-14d") { print(m.author, m.said) }
+for v in hits.of(Video) { print(v, v.length, read(v.transcript, matching: "cursor|agent")) }
+```
+
+That is one call, the way an agent uses one big `grep` in a shell. It works for mail, chat,
+transcripts and anything else in the workspace.
+
+- **`find` takes the palette's query string,** the same text a person types, as `grep` takes a
+  pattern. The typed form (`find(Thread, from: …)`) is for programs that build queries.
+- **The syntax is mainstream on purpose.** Named arguments, `x -> …` lambdas and string
+  templates read like TypeScript, Swift and Rust. That is checked by measurement (§12, the
+  fluency eval), not assumed.
+- **The same language is the `tilo` command in a terminal.** The existing path tools
+  (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`) are kept as one-call spellings.
 
 ## 2. Orientation
+
+**Context usually arrives with the message.** Right-clicking anything in Tilo offers a chat field
+right there. The person types, and the message carries what was under the pointer: the view, the
+resource, the selection and its anchor (`context: n12 §4 "Video", selected ¶2`). `look` is for
+when no such context came with the message.
 
 ```
 > look
@@ -337,7 +368,12 @@ The cost of a task is measured in tokens and calls, and every output format is j
 5. **Acceptance:** an agent given only `look` completes the YC-legal task in at most 6 requests
    with no failed call. The same holds for "tidy my todo list" and "what changed in the board
    meeting notes since Monday". The transcripts are kept as tests.
-6. **Real-world evals,** once Notes, Todo, Chat, Board and Mail run in tilolang:
+6. **Fluency eval, first, because it needs only the compiler.**
+   - The same 30 tasks go to several models, written once in tilolang and once in TypeScript
+     against the same mounted API.
+   - It compares first-try error rate, tokens and calls.
+   - If tilolang loses, its syntax moves toward TypeScript until it doesn't.
+7. **Real-world evals,** once Notes, Todo, Chat, Board and Mail run in tilolang:
    - real agents on real tasks in a seeded workspace, from the primer only;
    - measured in tokens, calls, failed calls and whether the result was right;
    - the format and primer change by what the evals show, not before.
