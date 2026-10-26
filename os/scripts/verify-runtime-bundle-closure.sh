@@ -15,6 +15,15 @@
 # answers libc's NEEDED on its soname, so a copy there satisfies that NEEDED
 # too. The bundle also signs it at the top of lib/ for tools that follow
 # NEEDED by name.
+#
+# A library that the host's own filesystem reached through a symbolic link
+# must not be read as missing: os/scripts/collect-runtime-dependencies.py
+# resolves libraries by the path they live at and signs them under their file
+# name, so on a host that links libgsttag-1.0.so.0 to libgsttag-1.0.so.0.2408.0
+# the signed copy is libgsttag-1.0.so.0.2408.0 and the soname the runtime links
+# against is absent here. A top-of-lib entry that carries the needed name as
+# its SONAME, or whose file name is the name with a version appended, holds
+# that library.
 set -euo pipefail
 
 bundle=${1:?usage: verify-runtime-bundle-closure.sh BUNDLE_DIR [THIN_APP...]}
@@ -26,10 +35,29 @@ fail() { printf 'verify-runtime-bundle-closure: %s\n' "$*" >&2; exit 1; }
 # (CANONICAL_LOADER_PATHS in crates/packaging/launcher/src/sandbox.rs).
 signed() {
   [ -f "$lib/$1" ] && return 0
-  case $1 in ld-linux*) ;; *) return 1 ;; esac
+  case $1 in ld-linux*) ;; *) held "$lib" "$1" && return 0 ;; esac
   local directory
   for directory in lib64 lib usr/lib64 lib/x86_64-linux-gnu lib/aarch64-linux-gnu; do
     [ -f "$lib/$directory/$1" ] && return 0
+  done
+  return 1
+}
+# Whether one of the libraries signed at the top of lib/ is $1, which that
+# directory holds under another file name: the versioned file the soname
+# points at where the host linked it, or a file carrying the name as its
+# SONAME.
+held() {
+  local directory=$1 needed=$2 candidate soname
+  for candidate in "$directory"/*.so*; do
+    [ -f "$candidate" ] || continue
+    case ${candidate##*/} in
+      "$needed"|"$needed".*) return 0 ;;
+      *".so."[0-9]*) ;;
+      *) continue ;;
+    esac
+    soname=$(readelf -dW "$candidate" 2>/dev/null \
+      | sed -n 's/.*(SONAME).*\[\([^]]*\)\].*/\1/p' | head -1)
+    [ "$soname" = "$needed" ] && return 0
   done
   return 1
 }
@@ -68,7 +96,7 @@ for object in "${objects[@]}"; do
     continue
   fi
   while IFS= read -r needed; do
-    if [ ! -f "$lib/$needed" ]; then
+    if ! held "$lib" "$needed"; then
       printf '%s: signed runtime is missing %s, which it loads on first use\n' "$object" "$needed" >&2
       broken=1
     fi
