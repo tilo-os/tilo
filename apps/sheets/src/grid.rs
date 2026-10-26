@@ -480,6 +480,10 @@ pub struct Grid {
     /// Resolved text/band metrics (see [`GridMetrics`]). Set by the app once
     /// per draw from the renderer; `fallback()` until then.
     metrics: GridMetrics,
+    /// How far down the body the window bar's search covers it while the
+    /// find's options stand open ([`Self::set_find_cover`]): what it reveals
+    /// stands clear of it.
+    find_cover: f64,
 }
 
 impl Default for Grid {
@@ -524,6 +528,7 @@ impl Grid {
             needs_autofit: true,
             dirty: true,
             metrics: GridMetrics::fallback(),
+            find_cover: 0.0,
         };
         g.rebuild_geom();
         g
@@ -1101,11 +1106,15 @@ impl Grid {
             ScrollAxis::Horizontal => {
                 ScrollMetrics::new(self.total_width(), self.body_rect().width(), self.scroll_x)
             }
-            ScrollAxis::Vertical => ScrollMetrics::new(
-                self.total_height(),
-                self.body_rect().height(),
-                self.scroll_y,
-            ),
+            ScrollAxis::Vertical => {
+                // The bar shows the sheet's own extent: scrolled up under the
+                // search's options, its thumb still starts at the track's top.
+                ScrollMetrics::new(
+                    self.total_height(),
+                    self.body_rect().height(),
+                    self.scroll_y.max(0.0),
+                )
+            }
         }
     }
 
@@ -1337,10 +1346,14 @@ impl Grid {
         let max_x = (self.total_width() - body.width()).max(0.0);
         let max_y = (self.total_height() - body.height()).max(0.0);
         self.scroll_x = self.scroll_x.clamp(0.0, max_x);
-        self.scroll_y = self.scroll_y.clamp(0.0, max_y);
+        // What the window's search covers is room to scroll into: the first
+        // rows move down under its options instead of staying hidden there.
+        let covered = self.cover_inset(body);
+        self.scroll_y = self.scroll_y.clamp(-covered, max_y);
     }
 
-    /// Scroll so the active cell is fully inside the body.
+    /// Scroll so the active cell is fully inside the body — and, while the
+    /// window's search covers the body's top, below what it covers.
     fn ensure_visible(&mut self) {
         if !self.has_layout() {
             return;
@@ -1350,17 +1363,44 @@ impl Grid {
         let right = left + self.col_w(self.active.0);
         let top = self.row_top(self.active.1);
         let bottom = top + self.row_h(self.active.1);
+        let covered = self.cover_inset(body);
         if left - self.scroll_x < 0.0 {
             self.scroll_x = left;
         } else if right - self.scroll_x > body.width() {
             self.scroll_x = right - body.width();
         }
-        if top - self.scroll_y < 0.0 {
-            self.scroll_y = top;
+        if top - self.scroll_y < covered {
+            // The space the search's options cover is scrolled into, so a
+            // cell among the sheet's first rows comes down clear of them.
+            self.scroll_y = top - covered;
         } else if bottom - self.scroll_y > body.height() {
             self.scroll_y = bottom - body.height();
         }
         self.clamp_scroll();
+    }
+
+    /// What of the body's top the window's search covers, in the body's own
+    /// coordinates: never so much that no row is left to show.
+    fn cover_inset(&self, body: Rect) -> f64 {
+        let row = self.metrics.default_row_h();
+        self.find_cover.clamp(0.0, (body.height() - row).max(0.0))
+    }
+
+    /// The window bar's search covers the top of the body while its find's
+    /// options stand open: what it reveals stands clear of it, the grid
+    /// scrolling up past its first row into the space the options take.
+    /// `None` uncovers the body, which scrolls back to its start.
+    pub fn set_find_cover(&mut self, cover: Option<Rect>) {
+        let inset = cover.map_or(0.0, |cover| {
+            let body = self.body_rect();
+            (cover.y1 - body.y0).max(0.0)
+        });
+        if inset.to_bits() == self.find_cover.to_bits() {
+            return;
+        }
+        self.find_cover = inset;
+        self.ensure_visible();
+        self.dirty = true;
     }
 
     /// Begin editing the active cell. `seed` replaces the content (typed

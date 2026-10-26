@@ -37,8 +37,8 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::{
-    Button, ColorSwatchPicker, ContextMenu, EditOutcome, EditableLabel, FindBar, MenuItem as Row,
-    Popover, PopoverSide, TextInput, Widget,
+    Button, ColorSwatchPicker, ContextMenu, EditOutcome, EditableLabel, MenuItem as Row, Popover,
+    PopoverSide, TextInput, Widget,
 };
 
 mod annotations;
@@ -399,18 +399,11 @@ pub struct SheetsApp {
     cell_menu: ContextMenu,
     cell_menu_rows: Vec<Option<CellMenuRow>>,
     cell_menu_target: Option<Addr>,
-    /// Find and replace over the workbook: the band, whether it is open,
-    /// the matches it found, and the one shown. The band is the toolkit's
-    /// `FindBar` driven by this app as its `Findable`.
-    find: FindBar,
-    find_open: bool,
+    /// The window bar's search over the workbook: the matches it found and
+    /// the one shown. This app is the `Findable` the bar drives; it draws no
+    /// find field of its own.
     find_matches: Vec<FoundCell>,
     find_current: Option<usize>,
-    find_rect: Rect,
-    /// Whether the band has room for the replace row's two buttons and a
-    /// field. When it does not, the band is query-only and Ctrl+H opens the
-    /// window bar's search, whose panel keeps the replacement at any width.
-    find_replace_roomy: bool,
     /// A replacement the bar asked for, waiting for the next frame's edit
     /// path: `Findable::replace` has no document handle.
     pending_find_replace: Vec<(usize, Addr, String)>,
@@ -589,12 +582,8 @@ impl SheetsApp {
             cell_menu: ContextMenu::new(),
             cell_menu_rows: Vec::new(),
             cell_menu_target: None,
-            find: FindBar::new(),
-            find_open: false,
             find_matches: Vec::new(),
             find_current: None,
-            find_rect: Rect::ZERO,
-            find_replace_roomy: true,
             pending_find_replace: Vec::new(),
             pending_ensure_visible: false,
             active_cell_bold: false,
@@ -1091,10 +1080,7 @@ impl SheetsApp {
             self.grid.select_only(addr);
         }
         match scenario {
-            Some(
-                name
-                @ ("docsettings" | "tabmenu" | "tabcolour" | "tabrename" | "find" | "cellmenu"),
-            ) => {
+            Some(name @ ("docsettings" | "tabmenu" | "tabcolour" | "tabrename" | "cellmenu")) => {
                 self.staged_overlay = Some(name.to_owned());
             }
             Some("editing") => self.grid.begin_edit_in_place(),
@@ -1163,22 +1149,6 @@ impl SheetsApp {
         match name.as_str() {
             "docsettings" => self.open_doc_settings(),
             "tabmenu" => self.open_tab_menu(0),
-            "find" => {
-                self.open_find(false);
-                self.find.set_query("a");
-                let mut find = std::mem::replace(&mut self.find, FindBar::new());
-                find.drive(self);
-                self.find = find;
-                // Show the fourth of the workbook's matches, as stepping
-                // through the band does: reveal each so the counter and the
-                // grid agree.
-                for _ in 0..3 {
-                    self.find.next();
-                    let mut find = std::mem::replace(&mut self.find, FindBar::new());
-                    find.drive(self);
-                    self.find = find;
-                }
-            }
             "cellmenu" => {
                 self.grid.select_only((1, 1));
                 let anchor = self.grid.cell_screen_rect(1, 1).center();
@@ -2862,10 +2832,6 @@ impl Widget for SheetsApp {
         let tr = text_renderer;
         let mut parts = PaintParts::new(scene);
         self.draw_chrome(&mut parts, scene, transform, tr, theme, presence);
-        if self.find_open {
-            self.find.layout(self.find_rect, theme, tr);
-            self.find.paint(scene, transform, tr, theme, presence);
-        }
         self.grid.draw(&mut parts, scene, transform, tr, theme);
         parts.draw(scene, "sheet-find-matches", self.grid_rect, |scene| {
             let body = self.grid.body_rect();
@@ -2955,6 +2921,9 @@ impl Widget for SheetsApp {
     }
 
     fn settle(&mut self, edits: &mut Edits<'_>, _path: &ObjId) {
+        // What the window's search asked to replace goes through the
+        // workbook's own edit path, with the document in hand.
+        self.drain_find_replace(edits);
         self.apply_window_toolbar(edits);
         if let Some(opening) = self.opening.borrow_mut().take() {
             self.pending_reveal = Some(opening);
@@ -2989,8 +2958,9 @@ impl Widget for SheetsApp {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = event_ctx.logical(position);
         }
-        // Find and replace are one gesture whichever band has the keyboard:
-        // the open band refocuses, it never types "f" into its own query.
+        // Find and replace open the window bar's search, which owns the
+        // field and the keys: the sheet's matches are painted from its
+        // find, never typed into a field of the sheet's own.
         if let WindowEvent::KeyboardInput { event: key, .. } = event {
             let ctrl = event_ctx.modifiers.state().control_key()
                 || event_ctx.modifiers.state().super_key();
@@ -3004,43 +2974,15 @@ impl Widget for SheetsApp {
                 && let winit::keyboard::Key::Character(character) = &key.logical_key
             {
                 if character.eq_ignore_ascii_case("f") && !shift {
-                    self.open_find(false);
+                    self.open_find(ui::window_toolbar::SearchOpening::Find);
                     *event_ctx.handled = true;
                     return;
                 }
                 if character.eq_ignore_ascii_case("h") {
-                    self.open_find(true);
+                    self.open_find(ui::window_toolbar::SearchOpening::Replace);
                     *event_ctx.handled = true;
                     return;
                 }
-            }
-        }
-        if self.find_open {
-            self.find.handle_event(event, event_ctx);
-            let mut find = std::mem::replace(&mut self.find, FindBar::new());
-            find.drive(self);
-            self.find = find;
-            self.drain_find_replace(&mut event_ctx.state);
-            if self.find.take_close_requested() {
-                self.close_find();
-                *event_ctx.handled = true;
-                return;
-            }
-            if matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    ..
-                }
-            ) && !self.find_rect.contains(self.last_mouse)
-            {
-                // A press back in the grid gives the keyboard back to the
-                // cells; the band stays open for the next match.
-                self.find.set_focus(false);
-            }
-            if *event_ctx.handled {
-                self.pending.redraw = true;
-                return;
             }
         }
         // A menu or popover over the sheet is modal and takes the event first.
@@ -3150,18 +3092,12 @@ impl Widget for SheetsApp {
 
     /// A cell being edited takes input-method composition.
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        if self.find_open {
-            return self.find.ime_content();
-        }
         self.grid
             .is_editing()
             .then_some(ui::ime::InputContent::TEXT)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        if self.find_open {
-            return self.find.ime_cursor_rect();
-        }
         self.grid.ime_cell_rect()
     }
 
@@ -3418,7 +3354,7 @@ impl Widget for SheetsApp {
                     }))
                     .collect(),
             );
-        let mut children = vec![
+        let children = vec![
             AccessNode::new(Role::Toolbar)
                 .with_name("Spreadsheet actions")
                 .with_children(toolbar_controls),
@@ -3428,11 +3364,6 @@ impl Widget for SheetsApp {
             sheet,
             annotations,
         ];
-        if self.find_open
-            && let Some(find) = self.find.accessibility()
-        {
-            children.push(find);
-        }
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Spreadsheet")
@@ -3447,13 +3378,8 @@ impl Widget for SheetsApp {
         target: &str,
         action: &ui::a11y::Action,
         state: &mut Edits<'_>,
-        path: &ModelPath,
+        _path: &ModelPath,
     ) -> bool {
-        if self.find_open && target.starts_with("find-") {
-            return self
-                .find
-                .perform_semantic_action(target, action, state, path);
-        }
         let activates = matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus);
         if activates {
             match target {
@@ -4371,12 +4297,12 @@ impl SheetsApp {
                 && let winit::keyboard::Key::Character(c) = &ke.logical_key
             {
                 if c.as_str().eq_ignore_ascii_case("f") && !shift {
-                    self.open_find(false);
+                    self.open_find(ui::window_toolbar::SearchOpening::Find);
                     *handled = true;
                     return;
                 }
                 if c.as_str().eq_ignore_ascii_case("h") {
-                    self.open_find(true);
+                    self.open_find(ui::window_toolbar::SearchOpening::Replace);
                     *handled = true;
                     return;
                 }
@@ -4688,50 +4614,12 @@ impl SheetsApp {
 
     // --- find and replace --------------------------------------------------
 
-    /// The toolkit find row's replace labels, in the person's locale, so the
-    /// app's room test measures the same buttons the band paints.
-    pub(super) fn find_replace_label() -> &'static str {
-        "Replace"
-    }
-
-    pub(super) fn find_replace_label_all() -> &'static str {
-        "Replace all"
-    }
-
-    /// Open the app's find band, replacing when `replace` is set. The
-    /// toolkit's `FindBar` is the band; this app is the `Findable` it drives.
-    fn open_find(&mut self, replace: bool) {
-        // The window bar's search keeps the replacement usable when this
-        // band cannot: at a phone width with large text its two localised
-        // buttons leave no field. The band stays a query-only find there.
-        if replace && !self.find_replace_roomy && ui::window_toolbar::is_hosted() {
-            ui::window_toolbar::open_search(ui::window_toolbar::SearchOpening::Replace);
-            return;
-        }
+    /// Open the window bar's search on the workbook: on its query for Find,
+    /// on its replacement for Replace. The bar hosts the field at every
+    /// width, with match case, whole word and the replacement.
+    fn open_find(&mut self, opening: ui::window_toolbar::SearchOpening) {
         self.close_overlays();
-        self.find_open = true;
-        self.find.set_focus(true);
-        if replace {
-            self.find.focus_replace();
-        } else {
-            self.find.focus_query();
-        }
-        self.find.refresh();
-        self.relayout();
-        self.pending.redraw = true;
-    }
-
-    /// Close the band and stop painting its matches.
-    fn close_find(&mut self) {
-        if !self.find_open {
-            return;
-        }
-        self.find_open = false;
-        self.find.set_query("");
-        self.find_matches.clear();
-        self.find_current = None;
-        self.relayout();
-        self.pending.redraw = true;
+        ui::window_toolbar::open_search(opening);
     }
 
     // --- name box (Go-To) + fx formula entry -------------------------------
@@ -4904,6 +4792,9 @@ mod interaction_tests;
 
 #[cfg(test)]
 mod entry_tests;
+
+#[cfg(test)]
+mod window_bar_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -5357,7 +5248,7 @@ pub(crate) mod tests {
     }
 
     /// A workbook holding the sample's Budget and Sales sheets, run as the app.
-    fn sample_app() -> TestApp<crate::resource::SheetsShell> {
+    pub(super) fn sample_app() -> TestApp<crate::resource::SheetsShell> {
         let mut app = TestApp::<crate::resource::SheetsShell>::new().unwrap();
         for invoke in crate::sample::workbook() {
             app.invoke_confirmed(invoke).unwrap();
