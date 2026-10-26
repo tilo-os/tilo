@@ -35,6 +35,9 @@ const MAX_HELD_INBOUND: usize = 4096;
 pub(super) enum Keys {
     /// No identity service: plaintext.
     Plain,
+    /// The room seals every write and this endpoint has no channel keys to
+    /// ask for: every write is refused, none is sent unencrypted.
+    Unsealable,
     /// Channel keys requested and not held.
     Pending(ChannelAccessState),
     /// A group installed explicitly on this endpoint.
@@ -131,6 +134,12 @@ impl RouteKeys {
         Self::with(Keys::Plain)
     }
 
+    /// Keys of a route in a room that seals every write, on an endpoint
+    /// with no identity service to ask for the channel's keys.
+    pub(super) fn unsealable() -> Self {
+        Self::with(Keys::Unsealable)
+    }
+
     fn with(keys: Keys) -> Self {
         Self {
             keys,
@@ -197,6 +206,7 @@ impl RouteKeys {
     pub(super) fn state(&self) -> ChannelAccessState {
         match &self.keys {
             Keys::Plain => ChannelAccessState::Unencrypted,
+            Keys::Unsealable => ChannelAccessState::Unavailable,
             Keys::Pending(state) => *state,
             Keys::Group(_) | Keys::Content { .. } => ChannelAccessState::Encrypted,
         }
@@ -251,6 +261,11 @@ impl RouteKeys {
     ) -> Sealed {
         let sealed = match &self.keys {
             Keys::Plain => return Sealed::Ready(cleartext, None),
+            Keys::Unsealable => {
+                return Sealed::Refused(
+                    "this room seals every write and this connection holds no channel keys".into(),
+                );
+            }
             Keys::Pending(ChannelAccessState::Removed) => {
                 return Sealed::Refused("this device was removed from the channel".into());
             }
@@ -288,7 +303,7 @@ impl RouteKeys {
         let ciphertext = collab_types::sealed_ciphertext(envelope)
             .map_err(|_| Unopened::Never(Never::Undecryptable))?;
         let opened = match &mut self.keys {
-            Keys::Plain => return Err(Unopened::Never(Never::SealedOnPlain)),
+            Keys::Plain | Keys::Unsealable => return Err(Unopened::Never(Never::SealedOnPlain)),
             Keys::Pending(_) => return Err(Unopened::Later),
             Keys::Group(group) => {
                 if group.channel_id() != metadata.channel {
