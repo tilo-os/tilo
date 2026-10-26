@@ -76,6 +76,10 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (180, speakers::SpeakerEffect::FAMILY),
     (190, speakers::SpeakerFlow::FAMILY),
     (200, agent_models::AgentModelsEffect::FAMILY),
+    // The provider panel's typed effects: declared beside the panel both
+    // Settings and the standalone provider host show, answered by Agent
+    // Models.
+    (205, provider_settings_ui::ProviderEffect::FAMILY),
     (210, device_mesh::DeviceMeshEffect::FAMILY),
     (260, region::language::LanguageEffect::FAMILY),
     (230, accounts::AccountsEffect::FAMILY),

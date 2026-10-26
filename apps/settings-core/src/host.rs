@@ -137,11 +137,9 @@ impl provider_settings_ui::PanelBindings for PaneCx {
         control: C,
         effect: provider_settings_ui::ProviderEffect,
     ) -> C {
-        use ui::tilo_resource::Effect;
-        match SettingsEffect::decode(effect.id(), &effect.arguments()) {
-            Ok(effect) => self.bind_invocation(control, effect),
-            Err(_) => control.unavailable(),
-        }
+        // The shared effect is one of Settings' own, not read back from its
+        // published id: binding a control keeps the typed vocabulary.
+        self.bind_invocation(control, SettingsEffect::from(effect))
     }
 }
 
