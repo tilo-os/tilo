@@ -1237,16 +1237,25 @@ def ush_environment_refusal(ctx) -> str | None:
     return environment_refusal(journal)
 
 
-def ush_journal_tail(ctx, lines: int = 4) -> str | None:
-    """The last `lines` lines the slot's `tilo-ush` logged, joined with " | ", or None: what a
-    Terminal with no shell, and no refusal to quote, can still say in its detail."""
+_USH_EVIDENCE = r'''set +e
+echo "journal: $(journalctl --user -u tilo-ush.service --no-pager -o cat -n 200 2>&1 | grep -v '^$' | tail -n 4 | tr '\n' '|' | cut -c1-900)"
+echo "session log: $(grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo/session-logs" 2>/dev/null | grep -v APP-STARTUP | tail -n 3 | tr '\n' '|' | cut -c1-900)"
+echo "guests: $(ps -u "$(id -u)" -o pid=,etimes=,time=,args= 2>/dev/null | grep -E 'tilo-ush (run|guest-init)' | grep -v grep | cut -c1-160 | tr '\n' '|')"
+'''
+
+
+def ush_evidence(ctx) -> str | None:
+    """What a Terminal with no shell can say in its detail, since a failed run publishes no
+    report data: the shell runtime's last journal lines (its runtime import's start and
+    duration among them), the session log's last lines about it or Terminal, and the guest
+    processes still running with their age and CPU time. None when nothing could be read."""
     try:
-        journal = ctx.vm.exec("journalctl --user -u tilo-ush.service --no-pager -o cat -n 200 2>&1",
-                              timeout=60, check=False)
+        text = ctx.vm.exec(_USH_EVIDENCE, timeout=60, check=False)
     except VmError:
         return None
-    said = [_ANSI.sub("", line).strip() for line in journal.splitlines() if line.strip()]
-    return " | ".join(said[-lines:]) or None
+    lines = [_ANSI.sub("", line).strip() for line in text.splitlines()
+             if line.strip() and not line.rstrip().endswith(":")]
+    return "; ".join(lines) or None
 
 
 def ush_diagnostics(ctx) -> str:
