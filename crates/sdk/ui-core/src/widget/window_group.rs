@@ -2377,6 +2377,14 @@ impl WindowGroup {
         self.bar.set_desktop_control(id, on)
     }
 
+    /// Mark tab `id` as running a developer's own build, installed by
+    /// `installer` into the room it is in, or clear the mark: while it is in
+    /// front the bar says "Dev build · by …". `true` when that changed what
+    /// the window shows.
+    pub fn set_tab_dev_build(&mut self, id: u64, installer: Option<String>) -> bool {
+        self.bar.set_dev_build(id, installer)
+    }
+
     /// Press the bar's "Controls your desktop" chip without a pointer, as an
     /// assistive technology does. Whether the bar shows it.
     pub fn activate_desktop_control(&mut self) -> bool {

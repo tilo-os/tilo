@@ -165,6 +165,50 @@ impl ShellOverlayHost {
         changed
     }
 
+    /// Every window bar marks the windows whose room runs a developer's own
+    /// build of their app, by who installed it there
+    /// ([`crate::shell::room_app_versions::dev_build_by`]). Whether a bar
+    /// changed.
+    pub(super) fn sync_dev_build_chips(&mut self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let marks: std::collections::HashMap<u64, String> = {
+            let chrome = chrome.borrow();
+            let tree = chrome.tree();
+            tree.desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| {
+                    let room = workspace.room();
+                    let tree = &tree;
+                    workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .filter_map(move |tab| {
+                            let package = tab_package(tree, tab)?;
+                            crate::shell::room_app_versions::dev_build_by(room, &package)
+                                .map(|by| (tab.id, by))
+                        })
+                })
+                .collect()
+        };
+        let mut changed = false;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                let ids: Vec<u64> = group.tabs().iter().map(|tab| tab.id).collect();
+                for id in ids {
+                    changed |= group.set_tab_dev_build(id, marks.get(&id).cloned());
+                }
+            }
+        }
+        changed
+    }
+
     /// Drains every bar's press on its chip and opens the chip's menu for
     /// the last one. Whether a menu opened.
     pub(super) fn harvest_desktop_control_presses(&mut self) -> bool {

@@ -980,10 +980,11 @@ build of one app is that app alone. The web desktop is one module today:
 every web app is linked into it and split out of it afterwards, so a web
 build relinks the whole desktop, and a running page cannot load a newer
 module for one app, so a browser in the room keeps its version until the
-page loads a desktop build that carries the room's. A native desktop
-installs the room's version but does not yet restart the app's open
-windows: they run it from their next start, and until then their changes
-to that app wait, held, as a member's on another version do.
+page loads a desktop build that carries the room's. A native desktop that
+installs the room's version ends the app's running launches and puts their
+windows back where they were, on the new build, as Reopen does for an app
+ended for memory. While a room runs a dev build, each of that app's windows
+in the room says "Dev build · by <who installed it>" in its bar.
 
 ### Android
 
