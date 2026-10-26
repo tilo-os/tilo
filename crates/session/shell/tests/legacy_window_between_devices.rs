@@ -675,9 +675,14 @@ async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
     let mut view = PeerView::new_with_metrics(SURFACE, viewer_peer, PeerSurfaceMetrics::default());
     view.restart_stream(codec, Some((WIDTH, HEIGHT)));
     let (mut frames, timestamps) = record_encoded_units(&session);
-    // The backlog is about one live route: the recorded units go once the
-    // host has reached the viewer, not while its first dial may still fail.
-    start_reaches_viewer(&host_cmd, &mut viewer_events, &session, viewer_peer).await;
+    host_cmd
+        .send(NetCmd::PublishSurfaceTo {
+            ws: WS,
+            msg: session.stream_start_msg(),
+            viewers: vec![viewer_peer],
+        })
+        .await
+        .unwrap();
     host_cmd
         .send(NetCmd::PublishSurfaceTo {
             ws: WS,
@@ -686,6 +691,9 @@ async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
         })
         .await
         .unwrap();
+    // Both go while the host's route to the viewer is still opening: the
+    // viewer gets the stream's start, then its first unit.
+    stream_start_reached(&mut viewer_events).await;
     let (encoded, ts, seq) = next_surface_frame(&mut viewer_events).await;
     assert_eq!(ts, timestamps[0]);
     assert_eq!(
@@ -967,45 +975,23 @@ fn record_encoded_units(session: &SharedFlatpakSession) -> (Vec<NeighbourMsg>, V
     (frames, timestamps)
 }
 
-/// Announce `session`'s stream to `viewer` until the announcement reaches
-/// it. A delivered announcement leaves the host holding its route to the
-/// viewer, which the stream's units then take; one sent while that route is
-/// still being dialled may be lost, as any unit on the way may be.
-async fn start_reaches_viewer(
-    host_cmd: &mpsc::Sender<NetCmd>,
-    viewer_events: &mut mpsc::Receiver<NetEvent>,
-    session: &SharedFlatpakSession,
-    viewer: u64,
-) {
+/// The viewer got the stream's start, before any of its units.
+async fn stream_start_reached(events: &mut mpsc::Receiver<NetEvent>) {
     tilo_test_env::within("the stream start reached the viewer", async {
-        loop {
-            host_cmd
-                .send(NetCmd::PublishSurfaceTo {
-                    ws: WS,
-                    msg: session.stream_start_msg(),
-                    viewers: vec![viewer],
-                })
-                .await
-                .expect("announce the stream");
-            let arrived = tokio::time::timeout(Duration::from_millis(500), async {
-                while let Some(event) = viewer_events.recv().await {
-                    if matches!(
-                        event,
-                        NetEvent::Msg {
-                            msg: NeighbourMsg::SurfaceStreamStart { .. },
-                            ..
-                        }
-                    ) {
-                        return;
-                    }
-                }
-                panic!("viewer event channel closed");
-            })
-            .await;
-            if arrived.is_ok() {
-                return;
+        while let Some(event) = events.recv().await {
+            match event {
+                NetEvent::Msg {
+                    msg: NeighbourMsg::SurfaceStreamStart { .. },
+                    ..
+                } => return,
+                NetEvent::Msg {
+                    msg: NeighbourMsg::SurfaceFrame { .. },
+                    ..
+                } => panic!("a unit reached the viewer before the stream start"),
+                _ => {}
             }
         }
+        panic!("viewer event channel closed");
     })
     .await;
 }
