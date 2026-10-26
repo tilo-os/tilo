@@ -45,6 +45,9 @@ impl DisplaySlot {
     }
 }
 
+/// How long a copy's mark stays on the value it took.
+const COPIED_SAID_FOR: std::time::Duration = std::time::Duration::from_millis(1_400);
+
 /// What the pointer is over, for deciding when to repaint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Hover {
@@ -149,6 +152,10 @@ pub struct CalcScreen {
     status_rect: Rect,
     result_rect: Rect,
     hovered_copy: Option<DisplaySlot>,
+    /// What the last copy did, for the mark its target shows: `true` copied,
+    /// `false` refused. The mark is not a state of the value — it says what
+    /// happened to it, which is why it names the slot it belongs to.
+    copy_said: Option<(DisplaySlot, bool, ui::time::Instant)>,
     hover: Hover,
     /// The window the screen lays out in.
     content: Rect,
@@ -184,6 +191,7 @@ impl Default for CalcScreen {
             status_rect: Rect::ZERO,
             result_rect: Rect::ZERO,
             hovered_copy: None,
+            copy_said: None,
             hover: Hover::default(),
             content: Rect::ZERO,
             m: Metrics::of(&stock),
@@ -193,6 +201,13 @@ impl Default for CalcScreen {
 }
 
 impl CalcScreen {
+    /// Say what a copy of `slot` did, so its target can show it. A refusal is
+    /// the case that matters: without it the person believes a value is on the
+    /// clipboard when it is not.
+    pub fn say_copied(&mut self, slot: DisplaySlot, copied: bool) {
+        self.copy_said = Some((slot, copied, ui::time::now()));
+    }
+
     pub fn keys(&self) -> &[Key] {
         &self.keys
     }
@@ -731,10 +746,14 @@ impl CalcScreen {
             return;
         }
         let hot = self.hovered_copy == Some(slot);
+        let said_now = self.copy_said.is_some_and(|(said, _, at)| {
+            said == slot && ui::time::now().saturating_duration_since(at) < COPIED_SAID_FOR
+        });
         // The result is the value people leave with, so its mark stays; the
         // expression and the previous answer reveal theirs when pointed at,
-        // keeping the display uncluttered while every line stays a target.
-        if !hot && slot != DisplaySlot::Result {
+        // keeping the display uncluttered while every line stays a target. An
+        // answer to a copy shows whatever the pointer is doing.
+        if !hot && !said_now && slot != DisplaySlot::Result {
             return;
         }
         if hot {
@@ -746,15 +765,34 @@ impl CalcScreen {
                 theme.tokens.colors.surfaces.raised,
             );
         }
-        ui::icons::Icon::Copy.draw(
+        // A copy that just happened says so on the target it took, for as long
+        // as it is news; a refused one says that instead of confirming it.
+        let said = self.copy_said.filter(|(said, _, at)| {
+            *said == slot && ui::time::now().saturating_duration_since(*at) < COPIED_SAID_FOR
+        });
+        let (icon, colour) = match said {
+            Some((_, true, _)) => (
+                ui::icons::Icon::CircleCheck,
+                theme.tokens.colors.text_primary,
+            ),
+            Some((_, false, _)) => (
+                ui::icons::Icon::TriangleAlert,
+                theme.tokens.colors.semantic.danger,
+            ),
+            None => (
+                ui::icons::Icon::Copy,
+                if hot {
+                    theme.tokens.colors.text_primary
+                } else {
+                    ink
+                },
+            ),
+        };
+        icon.draw(
             ctx.scene,
             ctx.transform,
             rect.inset(rect.height().min(rect.width()) * 0.16),
-            if hot {
-                theme.tokens.colors.text_primary
-            } else {
-                ink
-            },
+            colour,
         );
     }
 
