@@ -1,4 +1,5 @@
-"""report.json (machine-readable) and report.md (for people) for one run."""
+"""report.json (machine-readable) and report.md (for people) for one run, and
+failure-evidence.txt: the text evidence of the failed checks, bounded, for the log."""
 
 from __future__ import annotations
 
@@ -19,6 +20,13 @@ ESSENTIALS = [
     ("agent", "7. Agent door (in-session MCP from a terminal)"),
     ("input", "8. Input fidelity (real device descriptors, layouts, touchpad)"),
 ]
+
+# A failed run's report directory may not outlive it, so the text its failures left is
+# printed into the log too: up to EVIDENCE_FILE_BYTES of each file (the end of a long log,
+# where the failure is) and EVIDENCE_TOTAL_BYTES for the run.
+EVIDENCE_FILE_BYTES = 4096
+EVIDENCE_TOTAL_BYTES = 96 * 1024
+TEXT_SUFFIXES = {".txt", ".log", ".json", ".jsonl", ".csv", ".md"}
 
 # `xfail` is a named, expected failure (core.ExpectedFailure): it does not fail the run.
 PASSING = ("pass", "xfail")
@@ -43,7 +51,38 @@ def write(out: Path, meta: dict, results: list[Result], owners: dict) -> dict:
     doc = {**meta, "overall": overall, "summary": summary, "results": [asdict(r) for r in results]}
     (out / "report.json").write_text(json.dumps(doc, indent=1, default=str, ensure_ascii=False))
     (out / "report.md").write_text(_markdown(meta, summary, results, owners, overall))
+    (out / "failure-evidence.txt").write_text(failure_evidence(out, results))
     return doc
+
+
+def failure_evidence(out: Path, results: list[Result]) -> str:
+    """The text evidence files of every failed check, each cut to EVIDENCE_FILE_BYTES and
+    the whole to EVIDENCE_TOTAL_BYTES; images are left out. JSON is printed compact from
+    its start, where its summary fields are; other text from its end, where the failure is."""
+    L, total = [], 0
+    for r in results:
+        if r.status in PASSING:
+            continue
+        for rel in r.evidence:
+            path = out / rel
+            if path.suffix not in TEXT_SUFFIXES or not path.is_file():
+                continue
+            header = f"==== {r.id}: {rel}"
+            if total >= EVIDENCE_TOTAL_BYTES:
+                L.append(f"{header}: left out, the run's printed evidence reached {EVIDENCE_TOTAL_BYTES} bytes")
+                continue
+            data = path.read_bytes()
+            if path.suffix == ".json":
+                try:
+                    data = json.dumps(json.loads(data), separators=(",", ":"), ensure_ascii=False).encode()
+                except ValueError:
+                    pass
+            cut = data[:EVIDENCE_FILE_BYTES] if path.suffix == ".json" else data[-EVIDENCE_FILE_BYTES:]
+            if len(cut) < len(data):
+                header += f" ({'first' if path.suffix == '.json' else 'last'} {len(cut)} of {len(data)} bytes)"
+            L += [header, cut.decode("utf-8", "replace").rstrip("\n")]
+            total += len(cut)
+    return "\n".join(L) + "\n" if L else ""
 
 
 def _markdown(meta, summary, results, owners, overall) -> str:

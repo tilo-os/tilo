@@ -150,6 +150,7 @@ def run_check(ctx, chk: Check) -> Result:
         res.detail = _join(res.detail, f"{type(exc).__name__}: {exc}")
         (ctx.out / "errors").mkdir(exist_ok=True)
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
+        res.evidence.append(f"errors/{chk.id}.txt")
     leave_running(ctx, chk, res)
     leave_unlocked(ctx, chk, res)
     leave_no_dialog(ctx, chk, res)
