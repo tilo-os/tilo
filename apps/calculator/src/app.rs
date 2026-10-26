@@ -73,6 +73,8 @@ pub struct CalculatorApp {
     last_click: Option<ui::time::Instant>,
     last_click_pos: Point,
 
+    /// The last copy, watched until it settles: a refusal must be said.
+    copy: ui::CopyWatch,
     model_dirty: bool,
     /// Something visible changed since the last paint. Cleared by
     /// `mark_drawn`; without it the default (dirty every frame) repainted the
@@ -115,6 +117,7 @@ impl CalculatorApp {
     fn with_model(model: CalcModel) -> Self {
         Self {
             model,
+            copy: ui::CopyWatch::default(),
             calc: CalcScreen::default(),
             g2: Graph2dScreen::default(),
             g3: Graph3dScreen::default(),
@@ -809,10 +812,13 @@ impl CalculatorApp {
     /// Copy one display value to the system clipboard. The expression is
     /// copied as typed, the result as shown, and the answer as Ans.
     fn copy_display(&mut self, slot: DisplaySlot) {
-        if let Some(text) = self.display_text(slot) {
-            ui::clipboard_copy(&text);
-            self.model_dirty = true;
-        }
+        let Some(text) = self.display_text(slot) else {
+            return;
+        };
+        // Watch the outcome: a clipboard that refuses is told, not confirmed.
+        let copied = self.copy.watch(ui::try_clipboard_copy(&text));
+        self.calc.say_copied(slot, copied);
+        self.model_dirty = true;
     }
 
     /// Pointer and semantic keypad activation use the same editor as typing.
