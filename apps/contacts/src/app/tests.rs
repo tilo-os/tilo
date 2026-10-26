@@ -2154,7 +2154,7 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
             .unwrap();
         h.press_left(h.row_center(other_idx));
         assert_eq!(
-            h.app.pending_switch.map(|id| id),
+            h.app.pending_switch,
             Some(h.row_id(other_idx)),
             "the guard asks before dropping the edit"
         );
