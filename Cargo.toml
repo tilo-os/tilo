@@ -634,7 +634,7 @@ futures-util = "0.3"
 # clients through `tilo_net::http`, which installs the ring provider this
 # configuration requires.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
-zstd = "0.13"
+zstd = "0.14.3"
 crc32fast = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = "0.14"

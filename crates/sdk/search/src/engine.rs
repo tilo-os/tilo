@@ -18,14 +18,15 @@ use std::io::Write as _;
 use std::sync::Arc;
 
 use tantivy::collector::TopDocs;
-use tantivy::directory::{Directory as _, TerminatingWrite as _};
+use tantivy::directory::{Directory as _, RamDirectory, TerminatingWrite as _};
 use tantivy::merge_policy::{LogMergePolicy, MergeCandidate, MergePolicy, NoMergePolicy};
 use tantivy::schema::{
     FAST, Field, INDEXED, IndexRecordOption, Schema, TextFieldIndexing, TextOptions,
 };
+use tantivy::tokenizer::TokenizerManager;
 use tantivy::{
-    DocId, Index, IndexReader, IndexSettings, IndexWriter, ReloadPolicy, Score, SegmentMeta,
-    SegmentReader, SingleSegmentIndexWriter, TantivyDocument, TantivyError, Term,
+    DocId, Index, IndexBuilder, IndexReader, IndexSettings, IndexWriter, ReloadPolicy, Score,
+    SegmentMeta, SegmentReader, TantivyDocument, TantivyError, Term,
 };
 
 use crate::index::{BodySource, Document, Hit, Hits, Page, RECORD_SEGMENT, Signals};
@@ -291,22 +292,37 @@ fn schema() -> (Schema, Fields) {
 }
 
 /// An index in memory that never starts a thread of its own: its writes go
-/// through [`SingleSegmentIndexWriter`] (and, natively, an incremental
-/// writer), and no doc store compressor thread runs, since nothing is
-/// stored. Threads cannot start in the browser.
+/// through a [`SingleSegmentIndexWriter`](tantivy::SingleSegmentIndexWriter)
+/// (and, natively, an incremental writer), and no doc store compressor
+/// thread runs, since nothing is stored. Threads cannot start in the browser.
 fn in_memory(schema: Schema) -> Index {
+    in_memory_builder(schema.clone())
+        .create_in_ram()
+        .unwrap_or_else(|_| {
+            let mut index = Index::create_in_ram(schema);
+            index.set_tokenizers(tokenizers());
+            index
+        })
+}
+
+/// [`in_memory`]'s settings and tokenizers, for an index or a single
+/// segment writer to start from.
+fn in_memory_builder(schema: Schema) -> IndexBuilder {
     let settings = IndexSettings {
         docstore_compress_dedicated_thread: false,
         ..IndexSettings::default()
     };
-    let index = Index::builder()
-        .schema(schema.clone())
+    Index::builder()
+        .schema(schema)
         .settings(settings)
-        .create_in_ram()
-        .unwrap_or_else(|_| Index::create_in_ram(schema));
-    index.tokenizers().register(GRAMS, GramTokenizer::default());
-    index.tokenizers().register(WORDS, WordTokenizer::default());
-    index
+        .tokenizers(tokenizers())
+}
+
+fn tokenizers() -> TokenizerManager {
+    let tokenizers = TokenizerManager::default();
+    tokenizers.register(GRAMS, GramTokenizer::default());
+    tokenizers.register(WORDS, WordTokenizer::default());
+    tokenizers
 }
 
 fn manual_reader(index: &Index) -> tantivy::Result<IndexReader> {
@@ -579,8 +595,8 @@ impl TantivyEngine {
         heap_bytes: usize,
         documents: impl Iterator<Item = &'a Document>,
     ) -> tantivy::Result<Index> {
-        let index = in_memory(self.index.schema());
-        let mut writer = SingleSegmentIndexWriter::<TantivyDocument>::new(index, heap_bytes)?;
+        let mut writer = in_memory_builder(self.index.schema())
+            .single_segment_index_writer::<TantivyDocument>(RamDirectory::create(), heap_bytes)?;
         let mut failed = None;
         for document in documents {
             self.tantivy_documents(records, document, &mut |built| {
@@ -641,7 +657,8 @@ impl TantivyEngine {
         // collected as garbage.
         let meta = self.index.new_segment_meta(segment.id(), segment.max_doc());
         let (from, to) = (built.directory(), self.index.directory());
-        for path in segment.list_files() {
+        // The built index has this one segment: its files are the index's.
+        for path in built.load_metas()?.list_segment_files() {
             if !from.exists(&path)? {
                 continue;
             }
