@@ -206,12 +206,11 @@ mod cases {
         of_kind(tree, "embed")
     }
 
-    fn captions(tree: &UiNode) -> Vec<String> {
+    /// The values of the texts with the label role: the authors of a chat's messages.
+    fn labels(tree: &UiNode) -> Vec<String> {
         of_kind(tree, "text")
             .into_iter()
-            .filter(|t| t.props.get("role") == Some(&Value::text("caption")))
-            // A message's time is a caption too; the authors are the captions that are no date.
-            .filter(|t| !t.props.contains_key("value:as"))
+            .filter(|t| t.props.get("role") == Some(&Value::text("label")))
             .map(|t| text_prop(t, "value"))
             .collect()
     }
@@ -333,7 +332,7 @@ mod cases {
 
         let view = wb.view(&apps.chat, "thread", vec![res(&conv)]);
         assert_eq!(
-            captions(view.tree()),
+            labels(view.tree()),
             authors,
             "the view shows the messages in the converged order, with their authors"
         );
@@ -362,7 +361,7 @@ mod cases {
         assert_eq!(text_of(&w, &conv, "draft"), "");
         view.poll_patches().unwrap();
         assert_eq!(
-            captions(view.tree()),
+            labels(view.tree()),
             ["me"],
             "the composer posts as whoever is looking, as the runtime knows them"
         );
@@ -461,7 +460,7 @@ mod cases {
             first.contains("E0"),
             "the diagnostic keeps its code: {first}"
         );
-        assert_eq!(captions(view.tree()), ["agent:helper", "person:ada"]);
+        assert_eq!(labels(view.tree()), ["agent:helper", "person:ada"]);
     }
 
     #[test]
@@ -1313,7 +1312,7 @@ mod cases {
                     Value::Principal(Principal::new("person:bo"))
                 ]
             );
-            assert_eq!(captions(tree), ["person:ada", "person:bo"]);
+            assert_eq!(labels(tree), ["person:ada", "person:bo"]);
         }
     }
 
