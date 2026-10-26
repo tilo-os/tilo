@@ -22,6 +22,7 @@ pub mod recent_places;
 mod relevance_tests;
 mod timing;
 pub mod usage;
+pub mod verifier;
 pub mod visibility;
 
 use std::cell::RefCell;
