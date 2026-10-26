@@ -291,6 +291,7 @@ fn canonical_owner_process() {
             let message = chat::feedback::message_id(ID);
             assert_eq!(
                 chat::projection::read(doc)
+                    .expect("the persisted feedback chat reads whole")
                     .message_row(&chat::messages::Messages::default(), &message)
                     .map(|shown| shown.channel),
                 Some("feedback".to_owned())

@@ -187,6 +187,7 @@ pub async fn run() {
     )
     .unwrap();
     let channel = chat::projection::read(&doc)
+        .expect("the mounted chat fixture reads whole")
         .channel_rows()
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Text)
@@ -293,6 +294,7 @@ pub async fn run() {
     })
     .await;
     let voice_channel = chat::projection::read(&doc)
+        .expect("the mounted chat fixture reads whole")
         .channel_rows()
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
@@ -379,7 +381,7 @@ pub async fn run() {
         "channelId": channel.id,
         "channel": chat::projection::item_id("channels", &channel.id),
         "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey, "encryptedRestart": encrypted_restart, "sourceAuthor": source_author,
-        "sourcePeople": source.read(|doc| chat::projection::read(doc).user_rows().into_iter().map(|person|
+        "sourcePeople": source.read(|doc| chat::projection::read(doc).expect("the mounted chat fixture reads whole").user_rows().into_iter().map(|person|
             serde_json::json!({"id":person.id,"name":person.name})).collect::<Vec<_>>()).unwrap(),
         "voiceChannel": voice_channel.id, "callRow": format!("{}/call", chat::projection::item_id("channels", &voice_channel.id)),
         "secondDevice": {"seed": second_device.key.to_bytes(),

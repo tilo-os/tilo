@@ -75,6 +75,21 @@ fn stores(test: &str) -> Option<(PathBuf, PathBuf)> {
     Some((PathBuf::from(a), PathBuf::from(b)))
 }
 
+fn tool_available(program: &str) -> bool {
+    if Command::new(program)
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+    {
+        return true;
+    }
+    tilo_test_env::capability_unavailable(
+        tilo_test_env::Capability::Fanotify,
+        format_args!("native Tier 1 requires a working {program}"),
+    );
+    false
+}
+
 fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], primary: bool) {
     let paths = IdentityPaths::under(root);
     paths.ensure_directories().unwrap();
@@ -766,8 +781,7 @@ fn a_git_repository_made_on_one_device_is_clean_and_complete_on_the_other() {
     let Some((a, b)) = stores("native_git") else {
         return;
     };
-    if Command::new("git").arg("--version").output().is_err() {
-        assert!(!required(), "git is not installed");
+    if !tool_available("git") {
         return;
     }
     let mut pair = start_pair(&a, &b);
@@ -1114,8 +1128,7 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
     let Some((a, b)) = stores("native_changeset_crash") else {
         return;
     };
-    if Command::new("git").arg("--version").output().is_err() {
-        assert!(!required(), "git is not installed");
+    if !tool_available("git") {
         return;
     }
     let mut pair = start_pair(&a, &b);
@@ -1449,8 +1462,7 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
     let Some((a, b)) = stores("native_sqlite") else {
         return;
     };
-    if Command::new("sqlite3").arg("--version").output().is_err() {
-        assert!(!required(), "sqlite3 is not installed");
+    if !tool_available("sqlite3") {
         return;
     }
     let mut pair = start_pair(&a, &b);

@@ -320,6 +320,7 @@ pub async fn create_voice_channel(
     let mut chat = AutoCommit::new();
     chat::demo::start(&mut chat, "fixture", "Fixture", "F").unwrap();
     let voice = chat::projection::read(&chat)
+        .expect("the voice chat fixture reads whole")
         .channel_rows()
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
