@@ -184,6 +184,18 @@ pub const fn counter_of(id: u64) -> u64 {
     id & PEER_ID_COUNTER_MASK
 }
 
+/// The id namespace a room's own strips are minted in: the named places its
+/// operator lists. Derived from the room alone, so every host of the room
+/// mints them alike, and never a device's own namespace (a device whose key
+/// happens to fold here is refused its own, by the host admitting its
+/// writes).
+#[must_use]
+pub fn room_strips_salt(room: &str) -> u16 {
+    let hash = blake3::hash(format!("room strips {room}").as_bytes());
+    let [a, b, ..] = *hash.as_bytes();
+    device_salt(u16::from_le_bytes([a, b]))
+}
+
 /// The layout id namespace of the device a name stands for (its device key
 /// in hex, or any stable device name): the fold every host derives the same
 /// way, so a page's windows, the relay that admits them and a native peer

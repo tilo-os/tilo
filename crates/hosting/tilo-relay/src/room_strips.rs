@@ -87,10 +87,7 @@ struct Minter {
 
 impl Minter {
     fn salt(room: &str) -> u16 {
-        let hash = blake3::hash(format!("room strips {room}").as_bytes());
-        let [a, b, ..] = *hash.as_bytes();
-        // Salt 0 is no namespace at all, and the reserved one is nobody's.
-        tilo_desktop_model::ids::device_salt(u16::from_le_bytes([a, b]))
+        tilo_desktop_model::ids::room_strips_salt(room)
     }
 
     fn new(room: &str, tree: &DesktopTree) -> Self {
