@@ -1066,6 +1066,12 @@ inputs = ["os/usr/share/wayland-sessions/*.desktop", "os/usr/libexec/tilo-boot-h
 readers = ["crates/session/greeter/src/greeter_app.rs", "crates/session/greeter/src/seat_input.rs"]
 
 [[cargo]]
+package = "pam-tilo"
+# The conversation tests run the PAM services the image ships.
+inputs = ["os/etc/pam.d/tilo-auth", "os/etc/pam.d/greetd", "os/etc/pam.d/tilo-unlock", "os/etc/pam.d/polkit-1", "os/etc/pam.d/sudo"]
+readers = ["crates/system/pam-tilo/tests/conversation.rs"]
+
+[[cargo]]
 package = "launcher"
 inputs = [
   "apps/*/tilo-app.toml",

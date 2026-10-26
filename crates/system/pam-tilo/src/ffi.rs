@@ -10,6 +10,7 @@ pub struct PamHandle {
     _private: [u8; 0],
 }
 
+pub const PAM_SERVICE: c_int = 1;
 pub const PAM_AUTHTOK: c_int = 6;
 pub const PAM_OLDAUTHTOK: c_int = 7;
 pub const PAM_PRELIM_CHECK: c_int = 0x4000;

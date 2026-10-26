@@ -68,7 +68,7 @@ else
 fi
 
 auth_keyring_line=$(grep -n '^auth[[:space:]]\+optional[[:space:]]\+pam_gnome_keyring\.so$' "$pam" | cut -d: -f1)
-password_auth_line=$(grep -n '^auth[[:space:]]\+substack[[:space:]]\+password-auth$' "$pam" | cut -d: -f1)
+password_auth_line=$(grep -n '^auth[[:space:]]\+substack[[:space:]]\+tilo-auth$' "$pam" | cut -d: -f1)
 session_include_line=$(grep -n '^session[[:space:]]\+include[[:space:]]\+password-auth$' "$pam" | cut -d: -f1)
 session_keyring_line=$(grep -n '^session[[:space:]]\+optional[[:space:]]\+pam_gnome_keyring\.so[[:space:]]\+auto_start$' "$pam" | cut -d: -f1)
 if [ -n "$auth_keyring_line" ] \
