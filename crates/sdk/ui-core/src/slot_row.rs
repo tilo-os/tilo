@@ -154,6 +154,7 @@ impl SlotRow {
     }
 
     /// The row must be painted again in full.
+    #[cfg(feature = "native")]
     pub(crate) fn mark_repaint(&mut self) {
         self.repaint = true;
     }
@@ -319,6 +320,7 @@ impl SlotRow {
     /// The input evidence of the window's search, beside the app's own:
     /// what the field holds and where the control stands, while the row
     /// shows.
+    #[cfg(feature = "native")]
     pub(crate) fn with_search_evidence(
         &self,
         snapshot: Option<serde_json::Value>,

@@ -191,6 +191,54 @@ fn groups_and_history_steps_read_as_sentences() {
 }
 
 #[test]
+fn a_task_names_the_person_who_acted_through_it() {
+    let reader = Reader::new("en-US");
+    let task = Task {
+        id: "11111111-1111-4111-8111-111111111111",
+        label: "Prepare Q3 financials",
+    };
+    // An agent working a task is named by the person under whose authority
+    // the task ran, through the task.
+    assert_eq!(
+        reader.actor(&Who {
+            actor: "ada",
+            kind: ActorKind::Agent,
+            for_person: Some("ada"),
+            for_reader: false,
+            is_reader: false,
+            task: Some(&task),
+        }),
+        "ada via task ‘Prepare Q3 financials’"
+    );
+    assert_eq!(
+        Reader::new("de-DE").actor(&Who {
+            actor: "ada",
+            kind: ActorKind::Agent,
+            for_person: Some("ada"),
+            for_reader: false,
+            is_reader: false,
+            task: Some(&task),
+        }),
+        "ada über Aufgabe „Prepare Q3 financials“"
+    );
+    // A task nobody named leaves the actor as it is recorded.
+    assert_eq!(
+        reader.actor(&Who {
+            actor: "ada",
+            kind: ActorKind::Person,
+            for_person: None,
+            for_reader: false,
+            is_reader: false,
+            task: Some(&Task {
+                id: task.id,
+                label: " ",
+            }),
+        }),
+        "ada"
+    );
+}
+
+#[test]
 fn actors_are_named_with_the_person_they_act_for() {
     let reader = Reader::new("en-US");
     let agent = ActionInvoker::actor("agent:claude")
@@ -203,9 +251,10 @@ fn actors_are_named_with_the_person_they_act_for() {
             kind: agent.kind,
             for_person: Some("ada"),
             for_reader: false,
-            is_reader: false
+            is_reader: false,
+            task: None
         }),
-        "Claude · Agent, for ada"
+        "Claude · Software, for ada"
     );
     assert_eq!(
         reader.actor(&Who {
@@ -213,9 +262,10 @@ fn actors_are_named_with_the_person_they_act_for() {
             kind: ActorKind::Agent,
             for_person: None,
             for_reader: false,
-            is_reader: false
+            is_reader: false,
+            task: None
         }),
-        "Claude · Agent"
+        "Claude · Software"
     );
     assert_eq!(
         reader.actor(&Who {
@@ -223,7 +273,8 @@ fn actors_are_named_with_the_person_they_act_for() {
             kind: ActorKind::Person,
             for_person: None,
             for_reader: false,
-            is_reader: true
+            is_reader: true,
+            task: None
         }),
         "You"
     );
@@ -233,7 +284,8 @@ fn actors_are_named_with_the_person_they_act_for() {
             kind: ActorKind::Shortcut,
             for_person: Some("ada"),
             for_reader: false,
-            is_reader: false
+            is_reader: false,
+            task: None
         }),
         "Morgens · Kurzbefehl, für ada"
     );
@@ -243,7 +295,8 @@ fn actors_are_named_with_the_person_they_act_for() {
             kind: ActorKind::Bot,
             for_person: Some("Ada"),
             for_reader: false,
-            is_reader: false
+            is_reader: false,
+            task: None
         }),
         "Discord Bridge · Bot, for Ada"
     );
@@ -325,4 +378,79 @@ fn an_element_a_set_gained_or_lost_is_named() {
         english.sentence(&tag(EditOp::Remove, "ops")),
         "Removed ops from Tags of Deploy script"
     );
+}
+
+#[test]
+fn a_step_the_app_has_no_message_for_says_so_and_reads_the_fallback() {
+    let moved = entry(edit("folder", Some("Inbox".into()), Some("Ops".into())));
+    let what = moved.what.as_ref().unwrap();
+    // The app's catalogue has the field, so it renders the sentence itself.
+    let snippets = Catalogue::new("en-US", &[SNIPPETS_EN]);
+    assert_eq!(
+        Reader::new("en-US").with_app(&snippets).did_by_app(
+            what,
+            "org.tilo.Snippets",
+            Some("Deploy script")
+        ),
+        ("Moved Deploy script to Ops".to_owned(), true)
+    );
+    // A catalogue with no message for it falls back, and says so, so an
+    // agent or a check can tell the framework's words from the app's.
+    let other = Catalogue::new("en-US", &["snippets-snippet-favorite = Starred"]);
+    assert_eq!(
+        Reader::new("en-US").with_app(&other).did_by_app(
+            what,
+            "org.tilo.Snippets",
+            Some("Deploy script")
+        ),
+        ("Changed Folder of Deploy script to Ops".to_owned(), false)
+    );
+    // Without an app catalogue at all nothing is the app's.
+    assert!(
+        !Reader::new("en-US")
+            .did_by_app(what, "org.tilo.Snippets", None)
+            .1
+    );
+}
+
+#[test]
+fn a_group_names_every_message_one_of_its_steps_asks_for() {
+    let star = edit("favorite", Some(false.into()), Some(true.into()));
+    let move_to = edit("folder", None, Some("Ops".into()));
+    let app = "org.tilo.Snippets";
+    assert_eq!(
+        message_keys(app, &star),
+        ["snippets-snippet-favorite".to_owned()]
+    );
+    // The same step three times renders through its one message.
+    assert_eq!(
+        message_keys(app, &Did::group([star.clone(), star.clone()])),
+        ["snippets-snippet-favorite".to_owned()]
+    );
+    // A mixed group renders one generic sentence: the distinct steps it
+    // names are what its catalogue must still carry for the group's own row.
+    let mixed = Did::group([star, move_to]);
+    let mut keys = message_keys(app, &mixed);
+    keys.sort();
+    assert_eq!(
+        keys,
+        [
+            "snippets-snippet-favorite".to_owned(),
+            "snippets-snippet-folder".to_owned()
+        ]
+    );
+    // A history step is the framework's to word, never the app's.
+    assert!(message_keys(app, &Did::history(HistoryOp::Undo, 1, None)).is_empty());
+}
+
+#[test]
+fn a_framework_message_a_catalogue_lacks_never_renders_as_its_id() {
+    // Every message the reader asks for by name is in the framework's own
+    // catalogue: `tilo-history/locales/en-US.ftl`. Read through a catalogue
+    // that holds none of them, an entry still reads as words.
+    let bare = Catalogue::new("en-US", &["unrelated = nothing to do with history"]);
+    let moved = entry(edit("folder", Some("Inbox".into()), Some("Ops".into())));
+    let sentence = Reader::new("en-US").with_app(&bare).sentence(&moved);
+    assert_eq!(sentence, "Changed Folder of Deploy script to Ops");
+    assert!(!sentence.contains("history-"), "{sentence}");
 }

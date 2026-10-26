@@ -184,6 +184,9 @@ class CloudDeployTests(unittest.TestCase):
             self.fake.publish(ROOM, revision)
         self.fake.publish(WEB, self.newest)
         self.fake.publish(WEB, self.side)
+        guest = deploy.Service("legacy-guest", deploy.GUEST_IMAGE, "", "")
+        for revision in (self.deployed, self.target, self.newest, self.side):
+            self.fake.publish(guest, revision)
         self.fake.publish(ROOM, self.side)
         self.running = {WEB.name: self.deployed, ROOM.name: self.deployed}
         # The room service of a build whose relay cannot start answers, without a relay.
@@ -518,6 +521,110 @@ class CloudDeployTests(unittest.TestCase):
         self.assertIn("Not rolling back", err)
         self.assertEqual(len([1 for method, url, _ in self.writes() if url == f"{API}/contents"]), 1)
 
+    # --- the qualification manifest: the evidence names the exact release, or nothing deploys.
+
+    def guest_of(self, revision):
+        """The guest the given commit publishes, as the deploy resolves it."""
+        guest = deploy.Service("legacy-guest", deploy.GUEST_IMAGE, "", "")
+        return deploy.Registry(self.fake).image(guest, TARGET.tag.format(commit=revision)).digest
+
+    def qualification(self, revision, *, observation="native", services=None, guest=None, **identities):
+        """A manifest that qualifies `revision` the way a real run would."""
+        guest_revision = guest or revision
+        document = {
+            "sourceRevision": revision,
+            "observation": observation,
+            "identities": {
+                "guest": {"digest": self.guest_of(guest_revision), "sourceRevision": guest_revision},
+                "ami": {"id": "ami-0123456789abcdef0", "type": "m7g.large"},
+                "backend": {"revision": revision},
+                "template": {"revision": revision},
+                "browserRuntime": {"version": "131.0.6778.85"},
+            },
+            "services": services or {name: self.fake.digests[(name, revision)] for name in ("web-entry", "room-service")},
+            "limits": {"roomsPerHost": {"value": 8, "unit": "rooms"},
+                       "bootSeconds": {"value": 45, "unit": "seconds"}},
+        }
+        document["identities"].update(identities)
+        document["manifest"] = deploy.manifest_digest(document)
+        path = Path(self.temp.name) / f"qualification-{len(list(Path(self.temp.name).glob('qualification*')))}.json"
+        path.write_text(json.dumps(document))
+        return path
+
+    def rewrite(self, path, edit):
+        document = json.loads(path.read_text())
+        edit(document)
+        document["manifest"] = deploy.manifest_digest(document)
+        path.write_text(json.dumps(document))
+        return path
+
+    def test_a_qualification_that_names_this_release_is_deployed_and_kept_under_its_digest(self):
+        out_dir = Path(self.temp.name) / "out"
+        path = self.qualification(self.target)
+        code, _, err = self.plan("--qualification", str(path), "--out", str(out_dir))
+        self.assertEqual(code, 0, err)
+        plan = json.loads((out_dir / "plan.json").read_text())
+        document = json.loads(path.read_text())
+        self.assertEqual(plan["qualification"]["manifest"], document["manifest"])
+        self.assertEqual(plan["qualification"]["sourceRevision"], self.target)
+        kept = out_dir / f"{document['manifest'].split(':', 1)[1]}.qualification.json"
+        self.assertEqual(json.loads(kept.read_text()), document)
+
+    def test_a_qualification_of_another_guest_or_service_digest_is_refused(self):
+        for label, edit in (
+            ("guest digest", lambda document: document["identities"]["guest"].update(
+                digest=self.guest_of(self.deployed))),
+            ("guest source revision", lambda document: document["identities"]["guest"].update(
+                sourceRevision=self.deployed)),
+            ("room service digest", lambda document: document["services"].update(
+                {"room-service": self.fake.digests[("room-service", self.deployed)]})),
+        ):
+            with self.subTest(label):
+                path = self.rewrite(self.qualification(self.target), edit)
+                code, _, err = self.plan("--qualification", str(path))
+                self.assertEqual(code, 1, f"{label} was accepted")
+                self.assertIn("qualified", err)
+
+    def test_a_qualification_of_another_release_is_refused(self):
+        path = self.qualification(self.deployed)
+        code, _, err = self.plan("--qualification", str(path))
+        self.assertEqual(code, 1)
+        self.assertIn("qualified web-entry at", err)
+
+    def test_a_source_only_observation_does_not_enable_a_gated_feature(self):
+        path = self.qualification(self.target, observation="source")
+        code, _, err = self.plan("--qualification", str(path))
+        self.assertEqual(code, 1)
+        self.assertIn("from source only", err)
+        code, _, err = self.plan("--qualification", str(path), "--allow-source")
+        self.assertEqual(code, 0, err)
+
+    def test_an_edited_manifest_is_refused_by_its_own_digest(self):
+        path = self.qualification(self.target)
+        document = json.loads(path.read_text())
+        document["limits"]["roomsPerHost"]["value"] = 1
+        path.write_text(json.dumps(document))
+        code, _, err = self.plan("--qualification", str(path))
+        self.assertEqual(code, 1)
+        self.assertIn("hash to", err)
+
+    def test_the_identities_and_limits_a_manifest_must_name(self):
+        dropped = (
+            ("no guest", lambda document: document["identities"].pop("guest")),
+            ("no limits", lambda document: document.update(limits={})),
+            ("no ami", lambda document: document["identities"].pop("ami")),
+            ("no browser runtime", lambda document: document["identities"].pop("browserRuntime")),
+            ("unknown identity", lambda document: document["identities"].update(signed={"x": "y"})),
+            ("unknown observation", lambda document: document.update(observation="guess")),
+            ("limit without a unit", lambda document: document["limits"].update(
+                {"bootSeconds": {"value": 45}})),
+        )
+        for label, edit in dropped:
+            with self.subTest(label):
+                path = self.rewrite(self.qualification(self.target), edit)
+                code, _, err = self.plan("--qualification", str(path))
+                self.assertEqual(code, 1, f"{label} was accepted")
+
 
 class WorkflowContractTests(unittest.TestCase):
     def test_t_deploys_the_receipts_stable_publishes(self):
@@ -542,7 +649,6 @@ class WorkflowContractTests(unittest.TestCase):
         # The web entry's release is the image carrying production's version, not the bare build.
         self.assertEqual(checks["sign-web-entry"]["needs"], ["carry-web-entry", "signing-tools"])
         self.assertIn("carry-web-entry", checks["publish-web-entry"]["optional_needs"])
-
 
 if __name__ == "__main__":
     unittest.main()

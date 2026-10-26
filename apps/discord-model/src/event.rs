@@ -17,7 +17,13 @@ pub mod source {
     pub const LAYOUT_CHANGED: &str = "layout-changed";
     pub const MEMBER_CHANGED: &str = "member-changed";
     pub const COMMAND: &str = "command";
-    pub const ALL: [&str; 8] = [
+    /// Someone signed in with Discord on the room's host (OAuth 2): the
+    /// host appends it, not the worker.
+    pub const AUTHORIZED: &str = "authorized";
+    /// Whether, and where, the room's host offers signing in with Discord:
+    /// the host appends it when it starts, not the worker.
+    pub const SIGN_IN: &str = "sign-in";
+    pub const ALL: [&str; 10] = [
         MESSAGE_CREATED,
         MESSAGE_UPDATED,
         MESSAGE_DELETED,
@@ -26,6 +32,8 @@ pub mod source {
         LAYOUT_CHANGED,
         MEMBER_CHANGED,
         COMMAND,
+        AUTHORIZED,
+        SIGN_IN,
     ];
 }
 
@@ -57,21 +65,81 @@ pub mod event_id {
     pub fn command(interaction: &str) -> String {
         interaction.to_owned()
     }
+    #[must_use]
+    pub fn authorized(link_check: &str) -> String {
+        format!("authorized:{link_check}")
+    }
+    /// One event per page the host offers, so a restart with the same
+    /// settings repeats nothing.
+    #[must_use]
+    pub fn sign_in(page: &str) -> String {
+        let digest = super::sha256_hex(page.as_bytes());
+        format!("sign-in:{}", digest.get(..16).unwrap_or(&digest))
+    }
 }
 
-/// The SHA-256 (lower-case hex) of a `/link` code as typed, upper-cased
-/// with whitespace removed. The record keeps a pending link's code only as
-/// this hash, and the worker hashes a code with it on arrival, so the code
-/// itself never reaches the event log.
+/// Discord's consent page for signing in to this room's host (OAuth 2's
+/// authorization code flow, `identify` only), without the round trip's
+/// `state`, which each start appends: the application's `client_id`, and
+/// `redirect_uri`, the host's callback.
 #[must_use]
-pub fn code_sha256(code: &str) -> String {
+pub fn sign_in_page(authorize_url: &str, client_id: &str, redirect_uri: &str) -> String {
+    let query = [
+        ("response_type", "code"),
+        ("client_id", client_id),
+        ("scope", "identify"),
+        ("redirect_uri", redirect_uri),
+        ("prompt", "none"),
+    ]
+    .iter()
+    .map(|(key, value)| format!("{key}={}", query_value(value)))
+    .collect::<Vec<_>>()
+    .join("&");
+    format!("{authorize_url}?{query}")
+}
+
+/// `text` percent-encoded for a query value.
+#[must_use]
+pub fn query_value(text: &str) -> String {
+    text.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                char::from(b).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// How long a link offer lasts: the button `/link` answers with, or the
+/// return from Discord's consent page, is good for ten minutes. Discord
+/// keeps an interaction's token for fifteen, so the reply can still say
+/// what came of it afterwards.
+pub const LINK_TTL_MS: i64 = 10 * 60 * 1000;
+
+/// The proof of a link token: SHA-256 (lower-case hex) of the token. Who
+/// holds the token hands its proof to `complete-link`, which the record
+/// checks against the offer's [`link_check`]; the token itself never
+/// reaches a record or the event log.
+#[must_use]
+pub fn link_proof(token: &str) -> String {
+    sha256_hex(token.trim().as_bytes())
+}
+
+/// What a link offer is kept under: SHA-256 of its [`link_proof`]. Members
+/// read it in the record, and nobody can work the proof out of it, so
+/// nobody but the token's holder completes the link.
+#[must_use]
+pub fn link_check(proof: &str) -> String {
+    sha256_hex(proof.as_bytes())
+}
+
+/// SHA-256 (lower-case hex) of `bytes`.
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest as _, Sha256};
-    let normal: String = code
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .map(|c| c.to_ascii_uppercase())
-        .collect();
-    hex::encode(Sha256::digest(normal.as_bytes()))
+    hex::encode(Sha256::digest(bytes))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,6 +240,12 @@ pub struct ReactionChanged {
     pub user_avatar_url: Option<String>,
     /// A unicode emoji, or a custom emoji's name as `:name:`.
     pub emoji: String,
+    /// A custom emoji's id; none for a unicode one.
+    #[serde(default)]
+    pub emoji_id: Option<String>,
+    /// Whether the custom emoji is animated.
+    #[serde(default)]
+    pub animated: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +296,21 @@ pub struct LayoutChanged {
     pub bot_user: String,
     pub channels: Vec<ChannelInfo>,
     pub roles: Vec<RoleInfo>,
+    /// The guild's custom emoji, which a Tilo reaction of the same `:name:`
+    /// is mirrored as.
+    #[serde(default)]
+    pub emojis: Vec<EmojiInfo>,
+}
+
+/// One of a guild's custom emoji.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct EmojiInfo {
+    pub id: String,
+    /// 2 to 32 letters, digits and underscores.
+    pub name: String,
+    #[serde(default)]
+    pub animated: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,6 +327,10 @@ pub struct MemberChanged {
     /// The member's names, when the event carries them.
     #[serde(default)]
     pub user: Option<UserName>,
+    /// Their Discord avatar hash, when the event carries their user and
+    /// they set one.
+    #[serde(default)]
+    pub avatar: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,13 +340,46 @@ pub struct Command {
     pub user_id: String,
     /// `link` or `unlink`.
     pub name: String,
-    /// SHA-256 hex of the `/link` code, hashed by the worker on arrival so
-    /// the code itself never reaches the event log.
+    /// The interaction, whose reply the bridge edits to what came of it.
     #[serde(default)]
-    pub code_sha256: Option<String>,
+    pub interaction: String,
+    /// For `/link`: [`link_check`] of the token in the reply's button. The
+    /// worker made the token and keeps it out of the event log.
+    #[serde(default)]
+    pub link_check: Option<String>,
     /// Who ran it, as Discord names them.
     #[serde(default)]
     pub user: Option<UserName>,
+    /// Their Discord avatar hash, if they set one.
+    #[serde(default)]
+    pub avatar: Option<String>,
+}
+
+/// What the room's host offers for signing in with Discord: the consent
+/// page ([`sign_in_page`]), or empty when it offers none.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct SignInOffered {
+    #[serde(default)]
+    pub page: String,
+}
+
+/// Someone signed in with Discord through the room's host (OAuth 2 with
+/// the `identify` scope): the account Discord vouched for, the round
+/// trip's state that names who started it, and the token the host handed
+/// back to the browser that came back.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct Authorized {
+    pub user_id: String,
+    #[serde(default)]
+    pub user: Option<UserName>,
+    #[serde(default)]
+    pub avatar: Option<String>,
+    /// SHA-256 (hex) of the OAuth 2 `state` the round trip came back with.
+    pub state_sha256: String,
+    /// [`link_check`] of the token the browser came back with.
+    pub link_check: String,
 }
 
 /// A Discord user's names: their unique username, and the name they show
@@ -308,13 +434,17 @@ mod tests {
     }
 
     #[test]
-    fn link_codes_hash_as_typed_without_case_or_spaces() {
-        assert_eq!(code_sha256(" abcd efgh ijkl "), code_sha256("ABCDEFGHIJKL"));
+    fn a_link_check_is_the_hash_of_the_proof() {
         assert_eq!(
-            code_sha256("abc"),
+            link_proof("ABC"),
             "b5d4045c3f466fa91fe2cc6abe79232a1a57cdf104f7a26e716e0a1e2789df78",
             "SHA-256 of ABC"
         );
+        assert_eq!(
+            link_check(&link_proof("ABC")),
+            sha256_hex(link_proof("ABC").as_bytes())
+        );
+        assert_ne!(link_check(&link_proof("ABC")), link_proof("ABC"));
     }
 
     #[test]

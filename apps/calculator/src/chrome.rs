@@ -48,6 +48,13 @@ impl Header {
     }
 }
 
+/// The narrowest the formulas shrink to before the panel stops docking.
+///
+/// A formula row is a math field between its visibility and delete targets,
+/// so the panel needs about this much before it is a row rather than a
+/// stack of buttons; below docked width plus the plot's it floats instead.
+const PANEL_MIN_WIDTH: f64 = 340.0; // allow-breakpoint: the narrowest the panel may be, not a breakpoint
+
 /// A collapsible side panel: its geometry and its remembered state, both
 /// from the shared drawer. Its show/hide button is the window bar's.
 pub struct SidePanel {
@@ -59,15 +66,20 @@ pub struct SidePanel {
 
 impl SidePanel {
     /// A panel at the leading edge (`leading`) or the trailing edge, `docked`
-    /// wide at 1× when it sits beside the content.
-    pub fn new(leading: bool, docked: f64) -> Self {
+    /// wide at 1× when it sits beside the content — a page of formulas beside
+    /// the result it calculates, as the shell's sidebar sits beside a page.
+    pub fn new(leading: bool, docked: f64, kind: ui::widget::ContentKind) -> Self {
         let side = if leading {
             SidebarSide::Left
         } else {
             SidebarSide::Right
         };
         Self {
-            drawer: SidebarDrawer::new().side(side).docked_width(docked),
+            drawer: SidebarDrawer::new()
+                .side(side)
+                .docked_width(docked)
+                .content_kind(kind)
+                .panel_min_width(PANEL_MIN_WIDTH),
             column: Rect::ZERO,
             content: Rect::ZERO,
             header: Header::default(),

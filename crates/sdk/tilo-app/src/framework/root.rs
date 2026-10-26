@@ -40,12 +40,13 @@ use super::view::ViewCx;
 mod facts;
 mod live_head;
 mod shared_tree;
+mod shown_item;
 mod typed;
 mod widget;
 use live_head::LiveHead;
 use shared_tree::{
     DocumentChildren, ItemChildren, NestedViews, PublishedChildren, RecordChildren, RowChildren,
-    SharedTreeCache,
+    SharedTreeCache, mark_document_jobs,
 };
 use typed::TypedRoot;
 pub(crate) use typed::{ResourceType, Typed};
@@ -71,6 +72,9 @@ pub(crate) struct ResourceRoot {
     /// The window's save status over the view: the record's durability and
     /// the app's own saves, silent unless a save stalls or fails.
     save: super::saves::SaveIndicator,
+    /// The reactions to the record, in the window's bar, where the record
+    /// takes them.
+    reactions: super::reactions::ReactionsIndicator,
     /// The participant's permissions, re-checked every sync so a role change
     /// while the app runs takes effect at once. `None` for a read-only view
     /// of a past version.
@@ -549,6 +553,7 @@ impl ResourceRoot {
             dispatch,
             saved,
             save: super::saves::SaveIndicator::new(saves),
+            reactions: super::reactions::ReactionsIndicator::default(),
             permissions: None,
             write: None,
             stages,
@@ -636,12 +641,43 @@ impl ResourceRoot {
         self
     }
 
+    /// Show the record's reactions in the window's bar, and run those
+    /// pressed there ([`super::reactions`]). Nothing while the record does
+    /// not read as the resource: its last state is not what it holds.
+    fn sync_reactions(&mut self) {
+        let state = self.typed.state();
+        let readable = self.unreadable.is_none();
+        self.reactions.sync(&super::reactions::ReactionsInput {
+            table: self.resource.record_table.filter(|_| readable),
+            state: state.as_ref(),
+            dispatch: &self.dispatch,
+            people: &self.run.people,
+            private: self.run.private,
+        });
+    }
+
+    /// Show the item the launch asked for once a view that opens items is
+    /// up. An item the record does not hold yet (it is still arriving) is
+    /// asked for again at the next sync.
+    fn reveal_launched(&self) {
+        let mut reveal = self.run.launched.reveal.borrow_mut();
+        if let Some(anchor) = reveal.as_deref()
+            && self.stages.opens()
+            && self.stages.open(anchor).is_ok()
+        {
+            *reveal = None;
+        }
+    }
+
     /// Apply a permission change made while the app runs: dispatchers stop
     /// (or resume) submitting, bound state and surfaces see the new value.
     fn refresh_access(&self) {
         let _profile = tilo_resource::profiling::Phase::start("framework.access_refresh");
         if let (Some(permissions), Some(write)) = (&self.permissions, &self.write) {
-            self.dispatch.set_read_only(!permissions.check(write));
+            let read_only = !permissions.check(write) && !self.may_change_shown_item(permissions);
+            self.dispatch.set_read_only(read_only);
+            // Its person sees, in the window's bar, that they may only look.
+            ui_core::window_toolbar::show_view_only(read_only);
         }
         self.dispatch.refresh_permission_states();
     }
@@ -747,7 +783,13 @@ impl ResourceRoot {
     fn publication(&self) -> tilo_actions::Resource {
         let _profile = tilo_resource::profiling::Phase::start("framework.publication");
         let state = self.typed.state();
-        let tree = self.shared_document_tree(&*state).to_resource();
+        let mut tree = self.shared_document_tree(&*state).to_resource();
+        if let Some(reason) = self.typed.unreadable() {
+            // Read out of the last state that did read: the record publishes
+            // why its document actions do not apply, never that state as the
+            // one it holds.
+            tilo_resource::withhold_document_actions(&mut tree, &reason);
+        }
         self.decorate_publication(&*state, tree, Decoration::Tree)
     }
 
@@ -766,7 +808,18 @@ impl ResourceRoot {
         let state = self.typed.state();
         let version = (self.version(), ui_core::i18n::I18nManager::revision());
         let epoch = self.typed.cache_epoch(&*state);
-        let resource = if let Some(epoch) = &epoch {
+        let resource = if let Some(reason) = &self.typed.unreadable() {
+            // The state is the last that read, not what the document holds,
+            // so even the fields bound controls were bound to are no longer
+            // offered: every document action says why it does not apply.
+            let mut head = self
+                .typed
+                .head(self.dispatch.resource_id(), &self.label, &*state);
+            tilo_resource::withhold_document_actions(&mut head, reason);
+            head.actions
+                .retain(|spec| spec.id != tilo_resource::FIELD_EDIT);
+            Rc::new(head)
+        } else if let Some(epoch) = &epoch {
             self.live_head(&*state, epoch)
         } else {
             let _profile = tilo_resource::profiling::Phase::start("framework.resource_head");
@@ -839,7 +892,7 @@ impl ResourceRoot {
             mark_document_jobs(&mut resource);
         }
         if let Some(unreadable) = &key.unreadable {
-            withhold_document_actions(&mut resource, unreadable);
+            tilo_resource::withhold_document_actions(&mut resource, unreadable);
         }
         let base = Rc::new(BindingBase {
             key,
@@ -919,7 +972,7 @@ impl ResourceRoot {
             mark_document_jobs(&mut overlay);
         }
         if let Some(unreadable) = &base.key.unreadable {
-            withhold_document_actions(&mut overlay, unreadable);
+            tilo_resource::withhold_document_actions(&mut overlay, unreadable);
         }
         overlay.actions
     }
@@ -937,6 +990,16 @@ impl ResourceRoot {
         };
         let base = self.binding_base(&head);
         let overlay = self.binding_overlay(&base);
+        // Read while the document did not: the fields these edits were bound
+        // to are of the last state that read, not what it holds now.
+        let overlay = if self.typed.unreadable().is_some() {
+            overlay
+                .into_iter()
+                .filter(|spec| spec.id != tilo_resource::FIELD_EDIT)
+                .collect()
+        } else {
+            overlay
+        };
         self.action_bindings
             .update_shared(Rc::clone(&base.resource), overlay);
         head
@@ -955,7 +1018,12 @@ impl ResourceRoot {
             // withdrawing the new resource tree using the previous frame's
             // handler table. The next live revision replaces this cache.
             self.pin_nested_views(&*current);
-            return self.publication_of(&*current);
+            let reason = self.typed.unreadable();
+            let mut tree = self.publication_of(&*current);
+            if let Some(reason) = reason {
+                tilo_resource::withhold_document_actions(&mut tree, &reason);
+            }
+            return tree;
         }
         self.publication()
     }
@@ -1036,10 +1104,14 @@ impl ResourceRoot {
             mark_document_jobs(&mut resource);
         }
         if let Some(unreadable) = self.typed.unreadable() {
-            withhold_document_actions(&mut resource, &unreadable);
+            tilo_resource::withhold_document_actions(&mut resource, &unreadable);
         }
         if children {
+            // A record a view asked for and could not open is published
+            // with its declared actions unavailable for why: nothing is
+            // shown of it, so nothing but those is answered.
             resource.children.extend(self.storage.record_resources());
+            resource.children.extend(self.storage.unavailable_records());
         }
         resource
     }
@@ -1258,22 +1330,6 @@ fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource
     }
 }
 
-/// Every document action of `resource` and its children, unavailable for
-/// `reason`: the record does not read as the resource.
-fn withhold_document_actions(resource: &mut tilo_actions::Resource, reason: &str) {
-    for spec in &mut resource.actions {
-        if spec.kind == tilo_actions::OperationKind::Document {
-            spec.contract.availability = tilo_actions::Availability::Unavailable {
-                code: "unreadable".into(),
-                reason: reason.to_owned(),
-            };
-        }
-    }
-    for child in &mut resource.children {
-        withhold_document_actions(child, reason);
-    }
-}
-
 /// Visit the surface of type `S` the root of a resource app of `R` shows: for
 /// a test, or a host that mounted the app, reaching the surface between
 /// frames (`App::with_component_root` lends the root of a mounted one).
@@ -1290,28 +1346,6 @@ pub fn with_surface<R: Resource, S: 'static, T>(
     }
     let root = root.downcast_mut::<ResourceRoot>()?;
     find::<S>(root.view_mut()).map(visit)
-}
-
-/// The document actions of `resource` and its children that can queue an
-/// outside consequence (a verb taking an outbox, every action of a record
-/// with a `queue`, and undo, redo and restore, which queue the compensation
-/// of one), published as jobs: the invocation answers when what it queued
-/// has settled. Every other document action is deterministic and applies
-/// where it is invoked, at once.
-fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
-    for spec in &mut resource.actions {
-        let queues = spec.contract.kind == tilo_actions::ActionKind::Outside
-            || matches!(spec.id.as_str(), "undo" | "redo" | "restore");
-        if spec.kind == tilo_actions::OperationKind::Document && queues {
-            spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
-            if matches!(spec.contract.result, tilo_actions::ResultSpec::None) {
-                spec.contract.result = tilo_actions::ResultSpec::Job;
-            }
-        }
-    }
-    for child in &mut resource.children {
-        mark_document_jobs(child);
-    }
 }
 
 impl ui_core::widget::document_effects::DocumentEffects for ResourceRoot {
@@ -2053,6 +2087,7 @@ impl RootModel for ResourceRoot {
             let _profile = tilo_resource::profiling::Phase::start("framework.content_sync");
             self.content.sync(state, path);
         }
+        self.reveal_launched();
         self.settle_arrival();
         self.follow_search();
         // What the view's sync changed (a surface's bound edits, its
@@ -2062,6 +2097,7 @@ impl RootModel for ResourceRoot {
         *self.binding_head.borrow_mut() = Some(head);
         // The save status says itself in the window's bar.
         self.save.sync(ui_core::time::now());
+        self.sync_reactions();
     }
 
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
@@ -3598,7 +3634,7 @@ impl Unopened {
         for decl in declarations {
             resource = resource.with_action(tilo_resource::declaration_spec(decl));
         }
-        withhold_document_actions(&mut resource, reason);
+        tilo_resource::withhold_document_actions(&mut resource, reason);
         Self {
             title,
             icon,

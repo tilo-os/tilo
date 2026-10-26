@@ -1448,6 +1448,82 @@ async fn a_step_takes_arithmetic_written_in_words() {
     host.relay.shutdown().await;
 }
 
+/// A row's cells written by header are values nothing types: one that is
+/// only arithmetic (`10 business days after 2026-10-14`, `289 - 50`) is
+/// computed before the workbook takes it, so the sheet holds a real date
+/// and a number rather than the words; text around the arithmetic keeps
+/// it text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_untyped_value_that_is_only_arithmetic_is_computed() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let sheets = agent.open(SHEETS, None).unwrap();
+    let step = |action: &str, arguments: serde_json::Value| {
+        serde_json::json!({"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+            "action": action, "arguments": arguments})
+    };
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            step(
+                "set-cells",
+                serde_json::json!({"sheet": FIRST_SHEET, "start": "A1",
+                    "rows": [["Claim", "Pay by", "Payout", "Note"], ["C-1"]]})
+            ),
+            step(
+                "upsert-item",
+                serde_json::json!({"sheet": FIRST_SHEET, "match": {"Claim": "C-1"},
+                    "value": {"Pay by": "10 business days after 2026-10-14",
+                        "Payout": "289 - 50", "Note": "Call 319 - 75 today"}})
+            ),
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    let read = tilo_actions::door::ActionAddress::new("sheets.workbook", "read-cells");
+    let cells = agent
+        .invoke(
+            &sheets,
+            &read,
+            serde_json::json!({"sheet": FIRST_SHEET, "range": "B2:D2"})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap()
+        .and_then(|output| output.value)
+        .unwrap();
+    assert_eq!(
+        cells["rows"],
+        serde_json::json!([["2026-10-28", 239.0, "Call 319 - 75 today"]]),
+        "{cells}"
+    );
+    assert_eq!(
+        cells["formats"]["B2"], "date",
+        "the sheet holds a date, not text: {cells}"
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
 const MESSAGES: &str = "so.tilo.messages";
 
 /// A step quotes one message among several alike by a rule (the newest from
@@ -1578,6 +1654,195 @@ async fn a_missing_value_goes_to_repair_naming_its_reference() {
 
     agent.close();
     host.relay.shutdown().await;
+}
+
+/// A model's `plan` turn: a `sheets.workbook#set-cells` of each
+/// `(sheet, start, value)`, listing `obligations` when there are any.
+fn set_cells_plan(obligations: &[&str], cells: &[(&str, &str, &str)]) -> serde_json::Value {
+    let steps: Vec<serde_json::Value> = cells
+        .iter()
+        .map(|(sheet, start, value)| {
+            serde_json::json!({"operation": "sheets.workbook#set-cells",
+                "arguments": {"sheet": sheet, "start": start, "rows": [[value]]}})
+        })
+        .collect();
+    let mut plan = serde_json::json!({"steps": steps, "then": ""});
+    if !obligations.is_empty() {
+        plan["obligations"] = serde_json::json!(obligations);
+    }
+    tool_call("p1", "plan", &plan)
+}
+
+/// Run `task` on an agent granted `app`, its model answering `answers` in
+/// order: the task as it ended, the requests its model was sent, and the
+/// first sheet's `A1:C4` when `app` is Sheets.
+async fn task_with_model(
+    app: &str,
+    answers: Vec<serde_json::Value>,
+    task: &str,
+) -> (
+    tilo_relay_protocol::agents::AgentTask,
+    Vec<serde_json::Value>,
+    serde_json::Value,
+) {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (url, sent) = model_endpoint(answers);
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[app],
+        endpoint_planner(&url),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let route = agent.open(app, None).unwrap();
+    let info = run_task(&mut agent, &control, task);
+    let requests = sent
+        .try_iter()
+        .map(|body| serde_json::from_str(&body).unwrap())
+        .collect();
+    let cells = if app == SHEETS {
+        sheet_rows(&mut agent, &route, "A1:C4")
+    } else {
+        serde_json::Value::Null
+    };
+    agent.close();
+    host.relay.shutdown().await;
+    (info, requests, cells)
+}
+
+/// Two different slips in one task (a value that is not there, then a
+/// sheet that is not there) are each planned around, and the task
+/// finishes; the second repair is told the first one's step ran and is
+/// kept, and a step of it that ran already is not run again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_different_failures_in_one_task_are_both_repaired() {
+    let (info, requests, cells) = Box::pin(task_with_model(
+        SHEETS,
+        vec![
+            set_cells_plan(
+                &[],
+                &[("Sheet1", "A1", "Name"), ("Sheet1", "B1", "{{Sheet1!Z99}}")],
+            ),
+            set_cells_plan(&[], &[("Sheet1", "A1", "Name"), ("Budget", "B1", "none")]),
+            set_cells_plan(&[], &[("Sheet1", "B1", "none")]),
+        ],
+        "In Sheets, put Name in A1 and the figure from Z99 in B1",
+    ))
+    .await;
+    assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    assert_eq!(requests.len(), 3, "a plan and two repairs");
+    let second = message_text(&requests[2]["messages"][1]);
+    assert!(
+        second.contains("no sheet `Budget`") && second.contains("Already done, and kept"),
+        "the second repair is told why and what ran: {second}"
+    );
+    let failed = info
+        .steps
+        .iter()
+        .filter(|step| step.state == TaskState::Failed)
+        .count();
+    let ran = info
+        .steps
+        .iter()
+        .filter(|step| step.state == TaskState::Completed)
+        .count();
+    assert_eq!((failed, ran), (2, 2), "A1 ran once: {info:?}");
+    assert_eq!(
+        (&cells[0][0], &cells[0][1]),
+        (&serde_json::json!("Name"), &serde_json::json!("none")),
+        "{cells}"
+    );
+}
+
+/// A repair that fails exactly as the step it repairs did (same
+/// arguments, same error) ends the task: a third plan would be the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_same_failure_twice_ends_the_task() {
+    let missing = || set_cells_plan(&[], &[("Sheet1", "A1", "{{Sheet1!Z99}}")]);
+    let (info, requests, _) = Box::pin(task_with_model(
+        SHEETS,
+        vec![missing(), missing(), missing()],
+        "In Sheets, put the figure from Z99 in A1",
+    ))
+    .await;
+    assert_eq!(info.state, TaskState::Failed, "{info:?}");
+    assert_eq!(requests.len(), 2, "a plan and one repair");
+}
+
+/// Past its repairs a task ends failed, and its failure names the
+/// obligations it left undone, as a finished task's result does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_task_past_its_repairs_fails_naming_what_is_left_undone() {
+    let obligations = ["figure in A1", "label in B1"];
+    let attempt = |listed: &[&str], note: &str, reference: &str| {
+        set_cells_plan(
+            listed,
+            &[
+                ("Sheet1", "C1", note),
+                ("Sheet1", "A1", &format!("{{{{Sheet1!{reference}}}}}")),
+            ],
+        )
+    };
+    let (info, requests, _) = Box::pin(task_with_model(
+        SHEETS,
+        vec![
+            attempt(&obligations, "first try", "Z99"),
+            attempt(&[], "second try", "Z98"),
+            attempt(&[], "third try", "Z97"),
+            attempt(&[], "fourth try", "Z96"),
+            attempt(&[], "fifth try", "Z95"),
+        ],
+        "In Sheets, put the figure from Z99 in A1 and a label in B1",
+    ))
+    .await;
+    assert_eq!(info.state, TaskState::Failed, "{info:?}");
+    assert_eq!(requests.len(), 4, "a plan and three repairs");
+    let error = info.error.unwrap_or_default();
+    assert!(
+        error.contains("Z96") && error.contains("Left undone: 1. figure in A1; 2. label in B1."),
+        "{error}"
+    );
+}
+
+/// A step nobody may confirm is not planned around: the task ends on the
+/// refusal after its one plan.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refusal_no_plan_changes_is_not_repaired() {
+    const EBOOK: &str = "so.tilo.ebook";
+    let plan = tool_call(
+        "p1",
+        "plan",
+        &serde_json::json!({"steps": [
+            {"operation": "ebook.library#shelve", "arguments": {"book": "book:dusk",
+                "title": "Dusk", "author": "Ada", "subject": "", "shared": false}},
+            {"operation": "ebook.library#remove-from-library", "arguments": {"book": "book:dusk"}},
+        ], "then": ""}),
+    );
+    let (info, requests, _) = Box::pin(task_with_model(
+        EBOOK,
+        vec![plan.clone(), plan],
+        "In Ebook, shelve Dusk by Ada, then remove it",
+    ))
+    .await;
+    assert_eq!(info.state, TaskState::Failed, "{info:?}");
+    assert!(
+        info.error
+            .as_deref()
+            .is_some_and(|error| error.contains("confirmation_required")),
+        "{info:?}"
+    );
+    assert_eq!(requests.len(), 1, "no repair");
 }
 
 /// Two agents adding a row by its key at once each keep their row: an
@@ -1941,6 +2206,11 @@ struct RelayRoom {
 
 impl RelayRoom {
     async fn start(url: &str) -> Self {
+        Box::pin(Self::granting(url, &[CHAT])).await
+    }
+
+    /// [`Self::start`], Ana granted `apps`.
+    async fn granting(url: &str, apps: &[&str]) -> Self {
         let (ada, _) = UserIdentity::generate("Ada", 1);
         let host_device = enrol(&ada, "home-server", DeviceCapabilities::host());
         let state = tempfile::tempdir().unwrap();
@@ -1963,7 +2233,7 @@ impl RelayRoom {
             ("ana-121641", "Ana"),
             &ada,
             (&host, &host_device),
-            &[CHAT],
+            apps,
             (endpoint_planner(url), tilo_content::ContentStore::memory()),
         )
         .await;
@@ -2539,3 +2809,7 @@ async fn a_plan_without_obligations_finishes_without_a_reminder() {
     assert!(sent.try_recv().is_err(), "one model request");
     Box::pin(room.close()).await;
 }
+
+/// Coordinated tasks: an agent per item of the checklist.
+#[path = "session_coverage/decompose.rs"]
+mod decompose;

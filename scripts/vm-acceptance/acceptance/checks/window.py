@@ -294,6 +294,35 @@ def _app_groups(st, app_id: str) -> list:
                    for t in g["tabs"])]
 
 
+def _session_log_lines(ctx) -> int:
+    """How many lines the session log holds now, to read only what follows."""
+    out = ctx.vm.exec(f'wc -l < "{core.SESSION_LOG}" 2>/dev/null || echo 0', check=False) or "0"
+    return next((int(word) for word in out.split() if word.isdigit()), 0)
+
+
+def _launch_evidence(ctx, check_id: str, log_lines: int, card) -> str:
+    """What the desktop did after a launch was asked for that did not arrive: every
+    window's tile, the overlays and notices, whether the card is still offered, and what
+    the session log said since; written in full beside the check, summarised for its
+    failure."""
+    st = ctx.state()
+    tiles = [[core.tab_app(tab) for tab in group["tabs"]] for group in core.all_groups(st)]
+    chrome = st.get("chrome", {})
+    notices = [n.get("title") for n in chrome.get("notifications", []) if isinstance(n, dict)]
+    still = core.target_map(ctx.vm.targets()).get("launchpad:notes")
+    said = ctx.vm.exec(
+        f'tail -n +{log_lines + 1} "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
+        '| grep -aiE "launchpad|notes|launch|refused|app tab request|placeholder|spawn" '
+        '| tail -n 80 | cut -c1-400', check=False) or "the session log said nothing about it"
+    ctx.write(f"{check_id}-launch-evidence.log", json.dumps(
+        {"tiles": tiles, "overlays": chrome.get("overlays"), "notices": notices,
+         "card_before": card, "card_after": still, "pointer": chrome.get("pointer"),
+         "input": chrome.get("input")}, indent=1, default=str) + "\n--- session log since the tap\n" + said)
+    last = [line for line in said.splitlines() if line.strip()][-3:]
+    return (f"tiles {tiles}; overlays open {[k for k, v in (chrome.get('overlays') or {}).items() if v]}; "
+            f"notices {notices}; card still offered at {still}; session log: {last}")
+
+
 @check("W18", AREA, "Touch is not the mouse: a tap on a launchpad card opens its app, the cursor "
                     "stays hidden while touch is in use and returns with the mouse")
 def touch_first(ctx, res):
@@ -307,12 +336,16 @@ def touch_first(ctx, res):
         raise Unobservable("the empty workspace shows no launchpad:notes target "
                            f"(targets: {sorted(n for n in t if n.startswith('launchpad'))})")
     x, y = int(card[0] + card[2] / 2), int(card[1] + card[3] / 2)
+    log_lines = _session_log_lines(ctx)
     ctx.vm.input("touch", "tap", str(x), str(y))
     st = ctx.wait_state(lambda s: _pointer_kind(s) == "hidden", 5,
                         "the cursor hidden after a touch")
     res.metrics["pointer_after_tap"] = st["chrome"].get("pointer")
-    st = ctx.wait_state(lambda s: _app_groups(s, "so.tilo.notes"), 25,
-                        f"Notes opened by a tap on its launchpad card at {x},{y}")
+    try:
+        st = ctx.wait_state(lambda s: _app_groups(s, "so.tilo.notes"), 25,
+                            f"Notes opened by a tap on its launchpad card at {x},{y}")
+    except CheckFailed as failure:
+        raise CheckFailed(f"{failure}; {_launch_evidence(ctx, 'W18', log_lines, card)}") from failure
     expect(st["chrome"]["input"]["modality"] == "touch",
            f"touch is the input in use after a tap ({st['chrome']['input']})")
     ctx.shot("W18-tapped-card")
@@ -692,6 +725,18 @@ def _judge_instant(name, st, b) -> tuple[list[str], list[str]]:
     return problems + p, unseen + u
 
 
+def _judge_keyboard_flight(name, st, b) -> tuple[list[str], list[str]]:
+    """(problems, unobservable) for a keyboard overview toggle. The overview opens
+    and closes at once and input acts on its new state at once, while the windows fly
+    for at most the `fast` duration as spatial context (the shell's
+    `a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once` pins
+    that). So the key is judged on its first frame and the loop's CPU, not on how many
+    frames its short flight painted."""
+    if not st["settled"]:
+        return [], [f"{name}: the compositor kept asking for frames for {TRANSITION_TIMEOUT_S} s"]
+    return _judge_cpu_and_input(name, st, b, True)
+
+
 def _judge(name, st, b, hardware, software=False, timed_input=True) -> tuple[list[str], list[str]]:
     """(problems, unobservable) for one transition. `timed_input` is false for a
     transition started through an action, which carries no input to time from."""
@@ -749,7 +794,7 @@ def judge_switch_lines(switches: list[dict], expected: int, b: dict, hardware: b
 
 
 @check("W16", AREA, "Animations are paced: the overview's transition paints many frames with no "
-                    "stalls; the keyboard overview and workspace switches arrive at once",
+                    "stalls; the keyboard overview acts at once and workspace switches arrive at once",
        needs=("workspaces",))
 def animations(ctx, res):
     # The compositor's side is judged everywhere: frames painted per transition, their
@@ -758,6 +803,7 @@ def animations(ctx, res):
     ctx.reset()
     ctx.new_terminal_window()
     ctx.settle(1.5)
+    evidence_mark, cpu_before = core.session_log_mark(ctx), core.cpu_ticks(ctx)
     display = ctx.facts.get("display") or {}
     hardware = bool(display.get("hardware"))
     software = (ctx.facts.get("renderer") or "").lower().startswith("software")
@@ -790,13 +836,19 @@ def animations(ctx, res):
         p, u = _judge(name, res.metrics[name], b, hardware, software, False)
         problems += p
         unseen += u
+    for name in ("overview_key_open", "overview_key_close"):
+        p, u = _judge_keyboard_flight(name, res.metrics[name], b)
+        problems += p
+        unseen += u
     # A workspace switch swaps the desktop in one frame; nothing of it moves after.
-    for name in ("overview_key_open", "overview_key_close", "workspace_switch", "workspace_back"):
+    for name in ("workspace_switch", "workspace_back"):
         p, u = _judge_instant(name, res.metrics[name], b)
         problems += p
         unseen += u
     problems += judge_switch_lines(switches, 2, b, hardware)
     where = f" [renderer: {ctx.facts.get('renderer')}]"
+    if problems:
+        where += core.frame_pacing_evidence(ctx, "W16", evidence_mark, cpu_before)
     expect(not problems, "; ".join(problems + unseen) + where)
     if unseen:
         raise Unobservable("; ".join(unseen) + where)

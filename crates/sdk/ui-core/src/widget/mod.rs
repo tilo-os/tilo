@@ -867,6 +867,17 @@ impl StructureChange {
     pub fn join(self, other: Self) -> Self {
         self.max(other)
     }
+
+    /// Every one of `children`'s changes, joined: for a container that adds
+    /// no structure of its own, so a change a child carries out in place
+    /// ([`Self::Children`]) stays one. Each child's change is taken, none
+    /// skipped.
+    #[must_use]
+    pub fn of_children(children: Vec<&mut (dyn Widget + '_)>) -> Self {
+        children.into_iter().fold(Self::None, |change, child| {
+            change.join(child.take_structure_change())
+        })
+    }
 }
 
 /// Optional cross-device continuation capability for an app root.
@@ -2136,19 +2147,34 @@ pub trait Widget {
         })
     }
 
-    /// Default `true`; the exception is a widget standing in for a process
-    /// that has started but not drawn. Must **latch**: once `true`, never
-    /// `false` again for the same content, or an un-presenting widget would
-    /// make a window vanish mid-resize. What shows meanwhile is decided by
-    /// [`Widget::opening`].
+    /// Default `true`; the exception is a widget standing in for a window's
+    /// content whose first frame is not drawn yet (a process that has started
+    /// but not drawn, a stream from another device before its first picture).
+    /// Must **latch**: once `true`, never `false` again for the same content,
+    /// or an un-presenting widget would make a window vanish mid-resize. What
+    /// shows meanwhile is the framework's ([`crate::arriving`]), timed from
+    /// [`Widget::arrives_from`].
     fn presented(&self) -> bool {
         true
     }
-    /// True once waiting long enough, while not yet
-    /// [`presented`](Widget::presented), that showing nothing would read as
-    /// broken. Delayed so a fast open never flashes an indicator.
-    fn opening(&self) -> bool {
-        false
+    /// Where this content's first frame comes from while it has not
+    /// [`presented`](Widget::presented): this device (an app starting here),
+    /// another device or a host. A frame from this device may hold the
+    /// window's first frame up to one frame budget; any other reserves the
+    /// window's place and says where it comes from after a while.
+    fn arrives_from(&self) -> crate::arriving::Source {
+        crate::arriving::Source::Local
+    }
+    /// How much of what this content's first frame waits on has come, when
+    /// that measures itself (its app downloaded before it starts).
+    fn arrival_progress(&self) -> Option<crate::arriving::Progress> {
+        None
+    }
+    /// The shape this content declares for the placeholder standing in for
+    /// its first frame. Undeclared, the placeholder is the ground alone:
+    /// nothing guesses what a window will show.
+    fn arrival_shape(&self) -> crate::widget::SkeletonShape {
+        crate::widget::SkeletonShape::Ground
     }
 
     /// `(caret_byte, text)`, byte offset on a char boundary. The host diffs
@@ -2380,6 +2406,17 @@ pub trait Widget {
     /// this.
     fn take_structure_change(&mut self) -> StructureChange {
         StructureChange::of(self.take_structure_dirty())
+    }
+
+    /// This widget's own layout node while the widgets under it are laid
+    /// out again in place, in it, by the coming
+    /// [`Self::remount_children`]: it then names none of them through
+    /// [`Self::for_each_layout_child`], and the host lets go of every node
+    /// under this one, as their widgets may be gone. `None` (the default)
+    /// otherwise.
+    #[doc(hidden)]
+    fn relaid_layout_node(&self) -> Option<NodeId> {
+        None
     }
 
     /// Carry out a [`StructureChange::Children`] this widget or one under it
@@ -2986,7 +3023,7 @@ pub use remount::Remount;
 pub(crate) mod replaced_tripwire;
 pub use layout::{
     AuthoredExtent, ExtentSizing, SkippedFrames, WidgetLayoutError, compute_widget_layout, insets,
-    insets_all, insets_xy, layout_clip, text_control_height, with_layout_clip,
+    insets_all, insets_xy, layout_clip, placing_again, text_control_height, with_layout_clip,
 };
 
 mod button;
@@ -3184,8 +3221,7 @@ pub use scrollbar::BarFade;
 pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{
-    AppKind, OpeningCardText, TileContent, TileHost, hold_windows, opening_card_spinner,
-    paint_opening_card, record_unavailable_title, release_windows,
+    AppKind, TileContent, TileHost, hold_windows, record_unavailable_title, release_windows,
 };
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
@@ -3203,7 +3239,9 @@ pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
-pub use context_menu::{ContextMenu, MenuButton, MenuItem};
+pub use context_menu::{
+    ContextMenu, MenuButton, MenuItem, note_shift, shift_held, shift_skips_confirmation,
+};
 mod row_menu;
 pub use primitives::{
     BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureState, Fact, Facts,
@@ -3238,7 +3276,7 @@ mod overflow_door;
 pub use overflow_door::{DoorPlan, OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
-    CrossStripDetach, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan, Pan,
+    CrossStripDetach, GroupRow, GroupTopology, HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan,
     STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, StripLane, TabDropTarget, WheelJumpAccum,
     pan_within_canvas, wheel_jump_detents,
 };
@@ -3276,6 +3314,10 @@ pub use color_picker::{ColorPicker, ColorPickerOutcome};
 pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker, SwatchPainter};
 pub mod popover;
 pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
+pub mod emoji_picker;
+pub use emoji_picker::{EmojiPicker, PickerEvent};
+pub mod reaction_strip;
+pub use reaction_strip::{ReactionStrip, ReactionStripWidget, ReactionToggle, StripHit};
 pub mod modal_dialog;
 pub use modal_dialog::{
     ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSheet, ModalSpec,
@@ -3408,6 +3450,8 @@ pub mod file_open;
 pub use file_open::{FileOpenEvent, FileOpenSurface};
 pub mod skeleton;
 pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
+pub mod arrival_failure;
+pub use arrival_failure::{WindowFailure, arrival_failure};
 pub mod arriving_rows;
 pub mod arriving_view;
 pub use arriving_rows::{ArrivingRows, RowFade};
@@ -3431,6 +3475,8 @@ pub use toggle_group::{
 };
 pub mod view_tabs;
 pub use view_tabs::ViewTabs;
+pub mod quick_tile;
+pub use quick_tile::{QuickTile, QuickTileOutcome, QuickTilePart};
 
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a

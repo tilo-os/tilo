@@ -162,7 +162,7 @@ fn project(
     for old in ApiDoc::history(doc, &ROOT) {
         workspace.history.push(
             old.id,
-            Sent::new(old.method, &old.url, old.status, old.duration_ms, 0),
+            Sent::new(old.method, &old.url, old.status, old.duration_ms, 0, None),
         );
     }
     Ok(workspace)

@@ -28,18 +28,14 @@ use edit::Editor;
 use layout::Layout;
 use model::{Node, Row};
 
-/// The size a formula is set at in `theme`: the `Title` role's resolved size,
-/// less whatever scale the shared renderer already applies to every
-/// renderer-relative size (the math layout sizes its glyphs that way), so the
-/// formula ends up at the theme's size and is never scaled twice.
-pub fn formula_size(theme: &Theme, tr: &TextRenderer) -> f32 {
-    let size = theme.tokens.typography.size(ui::tokens::TextRole::Title);
-    let renderer = tr.text_scale();
-    if renderer.is_finite() && renderer > f32::EPSILON {
-        size / renderer
-    } else {
-        size
-    }
+/// The size a formula is set at in `theme`: the `Title` role's resolved size.
+///
+/// A theme role is already resolved against the reader's text and UI scale, and
+/// the math layout paints at exactly the size it is given, so this is the size
+/// the formula actually appears at — never divided by, or multiplied by, the
+/// renderer's text scale.
+pub fn formula_size(theme: &Theme) -> f32 {
+    theme.tokens.typography.size(ui::tokens::TextRole::Title)
 }
 
 /// A controller wrapping one editable formula. Calculator mode and the graph
@@ -113,6 +109,16 @@ impl MathField {
             self.editor = Editor::from_linear(&editor_linear(linear));
             self.source = linear.to_string();
         }
+    }
+
+    /// Leave the editor showing `linear` (the default, [`MathField::new`]): the
+    /// caller feeds the current formula in through
+    /// [`MathField::set_source`] on every pass, so a read-only field tracks a
+    /// value that changes elsewhere instead of holding the first one it saw.
+    #[must_use]
+    pub fn follow_source(mut self) -> Self {
+        self.source.clear();
+        self
     }
 
     /// The current content as a linear string the engine parses. The editor
@@ -359,6 +365,12 @@ impl MathField {
 
     /// The engine-ready linear form after an edit, recording it as the new
     /// source so a subsequent `set_source` with the same value is a no-op.
+    /// Whether the caret holds a text selection, so Ctrl+C copies the
+    /// selection rather than the calculator's displayed result.
+    pub fn has_selection(&self) -> bool {
+        self.editor.selected_linear().is_some()
+    }
+
     pub fn current_linear(&mut self) -> String {
         let s = engine_linear(&self.editor.to_linear());
         self.source.clone_from(&s);

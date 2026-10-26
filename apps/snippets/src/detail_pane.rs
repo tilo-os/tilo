@@ -20,7 +20,7 @@ use ui::theme::Theme;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
     AppModel, Button, ButtonRole, Chip, ChipLead, Column, ControlSize, Dropdown, Element,
-    EmptyState, ModelPath, Row, Text, TextInput, Widget,
+    EmptyState, ModelPath, Row, TextInput, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -109,13 +109,15 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
             .with_accessible_name(format!("Folder: {folder}"));
         if let Some(reveal) = reveal(
             Snippets::folder_place(folder.clone()),
-            SnippetsView::RevealFolder { folder },
+            SnippetsView::RevealFolder {
+                folder: folder.clone(),
+            },
         ) {
             chip = chip.on_action(reveal);
         }
         facts = facts.push(Box::new(chip));
     }
-    for tag in tags {
+    for tag in tags.iter() {
         let mut chip = Chip::new(tag.clone())
             .with_id(format!("snippets.snippet:{id}.tag:{tag}"))
             .with_accessible_name(format!("Tag: {tag}"));
@@ -127,16 +129,35 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
         }
         facts = facts.push(Box::new(chip));
     }
-    let mut about = Column::new()
+    let about = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .push(Box::new(name_field(core, requests, &id)))
-        .push(Box::new(facts));
-    if !description.trim().is_empty() {
-        about = about.push(Box::new(
-            Text::new(&description).with_role(TextRole::Body).dimmed(),
-        ));
-    }
+        .push(Box::new(facts))
+        // What the snippet is for, and which folder it is filed under: both
+        // are the library's organising model, so both are editable where the
+        // snippet is read rather than only when it is created.
+        .push(Box::new(field(
+            core,
+            requests,
+            &id,
+            "description",
+            "snippets-description",
+            "snippets-description-placeholder",
+            &description,
+            Action::SetDescription as fn(SnippetId, String) -> Action,
+        )))
+        .push(Box::new(field(
+            core,
+            requests,
+            &id,
+            "folder",
+            "snippets-folder",
+            "snippets-folder-placeholder",
+            &folder,
+            Action::SetFolder as fn(SnippetId, String) -> Action,
+        )))
+        .push(Box::new(tag_editor(core, requests, &id, &tags)));
     let about = about.with_rhythm(Rhythm::Sibling);
 
     // The main action: copy, through the fill-in dialog when the body has
@@ -203,6 +224,84 @@ fn name_field(core: &Shared, requests: &Requests, id: &SnippetId) -> TextInput {
                 .borrow_mut()
                 .push(Action::Rename(renamed.clone(), title.to_owned()));
         })
+}
+
+/// A single-line field of the snippet's own facts, committing on every
+/// change: the title's editor, for the fields that are not the title.
+fn field(
+    core: &Shared,
+    requests: &Requests,
+    id: &SnippetId,
+    name: &str,
+    accessible: &str,
+    placeholder: &str,
+    value: &str,
+    make: fn(SnippetId, String) -> Action,
+) -> TextInput {
+    let initial = value.to_owned();
+    let requests = Rc::clone(requests);
+    let changed = id.clone();
+    let _ = core;
+    TextInput::local()
+        .with_id(&format!("snippets.snippet:{id}.{name}"))
+        .with_accessible_name(&tr(accessible))
+        .with_placeholder(placeholder)
+        .with_initial_value(&initial)
+        .on_change(move |text| {
+            requests
+                .borrow_mut()
+                .push(make(changed.clone(), text.to_owned()));
+        })
+}
+
+/// The snippet's tags, each removable, and a field to add one: the sidebar
+/// groups the library by these, so they are the snippet's to change.
+fn tag_editor(core: &Shared, requests: &Requests, id: &SnippetId, tags: &[String]) -> Column {
+    let mut row = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_rhythm(Rhythm::Sibling);
+    for tag in tags.iter() {
+        let requests = Rc::clone(requests);
+        let removed = id.clone();
+        let name = tag.clone();
+        let remove = Button::icon_only(
+            &format!("snippets.snippet:{id}.tag:{tag}.remove"),
+            Icon::X,
+            &format!("Remove the tag {tag}"),
+        )
+        .control_size(ControlSize::Small)
+        .on_own_device_effect(move || {
+            requests
+                .borrow_mut()
+                .push(Action::RemoveTag(removed.clone(), name.clone()));
+        });
+        row = row.push(Box::new(
+            Row::new()
+                .push(Box::new(
+                    Chip::new(tag.clone()).with_accessible_name(format!("Tag: {tag}")),
+                ))
+                .push(Box::new(remove)),
+        ));
+    }
+    let requests_add = Rc::clone(requests);
+    let added = id.clone();
+    let add = TextInput::local()
+        .with_id(&format!("snippets.snippet:{id}.new-tag"))
+        .with_accessible_name(&tr("snippets-add-tag"))
+        .with_placeholder(tr("snippets-add-tag-placeholder"))
+        .on_change(move |text| {
+            // Committed as the field is typed into and cleared by the app
+            // once the tag is in, the way a tag entry field behaves.
+            let tag = text.trim();
+            if !tag.is_empty() {
+                requests_add
+                    .borrow_mut()
+                    .push(Action::AddTag(added.clone(), tag.to_owned()));
+            }
+        });
+    let _ = core;
+    row.push(Box::new(add))
 }
 
 /// The language picker; it opens when the core asks for it (the palette's

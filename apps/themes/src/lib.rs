@@ -57,7 +57,14 @@ impl ResourceApp for App {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &[GALLERY_SCENARIO, "editor", "tinted", "illegible"]
+        &[
+            GALLERY_SCENARIO,
+            "editor",
+            "editor-list",
+            "editor-dialog",
+            "tinted",
+            "illegible",
+        ]
     }
 
     /// `editor` opens a theme written from the warm graphite preset;
@@ -67,7 +74,9 @@ impl ResourceApp for App {
         let theme = Studio::paths().themes.item(&Id::from_raw(SCENARIO_THEME));
         let start = Studio::NEW_THEME.with((SCENARIO_THEME.to_owned(), "dark-graphite".to_owned()));
         let edits = match name {
-            Some("editor") => vec![theme.name.replace("Ember")],
+            Some("editor" | "editor-list" | "editor-dialog") => {
+                vec![theme.name.replace("Ember")]
+            }
             Some("tinted") => vec![
                 theme.name.replace("Ember"),
                 theme.tint.set(Some(40.0)),

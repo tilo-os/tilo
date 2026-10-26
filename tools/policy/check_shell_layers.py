@@ -371,6 +371,7 @@ class Workspace:
     root: Path
     manifests: dict[str, dict]  # package name -> manifest
     shared: dict  # [workspace.dependencies]
+    paths: dict[str, str]  # package name -> its Cargo.toml, relative to the root
 
     def package_of(self, key: str, spec: object) -> str:
         if isinstance(spec, dict):
@@ -411,6 +412,7 @@ def load_workspace(root: Path = ROOT) -> Workspace:
         top = tomllib.load(handle)
     workspace = top.get("workspace", {})
     manifests = {}
+    paths = {}
     for member in workspace.get("members", []):
         path = root / member / "Cargo.toml"
         if not path.is_file():
@@ -420,7 +422,8 @@ def load_workspace(root: Path = ROOT) -> Workspace:
         # Neither an edge to them nor from them is real.
         if "package" in manifest and manifest["package"]["name"] not in IGNORED_PACKAGES:
             manifests[manifest["package"]["name"]] = manifest
-    return Workspace(root, manifests, workspace.get("dependencies", {}))
+            paths[manifest["package"]["name"]] = path.relative_to(root).as_posix()
+    return Workspace(root, manifests, workspace.get("dependencies", {}), paths)
 
 
 
@@ -434,14 +437,20 @@ class Baseline:
     added: dict[str, str]
 
 
+def shown_path(path: Path, root: Path = ROOT) -> str:
+    """``path`` relative to ``root`` when it is under it, as a finding names it."""
+    return path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
+
+
 def load_baseline(path: Path = BASELINE) -> Baseline | None:
     if not path.is_file():
         return None
+    shown = shown_path(path)
     try:
         with path.open("rb") as handle:
             data = tomllib.load(handle)
     except tomllib.TOMLDecodeError as error:
-        raise BaselineError(f"{path}: {error}") from error
+        raise BaselineError(f"{shown}: {error}") from error
     extracted = data.get("extracted", {})
     dependencies = data.get("shell_dependencies", {})
     baseline = Baseline(
@@ -463,10 +472,10 @@ def load_baseline(path: Path = BASELINE) -> Baseline | None:
           for name, why in allowed.items() if not str(why).strip()),
     ]
     if reasons:
-        raise BaselineError(f"{path}: entries need a reason: {', '.join(reasons)}")
+        raise BaselineError(f"{shown}: entries need a reason: {', '.join(reasons)}")
     both = sorted(set(baseline.grandfathered) & set(baseline.added))
     if both:
-        raise BaselineError(f"{path}: listed as grandfathered and added: {', '.join(both)}")
+        raise BaselineError(f"{shown}: listed as grandfathered and added: {', '.join(both)}")
     return baseline
 
 
@@ -564,13 +573,18 @@ class Observed:
     shell_dependants: set[str]
     shell_dependencies: set[str]
     extracted_reached: dict[str, dict[str, list[str]]]
+    manifest_paths: dict[str, str]
 
 
-def observe(root: Path, extracted: list[str]) -> tuple[Observed, list[str]]:
+def observe(
+    root: Path, extracted: list[str], shown: str = shown_path(BASELINE)
+) -> tuple[Observed, list[str]]:
     workspace = load_workspace(root)
     problems = []
     if SHELL_PACKAGE not in workspace.manifests:
-        problems.append(f"the workspace has no `{SHELL_PACKAGE}` package; this check cannot see it")
+        problems.append(
+            f"Cargo.toml: the workspace has no `{SHELL_PACKAGE}` package; this check cannot see it"
+        )
     dependants = {
         name for name in workspace.manifests
         if name != SHELL_PACKAGE and SHELL_PACKAGE in workspace.dependencies(name)
@@ -581,26 +595,29 @@ def observe(root: Path, extracted: list[str]) -> tuple[Observed, list[str]]:
     reached = {}
     for crate in extracted:
         if crate not in workspace.manifests:
-            problems.append(f"[extracted] lists {crate}, which is not a workspace package")
+            problems.append(f"{shown}: [extracted] lists {crate}, which is not a workspace package")
             continue
         reached[crate] = {
             name: path for name, path in workspace.reached(crate).items()
             if name in EXTRACTED_FORBIDDEN
         }
     if not service_files(root):
-        problems.append(f"no service module found under {SHELL}/src; this check cannot see them")
+        problems.append(
+            f"{SHELL}/Cargo.toml: no service module found under {SHELL}/src; "
+            "this check cannot see them"
+        )
     edges = module_edges(root)
-    return Observed(edges, dependants, shell_dependencies, reached), problems
+    return Observed(edges, dependants, shell_dependencies, reached, workspace.paths), problems
 
 
 def check(root: Path = ROOT, baseline_path: Path = BASELINE) -> list[str]:
     """Every violation and stale baseline entry, as a printable line."""
+    shown = shown_path(baseline_path, root)
     baseline = load_baseline(baseline_path)
     if baseline is None:
-        return [f"{baseline_path} is missing; run check_shell_layers.py --write-baseline"]
-    observed, problems = observe(root, baseline.extracted)
-    shown = baseline_path.relative_to(root).as_posix() if baseline_path.is_relative_to(root) \
-        else str(baseline_path)
+        return [f"{shown}: missing; run check_shell_layers.py --write-baseline"]
+    observed, problems = observe(root, baseline.extracted, shown)
+    manifest = observed.manifest_paths
 
     found = {(edge.file, edge.target): edge for edge in observed.edges}
     allowed = {(file, target) for file, targets in baseline.modules.items() for target in targets}
@@ -612,7 +629,7 @@ def check(root: Path = ROOT, baseline_path: Path = BASELINE) -> list[str]:
         )
     for file, target in sorted(allowed - set(found)):
         problems.append(
-            f"{SHELL}/{file} no longer reaches {target}: remove it from [modules] in {shown}"
+            f"{shown}: {SHELL}/{file} no longer reaches {target}: remove it from [modules]"
         )
 
     for crate, reached in sorted(observed.extracted_reached.items()):
@@ -620,36 +637,39 @@ def check(root: Path = ROOT, baseline_path: Path = BASELINE) -> list[str]:
         for name, path in sorted(reached.items()):
             if name not in permitted:
                 problems.append(
-                    f"extracted crate {crate} reaches {name} ({' -> '.join(path)}); "
+                    f"{manifest[crate]}: extracted crate {crate} reaches {name} "
+                    f"({' -> '.join(path)}); "
                     "a crate carved out of the shell must not depend back up"
                 )
         for name in sorted(set(permitted) - set(reached)):
             problems.append(
-                f"extracted crate {crate} no longer reaches {name}: "
-                f"remove it from [extracted.allow] in {shown}"
+                f"{shown}: extracted crate {crate} no longer reaches {name}: "
+                "remove it from [extracted.allow]"
             )
     for crate in sorted(set(baseline.extracted_allow) - set(baseline.extracted)):
-        problems.append(f"[extracted.allow] names {crate}, which [extracted] does not list")
+        problems.append(f"{shown}: [extracted.allow] names {crate}, which [extracted] does not list")
 
     for name in sorted(observed.shell_dependants - set(baseline.shell_dependants)):
         problems.append(
-            f"{name} depends on {SHELL_PACKAGE}; depend on the crate that owns what you need "
+            f"{manifest[name]}: {name} depends on {SHELL_PACKAGE}; "
+            "depend on the crate that owns what you need "
             f"(or argue for it as a [shell_dependants] entry in {shown})"
         )
     for name in sorted(set(baseline.shell_dependants) - observed.shell_dependants):
         problems.append(
-            f"{name} no longer depends on {SHELL_PACKAGE}: remove it from [shell_dependants] in {shown}"
+            f"{shown}: {name} no longer depends on {SHELL_PACKAGE}: remove it from [shell_dependants]"
         )
 
     listed = set(baseline.grandfathered) | set(baseline.added)
     for name in sorted(observed.shell_dependencies - listed):
         problems.append(
-            f"{SHELL_PACKAGE} gains the dependency {name}; put the code in a smaller crate, or "
+            f"{manifest[SHELL_PACKAGE]}: {SHELL_PACKAGE} gains the dependency {name}; "
+            "put the code in a smaller crate, or "
             f"argue for it as a [shell_dependencies.added] entry in {shown}"
         )
     for name in sorted(listed - observed.shell_dependencies):
         problems.append(
-            f"{SHELL_PACKAGE} no longer depends on {name}: remove it from [shell_dependencies] in {shown}"
+            f"{shown}: {SHELL_PACKAGE} no longer depends on {name}: remove it from [shell_dependencies]"
         )
     return problems
 
@@ -717,12 +737,12 @@ def main(argv: list[str] | None = None) -> int:
         problems = check()
         baseline = load_baseline()
     except BaselineError as error:
-        print(f"  {error}")
+        print(error)
         return 1
     for problem in problems:
-        print(f"  {problem}")
+        print(problem)
     if problems:
-        print(f"The shell's layers only shrink ({POLICY}).")
+        print(f"The shell's layers only shrink ({POLICY}).", file=sys.stderr)
         return 1
     assert baseline is not None
     edges = sum(len(targets) for targets in baseline.modules.values())
@@ -730,7 +750,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"Shell layers: {edges} baselined service-module edges, "
         f"{len(baseline.extracted)} extracted crates clean, "
-        f"{dependencies} direct shell dependencies; none new."
+        f"{dependencies} direct shell dependencies; none new.",
+        file=sys.stderr,
     )
     return 0
 

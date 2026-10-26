@@ -621,7 +621,11 @@ impl DrainQueues {
         };
         for entry in drained_signed {
             let peer = entry.peer;
-            self.announce_tree_record(&entry.app_id, &entry.cluster_id, &entry.record_id);
+            let (app_id, cluster_id, record_id) = (
+                entry.app_id.clone(),
+                entry.cluster_id.clone(),
+                entry.record_id.clone(),
+            );
             let document = tilo_action_broker::collab_inbound::RemoteDocument {
                 app_id: entry.app_id,
                 cluster_id: entry.cluster_id,
@@ -651,6 +655,11 @@ impl DrainQueues {
             if !delivered {
                 return false;
             }
+            // After it is admitted: a window that subscribes from now on is
+            // told it with the records its room holds
+            // (`BrokerChannels::tree_records_held`), and one that subscribed
+            // before is told here, so none misses it.
+            self.announce_tree_record(&app_id, &cluster_id, &record_id);
         }
         true
     }
@@ -659,7 +668,9 @@ impl DrainQueues {
     /// container's child) that no window here holds: tell the app's windows
     /// in that room, which then hold it like their own and sync it on its
     /// route, receiving what was admitted for it before
-    /// (`CapnpBrokerState::subscribe_ops`).
+    /// (`CapnpBrokerState::subscribe_ops`). A window that opens after this
+    /// learns the record from what the broker holds
+    /// (`BrokerChannels::tree_records_held`).
     fn announce_tree_record(&self, app_id: &str, cluster_id: &str, record_id: &str) {
         if ui::record::RecordId::parse(record_id)
             .and_then(|id| id.tree())
@@ -854,6 +865,9 @@ fn spawn_inner(
     let record_content = peer_sync
         .filter(|_| config.is_none())
         .map(crate::shell::record_content::session_record_content);
+    if let Some(content) = &record_content {
+        crate::shell::room_app_versions::fetch_through(content);
+    }
     let drain_thread = peer_sync.and_then(|net| {
         let queues = DrainQueues {
             presence_inbound: net.inbound_app_presence_handle(),

@@ -197,6 +197,7 @@ shortcut-name-power-menu = Ein/Aus-Menü
 shortcut-name-next-input-source = Nächstes Tastaturlayout
 shortcut-name-emoji-picker = Emoji
 shortcut-name-say-something = Hier etwas sagen
+shortcut-name-report-problem = Problem melden
 shortcut-name-ask-agent = Agent zur Auswahl fragen
 
 # Die Gruppen, in denen Tastenkürzel aufgeführt werden
@@ -607,6 +608,10 @@ host-source-app-actions = App-Aktionen
 # App-Starts und Sitzungsaktionen
 host-app-did-not-open-title = Anwendung wurde nicht geöffnet
 host-app-did-not-open-body = Die App wurde gestartet, hat aber kein Fenster erstellt. Sieh im Sitzungsprotokoll nach und versuche es erneut.
+live-view-not-installed = Die App dazu ist nicht auf diesem Computer
+live-view-gone = Es ist nicht mehr da
+live-view-did-not-open = Es hat sich hier nicht geöffnet
+live-view-closed = Die App dazu wurde geschlossen
 host-session-action-failed = Sitzungsaktion fehlgeschlagen
 host-session-lock-failed = Die Sitzung konnte nicht gesperrt werden. Sieh im Sitzungsprotokoll nach und versuche es erneut.
 host-session-logout-failed = Abmelden fehlgeschlagen. Sieh im Sitzungsprotokoll nach und versuche es erneut.
@@ -835,11 +840,6 @@ overview-site-here = { $count ->
    *[other] { $count } Personen hier
 }
 a11y-leave-workspace = { $name } verlassen
-
-# Der Ansicht einer Person folgen
-follow-label = Du folgst { $person }
-follow-stopped = Folgen beendet
-follow-stop = Beenden
 
 # Filterchips der Suche
 search-filter-all = Alle
@@ -1427,7 +1427,7 @@ search-app-job-streaming = liefert Ergebnisse
 search-app-job-succeeded = abgeschlossen
 search-app-job-failed = fehlgeschlagen
 search-app-job-cancelled = abgebrochen
-search-app-resource-contains = enthält Ressourcen
+search-app-content-contains = enthält Ressourcen
 
 # Suche: Sitzungsaktionen
 search-session-logout = Von Tilo abmelden
@@ -2287,16 +2287,6 @@ overview-items-shared = { $count ->
 }
 
 # Fenster und Dokumente, die die Shell anzeigt
-shell-window-restoring = Dieses Fenster wird wiederhergestellt …
-shell-window-opening = Wird geöffnet …
-shell-window-opening-slow = { $app } wird geöffnet … dauert länger als üblich
-shell-window-installing-slow = { $app } wird installiert … dauert länger als üblich
-shell-window-installing-of = { $app } wird installiert … { $received } von { $total }
-shell-window-installing-received = { $app } wird installiert … { $received }
-shell-window-updating = { $app } wird aktualisiert …
-shell-window-updating-slow = { $app } wird aktualisiert … dauert länger als üblich
-shell-window-updating-of = { $app } wird aktualisiert … { $received } von { $total }
-shell-window-updating-received = { $app } wird aktualisiert … { $received }
 peer-window-not-installed = Auf diesem Gerät nicht installiert.
 peer-window-install = { $app } installieren
 peer-window-installing = { $app } wird installiert …
@@ -2449,7 +2439,6 @@ pad-map-dial-brightness = Helligkeit
 
 # Gerätefremde Ansichten, Dokumente öffnen, Identitätssicherung und Einladungen
 peer-view-surface-title = Entfernte Oberfläche #{ $id }
-peer-view-awaiting = Warte auf die entfernte Oberfläche …
 doc-open-no-handler = Keine App auf diesem Desktop öffnet .{ $ext }-Dateien ({ $name })
 doc-open-no-file-type = { $name } hat keinen Dateityp, mit dem es sich öffnen lässt
 doc-open-no-workspace = Es gibt keinen aktiven Arbeitsbereich, in dem es sich öffnen lässt
@@ -2845,6 +2834,7 @@ shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht ve
 shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.
 
 shell-window-restore-interrupted = Dieses gespeicherte Fenster wurde nicht vollständig wieder geöffnet.
+shell-window-open-failed = Dieses Fenster wurde nicht geöffnet
 shell-window-retry = Erneut öffnen
 shell-window-app-missing = { $app } ist nicht auf diesem Computer
 shell-window-get-app = { $app } holen
@@ -2971,7 +2961,7 @@ onboarding-browser-start = Meine Browserdaten verwenden
 onboarding-browser-unavailable = Deine Browserdaten warten noch. Versuche es erneut oder mach vorerst weiter.
 onboarding-backup-unavailable = Auf diesem Gerät kann keine Sicherung deiner persönlichen Identität erstellt werden.
 onboarding-ready-welcome = Willkommen bei Tilo
-onboarding-ready-next = Richte dich ein oder starte zuerst eine kurze Tour.
+onboarding-ready-next = Der Desktop ist bereit. Beginne mit irgendetwas: Öffne eine App, suche, was du brauchst, oder lade jemanden in einen Arbeitsbereich ein.
 onboarding-migration-cleanup-pending = Deine Sachen sind in Tilo bereit. Einige temporäre Dateien müssen noch entfernt werden.
 onboarding-migration-cleanup-unavailable = Deine Sachen sind in Tilo bereit. Das Entfernen der temporären Dateien konnte nicht bestätigt werden.
 onboarding-migration-cleanup-resume = Aufräumen erneut versuchen
@@ -3385,3 +3375,7 @@ search-action-app-remove-from-apps = Eine App aus deinen Apps entfernen…
 search-action-app-remove-from-apps-subtitle = Sie bleibt auf diesem Computer
 search-apps-uninstall = Deinstallieren
 search-apps-remove-from-apps = Aus Apps entfernen
+
+# The pinned people overlay's message box
+people-overlay-messages-unavailable = Direktnachrichten sind gerade nicht verfügbar
+people-overlay-message-failed = Die Nachricht an { $name } ging nicht raus

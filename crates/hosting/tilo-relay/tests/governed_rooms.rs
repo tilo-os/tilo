@@ -1127,6 +1127,9 @@ mod spectators;
 #[path = "governed_rooms/app_authorship.rs"]
 mod app_authorship;
 
+#[path = "governed_rooms/membership_governance.rs"]
+mod membership_governance;
+
 #[path = "governed_rooms/app_records.rs"]
 mod app_records;
 
@@ -1141,6 +1144,9 @@ mod revocations;
 
 #[path = "governed_rooms/hard_stops.rs"]
 mod hard_stops;
+
+#[path = "governed_rooms/app_push.rs"]
+mod app_push;
 
 #[cfg(feature = "agents")]
 #[path = "governed_rooms/member_files.rs"]

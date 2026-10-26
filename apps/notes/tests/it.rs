@@ -111,6 +111,8 @@ mod hosted_header_controls;
 mod note_context_menu;
 #[path = "note_header.rs"]
 mod note_header;
+#[path = "note_reactions.rs"]
+mod note_reactions;
 #[path = "semantic_input.rs"]
 mod semantic_input;
 
@@ -158,8 +160,12 @@ mod paragraph_damage;
 #[path = "perf_scroll.rs"]
 mod perf_scroll;
 
+#[path = "desktop_open_work.rs"]
+mod desktop_open_work;
 #[path = "desktop_pan_frame.rs"]
 mod desktop_pan_frame;
+#[path = "typing_frame_work.rs"]
+mod typing_frame_work;
 
 #[path = "perf_interaction.rs"]
 mod perf_interaction;

@@ -332,6 +332,11 @@ pub struct QuickSettingsRoot {
     /// The slider whose thumb glides to a press, and where the press was:
     /// past a few pixels from there the drag is welded to the hand.
     slider_glide: std::cell::Cell<Option<(usize, Point)>>,
+    /// One tile per control on the page, in the page's order.
+    tiles: Vec<(QuickSettingsControl, ui::widget::QuickTile)>,
+    /// How wide a tile's chevron half is in the theme of the last frame,
+    /// so hit-testing and accessibility split a tile where it paints.
+    tile_details_width: f64,
 }
 
 /// How far the hand moves from a press on a slider before the drag is the
@@ -408,6 +413,8 @@ impl QuickSettingsRoot {
             faces: ui::widget::FaceMotions::default(),
             slider_thumbs: std::cell::RefCell::default(),
             slider_glide: std::cell::Cell::new(None),
+            tiles: Vec::new(),
+            tile_details_width: TARGET,
         }
     }
     pub fn reset_focus(&mut self) {
@@ -1270,14 +1277,9 @@ impl QuickSettingsRoot {
         )
     }
 
-    /// A tile's chevron area: its trailing pointer-floor-wide strip.
+    /// A tile's chevron half, where the tile paints it.
     fn expand_rect(&self, tile: Rect) -> Rect {
-        Rect::new(
-            (tile.x1 - self.scaled(Self::EXPAND_WIDTH)).max(tile.x0),
-            tile.y0,
-            tile.x1,
-            tile.y1,
-        )
+        ui::widget::QuickTile::split(tile, self.tile_details_width).1
     }
     /// Slider `i`'s face: after the leading glyph slot, the rest of the
     /// block's width, at least one minimum pointer target tall (HIG §9.6). The
@@ -2409,6 +2411,7 @@ impl QuickSettingsRoot {
         cursor: Option<Point>,
         state: &QuickSettingsState,
     ) {
+        self.tile_details_width = ui::widget::QuickTile::details_width(theme);
         self.sync_scroll(panel, theme, state);
         self.lay_out(panel, state);
         // A pointer over the bar lane or outside the shown page hovers
@@ -2466,7 +2469,12 @@ impl QuickSettingsRoot {
             &title_style.with_weight(TextWeight::Semibold),
         );
     }
-    fn draw_root(&self, ctx: &mut PaintCtx<'_>, cursor: Option<Point>, state: &QuickSettingsState) {
+    fn draw_root(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        cursor: Option<Point>,
+        state: &QuickSettingsState,
+    ) {
         // One layout and one focus lookup for the whole frame.
         let layout = self.page_layout(state);
         let stops = self.stops_in(&layout, state);
@@ -2484,9 +2492,7 @@ impl QuickSettingsRoot {
             return;
         }
         self.draw_sliders(ctx, &layout, &frame);
-        for (index, (control, rect)) in layout.tiles.iter().enumerate() {
-            self.draw_tile(ctx, &frame, (index, *control, *rect));
-        }
+        self.draw_tiles(ctx, &layout, &frame);
         for slot in &layout.sections {
             self.draw_section(ctx, &frame, slot);
         }
@@ -2628,109 +2634,71 @@ impl QuickSettingsRoot {
         }
     }
 
-    /// A tile: the on colour when its control is on, its glyph, name and
-    /// state line, and — when it has a section — a chevron area of its own
-    /// that turns as the section opens.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "a tile's two targets, their hover, the chevron's turn and both focus rings paint in one ordered pass over one geometry"
-    )]
-    fn draw_tile(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        frame: &RootFrame<'_>,
-        (index, c, r): (usize, QuickSettingsControl, Rect),
-    ) {
-        let (s, cursor) = (frame.state, frame.cursor);
-        let (scene, transform, text, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let on = Self::on(c, s);
-        let section = Self::section_of(c, s);
-        let expand = section.map(|_| self.expand_rect(r));
-        let main = expand.map_or(r, |e| Rect::new(r.x0, r.y0, e.x0, r.y1));
-        let over = |rect: Rect| cursor.is_some_and(|p| rect.contains(p));
-        let main_hovered = over(main) && !expand.is_some_and(over);
-        let radius = control_radius(theme, r);
-        let hovered = if main_hovered {
-            Some(main)
-        } else {
-            expand.filter(|e| over(*e))
-        };
-        let face = ui::widget::primitives::QuickTileFace {
-            rect: r,
-            main,
-            expand,
-            on,
-            hovered,
-            radius,
-        };
-        if !on {
-            paint_control(scene, transform, theme, r, false, false);
-        }
-        // A control that is on is filled with the on colour: the whole tile
-        // says it at a glance. Hover lifts the half under the pointer.
-        face.paint_ground(
-            scene,
-            transform,
-            theme,
-            tilo_desktop::drill_in::control_fill(theme, true),
-        );
-        let (ink, ink_dim) = face.ink(theme);
-        let inset = self.scaled(CONTROL_INSET);
-        let glyph = Self::glyph_at(self.layout_scale);
-        let icon = leading_glyph(main, inset, glyph);
-        ui::icons::draw_icon(scene, transform, icon, Self::icon(c, s), ink, 1.5);
-        let text_x = icon.x1 + self.scaled(RELATED_GAP);
-        let text_width =
-            f32v((main.x1 - self.scaled(ui::tokens::Spacing::BASE.s1.into()) - text_x).max(1.0));
-        let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
-        let sub_style = theme.text(TextRole::Caption);
-        let label =
-            text.elide_to_width_style(&Self::rendered_label(c, s), text_width, &label_style);
-        let sub = text.elide_to_width_style(&Self::subline(c, s), text_width, &sub_style);
-        let (_, label_h) = text.measure_style(&label, None, &label_style);
-        let (_, sub_h) = text.measure_style(&sub, None, &sub_style);
-        let top = centred_text_top(main, f64::from(label_h) + f64::from(sub_h));
-        text.draw_style(
-            scene,
-            &label,
-            ink,
-            transform.pre_translate((text_x, top).into()),
-            None,
-            &label_style,
-        );
-        text.draw_style(
-            scene,
-            &sub,
-            ink_dim,
-            transform.pre_translate((text_x, top + f64::from(label_h)).into()),
-            None,
-            &sub_style,
-        );
-        if let (Some(expand), Some(section)) = (expand, section) {
-            // A hairline sets the chevron's area apart from the switch.
-            let inset_y =
-                self.scaled(CONTROL_PAD) + self.scaled(ui::tokens::Spacing::BASE.s1.into());
-            face.paint_divider(scene, transform, theme, inset_y);
-            let turn = self.chevron_turn(section, s);
-            let chevron = Rect::from_center_size(expand.center(), (glyph, glyph));
-            ui::icons::draw_icon(
-                scene,
-                transform.pre_rotate_about(std::f64::consts::FRAC_PI_2 * turn, chevron.center()),
-                chevron,
-                ui::icons::Icon::ChevronRight,
-                ink,
-                1.5,
-            );
-        }
-        let radius = control_radius(theme, r);
-        if frame.focused == Some(RootStop::Control(index, c)) {
-            ui::widget::paint_focus_ring(scene, transform, main, radius, theme);
-        }
-        if let Some(expand) = expand
-            && frame.focused == Some(RootStop::Expand(index, c))
+    /// The tiles, one retained [`ui::widget::QuickTile`] per control, kept
+    /// in the page's order and told the control's state, the pointer and
+    /// which of its halves has keyboard focus.
+    fn draw_tiles(&mut self, ctx: &mut PaintCtx<'_>, layout: &PageLayout, frame: &RootFrame<'_>) {
+        let state = frame.state;
+        let controls: Vec<QuickSettingsControl> = layout.tiles.iter().map(|(c, _)| *c).collect();
+        if self
+            .tiles
+            .iter()
+            .map(|(c, _)| *c)
+            .ne(controls.iter().copied())
         {
-            ui::widget::paint_focus_ring(scene, transform, expand, radius, theme);
+            let mut kept = std::mem::take(&mut self.tiles);
+            self.tiles = controls
+                .iter()
+                .map(|control| {
+                    let tile = kept.iter().position(|(c, _)| c == control).map_or_else(
+                        || {
+                            ui::widget::QuickTile::new(
+                                format!("quick_settings_{}", Self::semantic_control_name(*control)),
+                                Self::icon(*control, state),
+                                Self::rendered_label(*control, state),
+                            )
+                        },
+                        |at| kept.swap_remove(at).1,
+                    );
+                    (*control, tile)
+                })
+                .collect();
+        }
+        let turns: Vec<Option<f64>> = controls
+            .iter()
+            .map(|c| Self::section_of(*c, state).map(|section| self.chevron_turn(section, state)))
+            .collect();
+        for (index, ((control, rect), turn)) in layout.tiles.iter().zip(turns).enumerate() {
+            let Some((_, tile)) = self.tiles.get_mut(index) else {
+                continue;
+            };
+            tile.set_content(
+                Self::icon(*control, state),
+                &Self::rendered_label(*control, state),
+                &Self::subline(*control, state),
+            );
+            tile.set_on(Self::on(*control, state));
+            tile.set_details(turn.map(|_| Self::details_label(*control)));
+            tile.set_details_open(turn.unwrap_or(0.0));
+            tile.apply_layout_external(*rect);
+            tile.set_pointer(frame.cursor);
+            tile.set_focused_part(match frame.focused {
+                Some(RootStop::Control(i, _)) if i == index => {
+                    Some(ui::widget::QuickTilePart::Switch)
+                }
+                Some(RootStop::Expand(i, _)) if i == index => {
+                    Some(ui::widget::QuickTilePart::Details)
+                }
+                _ => None,
+            });
+            ui::widget::Widget::draw(
+                tile,
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &ui::presence::PresenceCtx::default(),
+            );
         }
     }
 

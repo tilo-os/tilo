@@ -16,6 +16,11 @@ ui::embedded_catalog!(pub static CATALOG, ["en-US", "de"]);
 pub fn register_messages() {
     ui::i18n::I18nManager::register_widget_messages();
     CATALOG.ensure();
+    // A page's reactions pick from the whole emoji catalogue. In the browser
+    // desktop Notes shares the start module, which must not carry the
+    // catalogue: there Chat's module offers it.
+    #[cfg(not(target_arch = "wasm32"))]
+    tilo_emoji_catalogue::offer();
 }
 
 impl NoteDates {

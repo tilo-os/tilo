@@ -152,6 +152,7 @@ impl FileExplorerWidget {
                 choices: Vec::new(),
                 anchor: None,
                 edited: false,
+                view_only: false,
             }),
             actions,
             ..WindowToolbar::default()

@@ -12,27 +12,43 @@ die()  { printf 'tilo-rollback: %s\n' "$*" >&2; exit 1; }
 # The LUKS2 backing device of the root filesystem, or empty when root is not
 # encrypted.
 #
-# Discovery is by content, not by configuration: find the device-mapper name the
-# root filesystem sits on, then ask cryptsetup what is underneath it. Reading
-# /etc/crypttab would tell us what was *intended*; this tells us what is.
+# Discovery is by content, not by configuration: find the block device the root
+# filesystem sits on, then follow the kernel's own record of what is underneath
+# it. Reading /etc/crypttab would tell us what was *intended*; this tells us
+# what is.
+#
+# The root is composefs, which no block device backs; the physical root is
+# /sysroot. The walk goes through sysfs alone (a crypt mapping's dm/uuid and its
+# one underlying device in slaves/), never a device-mapper ioctl, so it gives the
+# same answer in a unit without CAP_SYS_ADMIN and whatever name the mount table
+# records for the source. tilo-root-discover's link to the device it opened is
+# the last candidate, for a mount namespace without /sysroot.
 rollback_luks_device() {
-  local src dm base
-  # Under ostree the real root is /sysroot early on and / later; try both.
-  src="$(findmnt -nro SOURCE /sysroot 2>/dev/null | sed 's/\[.*//' | head -1)"
-  [ -n "$src" ] || src="$(findmnt -nro SOURCE / 2>/dev/null | sed 's/\[.*//' | head -1)"
-  [ -n "$src" ] || return 0
-  case "$src" in
-    /dev/mapper/*) dm="${src#/dev/mapper/}" ;;
-    *)
-      # btrfs on a plain partition, or a subvolume of one — not encrypted.
-      return 0
-      ;;
-  esac
-  base="$(cryptsetup status "$dm" 2>/dev/null | awk '$1=="device:"{print $2}')"
-  [ -n "$base" ] || return 0
+  local majmin target
+  for majmin in \
+    "$(findmnt -nro MAJ:MIN /sysroot 2>/dev/null | head -1)" \
+    "$(findmnt -nro MAJ:MIN / 2>/dev/null | head -1)"; do
+    rollback_luks_under "$majmin" && return 0
+  done
+  target="$(readlink -f "${TILO_ROLLBACK_ROOT_LINK:-/run/tilo-root/device}" 2>/dev/null)" || return 0
+  [ -b "$target" ] || return 0
+  rollback_luks_under "$(lsblk -dnro MAJ:MIN "$target" 2>/dev/null)" || true
+}
+
+# Print the LUKS device under the block device MAJ:MIN when that is an open
+# LUKS mapping; fail otherwise.
+rollback_luks_under() {
+  local majmin="$1" sys="${TILO_ROLLBACK_SYSFS:-/sys}" uuid slaves dev
+  case "$majmin" in [0-9]*:[0-9]*) ;; *) return 1 ;; esac
+  sys="$sys/dev/block/$majmin"
+  uuid="$(cat "$sys/dm/uuid" 2>/dev/null)" || return 1
+  case "$uuid" in CRYPT-LUKS*) ;; *) return 1 ;; esac
+  slaves=("$sys"/slaves/*)
+  [ "${#slaves[@]}" -eq 1 ] && [ -e "${slaves[0]}" ] || return 1
+  dev="${TILO_ROLLBACK_DEVROOT:-/dev}/${slaves[0]##*/}"
   # Confirm it really is LUKS before handing it to anything destructive.
-  cryptsetup isLuks "$base" 2>/dev/null || return 0
-  printf '%s\n' "$base"
+  cryptsetup isLuks "$dev" 2>/dev/null || return 1
+  printf '%s\n' "$dev"
 }
 
 # Is there a keyslot on $1 that no tilo-rollback token claims?
@@ -53,7 +69,7 @@ rollback_has_independent_keyslot() {
           | grep -cE '^  [0-9]+:')"
   [ -n "$slots" ] && [ "$slots" -gt 0 ] 2>/dev/null || return 1
   # `enrolled_generations` is a JSON array of numbers; count its elements.
-  enrolled="$(/usr/libexec/tilo/tilo-rollback status --device "$dev" --json 2>/dev/null \
+  enrolled="$("${TILO_ROLLBACK_BIN:-/usr/libexec/tilo/tilo-rollback}" status --device "$dev" --json 2>/dev/null \
              | sed -n 's/.*"enrolled_generations":\[\([^]]*\)\].*/\1/p' \
              | tr ',' '\n' | grep -c '[0-9]')"
   [ -n "$enrolled" ] || enrolled=0

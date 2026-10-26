@@ -10,7 +10,7 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ListRow, ObjectHeader, Property, PropertyList, Section};
 
-use crate::{Filter, Nav, Provider, tr};
+use crate::{Filter, Nav, Provider, tr, trf};
 
 pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> Element {
     let nav = nav.clone();
@@ -72,6 +72,31 @@ fn content(cx: &ViewCx<Filter>, nav: &Nav, range: &wire::Range, detail: &wire::D
     if !detail.offers.is_empty() {
         parts.push(offers(&provider, nav, range, detail));
     }
+    // What each field held either side, before the lines that only name the
+    // change: "Title — was Q3 budget" says nothing a person can act on.
+    if !detail.changes.is_empty() {
+        let rows: Vec<Element> = detail
+            .changes
+            .iter()
+            .enumerate()
+            .map(|(index, change)| {
+                let mut row = ListRow::new(format!("activity-field-{index}"), &change.field)
+                    .value(change.after.clone())
+                    .secondary(trf(
+                        "activity-was",
+                        &[("before", change.before.clone().into())],
+                    ));
+                if change.after.is_empty() {
+                    row = row.secondary(tr("activity-removed"));
+                }
+                Box::new(row) as Element
+            })
+            .collect();
+        parts.push(Box::new(Section::titled(
+            tr("activity-changed-fields"),
+            rows,
+        )));
+    }
     match &detail.comparison {
         Some(wire::Comparison::Changes { lines }) => {
             let rows = if lines.is_empty() {
@@ -98,7 +123,7 @@ fn content(cx: &ViewCx<Filter>, nav: &Nav, range: &wire::Range, detail: &wire::D
         None => {}
     }
     if let Some(run) = &detail.run {
-        parts.extend(agent_run(run));
+        parts.extend(agent_run(&provider, range, run));
     }
     parts.push(name(cx, &provider, range, detail));
     crate::page(parts)
@@ -134,7 +159,7 @@ fn offers(provider: &Provider, nav: &Nav, range: &wire::Range, detail: &wire::De
     Box::new(row)
 }
 
-fn agent_run(run: &wire::Run) -> Vec<Element> {
+fn agent_run(provider: &Provider, range: &wire::Range, run: &wire::Run) -> Vec<Element> {
     let facts = vec![
         Property::new(tr("activity-why-this-work"), run.instruction.clone()),
         Property::new(tr("activity-agent-task-by"), run.byline.clone()),
@@ -149,6 +174,9 @@ fn agent_run(run: &wire::Run) -> Vec<Element> {
     for status in [&run.undo_blocked, &run.undo_status].into_iter().flatten() {
         items.push(Box::new(Text::new(status).dimmed()));
     }
+    for left in &run.unreverted {
+        items.push(Box::new(Text::new(left).dimmed()));
+    }
     let mut parts: Vec<Element> = vec![Box::new(Section::titled(tr("activity-agent-task"), items))];
     if !run.records.is_empty() {
         let rows = run
@@ -156,13 +184,31 @@ fn agent_run(run: &wire::Run) -> Vec<Element> {
             .iter()
             .enumerate()
             .map(|(index, changed)| -> Element {
+                let row = ListRow::new(
+                    format!("activity-run-record-{index}"),
+                    changed.record.clone(),
+                )
+                .subtitle(changed.change.clone())
+                .secondary(changed.app.clone());
+                // One record undone on its own, beside the task-wide undo:
+                // the same step, asked of the run in this record alone.
+                let Some(offer) = &changed.undo else {
+                    return Box::new(row);
+                };
+                let query = wire::RecordQuery {
+                    range: range.clone(),
+                    app_id: changed.app_id.clone(),
+                    id: changed.id.clone(),
+                };
+                let (provider, action) = (provider.clone(), offer.action);
                 Box::new(
-                    ListRow::new(
-                        format!("activity-run-record-{index}"),
-                        changed.record.clone(),
-                    )
-                    .subtitle(changed.change.clone())
-                    .secondary(changed.app.clone()),
+                    Row::new()
+                        .with_rhythm(ui::tokens::Rhythm::Related)
+                        .push(Box::new(row))
+                        .push(Box::new(
+                            Button::new(&format!("activity-run-record-{index}-undo"), &offer.label)
+                                .on_view(move || provider.ask(action.action(), &query)),
+                        )),
                 )
             })
             .collect();

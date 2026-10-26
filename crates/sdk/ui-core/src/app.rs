@@ -51,6 +51,8 @@ mod host_commands;
 pub(crate) const HISTORY_ACTION_RESOURCE: &str = history_actions::RESOURCE;
 #[cfg(test)]
 mod history_actions_tests;
+#[cfg(test)]
+mod host_worker_pump_tests;
 mod model_lifecycle;
 mod participants;
 mod published_invocations;
@@ -929,6 +931,10 @@ impl App {
         app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
         app.appearance_reconcile = behaviour.appearance_reconcile;
         app.set_capture_protected(behaviour.capture_protected);
+        app.floating.window_record = Some((
+            binding.checkout.id.route().to_owned(),
+            binding.checkout.kind.as_str().to_owned(),
+        ));
         if let Some(app_id) = input_surface_id {
             app.window.app_id = Some(app_id);
         }
@@ -3749,6 +3755,7 @@ mod private_continuity_route_tests {
 #[cfg(test)]
 pub(crate) mod ordinary_confirmation_tests {
     include!("app/deferred_invocation_tests.rs");
+    include!("app/state_tick_tests.rs");
     use super::*;
     use crate::history_mode::*;
     use std::{cell::RefCell, rc::Rc};

@@ -174,16 +174,16 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
                 .find(|(id, _)| *id == pushed)
                 .copied()
                 .expect("the retargeted group is still moving");
+            let (from, carried) = m.sampled_after(Duration::ZERO);
             assert!(
-                (laid_after + m.from - (laid_before + drawn)).abs() < 1e-6,
+                (laid_after + from - (laid_before + drawn)).abs() < 1e-6,
                 "no snap: drawn at {} before the retarget, {} after",
                 laid_before + drawn,
-                laid_after + m.from
+                laid_after + from
             );
             assert!(
-                (m.velocity - velocity).abs() < 1e-6,
-                "velocity carries across the retarget: {velocity} then {}",
-                m.velocity
+                (carried - velocity).abs() < 1e-6,
+                "velocity carries across the retarget: {velocity} then {carried}"
             );
         }
 
@@ -229,39 +229,38 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
         /// Critically damped: the path approaches home from one side and
         /// arrives within the heavy spring's budget; then the row goes quiet.
         fn the_spring_never_crosses_home_and_settles_then_goes_quiet() {
-            let omega = spring_omega(crate::tokens::SpringPresets::default().heavy);
-            let m = GroupMove {
-                from: -600.0,
-                velocity: 0.0,
-                started: crate::time::now(),
-            };
-            let mut settled_at = None;
+            let start = crate::time::now();
+            let mut m = strip_motion(-600.0);
+            m.set(
+                0.0,
+                crate::motion::WindowMotion::MOVE.timing(
+                    crate::motion::Direction::Enter,
+                    crate::tokens::EffectiveMotion::default(),
+                    MotionSource::Pointer,
+                ),
+                start,
+            );
             for ms in 0..=1000_u64 {
-                let (x, v) = m.at(Duration::from_millis(ms), omega);
+                let (x, _) = m.sampled_after(Duration::from_millis(ms));
                 assert!(x <= 0.0, "crossed home at {ms} ms: {x}");
-                if settled_at.is_none()
-                    && x.abs() < MOVE_SETTLED_PX
-                    && v.abs() < MOVE_SETTLED_PX_PER_S
-                {
-                    settled_at = Some(ms);
-                }
             }
-            let settled_at = settled_at.expect("the spring settles");
+            let settled_at = m
+                .settles_at()
+                .expect("the spring moves")
+                .saturating_duration_since(start);
             assert!(
-                settled_at <= 450,
-                "a 600 px move settles in under half a second, took {settled_at} ms"
+                settled_at <= Duration::from_millis(450),
+                "a 600 px move settles in under half a second, took {settled_at:?}"
             );
 
             let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
             row.insert_group(make_group(999, &[9]), 0);
-            let (mut row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-            for (_, m) in &mut row.moves {
-                m.started = m
-                    .started
-                    .checked_sub(Duration::from_secs(2))
-                    .expect("the clock is past two seconds");
-            }
             let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            assert!(row.shift_in_flight(), "fixture: the strip makes room");
+            let later = crate::time::now() + Duration::from_secs(2);
+            let (row, _taffy, _root) = crate::time::testing::with_monotonic_time(later, || {
+                relayout_row_owned(row, 2000.0)
+            });
             assert!(row.moves.is_empty(), "settled moves are dropped");
             assert!(
                 !row.needs_animation_frame(),
@@ -293,9 +292,9 @@ fn making_room_slides_pushed_groups_from_their_old_place() {
             let footprint = rect_of(&row, closed).width() + HANDLE_SLOT_PX;
             let mut still = panned_four();
             assert!(row.remove_group_by_id(closed));
-            let (mut row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+            let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
             assert!(
-                !row.hold_shift_at(Duration::ZERO),
+                !row.shift_in_flight() && row.moves.is_empty(),
                 "nothing slides: the pan carries the view"
             );
             for (&id, was) in survivors.iter().zip(before) {

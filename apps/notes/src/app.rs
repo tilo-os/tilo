@@ -41,7 +41,7 @@ use crate::main_panel::{BacklinkChip, MainPanel, TagChip};
 use crate::model::{PageId, TagId, Workspace};
 use crate::shortcuts_overlay::ShortcutsOverlay;
 use crate::sidebar::{OutEvent, PageSidebar, SidebarTransfer};
-use crate::status_bar::{SaveStatus, StatusBarState, StatusModel, count_words};
+use crate::status_bar::{SaveStatus, StatusBarState, StatusModel};
 
 mod asset_reads;
 mod effects;
@@ -52,6 +52,11 @@ thread_local! {
     /// Always so in the app.
     static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
+
+/// What the window's bar was last declared with: the note shown (its title
+/// and anchor), whether the page tree is open, and whether New note is
+/// offered.
+type DeclaredBar = (Option<(String, String)>, bool, bool);
 
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
@@ -323,6 +328,10 @@ pub struct NotesApp {
     /// The note's save + page/word status, surfaced on the save status
     /// surface (see `save_status`) instead of a permanent strip.
     status: StatusModel,
+    /// The open note's word count and the revision of the note's blocks it
+    /// was counted at, so a status refresh that saw no change reuses it
+    /// instead of walking every block again.
+    word_count: Option<(u64, usize)>,
     /// The framework's save status, said in the window's bar: autosave says
     /// nothing; a save that stalls says "Couldn't save yet. Retrying…", and
     /// "Saved" once it lands; one that gives up says "Not saved" and a
@@ -360,7 +369,9 @@ pub struct NotesApp {
     header_in_bar: bool,
     /// The note title and sidebar state the bar's slots were last declared
     /// with.
-    declared_bar: Option<(Option<(String, String)>, bool)>,
+    declared_bar: Option<DeclaredBar>,
+    /// Whether the headers offer New note: the person may make one.
+    offers_new_note: bool,
     /// Cached taffy node IDs. Filled in `build_layout`, used by
     /// `apply_layout` and `handle_event`. The columns' nodes exist only while
     /// the shell shows them (a closed drawer shows no page tree).
@@ -478,6 +489,9 @@ pub struct NotesApp {
     /// The notes the notebook holds, and the notes a search hit or an agent's
     /// `open` asked to show, shared with the framework's opener.
     opened: Rc<std::cell::RefCell<Opened>>,
+    /// Who the participants are, by name, once hosted: whom the header's
+    /// reactions name, and whether anyone else shares the notebook.
+    people: Option<ui::framework::People>,
 }
 
 /// What the framework's opener and the window share: the notes there are,
@@ -711,6 +725,7 @@ impl NotesApp {
             sidebar,
             main,
             status: StatusModel::new(),
+            word_count: None,
             save_surface: ui::SaveStatusSurface::new(),
             save_notices: crate::save_notice::SaveNotices::new(),
             save_retry: false,
@@ -725,6 +740,7 @@ impl NotesApp {
             header,
             header_in_bar: false,
             declared_bar: None,
+            offers_new_note: true,
             shell_node: None,
             sidebar_node: None,
             shortcuts_return_to_tree: false,
@@ -751,6 +767,7 @@ impl NotesApp {
             presented: false,
             dispatcher: None,
             live: None,
+            people: None,
             active_tag_filter: None,
             route_history: ui::NavStack::new(initial_route),
             history_target: None,
@@ -788,6 +805,23 @@ impl NotesApp {
         std::mem::take(&mut self.save_retry) || stalled
     }
 
+    /// The open note's word count, counted once per change of its blocks
+    /// rather than once per status refresh: every pointer move and scroll
+    /// ends in one, and walking every block of a long note each time is what
+    /// that costs.
+    fn cached_word_count(&mut self) -> Option<usize> {
+        self.workspace.selected()?;
+        let revision = self.main.content_revision();
+        if let Some((counted, count)) = self.word_count
+            && counted == revision
+        {
+            return Some(count);
+        }
+        let count = self.main.word_count();
+        self.word_count = Some((revision, count));
+        Some(count)
+    }
+
     fn refresh_status(&mut self) {
         let _profile = ui::tilo_resource::profiling::Phase::start("status_refresh");
         let path = match self.workspace.selected() {
@@ -803,15 +837,12 @@ impl NotesApp {
         // We count over each block's plain text body — not the
         // serialised markdown — so chrome like `- `, `**`, `` ` ``
         // doesn't inflate the total.
-        let word_count = if self.workspace.selected().is_some() {
-            let mut total = 0usize;
-            for b in self.main.editor().blocks() {
-                total += count_words(b.text());
-            }
-            Some(total)
-        } else {
-            None
-        };
+        //
+        // This walks every block of the open note, so it is kept off the
+        // hot path: the result is reused until the editor has shown a
+        // change. A pointer move, a scroll, a save landing or a key that
+        // edited nothing leaves the note and its count where they were.
+        let word_count = self.cached_word_count();
         let save_status = self
             .shots_save_status
             .unwrap_or(match self.record_save_status {
@@ -994,6 +1025,49 @@ impl NotesApp {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The reactions to the selected note, as its header shows them: every
+    /// reaction it has, and an add button while the person may react and
+    /// someone else shares the notebook (alone, nobody would see one).
+    fn selected_reactions(&self) -> Option<crate::main_panel::NoteReactions> {
+        let page = self.workspace.selected()?;
+        let notebook = self.live.as_ref()?.get();
+        let reactions = &notebook
+            .pages
+            .get(&crate::notebook::page_id(page))?
+            .reactions;
+        let dispatcher = self.dispatcher.as_ref()?;
+        let me = dispatcher.me();
+        let people = self.people.as_ref();
+        // Each reactor under the name the notebook's people know them by,
+        // for the pills' tooltips.
+        let groups: Vec<ui::tilo_resource::ReactionGroup> = reactions
+            .groups()
+            .into_iter()
+            .map(|mut group| {
+                for reactor in &mut group.reactors {
+                    if reactor.name.is_none()
+                        && let Some(people) = people
+                    {
+                        reactor.name = Some(people.name(&reactor.by));
+                    }
+                }
+                group
+            })
+            .collect();
+        let can_react = me.is_some()
+            && !dispatcher.is_past()
+            && dispatcher.may(&tilo_actions::ActionNeed::reactions());
+        // Shared with whoever belongs to the notebook's room, here now or not.
+        let shared = people.is_some_and(|people| dispatcher.is_shared(people));
+        let offered = can_react && (shared || !groups.is_empty());
+        (offered || !groups.is_empty()).then(|| crate::main_panel::NoteReactions {
+            page,
+            groups,
+            me: me.unwrap_or_default().to_owned(),
+            can_react: offered,
+        })
     }
 
     /// Present only the selected page's incoming-link row. The complete index
@@ -1301,6 +1375,9 @@ impl NotesApp {
         while let Some(url) = self.main.take_external_link_open() {
             self.request(&NotesEffect::OpenLink { url });
         }
+        while let Some(href) = self.main.take_resource_link_open() {
+            self.request(&NotesEffect::OpenResource { href });
+        }
     }
 
     /// Test accessor: the currently selected page id.
@@ -1606,6 +1683,11 @@ impl NotesApp {
     /// Wake the window through `wake` when the notebook's pictures are read.
     pub(crate) fn wake_asset_reads_through(&mut self, wake: ui::WakeHandle) {
         self.asset_reads.wake_through(wake);
+    }
+
+    /// Name the participants through `people` from now on.
+    pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
+        self.people = Some(people);
     }
 
     /// Attach the framework dispatcher when hosted as a surface.
@@ -2715,6 +2797,7 @@ impl Widget for NotesApp {
         self.drain_tag_open();
         self.drain_backlink_open();
         self.main.set_tags(self.selected_tag_chips());
+        self.main.set_reactions(self.selected_reactions());
         self.refresh_transclusion_previews();
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
@@ -3344,6 +3427,11 @@ impl NotesApp {
             ui::widget::block_editor::LinkTarget::Page(id) => id,
             ui::widget::block_editor::LinkTarget::External(url) => {
                 self.request(&NotesEffect::OpenLink { url });
+                *handled = true;
+                return true;
+            }
+            ui::widget::block_editor::LinkTarget::Resource(href) => {
+                self.request(&NotesEffect::OpenResource { href });
                 *handled = true;
                 return true;
             }
@@ -4326,6 +4414,32 @@ mod tests {
                 "captures can include save feedback without waiting out its lifetime"
             );
             assert_expired_save_feedback_presents(&mut app, &state);
+        }
+
+        eprintln!("phase words_are_counted_once_per_change_of_the_note");
+        {
+            let (mut app, _state, _tmp, _welcome) = app_seeded_into_doc();
+            app.shots_save_status = Some(SaveStatus::Saved);
+            app.refresh_status();
+            let boards = app.main.word_count();
+            assert!(boards > 0, "the seeded note has words");
+            let counted = app.word_count.expect("the count was taken");
+            assert_eq!(counted.1, boards);
+            // A status refresh that saw no change reuses what it counted.
+            for _ in 0..3 {
+                app.refresh_status();
+                assert_eq!(app.word_count, Some(counted), "no recount without a change");
+                assert_eq!(app.status.state().word_count, Some(boards));
+            }
+            // An edit of the note is recounted.
+            app.main
+                .editor_mut()
+                .set_blocks(vec![ui::widget::Block::paragraph("One two three")]);
+            app.refresh_status();
+            assert_eq!(app.status.state().word_count, Some(3));
+            let edited = app.word_count.expect("the edited count was taken");
+            assert_eq!(edited.1, 3, "the live count, not one left behind");
+            assert_ne!(edited.0, counted.0, "the revision moved with the edit");
         }
 
         eprintln!("phase an_unchanged_notebook_skips_search_index_work");

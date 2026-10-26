@@ -32,7 +32,10 @@ fn actual_discovery_requires_selection_and_calendar_reads_the_saved_collections(
     let account_root = AccountRoot::at(root.path());
     let mut pane = AccountsPane::in_root(account_root.clone());
     pane.command(AccountViewCommand::Add(AccountKind::CalDav));
-    let server_url = format!("http://localhost:{}/cloud/dav/", server.port());
+    // The responder listens on 127.0.0.1 only. A `localhost` URL would let
+    // the client try [::1] first, where another test's server may hold the
+    // same port number and answer instead.
+    let server_url = format!("http://127.0.0.1:{}/cloud/dav/", server.port());
     pane.set_form_fields_for_test("Cloud calendars", "", "login@example.test", &server_url);
     pane.set_form_password_for_test("private-app-password");
     pane.submit_form_for_test();
@@ -51,11 +54,11 @@ fn actual_discovery_requires_selection_and_calendar_reads_the_saved_collections(
             .is_err()
     );
     let team = format!(
-        "http://localhost:{}/cloud/calendars/internal-id/team/",
+        "http://127.0.0.1:{}/cloud/calendars/internal-id/team/",
         server.port()
     );
     let holidays = format!(
-        "http://localhost:{}/cloud/calendars/internal-id/holidays/",
+        "http://127.0.0.1:{}/cloud/calendars/internal-id/holidays/",
         server.port()
     );
     pane.select_calendar(&team, false).unwrap();
@@ -116,7 +119,7 @@ fn nextcloud_calendars_reuse_the_canonical_account_and_never_rewrite_its_secret(
         account.display_name = "My cloud".into();
         account.config = serde_json::json!({
             "id": "canonical-nextcloud", "label": "My cloud",
-            "server_url": format!("http://localhost:{}/cloud/", server.port()),
+            "server_url": format!("http://127.0.0.1:{}/cloud/", server.port()),
             "username": "different-login@example.test", "use_files": use_files,
             "use_calendar": false, "use_mail": false, "future_setting": "keep"
         });
@@ -137,7 +140,7 @@ fn nextcloud_calendars_reuse_the_canonical_account_and_never_rewrite_its_secret(
         assert!(pane.finish_form_submission_for_test(tilo_test_env::hang_bound()));
         assert_eq!(account_root.store().get(&account.id), Some(&account));
         let href = format!(
-            "http://localhost:{}/cloud/calendars/opaque-id/personal/",
+            "http://127.0.0.1:{}/cloud/calendars/opaque-id/personal/",
             server.port()
         );
         pane.submit_form_for_test();
@@ -218,7 +221,7 @@ fn changing_or_canceling_a_live_discovery_draft_never_commits_it() {
         let account_root = AccountRoot::at(root.path());
         let mut pane = AccountsPane::in_root(account_root.clone());
         pane.command(AccountViewCommand::Add(AccountKind::CalDav));
-        let url = format!("http://localhost:{}/cal/", server.port());
+        let url = format!("http://127.0.0.1:{}/cal/", server.port());
         pane.set_form_fields_for_test("Cloud", "", "ada", &url);
         pane.set_form_password_for_test("candidate-password");
         pane.submit_form_for_test();
@@ -265,7 +268,7 @@ fn failed_or_empty_discovery_never_saves_an_account_or_credential() {
             "Cloud",
             "",
             "ada",
-            &format!("http://localhost:{}/cal/", server.port()),
+            &format!("http://127.0.0.1:{}/cal/", server.port()),
         );
         pane.set_form_password_for_test("candidate-password");
         pane.submit_form_for_test();

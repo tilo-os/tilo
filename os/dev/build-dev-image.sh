@@ -49,6 +49,10 @@
 #                     t's os-compile-dev-<arch>); without it they are compiled here, in
 #                     the OS builder image, with the build directory and sccache kept
 #                     under os/output so a rebuild compiles only what changed
+#   TILO_DEV_ENV_RUNTIME  a sealed env-runtime directory (install-env-runtime.sh's
+#                     layout; `env-runtime.sh dev` in os-image.sh): what the dev image ships when
+#                     its base ships no published runtime. A dev image with neither
+#                     fails to build (os/scripts/ensure-dev-env-runtime.sh)
 #   TILO_DEV_RUST_LTO thin (default here) or off, for that compile
 #   TILO_DEV_CARGO_BUILD_JOBS  parallel jobs of that compile (default: a CPU per
 #                     job, as far as memory holds out at 4 GiB a thin-LTO job)
@@ -231,6 +235,15 @@ if [ -z "${TILO_COMPILED_DEV:-}" ]; then
   TILO_COMPILED_DEV="$TILO_OUTPUT/compiled-dev"
 fi
 
+# The env-runtime the dev image ships when its base ships none; an empty directory gives none.
+if [ -n "${TILO_DEV_ENV_RUNTIME:-}" ]; then
+  dev_env_runtime="$(realpath "$TILO_DEV_ENV_RUNTIME")"
+else
+  dev_env_runtime="$TILO_OUTPUT/no-env-runtime"
+  rm -rf "$dev_env_runtime"
+  mkdir -p "$dev_env_runtime"
+fi
+
 msg "1/2 podman build $dev_image FROM $base${base_digest:+ ($base_digest)}"
 dev_started=$SECONDS
 podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev" \
@@ -240,6 +253,7 @@ podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev"
   --build-arg "TILO_BASE_DIGEST=$base_digest" \
   --build-arg "TILO_BASE_CREATED=$base_created" \
   --build-context "compiled-dev=$(realpath "$TILO_COMPILED_DEV")" \
+  --build-context "dev-env-runtime=$dev_env_runtime" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
   "${_extra_build_args[@]}" \
   --tag "$dev_image" \

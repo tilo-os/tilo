@@ -3,8 +3,6 @@ use crate::record::{RecordCheckout, RecordId, RecordStore};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::tokens::TextRole;
-use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::AppWidget;
 use crate::widget::{AppModel, ModelPath};
@@ -38,26 +36,6 @@ fn spawn_progress(elapsed: Duration) -> f64 {
 fn spawn_time() -> Duration {
     WindowMotion::OPEN.settle_time(
         Direction::Enter,
-        EffectiveMotion::default(),
-        MotionSource::Pointer,
-    )
-}
-
-/// How far the opening card's hand-over to the window has come: one motion
-/// becoming another, a cross-fade (`motion::CROSS_FADE`).
-fn handover_progress(elapsed: Duration) -> f64 {
-    crate::motion::CROSS_FADE.progress_after(
-        Direction::Exit,
-        EffectiveMotion::default(),
-        MotionSource::Pointer,
-        elapsed,
-    )
-}
-
-/// How long the hand-over runs.
-fn handover_time() -> Duration {
-    crate::motion::CROSS_FADE.settle_time(
-        Direction::Exit,
         EffectiveMotion::default(),
         MotionSource::Pointer,
     )
@@ -167,14 +145,15 @@ pub enum TileContent {
         title: String,
         detail: String,
     },
-    /// The place of an app whose code is still on its way (a browser
-    /// bundle fetches each app's module the first time one of its windows
-    /// opens). It has drawn nothing and is opening from the start, so its
-    /// window keeps its frame and shows the opening card, as for any app
-    /// asked for and not yet drawn; the app built in its place once the code
-    /// is in takes the card over ([`TileHost::continue_opening_card`]). It
-    /// holds no record and takes no focus or input: nothing typed while it
-    /// waits lands in a field that is not there yet.
+    /// The place of an app whose code or record is still on its way (a
+    /// browser bundle fetches each app's module the first time one of its
+    /// windows opens). It has drawn nothing, so its window reserves its
+    /// place and shows the framework's placeholder, as for any content whose
+    /// first frame is not drawn yet ([`crate::arriving`]); the app built in
+    /// its place once it is in goes on with the same arrival
+    /// ([`TileHost::continue_arrival`]). It holds no record and takes no
+    /// focus or input: nothing typed while it waits lands in a field that is
+    /// not there yet.
     Arriving,
 }
 
@@ -472,6 +451,14 @@ pub struct TileHost {
     /// tile's node shape changed even though no hosted widget reported
     /// anything.
     structure_dirty: bool,
+    /// The tile's own layout node, as last built; `None` while it has none.
+    node: Option<NodeId>,
+    /// The content took the place of a placeholder in this tile's retained
+    /// node ([`Self::take_place_of`]) and is laid out under it in place
+    /// ([`Widget::remount_children`]), not by rebuilding the host's tree.
+    /// Until then the tile names none of its content to the retained
+    /// layout's check: none of it is in the tree yet.
+    remount: bool,
     /// Latched: once this tile has shown something, its window stays on
     /// screen for good. Must survive [`TileHost::replace_content`] — a
     /// peer's already-open window arrives as a card, then gets replaced
@@ -519,32 +506,17 @@ pub struct TileHost {
     /// ([`TileHost::hold_content`]), drawn in place of the live content
     /// until released.
     held: Option<held::HeldContent>,
-    /// Pushed down by the parent [`crate::widget::WindowGroup`] every
-    /// frame: the pill is where a wayland app-id becomes a name a person
-    /// recognises, and resolving it a second time down here would only be
-    /// a second chance for the two to disagree.
-    opening_name: String,
-    opening_spinner: Spinner,
-    /// Set on the first frame the opening card is actually painted: a
-    /// card nobody saw has nothing to dissolve, and fading one out over
-    /// an app that opened in a blink would invent a transition out of a
-    /// placeholder that was never on screen.
-    opening_shown: bool,
-    /// Drives the dissolve; only ever set once `opening_shown` is.
-    handed_over_at: Option<Instant>,
+    /// The arrival of content whose first frame is not drawn yet
+    /// ([`arrival`]): from when it was asked for until its first frame has
+    /// faded in.
+    arrival: Option<arrival::TileArrival>,
+    /// When the content's first frame landed ([`Widget::presented`] turned
+    /// true), for the arrival to time its reveal by.
+    content_presented_at: std::cell::Cell<Option<Instant>>,
+    /// The motion the arrival's cross-fade plays, latched from the theme at
+    /// draw.
+    arrival_motion: EffectiveMotion,
 }
-
-/// Larger than the toolkit default so it holds its own under a title on a
-/// full-window card, small enough to stay an indicator rather than the
-/// subject of the screen.
-const OPENING_SPINNER_PX: f64 = 36.0;
-
-/// Mirrors `OPENING_SPINNER_PX` as an `f32`: `Spinner::with_size` takes an
-/// `f32`, while every rect computation below stays in `f64` alongside the
-/// rest of this widget's geometry.
-const OPENING_SPINNER_PX_F32: f32 = 36.0;
-
-const OPENING_SPINNER_GAP: f64 = 24.0;
 
 /// While a tile's application runs: its tab named to a panic hook, and its
 /// window current for its bar's slots.
@@ -563,6 +535,14 @@ impl TileHost {
         }
         self.rect = self.rect + vello::kurbo::Vec2::new(dx, 0.0);
         self.content_shift += dx;
+    }
+
+    /// How far the content is drawn from where it was laid out
+    /// ([`Self::offset_layout`]): what its app placed at `x` shows at
+    /// `x + content_shift()`.
+    #[must_use]
+    pub fn content_shift(&self) -> f64 {
+        self.content_shift
     }
 
     fn install_live_custody(&mut self, attachment: crate::control_custody::CustodyAttachment) {
@@ -804,9 +784,63 @@ impl TileHost {
         found
     }
 
+    /// The style of the tile's own node: one holding its app, or a leaf
+    /// for a card drawn by the tile itself.
+    fn node_style(holds_app: bool) -> Style {
+        let fill = Size {
+            width: Dimension::percent(1.0),
+            height: Dimension::percent(1.0),
+        };
+        if !holds_app {
+            return Style {
+                size: fill,
+                ..Default::default()
+            };
+        }
+        Style {
+            size: fill,
+            // The window gives its app its room; what the app shows never
+            // sets a floor under it. With the automatic minimum, a page whose
+            // document was taller than the window kept the tile from making
+            // way for the window's bar, and pushed the window past its strip.
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::length(0.0),
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Build the app's layout (in its History's composition, when it has
+    /// one) for the tile's node to hold; `None` for a card, which has none.
+    fn build_content(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> Option<NodeId> {
+        self.live_callback_node = None;
+        let TileContent::App(w) = &mut self.content else {
+            return None;
+        };
+        let child = if let Some(history) = &mut self.history {
+            history.build_composition(w.as_mut(), taffy, theme, node_map)
+        } else {
+            w.build_layout(taffy, theme, node_map)
+        };
+        self.live_callback_node = self
+            .history
+            .as_ref()
+            .map_or(Some(child), |history| history.live_layout_node());
+        Some(child)
+    }
+
     /// Inactive retained tiles have no nodes in the current Taffy tree.
     pub(crate) fn discard_layout_nodes(&mut self) {
         self.live_callback_node = None;
+        self.node = None;
+        // With no node to lay the content out under, the next build does.
+        self.structure_dirty |= std::mem::take(&mut self.remount);
         if let Some(history) = &mut self.history {
             history.discard_layout_nodes();
         }
@@ -882,6 +916,8 @@ impl TileHost {
             record_creation_refused: false,
             announced: None,
             structure_dirty: false,
+            node: None,
+            remount: false,
             was_presented: std::cell::Cell::new(false),
             content_was_presented: std::cell::Cell::new(false),
             panic_scope: std::cell::Cell::new(None),
@@ -897,17 +933,171 @@ impl TileHost {
             square_bottom: false,
             spawned_at: None,
             held: None,
-            opening_name: String::new(),
-            opening_spinner: Spinner::with_size(OPENING_SPINNER_PX_F32),
-            opening_shown: false,
-            handed_over_at: None,
+            arrival: None,
+            content_presented_at: std::cell::Cell::new(None),
+            arrival_motion: EffectiveMotion::default(),
         };
         match registration {
             Ok(Some(registration)) => tile.install_history_registration(registration),
             Err(error) => tile.record_error = Some(format!("History unavailable: {error}")),
             Ok(None) => {}
         }
+        tile.arrival = tile.begin_arrival(None);
         tile
+    }
+
+    /// Content whose first frame comes from `from`: an [`TileContent::Arriving`]
+    /// place for an app whose code a host serves.
+    #[must_use]
+    pub fn arriving_from(mut self, from: crate::arriving::Source) -> Self {
+        if let Some(arrival) = &self.arrival
+            && !arrival.revealed()
+        {
+            self.arrival = Some(arrival.answered_from(from));
+        }
+        self
+    }
+
+    /// The arrival of the content now in the tile: `None` when it presented
+    /// at once and nothing stood before it, else timed from `since` (the
+    /// placeholder that stood before it), or from now.
+    fn begin_arrival(&self, since: Option<Instant>) -> Option<arrival::TileArrival> {
+        let pending = !self.content_presented();
+        if !pending && since.is_none() {
+            return None;
+        }
+        let from = match &self.content {
+            TileContent::App(app) => app.arrives_from(),
+            _ => crate::arriving::Source::Local,
+        };
+        let since = since.unwrap_or_else(crate::time::now);
+        let mut arrival =
+            arrival::TileArrival::new(crate::arriving::ArrivalClock::new(since, from));
+        if !pending {
+            arrival.arrive(crate::time::now());
+        }
+        Some(arrival)
+    }
+
+    /// Whether the content now in the tile has drawn its first frame: polls
+    /// it, latching the answer ([`Widget::presented`]).
+    fn content_presented(&self) -> bool {
+        let _ = Widget::presented(self);
+        self.content_was_presented.get()
+    }
+
+    /// The arrival as of now: with the content's first frame landed when it
+    /// has, which a query that cannot change the tile reads.
+    fn arrival_now(&self) -> Option<arrival::TileArrival> {
+        let mut arrival = self.arrival.clone()?;
+        if self.content_presented() {
+            arrival.arrive(
+                self.content_presented_at
+                    .get()
+                    .unwrap_or_else(crate::time::now),
+            );
+        }
+        Some(arrival)
+    }
+
+    /// Note the content's first frame on the arrival, and show it once due.
+    fn advance_arrival(&mut self, now: Instant) {
+        let presented = self.content_presented();
+        let at = self.content_presented_at.get();
+        let motion = self.arrival_motion;
+        let Some(arrival) = self.arrival.as_mut() else {
+            return;
+        };
+        if presented {
+            arrival.arrive(at.unwrap_or(now));
+        }
+        arrival.reveal_when_due(motion, now);
+        if arrival.paint_at(now).is_none() {
+            self.arrival = None;
+        }
+    }
+
+    /// The content's own update ([`Widget::update`]).
+    fn update_content(&mut self, s: &AppModel, p: &ModelPath) -> bool {
+        let _running = self.running();
+        // This custody is independent of the outer App State and remains
+        // durable while History hides the live widget.
+        if let Some(binding) = &self.binding {
+            binding.store.schedule_committed_history(&binding.live);
+            if let TileContent::App(app) = &mut self.content
+                && app.take_save_retry()
+                && let Err(error) = binding.store.try_flush_record(&binding.live)
+            {
+                tracing::warn!(%error, "retrying a failed record save");
+            }
+            if self.history_lifetime.active.get()
+                && let (Ok(status), TileContent::App(app)) =
+                    (binding.store.save_status(&binding.live), &mut self.content)
+            {
+                app.record_save_status(status);
+            }
+        }
+        if !self.history_lifetime.active.get()
+            || crate::history_mode::frame::FrameworkInputFrame::active()
+        {
+            return false;
+        }
+        let Ok(live) = self.resolve_record() else {
+            return false;
+        };
+        self.install_declared_history();
+        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
+        if self.record_error.is_some() {
+            return false;
+        }
+        let (store, id) = if let (Some(id), Some(binding)) = (live, self.binding.as_ref()) {
+            (binding.store.clone(), id)
+        } else {
+            let TileContent::App(w) = &mut self.content else {
+                return false;
+            };
+            return w.update(s, p);
+        };
+        let changed = store
+            .with(&id, |doc| {
+                let TileContent::App(w) = &mut self.content else {
+                    return false;
+                };
+                w.update(doc, &ROOT)
+            })
+            .unwrap_or(false);
+        let _ = self.record_owner_step_to_current_record();
+        changed
+    }
+
+    /// The placeholder step standing in the tile at `now`, while one does:
+    /// the content's first frame is not shown yet.
+    #[must_use]
+    pub fn arrival_step(&self, now: Instant) -> Option<crate::arriving::Step> {
+        let arrival = self.arrival_now()?;
+        // A first frame that is due shows on the next frame drawn.
+        let due = arrival.clock().shows_at().is_some_and(|at| now >= at);
+        (!arrival.revealed() && !due).then(|| arrival.placeholder_step(now))
+    }
+
+    /// Whether the tile still stands for content whose first frame is not
+    /// shown: its placeholder (or the ground it reserves) is what is there.
+    #[must_use]
+    pub fn is_arriving(&self) -> bool {
+        self.arrival_step(crate::time::now()).is_some()
+    }
+
+    /// Until when the window's first frame waits for this tile's content:
+    /// a first frame from this device, inside its frame budget.
+    #[must_use]
+    pub fn holds_first_frame_until(&self, now: Instant) -> Option<Instant> {
+        if self.content_presented() {
+            return None;
+        }
+        self.arrival
+            .as_ref()
+            .filter(|arrival| !arrival.revealed())
+            .and_then(|arrival| arrival.clock().holds_frame_until(now))
     }
 
     pub(crate) fn set_flush_edges(&mut self, flush: bool) {
@@ -968,39 +1158,47 @@ impl TileHost {
         self.hosted_window.as_ref()
     }
 
-    pub fn set_opening_name(&mut self, name: &str) {
-        if self.opening_name != name {
-            self.opening_name.clear();
-            self.opening_name.push_str(name);
+    /// Built in place of `previous` (an app whose code or record just
+    /// arrived, in the window that reserved its place): while `previous`
+    /// still stood for content not shown, this host goes on with that
+    /// arrival, so its placeholder keeps its timing and the app cross-fades
+    /// in over it instead of the window cutting or starting over.
+    /// Stand where this tile stands from now on: `next`, built for the same
+    /// window (an app whose code or record arrived where a placeholder held
+    /// its place), goes on with the arrival ([`Self::continue_arrival`])
+    /// and takes this tile's retained layout node: the app is laid out under
+    /// that node in place and the rest of the host's tree is kept.
+    pub fn take_place_of(&mut self, mut next: Self) {
+        next.continue_arrival(self);
+        next.node = self.node;
+        next.remount = self.node.is_some();
+        next.structure_dirty = !next.remount;
+        *self = next;
+    }
+
+    pub fn continue_arrival(&mut self, previous: &Self) {
+        let Some(standing) = previous
+            .arrival
+            .as_ref()
+            .filter(|arrival| !arrival.revealed())
+        else {
+            return;
+        };
+        let since = standing.clock().since();
+        let from = match &self.content {
+            TileContent::App(app) if !self.content_presented() => app.arrives_from(),
+            _ => standing.clock().source().clone(),
+        };
+        let mut arrival =
+            arrival::TileArrival::new(crate::arriving::ArrivalClock::new(since, from));
+        if self.content_presented() {
+            arrival.arrive(
+                self.content_presented_at
+                    .get()
+                    .unwrap_or_else(crate::time::now),
+            );
         }
-    }
-
-    /// Test seam for the parent group's push — a card naming the wrong
-    /// app, or an app-id, is the defect this exists to catch.
-    /// Built in place of `previous` (an app whose code just arrived, in
-    /// the window that held its place): when `previous` had its opening card
-    /// on screen, this host dissolves that card over what it shows instead of
-    /// cutting to it, so the window fills in rather than jumping.
-    pub fn continue_opening_card(&mut self, previous: &Self) {
-        if previous.opening_shown && previous.handed_over_at.is_none() {
-            self.opening_shown = true;
-            self.set_opening_name(&previous.opening_name);
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn opening_name_for_test(&self) -> &str {
-        &self.opening_name
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_opening_shown_for_test(&mut self) {
-        self.opening_shown = true;
-    }
-
-    fn handover_in_flight(&self) -> bool {
-        self.handed_over_at
-            .is_some_and(|t| crate::time::now().saturating_duration_since(t) < handover_time())
+        self.arrival = Some(arrival);
     }
 
     /// Idempotent on the same record — rebinding would hand the tab a
@@ -1643,7 +1841,7 @@ impl TileHost {
         }
         crate::component_lifecycle::take_component_close_reports(self)
     }
-    /// Used when a window announced before it existed (an opening card)
+    /// Used when a window announced before it existed (a place reserved for it)
     /// becomes the app; replacing the tab instead would hand focus
     /// elsewhere. Keeps the record binding but resets `announced` so the
     /// new occupant is told its scope, and flags a structural rebuild
@@ -1691,15 +1889,23 @@ impl TileHost {
         self.install_declared_history();
         // An app with a History of its own learns where the window presents
         // its controls, as the content it replaces did: an app that replaced
-        // its opening card drew its own History and search beside the bar's.
+        // the content it replaced drew its own History and search beside the bar's.
         if let Some(tab_presents) = self.window_history
             && let Some(app) = self.app_history_mut()
         {
             app.set_window_presents_history(tab_presents);
         }
+        // Content replacing a placeholder still standing goes on with its
+        // arrival (a launch's place taken over by the window it asked for);
+        // content replacing shown content arrives afresh, or at once.
+        let standing = self
+            .arrival
+            .as_ref()
+            .filter(|arrival| !arrival.revealed())
+            .map(|arrival| arrival.clock().since());
         self.content_was_presented.set(false);
-        self.opening_shown = false;
-        self.handed_over_at = None;
+        self.content_presented_at.set(None);
+        self.arrival = self.begin_arrival(standing);
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         self.announced = None;
         self.structure_dirty = true;
@@ -2324,6 +2530,10 @@ impl Widget for TileHost {
     }
     /// The app also while History keeps it inert.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        // Content waiting to be laid out in place is in no layout yet.
+        if self.remount {
+            return true;
+        }
         if let Some(history) = &self.history {
             visitor(history.as_ref());
         }
@@ -2484,55 +2694,14 @@ impl Widget for TileHost {
     }
 
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
-        let _running = self.running();
-        // This custody is independent of the outer App State and remains
-        // durable while History hides the live widget.
-        if let Some(binding) = &self.binding {
-            binding.store.schedule_committed_history(&binding.live);
-            if let TileContent::App(app) = &mut self.content
-                && app.take_save_retry()
-                && let Err(error) = binding.store.try_flush_record(&binding.live)
-            {
-                tracing::warn!(%error, "retrying a failed record save");
-            }
-            if self.history_lifetime.active.get()
-                && let (Ok(status), TileContent::App(app)) =
-                    (binding.store.save_status(&binding.live), &mut self.content)
-            {
-                app.record_save_status(status);
-            }
-        }
-        if !self.history_lifetime.active.get()
-            || crate::history_mode::frame::FrameworkInputFrame::active()
-        {
-            return false;
-        }
-        let Ok(live) = self.resolve_record() else {
-            return false;
-        };
-        self.install_declared_history();
-        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-        if self.record_error.is_some() {
-            return false;
-        }
-        let (store, id) = if let (Some(id), Some(binding)) = (live, self.binding.as_ref()) {
-            (binding.store.clone(), id)
-        } else {
-            let TileContent::App(w) = &mut self.content else {
-                return false;
-            };
-            return w.update(s, p);
-        };
-        let changed = store
-            .with(&id, |doc| {
-                let TileContent::App(w) = &mut self.content else {
-                    return false;
-                };
-                w.update(doc, &ROOT)
-            })
-            .unwrap_or(false);
-        let _ = self.record_owner_step_to_current_record();
-        changed
+        // A placeholder step that came due (its wake deadline), or a first
+        // frame due to show, is a change of what the tile shows: the host
+        // that woke for it paints.
+        let progress = self.arrival_progress();
+        let arrival = self
+            .arrival_now()
+            .is_some_and(|arrival| arrival.needs_redraw(crate::motion::frame_now(), progress));
+        self.update_content(s, p) || arrival
     }
     fn build_layout(
         &mut self,
@@ -2541,48 +2710,12 @@ impl Widget for TileHost {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let _running = self.running();
-        self.live_callback_node = None;
-        let node = match &mut self.content {
-            TileContent::App(w) => {
-                let child = if let Some(history) = &mut self.history {
-                    history.build_composition(w.as_mut(), taffy, theme, node_map)
-                } else {
-                    w.build_layout(taffy, theme, node_map)
-                };
-                self.live_callback_node = self
-                    .history
-                    .as_ref()
-                    .map_or(Some(child), |history| history.live_layout_node());
-                taffy.parent_node(
-                    Style {
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::percent(1.0),
-                        },
-                        // The window gives its app its room; what the app
-                        // shows never sets a floor under it. With the
-                        // automatic minimum, a page whose document was taller
-                        // than the window kept the tile from making way for
-                        // the window's bar, and pushed the window past its
-                        // strip.
-                        min_size: Size {
-                            width: Dimension::length(0.0),
-                            height: Dimension::length(0.0),
-                        },
-                        ..Default::default()
-                    },
-                    &[child],
-                )
-            }
-            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => taffy
-                .leaf_node(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                }),
+        let node = match self.build_content(taffy, theme, node_map) {
+            Some(child) => taffy.parent_node(Self::node_style(true), &[child]),
+            None => taffy.leaf_node(Self::node_style(false)),
         };
+        self.node = Some(node);
+        self.remount = false;
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         // This build composed the current content and admission, so a change
         // flagged before it (a rebind, a replacement) is satisfied. A host
@@ -2595,6 +2728,10 @@ impl Widget for TileHost {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let _running = self.running();
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        // Content waiting to be laid out in place has no nodes yet.
+        if self.remount {
+            return;
+        }
         if let TileContent::App(w) = &mut self.content {
             // Guards a structural mismatch: content is `App` but the taffy
             // node has no child yet (build_layout ran while content was
@@ -2710,6 +2847,21 @@ impl Widget for TileHost {
     fn needs_redraw(&self) -> bool {
         if let Some(redraw) = self.held_redraw() {
             return redraw;
+        }
+        let now = crate::motion::frame_now();
+        let progress = self.arrival_progress();
+        let arrival = self.arrival_now();
+        if arrival
+            .as_ref()
+            .is_some_and(|arrival| arrival.needs_redraw(now, progress))
+        {
+            return true;
+        }
+        // Content its placeholder still stands for is not drawn: what it
+        // would redraw is not on screen. Its first frame landing is the
+        // arrival's to notice, above.
+        if self.arrival_step(now).is_some() {
+            return false;
         }
         super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
@@ -2873,6 +3025,32 @@ impl Widget for TileHost {
                     .with_bounds(self.rect),
             );
         }
+        // Content on its way: the placeholder says what a screen reader
+        // needs, where it comes from and how much has come, and is busy.
+        if let Some(step) = self.arrival_step(crate::time::now()) {
+            let local = crate::arriving::Source::Local;
+            let source = self
+                .arrival
+                .as_ref()
+                .map_or(&local, |arrival| arrival.clock().source());
+            let face = super::ArrivalFace::at_step(self.arrival_shape(), step, source)
+                .with_progress(self.arrival_progress());
+            let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group);
+            let title = match &self.content {
+                TileContent::App(app) => app.app_title(),
+                TileContent::Stub { label, .. } => label.as_str(),
+                TileContent::Notice { title, .. } => title.as_str(),
+                TileContent::Arriving => "",
+            };
+            if !title.is_empty() {
+                node = node.with_name(title.to_owned());
+            }
+            return Some(
+                node.with_description(face.description())
+                    .with_state(crate::a11y::AccessState::new().busy(true))
+                    .with_bounds(self.rect),
+            );
+        }
         match &self.content {
             TileContent::Notice { title, detail } => Some(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Group)
@@ -2893,25 +3071,41 @@ impl Widget for TileHost {
                 TileContent::Arriving => false,
             };
             self.content_was_presented.set(now);
+            if now {
+                self.content_presented_at.set(Some(crate::time::now()));
+            }
             self.was_presented.set(self.was_presented.get() || now);
         }
         self.was_presented.get()
     }
-    /// Current content keeps its readiness through resize, but a replacement
-    /// gets its own opening presentation. A visible tile shows that card
-    /// immediately rather than disappearing while the new app starts.
-    fn opening(&self) -> bool {
-        // Poll even outside WindowGroup's presentation pass, so a newly
-        // ready occupant can retire its card when only redraw is queried.
-        let _ = self.presented();
-        if self.content_was_presented.get() {
-            return false;
-        }
-        match &self.content {
-            TileContent::App(w) => self.was_presented.get() || w.opening(),
-            TileContent::Arriving => true,
-            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
-        }
+    fn arrives_from(&self) -> crate::arriving::Source {
+        self.arrival
+            .as_ref()
+            .map_or(crate::arriving::Source::Local, |arrival| {
+                arrival.clock().source().clone()
+            })
+    }
+    fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
+        let content = super::defaults::holds_frame_until(&|visit| self.for_each_child(visit), now);
+        self.holds_first_frame_until(now)
+            .into_iter()
+            .chain(content)
+            .max()
+    }
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let now = crate::time::now();
+        let own = self
+            .arrival_now()
+            .and_then(|arrival| arrival.next_step_at(now));
+        // A first frame held for this device's content is drawn when its
+        // budget runs out, if it has not landed by then.
+        let held = self.holds_first_frame_until(now);
+        own.into_iter()
+            .chain(held)
+            .chain(super::defaults::next_wake_deadline(&|visit| {
+                self.for_each_child(visit);
+            }))
+            .min()
     }
     fn get_rect(&self) -> Rect {
         self.rect
@@ -2924,39 +3118,92 @@ impl Widget for TileHost {
         }
     }
     fn take_structure_dirty(&mut self) -> bool {
-        // Both flags drained, not short-circuited, so neither can be left
-        // set behind the other.
+        self.take_structure_change().rebuilds()
+    }
+    /// The window's content is laid out again in place under the tile's
+    /// retained node ([`StructureChange::Children`](crate::widget::StructureChange)):
+    /// content that took a placeholder's place, and an app that replaced
+    /// widgets of its own, so the rest of the host's tree is kept. Only a
+    /// change of the tile itself rebuilds. Both flags are drained, so
+    /// neither is left set behind the other.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        use crate::widget::StructureChange;
         let swapped = std::mem::take(&mut self.structure_dirty);
         let inner = match &mut self.content {
-            TileContent::App(w) => w.take_structure_dirty(),
-            _ => false,
+            // Built whole when it is laid out in place.
+            TileContent::App(w) if self.remount => {
+                let _ = w.take_structure_dirty();
+                StructureChange::None
+            }
+            TileContent::App(w) => w.take_structure_change(),
+            _ => StructureChange::None,
         };
-        swapped || inner
+        if self.remount {
+            return StructureChange::Children;
+        }
+        let rebuilds =
+            swapped || matches!(inner, StructureChange::Described | StructureChange::Rebuild);
+        match (rebuilds, self.node) {
+            // The tile's content, its History or the app's own widgets were
+            // replaced: they are built again under the tile's node, and
+            // nothing outside it.
+            (true, Some(_)) => {
+                // The host lets go of every node under the tile's own.
+                self.remount = true;
+                self.live_callback_node = None;
+                if let Some(history) = &mut self.history {
+                    history.discard_layout_nodes();
+                }
+                StructureChange::Children
+            }
+            (true, None) => StructureChange::Rebuild,
+            (false, _) => inner,
+        }
+    }
+    fn relaid_layout_node(&self) -> Option<NodeId> {
+        if self.remount { self.node } else { None }
+    }
+    /// Lay the content that took a placeholder's place out under the
+    /// tile's retained node; otherwise carry out the app's own change.
+    fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+        if !self.remount {
+            return self
+                .children_mut()
+                .into_iter()
+                .all(|child| child.remount_children(remount));
+        }
+        let Some(node) = self.node else {
+            return false;
+        };
+        let _running = self.running();
+        self.remount = false;
+        for child in remount.taffy().children(node).unwrap_or_default() {
+            remount.unmount(child);
+        }
+        let child = remount.mount_with(node, |taffy, theme, node_map| {
+            self.build_content(taffy, theme, node_map)
+        });
+        let _ = remount
+            .taffy()
+            .set_style(node, Self::node_style(child.is_some()));
+        remount.set_children(node, child.as_slice()).is_ok()
     }
     fn needs_animation_frame(&self) -> bool {
         let _running = self.running();
-        // `TileHost` has no `children()`, so the default recursive
-        // implementation would always say false; override so the spawn
-        // fade and a hosted app's own signal both bubble up. The opening
-        // card itself is state, not an animation: its spinner reports its own
-        // motion through `inner`, and under reduced motion it is deliberately
-        // static. Treating `opening()` as perpetual motion pinned the whole
-        // compositor at display cadence until a slow app's first frame.
+        // Override so the spawn fade, the arrival's cross-fade and a hosted
+        // app's own signal all bubble up. Content still on its way is not an
+        // animation: its placeholder steps are deadlines
+        // (`next_wake_deadline`), so a slow app's first frame never holds the
+        // compositor at display cadence.
         let inner = match &self.content {
             TileContent::App(w) => w.needs_animation_frame(),
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         };
-        let opening_indicator =
-            Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
-        // The card is painted, then the app presents. If we sleep there the
-        // last compositor frame is still the empty card — A05's Store shot.
-        let pending_handover =
-            self.opening_shown && !Widget::opening(self) && self.handed_over_at.is_none();
-        self.spawn_in_flight()
-            || self.handover_in_flight()
-            || opening_indicator
-            || inner
-            || pending_handover
+        let arrival = self
+            .arrival
+            .as_ref()
+            .is_some_and(|arrival| arrival.is_moving(crate::motion::frame_now()));
+        self.spawn_in_flight() || arrival || inner
     }
 }
 
@@ -3527,8 +3774,9 @@ impl TileHost {
         });
     }
 
-    /// The tile's content inside its clip: the opening card, the app (or a
-    /// card in its place), and the card dissolving over an arrived app.
+    /// The tile's content inside its clip: the app (or a card in its
+    /// place), or, while its first frame is on its way, the framework's
+    /// placeholder ([`arrival`]), and the first frame fading in over it.
     fn draw_clipped_content(
         &mut self,
         scene: &mut Scene,
@@ -3538,239 +3786,167 @@ impl TileHost {
         presence: &PresenceCtx,
         shape: &RoundedRect,
     ) {
-        // An app asked for but not arrived gets the card in place of the
-        // app, not behind it: its early buffer is the client's own size,
-        // not the tab's, and painting it would show the window visibly
-        // resizing a moment after opening.
-        if Widget::opening(self) {
-            self.opening_shown = true;
-            draw_opening_card(
-                scene,
-                transform,
-                tr,
-                theme,
-                presence,
-                self.rect,
-                &self.opening_name,
-                &mut self.opening_spinner,
-            );
-        } else {
-            // Dissolve the card over the arrived window rather than cut
-            // it away, so the tile is never briefly empty.
-            if self.opening_shown && self.handed_over_at.is_none() {
-                self.handed_over_at = Some(crate::time::now());
-            }
-            if let Some(detail) = self.record_error.clone() {
-                if self
-                    .error_card
-                    .as_ref()
-                    .is_none_or(|(shown, _)| *shown != detail)
-                {
-                    self.error_card = Some((detail.clone(), record_unavailable_card(&detail)));
-                }
-                let rect = self.rect;
-                if let Some((_, card)) = &mut self.error_card {
-                    card.apply_layout_external(rect);
-                    card.draw(scene, transform, tr, theme, presence);
-                }
-            } else {
-                // The app and its history were laid out where the tile
-                // was; a moved tile draws them moved with it.
-                let content_transform = if self.content_shift == 0.0 {
-                    transform
-                } else {
-                    transform.pre_translate(vello::kurbo::Vec2::new(self.content_shift, 0.0))
-                };
-                match &mut self.content {
-                    TileContent::App(w) => {
-                        if self
-                            .history
-                            .as_ref()
-                            .is_none_or(|history| history.live_visible())
-                        {
-                            // The app is a damage part of its own, hinted
-                            // with its widgets' damage: a host comparing
-                            // frames repaints a typed character, not the
-                            // window.
-                            let key = crate::scene_parts::PartKey::new("ui.tile-app", ());
-                            crate::scene_parts::begin(scene, key);
-                            w.draw(scene, content_transform, tr, theme, presence);
-                            let hint = self.content_damage.hint(
-                                &**w,
-                                content_transform,
-                                transform.transform_rect_bbox(self.rect),
-                                presence,
-                            );
-                            crate::scene_parts::end_hinted(scene, hint);
-                        } else {
-                            self.content_damage.forget();
-                        }
-                        if let Some(history) = &mut self.history {
-                            history.draw(scene, content_transform, tr, theme, presence);
-                        }
-                    }
-                    TileContent::Stub { kind, label } => {
-                        let detail = format!("{} coming soon", kind.as_str());
-                        draw_card_text(scene, transform, tr, theme, self.rect, label, &detail);
-                    }
-                    TileContent::Notice { title, detail } => {
-                        draw_card_text(scene, transform, tr, theme, self.rect, title, detail);
-                    }
-                    // The opening card above stands in for it.
-                    TileContent::Arriving => {}
+        let now = crate::motion::frame_now();
+        self.arrival_motion = theme.motion();
+        self.advance_arrival(now);
+        let progress = self.arrival_progress();
+        match self
+            .arrival
+            .as_ref()
+            .and_then(|arrival| arrival.paint_at(now))
+        {
+            // Content on its way gets the placeholder in place of the app,
+            // not behind it: an early buffer is the client's own size, not
+            // the tab's, and painting it would show the window visibly
+            // resizing a moment after opening.
+            Some(arrival::ArrivalPaint::Placeholder(step)) => {
+                self.paint_arrival_face(scene, transform, tr, theme, step);
+                if let Some(arrival) = self.arrival.as_mut() {
+                    arrival.note_drawn(step, progress);
                 }
             }
-            self.draw_transition_status(scene, transform, tr, theme);
-            // Reduced motion takes the cut — the window just being there
-            // is the end state.
-            if theme.reduce_motion {
-                self.opening_shown = false;
-                self.handed_over_at = None;
-            } else if let Some(started) = self.handed_over_at {
-                let t = crate::motion::unit_opacity(handover_progress(
-                    crate::time::now().saturating_duration_since(started),
-                ));
-                if t >= 1.0 {
-                    self.opening_shown = false;
-                    self.handed_over_at = None;
-                } else {
+            Some(arrival::ArrivalPaint::Fading {
+                replaced,
+                outgoing,
+                incoming,
+            }) => {
+                if outgoing > 0.0 {
                     scene.push_layer(
                         vello::peniko::Fill::NonZero,
                         vello::peniko::BlendMode::default(),
-                        1.0 - t,
+                        outgoing,
                         transform,
                         shape,
                     );
-                    draw_opening_card(
-                        scene,
-                        transform,
-                        tr,
-                        theme,
-                        presence,
-                        self.rect,
-                        &self.opening_name,
-                        &mut self.opening_spinner,
-                    );
+                    self.paint_arrival_face(scene, transform, tr, theme, replaced);
                     scene.pop_layer();
                 }
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    incoming,
+                    transform,
+                    shape,
+                );
+                self.draw_content(scene, transform, tr, theme, presence);
+                scene.pop_layer();
             }
+            None => self.draw_content(scene, transform, tr, theme, presence),
         }
     }
-}
 
-/// No sentence, deliberately: the app's name over a working indicator is
-/// the only two things someone waiting for a window needs. Paints its own
-/// ground because it is also the top half of the dissolve that retires
-/// it, covering the arrived window underneath while still fading.
-// Standard immediate-mode paint-helper signature for this vello renderer
-// (scene + transform + text_renderer + theme, plus this draw's own
-// content); every parameter is independently load-bearing.
-fn draw_opening_card(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-    rect: Rect,
-    name: &str,
-    spinner: &mut Spinner,
-) {
-    paint_opening_card(
-        scene,
-        transform,
-        tr,
-        theme,
-        presence,
-        rect,
-        OpeningCardText { name, status: "" },
-        Some(spinner),
-    );
-}
-
-/// The moving indicator [`paint_opening_card`] draws, at the tile's size.
-#[must_use]
-pub fn opening_card_spinner() -> Spinner {
-    Spinner::with_size(OPENING_SPINNER_PX_F32)
-}
-
-/// What the opening card says: the app's name, and a line under the
-/// indicator when the wait has something worth saying — an install under
-/// way, or a start taking longer than it should. An empty `status` draws
-/// exactly the card the tile shows for an arriving window, so handing over
-/// from one to the other changes nothing on screen.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct OpeningCardText<'a> {
-    pub name: &'a str,
-    pub status: &'a str,
-}
-
-/// The opening card, for a place held before any window exists. Draws
-/// `spinner` in the indicator's place, or leaves that place to the caller
-/// (a measured wait shows a bar there instead). Returns the place.
-pub fn paint_opening_card(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-    rect: Rect,
-    text: OpeningCardText<'_>,
-    spinner: Option<&mut Spinner>,
-) -> Rect {
-    let OpeningCardText { name, status } = text;
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        theme.tokens.colors.surfaces.content,
-        None,
-        &rect,
-    );
-    // Measured against the card, not a fixed ramp slot: `neutral[1]` is
-    // the *dark* end of a dark theme's ramp, and on that theme's own dark
-    // card the name would land at ~1.05:1 contrast — invisible on screen.
-    let on_card = theme.on_content().ink;
-    let style = theme.text(TextRole::Title);
-    let cx = rect.center().x;
-    // Above centre, so name + indicator reads as one centred pair rather
-    // than the name alone with the indicator hanging below.
-    let y = rect.center().y - f64::from(style.size);
-    if !name.is_empty() {
-        let (tw, _) = tr.measure_style(name, None, &style);
-        tr.draw_style(
-            scene,
-            name,
-            on_card,
-            transform.pre_translate((cx - f64::from(tw) / 2.0, y).into()),
-            None,
-            &style,
-        );
+    /// The placeholder at `step`, at the page margins of the tile.
+    fn paint_arrival_face(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        step: crate::arriving::Step,
+    ) {
+        let local = crate::arriving::Source::Local;
+        let source = self
+            .arrival
+            .as_ref()
+            .map_or(&local, |arrival| arrival.clock().source());
+        let margin = f64::from(theme.tokens.spacing.rhythm.group);
+        let page = self.rect.inset(-margin);
+        super::ArrivalFace::at_step(self.arrival_shape(), step, source)
+            .with_progress(self.arrival_progress())
+            .paint(
+                &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
+                page,
+            );
     }
-    let top = y + f64::from(style.size) + OPENING_SPINNER_GAP;
-    let indicator = Rect::new(
-        cx - OPENING_SPINNER_PX / 2.0,
-        top,
-        cx + OPENING_SPINNER_PX / 2.0,
-        top + OPENING_SPINNER_PX,
-    );
-    if let Some(spinner) = spinner {
-        spinner.set_rect(indicator);
-        Widget::draw(spinner, scene, transform, tr, theme, presence);
+
+    /// The shape the content declared for its placeholder; none declared,
+    /// the window's ground alone.
+    fn arrival_shape(&self) -> super::SkeletonShape {
+        match &self.content {
+            TileContent::App(app) => app.arrival_shape(),
+            _ => super::SkeletonShape::Ground,
+        }
     }
-    if !status.is_empty() {
-        let style = theme.text(TextRole::Body);
-        let (tw, _) = tr.measure_style(status, None, &style);
-        tr.draw_style(
-            scene,
-            status,
-            theme.on_content().ink_dim,
-            transform.pre_translate(
-                (cx - f64::from(tw) / 2.0, indicator.y1 + OPENING_SPINNER_GAP).into(),
-            ),
-            None,
-            &style,
-        );
+
+    /// How much of what the content's first frame waits on has come.
+    fn arrival_progress(&self) -> Option<crate::arriving::Progress> {
+        match &self.content {
+            TileContent::App(app) if !self.content_was_presented.get() => app.arrival_progress(),
+            _ => None,
+        }
     }
-    indicator
+
+    /// The app, or the card standing in its place.
+    fn draw_content(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if let Some(detail) = self.record_error.clone() {
+            if self
+                .error_card
+                .as_ref()
+                .is_none_or(|(shown, _)| *shown != detail)
+            {
+                self.error_card = Some((detail.clone(), record_unavailable_card(&detail)));
+            }
+            let rect = self.rect;
+            if let Some((_, card)) = &mut self.error_card {
+                card.apply_layout_external(rect);
+                card.draw(scene, transform, tr, theme, presence);
+            }
+        } else {
+            // The app and its history were laid out where the tile
+            // was; a moved tile draws them moved with it.
+            let content_transform = if self.content_shift == 0.0 {
+                transform
+            } else {
+                transform.pre_translate(vello::kurbo::Vec2::new(self.content_shift, 0.0))
+            };
+            match &mut self.content {
+                TileContent::App(w) => {
+                    if self
+                        .history
+                        .as_ref()
+                        .is_none_or(|history| history.live_visible())
+                    {
+                        // The app is a damage part of its own, hinted
+                        // with its widgets' damage: a host comparing
+                        // frames repaints a typed character, not the
+                        // window.
+                        let key = crate::scene_parts::PartKey::new("ui.tile-app", ());
+                        crate::scene_parts::begin(scene, key);
+                        w.draw(scene, content_transform, tr, theme, presence);
+                        let hint = self.content_damage.hint(
+                            &**w,
+                            content_transform,
+                            transform.transform_rect_bbox(self.rect),
+                            presence,
+                        );
+                        crate::scene_parts::end_hinted(scene, hint);
+                    } else {
+                        self.content_damage.forget();
+                    }
+                    if let Some(history) = &mut self.history {
+                        history.draw(scene, content_transform, tr, theme, presence);
+                    }
+                }
+                TileContent::Stub { kind, label } => {
+                    let detail = format!("{} coming soon", kind.as_str());
+                    draw_card_text(scene, transform, tr, theme, self.rect, label, &detail);
+                }
+                TileContent::Notice { title, detail } => {
+                    draw_card_text(scene, transform, tr, theme, self.rect, title, detail);
+                }
+                // The arrival's placeholder stands in for it.
+                TileContent::Arriving => {}
+            }
+        }
+        self.draw_transition_status(scene, transform, tr, theme);
+    }
 }
 
 /// One function so the two callers (`Stub`, `Notice`) can't drift apart —
@@ -3792,6 +3968,7 @@ fn draw_card_text(
     super::EmptyState::paint(&mut paint, rect, &content, Point::new(-1.0, -1.0));
 }
 
+mod arrival;
 mod held;
 pub use held::{hold_windows, release_windows};
 #[cfg(test)]

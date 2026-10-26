@@ -45,11 +45,11 @@ nav = "Installed Linux session"
 description = "Develop a real Linux login session when nested testing is insufficient."
 
 [[page]]
-slug = "hardware"
-source = "docs/development/hardware.md"
+slug = "devices"
+source = "docs/development/devices.md"
 section = "Run your change"
-nav = "Boards and kernels"
-description = "Choose the existing image and kernel workflows for hardware work."
+nav = "Devices and boards"
+description = "How a device follows a channel, and how to put your own build on one."
 
 [[page]]
 slug = "linux"

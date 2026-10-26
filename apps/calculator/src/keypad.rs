@@ -19,16 +19,41 @@ use vello::kurbo::{Affine, Point, Rect};
 use crate::draw::{self, Align};
 use crate::engine;
 use crate::mathfield::{self, MathField};
-use crate::model::{CalcModel, Key, KeyRole, KeypadLayout};
+use crate::model::{CalcModel, Key, KeyRole, KeypadLayout, KeypadPage};
 
 /// Memory-bar buttons, left → right.
 pub const MEM_KEYS: [Key; 4] = [Key::MemClear, Key::MemRecall, Key::MemAdd, Key::MemSub];
+
+/// Which of the display's three values a copy target stands for. Every value
+/// the display shows can leave the app: the expression being typed, the
+/// result or preview it evaluates to, and the previous answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplaySlot {
+    Expression,
+    Result,
+    Answer,
+}
+
+impl DisplaySlot {
+    /// The value's name in the clipboard confirmation and the semantic tree.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Expression => "expression",
+            Self::Result => "result",
+            Self::Answer => "previous answer",
+        }
+    }
+}
+
+/// How long a copy's mark stays on the value it took.
+const COPIED_SAID_FOR: std::time::Duration = std::time::Duration::from_millis(1_400);
 
 /// What the pointer is over, for deciding when to repaint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Hover {
     pub key: Option<usize>,
     pub mem: Option<usize>,
+    pub copy: Option<DisplaySlot>,
 }
 
 /// The theme's measurements the screen lays out with, cached from the last
@@ -117,6 +142,20 @@ pub struct CalcScreen {
     pub hovered_key: Option<usize>,
     pub hovered_mem: Option<usize>,
     pub pressed_key: Option<usize>,
+    /// The keypad's page while narrow: the number pad, or the function pad.
+    page: KeypadPage,
+    /// The copy targets of the display values, laid out with the lines they
+    /// stand beside so a press lands on what was painted.
+    pub(crate) copy_rects: [(DisplaySlot, Rect); 3],
+    /// The display's status, expression and result line rects (status is
+    /// empty when the display is short).
+    status_rect: Rect,
+    result_rect: Rect,
+    hovered_copy: Option<DisplaySlot>,
+    /// What the last copy did, for the mark its target shows: `true` copied,
+    /// `false` refused. The mark is not a state of the value — it says what
+    /// happened to it, which is why it names the slot it belongs to.
+    copy_said: Option<(DisplaySlot, bool, ui::time::Instant)>,
     hover: Hover,
     /// The window the screen lays out in.
     content: Rect,
@@ -143,6 +182,16 @@ impl Default for CalcScreen {
             hovered_key: None,
             hovered_mem: None,
             pressed_key: None,
+            page: KeypadPage::Primary,
+            copy_rects: [
+                (DisplaySlot::Expression, Rect::ZERO),
+                (DisplaySlot::Result, Rect::ZERO),
+                (DisplaySlot::Answer, Rect::ZERO),
+            ],
+            status_rect: Rect::ZERO,
+            result_rect: Rect::ZERO,
+            hovered_copy: None,
+            copy_said: None,
             hover: Hover::default(),
             content: Rect::ZERO,
             m: Metrics::of(&stock),
@@ -152,6 +201,13 @@ impl Default for CalcScreen {
 }
 
 impl CalcScreen {
+    /// Say what a copy of `slot` did, so its target can show it. A refusal is
+    /// the case that matters: without it the person believes a value is on the
+    /// clipboard when it is not.
+    pub fn say_copied(&mut self, slot: DisplaySlot, copied: bool) {
+        self.copy_said = Some((slot, copied, ui::time::now()));
+    }
+
     pub fn keys(&self) -> &[Key] {
         &self.keys
     }
@@ -164,6 +220,44 @@ impl CalcScreen {
     /// Key geometry for the app's custom-canvas accessibility tree.
     pub fn key_rect(&self, i: usize) -> Option<Rect> {
         self.key_rects.get(i).copied()
+    }
+
+    /// Which keypad page is showing. Only the compact layout pages its keys.
+    pub fn page(&self) -> KeypadPage {
+        self.page
+    }
+
+    /// Turn the number page into the function page or back, rebuilding the
+    /// key list and geometry. A no-op on a layout that shows every key.
+    pub fn toggle_page(&mut self) {
+        if !self.layout_kind.pages() {
+            return;
+        }
+        self.page = match self.page {
+            KeypadPage::Primary => KeypadPage::Functions,
+            KeypadPage::Functions => KeypadPage::Primary,
+        };
+        self.keys = self.layout_kind.keys_on(self.page);
+        self.pressed_key = None;
+        self.hovered_key = None;
+        self.rebuild_keys();
+    }
+
+    /// The rect of the copy target for `slot`, `Rect::ZERO` while the line
+    /// is not shown.
+    pub fn copy_rect(&self, slot: DisplaySlot) -> Rect {
+        self.copy_rects
+            .iter()
+            .find(|(have, _)| *have == slot)
+            .map_or(Rect::ZERO, |(_, rect)| *rect)
+    }
+
+    /// Which display value, if any, a press at `p` copies.
+    pub fn copy_at(&self, p: Point) -> Option<DisplaySlot> {
+        self.copy_rects
+            .iter()
+            .find(|(_, rect)| *rect != Rect::ZERO && rect.contains(p))
+            .map(|(slot, _)| *slot)
     }
 
     /// Index of the first keypad key whose label is `label`.
@@ -208,6 +302,14 @@ impl CalcScreen {
         self.adopt_layout(KeypadLayout::for_width(keypad_w));
     }
 
+    /// Rebuild `key_rects` for the current key list from the grid it was
+    /// last laid out in. Called when the page changes between layouts.
+    fn rebuild_keys(&mut self) {
+        // The next `layout` rebuilds every rect from the grid; clearing now
+        // keeps a same-frame hit-test from landing on yesterday's key.
+        self.key_rects.clear();
+    }
+
     /// Pick the widest layout for a `keypad_w` × `keypad_h` pad whose rows
     /// still keep `key_min_h`: a short pad trades function keys for key
     /// height before its keys shrink. The compact pad is the floor.
@@ -228,7 +330,11 @@ impl CalcScreen {
         if want != self.layout_kind {
             self.layout_kind = want;
             self.cols = want.cols();
-            self.keys = want.keys();
+            // A new width starts at the number page: a person who widened
+            // the window gets the pad that shows everything, and one who
+            // narrowed it again finds the familiar first page.
+            self.page = KeypadPage::Primary;
+            self.keys = want.keys_on(self.page);
             self.pressed_key = None;
             self.hovered_key = None;
         }
@@ -253,9 +359,10 @@ impl CalcScreen {
             })
             .fold(0.0, f64::max);
         self.field.set_source(&model.expr);
-        self.field.set_size(mathfield::formula_size(theme, tr));
-        let formula_h = (self.field.content_height(tr) * f64::from(tr.text_scale()))
-            .min(mathfield::CARD_MAX_H * theme.responsive_scale());
+        self.field.set_size(mathfield::formula_size(theme));
+        let formula_h = (self.field.content_height(tr)
+            / f64::from(tr.text_scale().max(f32::EPSILON)))
+        .min(mathfield::CARD_MAX_H * theme.responsive_scale());
         let extra = (formula_h - self.m.expr_tall_line).max(0.0);
         self.m.expr_tall_line += extra;
         self.m.display_tall += extra;
@@ -380,6 +487,37 @@ impl CalcScreen {
             self.display_rect.x1 - m.display_pad,
             expr_bottom,
         );
+        self.status_rect = if self.display_is_short() {
+            Rect::ZERO
+        } else {
+            Rect::new(
+                self.display_rect.x0 + m.display_pad,
+                expr_top - m.status_line,
+                self.display_rect.x1 - m.display_pad,
+                expr_top,
+            )
+        };
+        let result_h = if self.display_is_short() {
+            m.short_line
+        } else {
+            m.result_tall_line
+        };
+        self.result_rect = Rect::new(
+            self.expression_rect.x0,
+            expr_bottom,
+            self.expression_rect.x1,
+            expr_bottom + result_h,
+        );
+        self.copy_rects = [
+            (
+                DisplaySlot::Expression,
+                Self::copy_icon(self.expression_rect),
+            ),
+            // The result and the previous answer are reading surfaces, not
+            // editors: the whole line is the target and the icon marks it.
+            (DisplaySlot::Result, self.result_rect),
+            (DisplaySlot::Answer, self.status_rect),
+        ];
 
         // Keypad grid (column count is layout-dependent).
         self.key_rects.clear();
@@ -390,6 +528,38 @@ impl CalcScreen {
             let x0 = grid.x0 + c as f64 * (cw + m.cell_gap);
             let y0 = grid.y0 + r as f64 * (ch + m.cell_gap);
             self.key_rects.push(Rect::new(x0, y0, x0 + cw, y0 + ch));
+        }
+    }
+
+    /// The trailing square that marks a copy target, inset to the line.
+    fn copy_icon(line: Rect) -> Rect {
+        if line.width() < 40.0 || line.height() < 12.0 {
+            return Rect::ZERO;
+        }
+        let side = line.height().clamp(12.0, 20.0);
+        let y0 = line.y0 + (line.height() - side) / 2.0;
+        Rect::new(line.x1 - side, y0, line.x1, y0 + side)
+    }
+
+    /// `line` with room left for its copy icon, so the value never runs
+    /// under the target.
+    fn line_text(line: Rect, copy: Rect) -> Rect {
+        if copy == Rect::ZERO || copy.height() < 12.0 || copy.width() >= line.width() {
+            return line;
+        }
+        Rect::new(line.x0, line.y0, (copy.x0 - 6.0).max(line.x0), line.y1)
+    }
+
+    /// The icon square of a copy target (the target itself for the
+    /// expression, whose whole visible mark is the icon).
+    fn copy_icon_of(&self, slot: DisplaySlot) -> Rect {
+        let copy = self.copy_rect(slot);
+        if copy == Rect::ZERO {
+            return Rect::ZERO;
+        }
+        match slot {
+            DisplaySlot::Expression => copy,
+            DisplaySlot::Result | DisplaySlot::Answer => Self::copy_icon(copy),
         }
     }
 
@@ -466,26 +636,26 @@ impl CalcScreen {
         let m = &self.m;
         let short = self.display_is_short();
         let pad = m.display_pad;
-        let (expr_top, expr_bottom) = self.expression_band();
-        let expr_rect = Rect::new(display.x0 + pad, expr_top, display.x1 - pad, expr_bottom);
+        let (_expr_top, expr_bottom) = self.expression_band();
+        let expr_line = Rect::new(display.x0 + pad, _expr_top, display.x1 - pad, expr_bottom);
+        let expr_icon = self.copy_icon_of(DisplaySlot::Expression);
+        let expr_rect = Self::line_text(expr_line, expr_icon);
 
         if !short {
-            // status line: the previous answer
-            let status = Rect::new(
-                display.x0 + pad,
-                expr_top - m.status_line,
-                display.x1 - pad,
-                expr_top,
-            );
+            // status line: the previous answer, and a copy target of its own
+            let status = self.status_rect;
+            let icon = self.copy_icon_of(DisplaySlot::Answer);
+            let text = Self::line_text(status, icon);
             let ans = format!("Ans = {}", engine::format_number(model.ans));
             draw::text_in(
                 &mut ctx,
-                status,
+                text,
                 &ans,
                 &theme.text(TextRole::Caption).numeric(),
                 c.text_dim,
                 Align::Right,
             );
+            self.draw_copy_icon(&mut ctx, DisplaySlot::Answer, theme, c.text_dim);
         }
 
         self.field.set_rect(expr_rect, ctx.text);
@@ -499,6 +669,7 @@ impl CalcScreen {
                 Align::Left,
             );
         }
+        self.draw_copy_icon(&mut ctx, DisplaySlot::Expression, theme, c.text_tertiary);
         let local = theme.on_ground(c.surfaces.raised);
         self.field.draw(
             ctx.scene,
@@ -510,17 +681,9 @@ impl CalcScreen {
         );
 
         // result / preview line
-        let res_rect = Rect::new(
-            display.x0 + pad,
-            expr_rect.y1,
-            display.x1 - pad,
-            expr_rect.y1
-                + if short {
-                    m.short_line
-                } else {
-                    m.result_tall_line
-                },
-        );
+        let res_line = self.result_rect;
+        let res_icon = self.copy_icon_of(DisplaySlot::Result);
+        let res_rect = Self::line_text(res_line, res_icon);
         let result_role = if short {
             TextRole::Title
         } else {
@@ -546,6 +709,16 @@ impl CalcScreen {
             ),
             _ => (String::new(), theme.text(result_role), c.text_dim),
         };
+        // A result that does not fit its line shrinks rather than clipping:
+        // the answer you just computed must stay whole, especially with the
+        // accessibility text scale up.
+        let mut res_style = res_style;
+        let measured = f64::from(ctx.text.measure_style(&res_txt, None, &res_style).0);
+        if measured > res_rect.width() && measured > 0.0 && res_rect.width() > 0.0 {
+            let fit = (res_rect.width() / measured).clamp(0.55, 1.0) as f32;
+            res_style.size *= fit;
+            res_style.line_height *= fit;
+        }
         draw::text_in(
             &mut ctx,
             res_rect,
@@ -553,6 +726,74 @@ impl CalcScreen {
             &res_style,
             res_ink,
             Align::Right,
+        );
+        if !res_txt.is_empty() {
+            self.draw_copy_icon(&mut ctx, DisplaySlot::Result, theme, c.text_tertiary);
+        }
+    }
+
+    /// The small copy mark on a display value's trailing edge, lit when the
+    /// pointer is over that value. The value is the target; this is its
+    /// affordance, not a second control.
+    fn draw_copy_icon(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        slot: DisplaySlot,
+        theme: &Theme,
+        ink: vello::peniko::Color,
+    ) {
+        let rect = self.copy_icon_of(slot);
+        if rect == Rect::ZERO {
+            return;
+        }
+        let hot = self.hovered_copy == Some(slot);
+        let said_now = self.copy_said.is_some_and(|(said, _, at)| {
+            said == slot && ui::time::now().saturating_duration_since(at) < COPIED_SAID_FOR
+        });
+        // The result is the value people leave with, so its mark stays; the
+        // expression and the previous answer reveal theirs when pointed at,
+        // keeping the display uncluttered while every line stays a target. An
+        // answer to a copy shows whatever the pointer is doing.
+        if !hot && !said_now && slot != DisplaySlot::Result {
+            return;
+        }
+        if hot {
+            ui::surface::card(
+                ctx.scene,
+                ctx.transform,
+                rect,
+                f64::from(theme.tokens.radii.control),
+                theme.tokens.colors.surfaces.raised,
+            );
+        }
+        // A copy that just happened says so on the target it took, for as long
+        // as it is news; a refused one says that instead of confirming it.
+        let said = self.copy_said.filter(|(said, _, at)| {
+            *said == slot && ui::time::now().saturating_duration_since(*at) < COPIED_SAID_FOR
+        });
+        let (icon, colour) = match said {
+            Some((_, true, _)) => (
+                ui::icons::Icon::CircleCheck,
+                theme.tokens.colors.text_primary,
+            ),
+            Some((_, false, _)) => (
+                ui::icons::Icon::TriangleAlert,
+                theme.tokens.colors.semantic.danger,
+            ),
+            None => (
+                ui::icons::Icon::Copy,
+                if hot {
+                    theme.tokens.colors.text_primary
+                } else {
+                    ink
+                },
+            ),
+        };
+        icon.draw(
+            ctx.scene,
+            ctx.transform,
+            rect.inset(rect.height().min(rect.width()) * 0.16),
+            colour,
         );
     }
 
@@ -576,16 +817,26 @@ impl CalcScreen {
             Button::paint(scene, t, tr, theme, &face);
         }
         if model.memory != 0.0 && self.memory_rect.width() >= 48.0 {
-            let mut ctx = PaintCtx::new(scene, t, tr, theme);
-            let readout = format!("Memory {}", engine::format_number(model.memory));
-            draw::text_in(
-                &mut ctx,
-                self.memory_rect,
-                &readout,
-                &theme.text(TextRole::Label).numeric(),
-                theme.tokens.colors.text_dim,
-                Align::Right,
-            );
+            let style = theme.text(TextRole::Label).numeric();
+            let value = engine::format_number(model.memory);
+            // Say as much of the register as fits, never a clipped label:
+            // "Memory 42", else "M 42", else just the value, else nothing.
+            let readout = [format!("Memory {value}"), format!("M {value}"), value]
+                .into_iter()
+                .find(|text| {
+                    f64::from(tr.measure_style(text, None, &style).0) <= self.memory_rect.width()
+                });
+            if let Some(readout) = readout {
+                let mut ctx = PaintCtx::new(scene, t, tr, theme);
+                draw::text_in(
+                    &mut ctx,
+                    self.memory_rect,
+                    &readout,
+                    &style,
+                    theme.tokens.colors.text_dim,
+                    Align::Right,
+                );
+            }
         }
     }
 
@@ -635,11 +886,19 @@ impl CalcScreen {
     }
     /// Track the pointer. Returns whether anything the screen paints changed.
     pub fn set_pointer(&mut self, p: Point) -> bool {
-        self.hovered_key = self.key_at(p);
+        // A copy target owns the value's whole line (and its icon); the
+        // keypad and memory row are elsewhere, so the three never overlap.
+        self.hovered_copy = self.copy_at(p);
+        self.hovered_key = if self.hovered_copy.is_some() {
+            None
+        } else {
+            self.key_at(p)
+        };
         self.hovered_mem = self.mem_at(p);
         let next = Hover {
             key: self.hovered_key,
             mem: self.hovered_mem,
+            copy: self.hovered_copy,
         };
         let changed = next != self.hover;
         self.hover = next;
@@ -677,20 +936,42 @@ mod tests {
     #[test]
     fn enlarged_calculator_keeps_a_stacked_display_and_usable_keypad() {
         for theme in [
+            Theme::dark(),
             Theme::dark().with_ui_scale(1.5),
             Theme::light().with_ui_scale(1.5),
             Theme::dark().with_ui_scale(1.5).with_text_scale(1.5),
+            Theme::dark().with_text_scale(2.0),
         ] {
             let mut screen = CalcScreen::default();
             let mut text = TextRenderer::new();
+            // The live desktop's renderer carries the reader's text scale;
+            // the formula is set at the theme's size already.
+            text.set_text_scale(theme.text_scale);
             let model = CalcModel {
                 expr: "sqrt(2)/3".into(),
                 ..CalcModel::seeded()
             };
             let area = Rect::new(0.0, 0.0, 1440.0, 810.0);
             screen.prepare(&mut text, &theme, &model, area);
+            // The display grows with the formula it holds: re-place the field
+            // as the draw pass does and measure what is actually set.
+            let band = screen.expression_rect;
+            screen.field.set_rect(band, &mut text);
+            let content = screen.field.content_height(&mut text);
             assert!(area.contains_rect(screen.display_rect));
-            assert!(screen.expression_rect.height() >= screen.field.content_height(&mut text));
+            assert!(
+                band.height() >= content || screen.field.overflows(),
+                "a formula that fits its display must not scroll: band {} vs content {content}",
+                band.height()
+            );
+            // The display grows for a reader with a larger text scale instead
+            // of clipping the formula it holds.
+            let plain = CalcScreen::default().m.display_tall;
+            assert!(
+                screen.m.display_tall > plain,
+                "the display must grow with the text scale ({} vs {plain})",
+                screen.m.display_tall
+            );
             for key in &screen.key_rects {
                 assert!(area.contains_rect(*key));
                 assert!(key.height() > 0.0 && key.width() > 0.0);
@@ -888,5 +1169,19 @@ mod tests {
             Key::Backspace.icon().is_some(),
             "backspace is an icon, not a glyph"
         );
+    }
+    #[test]
+    fn a_narrow_pad_pages_between_numbers_and_functions() {
+        let mut screen = CalcScreen::default();
+        screen.layout(Rect::new(0.0, 0.0, 390.0, 844.0));
+        assert_eq!(screen.page(), KeypadPage::Primary);
+        assert!(screen.keys().iter().any(|key| matches!(key, Key::Page(_))));
+        let primary = screen.keys().len();
+        screen.toggle_page();
+        assert_eq!(screen.page(), KeypadPage::Functions);
+        assert_eq!(screen.keys().len(), 28);
+        screen.toggle_page();
+        assert_eq!(screen.page(), KeypadPage::Primary);
+        assert_eq!(screen.keys().len(), primary);
     }
 }

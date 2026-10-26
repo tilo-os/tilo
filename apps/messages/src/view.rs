@@ -81,9 +81,12 @@ impl Choice {
                 .accounts()
                 .accounts
                 .get(&Id::from_raw(&self.account))
+                // The account's name, never its identifier: which account a
+                // thread arrives on is what a person needs, and the opaque key
+                // behind it means nothing to them.
                 .map_or_else(
                     || self.account.clone(),
-                    |account| format!("{} ({})", account.display_name, self.account),
+                    |account| account.display_name.clone(),
                 )
         };
         let service = CATALOG.t(&format!("messages-{}", self.service));

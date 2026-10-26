@@ -43,7 +43,36 @@ pub(super) fn rooted_edit_spec(
     let judged = root.map(|root| (root, FieldValues::from(now)));
     let mut spec = edit_spec(vocabulary, prefix, schema, label, description, judged);
     spec.contract.tags.extend(tags);
-    spec
+    let takes_reactions = vocabulary
+        .record_table
+        .is_some_and(|table| table.holds(<crate::Reactions as crate::Model>::TABLE));
+    if !takes_reactions {
+        return spec;
+    }
+    // A reaction is placed below the reactions field, wherever it is, as
+    // the room places it: someone who may only comment may react, though
+    // no other edit of the record is theirs. The edit is offered to whoever
+    // may react, and each invocation is what it does.
+    let edit = spec.contract.need();
+    let reaction = tilo_actions::ActionNeed::reactions();
+    spec.with_need(reaction.clone()).with_need_of(move |args| {
+        if reacts(args) {
+            reaction.clone()
+        } else {
+            edit.clone()
+        }
+    })
+}
+
+/// Whether the field edit in `args` reacts, or takes a reaction back.
+fn reacts(args: &tilo_actions::ActionArgs) -> bool {
+    let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
+        return false;
+    };
+    value
+        .get("op")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|op| op == "react" || op == "unreact")
 }
 
 /// The values of fields, as JSON text by dotted path.
@@ -100,10 +129,10 @@ fn edit_spec(
     // Controls and agents edit fields; a person picks named actions or edits
     // the field in place.
     .for_audience(tilo_actions::Audience::Agents)
-    // A field edit changes only the document.
-    .reversible()
-    // History records the edit itself, not `field-edit`.
+    // History records the edit itself, not `field-edit`, and Undo puts the
+    // field's value back.
     .carrying()
+    .of_kind(tilo_actions::ActionKind::Undoable)
     // Removing a collection item asks, as a delete verb does, and so does
     // any edit of a field that is not ordinary, but an edit of one that
     // weakens one way only when it makes it weaker than it is now.

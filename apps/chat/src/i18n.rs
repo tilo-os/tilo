@@ -18,6 +18,14 @@ pub fn emoji_catalogue() -> &'static emoji::Catalogue {
     emoji::Catalogue::for_locale(&ui::i18n::I18nManager::current_locale())
 }
 
+/// Hand the catalogue to the toolkit's shared emoji picker and reaction
+/// strip ([`ui::emoji_catalogue::CATALOGUE`]). Chat links the catalogue, so
+/// it is there from the first frame; in the browser desktop it stays in
+/// Chat's own module.
+pub fn offer_emoji_catalogue() {
+    tilo_emoji_catalogue::offer();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,8 +80,6 @@ mod tests {
         "chat-emoji-insert",
         "chat-emoji-choose",
         "chat-emoji-group",
-        "chat-reaction-add",
-        "chat-reaction-remove",
         "chat-agent-work-taken",
         "chat-agent-work-waiting",
         "chat-agent-work-intent",

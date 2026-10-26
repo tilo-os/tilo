@@ -26,9 +26,9 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::conversation::{ConversationClock, DayBreaks, DayDividerFace};
 use ui::widget::{
-    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ChipLead,
-    ControlSize, EmptyState, EmptyStateContent, ListRowFace, MediaArt, MediaAspect, MediaCardFace,
-    MediaSize, RowLeading,
+    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ControlSize,
+    EmptyState, EmptyStateContent, ListRowFace, MediaArt, MediaAspect, MediaCardFace, MediaSize,
+    RowLeading,
 };
 
 use crate::app::{ChatApp, Hit, MenuTarget};
@@ -46,10 +46,10 @@ use ui::tokens::colors::NON_TEXT_MIN_CONTRAST as MENTION_BAND_CONTRAST;
 use ui::tokens::contrast::BODY_TEXT_MIN_CONTRAST as MENTION_TEXT_CONTRAST;
 
 #[derive(Clone, Copy)]
-struct MessageColumn {
-    area: Rect,
-    text_x: f64,
-    text_width: f32,
+pub(crate) struct MessageColumn {
+    pub(crate) area: Rect,
+    pub(crate) text_x: f64,
+    pub(crate) text_width: f32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -117,11 +117,17 @@ impl ChatApp {
         // column above the composer; the composer and the notes under it
         // below that, to the window's foot.
         let column = Rect::new(self.center_left(), area.y0, self.center_right(), area.y1);
+        let messages_phase = ui::tilo_resource::profiling::Phase::start("chat.draw.messages");
         parts.draw(scene, "chat-messages", column, |scene| {
             if area.width() > 0.0 && area.height() >= self.chrome.body_line {
                 push_clip(scene, tf, area);
                 if self.direct_person.is_some() {
-                    self.draw_person_messages(PaintCtx::new(scene, tf, tr, theme), presence, area);
+                    self.draw_person_messages(
+                        PaintCtx::new(scene, tf, tr, theme),
+                        presence,
+                        area,
+                        hits,
+                    );
                 } else {
                     self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
                 }
@@ -140,6 +146,8 @@ impl ChatApp {
                 );
             }
         });
+        messages_phase.end();
+        let _composer_phase = ui::tilo_resource::profiling::Phase::start("chat.draw.composer");
         let composer = Rect::new(column.x0, column.y1, column.x1, self.rect.y1);
         parts.draw(scene, "chat-composer", composer, |scene| {
             self.draw_composer(scene, tf, tr, theme, presence, hits);
@@ -310,6 +318,37 @@ impl ChatApp {
         blocks
     }
 
+    /// Each line of a message's body as [`Self::draw_body`] last drew it:
+    /// the line's rect and the words on it. Read off the laid-out view, so
+    /// it shapes nothing again.
+    fn body_lines(&self, id: &str) -> Vec<(Rect, String)> {
+        let mut views = self.body_views.borrow_mut();
+        let Some((_, view)) = views.get_mut(&(0, id.to_owned())) else {
+            return Vec::new();
+        };
+        let mut lines = Vec::new();
+        for block in view.editor_mut().blocks() {
+            let words = block.line.value();
+            if words.trim().is_empty() {
+                continue;
+            }
+            let input = block.line.inner();
+            for rect in block.line.prepared_range_rects(0..words.len()) {
+                let middle = rect.center().y;
+                // A row's two ends; a right-to-left row has its start on
+                // the right.
+                let a = input.byte_at_point(Point::new(rect.x0 + 0.5, middle));
+                let b = input.byte_at_point(Point::new(rect.x1 - 0.5, middle));
+                let row = words.get(a.min(b)..a.max(b)).unwrap_or_default();
+                let row = row.trim();
+                if !row.is_empty() && rect.width() > 0.0 && rect.height() > 0.0 {
+                    lines.push((rect, row.to_owned()));
+                }
+            }
+        }
+        lines
+    }
+
     /// Paint a message's body where [`Self::layout_body`] last put it.
     fn draw_body(&self, m: &Message, paint: &mut PaintCtx<'_>) {
         if let Some((_, view)) = self.body_views.borrow_mut().get_mut(&(0, m.id.clone())) {
@@ -320,7 +359,8 @@ impl ChatApp {
     /// Paint `m`'s author through the shared author helper: the avatar (an
     /// agent's mark, a bot's tile) into `mark`, the name from `name_at`, and
     /// for a bot its `BOT` chip, which is never elided. Nothing goes past
-    /// `max_x`. Returns where the line ends and the name line's height.
+    /// `max_x`. Returns where the line ends, the name line's height and
+    /// where its parts went.
     fn paint_author(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -328,7 +368,7 @@ impl ChatApp {
         mark: Rect,
         name_at: Point,
         max_x: f64,
-    ) -> (f64, f64) {
+    ) -> (f64, f64, ui::author::AuthorLine) {
         let name = self.message_author_name(m);
         let initiator = self.user_name(&m.author);
         // The avatar the bot showed, once the content store has it.
@@ -346,11 +386,49 @@ impl ChatApp {
         let mut line = author.layout(&members, origin, max_x - origin.x, ctx.text, theme);
         line.mark = mark;
         line.name = line.name.with_size((line.name.width(), line_h));
-        if let Some(chip) = line.chip.as_mut() {
-            *chip = chip.with_origin((chip.x0, name_at.y + (line_h - chip.height()) / 2.0));
+        for part in [line.chip.as_mut(), line.badge.as_mut()]
+            .into_iter()
+            .flatten()
+        {
+            *part = part.with_origin((part.x0, name_at.y + (line_h - part.height()) / 2.0));
         }
         author.paint(&line, ctx);
-        (line.chip.map_or(line.name.x1, |chip| chip.x1), line_h)
+        let end = line
+            .chip
+            .or(line.badge)
+            .map_or(line.name.x1, |part| part.x1);
+        (end, line_h, line)
+    }
+
+    /// A person's avatar and name, through both, open their card; a bot's
+    /// or an agent's message has none.
+    fn push_author_hit(
+        &self,
+        m: &Message,
+        parts: &crate::app::PaintedMessage,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        if m.author.starts_with("bot:")
+            || self.agent_authors.contains_key(&m.author)
+            || self.is_provider_output(m)
+        {
+            return;
+        }
+        let name = parts.author.as_ref().map(|(rect, _)| *rect);
+        let face = match (parts.avatar, name) {
+            (Some(avatar), Some(name)) => Some(avatar.union(name)),
+            (avatar, name) => avatar.or(name),
+        };
+        if let Some(face) = face {
+            ChatApp::push_hit(
+                hits,
+                face,
+                Hit::ShowPerson {
+                    person: m.author.clone(),
+                    place: m.id.clone(),
+                },
+            );
+        }
     }
 
     pub(crate) fn message_author<'a>(
@@ -412,12 +490,12 @@ impl ChatApp {
 
     /// Whether the pointer is over `rect`.
     pub(crate) fn hovered(&self, rect: Rect) -> bool {
-        rect.contains(self.last_mouse)
+        self.pointer_over(rect)
     }
 
     /// Whether an open context menu acts on `target`: its row stays lifted
     /// while the menu is open, so it is clear what the menu will change.
-    fn menu_targets(&self, target: &MenuTarget) -> bool {
+    pub(crate) fn menu_targets(&self, target: &MenuTarget) -> bool {
         self.menu
             .as_ref()
             .is_some_and(|menu| menu.target == *target)
@@ -510,6 +588,7 @@ impl ChatApp {
         mut paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         area: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
     ) {
         let gap = f64::from(paint.theme.tokens.spacing.s3);
         let width = (area.width() - 2.0 * self.chrome.gutter).max(1.0);
@@ -574,9 +653,20 @@ impl ChatApp {
                 y + heading_h,
             );
             let color = paint.theme.text_dim;
-            line_in(
+            let shown = line_in(
                 &mut paint, &author, &style, color, heading.x0, heading, width,
             );
+            // Each line's author opens their card, as in a channel.
+            if heading.y1 > area.y0 && heading.y0 < area.y1 {
+                ChatApp::push_hit(
+                    hits,
+                    Rect::new(heading.x0, heading.y0, heading.x0 + shown, heading.y1),
+                    Hit::ShowPerson {
+                        person: message.author.clone(),
+                        place: message.id.clone(),
+                    },
+                );
+            }
             if let Some((_, editor)) = self.person_body_views.get_mut(&message.id) {
                 let body = Rect::new(heading.x0, heading.y1, heading.x1, y + height - gap);
                 editor.layout(body, paint.theme, paint.text);
@@ -602,18 +692,18 @@ impl ChatApp {
         self.scroll_content = 0.0;
         self.scroll_viewport = area.height().max(0.0);
         self.scroll = 0.0;
-        let title = if self.can_participate() {
-            "No messages yet"
+        let title = crate::i18n::t(if self.can_participate() {
+            "chat-empty-title"
         } else {
-            "Nothing has been said here yet"
-        };
+            "chat-empty-title-read-only"
+        });
         // An empty channel says what it is for, or invites the first word:
         // a visitor arriving in a quiet room should know they may start it.
         let channel_message = self.empty_channel_message();
         let content = EmptyStateContent {
             icon: Some(Icon::Send),
             message: channel_message.as_deref(),
-            ..EmptyStateContent::new(title)
+            ..EmptyStateContent::new(&title)
         };
         EmptyState::paint(
             &mut PaintCtx::new(scene, tf, tr, theme),
@@ -679,7 +769,7 @@ impl ChatApp {
             return;
         }
 
-        let groups = model::group_messages(&self.messages);
+        let groups = self.timeline_groups();
         let clock = ConversationClock::local();
         let (items, total) = self.measure_message_rows(tr, theme, &groups, text_w, clock);
 
@@ -749,13 +839,23 @@ impl ChatApp {
         self.timeline_total_height = total;
 
         let first_row_hit = hits.len();
+        // Only what stands in view is painted; a row keeps its scene for
+        // the frames it stays there ([`crate::timeline`]).
+        self.begin_timeline_paint(theme, tf, column);
+        self.message_rows.clear();
+        self.message_bar.lifted = self.bar_message();
         for item in &items {
+            let height = Self::item_height(item, theme);
+            if y >= area.y1 || y + height <= area.y0 {
+                y += height;
+                continue;
+            }
             match item {
                 TimelineItem::Divider { label } => {
                     y = self.draw_day_divider(PaintCtx::new(scene, tf, tr, theme), area, label, y);
                 }
                 TimelineItem::Row(rm) => {
-                    self.draw_row(
+                    self.paint_row(
                         PaintCtx::new(scene, tf, tr, theme),
                         presence,
                         rm,
@@ -766,6 +866,7 @@ impl ChatApp {
                 }
             }
         }
+        self.end_timeline_paint();
         // A row scrolled half out of the timeline is clipped where it is
         // painted; so is what it answers to, never reaching the header.
         let rows_hits = hits.split_off(first_row_hit);
@@ -773,6 +874,7 @@ impl ChatApp {
             let clipped = rect.intersect(area);
             (clipped.width() > 0.0 && clipped.height() > 0.0).then_some((clipped, hit))
         }));
+        self.draw_message_bar(PaintCtx::new(scene, tf, tr, theme), area, hits);
         if !self.timeline_at_end {
             self.draw_jump_to_latest(scene, tf, tr, theme, area, hits);
         }
@@ -790,7 +892,7 @@ impl ChatApp {
         area: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let label = "Jump to latest";
+        let label = &crate::i18n::t("chat-jump-latest");
         let face = ButtonFace::new(Rect::ZERO, label).icon(Icon::ArrowDown);
         let w = face.intrinsic_width(tr, theme);
         let h = ButtonFace::height(ControlSize::Regular, theme);
@@ -840,7 +942,7 @@ impl ChatApp {
                         label: clock.day_label(day),
                     });
                 }
-                let rm = self.measure_row(tr, theme, m, gi == 0, text_w);
+                let rm = self.measure_row_kept(tr, theme, m, gi == 0, text_w);
                 total += rm.height();
                 items.push(TimelineItem::Row(rm));
             }
@@ -868,7 +970,7 @@ impl ChatApp {
         y + height
     }
 
-    fn measure_row(
+    pub(crate) fn measure_row(
         &self,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -921,7 +1023,13 @@ impl ChatApp {
         let react_h = if m.reactions.is_empty() {
             0.0
         } else {
-            ChipFace::height(theme) + f64::from(sp.s2)
+            ui::widget::reaction_strip::measure_height(
+                &m.reactions,
+                self.can_participate(),
+                f64::from(text_w),
+                tr,
+                theme,
+            ) + f64::from(sp.s2)
         };
         // While editing, the "Edited" marker gives way to the editor's own
         // controls row.
@@ -963,7 +1071,9 @@ impl ChatApp {
             } else {
                 0.0
             },
-            resource_h: if !editing && m.reference.is_some() && m.source_provider.is_some() {
+            resource_h: if !editing && m.share.is_some() {
+                self.share_card_height(m, f64::from(text_w), tr, theme)
+            } else if !editing && m.reference.is_some() && m.source_provider.is_some() {
                 2.0 * (ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2))
             } else {
                 0.0
@@ -977,7 +1087,8 @@ impl ChatApp {
         }
     }
 
-    fn draw_row(
+    /// Paint the row `rm` from `*y`; returns where it drew its texts.
+    pub(crate) fn draw_row(
         &mut self,
         paint: PaintCtx<'_>,
         presence: &PresenceCtx,
@@ -985,7 +1096,7 @@ impl ChatApp {
         column: MessageColumn,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
-    ) {
+    ) -> crate::app::PaintedMessage {
         let PaintCtx {
             scene,
             transform: tf,
@@ -993,18 +1104,20 @@ impl ChatApp {
             theme,
         } = paint;
         let area = column.area;
+        let mut parts = crate::app::PaintedMessage::default();
         let Some(m) = self.message(&rm.idx_id).cloned() else {
-            return;
+            return parts;
         };
         let revealed = self.revealed_message.as_deref() == Some(m.id.as_str());
-        let targeted = self.menu_targets(&MenuTarget::Message(m.id.clone()));
-        if revealed || targeted {
-            let s2 = f64::from(theme.tokens.spacing.s2);
+        let lifted = self.row_lifted(&m.id);
+        let s2 = f64::from(theme.tokens.spacing.s2);
+        let row = Rect::new(area.x0 + s2, *y, area.x1 - s2, *y + rm.height());
+        if revealed || lifted {
             chrome::paint_row_selection(
                 scene,
                 tf,
-                Rect::new(area.x0 + s2, *y, area.x1 - s2, *y + rm.height()),
-                SelectionState::new(revealed, targeted, false),
+                row,
+                SelectionState::new(revealed, lifted, false),
                 theme.tokens.colors.surfaces.content,
                 theme,
             );
@@ -1013,7 +1126,13 @@ impl ChatApp {
         let content_top = *y;
 
         if rm.show_header {
-            self.draw_row_header(PaintCtx::new(scene, tf, tr, theme), column, &m, y);
+            self.draw_row_header(
+                PaintCtx::new(scene, tf, tr, theme),
+                column,
+                &m,
+                y,
+                &mut parts,
+            );
         }
         if rm.editing {
             self.draw_message_editor(
@@ -1043,20 +1162,8 @@ impl ChatApp {
             *y += rm.body_h;
         }
         if rm.reasoning_h > 0.0 {
-            let caption = crate::i18n::t(if self.expanded_reasoning.contains(&m.id) {
-                "chat-agent-hide-reasoning"
-            } else {
-                "chat-agent-show-reasoning"
-            });
-            let rect = Rect::new(
-                column.text_x,
-                *y,
-                column.text_x + f64::from(column.text_width),
-                *y + rm.reasoning_h - f64::from(theme.tokens.spacing.s2),
-            );
-            Button::paint(scene, tf, tr, theme, &ButtonFace::new(rect, &caption));
-            Self::push_hit(hits, rect, Hit::AgentReasoning(m.id.clone()));
-            *y += rm.reasoning_h;
+            let paint = PaintCtx::new(scene, tf, tr, theme);
+            self.draw_reasoning_toggle(paint, rm, &m.id, column, y, hits);
         }
         if !rm.editing
             && let Some(work) = &m.work
@@ -1084,11 +1191,61 @@ impl ChatApp {
                 Hit::MessageMenu { msg: m.id.clone() },
             );
         }
-        if rm.resource_h > 0.0 {
+        self.push_author_hit(&m, &parts, hits);
+        if !rm.editing {
+            parts.lines = self.body_lines(&m.id);
+        }
+        if rm.resource_h > 0.0 && m.share.is_some() {
+            let place = (column.text_x, f64::from(column.text_width), column.area);
+            self.draw_share_card(PaintCtx::new(scene, tf, tr, theme), &m, place, y, hits);
+        } else if rm.resource_h > 0.0 {
             self.draw_resource_navigation(PaintCtx::new(scene, tf, tr, theme), &m, column, y, hits);
         }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;
+        parts
+    }
+
+    /// The button that shows or hides the reasoning an agent's provider
+    /// shared. Advances `*y` past it.
+    fn draw_reasoning_toggle(
+        &self,
+        paint: PaintCtx<'_>,
+        rm: &RowM,
+        id: &str,
+        column: MessageColumn,
+        y: &mut f64,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let caption = crate::i18n::t(if self.expanded_reasoning.contains(id) {
+            "chat-agent-hide-reasoning"
+        } else {
+            "chat-agent-show-reasoning"
+        });
+        let rect = Rect::new(
+            column.text_x,
+            *y,
+            column.text_x + f64::from(column.text_width),
+            *y + rm.reasoning_h - f64::from(theme.tokens.spacing.s2),
+        );
+        Button::paint(scene, tf, tr, theme, &ButtonFace::new(rect, &caption));
+        Self::push_hit(hits, rect, Hit::AgentReasoning(id.to_owned()));
+        *y += rm.reasoning_h;
+    }
+
+    /// Keep where a shown message drew its texts, cut to the timeline's
+    /// `area`.
+    pub(crate) fn note_painted(&mut self, id: &str, parts: crate::app::PaintedMessage, area: Rect) {
+        let parts = parts.clipped(area);
+        if !parts.is_empty() {
+            self.painted_messages.insert(id.to_owned(), parts);
+        }
     }
 
     fn draw_resource_navigation(
@@ -1149,13 +1306,14 @@ impl ChatApp {
     }
 
     /// A message group's header: avatar, author and time. Advances `*y`
-    /// past it.
+    /// past it and notes in `parts` where each was drawn.
     fn draw_row_header(
         &self,
         paint: PaintCtx<'_>,
         column: MessageColumn,
         m: &Message,
         y: &mut f64,
+        parts: &mut crate::app::PaintedMessage,
     ) {
         let PaintCtx {
             scene,
@@ -1172,7 +1330,7 @@ impl ChatApp {
             *y + side,
         );
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        let (end_x, nh) = self.paint_author(
+        let (end_x, nh, line) = self.paint_author(
             &mut ctx,
             m,
             avatar,
@@ -1185,7 +1343,7 @@ impl ChatApp {
         let clock = clock_label(m.ts);
         let th = line_of(ctx.text, &time_style);
         let clock_x = end_x + f64::from(theme.tokens.spacing.s2);
-        text(
+        let (clock_w, clock_h) = text(
             &mut ctx,
             &clock,
             &time_style,
@@ -1193,12 +1351,27 @@ impl ChatApp {
             Point::new(clock_x, *y + nh - th),
             None,
         );
+        let clock_w = f64::from(clock_w);
+        parts.avatar = Some(line.mark);
+        parts.author = Some((line.name, line.shown));
+        // Where a bridged person writes from: its mark, saying so when
+        // hovered and to assistive technology.
+        parts.service = line
+            .badge
+            .zip(self.message_author(m, "", "", None).service_tip());
+        parts.time = Some((
+            Rect::new(
+                clock_x,
+                *y + nh - th,
+                clock_x + clock_w,
+                *y + nh - th + f64::from(clock_h),
+            ),
+            clock,
+        ));
         // A pinned message says so where its time is.
         if m.pinned {
             let icon = f64::from(theme.tokens.metrics.icon_sm);
-            let x = clock_x
-                + width_of(ctx.text, &clock, &time_style)
-                + f64::from(theme.tokens.spacing.s2);
+            let x = clock_x + clock_w + f64::from(theme.tokens.spacing.s2);
             let cy = *y + nh - th / 2.0;
             Icon::Pin.draw(
                 ctx.scene,
@@ -1208,7 +1381,7 @@ impl ChatApp {
             );
             text(
                 &mut ctx,
-                "Pinned",
+                &crate::i18n::t("chat-message-pinned-marker"),
                 &time_style,
                 theme.text_dim,
                 Point::new(x + icon + f64::from(theme.tokens.spacing.s1), *y + nh - th),
@@ -1278,7 +1451,7 @@ impl ChatApp {
         } = column;
         if m.edited && !rm.editing {
             let style = theme.text(TextRole::Caption);
-            let label = "Edited";
+            let label = &crate::i18n::t("chat-message-edited");
             let w = width_of(tr, label, &style);
             let band = Rect::new(
                 text_x,
@@ -1328,7 +1501,12 @@ impl ChatApp {
         }
 
         if !m.reactions.is_empty() {
-            self.draw_reactions(PaintCtx::new(scene, tf, tr, theme), m, text_x, *y, hits);
+            self.draw_reactions(
+                PaintCtx::new(scene, tf, tr, theme),
+                m,
+                (false, Point::new(text_x, *y), f64::from(text_w)),
+                hits,
+            );
             *y += rm.react_h;
         }
 
@@ -1374,7 +1552,8 @@ impl ChatApp {
             *y + rm.body_h + 2.0 * pad,
         );
         paint_field(scene, tf, theme, field);
-        self.edit_input.set_placeholder("Edit message");
+        self.edit_input
+            .set_placeholder(&crate::i18n::t("chat-edit-field"));
         self.edit_input.set_mention_paint(self.mention_paint(theme));
         self.edit_input.layout(
             Rect::new(field.x0, field.y0 + pad, field.x1, field.y1 - pad),
@@ -1388,7 +1567,9 @@ impl ChatApp {
 
         // Cancel and Save at the field's trailing edge.
         let h = ButtonFace::height(ControlSize::Small, theme);
-        let save_face = ButtonFace::new(Rect::ZERO, "Save").control_size(ControlSize::Small);
+        let save_label = crate::i18n::t("chat-edit-save-button");
+        let cancel_label = crate::i18n::t("chat-edit-cancel-button");
+        let save_face = ButtonFace::new(Rect::ZERO, &save_label).control_size(ControlSize::Small);
         let save_w = save_face.intrinsic_width(tr, theme);
         let save = Rect::new(field.x1 - save_w, *y, field.x1, *y + h);
         Button::paint(
@@ -1396,13 +1577,13 @@ impl ChatApp {
             tf,
             tr,
             theme,
-            &ButtonFace::new(save, "Save")
+            &ButtonFace::new(save, &save_label)
                 .role(ButtonRole::Primary)
                 .control_size(ControlSize::Small)
                 .hovered(self.hovered(save)),
         );
         ChatApp::push_hit(hits, save, Hit::EditSave);
-        let cancel_w = ButtonFace::new(Rect::ZERO, "Cancel")
+        let cancel_w = ButtonFace::new(Rect::ZERO, &cancel_label)
             .control_size(ControlSize::Small)
             .intrinsic_width(tr, theme);
         let cancel = Rect::new(
@@ -1416,7 +1597,7 @@ impl ChatApp {
             tf,
             tr,
             theme,
-            &ButtonFace::new(cancel, "Cancel")
+            &ButtonFace::new(cancel, &cancel_label)
                 .control_size(ControlSize::Small)
                 .hovered(self.hovered(cancel)),
         );
@@ -1424,58 +1605,54 @@ impl ChatApp {
         *y += rm.edit_ctrl_h;
     }
 
-    /// One chip per reaction (yours selected), then a chip to add another.
+    /// The message's reactions as the toolkit's shared strip: a pill per
+    /// emoji (yours accented), then the add button while you may react.
+    /// `place` is the surface (`true` in the thread), the strip's origin
+    /// and the width it wraps at. Returns its height.
     fn draw_reactions(
         &self,
         paint: PaintCtx<'_>,
         m: &Message,
-        text_x: f64,
-        y: f64,
+        (thread, origin, width): (bool, Point, f64),
         hits: &mut Vec<(Rect, Hit)>,
-    ) {
+    ) -> f64 {
+        use ui::widget::reaction_strip::StripHit;
         let PaintCtx {
             scene,
             transform: tf,
             text: tr,
             theme,
         } = paint;
-        let chip_h = ChipFace::height(theme);
-        let gap = f64::from(theme.tokens.spacing.s2);
-        let mut x = text_x;
-        for reaction in &m.reactions {
-            let mine = reaction.reacted_by(&self.me.id);
-            let label = format!("{} {}", reaction.emoji, reaction.count());
-            let chip_w = ChipFace::intrinsic_width(&label, ChipLead::None, false, tr, theme);
-            let chip = Rect::new(x, y, x + chip_w, y + chip_h);
-            ChipFace::new(chip, &label)
-                .selected(mine)
-                .hovered(self.hovered(chip))
-                .paint(scene, tf, tr, theme);
-            ChatApp::push_hit(
-                hits,
-                chip,
-                Hit::Reaction {
-                    msg: m.id.clone(),
-                    emoji: reaction.emoji.clone(),
-                },
-            );
-            x = chip.x1 + gap;
-        }
-        let lead = ChipLead::Glyph(Icon::Plus);
-        let add_w = ChipFace::intrinsic_width("", lead, false, tr, theme);
-        let add = Rect::new(x, y, x + add_w, y + chip_h);
-        ChipFace::new(add, "")
-            .lead(lead)
-            .hovered(self.hovered(add))
-            .paint(scene, tf, tr, theme);
-        ChatApp::push_hit(
-            hits,
-            add,
-            Hit::AddReaction {
-                msg: m.id.clone(),
-                anchor: Point::new(add.x0, add.y1 + gap / 2.0),
-            },
+        let mut strips = self.reaction_strips.borrow_mut();
+        let strip = strips.entry((thread, m.id.clone())).or_default();
+        let laid = strip.layout(
+            &m.reactions,
+            &self.me.id,
+            self.can_participate(),
+            (origin, width),
+            tr,
+            theme,
         );
+        let height = laid.height();
+        for (rect, target) in laid.targets() {
+            let hit = match target {
+                StripHit::Toggle(emoji) => Hit::Reaction {
+                    msg: m.id.clone(),
+                    emoji,
+                },
+                StripHit::Add { anchor } => Hit::AddReaction {
+                    msg: m.id.clone(),
+                    anchor,
+                },
+            };
+            ChatApp::push_hit(hits, rect, hit);
+        }
+        // The strip lifts the chip under the pointer: the row asks about
+        // each of them.
+        self.note_pointer_probes(laid.targets().into_iter().map(|(rect, _)| rect));
+        let hover = (self.menu.is_none() && !self.emoji_open).then_some(self.pointer_in_row());
+        strip.paint(&mut PaintCtx::new(scene, tf, tr, theme), hover, None);
+        height
     }
 
     /// The link into a message's thread: who replied, how many replies and
@@ -1507,14 +1684,19 @@ impl ChatApp {
         } else {
             0.0
         };
-        let replies = format!("{count} {}", if count == 1 { "reply" } else { "replies" });
+        let replies = crate::i18n::t_args("chat-thread-replies", &[("count", count.into())]);
         let last = self
             .messages
             .iter()
             .filter(|reply| reply.parent.as_deref() == Some(m.id.as_str()))
             .map(|reply| reply.ts)
             .max()
-            .map(|ts| format!("Last reply {}", clock_label(ts)));
+            .map(|ts| {
+                crate::i18n::t_args(
+                    "chat-thread-last-reply",
+                    &[("time", clock_label(ts).into())],
+                )
+            });
         let label_style = theme.text(TextRole::Label).strong();
         let meta_style = theme.text(TextRole::Caption);
         let replies_w = width_of(tr, &replies, &label_style);
@@ -1786,12 +1968,12 @@ impl ChatApp {
         } = paint;
         let style = theme.text(TextRole::Caption);
         let y = field.y1 + f64::from(theme.tokens.spacing.s1);
-        let retry = "Retry";
+        let retry = &crate::i18n::t("chat-retry");
         let strong = style.clone().strong();
         let retry_w = width_of(tr, retry, &strong);
         let line = elide(
             tr,
-            &format!("Not sent: {reason}"),
+            &crate::i18n::t_args("chat-not-sent", &[("reason", reason.to_owned().into())]),
             &style,
             (field.width() - retry_w - f64::from(theme.tokens.spacing.s3)).max(0.0),
         );
@@ -1837,8 +2019,8 @@ impl ChatApp {
         } = paint;
         let style = theme.text(TextRole::Caption);
         let y = field.y1 + f64::from(theme.tokens.spacing.s1);
-        let line = "Message deleted";
-        let undo = "Undo";
+        let line = &crate::i18n::t("chat-message-deleted");
+        let undo = &crate::i18n::t("chat-undo");
         let strong = style.clone().strong();
         let line_w = width_of(tr, line, &style);
         let undo_w = width_of(tr, undo, &strong);
@@ -1938,7 +2120,6 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let sp = &theme.tokens.spacing;
         let btn = ButtonFace::height(ControlSize::Regular, theme);
         paint_field(scene, tf, theme, rect);
         if interactive {
@@ -1954,8 +2135,9 @@ impl ChatApp {
             .control_size(ControlSize::Regular);
         let send_w = send_probe.intrinsic_width(tr, theme);
         let leading = if attach { vec![btn] } else { Vec::new() };
+        let emoji_label = crate::i18n::t("chat-emoji-insert");
         let emoji_w =
-            ButtonFace::icon_only(Rect::ZERO, Icon::Smile, "Emoji").intrinsic_width(tr, theme);
+            ButtonFace::icon_only(Rect::ZERO, Icon::Smile, &emoji_label).intrinsic_width(tr, theme);
         let frame =
             tilo_rich_text::ComposerFrame::layout(rect, theme, &leading, &[send_w, emoji_w]);
         if attach {
@@ -1965,7 +2147,7 @@ impl ChatApp {
                 tf,
                 tr,
                 theme,
-                &ButtonFace::icon_only(plus, Icon::Paperclip, "Attach a file")
+                &ButtonFace::icon_only(plus, Icon::Paperclip, &crate::i18n::t("chat-attach"))
                     .hovered(self.hovered(plus)),
             );
             ChatApp::push_hit(hits, plus, Hit::Attach);
@@ -1996,14 +2178,9 @@ impl ChatApp {
             tf,
             tr,
             theme,
-            &ButtonFace::icon_only(emoji, Icon::Smile, "Emoji").hovered(self.hovered(emoji)),
+            &ButtonFace::icon_only(emoji, Icon::Smile, &emoji_label).hovered(self.hovered(emoji)),
         );
-        let picker_w = f64::from(theme.tokens.metrics.panel_width_utility);
-        ChatApp::push_hit(
-            hits,
-            emoji,
-            Hit::ComposerEmoji(Point::new(emoji.x1 - picker_w, rect.y0 - f64::from(sp.s2))),
-        );
+        ChatApp::push_hit(hits, emoji, Hit::ComposerEmoji(emoji));
 
         let _ = draft;
         frame.editor
@@ -2155,7 +2332,7 @@ impl ChatApp {
         let close_label = if matches!(&close_hit, Hit::CloseThread) {
             crate::i18n::t("chat-thread-close")
         } else {
-            "Close".into()
+            crate::i18n::t("chat-close")
         };
         let title_x = head.x0 + f64::from(sp.s4);
         let close = square(
@@ -2370,7 +2547,13 @@ impl ChatApp {
             height += self.attachment_flow_height(attachment, f64::from(width), tr, theme);
         }
         if !message.reactions.is_empty() {
-            height += ChipFace::height(theme) + f64::from(sp.s2);
+            height += ui::widget::reaction_strip::measure_height(
+                &message.reactions,
+                self.can_participate(),
+                f64::from(width),
+                tr,
+                theme,
+            ) + f64::from(sp.s2);
         }
         height += f64::from(sp.s3);
         height
@@ -2397,7 +2580,7 @@ impl ChatApp {
         let tx = column.x0 + side + f64::from(sp.s2);
         let tw = (column.x1 - tx).max(f64::from(theme.tokens.spacing.s16)) as f32;
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        let (end_x, nh) = self.paint_author(
+        let (end_x, nh, _) = self.paint_author(
             &mut ctx,
             m,
             Rect::new(column.x0, y, column.x0 + side, y + side),
@@ -2460,17 +2643,12 @@ impl ChatApp {
             yy += self.attachment_flow_height(att, f64::from(tw), tr, theme);
         }
         if !m.reactions.is_empty() {
-            let chip_h = ChipFace::height(theme);
-            let mut chip_x = tx;
-            for reaction in &m.reactions {
-                let label = format!("{} {}", reaction.emoji, reaction.count());
-                let chip_w = ChipFace::intrinsic_width(&label, ChipLead::None, false, tr, theme);
-                ChipFace::new(Rect::new(chip_x, yy, chip_x + chip_w, yy + chip_h), &label)
-                    .selected(reaction.reacted_by(&self.me.id))
-                    .paint(scene, tf, tr, theme);
-                chip_x += chip_w + f64::from(sp.s2);
-            }
-            yy += chip_h + f64::from(sp.s2);
+            yy += self.draw_reactions(
+                PaintCtx::new(scene, tf, tr, theme),
+                m,
+                (true, Point::new(tx, yy), f64::from(tw)),
+                hits,
+            ) + f64::from(sp.s2);
         }
         yy + f64::from(sp.s3)
     }
@@ -2560,7 +2738,22 @@ impl ChatApp {
                 }
                 let row_h = face.height(ctx.text, theme);
                 let row = Rect::new(body.x0 + inset, y, body.x1 - inset, y + row_h);
-                face.paint(&mut ctx, row);
+                face.interaction(ui::widget::Interaction {
+                    hovered: !person.is_agent && self.hovered(row),
+                    ..ui::widget::Interaction::default()
+                })
+                .paint(&mut ctx, row);
+                // A person's row opens their card; an agent has none.
+                if !person.is_agent {
+                    ChatApp::push_hit(
+                        hits,
+                        row,
+                        Hit::ShowPerson {
+                            person: person.id.clone(),
+                            place: format!("member:{}", person.id),
+                        },
+                    );
+                }
                 y += row_h;
             }
         }
@@ -2581,7 +2774,7 @@ impl ChatApp {
         let head = self.draw_panel_header(
             PaintCtx::new(scene, tf, tr, theme),
             panel,
-            "Pinned messages",
+            &crate::i18n::t("chat-pins"),
             Hit::TogglePins,
             hits,
         );
@@ -2589,10 +2782,12 @@ impl ChatApp {
         let pinned: Vec<&Message> = self.messages.iter().rev().filter(|m| m.pinned).collect();
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         if pinned.is_empty() {
+            let title = crate::i18n::t("chat-pins-empty");
+            let message = crate::i18n::t("chat-pins-empty-detail");
             let content = EmptyStateContent {
                 icon: Some(Icon::Pin),
-                message: Some("Pin a message from its menu to keep it here for everyone."),
-                ..EmptyStateContent::new("Nothing pinned yet")
+                message: Some(&message),
+                ..EmptyStateContent::new(&title)
             };
             EmptyState::paint(&mut ctx, body, &content, self.last_mouse);
             return;
@@ -2659,9 +2854,12 @@ impl ChatApp {
             .secondary("Ag")
             .leading(RowLeading::Icon(Icon::Image))
             .height(tr, &local);
-        // This device's files first; the workspace's, where there is one,
+        // This device's files first, then a window to share live when the
+        // desktop lists one; the workspace's files, where there is one,
         // under their own caption.
+        let windows = !ui::window_share::windows().is_empty();
         let body_h = row_h
+            + if windows { row_h } else { 0.0 }
             + if rows.is_empty() {
                 0.0
             } else {
@@ -2695,7 +2893,7 @@ impl ChatApp {
         let title_band = Rect::new(panel.x0, y, panel.x1, y + title_h);
         line_in(
             &mut ctx,
-            "Share a file",
+            &crate::i18n::t("chat-attach"),
             &local.text(TextRole::Subheading),
             local.text_primary,
             inner_x,
@@ -2725,8 +2923,8 @@ impl ChatApp {
             y = band.y1 + pad;
         }
         let device = Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + row_h);
-        ListRowFace::new("Upload from this device")
-            .secondary("Files, pictures and videos up to 32 MiB")
+        ListRowFace::new(&crate::i18n::t("chat-attach-device"))
+            .secondary(&crate::i18n::t("chat-attach-device-detail"))
             .leading(RowLeading::Icon(Icon::Upload))
             .interaction(ui::widget::Interaction {
                 hovered: self.hovered(device),
@@ -2735,11 +2933,16 @@ impl ChatApp {
             .paint(&mut ctx, device);
         ChatApp::push_hit(hits, device, Hit::AttachDevice);
         y = device.y1;
+        if windows {
+            let row = Rect::new(panel.x0 + pad, y, panel.x1 - pad, y + row_h);
+            self.draw_share_window_row(&mut ctx, row, hits);
+            y = row.y1;
+        }
         if !rows.is_empty() {
             let band = Rect::new(panel.x0, y + pad, panel.x1, y + pad + caption_h);
             line_in(
                 &mut ctx,
-                "From the workspace",
+                &crate::i18n::t("chat-attach-workspace"),
                 &local.text(TextRole::Caption),
                 local.text_dim,
                 inner_x,
@@ -2773,7 +2976,7 @@ impl ChatApp {
         }
         if more > 0 {
             let band = Rect::new(panel.x0, y + pad, panel.x1, y + pad + caption_h);
-            let label = format!("{more} more in the workspace");
+            let label = crate::i18n::t_args("chat-attach-more", &[("count", more.into())]);
             line_in(
                 &mut ctx,
                 &label,
@@ -2834,9 +3037,18 @@ pub(crate) fn typing_line(
     writers.dedup();
     match writers.as_slice() {
         [] => None,
-        [one] => Some(format!("{one} is typing…")),
-        [one, two] => Some(format!("{one} and {two} are typing…")),
-        _ => Some("Several people are typing…".to_owned()),
+        [one] => Some(crate::i18n::t_args(
+            "chat-typing-one",
+            &[("name", one.clone().into())],
+        )),
+        [one, two] => Some(crate::i18n::t_args(
+            "chat-typing-two",
+            &[
+                ("first", one.clone().into()),
+                ("second", two.clone().into()),
+            ],
+        )),
+        _ => Some(crate::i18n::t("chat-typing-several")),
     }
 }
 
@@ -2985,7 +3197,9 @@ fn thread_bar_h(theme: &Theme) -> f64 {
 mod agent_work;
 
 pub(crate) use agent_work::agent_work_accessible_description;
-use agent_work::*;
+use agent_work::{
+    AgentWorkLineStyle, AgentWorkPresentation, draw_agent_work_line, measure_agent_work,
+};
 /// Per-row measured heights for the timeline layout.
 /// One thing the timeline paints, in order: a day divider, or a message.
 enum TimelineItem {
@@ -2996,9 +3210,10 @@ enum TimelineItem {
     Row(RowM),
 }
 
-struct RowM {
-    idx_id: String,
-    show_header: bool,
+#[derive(Clone)]
+pub(crate) struct RowM {
+    pub(crate) idx_id: String,
+    pub(crate) show_header: bool,
     /// Space above the row: a group's first row stands apart from the one
     /// before it; a continuation row follows closely.
     top_gap: f64,
@@ -3009,19 +3224,19 @@ struct RowM {
     body_h: f64,
     work_h: f64,
     reasoning_h: f64,
-    resource_h: f64,
+    pub(crate) resource_h: f64,
     att_h: f64,
     react_h: f64,
     edited_h: f64,
     thread_h: f64,
     /// This row is the message being edited inline: its body is the editor
     /// field (padded) plus a controls row.
-    editing: bool,
+    pub(crate) editing: bool,
     edit_ctrl_h: f64,
 }
 
 impl RowM {
-    fn height(&self) -> f64 {
+    pub(crate) fn height(&self) -> f64 {
         let header = if self.show_header { self.header_h } else { 0.0 };
         let body = if self.editing {
             self.body_h + 2.0 * self.pad + self.pad + self.edit_ctrl_h
@@ -3116,6 +3331,7 @@ mod tests {
             pinned: false,
             work: None,
             appearance: None,
+            share: None,
         };
         // Two hours apart across midnight, and one three days later.
         let start = 1_782_828_300_i64;

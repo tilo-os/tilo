@@ -1433,6 +1433,9 @@ async fn route(
                 tilo_clock::unix_now_ms(),
             );
             here::pair_members(&mut reply, &web.grants.persons_in(workspace_id));
+            for person in &mut reply.people {
+                person.profile_ms = web.profiles.issued_at(&person.user).unwrap_or(0);
+            }
             if let Some(job) = job {
                 tokio::spawn(web.here.clone().summarize(job));
             }
@@ -1462,6 +1465,41 @@ async fn route(
             Ok(encoded(&protocol::ChannelKeys {
                 keys: keys.to_vec(),
             }))
+        }
+        tilo_relay_protocol::rooms::private::PRIVATE_PATH => {
+            use tilo_relay_protocol::rooms::private::{MAX_REQUEST_BYTES, PrivateCall};
+            let session = authed()?;
+            // The governor's private door, the one a native device reaches
+            // over iroh, within the same bounds.
+            let door = web
+                .rooms
+                .clone()
+                .map(crate::rooms::PrivateProtocol::new)
+                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no rooms"))?;
+            if bytes.len() > MAX_REQUEST_BYTES {
+                return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "body too large"));
+            }
+            let call: PrivateCall = decode(&bytes)?;
+            let device = session.peer.device_public_key;
+            let _admitted = door
+                .admit(device)
+                .ok_or_else(|| status(StatusCode::SERVICE_UNAVAILABLE, "busy"))?;
+            // A watch is a long-poll, held as long as `/events` holds one.
+            let poll = async {
+                tokio::time::sleep(wait(MAX_POLL_MS)).await;
+                Ok(())
+            };
+            let reply = door
+                .serve(
+                    &session.peer.cert,
+                    &device,
+                    &call.room,
+                    call.operation,
+                    poll,
+                )
+                .await;
+            drop(door);
+            Ok(encoded(&reply))
         }
         "/rooms" => {
             let session = authed()?;

@@ -19,6 +19,10 @@ use ui::widget::TaffyTreeExt;
 pub enum Show {
     /// A window on the desktop, with a floating panel over it.
     Desktop,
+    /// A list row surface with selection and presence.
+    List,
+    /// A dialog over the window it asks about.
+    Dialog,
     /// The twelve presence colours.
     Presence,
 }
@@ -74,12 +78,23 @@ impl ThemePreview {
         }
     }
 
+    /// Show a list surface, or a dialog, or the presence colours.
+    #[must_use]
+    pub fn show(mut self, show: Show) -> Self {
+        self.show = show;
+        self.label = match show {
+            Show::Desktop => format!("Preview of {}", self.theme.name),
+            Show::List => format!("List preview of {}", self.theme.name),
+            Show::Dialog => format!("Dialog preview of {}", self.theme.name),
+            Show::Presence => format!("Presence colours of {}", self.theme.name),
+        };
+        self
+    }
+
     /// The presence colours of `document` instead of the desktop.
     #[must_use]
-    pub fn presence(mut self) -> Self {
-        self.show = Show::Presence;
-        self.label = format!("Presence colours of {}", self.theme.name);
-        self
+    pub fn presence(self) -> Self {
+        self.show(Show::Presence)
     }
 
     #[must_use]
@@ -143,7 +158,7 @@ impl Widget for ThemePreview {
             Show::Presence => {
                 crate::draw::presence_strip(scene, transform, self.rect, &self.theme);
             }
-            Show::Desktop => {
+            Show::List | Show::Dialog | Show::Desktop => {
                 let (cw, ch) = crate::draw::CANVAS;
                 let scale = (self.rect.width() / cw).min(self.rect.height() / ch);
                 let size = (cw * scale, ch * scale);
@@ -165,7 +180,12 @@ impl Widget for ThemePreview {
                     transform,
                     &RoundedRect::from_rect(frame, radius),
                 );
-                crate::draw::miniature(
+                let miniature = match self.show {
+                    Show::List => crate::draw::miniature_list,
+                    Show::Dialog => crate::draw::miniature_dialog,
+                    _ => crate::draw::miniature,
+                };
+                miniature(
                     scene,
                     transform * Affine::translate(origin.to_vec2()) * Affine::scale(scale),
                     text_renderer,

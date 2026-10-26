@@ -27,7 +27,7 @@ use vello::kurbo::{BezPath, Point, Rect, Stroke};
 use crate::actions::GraphKind;
 use crate::draw::{self, Align};
 use crate::engine;
-use crate::mathfield::{self, MathField};
+use crate::mathfield::MathField;
 
 /// The x range a curve's thumbnail plots, in the graph's own units.
 const THUMBNAIL_X: std::ops::RangeInclusive<f64> = -5.0..=5.0;
@@ -247,13 +247,18 @@ impl GraphKind {
 /// layout, dim, and its result in the numeric title face beneath, trailing.
 struct CalculationBody {
     field: RefCell<MathField>,
+    /// The expression the calculation was made from; the field shows it.
+    expression: String,
     result: String,
 }
 
 impl CalculationBody {
     fn new(expression: &str, result: &str) -> Self {
         Self {
-            field: RefCell::new(MathField::new(expression)),
+            // Read-only: follows the expression the history holds, which an
+            // undo, a merge or a peer can change under this row.
+            field: RefCell::new(MathField::new(expression).follow_source()),
+            expression: expression.to_owned(),
             result: result.to_owned(),
         }
     }
@@ -280,7 +285,8 @@ impl EntryBody for CalculationBody {
             rect.y1 - pad_y - result_h,
         );
         let mut field = self.field.borrow_mut();
-        field.set_size(formula_size(ctx));
+        field.set_source(&self.expression);
+        field.set_size(formula_size(theme));
         field.set_rect(expression, ctx.text);
         field.draw(
             ctx.scene,
@@ -305,19 +311,17 @@ impl EntryBody for CalculationBody {
 /// One line of a formula in a History row: a body line, with room above
 /// and below it for an exponent or an index.
 fn formula_line(theme: &Theme) -> f64 {
-    f64::from(theme.text(TextRole::Body).line_height_px()) + f64::from(theme.tokens.spacing.s2)
+    let set = f64::from(formula_size(theme));
+    (set * 1.25).max(f64::from(theme.text(TextRole::Body).line_height_px()))
+        + f64::from(theme.tokens.spacing.s2)
 }
 
 /// The size a formula is set at in a History row: the body face, so a row
-/// keeps the display's typesetting at the list's scale.
-fn formula_size(ctx: &PaintCtx<'_>) -> f32 {
-    let size = ctx.theme.tokens.typography.size(TextRole::Body);
-    let renderer = ctx.text.text_scale();
-    if renderer.is_finite() && renderer > f32::EPSILON {
-        size / renderer
-    } else {
-        mathfield::formula_size(ctx.theme, ctx.text)
-    }
+/// keeps the display's typesetting at the list's scale. A role is already
+/// resolved against the reader's text scale, and the math layout paints at
+/// exactly the size it is given, so it is read straight off the theme.
+fn formula_size(theme: &Theme) -> f32 {
+    theme.tokens.typography.size(TextRole::Body)
 }
 
 /// A plotted function: `y = f(x)` typeset, and for a curve a small plot of
@@ -325,6 +329,8 @@ fn formula_size(ctx: &PaintCtx<'_>) -> f32 {
 struct GraphBody {
     kind: GraphKind,
     field: RefCell<MathField>,
+    /// The formula the row was made from; the field shows it.
+    formula: String,
     /// The curve's samples over the thumbnail span, `None` where it is
     /// undefined; empty for a surface or a formula that does not compile.
     samples: Vec<Option<f64>>,
@@ -352,7 +358,10 @@ impl GraphBody {
         };
         Self {
             kind,
-            field: RefCell::new(MathField::new(formula)),
+            // Read-only, and following: a relabelled or edited formula is drawn
+            // as it is now, not as it was when the row was built.
+            field: RefCell::new(MathField::new(formula).follow_source()),
+            formula: formula.into(),
             samples,
             curve,
         }
@@ -441,7 +450,8 @@ impl EntryBody for GraphBody {
             rect.y1 - pad_y,
         );
         let mut field = self.field.borrow_mut();
-        field.set_size(formula_size(ctx));
+        field.set_source(&self.formula);
+        field.set_size(formula_size(theme));
         field.set_rect(formula, ctx.text);
         field.draw(
             ctx.scene,

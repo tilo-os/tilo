@@ -33,8 +33,13 @@ pub fn unreachable_actions<A: ResourceApp>(app: &mut HeadlessApp<A>) -> Vec<Stri
         let answer = app
             .harness()
             .invoke_action(&address, &arguments, true, phrase.as_deref());
+        // The invocation first takes the work still pending in the window, as
+        // a real input event does: an earlier action's withdrawal of this row
+        // (a file it closed) may land only then. A row no longer published
+        // was withdrawn, not left without a handler.
         if let Err(error) = answer
             && error.code() == "unknown_action"
+            && tilo_actions::door::resolve(&app.harness().resources(), &address).is_some()
         {
             unreachable.push(format!("{} {}: {error}", address.resource, address.action));
         }

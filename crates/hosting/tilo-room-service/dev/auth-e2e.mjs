@@ -89,24 +89,51 @@
 //                  and nothing kept (screenshots at 1440x900, 390x844 and
 //                  2560x1440 at DPR 2); a pasted text that is no invite link
 //                  is said so
+//                  The door mails (TILO_ROOMS_MAIL_FROM with
+//                  TILO_ROOMS_RESEND_KEY_FILE) through a stand-in for
+//                  Resend's API on loopback (TILO_ROOMS_RESEND_URL), which
+//                  keeps every mail; the checks open the links in them.
 //   stranger-own   another fresh profile opening the person's own desktop
 //                  (#/me) directly lands on that door: no desktop of their
 //                  own, nothing offered in its place, nothing kept
 //   wait-list      at that door, a text that is no email address is said so
-//                  beside the field; an address is kept and confirmed as
-//                  normalized, and the same address again is answered alike
+//                  beside the field; an address is kept as typed and the
+//                  door says to check the inbox, with a way to have the link
+//                  sent again and "Changed your mind? Take me off the list",
+//                  the browser keeping its removal secret; one mail went
+//                  there, with a confirmation and a removal link; the same
+//                  address again is answered alike, with a secret of its
+//                  own, and mailed nothing more within the hour
+//   wait-list-revisit
+//                  the door again in that browser still says to check the
+//                  inbox, as the door says the address waits to be confirmed
+//   wait-list-confirm
+//                  the mail's confirmation link opens the door saying
+//                  "You're on the list" with the address, and leaves the
+//                  address bar clean
+//   wait-list-remove
+//                  taking it off shows the form again saying "You're off the
+//                  list.", the secret forgotten, and mails word of it; a
+//                  wrong secret is answered exactly as the right one was;
+//                  another address's mailed removal link, opened in a fresh
+//                  browser, takes that one off and says so
 //   wait-list-invite
 //                  the first person, a member, opens "Waiting to join"
-//                  through search and finds that address with when it was
-//                  left (screenshots at 1440x900 and 390x844); Invite makes
-//                  an invite link for it and Remove takes it off the list
-//   invite-admits  the first person, a member, gets in as before, invites
-//                  with the desktop's Invite; that link pasted into the door
-//                  page's field asks to join, the member lets them in from
-//                  the banner's button, pressed through accessibility, and
-//                  the desktop presents as a member. Every check before ran
-//                  with the door open (TILO_ROOMS_ADMISSION unset), as do the
-//                  ones after
+//                  through search: an address not confirmed is not listed,
+//                  one confirmed is, and Remove takes that off by hand. The
+//                  address left again and confirmed is found with when it
+//                  was left; Invite has the door mail it an invite link, the
+//                  card says so with the link to copy, and the row says it
+//                  was invited and stays (screenshots of every door state
+//                  and the inviter's list at 1440x900 and 390x844)
+//   invite-admits  the mailed invite link opened in the person's browser
+//                  asks to join, the member lets them in from the banner's
+//                  button, pressed through accessibility, and the desktop
+//                  presents as a member. Every check before ran with the
+//                  door open (TILO_ROOMS_ADMISSION unset), as do the ones
+//                  after
+//   wait-list-joined
+//                  once they are in, the address is off the wait list
 //   invite-admits-again
 //                  three more strangers, each in a fresh browser, invited
 //                  and let in the same way, each open as a member; one that
@@ -137,8 +164,9 @@
 // cannot draw WebGPU. Credentials are all made here, by the pages and run.py;
 // nothing reaches a deployed host.
 import {spawn} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {createHash, randomBytes} from 'node:crypto';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {createServer as createHttpServer} from 'node:http';
 import {createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
@@ -294,6 +322,45 @@ export async function startStack(options, ports, {fresh, env = {}}) {
   return {room, stop, log: () => output};
 }
 
+/** A stand-in for Resend's API (`POST /emails`) on loopback: `mails` keeps
+ * each mail the door sent with the right key, in order. `{url, key, mails,
+ * close}`. */
+export async function fakeResend() {
+  const mails = [];
+  const key = `re_test_${randomBytes(12).toString('hex')}`;
+  const server = createHttpServer((request, response) => {
+    let body = '';
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      const answer = (status, reply) => {
+        response.writeHead(status, {'content-type': 'application/json'});
+        response.end(JSON.stringify(reply));
+      };
+      if (request.method !== 'POST' || request.url !== '/emails' || request.headers.authorization !== `Bearer ${key}`) {
+        answer(401, {message: 'not for this key'});
+        return;
+      }
+      try {
+        const mail = JSON.parse(body);
+        if (!Array.isArray(mail.to) || !mail.from || !mail.subject || !mail.text || !mail.html) throw new Error('incomplete');
+        mails.push(mail);
+        answer(200, {id: `fake-${mails.length}`});
+      } catch (error) {
+        answer(422, {message: error.message});
+      }
+    });
+  });
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  return {url: `http://127.0.0.1:${server.address().port}/emails`, key, mails, close: () => new Promise(done => server.close(done))};
+}
+
+/** The link in `mail`'s text that carries `parameter` (a wait-list secret,
+ * or `invite`), or `null`. */
+export function mailLink(mail, parameter) {
+  const pattern = parameter === 'invite' ? /https?:\/\/\S*[?&]invite=\S+/ : new RegExp(`https?://\\S*[?&]${parameter}=[0-9a-f]{64}`);
+  return mail?.text?.match(pattern)?.[0] ?? null;
+}
+
 // Every fetch a page makes, told to the harness through a DevTools binding
 // (which outlives reloads), with the body of the door's answers. DevTools'
 // own network domain held up later pages of the run.
@@ -312,10 +379,13 @@ const FETCHES = `(() => {
     try {
       const response = await original.call(this, input, init);
       const entry = {url, method, status: response.status};
-      if (method === 'POST' && new URL(url).pathname.endsWith('/join')) {
+      const path = new URL(url).pathname;
+      if (method === 'POST' && path.endsWith('/join')) {
         entry.body = await response.clone().text().catch(() => null);
         entry.request = typeof init?.body === 'string' ? init.body : null;
       }
+      // What the door answered taking an address off its wait list.
+      if (method === 'POST' && path.endsWith('/wait-list/remove')) entry.body = await response.clone().text().catch(() => null);
       tell(entry);
       return response;
     } catch (error) {
@@ -868,16 +938,26 @@ async function key(tab, name, modifiers = 0) {
   await sleep(300);
 }
 
-/** In `tab`, a member's desktop: open "Waiting to join" through search
- * (Ctrl+K, its name, Enter), find `contact` on the wait list, invite it
- * and take it off. `{row: {contact, added}, link, removed}`, or what did
- * not happen as `error`. */
-async function inviteFromWaitList(tab, contact, shoot) {
-  const card = "document.querySelector('[data-card=waiting]')";
-  const ROW = `[...document.querySelectorAll('[data-card=waiting] [data-list=wait-list] li')]
+const WAITING_CARD = "document.querySelector('[data-card=waiting]')";
+/** The wait list's row of `contact` in the open "Waiting to join" card. */
+const WAIT_ROW = contact => `[...document.querySelectorAll('[data-card=waiting] [data-list=wait-list] li')]
     .find(li => li.querySelector('.tilo-waiting-contact')?.textContent === ${JSON.stringify(contact)})`;
+/** The addresses on the open card's wait list, each with its buttons and
+ * whether it says it was invited. */
+const WAIT_ROWS = `[...document.querySelectorAll('[data-card=waiting] [data-list=wait-list] li')].map(li => ({
+    contact: li.querySelector('.tilo-waiting-contact')?.textContent ?? null,
+    added: li.querySelector('time')?.dateTime ?? null,
+    invited: li.querySelector('.tilo-waiting-invited')?.textContent ?? null,
+    buttons: [...li.querySelectorAll('button')].map(b => b.textContent)}))`;
+
+/** In `tab`, a member's desktop: "Waiting to join" opened afresh through
+ * search (Ctrl+K, its name, Enter), so it reads the wait list now. Whether
+ * it opened. */
+async function openWaiting(tab) {
+  await tab.evaluate(`${WAITING_CARD}?.querySelector('button[type=submit]')?.click()`).catch(() => {});
+  await until(() => tab.evaluate(`!${WAITING_CARD} || null`), 5000, 250);
   const opened = await until(async () => {
-    if (await tab.evaluate(`Boolean(${card})`)) return true;
+    if (await tab.evaluate(`Boolean(${WAITING_CARD})`)) return true;
     await key(tab, 'k', 2);
     if (!await until(() => tab.evaluate('tiloMount.state()?.searchOpen === true || null'), 5000, 250)) return null;
     for (const ch of 'Waiting to join') {
@@ -886,9 +966,32 @@ async function inviteFromWaitList(tab, contact, shoot) {
     }
     await sleep(800);
     await key(tab, 'Enter');
-    return await until(() => tab.evaluate(`Boolean(${card}) || null`), 5000, 250);
+    return await until(() => tab.evaluate(`Boolean(${WAITING_CARD}) || null`), 5000, 250);
   }, 60_000, 1000);
-  if (!opened) return {error: 'search did not open Waiting to join'};
+  // The list loads after the card shows.
+  if (opened) await sleep(1500);
+  return Boolean(opened);
+}
+
+/** In `tab`, "Waiting to join" open: press `label` in `contact`'s row of
+ * the wait list. Whether the row and its button were there. */
+const pressInRow = (tab, contact, label) => tab.evaluate(`(() => {
+  const button = [...(${WAIT_ROW(contact)})?.querySelectorAll('button') ?? []].find(b => b.textContent === ${JSON.stringify(label)});
+  button?.click();
+  return Boolean(button);
+})()`).catch(() => false);
+
+/** In `tab`, a member's desktop: open "Waiting to join", find `contact` on
+ * the wait list and invite it: the door mails the link (`mailed()` resolves
+ * to it once the mail is in), the card saying so, or the member is handed
+ * it to share; the row then says it was invited, and stays until someone
+ * joins with the link. `{row, link, sent, after}` (the row before and
+ * after inviting, `sent` what the card said), or what did not happen as
+ * `error`. */
+async function inviteFromWaitList(tab, contact, shoot, mailed = async () => null) {
+  const card = WAITING_CARD;
+  const ROW = WAIT_ROW(contact);
+  if (!await openWaiting(tab)) return {error: 'search did not open Waiting to join'};
   const row = await until(() => tab.evaluate(`(() => {
     const row = ${ROW};
     return row ? {contact: row.querySelector('.tilo-waiting-contact').textContent, added: row.querySelector('time')?.dateTime ?? null} : null;
@@ -900,15 +1003,37 @@ async function inviteFromWaitList(tab, contact, shoot) {
     await shoot(name, tab);
   }
   await tab.send('Emulation.clearDeviceMetricsOverride');
-  await tab.evaluate(`[...${ROW}.querySelectorAll('button')].find(b => b.textContent === 'Invite').click()`);
-  const link = await until(() => tab.evaluate("document.querySelector('[data-card=share] input[name=link]')?.value || null"), 30_000);
+  await pressInRow(tab, contact, 'Invite');
+  const shared = () => tab.evaluate("document.querySelector('[data-card=share] input[name=link]')?.value || null");
+  const said = () => tab.evaluate(`(() => { const sent = ${card}?.querySelector('.tilo-waiting-sent');
+    return sent && !sent.hidden ? sent.textContent : null; })()`);
+  const handed = await until(async () => {
+    const link = await shared().catch(() => null);
+    if (link) return {link, sent: null};
+    const sent = await said().catch(() => null);
+    return sent ? {link: await until(mailed, 30_000), sent} : null;
+  }, 30_000);
   await tab.evaluate("document.querySelector('[data-card=share] button[type=submit]')?.click()").catch(() => {});
-  if (!link) return {row, error: 'Invite made no link'};
-  await until(() => tab.evaluate(`Boolean(${ROW}) || null`), 10_000);
-  await tab.evaluate(`[...${ROW}.querySelectorAll('button')].find(b => b.textContent === 'Remove').click()`).catch(() => {});
-  const removed = Boolean(await until(() => tab.evaluate(`!${ROW} || null`), 30_000));
+  if (!handed?.link) return {row, sent: handed?.sent ?? null, error: 'Invite made no link'};
+  const {link, sent} = handed;
+  // Invited: the row says so, and stays on the list.
+  const after = await until(() => tab.evaluate(`(${WAIT_ROWS}).find(r => r.contact === ${JSON.stringify(contact)} && r.invited) ?? null`), 30_000);
+  for (const [name, width, height, mobile] of [['wait-list-invited-1440x900', 1440, 900, false], ['wait-list-invited-390x844', 390, 844, true]]) {
+    await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
+    await sleep(500);
+    await shoot(name, tab);
+  }
+  await tab.send('Emulation.clearDeviceMetricsOverride');
   await tab.evaluate(`${card}?.querySelector('button[type=submit]')?.click()`).catch(() => {});
-  return {row, link, removed};
+  return {row, link, sent, after};
+}
+
+/** In `tab`, a member's desktop: the wait list as "Waiting to join" shows
+ * it now (`rows`), or `error`. */
+async function readWaitList(tab) {
+  if (!await openWaiting(tab)) return {error: 'search did not open Waiting to join'};
+  const rows = await tab.evaluate(WAIT_ROWS).catch(() => null);
+  return rows ? {rows} : {error: 'no wait list in the card'};
 }
 
 /** Whether the page shows an entry card (an offer waiting for the person). */
@@ -976,6 +1101,7 @@ async function main() {
   const keepLog = (name, tab) => pages.push({name, log: tab.log, requests: tab.requests.map(({url, method, status, error}) => ({url, method, status, error}))});
 
   let stack = await startStack(options, ports, {fresh: true});
+  let resend = null;
   // Chrome's own WebGPU on the CPU, as the qualification runs it: CI runners
   // have no GPU, and a host GPU in headless Chrome can lose its device mid-run.
   const browser = await launch({args: chromeFlags('swiftshader', process.getuid?.())});
@@ -1298,11 +1424,29 @@ async function main() {
     if (returned.entry !== 'open') await shoot('kept-membership', returning);
     await returning.close();
 
-    // invite-door: the host started again taking people by invitation.
+    // invite-door: the host started again taking people by invitation,
+    // mailing through the stand-in for Resend.
     await stack.stop();
-    stack = await startStack(options, ports, {fresh: false, env: {TILO_ROOMS_ADMISSION: 'invite'}});
+    resend = await fakeResend();
+    const resendKey = join(options.scratch, 'resend-key');
+    writeFileSync(resendKey, `${resend.key}\n`, {mode: 0o600});
+    stack = await startStack(options, ports, {fresh: false, env: {TILO_ROOMS_ADMISSION: 'invite',
+      TILO_ROOMS_MAIL_FROM: 'Tilo Lounge <door@example.org>', TILO_ROOMS_RESEND_KEY_FILE: resendKey, TILO_ROOMS_RESEND_URL: resend.url}});
+    const mailsTo = to => resend.mails.filter(mail => mail.to?.[0] === to);
+    const mailTo = (to, count = 1) => until(async () => (mailsTo(to).length >= count ? mailsTo(to)[count - 1] : null), 30_000);
     const outsider = await browser.context();
-    const door = await page(browser, outsider);
+    // Whether Try again ever showed or took the keyboard on the way to the
+    // door: a refusal has nothing to try again, and the door's field is
+    // where the keyboard belongs.
+    const RETRY_WATCH = `addEventListener('DOMContentLoaded', () => {
+      const retry = document.getElementById('arrival-retry');
+      if (!retry) return;
+      retry.addEventListener('focus', () => { globalThis.tiloRetrySeen = 'focused'; });
+      new MutationObserver(() => {
+        if (!globalThis.tiloRetrySeen && getComputedStyle(retry).display !== 'none') globalThis.tiloRetrySeen = 'shown';
+      }).observe(document.documentElement, {attributes: true});
+    });`;
+    const door = await page(browser, outsider, {before: [RETRY_WATCH]});
     // Until its relay has the room back, the door answers 503 and the page
     // watches live; asked again once it is back, it turns them away.
     let doorTurned = await open(door, `${web}/`, settleOptions);
@@ -1323,9 +1467,19 @@ async function main() {
         link: shown('arrival-invite'), inDoor: document.getElementById('arrival-invite')?.closest('#arrival-door') !== null,
         heading: document.getElementById('arrival-door-heading')?.textContent ?? '', note: document.getElementById('arrival-wait-note')?.textContent ?? '',
         done: shown('arrival-wait-done') ? document.getElementById('arrival-wait-done').textContent : null,
+        off: shown('arrival-wait-off') ? document.getElementById('arrival-wait-off').textContent.trim() : null,
+        again: shown('arrival-wait-again-line') ? document.getElementById('arrival-wait-again-line').textContent.trim() : null,
+        state: document.documentElement.dataset.waitList ?? null,
         invalid: document.getElementById('arrival-wait-email')?.getAttribute('aria-invalid') === 'true'};
     })()`;
     const field = await door.evaluate(DOOR).catch(error => ({error: error.message}));
+    // A click in the wait list's field keeps the keyboard there.
+    const emailAt = await door.evaluate(`(() => { const r = document.getElementById('arrival-wait-email').getBoundingClientRect();
+      return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()`).catch(() => null);
+    if (emailAt) await click(door, emailAt);
+    await sleep(3000);
+    const keyboard = await door.evaluate(`({retry: globalThis.tiloRetrySeen ?? null, focused: document.activeElement?.id ?? null})`)
+      .catch(error => ({error: error.message}));
     for (const [name, width, height, mobile, deviceScaleFactor = 1] of [['invite-door-1440x900', 1440, 900, false],
       ['invite-door-390x844', 390, 844, true], ['invite-door-2560x1440-dpr2', 2560, 1440, false, 2]]) {
       await door.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor, mobile});
@@ -1342,10 +1496,11 @@ async function main() {
     const unfolded = await door.evaluate(DOOR).catch(error => ({error: error.message}));
     check('invite-door', doorTurned.entry === 'refused' && !doorTurned.desktop && doorTurned.membership === null
       && /need an invitation/.test(doorTurned.status) && field.door && field.waitList && field.signIn && field.toggle && !field.link
-      && /invite-only/.test(field.heading) && /only use your email/.test(field.note) && unfolded.link && unfolded.inDoor
+      && /invite-only/.test(field.heading) && /email you a link to confirm/.test(field.note) && unfolded.link && unfolded.inDoor
       && doorJoins.at(-1)?.status === 403 && /invitation-only/.test(doorJoins.at(-1)?.body ?? '')
-      && /"waitList":true/.test(doorJoins.at(-1)?.body ?? '') && /isn’t an invite link/.test(notALink),
-    {entry: doorTurned.entry, desktop: doorTurned.desktop, membership: doorTurned.membership, status: doorTurned.status, field, unfolded,
+      && /"waitList":true/.test(doorJoins.at(-1)?.body ?? '') && /"mail":true/.test(doorJoins.at(-1)?.body ?? '')
+      && /isn’t an invite link/.test(notALink) && keyboard.retry === null && keyboard.focused === 'arrival-wait-email',
+    {entry: doorTurned.entry, desktop: doorTurned.desktop, membership: doorTurned.membership, status: doorTurned.status, field, unfolded, keyboard,
       joins: doorJoins.map(j => ({status: j.status, body: j.body})), notALink});
 
     // stranger-own: the own desktop, asked for directly, is that door.
@@ -1366,8 +1521,10 @@ async function main() {
     await ownStranger.close();
 
     // wait-list: an address that is none is said so on the page, a real one
-    // is kept and confirmed, and the same one again (as typed differently)
-    // is answered the same without a second entry.
+    // is kept as typed and the door says to check the inbox, where one mail
+    // went with its links; the same one again (as typed differently) is
+    // answered the same, with a removal secret of its own, and mailed
+    // nothing more within the hour.
     const leave = text => door.evaluate(`(async () => {
       const email = document.getElementById('arrival-wait-email');
       email.value = ${JSON.stringify(text)};
@@ -1378,42 +1535,154 @@ async function main() {
       await new Promise(r => setTimeout(r, 300));
       return ${DOOR};
     })()`).catch(error => ({error: error.message}));
+    const shootBoth = async (name, tab) => {
+      for (const [size, width, height, mobile] of [['1440x900', 1440, 900, false], ['390x844', 390, 844, true]]) {
+        await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
+        await sleep(500);
+        await shoot(`${name}-${size}`, tab).catch(() => {});
+      }
+      await tab.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+    };
+    const postTo = (path, body) => fetch(`${api}/${path}`, {method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify(body)}).then(async r => ({status: r.status, body: await r.json().catch(() => null)}))
+      .catch(error => ({error: error.message}));
+    const PERSON = 'Waiting.Person@Example.org';
     const badAddress = await leave('not an address');
     await shoot('wait-list-invalid', door).catch(() => {});
-    const waitListed = await leave('Waiting.Person@Example.org ');
-    await shoot('wait-list-done', door).catch(() => {});
-    const listedAgain = await fetch(`${api}/wait-list`, {method: 'POST', headers: {'content-type': 'application/json'},
-      body: JSON.stringify({email: 'waiting.person@example.org'})}).then(async r => ({status: r.status, body: await r.json().catch(() => null)}))
-      .catch(error => ({error: error.message}));
+    const waitListed = await leave(`${PERSON} `);
+    await shootBoth('wait-list-inbox', door);
+    const kept = await door.evaluate("JSON.parse(localStorage.getItem('tilo-wait-listings') ?? '{}')").catch(() => ({}));
+    const keptSecret = Object.values(kept)[0]?.secret ?? '';
+    const confirmMail = await mailTo(PERSON);
+    const confirmLink = mailLink(confirmMail, 'wait-list-confirm');
+    const listedAgain = await postTo('wait-list', {email: 'waiting.person@example.org'});
+    await sleep(2000);
     check('wait-list', badAddress.invalid && /doesn’t look like an email/.test(badAddress.note) && badAddress.done === null
-      && /on the list.+waiting\.person@example\.org/.test(waitListed.done ?? '') && listedAgain.status === 200
-      && listedAgain.body?.email === 'waiting.person@example.org', {badAddress, waitListed, listedAgain});
+      && waitListed.state === 'inbox' && waitListed.done === `Check your inbox: we sent a link to ${PERSON} to confirm.`
+      && waitListed.again === 'Didn’t get it? Send it again'
+      && waitListed.off === 'Changed your mind? Take me off the list' && !waitListed.waitList
+      && /^[0-9a-f]{64}$/.test(keptSecret) && Object.values(kept)[0]?.email === PERSON
+      && confirmMail?.from === 'Tilo Lounge <door@example.org>' && /wait list/.test(confirmMail?.subject ?? '')
+      && confirmLink?.startsWith(`${web}/?wait-list-confirm=`) && mailLink(confirmMail, 'wait-list-remove') === `${web}/?wait-list-remove=${keptSecret}`
+      && confirmMail.html.includes(confirmLink)
+      && listedAgain.status === 200 && listedAgain.body?.email === 'waiting.person@example.org' && listedAgain.body.mail === true
+      && /^[0-9a-f]{64}$/.test(listedAgain.body?.removal ?? '') && listedAgain.body.removal !== keptSecret
+      && mailsTo(PERSON).length === 1 && mailsTo('waiting.person@example.org').length === 0,
+    {badAddress, waitListed, kept: Object.values(kept).map(k => k.email), subject: confirmMail?.subject, confirmLink,
+      listedAgain: {status: listedAgain.status, email: listedAgain.body?.email, mail: listedAgain.body?.mail},
+      mailed: resend.mails.map(mail => mail.subject)});
 
-    // invite-admits: the first person invites the stranger.
+    // wait-list-revisit: the door again in that browser still says to check
+    // the inbox: the address waits to be confirmed.
+    const revisit = await reload(door, settleOptions);
+    await sleep(1500);
+    const revisited = await until(() => door.evaluate(`${DOOR}.state === 'inbox' ? ${DOOR} : null`), 30_000)
+      ?? await door.evaluate(DOOR).catch(error => ({error: error.message}));
+    check('wait-list-revisit', revisit.entry === 'refused' && revisited.state === 'inbox' && !revisited.waitList
+      && revisited.done === `Check your inbox: we sent a link to ${PERSON} to confirm.`
+      && revisited.off === 'Changed your mind? Take me off the list',
+    {entry: revisit.entry, revisited});
+
+    // wait-list-confirm: the mail's link opens the door, listed, with a
+    // clean address bar.
+    await leaving(door);
+    const confirming = confirmLink ? await open(door, confirmLink, settleOptions) : {entry: 'no link'};
+    const confirmed = await until(() => door.evaluate(`${DOOR}.state === 'listed' ? ${DOOR} : null`), 30_000)
+      ?? await door.evaluate(DOOR).catch(error => ({error: error.message}));
+    const cleanUrl = await door.evaluate('location.href').catch(() => null);
+    await shootBoth('wait-list-confirmed', door);
+    check('wait-list-confirm', confirming.entry === 'refused' && confirmed.state === 'listed'
+      && confirmed.done === `You’re on the list (${PERSON})` && confirmed.off === 'Changed your mind? Take me off the list'
+      && confirmed.again === null && typeof cleanUrl === 'string' && !cleanUrl.includes('wait-list-confirm'),
+    {entry: confirming.entry, confirmed, cleanUrl});
+
+    // wait-list-remove: taking it off shows the form again, saying so, and
+    // mails word of it; a wrong secret is answered as that one was. A
+    // removal link from another address's mail, opened in a fresh browser,
+    // takes that one off.
+    const sinceLeave = door.requests.length;
+    await door.evaluate("document.getElementById('arrival-wait-leave').click()").catch(() => {});
+    const removedDoor = await until(() => door.evaluate(`${DOOR}.state === 'left' ? ${DOOR} : null`), 30_000)
+      ?? await door.evaluate(DOOR).catch(error => ({error: error.message}));
+    await shootBoth('wait-list-left', door);
+    const leaveAsked = door.requests.slice(sinceLeave).find(request => request.url.endsWith('/wait-list/remove'));
+    const wrong = await postTo('wait-list/remove', {secret: 'ab'.repeat(32)});
+    const listingAfter = await door.evaluate("localStorage.getItem('tilo-wait-listings')").catch(() => 'unreadable');
+    const removedMail = await mailTo(PERSON, 2);
+    const BY_LINK = 'by.link@example.org';
+    const byLink = await postTo('wait-list', {email: BY_LINK});
+    const byLinkMail = await mailTo(BY_LINK);
+    const linkTab = await page(browser, await browser.context());
+    const removing = mailLink(byLinkMail, 'wait-list-remove');
+    const removedByLink = removing ? await open(linkTab, removing, settleOptions) : {entry: 'no link'};
+    const linkDoor = await until(() => linkTab.evaluate(`${DOOR}.state === 'left' ? ${DOOR} : null`), 30_000)
+      ?? await linkTab.evaluate(DOOR).catch(error => ({error: error.message}));
+    await linkTab.close();
+    check('wait-list-remove', removedDoor.state === 'left' && removedDoor.waitList && removedDoor.done === null && removedDoor.off === null
+      && removedDoor.note === 'You’re off the list.' && leaveAsked?.status === 200 && wrong.status === 200
+      && JSON.stringify(wrong.body) === leaveAsked?.body && listingAfter === null
+      && /off the/.test(removedMail?.subject ?? '') && byLink.status === 200 && removedByLink.entry === 'refused'
+      && linkDoor.state === 'left' && linkDoor.note === 'You’re off the list.',
+    {removedDoor, leaveAsked: {status: leaveAsked?.status, body: leaveAsked?.body}, wrong, listingAfter,
+      removedMail: removedMail?.subject ?? null, byLink: byLink.status, linkDoor});
+
+    // wait-list-invite: the member finds the list in "Waiting to join"
+    // (through search, as a person does): an address not confirmed is not
+    // on it; one confirmed is, and Remove takes it off by hand. The person
+    // leaves the address again and confirms it, and the member invites it:
+    // the door mails the link, and the row says it was invited and stays.
     const inviter = await page(browser, person);
     const inviting = await open(inviter, `${web}/`, settleOptions);
     keepLog('inviter', inviter);
-    // wait-list-invite: the member finds the address in "Waiting to join"
-    // (through search, as a person does), with when it was left, invites it
-    // with a link of its own and takes it off the list.
-    const listed = inviting.entry === 'open' ? await inviteFromWaitList(inviter, 'waiting.person@example.org', shoot)
+    const BY_HAND = 'by.hand@example.org';
+    const byHand = await postTo('wait-list', {email: BY_HAND});
+    const handToken = mailLink(await mailTo(BY_HAND), 'wait-list-confirm')?.split('=').at(-1);
+    const handConfirmed = await postTo('wait-list/confirm', {token: handToken ?? ''});
+    const listedBefore = inviting.entry === 'open' ? await until(async () => {
+      const read = await readWaitList(inviter);
+      return read.rows?.some(row => row.contact === BY_HAND) ? read : null;
+    }, 60_000, 2000) ?? await readWaitList(inviter) : {error: 'the inviter is not in'};
+    const handRemoved = Boolean(await pressInRow(inviter, BY_HAND, 'Remove'))
+      && Boolean(await until(() => inviter.evaluate(`!(${WAIT_ROW(BY_HAND)}) || null`), 30_000));
+    // Left again within the hour of its first mail, the address is sent no
+    // other: until it is confirmed it is not listed, and the link in that
+    // first mail confirms it.
+    const relisted = await leave(PERSON);
+    const mailsAfterRelisting = mailsTo(PERSON).length;
+    const unconfirmedHidden = inviting.entry === 'open'
+      && !(await readWaitList(inviter)).rows?.some(row => row.contact === PERSON);
+    const reconfirm = mailLink(confirmMail, 'wait-list-confirm');
+    const reconfirmed = await postTo('wait-list/confirm', {token: reconfirm?.split('=').at(-1) ?? ''});
+    const mailedBefore = mailsTo(PERSON).length;
+    const listed = inviting.entry === 'open'
+      ? await inviteFromWaitList(inviter, PERSON, shoot, async () => mailLink(mailsTo(PERSON)[mailedBefore], 'invite'))
       : {error: 'the inviter is not in'};
-    check('wait-list-invite', listed.row?.contact === 'waiting.person@example.org' && Boolean(listed.row?.added)
-      && /[?&]invite=/.test(listed.link ?? '') && listed.removed === true, listed);
-    const invitePressed = inviting.entry === 'open' && Boolean(await until(() => inviter.evaluate(PRESS_NAMED('Invite')), 60_000));
-    const inviteLink = invitePressed ? await until(() => inviter.evaluate(
-      "document.querySelector('[data-card=share] input[name=link]')?.value || null"), 30_000) : null;
-    await inviter.evaluate("document.querySelector('[data-card=share] button[type=submit]')?.click()").catch(() => {});
+    const inviteMail = mailsTo(PERSON)[mailedBefore] ?? null;
+    check('wait-list-invite', byHand.status === 200 && handConfirmed.body?.confirmed === true
+      && listedBefore.rows?.length === 1 && listedBefore.rows[0].contact === BY_HAND
+      && handRemoved && relisted.state === 'inbox' && mailsAfterRelisting === 2 && unconfirmedHidden
+      && reconfirmed.body?.confirmed === true
+      && listed.row?.contact === PERSON && Boolean(listed.row?.added)
+      && /^Invitation emailed to /.test(listed.sent ?? '') && /Copy link/.test(listed.sent ?? '')
+      && /[?&]invite=/.test(listed.link ?? '') && listed.link.startsWith(`${web}/`)
+      && /invited/i.test(inviteMail?.subject ?? '') && Boolean(mailLink(inviteMail, 'wait-list-remove'))
+      && /^Invited (just now|1 minute ago)$/.test(listed.after?.invited ?? '')
+      && listed.after?.buttons?.includes('Invite again') && listed.after.buttons.includes('Remove'),
+    {listedBefore, handConfirmed: handConfirmed.body, handRemoved, relisted: relisted.state, mailsAfterRelisting, unconfirmedHidden,
+      reconfirmed: reconfirmed.body,
+      listed, inviteSubject: inviteMail?.subject ?? null});
+
+    // invite-admits: the person who left the address opens the mailed link,
+    // asks to join, and the member lets them in; once they are in, their
+    // address is off the wait list (wait-list-joined).
+    const inviteLink = listed.link ?? null;
     const sinceInvite = door.requests.length;
     let invited = {entry: 'not asked'};
     let joined = false;
     let letIn = {pressed: false, error: 'no invitation'};
     if (inviteLink) {
       await leaving(door);
-      await door.evaluate(`(() => {
-        document.getElementById('arrival-invite-link').value = ${JSON.stringify(` ${inviteLink} `)};
-        document.getElementById('arrival-invite').requestSubmit();
-      })()`).catch(() => {});
+      await door.navigate(inviteLink);
       await door.waitFor('!globalThis.__authE2eLeft', {timeout}).catch(() => {});
       joined = await press(door, 'Join', timeout);
       // Let in from the banner the inviter's desktop offers; once the
@@ -1431,12 +1700,21 @@ async function main() {
       && /[?&]invite=/.test(inviteLink ?? '') && joined && Boolean(letIn.pressed) && invited.entry === 'open' && invited.arrival === 'done'
       && /^[0-9a-f]{64}$/.test(invited.membership?.userPublicKey ?? '') && invited.membership.userPublicKey !== me
       && invitedJoins.length === 0,
-    {inviter: {entry: inviting.entry, membership: inviting.membership, status: inviting.status}, invitePressed, inviteLink,
+    {inviter: {entry: inviting.entry, membership: inviting.membership, status: inviting.status}, inviteLink,
       joined, letIn, asking, inviterLog: letIn.pressed ? undefined : inviter.log.slice(-8),
       inviteeLog: invited.entry === 'open' ? undefined : door.log.slice(-12), entry: invited.entry, arrival: invited.arrival, membership: invited.membership, status: invited.status,
       firstFrame: invited.firstFrame, doorJoins: invitedJoins.map(j => j.status)});
     if (invited.entry !== 'open') await shoot('invite-admits', door);
     await door.close();
+
+    // wait-list-joined: the address invited from the wait list is off it
+    // now that someone joined with its invitation.
+    const afterJoin = inviting.entry === 'open' ? await until(async () => {
+      const read = await readWaitList(inviter);
+      return read.rows && !read.rows.some(row => row.contact === PERSON) ? read : null;
+    }, 60_000, 3000) ?? await readWaitList(inviter) : {error: 'the inviter is not in'};
+    await inviter.evaluate(`${WAITING_CARD}?.querySelector('button[type=submit]')?.click()`).catch(() => {});
+    check('wait-list-joined', invited.entry === 'open' && Array.isArray(afterJoin.rows) && afterJoin.rows.length === 0, afterJoin);
 
     // invite-admits-again: more strangers, each in a browser of their own,
     // invited and let in the same way. Being let in opens the workspace
@@ -1574,6 +1852,7 @@ async function main() {
   } finally {
     await browser.close().catch(error => console.error(`closing Chrome: ${error.message}`));
     await stack.stop();
+    await resend?.close();
     writeFileSync(join(options.out, 'stack.log'), stack.log());
     writeFileSync(join(options.out, 'pages.json'), `${JSON.stringify(pages, null, 2)}\n`);
     rmSync(options.scratch, {recursive: true, force: true});

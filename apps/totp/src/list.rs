@@ -10,7 +10,7 @@
 //! Interaction is reported to the app as [`ListEvent`]s
 //! ([`AccountList::take_events`]): clicking a row selects it, clicking its
 //! code copies it, and the hover actions edit, reorder and delete it. With no
-//! accounts the list shows an [`EmptyState`] whose action asks to add one.
+//! accounts the list is empty; the view's empty state stands over it.
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -23,9 +23,8 @@ use ui::text_render::{TextKind, TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    AvatarFace, Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent,
-    EventCtx, Interaction, ListRowFace, ProgressRingFace, ProgressRingSize, RowAction, RowLeading,
-    ScrollRegion, Tone,
+    AvatarFace, Button, ButtonFace, ButtonRole, ControlSize, EventCtx, Interaction, ListRowFace,
+    ProgressRingFace, ProgressRingSize, RowAction, RowLeading, ScrollRegion, Tone,
 };
 
 use crate::model::{Account, AccountId, account_color};
@@ -50,8 +49,6 @@ pub enum ListEvent {
     Delete(AccountId),
     /// Install the key for a shared account that has none on this device.
     SetUp(AccountId),
-    /// The empty list's action.
-    Add,
 }
 
 /// Which part of a row the pointer is over.
@@ -211,7 +208,6 @@ pub struct AccountList {
     metrics: Option<Metrics>,
     layouts: Vec<RowLayout>,
     /// The empty state's action, once painted.
-    empty_action: Rect,
     /// The one row whose code is shown, and when the veil returns.
     revealed: Option<(AccountId, ui::time::Instant)>,
 }
@@ -236,7 +232,6 @@ impl AccountList {
             events: Vec::new(),
             metrics: None,
             layouts: Vec::new(),
-            empty_action: Rect::ZERO,
             revealed: None,
         }
     }
@@ -468,10 +463,8 @@ impl AccountList {
         let theme = ctx.theme;
         if self.accounts.is_empty() {
             self.metrics = None;
-            self.paint_empty(ctx);
             return;
         }
-        self.empty_action = Rect::ZERO;
         self.layout(ctx.text, theme);
         let Some(m) = self.metrics else { return };
         let now = totp::unix_now();
@@ -669,32 +662,6 @@ impl AccountList {
         face.paint(ctx, ring);
     }
 
-    fn empty_content() -> EmptyStateContent<'static> {
-        EmptyStateContent {
-            icon: Some(Icon::Shield),
-            message: Some("Scan a QR code or paste a setup link to see its one-time codes here."),
-            action_label: Some("Add account"),
-            ..EmptyStateContent::new("No accounts yet")
-        }
-    }
-
-    fn paint_empty(&mut self, ctx: &mut PaintCtx<'_>) {
-        let action = EmptyState::paint(ctx, self.rect, &Self::empty_content(), self.last_mouse);
-        self.empty_action = action.unwrap_or(Rect::ZERO);
-    }
-
-    /// The empty list's state as drawn, its "Add account" answering
-    /// `action_target`; `None` while there are accounts.
-    pub fn empty_access(&self, action_target: &str) -> Option<ui::a11y::AccessNode> {
-        self.accounts.is_empty().then(|| {
-            Self::empty_content().access_node(
-                self.rect,
-                (self.empty_action.area() > 0.0).then_some(self.empty_action),
-                action_target,
-            )
-        })
-    }
-
     /// Whether the scroll bar's fade needs frames now.
     pub fn needs_animation_frame(&self) -> bool {
         self.scroller.needs_animation_frame(&self.theme)
@@ -754,10 +721,6 @@ impl AccountList {
     fn press(&mut self, handled: &mut bool) {
         let p = self.last_mouse;
         if self.accounts.is_empty() {
-            if self.empty_action.contains(p) {
-                self.events.push(ListEvent::Add);
-                *handled = true;
-            }
             return;
         }
         let Some((i, zone)) = self.hit(p) else { return };

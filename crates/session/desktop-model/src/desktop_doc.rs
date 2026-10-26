@@ -574,7 +574,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             .into_iter()
             .collect();
         if let Some(grants) = grants {
-            ws.policy.grants = grants;
+            ws.policy.grants = tilo_action_policy::roles::current_role_grants(grants);
         } else {
             // Old appended entries had no grants map. Reconstruct their
             // canonical defaults even when this tree reuses a cached room.

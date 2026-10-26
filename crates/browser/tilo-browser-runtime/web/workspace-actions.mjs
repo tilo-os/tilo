@@ -19,8 +19,9 @@
  *   them in. A room that takes people by invitation also lists the
  *   addresses people left at its door (`membership.waitList`): each is
  *   answered with an invitation of the inviter's own, a link they send to
- *   that address, or taken off the list (`unlist`). They are nobody to let
- *   in, so they get no banner.
+ *   that address, made for the entry so it shows as invited and leaves the
+ *   list once someone joins with it; or taken off the list by hand
+ *   (`unlist`). They are nobody to let in, so they get no banner.
  *
  * Every step is the host's decision: a refusal is said, never worked
  * around.
@@ -41,6 +42,17 @@ const WAITING_POLL_MS = 4000;
 const hex = bytes => Array.from(bytes ?? [], byte => byte.toString(16).padStart(2, '0')).join('');
 
 /** Whether `peer`'s host serves the person the peer is: their own machine. */
+/** How a wait-list entry invited at `atMs` says so at `now`, "Invited 2
+ * hours ago", so whoever reads the list does not invite it twice. */
+export function invitedLine(atMs, now = Date.now(), locale = undefined) {
+  const seconds = Math.round((atMs - now) / 1000);
+  const relative = new Intl.RelativeTimeFormat(locale, {numeric: 'auto'});
+  for (const [unit, size] of [['day', 86_400], ['hour', 3600], ['minute', 60]]) {
+    if (Math.abs(seconds) >= size) return `Invited ${relative.format(Math.round(seconds / size), unit)}`;
+  }
+  return 'Invited just now';
+}
+
 export const ownHost = peer => Boolean(peer?.userPublicKey) && hex(peer.host?.hostCert?.user_public_key) === peer.userPublicKey;
 
 /**
@@ -55,7 +67,8 @@ export const ownHost = peer => Boolean(peer?.userPublicKey) && hex(peer.host?.ho
  * (resolves whether it reached the clipboard),
  * `waitingList({load, admit, decline, invite, unlist})` (`load()` resolves
  * to `{people, waitList}`; `invite(entry)` makes the invitation for a
- * wait-list address and shares it) and `fail(text)`. `publicLink()` is
+ * wait-list address and has the host mail it, else shares it, resolving to
+ * `{mailed, link}`) and `fail(text)`. `publicLink()` is
  * the link anyone joins the room in front with when it is a public
  * workspace, else `null`. Attach the desktop with `attach(mount)`; route its
  * host actions to `perform`.
@@ -155,15 +168,26 @@ export function createWorkspaceActions({
     });
   };
 
-  /** An invitation for the address `entry` left at the door, shared for
-   * the inviter to send there. It stays on the list until they take it off. */
+  /** An invitation for the address `entry` left at the door: mailed there
+   * by the host where it sends mail, else shared for the inviter to send.
+   * Resolves to `{mailed, link}`; the entry leaves the list once someone
+   * joins with it. */
   const inviteContact = async entry => {
-    const text = await peer.createInvitation({role: 'editor'});
+    const text = await peer.createInvitation({role: 'editor', waitListEntry: entry.requestId});
+    const link = inviteLink(text);
+    try {
+      await peer.membership.mailInvite(entry.requestId, link);
+      return {mailed: true, link};
+    } catch (refusal) {
+      // A host that sends no mail: the inviter sends the link.
+      console.info('wait list: the invitation was not mailed:', refusal?.message ?? refusal);
+    }
     await ui.share({
       title: `Invite ${entry.contact}`,
-      body: `Send this link to ${entry.contact}. They join ${workspaceName ? `“${workspaceName}”` : 'this workspace'} with it, and you let them in here. Take them off the wait list once you have sent it.`,
-      link: inviteLink(text),
+      body: `Send this link to ${entry.contact}. They join ${workspaceName ? `“${workspaceName}”` : 'this workspace'} with it, and you let them in here. They leave the wait list once they join.`,
+      link,
     });
+    return {mailed: false, link};
   };
 
   const admit = async requestId => {

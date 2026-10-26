@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex};
 use ui::lock::MutexRecover as _;
 
 use super::archives::archive_rows;
-use super::recovery_button;
 use crate::fileops;
 use crate::i18n::{arg, t, t_args};
 use crate::model::{Entry, read_dir_sync, sort_entries};
@@ -416,8 +415,6 @@ impl super::FileExplorerWidget {
                 // directory's contents.
                 self.entries.clear();
                 self.shown_folder = None;
-                let may_pass = crate::fileops::FolderFailure::of(&e).may_pass();
-                self.state_retry = recovery_button(may_pass);
                 self.error = Some(t_args("files-directory-read-failed", &[arg("error", e)]));
             }
         }

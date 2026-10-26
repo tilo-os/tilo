@@ -4,8 +4,9 @@
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
 use crate::shell::input_policy::{
-    is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch, winit_event_to_lock_key,
+    is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch,
 };
+use crate::shell::pointer_readiness::PressFacts;
 pub use crate::shell::session_policy::*;
 use crate::shell::state::WorkspaceAuthority as _;
 pub use crate::shell::test_control::{
@@ -1884,6 +1885,9 @@ fn pump_floating_surface_service(
                 network_status_allowed,
             } => {
                 appearance.connected(connection, &app_id, network_status_allowed);
+                frame_builder
+                    .host_mut()
+                    .connect_window_share(connection, &app_id);
                 if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID
                     && let Some(writer) = service.reply_writer(connection)
                 {
@@ -2372,6 +2376,33 @@ fn pump_floating_surface_service(
                         .host_mut()
                         .receive_pointed(&app_id, request, control);
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::PickAnswered {
+                    request,
+                    answer,
+                } => {
+                    // Credited to the launcher's app id, and taken only as
+                    // the answer to what the picker asked that app.
+                    changed |= frame_builder
+                        .host_mut()
+                        .receive_pick_answer(&app_id, request, answer);
+                }
+                message @ (ui::floating_surface::FloatingSurfaceClientMessage::WindowRecord {
+                    ..
+                }
+                | ui::floating_surface::FloatingSurfaceClientMessage::Embeds {
+                    ..
+                }
+                | ui::floating_surface::FloatingSurfaceClientMessage::SharedWindows {
+                    ..
+                }) => {
+                    // The app id is the launcher's: an app only names its
+                    // own window's record, and only the sharing app embeds
+                    // views or says what it shares.
+                    changed |= frame_builder
+                        .host_mut()
+                        .receive_window_share_message(connection, &app_id, &message)
+                        .unwrap_or(false);
+                }
                 message @ (ui::floating_surface::FloatingSurfaceClientMessage::Toolbar {
                     ..
                 }
@@ -2440,6 +2471,7 @@ fn pump_floating_surface_service(
                     .host_mut()
                     .forget_selection_capable(connection);
                 frame_builder.host_mut().forget_app_toolbars(connection);
+                frame_builder.host_mut().forget_window_share(connection);
                 frame_builder
                     .host_mut()
                     .forget_history_descriptions(connection);
@@ -2478,6 +2510,11 @@ fn pump_floating_surface_service(
     {
         service.send(connection, &message);
     }
+    // Picking what to report asks the windows under the pointer what is
+    // there, and reads the picks again once the person finished.
+    for (connection, message) in frame_builder.host_mut().route_feedback_pick(Instant::now()) {
+        service.send(connection, &message);
+    }
     // The ask-agent chord asks the focused app for its selection, or opens
     // the composer itself once that app had its moment to answer.
     for connection in frame_builder
@@ -2495,6 +2532,14 @@ fn pump_floating_surface_service(
             connection,
             &ui::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { event },
         );
+    }
+    // What the desktop says of windows shared live, to the apps it concerns.
+    for (connection, message) in frame_builder.host_mut().take_window_share_outbox() {
+        service.send(connection, &message);
+    }
+    // The windows of live views nothing embeds any more.
+    for surface in crate::shell::live_embeds::take_closing() {
+        state.close_surface_on_request(surface);
     }
     // What apps' changes did, for their History.
     for (connection, described) in frame_builder.host_mut().take_history_descriptions() {
@@ -3550,6 +3595,22 @@ impl ControlState for FrameBuilderControlState<'_> {
         self.fb.widget_registry()
     }
 
+    /// What a press is proven against: the overlay host the registry was just
+    /// walked from, the identity of the frame on screen, and whether the
+    /// desktop is between two arrangements — opening setup, or switching
+    /// workspace, strip or window group — where a rectangle read now is not
+    /// the one a caller was shown.
+    ///
+    /// The side is asked of the host rather than of the whole desktop: a
+    /// widget asking for frames for its own reasons is not a reason to hold
+    /// every unrelated target back.
+    fn press_witness(&self) -> Option<(&dyn ui::widget::Widget, PressFacts)> {
+        let drawn = self.fb.drawn_revisions().last().copied();
+        let host = self.fb.host();
+        let in_transition = drawn.is_none() || host.desktop_is_moving();
+        Some((host, PressFacts::at(drawn, in_transition)))
+    }
+
     /// The peers the overlay would paint this frame, read from the same
     /// presence context `draw_real_peers` uses, keyed by room.
     fn peers_json(&self) -> serde_json::Value {
@@ -3745,9 +3806,11 @@ impl ControlState for FrameBuilderControlState<'_> {
                         "presented": store.is_presented(tab.surface_id),
                         "pixels_ready": pixels.is_some(),
                         "capture_pending": capture_pending,
-                        // And, while it is not, whether the placeholder card is up — without this
-                        // a harness can't tell an empty desktop from one announcing an app is on its way.
-                        "opening": store.is_opening(tab.surface_id),
+                        // And, while it is not, whether its place is reserved past its
+                        // first frame's budget: without this a harness can't tell an empty
+                        // desktop from one whose window is on its way.
+                        "opening": store.stands(tab.surface_id)
+                            && !store.is_presented(tab.surface_id),
                     });
                     self.insert_primary_preedit_route(&mut row, tab.surface_id);
                     row
@@ -5513,7 +5576,7 @@ fn execute_locked_action(
                 client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
             }
             client_input::consume_keyboard_while_captured(state, &event);
-            lock.handle_key(winit_event_to_lock_key(&event));
+            lock.handle_event(&event, &ctx.modifiers);
             None
         }
         // The loop routes it to the lock as it does a physical key.
@@ -8371,6 +8434,8 @@ fn attach_peer_presence(
             let key = ui::presence::PresenceKey::Workspace {
                 id: room.to_string(),
             };
+            // Browser tabs hear it on the room's live presence.
+            follow_network.publish_following(&room.to_string(), target.as_deref());
             let payload = ui::collaboration::PresencePayload::Following { target };
             if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
                 follow_network.publish_app_presence("tilo-shell".into(), room.to_string(), frame);
@@ -8399,6 +8464,16 @@ fn attach_peer_presence(
         .set_presence_visibility_bridge(std::rc::Rc::new(move |room, visibility| {
             visibility_network.set_presence_visibility(&room.to_string(), visibility);
         }));
+    let heard_network = Arc::clone(net);
+    let publish_network = Arc::clone(net);
+    frame_builder
+        .host_mut()
+        .set_live_layout_bridge(crate::shell::overlay_host::LiveLayoutBridge {
+            heard: std::rc::Rc::new(move |room| heard_network.live_layouts_of(&room.to_string())),
+            publish: std::rc::Rc::new(move |room, layout| {
+                publish_network.publish_layout(&room.to_string(), layout);
+            }),
+        });
     let status_network = Arc::clone(net);
     frame_builder
         .host_mut()
@@ -11371,7 +11446,9 @@ pub fn run() {
                     if route == PriorityRoute::LockScreen {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
-                        let mut key = winit_event_to_lock_key(wev);
+                        // A key of the keyboard drawn for touch, when one
+                        // was pressed; every other event goes to the prompt.
+                        let mut key = None;
                         match wev {
                             WindowEvent::CursorMoved { position, .. } => {
                                 lock_pointer =
@@ -11411,7 +11488,7 @@ pub fn run() {
                                     )
                                 });
                                 if let Some(pressed) = pressed {
-                                    key = lock_keyboard.press(pressed);
+                                    key = Some(lock_keyboard.press(pressed));
                                 } else if let Some(transport) = lock_pointer.and_then(|point| {
                                     lock_screen::transport_at(
                                         &outputs,
@@ -11425,7 +11502,14 @@ pub fn run() {
                             }
                             _ => {}
                         }
-                        lock.handle_key(key);
+                        match key {
+                            Some(key) => {
+                                lock.handle_key(key);
+                            }
+                            None => {
+                                lock.handle_event(wev, &test_control_ctx.modifiers);
+                            }
+                        }
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
                     } else if route == PriorityRoute::PowerKey {
@@ -12381,7 +12465,8 @@ pub fn run() {
                     // time, and also observe a manual/lid lock that arrived
                     // while the async suspend request was in flight.
                     sleep_lock_was_locked |= session.is_locked();
-                    let transitions = session.prepare_for_sleep(Instant::now());
+                    let transitions =
+                        session.prepare_for_sleep(Instant::now(), power_policy.lock_on_sleep);
                     if sleep_requested_by_idle {
                         // The idle timer's sleep locks like the idle timer:
                         // the lock stays on this device.
@@ -13336,6 +13421,7 @@ pub fn run() {
                     .collect::<Vec<_>>();
                 for room in rooms {
                     net.publish_hosted_legacy_windows(room, &tree_handle);
+                    net.follow_room_app_versions(room);
                 }
                 let generation = tree_handle.generation();
                 net.set_room_window_hosting(
@@ -13931,7 +14017,7 @@ pub fn run() {
         let keepalive_due = false;
         let lock_clock_due =
             lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh)
-                || (session.is_locked() && retained_lock.feedback_frame_due(iter_t0));
+                || (session.is_locked() && retained_lock.feedback_frame_due());
         if session.is_locked() {
             if iter_t0.saturating_duration_since(last_lock_media_poll) >= LOCK_MEDIA_REFRESH {
                 last_lock_media_poll = iter_t0;
@@ -14020,7 +14106,15 @@ pub fn run() {
         let display_dark = session.is_blanked();
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
-        let cadence_due = force_first_paint || frame_clock.due(iter_t0);
+        // A window whose first frame may still land inside its frame budget
+        // holds the frame back until then, so a window that answers in time
+        // opens with no placeholder ([`ui::arriving`]); the hold's end is a
+        // wake deadline, and what changed meanwhile is owed to that frame.
+        ui::arriving::set_frame_budget(frame_clock.interval());
+        let held_until = (!force_first_paint)
+            .then(|| frame_builder.holds_frame_until(iter_t0))
+            .flatten();
+        let cadence_due = force_first_paint || (frame_clock.due(iter_t0) && held_until.is_none());
         // Is there room in the pipe? Building another scene while the render
         // thread is behind would only grow the queue (and input-to-photon latency); capped at the presenter's queue depth plus the frame presenting, the tick still services input/clients without rendering.
         // A frame still waiting for the render thread is replaced by the one built now (latest
@@ -14054,14 +14148,13 @@ pub fn run() {
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame. A full presenter is itself the
         // gate: its retirement ping wakes the loop when capacity returns.
-        let cadence_needed = cadence_wait_needed(
-            pipe_ready,
-            (content_changed && !cadence_due)
-                || (!session.is_locked() && !display_dark && animating)
-                || (session.is_locked()
-                    && !display_dark
-                    && retained_lock.feedback_frame_due(iter_t0)),
-        );
+        let cadence_needed = held_until.is_none()
+            && cadence_wait_needed(
+                pipe_ready,
+                (content_changed && !cadence_due)
+                    || (!session.is_locked() && !display_dark && animating)
+                    || (session.is_locked() && !display_dark && retained_lock.feedback_frame_due()),
+            );
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -15166,7 +15259,7 @@ pub fn run() {
                     // frame must be a cadence tick, not only the resting deadline.
                     || (session.is_locked()
                         && !session.is_blanked()
-                        && retained_lock.feedback_frame_due(park_now)),
+                        && retained_lock.feedback_frame_due()),
             );
         // Nothing changed on screen and no frame is waiting, here or behind
         // the presenter: the inputs handled so far are done without a frame.
@@ -15229,6 +15322,10 @@ pub fn run() {
                 (
                     "feedback-point",
                     frame_builder.host().feedback_point_deadline(park_now),
+                ),
+                (
+                    "feedback-pick",
+                    frame_builder.host().feedback_pick_deadline(park_now),
                 ),
                 (
                     "dictation-service",

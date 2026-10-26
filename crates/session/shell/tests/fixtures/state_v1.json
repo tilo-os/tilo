@@ -124,6 +124,21 @@
             }
           },
           {
+            "id": "role:commenter:2",
+            "subject": {
+              "role": "commenter"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000001/**/field:reactions",
+            "kinds": [
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
             "id": "role:editor:0",
             "subject": {
               "role": "editor"
@@ -480,6 +495,21 @@
               "role": "commenter"
             },
             "node": "room:00000000-0000-4000-8000-000000000002/**/field:comments",
+            "kinds": [
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:commenter:2",
+            "subject": {
+              "role": "commenter"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000002/**/field:reactions",
             "kinds": [
               "undoable"
             ],

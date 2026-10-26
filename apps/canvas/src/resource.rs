@@ -3,7 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{
-    self, ActionCx, ActionRef, Doc, Invoke, JsonSchema, ModelError, Refusal, SearchEntry, resource,
+    self, ActionCx, ActionRef, Doc, Invoke, JsonSchema, ModelError, Place, Refusal, SearchEntry,
+    resource,
 };
 
 // The verbs' argument structs, named apart from the verbs' own generated
@@ -667,6 +668,7 @@ mod prepare {
     label = "Artwork",
     initialize = Artwork::genesis,
     load = Artwork::loaded,
+    lands = Artwork::lands,
     search = Artwork::entries,
     answer = crate::answer::answer,
     effects = ViewOp
@@ -948,6 +950,34 @@ impl Artwork {
 }
 
 impl Artwork {
+    /// Where selecting leaves the participant who asked for it: the marks
+    /// `select` names, as a range over the artwork's marks, in the order
+    /// every collaborator holds them — so a peer draws the selection on
+    /// their own screen, and a participant with no pointer of its own shows
+    /// what it picked.
+    fn lands(
+        state: &Self,
+        action: &<Self as ui::tilo_resource::Resource>::Action,
+    ) -> Option<Place> {
+        let ArtworkAction::Select(select) = &action.operation else {
+            return None;
+        };
+        let named = select.select.marks.as_ref()?;
+        let picked: Vec<usize> = state
+            .marks
+            .iter()
+            .enumerate()
+            .filter(|(_, mark)| named.iter().any(|id| *id == mark.id || *id == mark.group))
+            .map(|(index, _)| index)
+            .collect();
+        let (first, last) = (*picked.first()?, picked.last()?);
+        Some(Place::Range {
+            item: crate::surface::peers::SELECTION_ITEM.to_owned(),
+            start: first,
+            end: last.saturating_add(1),
+        })
+    }
+
     /// A new artwork is an empty sheet of paper with one plain layer, so the
     /// first stroke has somewhere to go.
     fn genesis() -> Self {

@@ -76,6 +76,13 @@ impl HeldRecords {
                 .apply(&DocumentMutation::Snapshot(saved))
                 .map_err(|error| error.to_string());
         }
+        // A record every app of the workspace opens beside its own (the
+        // workspace's emoji) is kept under its owner's routes but is no
+        // record of the owner's kind: a bot acts on the app's own records,
+        // and reads what such a record says through the app's actions.
+        if collab_types::workspace_record(&route.app_id, &route.record).is_some() {
+            return Ok(());
+        }
         let record = ui::record::RecordId::from_route(&route.record)
             .ok_or_else(|| format!("{} is not a record route", route.record))?;
         if record.chain_part().is_some() {
@@ -300,5 +307,23 @@ impl DoorParticipant for HeldRecords {
         self.replicas.get(route).map_or_else(Vec::new, |replica| {
             replica.read_history(|doc| super::door::queued_by_step(doc, step, actor, field))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_workspace_record_under_a_watched_apps_routes_is_left_alone() {
+        let mut held =
+            HeldRecords::new(AppCatalogue::native(), "room-1".into(), ReplicaActor::Owner);
+        let emoji = DocumentRoute {
+            app_id: "so.tilo.chat".into(),
+            cluster_id: "room-1".into(),
+            record: collab_types::workspace_record_id("tilo.workspace.emoji"),
+        };
+        assert_eq!(held.hold(&emoji, b"not chat's record".to_vec()), Ok(()));
+        assert!(held.offered().is_empty(), "nothing is held for it");
     }
 }

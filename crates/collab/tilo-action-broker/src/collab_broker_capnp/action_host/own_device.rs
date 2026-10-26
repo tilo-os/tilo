@@ -19,7 +19,7 @@ use super::super::CapnpBrokerState;
 /// another device, not an agent, bot or app, not a Shortcut's step. Only
 /// they reach their other devices, so nobody gains a reach across devices
 /// they lack here.
-fn is_person_here(
+pub(super) fn is_person_here(
     caller: &Caller,
     origin: Option<&super::super::published_invocation::InvocationCaller>,
 ) -> bool {

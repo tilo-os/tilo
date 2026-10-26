@@ -9,8 +9,11 @@
 //! with the envelope, the passkey opens it.
 //!
 //! The person's profile ([`Kind::Profile`]: `{version: 1, user_public_key,
-//! display_name}`, JSON) is kept the same way, so each of their devices,
-//! paired or signed in, shows the name they chose.
+//! display_name, photo?}`, JSON) is kept the same way, so each of their
+//! devices, paired or signed in, shows the name and picture they chose, and
+//! everyone here sees that picture beside their name. The picture is a small
+//! square image as a `data:` URL (PNG, JPEG or WebP, at most
+//! [`MAX_PHOTO_CHARS`] characters); without one their initials show.
 //!
 //! `POST /peer/v1/envelope` keeps one: `{envelope, issued_at_ms, signature}`
 //! where `envelope` is the envelope's JSON text and `signature` (hex) the
@@ -35,8 +38,17 @@ pub(super) const LABEL: &[u8] = b"tilo root envelope v1\0";
 pub(super) const MAX_ENVELOPE_BYTES: usize = 16 * 1024;
 /// What a root signs to have its profile kept.
 pub(super) const PROFILE_LABEL: &[u8] = b"tilo person profile v1\0";
-/// A profile is a name and a key.
-const MAX_PROFILE_BYTES: usize = 1024;
+/// A profile's picture, as its `data:` URL: a 96 px square encodes in a few
+/// kilobytes, so this bounds a profile without cramping one.
+pub(super) const MAX_PHOTO_CHARS: usize = 48 * 1024;
+/// A profile is a name, a key, at most one small picture and a few lines.
+const MAX_PROFILE_BYTES: usize = MAX_PHOTO_CHARS + 2048;
+/// The image types a profile's picture may be.
+const PHOTO_PREFIXES: [&str; 3] = [
+    "data:image/png;base64,",
+    "data:image/jpeg;base64,",
+    "data:image/webp;base64,",
+];
 /// How far ahead of this host's clock a statement may be dated.
 const MAX_SKEW_MS: u64 = 10 * 60 * 1000;
 
@@ -55,6 +67,79 @@ struct Profile {
     version: u32,
     user_public_key: String,
     display_name: String,
+    /// The picture they chose, as a `data:` URL; none shows their initials.
+    #[serde(default)]
+    photo: Option<String>,
+    /// What they say they are doing, in their own words: one line of at
+    /// most [`MAX_STATUS_CHARS`] characters.
+    #[serde(default)]
+    status: Option<String>,
+    /// How they share what they are doing: `automatic`, `manual` or `off`.
+    #[serde(default)]
+    sharing: Option<String>,
+    /// The service the picture is their account's avatar on ("Discord"),
+    /// when it is not one they uploaded.
+    #[serde(default)]
+    photo_from: Option<String>,
+    /// Their accounts elsewhere that a room here linked to them.
+    #[serde(default)]
+    linked: Vec<LinkedHandle>,
+}
+
+/// An account elsewhere a profile names: the service and its handle there.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinkedHandle {
+    service: String,
+    handle: String,
+}
+
+/// The most accounts elsewhere a profile names.
+const MAX_LINKED: usize = 4;
+/// The longest service name or handle a profile names, in characters.
+const MAX_HANDLE_CHARS: usize = 64;
+
+/// Whether `word` is a service name or handle a profile may carry.
+fn valid_handle(word: &str) -> bool {
+    !word.is_empty()
+        && word.chars().count() <= MAX_HANDLE_CHARS
+        && !word.chars().any(char::is_control)
+}
+
+/// Whether what a profile says of its accounts elsewhere may be kept: a
+/// few named ones, and a picture from one only beside a picture.
+fn valid_links(profile: &Profile) -> bool {
+    profile.linked.len() <= MAX_LINKED
+        && profile
+            .linked
+            .iter()
+            .all(|link| valid_handle(&link.service) && valid_handle(&link.handle))
+        && profile
+            .photo_from
+            .as_deref()
+            .is_none_or(|from| valid_handle(from) && profile.photo.is_some())
+}
+
+/// The longest status a profile keeps, in characters.
+const MAX_STATUS_CHARS: usize = 96;
+
+/// Whether `status` is one line a profile may carry.
+fn valid_status(status: &str) -> bool {
+    status.chars().count() <= MAX_STATUS_CHARS && !status.chars().any(char::is_control)
+}
+
+/// Whether `photo` is a picture a profile may carry: a bounded base64
+/// `data:` URL of an image type pages draw.
+fn valid_photo(photo: &str) -> bool {
+    photo.len() <= MAX_PHOTO_CHARS
+        && PHOTO_PREFIXES.iter().any(|prefix| {
+            photo.strip_prefix(prefix).is_some_and(|data| {
+                !data.is_empty()
+                    && data
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+            })
+        })
 }
 
 impl Kind {
@@ -89,7 +174,22 @@ impl Kind {
                 let profile: Profile = serde_json::from_str(record)
                     .map_err(|_| Refusal::Malformed("not a profile"))?;
                 let name = profile.display_name.as_str();
-                if profile.version != 1 || tilo_user_identity::display_name(name) != Ok(name) {
+                if profile.version != 1
+                    || tilo_user_identity::display_name(name) != Ok(name)
+                    || profile
+                        .photo
+                        .as_deref()
+                        .is_some_and(|photo| !valid_photo(photo))
+                    || profile
+                        .status
+                        .as_deref()
+                        .is_some_and(|status| !valid_status(status))
+                    || profile
+                        .sharing
+                        .as_deref()
+                        .is_some_and(|sharing| !matches!(sharing, "automatic" | "manual" | "off"))
+                    || !valid_links(&profile)
+                {
                     return Err(Refusal::Malformed("not a profile"));
                 }
                 root_of(&profile.user_public_key)
@@ -186,6 +286,11 @@ impl Envelopes {
     fn fetch(&self, body: &[u8]) -> Option<String> {
         let root = root_of(std::str::from_utf8(body).ok()?.trim())?;
         Self::kept(&self.path(&root)).map(|kept| kept.envelope)
+    }
+
+    /// When the record kept for `root` was signed, Unix milliseconds.
+    pub(super) fn issued_at(&self, root: &[u8; 32]) -> Option<u64> {
+        Self::kept(&self.path(root)).map(|kept| kept.issued_at_ms)
     }
 
     /// The answer to a fetch of the root `body` names (hex): `{"<kind>":
@@ -345,7 +450,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_member_keeps_a_profile_with_a_name_and_nothing_else() {
+    async fn a_member_keeps_a_profile_with_a_name_a_picture_and_nothing_else() {
         let dir = tempfile::tempdir().expect("tempdir");
         let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
         let root = SigningKey::from_bytes(&[7; 32]);
@@ -405,5 +510,143 @@ mod tests {
                 .await,
             Err(Refusal::BadSignature)
         );
+        // A picture rides along, and when it was kept is known.
+        let pictured = serde_json::json!({"version": 1, "user_public_key": hex_root,
+            "display_name": "Ada Lovelace", "photo": "data:image/webp;base64,UklGRg=="})
+        .to_string();
+        profiles
+            .publish(&signed(PROFILE_LABEL, &pictured, 4_000), 4_000, |_| async {
+                true
+            })
+            .await
+            .expect("kept with a picture");
+        assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(pictured));
+        assert_eq!(
+            profiles.issued_at(&root.verifying_key().to_bytes()),
+            Some(4_000)
+        );
+        // Only a bounded image, never a link elsewhere or a script.
+        let huge = format!("data:image/png;base64,{}", "A".repeat(MAX_PHOTO_CHARS));
+        for bad in [
+            "https://example.org/a.png",
+            "data:text/html;base64,PHNjcmlwdD4=",
+            "data:image/svg+xml;base64,PHN2Zz4=",
+            "data:image/png;base64,",
+            "data:image/png;base64,<>",
+            huge.as_str(),
+        ] {
+            let text = serde_json::json!({"version": 1, "user_public_key": hex_root,
+                "display_name": "Ada", "photo": bad})
+            .to_string();
+            assert!(
+                matches!(
+                    profiles
+                        .publish(&signed(PROFILE_LABEL, &text, 5_000), 5_000, |_| async {
+                            true
+                        })
+                        .await,
+                    Err(Refusal::Malformed(_))
+                ),
+                "{}",
+                &bad[..bad.len().min(40)]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_profile_keeps_what_they_say_they_are_doing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let root = SigningKey::from_bytes(&[8; 32]);
+        let hex_root = hex::encode(root.verifying_key().to_bytes());
+        let signed = |label: &[u8], text: &str, at: u64| {
+            let mut statement = label.to_vec();
+            statement.extend_from_slice(&at.to_le_bytes());
+            statement.extend_from_slice(text.as_bytes());
+            serde_json::to_vec(&serde_json::json!({
+                "profile": text,
+                "issued_at_ms": at,
+                "signature": hex::encode(root.sign(&statement).to_bytes()),
+            }))
+            .unwrap_or_default()
+        };
+        // What they say they are doing, and how they share it, ride along
+        // too; a second line or a way of sharing nobody knows does not.
+        let said = serde_json::json!({"version": 1, "user_public_key": hex_root,
+            "display_name": "Ada", "status": "Sketching the tour", "sharing": "manual"})
+        .to_string();
+        profiles
+            .publish(&signed(PROFILE_LABEL, &said, 4_500), 4_500, |_| async {
+                true
+            })
+            .await
+            .expect("kept with a status");
+        for (status, sharing) in [("Two\nlines", "manual"), ("Fine", "sometimes")] {
+            let text = serde_json::json!({"version": 1, "user_public_key": hex_root,
+                "display_name": "Ada", "status": status, "sharing": sharing})
+            .to_string();
+            assert!(matches!(
+                profiles
+                    .publish(&signed(PROFILE_LABEL, &text, 4_600), 4_600, |_| async {
+                        true
+                    })
+                    .await,
+                Err(Refusal::Malformed(_))
+            ));
+        }
+        assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(said));
+    }
+
+    #[tokio::test]
+    async fn a_profile_names_its_linked_accounts_and_where_its_picture_is_from() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let root = SigningKey::from_bytes(&[9; 32]);
+        let hex_root = hex::encode(root.verifying_key().to_bytes());
+        let publish = |text: String, at: u64| {
+            let mut statement = PROFILE_LABEL.to_vec();
+            statement.extend_from_slice(&at.to_le_bytes());
+            statement.extend_from_slice(text.as_bytes());
+            let body = serde_json::to_vec(&serde_json::json!({
+                "profile": text,
+                "issued_at_ms": at,
+                "signature": hex::encode(root.sign(&statement).to_bytes()),
+            }))
+            .unwrap_or_default();
+            let profiles = &profiles;
+            async move { profiles.publish(&body, at, |_| async { true }).await }
+        };
+        let linked = serde_json::json!({"version": 1, "user_public_key": hex_root,
+            "display_name": "ada", "photo": "data:image/png;base64,iVBORw0KGgo=",
+            "photo_from": "Discord", "linked": [{"service": "Discord", "handle": "ada"}]})
+        .to_string();
+        publish(linked.clone(), 4_000)
+            .await
+            .expect("kept with its link");
+        assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(linked));
+        let five: Vec<_> = (0..5)
+            .map(|i| serde_json::json!({"service": "Discord", "handle": format!("h{i}")}))
+            .collect();
+        for bad in [
+            // A picture from a service, without a picture.
+            serde_json::json!({"photo_from": "Discord"}),
+            serde_json::json!({"linked": [{"service": "Discord", "handle": ""}]}),
+            serde_json::json!({"linked": [{"service": "Discord", "handle": "a\nb"}]}),
+            serde_json::json!({"linked": five}),
+            serde_json::json!({"linked": [{"service": "Discord", "handle": "x", "url": "y"}]}),
+        ] {
+            let mut text = serde_json::json!({"version": 1, "user_public_key": hex_root,
+                "display_name": "ada"});
+            for (key, value) in bad.as_object().into_iter().flatten() {
+                text[key] = value.clone();
+            }
+            assert!(
+                matches!(
+                    publish(text.to_string(), 5_000).await,
+                    Err(Refusal::Malformed(_))
+                ),
+                "{bad}"
+            );
+        }
     }
 }

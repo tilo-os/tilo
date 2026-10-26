@@ -106,6 +106,7 @@ use crate::inject::{Keypress, Symbol};
 use crate::layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState};
 use crate::output::{OskOutput, TextMirror};
 use crate::predict::Predictor;
+use crate::resource::KeyboardSize;
 use crate::suggest::Suggestion;
 use crate::swipe::{GeometricSwipeModel, SwipeModel};
 
@@ -214,6 +215,11 @@ pub struct OskWidget {
     /// Whether candidate chips are shown. Turning this off leaves the stable
     /// suggestion band in place, avoiding geometry churn while typing.
     suggestions_enabled: bool,
+    /// Whether a finished word may be rewritten to a likely correction.
+    /// Independent of [`Self::suggestions_enabled`].
+    autocorrect_enabled: bool,
+    /// How tall the key rows are, as the person chose.
+    key_size: KeyboardSize,
     /// Whether the keyboard may adapt rankings and tap targets to this
     /// person's typing. What it learns is theirs alone: their host keeps it
     /// in the person's own record ([`crate::learned`]).
@@ -250,9 +256,11 @@ pub struct OskWidget {
     /// Host-issued reader of the person's shared local vocabulary. No app
     /// path fallback: an anonymous or unbound keyboard has no personal hints.
     personal_vocabulary: Option<std::sync::Arc<dyn ui::personal_dictionary::Vocabulary>>,
-    /// The language the preferred letter layout types; the predictor, the
-    /// autocorrector and the swipe decoder all serve it.
+    /// The language the dictionary, predictor, autocorrector and swipe
+    /// decoder serve; it may be chosen independently of the letter layout.
     language: Language,
+    /// The language the person chose, if any; `None` follows the layout.
+    typing_language: Option<Language>,
     /// The current ranked suggestion chips (swipe candidates or next-word
     /// predictions). Empty → the bar collapses to a hint row.
     suggestions: Vec<Suggestion>,
@@ -392,6 +400,8 @@ impl OskWidget {
             toolbar_height: toolbar_row_height(&ui::tokens::Spacing::BASE),
             suggestion_height: suggestion_row_height(&ui::tokens::Metrics::BASE),
             suggestions_enabled: true,
+            autocorrect_enabled: true,
+            key_size: KeyboardSize::Standard,
             personalization_enabled: true,
             rect: Rect::ZERO,
             content_rect: Rect::ZERO,
@@ -412,6 +422,7 @@ impl OskWidget {
             predictor: Predictor::english(),
             personal_vocabulary: None,
             language: Language::English,
+            typing_language: None,
             suggestions: Vec::new(),
             current_word: String::new(),
             word_from_swipe: false,
@@ -924,7 +935,10 @@ impl OskWidget {
     pub fn present_preferences(&mut self, preferences: &crate::resource::OskPreferences) {
         self.present_layout_order(preferences);
         self.select_text_layout_from_preference(&preferences.layout);
+        self.set_typing_language(preferences.typing_language.as_deref());
         self.set_suggestions_enabled(preferences.suggestions);
+        self.set_autocorrect_enabled(preferences.autocorrect);
+        self.set_key_size(preferences.size);
         self.set_personalization_enabled(preferences.personalization);
         self.set_emoji_recents(&preferences.emoji_recents);
     }
@@ -1277,30 +1291,6 @@ impl OskWidget {
         true
     }
 
-    /// Switch the word data to the language the preferred letter layout
-    /// types. The previous language's context, corrections and learned words
-    /// do not carry over.
-    fn follow_layout_language(&mut self) {
-        let Some(language) = Language::for_layout(&self.preferred_text_layout) else {
-            return;
-        };
-        if language == self.language {
-            return;
-        }
-        self.language = language;
-        self.predictor = Predictor::for_language(language);
-        if self.personalization_enabled
-            && let Some(transitions) = self.learned.transitions.get(language.code())
-        {
-            self.predictor.adopt_learned(transitions);
-        }
-        self.swipe_model.set_language(language);
-        self.autocorrect = None;
-        self.last_correction = None;
-        self.prev_word = None;
-        self.refresh_completion_suggestions();
-    }
-
     fn select_text_layout_from_preference(&mut self, name: &str) {
         if name == "symbols"
             || !self.layouts.contains_key(name)
@@ -1545,7 +1535,7 @@ impl OskWidget {
     /// text with suggestions on. Passwords, addresses and codes are typed
     /// verbatim.
     fn autocorrect_allowed(&self) -> bool {
-        self.purpose == InputPurpose::Text && self.suggestions_enabled && !self.is_secret_field()
+        self.purpose == InputPurpose::Text && self.autocorrect_enabled && !self.is_secret_field()
     }
 
     /// The correction for a finished `word`, if autocorrection applies and the
@@ -2754,6 +2744,9 @@ struct Correction {
     tail: String,
 }
 
+#[path = "keyboard_preferences.rs"]
+mod keyboard_preferences;
+
 #[cfg(test)]
 #[path = "personal_vocabulary_tests.rs"]
 mod personal_vocabulary_tests;
@@ -2771,7 +2764,7 @@ impl Widget for OskWidget {
     ) -> NodeId {
         self.spacing = theme.tokens.spacing;
         self.metrics = theme.tokens.metrics;
-        self.target_key_height = key_row_height(&self.metrics);
+        self.target_key_height = key_row_height(&self.metrics) * self.key_size.scale();
         self.toolbar_height = toolbar_row_height(&self.spacing);
         self.suggestion_height =
             if self.purpose == InputPurpose::Terminal && self.context_error.is_none() {

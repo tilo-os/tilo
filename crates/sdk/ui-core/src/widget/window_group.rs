@@ -58,11 +58,6 @@ pub const DEFAULT_STRIP_USABLE_PX: f64 = 1280.0;
 
 pub const RESIZE_HANDLE_PX: f64 = 6.0;
 
-/// How long a window's place is held, with nothing drawn in it, for its
-/// first frame: a window whose content arrives inside it appears whole,
-/// with no fade (its slot opening is the motion); one that arrives later
-/// cross-fades in over the ground it held.
-const ARRIVAL_GRACE: Duration = Duration::from_millis(150);
 /// The lifted handle remains readable while exposing the drop target; the app
 /// pixels beneath it recede further so the target never disappears.
 const DRAG_CONTENT_ALPHA: f32 = 0.42;
@@ -76,18 +71,6 @@ const DRAG_CONTENT_SCALE_END: f64 = 0.96;
 fn window_progress(direction: crate::motion::Direction, elapsed: Duration) -> f64 {
     crate::motion::WindowMotion::OPEN.progress_after(
         direction,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
-        elapsed,
-    )
-}
-
-/// How far a window's content has cross-faded in over the ground its place
-/// held, `elapsed` after it arrived past [`ARRIVAL_GRACE`]
-/// (`motion::CROSS_FADE`).
-fn arrival_progress(elapsed: Duration) -> f64 {
-    crate::motion::CROSS_FADE.progress_after(
-        crate::motion::Direction::Enter,
         crate::tokens::EffectiveMotion::default(),
         crate::tokens::MotionSource::Pointer,
         elapsed,
@@ -189,6 +172,13 @@ impl<T: crate::motion::Animatable> FrameSpring<T> {
 }
 
 impl WindowGroup {
+    /// Whether the slot width is still moving — the window is opening, or a
+    /// resize has not landed.
+    #[cfg(test)]
+    pub(crate) fn has_width_spring_for_tests(&self) -> bool {
+        self.width_spring.is_some()
+    }
+
     /// Move this group and the chrome laid out inside it. Used while a
     /// retained strip is drawn, so the encoded scene stays in canvas
     /// coordinates and a pan does not rewrite it. The caller puts the
@@ -333,12 +323,6 @@ pub struct WindowGroup {
     /// display and draws edge to edge ([`Widget::set_full_bleed`]).
     fills_display: bool,
     last_cursor: Point,
-    /// When the window was asked for: its slot opens from here, and its
-    /// content, held back until it first draws, shows whole if that is
-    /// within [`ARRIVAL_GRACE`].
-    spawned_at: Option<Instant>,
-    /// Content that first drew past the grace cross-fades in from here.
-    arrival_fade_at: Option<Instant>,
     /// A tab just opened in this window that has not drawn yet, and the tab
     /// shown before it: the window keeps showing that one meanwhile, so its
     /// body is never blank.
@@ -367,11 +351,6 @@ pub struct WindowGroup {
     /// A restoring frame came to rest and the window is owed the layout at
     /// its own width: asks for the frame that lays it out.
     rest_layout_owed: bool,
-    /// Set on any `draw` this group sat out because nothing in it had
-    /// presented yet; drained on the first `draw` that does paint, which
-    /// latches the arrival fade to the moment the window turns up rather
-    /// than the moment its tab was created.
-    held_back: bool,
     /// Tab-pill close fades, keyed by close-start `Instant` — the same
     /// stamp the bar snapshots into `closing_tabs` so both stay in
     /// lockstep. A side table (not a `TileHost` field) to keep
@@ -596,8 +575,6 @@ impl WindowGroup {
             top_slide_since: None,
             fills_display: false,
             last_cursor: Point::ZERO,
-            spawned_at: None,
-            arrival_fade_at: None,
             tab_waiting: None,
             tab_fade: None,
             rect_spring: None,
@@ -605,7 +582,6 @@ impl WindowGroup {
             content_px: 0.0,
             rect_from_width: 0.0,
             rest_layout_owed: false,
-            held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
             close_requested: false,
@@ -689,30 +665,28 @@ impl WindowGroup {
         self.focused
     }
 
+    /// The window was asked for: its slot opens from nothing. What shows
+    /// inside it meanwhile is its content's arrival ([`TileHost`]).
     pub fn start_spawn_animation(&mut self) {
-        self.spawned_at = Some(crate::time::now());
         self.arm_width_from_zero();
     }
 
-    /// Called by every paint: on the first one after the window's place was
-    /// held back (nothing of it had drawn), decide how its content arrives.
-    /// Inside [`ARRIVAL_GRACE`] of being asked for it shows whole; later, it
-    /// cross-fades in. The slot's width spring is left as it is: it has been
-    /// opening since the window was asked for.
-    fn take_first_paint(&mut self) {
-        let now = crate::time::now();
-        if std::mem::take(&mut self.held_back) && !self.is_closing() {
-            let late = self
-                .spawned_at
-                .is_none_or(|asked| now.saturating_duration_since(asked) >= ARRIVAL_GRACE);
-            self.arrival_fade_at = late.then_some(now);
+    /// Whether the window stands on screen: something in it has drawn, or
+    /// its place is reserved for content still on its way. Only a first
+    /// frame from this device, inside its frame budget, keeps it off.
+    #[must_use]
+    pub fn stands(&self) -> bool {
+        Widget::presented(self) || self.holds_first_frame_until(crate::time::now()).is_none()
+    }
+
+    /// Until when the window's first frame waits for its content: nothing
+    /// in it has drawn, and its active tab's first frame comes from this
+    /// device and is inside its frame budget.
+    fn holds_first_frame_until(&self, now: Instant) -> Option<Instant> {
+        if Widget::presented(self) || self.is_closing() {
+            return None;
         }
-        if self
-            .arrival_fade_at
-            .is_some_and(|t| arrival_progress(now.saturating_duration_since(t)) >= 1.0)
-        {
-            self.arrival_fade_at = None;
-        }
+        self.active_host()?.holds_first_frame_until(now)
     }
 
     /// A shortcut or action lands what it changed at once: the springs it
@@ -731,10 +705,6 @@ impl WindowGroup {
             }
             if self.rect_spring.take().is_some() {
                 self.style_dirty = true;
-            }
-            if !self.is_closing() {
-                self.spawned_at = None;
-                self.arrival_fade_at = None;
             }
         }
     }
@@ -1701,15 +1671,14 @@ impl WindowGroup {
             host.bind_record(store.clone(), record_for(*tab_id));
         }
     }
-    /// Deliberately not [`Widget::opening`], which is false as soon as
-    /// one tab has drawn even if a tab behind it is still starting (and
-    /// still needs animation frames).
-    pub fn any_tile_opening(&self) -> bool {
-        // `presented()` is also the latch that retires a newly arrived
-        // client's opening state. Evaluate every host before asking which are
-        // still opening, just as the group's ordinary presentation path does.
+    /// Whether any tab still stands for content whose first frame is not
+    /// shown, even when another tab of the window has drawn.
+    pub fn any_tile_arriving(&self) -> bool {
+        // `presented()` is also the latch that notes a newly arrived
+        // client's first frame. Evaluate every host before asking which are
+        // still arriving, just as the group's ordinary presentation path does.
         let _ = Widget::presented(self);
-        self.hosts.iter().any(|(_, h)| Widget::opening(h))
+        self.hosts.iter().any(|(_, h)| h.is_arriving())
     }
 
     pub fn active_host_mut(&mut self) -> Option<&mut TileHost> {
@@ -1758,12 +1727,6 @@ impl WindowGroup {
             return None;
         }
         let active_id = self.bar.active_id();
-        let opening_name = self
-            .bar
-            .tabs()
-            .iter()
-            .find(|tab| tab.id == active_id)
-            .map(|tab| tab.title.clone());
         let host = self
             .hosts
             .iter_mut()
@@ -1773,9 +1736,6 @@ impl WindowGroup {
         self.bar
             .set_group_focused(self.focused || self.search_active);
         self.bar.draw(scene, transform, tr, theme, presence);
-        if let Some(name) = opening_name.as_deref() {
-            host.set_opening_name(name);
-        }
         host.set_focused(self.focused || self.search_active);
         host.draw_complete_content_capture(scene, transform, tr, theme, presence)?;
         Some(self.rect.union(capture_rect))
@@ -1954,13 +1914,13 @@ impl WindowGroup {
             let from_alive = self.hosts.iter().any(|(i, _)| *i == from);
             if to != active || !from_alive {
                 self.tab_waiting = None;
-            } else if self
-                .hosts
-                .iter()
-                .any(|(i, h)| *i == to && (Widget::presented(h) || Widget::opening(h)))
-            {
-                // Drawn, or waited for long enough that its opening card
-                // says what is coming.
+            } else if self.hosts.iter().any(|(i, h)| {
+                *i == to
+                    && (Widget::presented(h)
+                        || h.holds_first_frame_until(crate::time::now()).is_none())
+            }) {
+                // Drawn, or its place is reserved past the frame its first
+                // frame may hold: what stands there is its arrival.
                 let mut fade = crate::motion::CrossFade::new(from);
                 // The new tab's content arriving, not a navigation: it
                 // cross-fades whatever opened it.
@@ -2056,8 +2016,6 @@ impl WindowGroup {
             top_slide_since: None,
             fills_display: false,
             last_cursor: Point::ZERO,
-            spawned_at: None,
-            arrival_fade_at: None,
             tab_waiting: None,
             tab_fade: None,
             rect_spring: None,
@@ -2065,7 +2023,6 @@ impl WindowGroup {
             content_px: 0.0,
             rect_from_width: 0.0,
             rest_layout_owed: false,
-            held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
             close_requested: false,
@@ -2736,7 +2693,7 @@ impl WindowGroup {
                 self.note_maximized_press(self.last_cursor);
                 false
             }
-            WindowEvent::CursorLeft { .. } => self.top_edge.on_leave(crate::time::now()),
+            WindowEvent::CursorLeft { .. } => self.top_edge.on_leave(),
             WindowEvent::Touch(touch) => {
                 let p = Point::new(touch.location.x / scale, touch.location.y / scale);
                 match touch.phase {
@@ -2750,9 +2707,7 @@ impl WindowGroup {
                         self.top_edge.on_touch_start(p, &geo);
                         false
                     }
-                    winit::event::TouchPhase::Moved => {
-                        self.top_edge.on_touch_move(p, crate::time::now())
-                    }
+                    winit::event::TouchPhase::Moved => self.top_edge.on_touch_move(p),
                     winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
                         self.top_edge.on_touch_end();
                         false
@@ -2793,7 +2748,7 @@ impl WindowGroup {
         }
         for action in self.maximized_controls.take_activated() {
             // A used control is done with the bar.
-            if self.top_edge.hide(crate::time::now()) {
+            if self.top_edge.hide() {
                 self.top_edge_changed();
             }
             if action == CLOSE_TARGET && self.bar.is_held(self.bar.active_id()) {
@@ -2986,9 +2941,6 @@ impl WindowGroup {
             let alpha = f32_of_f64((1.0 - eased).max(0.0));
             let scale = 1.0 - 0.05 * eased;
             (alpha, 0.0, 0.0, scale)
-        } else if let Some(started) = self.arrival_fade_at {
-            let eased = arrival_progress(crate::time::now().saturating_duration_since(started));
-            (crate::motion::unit_opacity(eased), 0.0, 0.0, 1.0)
         } else {
             (1.0, 0.0, 0.0, 1.0)
         }
@@ -3765,29 +3717,19 @@ impl Widget for WindowGroup {
         }
         self.step_rect_spring();
         self.offer_history_controls();
-        // An indicator that flashes in and out before an app has time to
-        // draw would just be a flicker, so nothing paints until either
-        // something has drawn or the wait is long enough to say so.
-        if !Widget::presented(self) && !Widget::opening(self) {
-            if self.is_closing() {
-                // A dying client must not blank the card: keep the last
-                // frame we painted while the slot collapses.
-            } else {
-                self.held_back = true;
-                return;
-            }
+        // A first frame from this device may hold the window's first frame
+        // up to one frame budget, so a window whose app draws in time
+        // appears complete. A host that honours the hold
+        // (`Widget::holds_frame_until`) keeps its last frame meanwhile; one
+        // that draws anyway shows the slot without the window. Past the
+        // budget the window stands, its place reserved, and its content
+        // arrives inside its frame ([`TileHost`]).
+        if self.holds_first_frame_until(crate::time::now()).is_some() {
+            return;
         }
-        // The first frame after holding the place back. The slot has been
-        // opening since the window was asked for and goes on from where it
-        // is; the content shows whole when it came inside the grace (a
-        // local app's first frame normally does), and cross-fades in over
-        // the ground its place held when it came later.
-        self.take_first_paint();
-        // Close checked first (mutually exclusive with an arrival): the
-        // window fades out as one (α 1→0, scale 1→0.95) while its slot
-        // closes; a late arrival cross-fades in. The whole paint composes
-        // under one alpha+translate+scale layer so hit tests stay aligned
-        // with what's on screen mid-fade.
+        // The window fades out as one (α 1→0, scale 1→0.95) while its slot
+        // closes. The whole paint composes under one alpha+translate+scale
+        // layer so hit tests stay aligned with what's on screen mid-fade.
         let (fade_alpha, fade_x, fade_y, fade_scale) = self.fade_transform_params();
         let spawn_active = fade_alpha < 1.0;
         if spawn_active {
@@ -3845,14 +3787,6 @@ impl Widget for WindowGroup {
             self.draw_bar(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();
-        // A tile holding a place for an app that has not arrived takes
-        // its name from the pill above it, so the two never disagree.
-        let opening_name = self
-            .bar
-            .tabs()
-            .iter()
-            .find(|t| t.id == active_id)
-            .map(|t| t.title.clone());
         // Scoping search *is* aiming the keyboard at this group, so it
         // lights the same edge/shadow signal as keyboard focus.
         let focused = self.focused || self.search_active;
@@ -3879,9 +3813,6 @@ impl Widget for WindowGroup {
                 h.draw(scene, transform, tr, theme, presence);
             }
         } else if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
-            if let Some(name) = &opening_name {
-                h.set_opening_name(name);
-            }
             h.set_focused(focused);
             // A maximized window filling its display draws edge to edge;
             // under a docked bar, or mid-fade, it is still a card.
@@ -4005,6 +3936,14 @@ impl Widget for WindowGroup {
     fn name(&self) -> &'static str {
         "WindowGroup"
     }
+    /// Only what the active tab shows holds the frame: a tab beside it,
+    /// still starting, never does.
+    fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
+        if self.is_closing() {
+            return None;
+        }
+        Widget::holds_frame_until(self.active_host()?, now)
+    }
     /// **Any**, not all: a group with one live window and a second still
     /// starting must not blink out because a sibling tab hasn't drawn.
     fn presented(&self) -> bool {
@@ -4018,11 +3957,6 @@ impl Widget for WindowGroup {
         self.hosts
             .iter()
             .fold(false, |seen, (_, h)| h.presented() || seen)
-    }
-    /// Only true while *nothing* has presented, so a group with one live
-    /// window never turns into a placeholder because a sibling is starting.
-    fn opening(&self) -> bool {
-        !Widget::presented(self) && self.hosts.iter().any(|(_, h)| h.opening())
     }
     fn get_rect(&self) -> Rect {
         self.rect
@@ -4045,6 +3979,12 @@ impl Widget for WindowGroup {
                 .is_some_and(super::Widget::wants_pointer_capture)
     }
     fn take_structure_dirty(&mut self) -> bool {
+        self.take_structure_change().rebuilds()
+    }
+    /// A change the active tab's content carries out in place stays in
+    /// place; the window's own changes rebuild.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        use crate::widget::StructureChange;
         // Every child's flag is drained, but only the active host's counts:
         // inactive hosts have no layout nodes (see `is_layout_dirty`), and
         // selecting one rebuilds through `active_switched` anyway.
@@ -4056,11 +3996,11 @@ impl Widget for WindowGroup {
         self.style_dirty |= self.fullscreen_bar.laid_out != self.bar_over_content();
         let bar = self.bar.take_structure_dirty();
         let active = self.bar.active_id();
-        let mut active_host = false;
+        let mut active_host = StructureChange::None;
         for (id, host) in &mut self.hosts {
-            let dirty = host.take_structure_dirty();
+            let change = host.take_structure_change();
             if *id == active {
-                active_host = dirty;
+                active_host = change;
             }
         }
         let style = std::mem::take(&mut self.style_dirty);
@@ -4068,7 +4008,7 @@ impl Widget for WindowGroup {
         let closing = self.is_closing()
             && !self.close_complete()
             && !std::mem::replace(&mut self.close_rebuild_taken, true);
-        bar || active_host || style || active_switched || closing
+        StructureChange::of(bar || style || active_switched || closing).join(active_host)
     }
     fn needs_redraw(&self) -> bool {
         // Redraw follows the presentation tree. Retained inactive hosts still
@@ -4117,9 +4057,6 @@ impl Widget for WindowGroup {
     }
     fn animation_detail(&self) -> Option<String> {
         let mut parts = Vec::new();
-        if self.arrival_fade_at.is_some() {
-            parts.push("arrival".to_string());
-        }
         if self.closing_at.is_some() {
             parts.push("closing".to_string());
         }
@@ -4158,9 +4095,6 @@ impl Widget for WindowGroup {
             return false;
         }
         // Include group and inactive closing-host animations beyond the active presentation.
-        let spawn_in_flight = self.arrival_fade_at.is_some_and(|t| {
-            arrival_progress(crate::time::now().saturating_duration_since(t)) < 1.0
-        });
         let close_window = group_close_fade();
         let close_in_flight = !self.reduce_motion
             && self
@@ -4185,8 +4119,6 @@ impl Widget for WindowGroup {
             .is_some_and(|(_, h)| h.needs_animation_frame());
         let rect_in_flight =
             (!self.reduce_motion && self.rect_spring.is_some()) || self.rest_layout_owed;
-        let chrome_fade = self.maximized_chrome_live()
-            && self.top_edge.fading(crate::time::now(), self.chrome_motion);
         let top_slide = self.top_slide_in_flight();
         let tab_fade = self
             .tab_fade
@@ -4198,12 +4130,10 @@ impl Widget for WindowGroup {
             crate::time::now().saturating_duration_since(released)
                 < crate::tokens::Durations::default().fast().saturating_mul(2)
         });
-        spawn_in_flight
-            || tab_fade
+        tab_fade
             || size_label_fading
             || self.fullscreen_bar_fading()
             || top_slide
-            || chrome_fade
             || close_in_flight
             || group_close_in_flight
             || rect_in_flight
@@ -4723,7 +4653,7 @@ mod tests {
 
     struct Starting {
         presented: bool,
-        opening: bool,
+        from: crate::arriving::Source,
     }
 
     impl Widget for Starting {
@@ -4741,8 +4671,8 @@ mod tests {
         fn presented(&self) -> bool {
             self.presented
         }
-        fn opening(&self) -> bool {
-            self.opening
+        fn arrives_from(&self) -> crate::arriving::Source {
+            self.from.clone()
         }
     }
 
@@ -4837,10 +4767,10 @@ mod tests {
         );
     }
 
-    fn group_opening(title: &str, presented: bool, opening: bool) -> WindowGroup {
+    fn group_opening(title: &str, presented: bool, from: crate::arriving::Source) -> WindowGroup {
         let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
             TabDescriptor::new(1, title),
-            TileContent::App(Box::new(Starting { presented, opening })),
+            TileContent::App(Box::new(Starting { presented, from })),
         )];
         let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
         g.rect = Rect::new(0.0, 0.0, 400.0, 300.0);
@@ -4875,55 +4805,58 @@ mod tests {
     }
 
     #[test]
-    fn opening_card_holds_the_place_only_for_a_worthwhile_wait() {
+    fn a_window_holds_its_first_frame_only_for_its_budget_then_reserves_its_place() {
         {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
             let scene = Scene::new();
-            let _ = (&theme, &mut tr);
             assert!(
                 scene.encoding().path_data.is_empty(),
                 "an untouched scene must read as nothing painted, or the \
-             held-back case passes for free",
+             held case passes for free",
             );
         }
 
+        let t0 = crate::time::now();
+        let budget = crate::arriving::frame_budget();
         {
-            let mut g = group_opening("Files", false, false);
-            assert!(
-                !painted_anything(&mut g),
-                "a window frame went up for an app that has not drawn and has \
-             not been waiting long enough to say so — which is a card \
-             flashing on and off in front of an app that opened fast",
-            );
+            let mut g = crate::time::testing::with_monotonic_time(t0, || {
+                group_opening("Files", false, crate::arriving::Source::Local)
+            });
+            crate::time::testing::with_monotonic_time(t0, || {
+                assert_eq!(
+                    Widget::holds_frame_until(&g, t0),
+                    Some(t0 + budget),
+                    "a first frame from this device holds the window's for one frame"
+                );
+                assert!(!g.stands());
+                assert!(
+                    !painted_anything(&mut g),
+                    "a window frame went up before its app's first frame had its \
+                 budget, which is the window appearing empty and then filled",
+                );
+            });
+            crate::time::testing::with_monotonic_time(t0 + budget, || {
+                assert_eq!(Widget::holds_frame_until(&g, t0 + budget), None);
+                assert!(g.stands(), "past the budget its place is reserved");
+                assert!(
+                    painted_anything(&mut g),
+                    "the desktop stayed empty for an app the person asked for and \
+                 is still waiting on",
+                );
+                assert!(g.any_tile_arriving());
+            });
         }
 
         {
-            let mut g = group_opening("Files", false, true);
-            assert!(
-                Widget::opening(&g),
-                "the group must report that it is holding a place",
-            );
-            assert!(
-                painted_anything(&mut g),
-                "the desktop stayed empty for an app the person asked for and \
-             is still waiting on — the whole defect this exists to fix",
-            );
-        }
-
-        // Case `the_card_takes_the_apps_name_from_its_tab`.
-        // A card reading `so.tilo.file-explorer` is the failure this guards:
-        // the person asked for Files, and a package id is not an answer.
-        {
-            let mut g = group_opening("Files", false, true);
-            let _ = painted_anything(&mut g);
-            let (_, host) = g.hosts.first().expect("the group has its one tab");
-            assert_eq!(
-                host.opening_name_for_test(),
-                "Files",
-                "the card must say what the tab says; anything else is two \
-             names for one window",
-            );
+            // Another device's frame never holds this one's: the place is
+            // reserved from the first frame.
+            let mut g = crate::time::testing::with_monotonic_time(t0, || {
+                group_opening("Notes", false, crate::arriving::Source::peer("Laptop"))
+            });
+            crate::time::testing::with_monotonic_time(t0, || {
+                assert_eq!(Widget::holds_frame_until(&g, t0), None);
+                assert!(g.stands());
+                assert!(painted_anything(&mut g));
+            });
         }
 
         {
@@ -4932,14 +4865,14 @@ mod tests {
                     TabDescriptor::new(1, "Files"),
                     TileContent::App(Box::new(Starting {
                         presented: true,
-                        opening: false,
+                        from: crate::arriving::Source::Local,
                     })),
                 ),
                 (
                     TabDescriptor::new(2, "Notes"),
                     TileContent::App(Box::new(Starting {
                         presented: false,
-                        opening: true,
+                        from: crate::arriving::Source::Local,
                     })),
                 ),
             ];
@@ -4948,11 +4881,13 @@ mod tests {
                 Widget::presented(&g),
                 "one of its tabs is a window on screen"
             );
-            assert!(
-                !Widget::opening(&g),
-                "a group holding a window the person is using must never be \
-             replaced by a card about the tab beside it",
+            assert_eq!(
+                Widget::holds_frame_until(&g, crate::time::now()),
+                None,
+                "a group holding a window the person is using never holds a \
+             frame for the tab beside it",
             );
+            assert!(g.stands());
         }
     }
 
@@ -5005,9 +4940,6 @@ mod tests {
             }
             self.latched.get()
         }
-        fn opening(&self) -> bool {
-            !self.latched.get()
-        }
     }
 
     impl crate::widget::app_widget::AppWidget for Latching {
@@ -5050,7 +4982,7 @@ mod tests {
     }
 
     #[test]
-    fn opening_card_retires_when_any_tab_window_has_drawn() {
+    fn the_placeholder_retires_when_its_tabs_window_has_drawn() {
         {
             let (g, latched, asked) = group_of_two(true, true);
 
@@ -5065,8 +4997,8 @@ mod tests {
                 "a window that has drawn must end up marked as having drawn",
             );
             assert!(
-                !Widget::opening(&g),
-                "and must not still be holding its own place",
+                !g.any_tile_arriving(),
+                "and must not still be standing for its own place",
             );
         }
 
@@ -5080,9 +5012,9 @@ mod tests {
                 .map(|(_, h)| h)
                 .expect("the group holds the tab it was built with");
             assert!(
-                !Widget::opening(host),
-                "the card holding this window's place must be gone: the window is \
-             drawn, populated, and the one on screen",
+                !host.is_arriving(),
+                "the placeholder in this window's place must be gone: the window \
+             is drawn, populated, and the one on screen",
             );
         }
 
@@ -5100,7 +5032,7 @@ mod tests {
                 .find(|(id, _)| *id == 2)
                 .map(|(_, h)| h)
                 .expect("the group holds the tab it was built with");
-            assert!(Widget::opening(host), "its place is still being held");
+            assert!(host.is_arriving(), "its place is still reserved");
         }
     }
 
@@ -5999,7 +5931,7 @@ mod tests {
             // layout, and rebuilds only when a group asks for it. Frames at
             // 60 and at 20 a second must both end the motion.
             for frame_ms in [16, 50] {
-                let mut g = group_opening("Files", true, false);
+                let mut g = group_opening("Files", true, crate::arriving::Source::Local);
                 g.set_strip_usable_px(1200.0);
                 let t0 = crate::time::now();
                 at(t0, 0, || g.start_spawn_animation());
@@ -6032,7 +5964,7 @@ mod tests {
             // presenter is still busy paints nothing; the step the next
             // rebuild skips must not leave the slot stopped part-way, asking
             // for frames forever.
-            let mut g = group_opening("Notes", true, false);
+            let mut g = group_opening("Notes", true, crate::arriving::Source::Local);
             g.set_strip_usable_px(1200.0);
             let t0 = crate::time::now();
             at(t0, 0, || g.start_spawn_animation());
@@ -6062,21 +5994,23 @@ mod tests {
         }
 
         {
-            let mut g = group_opening("Files", false, false);
+            let t0 = crate::time::now();
+            let mut g = at(t0, 0, || {
+                group_opening("Files", false, crate::arriving::Source::Local)
+            });
             g.set_strip_usable_px(1200.0);
             assert!(
-                !painted_anything(&mut g),
-                "precondition: an unpresented group with no opening card paints nothing",
+                !at(t0, 0, || painted_anything(&mut g)),
+                "precondition: a group holding its first frame paints nothing",
             );
             let from = g.layout_width_px();
-            let t0 = crate::time::now();
             at(t0, 0, || g.start_closing());
             assert!(
                 (g.layout_width_px() - from).abs() < 0.5,
                 "close must start from the last reserved width, not jump to zero",
             );
             assert!(
-                painted_anything(&mut g),
+                at(t0, 0, || painted_anything(&mut g)),
                 "a closing group is drawn from its last frame while the slot collapses",
             );
             let mut last = g.layout_width_px();
@@ -6479,3 +6413,7 @@ mod search_tests;
 #[cfg(test)]
 #[path = "window_group_motion_tests.rs"]
 mod motion_tests;
+
+#[cfg(test)]
+#[path = "window_group_arrival_tests.rs"]
+mod arrival_tests;

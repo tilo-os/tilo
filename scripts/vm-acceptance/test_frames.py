@@ -9,9 +9,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acceptance.checks.window import _judge, _judge_instant, judge_switch_lines  # noqa: E402
-from acceptance.core import (Unobservable, _parse_trace, frame_stats, parse_switch_lines,  # noqa: E402
-                             transition_stats)
+from acceptance.checks.window import (  # noqa: E402
+    _judge,
+    _judge_instant,
+    _judge_keyboard_flight,
+    judge_switch_lines,
+)
+from acceptance.core import (Unobservable, _parse_trace, frame_stats, parse_cpu_ticks,  # noqa: E402
+                             parse_switch_lines, steal_percent, transition_stats)
 
 HEADER = ("seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,submit_us,testctl_us,"
           "clients_us,sleep_us,painted,present_async,input_latency_us,input_retirement_latency_us,"
@@ -195,6 +200,26 @@ class AnimationJudgeTest(unittest.TestCase):
         self.assertEqual(len(problems), 1, problems)
         self.assertIn("12 frames painted for a transition's frame run", problems[0])
 
+    def test_a_keyboard_toggle_flies_briefly_and_is_judged_on_its_first_frame(self):
+        # A key flies the windows for `fast` as spatial context: its transition frames
+        # are not counted against it, its first frame and its loop CPU are.
+        flight = run(8, "animation+transition")
+        self.assertEqual(_judge_keyboard_flight("overview_key_open", flight, W16_BUDGETS), ([], []))
+        slow = run(8, "animation+transition", input_us=80_000)
+        problems, _ = _judge_keyboard_flight("overview_key_open", slow, W16_BUDGETS)
+        self.assertIn("first frame 80.0 ms after the input", problems[0])
+        stalled = run(8, "animation+transition", cpu_us=75_000)
+        problems, _ = _judge_keyboard_flight("overview_key_close", stalled, W16_BUDGETS)
+        self.assertIn("CPU stall in the compositor loop", problems[0])
+
+    def test_a_tick_spent_answering_the_harness_is_not_a_stall(self):
+        # 75 ms on the loop thread, 50 of it answering this harness's state request.
+        busy = run(8, "animation+transition", extra={3: {"cpu_us": 75_000, "testctl_cpu_us": 50_000}})
+        self.assertEqual(_judge_keyboard_flight("overview_key_close", busy, W16_BUDGETS), ([], []))
+        own = run(8, "animation+transition", extra={3: {"cpu_us": 75_000, "testctl_cpu_us": 1_000}})
+        problems, _ = _judge_keyboard_flight("overview_key_close", own, W16_BUDGETS)
+        self.assertIn("74.0 ms CPU stall", problems[0])
+
     def test_the_keyboard_toggle_is_judged_on_its_first_frame(self):
         slow = run(1, "revision", input_us=80_000)
         problems, _ = _judge_instant("overview_key_open", slow, W16_BUDGETS)
@@ -254,3 +279,18 @@ class DemandLatenessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StealTest(unittest.TestCase):
+    STAT = "cpu  100 0 50 800 10 0 5 35 0 0\ncpu0 50 0 25 400 5 0 2 18 0 0\n"
+
+    def test_reads_total_and_steal_from_the_all_cpus_line(self):
+        self.assertEqual(parse_cpu_ticks(self.STAT), (1000, 35))
+
+    def test_no_cpu_line_reads_as_unknown(self):
+        self.assertIsNone(parse_cpu_ticks("intr 1 2 3\n"))
+
+    def test_steal_is_the_share_of_the_cpu_time_between_two_readings(self):
+        self.assertEqual(steal_percent((1000, 35), (1400, 135)), 25.0)
+        self.assertIsNone(steal_percent(None, (1400, 135)))
+        self.assertIsNone(steal_percent((1000, 35), (1000, 35)))

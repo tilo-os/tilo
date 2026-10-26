@@ -671,8 +671,12 @@ pub struct TopBarChrome {
     /// off to cancel instead of firing Pause/Close on contact.
     clock_touch_control: Option<(u64, u8)>,
     clock_control_focus: Option<u8>,
-    /// Click toggles `overlays.collaborators`.
+    /// The others' faces (and the "+N" badge): each face opens that
+    /// person's card, the badge everyone.
     avatar_stack_rect: Rect,
+    /// The people button beside the faces, which opens everyone here (the
+    /// panel and its pin); zero when nobody else is here.
+    people_button_rect: Rect,
     /// The invite button beside the faces; zero when not offered.
     invite_rect: Rect,
     /// The arrival status as last drawn; zero while it is not up.
@@ -990,6 +994,7 @@ impl TopBarChrome {
             clock_touch_control: None,
             clock_control_focus: None,
             avatar_stack_rect: Rect::ZERO,
+            people_button_rect: Rect::ZERO,
             invite_rect: Rect::ZERO,
             arrival_rect: Rect::ZERO,
             arrival_pressable: false,
@@ -1805,13 +1810,20 @@ impl TopBarChrome {
             Self::CONTROL_QUICK_SETTINGS => self.tray_hit_rect,
             Self::CONTROL_PROFILE => self.own_avatar_rect,
             Self::CONTROL_INVITE => self.invite_rect,
+            // The people button opens everyone here; the faces beside it
+            // each open one person, so they are not this control.
             Self::CONTROL_COLLABORATORS => {
-                if self.avatar_stack_rect.is_zero_area() {
-                    self.sharing_indicator_rect
-                } else if self.sharing_indicator_rect.is_zero_area() {
+                let people = if self.people_button_rect.is_zero_area() {
                     self.avatar_stack_rect
                 } else {
-                    self.avatar_stack_rect.union(self.sharing_indicator_rect)
+                    self.people_button_rect
+                };
+                if people.is_zero_area() {
+                    self.sharing_indicator_rect
+                } else if self.sharing_indicator_rect.is_zero_area() {
+                    people
+                } else {
+                    people.union(self.sharing_indicator_rect)
                 }
             }
             Self::CONTROL_MEDIA => self.media_hit_rect(),
@@ -3040,7 +3052,7 @@ impl TopBarChrome {
             center_y + side / 2.0,
         );
         let (r, g, b) = own.rgb;
-        ui::widget::AvatarFace::new(&own.name, "")
+        ui::widget::AvatarFace::new(&own.name, &own.identity)
             .presence(Color::from_rgb8(r, g, b))
             .ringed_on(theme.tokens.colors.surfaces.base)
             .paint(
@@ -6070,6 +6082,7 @@ mod tests {
         chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
             name: "Kim Lee".into(),
             rgb: (200, 120, 90),
+            identity: String::new(),
         });
         let mut bar = TopBarChrome::from_tree(&tree)
             .with_chrome(chrome.clone())
@@ -7030,7 +7043,7 @@ mod tests {
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         paint(&mut bar);
         assert!(bar.collaborator_initials().is_empty());
-        assert!(bar.avatar_stack_rect.height() >= BAR_CONTROL_PX);
+        assert!(bar.people_button_rect.height() >= BAR_CONTROL_PX);
         let node = bar.accessibility().expect("topbar semantics");
         assert!(
             node.children
@@ -7045,7 +7058,7 @@ mod tests {
                 .is_some_and(|name| name.contains("2 people watching"))),
             "the bar names its spectators"
         );
-        bar.last_cursor = Some(bar.avatar_stack_rect.center());
+        bar.last_cursor = Some(bar.people_button_rect.center());
         let mut handled = false;
         bar.handle_left_click(&mut handled);
         assert!(handled && chrome.borrow().overlays.collaborators);

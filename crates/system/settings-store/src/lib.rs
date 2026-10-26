@@ -89,6 +89,7 @@ pub mod appearance;
 pub mod clock;
 pub mod continuity;
 pub mod continuity_privacy;
+pub mod control_hints;
 pub mod day_schedule;
 pub mod desk_widgets;
 pub mod desktop_control;

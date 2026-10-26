@@ -2393,7 +2393,7 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
         1,
         "not yet opened"
     );
-    assert!(openings.open(&handle, "g", |_| Ok(())));
+    assert!(openings.open(&handle, "g", |_, _| Ok(())));
     driver.idle();
     driver.relayout();
     let snapshot = handle.snapshot("g", vec![]);
@@ -2410,7 +2410,7 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
     driver
         .invoke_published("camera.capture", "open-writer", &serde_json::Map::new())
         .expect("the session takes the open");
-    openings.open(&handle, "g", |_| {
+    openings.open(&handle, "g", |_, _| {
         Err(ui::tilo_actions::remote::ActionHostError::NotPermitted)
     });
     driver.idle();
@@ -2555,4 +2555,102 @@ fn a_filling_page_keeps_its_strip_to_the_band_and_settles() {
         (short.height() - filling.height()).abs() < 1.0,
         "the empty page fills its window: {short:?} in {filling:?}"
     );
+}
+
+/// Windows on records: each record launch opens its app on that record,
+/// and the record's window, once open, is the one shown again.
+struct RecordWindows {
+    opened: Rc<std::cell::RefCell<Vec<(u64, String)>>>,
+}
+
+impl TileSource for RecordWindows {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        TileHost::new(ui::widget::TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+        let (app, record) = tilo_desktop_surface::session::launched_record(app)?;
+        self.opened.borrow_mut().push((id, record.to_owned()));
+        Some(Tab {
+            id,
+            title: record.into(),
+            tile: TileContent::LocalApp {
+                app_id: app.into(),
+                label: record.into(),
+                note: String::new(),
+            },
+            app_title: None,
+        })
+    }
+
+    fn showing(&self, app: &str) -> Option<u64> {
+        let (_, record) = tilo_desktop_surface::session::launched_record(app)?;
+        self.opened
+            .borrow()
+            .iter()
+            .find(|(_, opened)| opened == record)
+            .map(|(tab, _)| *tab)
+    }
+}
+
+/// A shared window's message opens the resource it shares: the page's
+/// session opens the resource's app on its record, and asked again shows
+/// that window instead of a second one. A resource in another workspace
+/// is not this desktop's to open.
+#[test]
+fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
+    use ui::tilo_actions::remote::{
+        APPLICATION_OPEN_ACTION, ActionHost as _, Caller, InvokeRequest, application_record_target,
+    };
+    let mut minter = IdMinter::new(7);
+    let chat = tab(&mut minter, "Chat");
+    let tree = seed_tree(&mut minter, "Desk", vec![chat]);
+    let opened = Rc::default();
+    let (surface, handle) = DesktopSurface::new(
+        tree,
+        7,
+        Box::new(RecordWindows {
+            opened: Rc::clone(&opened),
+        }),
+    );
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1200, 800),
+        ui::Theme::dark(),
+    );
+    let (session, openings) =
+        tilo_desktop_surface::session::serve("room", std::sync::Arc::default());
+    let caller = Caller::local_person("tester").in_room("room");
+    let open = |room: &str| -> InvokeRequest {
+        serde_json::from_value(serde_json::json!({
+            "invocation": ui::tilo_actions::InvocationId::new(),
+            "target": application_record_target(room, "so.tilo.notes", "n:plan", "plan", APPLICATION_OPEN_ACTION),
+        }))
+        .unwrap()
+    };
+    let refused = session.invoke(&caller, open("elsewhere"));
+    drop(refused);
+    assert!(
+        !openings.open(&handle, "g", |_, _| Ok(())),
+        "nothing asked of here"
+    );
+
+    for _ in 0..2 {
+        drop(session.invoke(&caller, open("room")));
+        assert!(openings.open(&handle, "g", |app, _| {
+            assert_eq!(app, "so.tilo.notes", "admitted as its app");
+            Ok(())
+        }));
+        driver.relayout();
+    }
+    assert_eq!(opened.borrow().len(), 1, "one window on the record");
+    let snapshot = handle.snapshot("g", vec![]);
+    assert_eq!(snapshot.entries.len(), 2, "{:?}", snapshot.entries);
+    assert_eq!(snapshot.entries[1].label, "n:plan");
+    assert_eq!(snapshot.active.as_ref(), Some(&snapshot.entries[1].route));
 }

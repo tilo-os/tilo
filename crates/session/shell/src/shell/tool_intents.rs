@@ -310,6 +310,7 @@ fn apply_workspace_settings(chrome: &Chrome, request: &ToolRequest) -> Result<()
         os_actions::WorkspaceSettingsRoute::Members => WsTab::Members,
         os_actions::WorkspaceSettingsRoute::PrivacySecurity => WsTab::Permissions,
         os_actions::WorkspaceSettingsRoute::AppsFiles => WsTab::Apps,
+        os_actions::WorkspaceSettingsRoute::Emoji => WsTab::Emoji,
     };
     state.open_workspace_settings(tab);
     state.bump();

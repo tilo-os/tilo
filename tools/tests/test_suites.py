@@ -485,7 +485,7 @@ class CargoReaderTests(unittest.TestCase):
         self.assertEqual(suites.parse(manifest).cargo[0].dependencies_of, ("apps/",))
         self.assertEqual(self.audit({}, manifest), [])
         problems = self.audit({}, manifest.replace('["apps/"]', '["tools/"]'))
-        self.assertEqual(problems, ["cargo ui: dependencies_of tools/ holds no tracked package"])
+        self.assertEqual(problems, ["tools/ci/suites.toml: cargo ui: dependencies_of tools/ holds no tracked package"])
         for value in ('["apps"]', '[]', '"apps/"', '["../apps/"]'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 suites.parse(manifest.replace('["apps/"]', value))

@@ -54,6 +54,7 @@
 pub mod actions;
 pub mod agent_render;
 pub mod agent_timeline;
+pub mod angles;
 pub mod app;
 pub mod audio;
 pub mod curve;

@@ -68,6 +68,29 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Say which sheet an Enter press meets, so a join typed into the
+    /// directory sheet that never left shows where its Enter went.
+    fn trace_enter_at_sheets(&self, event: &WindowEvent) {
+        if let WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+            && (self.directory_sheet.is_open() || self.peer_sync_overlay.visible())
+        {
+            tracing::info!(
+                directory_sheet = self.directory_sheet.is_open(),
+                join_card = self.peer_sync_overlay.visible(),
+                app_sheet = self.app_sheet.is_some(),
+                "Enter reached the shell's join sheets"
+            );
+        }
+    }
+
     /// Modal overlays that absorb an event outright before anything else
     /// sees it: the file chooser (for the window that asked; a D-Bus call
     /// is parked on the answer), an in-flight peer-sync token prompt, and
@@ -82,6 +105,7 @@ impl ShellOverlayHost {
         // the answer, and a typed filename shares characters with chords)
         // and leaves the rest of the desktop alone.
         self.focus_asking_window_on_press(event);
+        self.trace_enter_at_sheets(event);
         let place = self.file_picker_place();
         if self
             .file_picker_overlay
@@ -555,6 +579,10 @@ impl ShellOverlayHost {
             if self.workspace_settings_overlay.scroll_agent_access(dy) {
                 self.bump_chrome();
             }
+            *ctx.handled = true;
+            return true;
+        }
+        if self.route_ws_emoji_wheel(event) {
             *ctx.handled = true;
             return true;
         }

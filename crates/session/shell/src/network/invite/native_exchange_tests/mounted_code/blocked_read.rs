@@ -99,14 +99,18 @@ pub(super) async fn run(device: &Device, target: &mut Mounted) {
     );
 }
 
+/// The merge phase of the Code record's own route; the window also keeps
+/// records beside it (the workspace's emoji) on routes of their own.
 pub(super) fn phase(target: &Mounted) -> serde_json::Value {
     let phases = target.code.app.controlled_document_merge_phase_for_test();
-    assert_eq!(
-        phases.len(),
-        1,
-        "the original document owner remains observable"
-    );
-    phases.into_iter().next().unwrap()
+    let mut own = phases
+        .into_iter()
+        .filter(|phase| phase["app"] == APP && phase["record"] == cold_code::RECORD);
+    let phase = own
+        .next()
+        .expect("the original document owner remains observable");
+    assert!(own.next().is_none(), "one route holds the Code record");
+    phase
 }
 
 /// Commit an edit of the Code record from `base` to `expected` through the

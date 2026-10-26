@@ -480,6 +480,9 @@ pub struct RoomActivityPane {
     agent_runs: Vec<IndexedAgentRun>,
     cold_agent_runs: HashMap<RecordId, ColdAgentRuns>,
     agent_undo_notice: Option<(String, String)>,
+    /// Records the last task undo did not reach, as sentences naming each:
+    /// reported beside the run, never left out of it.
+    unreverted: Vec<String>,
     open_agent_records: HashSet<RecordId>,
     /// What a deep link last asked the feed to show, and how many it asked.
     focus: Option<tilo_actions::remote::workspace_activity::Focus>,
@@ -639,6 +642,7 @@ impl RoomActivityPane {
             agent_runs: Vec::new(),
             cold_agent_runs: HashMap::new(),
             agent_undo_notice: None,
+            unreverted: Vec::new(),
             open_agent_records: HashSet::new(),
             focus: None,
             focus_serial: 0,
@@ -965,6 +969,12 @@ impl RoomActivityPane {
         self.comparison.is_some()
     }
 
+    /// The comparison Compare materialised for the selected changes: both
+    /// sides as full snapshots, and the patches between them.
+    pub fn comparison(&self) -> Option<&HistoryComparison> {
+        self.comparison.as_ref()
+    }
+
     /// Checkpoints whose causal heads or historical projection were unavailable.
     pub fn replay_unavailable_checkpoints(&self) -> usize {
         self.replay_unavailable
@@ -1224,24 +1234,36 @@ impl RoomActivityPane {
     /// Ask the host to undo the agent's whole run of `task_id`, through
     /// each changed document's own history. Returns whether it was asked.
     fn undo_task_run(&mut self, task_id: &str) -> bool {
+        self.undo_task_run_of(task_id, None)
+    }
+
+    /// Ask the host to undo the agent's run of `task_id` in the one record
+    /// `only` names (its app and record), or in every record the run
+    /// changed when it names none. Returns whether it was asked.
+    fn undo_task_run_of(&mut self, task_id: &str, only: Option<&(String, String)>) -> bool {
         if self.undo_pending.is_some() {
             return true;
         }
         let Some(indexed) = self.task_agent_run(task_id) else {
             return false;
         };
+        let steps: Vec<(String, String)> = indexed
+            .run
+            .steps
+            .iter()
+            .map(|step| (step.app.clone(), step.record.clone()))
+            .filter(|step| only.is_none_or(|one| one == step))
+            .collect();
+        if steps.is_empty() {
+            return false;
+        }
         let run = indexed.run.id.clone();
         let invocation = uuid::Uuid::new_v4();
         let undo = TaskRunUndo {
             room: self.room.clone(),
             invocation,
             task_id: task_id.to_owned(),
-            steps: indexed
-                .run
-                .steps
-                .iter()
-                .map(|step| (step.app.clone(), step.record.clone()))
-                .collect(),
+            steps,
         };
         match self.host.undo_task_run(undo) {
             Ok(()) => {
@@ -1258,6 +1280,13 @@ impl RoomActivityPane {
         }
     }
 
+    /// Undo the agent's run of task `task_id` in one changed record, from
+    /// the run's step list: the document it name is not otherwise touched.
+    fn undo_task_record(&mut self, task_id: &str, app: &str, record: &str) -> bool {
+        let only = (app.to_owned(), record.to_owned());
+        self.undo_task_run_of(task_id, Some(&only))
+    }
+
     /// Tell how the host's undo of an agent's run ended, once it has.
     fn poll_undo(&mut self) {
         let Some((invocation, run)) = self.undo_pending.clone() else {
@@ -1267,8 +1296,51 @@ impl RoomActivityPane {
             return;
         };
         self.undo_pending = None;
+        self.unreverted = Vec::new();
         let notice = match result {
-            Ok(()) => t("activity-undo-task-done"),
+            Ok(documents) => {
+                let asked: Vec<(String, String)> = documents
+                    .iter()
+                    .map(|document| (document.app.clone(), document.record.clone()))
+                    .collect();
+                // Every record of the run the host did not ask a document
+                // about is one undo did not reach: it is named, never
+                // quietly left behind.
+                self.unreverted = self
+                    .agent_runs
+                    .iter()
+                    .find(|indexed| indexed.run.id == run)
+                    .map_or_else(Vec::new, |indexed| {
+                        indexed
+                            .run
+                            .steps
+                            .iter()
+                            .filter(|step| {
+                                !asked
+                                    .iter()
+                                    .any(|(app, record)| app == &step.app && record == &step.record)
+                            })
+                            .map(|step| {
+                                let record = RecordId::parse(&step.record)
+                                    .and_then(|id| id.file_path())
+                                    .and_then(|path| {
+                                        path.file_name()
+                                            .map(|name| name.to_string_lossy().into_owned())
+                                    })
+                                    .unwrap_or_else(|| step.record.clone());
+                                t_args(
+                                    "activity-undo-task-record-left",
+                                    &[("record", record.into()), ("app", step.app.clone().into())],
+                                )
+                            })
+                            .collect()
+                    });
+                if self.unreverted.is_empty() {
+                    t("activity-undo-task-done")
+                } else {
+                    t("activity-undo-task-partial-records")
+                }
+            }
             Err(error) => t_args("activity-undo-task-refused", &[("detail", error.into())]),
         };
         self.agent_undo_notice = Some((run, notice));
@@ -1281,9 +1353,23 @@ impl RoomActivityPane {
         let Some(indexed) = self.selected_agent_run() else {
             return false;
         };
-        indexed.run.steps.iter().all(|step| {
-            RecordId::parse(&step.record).is_some_and(|id| self.open_agent_records.contains(&id))
-        })
+        indexed
+            .run
+            .steps
+            .iter()
+            .all(|step| self.record_is_open(step))
+    }
+
+    /// Whether the document behind a run's step is open here, which undoing
+    /// just that step needs.
+    fn record_is_open(&self, step: &ui::RunStep) -> bool {
+        RecordId::parse(&step.record).is_some_and(|id| self.open_agent_records.contains(&id))
+    }
+
+    /// Whether one record of the selected run can be undone on its own
+    /// from the task view.
+    fn can_undo_agent_record(&self, step: &ui::RunStep) -> bool {
+        self.host.mutations_available() && self.undo_pending.is_none() && self.record_is_open(step)
     }
 
     fn selected_ids(&self) -> Vec<HistoryEntryId> {
@@ -2872,6 +2958,58 @@ fn detail_provenance(detail: &HistorySelectionDetail) -> String {
 /// Turn Automerge's structural patch vocabulary into a small, stable set of
 /// phrases suitable for the human-facing comparison preview. Resource-native
 /// renderers can still use the complete before/after documents when opened.
+/// The fields a comparison changed, with what each held either side, read
+/// from the before and after documents the comparison kept.
+pub(crate) fn comparison_field_changes(
+    comparison: &ui::history_source::HistoryComparison,
+) -> Vec<tilo_actions::remote::workspace_activity::FieldChange> {
+    let before = automerge::AutoCommit::load(&comparison.before_document).ok();
+    let after = automerge::AutoCommit::load(&comparison.after_document).ok();
+    let (Some(before), Some(after)) = (before, after) else {
+        return Vec::new();
+    };
+    let mut changes: Vec<tilo_actions::remote::workspace_activity::FieldChange> = Vec::new();
+    for patch in &comparison.patches {
+        let automerge::PatchAction::PutMap { key, .. } = &patch.action else {
+            continue;
+        };
+        let field = humanize_field(key);
+        if changes.iter().any(|change| change.field == field) {
+            continue;
+        }
+        changes.push(tilo_actions::remote::workspace_activity::FieldChange {
+            before: map_value(&before, &patch.obj, key),
+            after: map_value(&after, &patch.obj, key),
+            field,
+        });
+    }
+    changes
+}
+
+/// What `key` of the map `object` holds in `doc`, as a person reads it.
+fn map_value(doc: &automerge::AutoCommit, object: &automerge::ObjId, key: &str) -> String {
+    match doc.get(object, key).ok().flatten() {
+        None => String::new(),
+        Some((automerge::Value::Scalar(value), _)) => match value.as_ref() {
+            automerge::ScalarValue::Str(text) => text.to_string(),
+            automerge::ScalarValue::Int(number) => number.to_string(),
+            automerge::ScalarValue::Uint(number) => number.to_string(),
+            automerge::ScalarValue::F64(number) => format!("{number}"),
+            automerge::ScalarValue::Boolean(flag) => {
+                if *flag {
+                    "yes".into()
+                } else {
+                    "no".into()
+                }
+            }
+            automerge::ScalarValue::Null => String::new(),
+            other => format!("{other:?}"),
+        },
+        // A list or a map reads as what it holds, not as its identity.
+        Some(_) => t("activity-change-content"),
+    }
+}
+
 fn comparison_change_labels(patches: &[automerge::Patch]) -> Vec<String> {
     let mut labels = Vec::new();
     for patch in patches {

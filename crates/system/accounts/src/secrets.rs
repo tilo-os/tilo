@@ -99,6 +99,16 @@ impl std::fmt::Debug for SecretItem {
 }
 
 impl SecretItem {
+    /// A list of items from its JSON form (a backup's), read by code the
+    /// runtime holds once rather than every app that reads such a list.
+    ///
+    /// # Errors
+    /// When `bytes` is not a list of items.
+    #[inline(never)]
+    pub fn list_from_json(bytes: &[u8]) -> serde_json::Result<Vec<Self>> {
+        serde_json::from_slice(bytes)
+    }
+
     pub fn login(
         title: impl Into<String>,
         username: impl Into<String>,

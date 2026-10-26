@@ -438,19 +438,10 @@ impl DirectorySheet {
                 self.keep_selection_in_view();
                 DirectoryOutcome::consumed()
             }
-            Key::Named(NamedKey::Enter) => match self.selected {
-                Some(row) => self.activate(&Target::Row(row)),
-                None => match typed_request(&self.query) {
-                    Some(DirectoryRequest::Fetch { site }) => {
-                        self.status = Status::Loading;
-                        DirectoryOutcome::request(DirectoryRequest::Fetch { site })
-                    }
-                    Some(request) => DirectoryOutcome::request(request),
-                    // One workspace answers the search: Enter joins it.
-                    None if self.shown().len() == 1 => self.activate(&Target::Row(0)),
-                    None => DirectoryOutcome::consumed(),
-                },
-            },
+            Key::Named(NamedKey::Enter) => {
+                self.trace_enter();
+                self.enter()
+            }
             // Everything else edits the search, as in every field.
             _ => {
                 let before = self.query.clone();
@@ -467,6 +458,43 @@ impl DirectorySheet {
                 DirectoryOutcome::consumed()
             }
         }
+    }
+
+    /// Enter: the chosen row, else what was typed, else the one row the
+    /// search leaves.
+    fn enter(&mut self) -> DirectoryOutcome {
+        match self.selected {
+            Some(row) => self.activate(&Target::Row(row)),
+            None => match typed_request(&self.query) {
+                Some(DirectoryRequest::Fetch { site }) => {
+                    self.status = Status::Loading;
+                    DirectoryOutcome::request(DirectoryRequest::Fetch { site })
+                }
+                Some(request) => DirectoryOutcome::request(request),
+                // One workspace answers the search: Enter joins it.
+                None if self.shown().len() == 1 => self.activate(&Target::Row(0)),
+                None => DirectoryOutcome::consumed(),
+            },
+        }
+    }
+
+    /// Say what Enter will do with the search, never what was typed: a
+    /// pasted invitation is a secret.
+    fn trace_enter(&self) {
+        let typed = match typed_request(&self.query) {
+            Some(DirectoryRequest::LinkOrCode(_)) => "link or code",
+            Some(DirectoryRequest::Fetch { .. }) => "site",
+            Some(_) => "other",
+            None if self.query.trim().is_empty() => "nothing",
+            None => "search words",
+        };
+        tracing::info!(
+            typed,
+            typed_chars = self.query.chars().count(),
+            selected = ?self.selected,
+            shown = self.shown().len(),
+            "directory sheet: Enter on the join field"
+        );
     }
 
     /// Text an input method committed into the search.

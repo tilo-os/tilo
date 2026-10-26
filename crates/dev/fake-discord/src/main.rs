@@ -7,17 +7,37 @@
 //!
 //! With `--control`, a script acts as Discord's people over plain HTTP, the
 //! way the crate's tests do through [`fake_discord::FakeDiscord`]:
-//! - `POST /post?channel=&user=&name=&content=` posts as that user; a
-//!   non-empty body is a file, named by `file=` and typed by `type=`;
-//!   answers `{"id": ...}`.
+//! - `POST /post?channel=&user=&name=&content=&avatar=` posts as that
+//!   user (`avatar` an avatar hash, optional); a non-empty body is a file,
+//!   named by `file=` and typed by `type=`; answers `{"id": ...}`.
 //! - `POST /edit?message=&content=` and `POST /delete?message=` change or
 //!   remove a message, as its author would.
 //! - `GET /messages?channel=` answers the channel's messages, oldest first.
-//! - `POST /slash?user=&name=&command=&code=` runs a slash command as that
-//!   user in #general (`command=link&code=ABC123`, `command=unlink`), as
-//!   Discord delivers it: an interaction on the gateway; answers `{"id": ...}`.
+//! - `POST /slash?user=&name=&command=&avatar=` runs a slash command as
+//!   that user in #general (`command=link`, `command=unlink`), as Discord
+//!   delivers it: an interaction on the gateway; answers `{"id": ...}`.
 //! - `GET /replies` answers the bot's replies to interactions, oldest first,
-//!   each `{"interaction": id, "reply": body}`.
+//!   each `{"interaction": id, "reply": body}`; `GET /edits` the bot's
+//!   later edits of them, each `{"interaction": id, "edit": body}`.
+//!
+//! Signing in with Discord (the REST address serves the consent page at
+//! `/oauth2/authorize`, the token endpoint and `/users/@me`):
+//! - `POST /signin?user=&name=&avatar=` signs that user in to Discord: the
+//!   consent page authorizes their account (default `4242`, `qwolff`).
+//! - `POST /cdn?path=avatars/<user>/<hash>.png&type=image/png` with the
+//!   bytes as body serves them on the CDN (an avatar a user carries).
+//!
+//! Reactions and the server's own emoji (`--emojis name:id,...` gives the
+//! guild custom emoji from the start, as its `GUILD_CREATE` lists them):
+//! - `POST /react?channel=&message=&user=&name=&emoji=` and
+//!   `POST /unreact?...` add or take back that user's reaction, as Discord
+//!   delivers it; `emoji` is a Unicode emoji, or `:name:` for a custom one
+//!   (the guild's of that name, with its id, when it has one).
+//! - `GET /reactions?message=` answers the emoji the bot reacted to that
+//!   message with, oldest first: Unicode, or `name:id` for a custom one.
+//! - `GET /emojis` answers the guild's custom emoji; `POST /emojis?set=
+//!   name:id,name:id` replaces them, as a moderator uploading or deleting
+//!   one does (`GUILD_EMOJIS_UPDATE`).
 //!
 //! Voice (the fake voice server runs on loopback; `VOICE_SERVER_UPDATE`
 //! names it, so the worker needs nothing beyond `DISCORD_ALLOW_LOOPBACK`):
@@ -51,9 +71,14 @@ async fn main() -> std::io::Result<()> {
     let mut rest: SocketAddr = ([127, 0, 0, 1], 0).into();
     let mut gateway: SocketAddr = ([127, 0, 0, 1], 0).into();
     let mut control: Option<SocketAddr> = None;
+    let mut emojis = String::new();
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let value = args.next().unwrap_or_default();
+        if flag == "--emojis" {
+            emojis = value;
+            continue;
+        }
         let parsed: SocketAddr = value.parse().map_err(|_| {
             std::io::Error::other(format!(
                 "{flag} wants an address like 127.0.0.1:8080, not {value:?}"
@@ -68,12 +93,13 @@ async fn main() -> std::io::Result<()> {
             "--control" => control = Some(parsed),
             other => {
                 return Err(std::io::Error::other(format!(
-                    "unknown flag {other}; use --rest, --gateway or --control"
+                    "unknown flag {other}; use --rest, --gateway, --control or --emojis"
                 )));
             }
         }
     }
     let fake = Arc::new(fake_discord::FakeDiscord::start_on(rest, gateway).await?);
+    set_emojis(&fake, &emojis);
     println!("DISCORD_API_BASE={}", fake.api_base());
     println!("DISCORD_CDN_BASE={}", fake.cdn_base());
     println!("DISCORD_ALLOW_LOOPBACK=1");
@@ -138,7 +164,7 @@ async fn control(
         .unwrap_or_default();
     let (status, answer): (u16, Value) = match (method.as_str(), path.as_str()) {
         ("POST", "/post") => {
-            let user = fake_discord::User::new(&arg("user"), &arg("name"));
+            let user = person(&arg);
             let id = if body.is_empty() {
                 fake.post(&arg("channel"), &user, &arg("content"))
             } else {
@@ -161,16 +187,22 @@ async fn control(
         }
         ("GET", "/messages") => (200, json!(fake.messages_in(&arg("channel")))),
         ("POST", "/slash") => {
-            let user = fake_discord::User::new(&arg("user"), &arg("name"));
-            let code = arg("code");
-            let id = fake.slash(
-                &user,
-                &arg("command"),
-                Some(code.as_str()).filter(|c| !c.is_empty()),
-            );
+            let id = fake.slash(&person(&arg), &arg("command"));
             (200, json!({ "id": id }))
         }
         ("GET", "/replies") => (200, json!(fake.interaction_replies())),
+        ("GET", "/edits") => (200, json!(fake.interaction_edits())),
+        ("POST", "/signin") => {
+            fake.sign_in(person(&arg));
+            (200, json!({}))
+        }
+        ("POST", "/cdn") => {
+            let url = fake.put_cdn(&arg("path"), &arg("type"), &body);
+            (200, json!({ "url": url }))
+        }
+        ("POST", "/react" | "/unreact" | "/expressions") | (_, "/reactions" | "/emojis") => {
+            (200, reactions(fake, &method, &path, &arg))
+        }
         ("POST", "/voice/join") => {
             let user = fake_discord::User::new(&arg("user"), &arg("name"));
             let channel = Some(arg("channel"))
@@ -195,7 +227,7 @@ async fn control(
         ("GET", "/voice/state") => (200, fake.voice_state_json()),
         _ => (
             404,
-            json!({ "error": "use /post, /edit, /delete, /messages, /slash, /replies or /voice/..." }),
+            json!({ "error": "use /post, /edit, /delete, /messages, /slash, /replies, /react, /unreact, /reactions, /emojis, /expressions or /voice/..." }),
         ),
     };
     Response::builder()
@@ -245,8 +277,75 @@ fn heard(fake: &fake_discord::FakeDiscord, hz: &str, seconds: &str) -> Value {
     json!({"frames": frames.len(), "share": shares})
 }
 
+/// The reaction and emoji routes: a user's reaction added or taken back,
+/// the bot's reactions on a message, and the guild's custom emoji.
+fn reactions(
+    fake: &fake_discord::FakeDiscord,
+    method: &str,
+    path: &str,
+    arg: &dyn Fn(&str) -> String,
+) -> Value {
+    match (method, path) {
+        ("POST", "/react" | "/unreact") => {
+            let user = fake_discord::User::new(&arg("user"), &arg("name"));
+            let (channel, message, emoji) = (arg("channel"), arg("message"), arg("emoji"));
+            if path == "/react" {
+                fake.react(&channel, &message, &user, &emoji);
+            } else {
+                fake.unreact(&channel, &message, &user, &emoji);
+            }
+            json!({})
+        }
+        ("POST", "/emojis") => {
+            set_emojis(fake, &arg("set"));
+            json!(fake.emojis())
+        }
+        (_, "/emojis") => json!(fake.emojis()),
+        ("POST", "/expressions") => {
+            let yes = |name: &str| matches!(arg(name).as_str(), "1" | "true");
+            let slots = arg("slots").parse().unwrap_or(fake_discord::EMOJI_SLOTS);
+            fake.set_expressions(yes("create"), yes("manage"), slots);
+            json!({})
+        }
+        _ => json!(fake.bot_reactions_on(&arg("message"))),
+    }
+}
+
+/// Make the guild's custom emoji `list`, `name:id` comma separated; a
+/// name alone gets an id of its own.
+fn set_emojis(fake: &fake_discord::FakeDiscord, list: &str) {
+    let parsed: Vec<(String, String)> = list
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .enumerate()
+        .map(|(index, entry)| match entry.split_once(':') {
+            Some((name, id)) => (name.to_owned(), id.to_owned()),
+            None => (
+                entry.to_owned(),
+                5100_usize.saturating_add(index).to_string(),
+            ),
+        })
+        .collect();
+    let emojis: Vec<(&str, &str, bool)> = parsed
+        .iter()
+        .map(|(name, id)| (name.as_str(), id.as_str(), false))
+        .collect();
+    fake.set_emojis(&emojis);
+}
+
 fn decode(text: &str) -> String {
     percent_encoding::percent_decode_str(&text.replace('+', " "))
         .decode_utf8_lossy()
         .into_owned()
+}
+
+/// The Discord user a control request names (`user=&name=`, with
+/// `avatar=` an avatar hash when they have one).
+fn person(arg: &impl Fn(&str) -> String) -> fake_discord::User {
+    let user = fake_discord::User::new(&arg("user"), &arg("name"));
+    match arg("avatar") {
+        hash if hash.is_empty() => user,
+        hash => user.with_avatar(&hash),
+    }
 }
