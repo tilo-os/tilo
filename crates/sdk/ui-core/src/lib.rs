@@ -477,6 +477,8 @@ pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
 pub use action_palette::ActionPalette;
 pub use tilo_actions;
+/// The record and effect vocabulary a published action belongs to.
+pub use tilo_resource;
 
 /// The word-boundary corrections every text field applies, for an input
 /// method that commits whole words itself (the on-screen keyboard).

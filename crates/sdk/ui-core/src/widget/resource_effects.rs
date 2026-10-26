@@ -4,43 +4,32 @@
 //! screen, the installer — keeps its state in the widget rather than in a
 //! resource document, but its actions are ordinary published resources. This
 //! host keeps the toolkit's raw operation protocol inside the toolkit: the
-//! root names one typed vocabulary ([`EffectVocabulary`]) and answers it in
-//! [`TypedEffects::answer`], so an app's own sources neither encode nor
-//! decode a host operation, while the app framework's `ResourceSurface`
-//! remains the path a resource answers its effects through.
+//! root names the toolkit's one typed effect vocabulary ([`Effect`]) and
+//! answers it in [`TypedEffects::answer`], so an app's own sources neither
+//! encode nor decode a host operation, while the app framework's
+//! `ResourceSurface` remains the path a resource answers its effects through.
+//!
+//! [`Effect`]: tilo_resource::Effect
 
 use crate::automerge::AutoCommit;
 use crate::tilo_actions::{ActionOutput, OperationKind, Resource};
+use crate::tilo_resource::Effect;
 use crate::widget::{
     Decorator, ResourceOperation, ResourceOperationStart, ResourceOperations, Widget,
     start_in_children,
 };
 
-/// One typed effect vocabulary: the operation types it decodes.
-pub trait EffectVocabulary: Sized {
-    /// The operation type ids [`Self::decode`] accepts. Every action the root
-    /// publishes under one of them is answered by [`TypedEffects::answer`].
-    const OPERATION_TYPES: &'static [&'static str];
-
-    /// Decode one payload the action door bound for `type_id`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a caller-facing reason. A vocabulary that carries secrets
-    /// reports the payload's category, never its contents.
-    fn decode(type_id: &str, payload: &[u8]) -> Result<Self, String>;
-}
-
 /// A retained widget root that publishes its resources and answers their
-/// effects as a typed vocabulary.
+/// effects as one typed vocabulary.
 ///
 /// Host it with [`host`]; the returned widget publishes what
 /// [`published_resources`](Self::published_resources) reports and decodes the
 /// operations of [`Self::Effect`] before reaching
 /// [`answer`](Self::answer).
 pub trait TypedEffects: Widget {
-    /// The typed vocabulary every effect operation on this root decodes to.
-    type Effect: EffectVocabulary;
+    /// The typed vocabulary every effect operation on this root decodes to:
+    /// the toolkit's canonical [`Effect`].
+    type Effect: Effect;
 
     /// The resources this root has open now, with the actions each exports.
     fn published_resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
@@ -101,7 +90,7 @@ impl<W: TypedEffects + 'static> crate::resources::PublishesResources for EffectH
 
 impl<W: TypedEffects + 'static> ResourceOperations for EffectHost<W> {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        W::Effect::OPERATION_TYPES
+        &[<W::Effect as Effect>::OPERATION]
     }
 
     fn start_operation(
@@ -113,9 +102,9 @@ impl<W: TypedEffects + 'static> ResourceOperations for EffectHost<W> {
         let request = op
             .unscoped()
             .filter(|request| request.kind != OperationKind::Document)
-            .filter(|request| W::Effect::OPERATION_TYPES.contains(&request.type_id));
+            .filter(|request| request.type_id == <W::Effect as Effect>::OPERATION);
         if let Some(request) = request {
-            let effect = W::Effect::decode(request.type_id, request.payload)?;
+            let effect = W::Effect::from_payload(request.payload)?;
             return self
                 .inner
                 .answer(effect)

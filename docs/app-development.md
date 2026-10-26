@@ -1819,12 +1819,15 @@ with `#[derive(Effect)]` instead, and runs long work as a job through the
 `EffectCx` its handler receives. A session surface that runs before any
 compositor exists — the sign-in screen, the installer — keeps its own retained
 state and publishes the same resources: it implements
-`ui::widget::resource_effects::TypedEffects`, names one `EffectVocabulary`,
-answers each effect in one exhaustive match, and launches through
+`ui::widget::resource_effects::TypedEffects` with the toolkit's canonical
+`tilo_resource::Effect` vocabulary (derived or implemented on its operation
+enum), answers each effect in one exhaustive match, and launches through
 `ui::widget::resource_effects::host(root)`. That host owns the toolkit's raw
 operation protocol, so no door in the app's own sources encodes or decodes
 one, and the console surface, palette, assistive activation, agents and
-scripts all end in the same typed handler.
+scripts all end in the same typed handler. The effect declarations are the
+action metadata callers see: ids, secret parameters, risk, availability,
+kinds and arguments come from the same vocabulary the handler answers.
 
 Register document action decoders in `App::action_registry_mut`. The raw
 operation protocol between a host and the toolkit's widgets —
