@@ -19,6 +19,8 @@ use crate::shell::state::{StripId, WorkspaceId};
 /// One thing the window menu does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowMenuAction {
+    /// Take the person to the window that is asking for them.
+    Reveal,
     /// Cover the display with the window, or leave full screen.
     FullScreen,
     /// Fill the strip with the window, or restore it.
@@ -58,6 +60,7 @@ impl WindowMenuAction {
     /// `perform_semantic_action` target an assistive technology activates.
     pub fn semantic_key(self) -> String {
         match self {
+            Self::Reveal => "tabmenu:reveal".into(),
             Self::FullScreen => "tabmenu:full-screen".into(),
             Self::Maximize => "tabmenu:maximize".into(),
             Self::MoveToStrip(strip) => format!("{MOVE_TO_STRIP_KEY}:{}", strip.raw()),
@@ -93,6 +96,7 @@ impl WindowMenuAction {
                 .map(|raw| Self::MoveToWorkspace(WorkspaceId(raw)));
         }
         [
+            Self::Reveal,
             Self::FullScreen,
             Self::Maximize,
             Self::NewTab,
@@ -122,6 +126,8 @@ pub struct WindowMenuFacts {
     /// The tab shows a host window this device may name
     /// ([`crate::shell::tab_binding::may_rename_tab`]).
     pub renamable: bool,
+    /// The window asked for the person and has not had them yet.
+    pub attention: bool,
 }
 
 /// One row the menu offers.
@@ -274,7 +280,17 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
         })
     };
     let tabbed = facts.tab_count >= 2;
-    let mut rows = vec![
+    let mut rows = Vec::new();
+    if facts.attention {
+        rows.push(entry(
+            WindowMenuAction::Reveal,
+            t("shell-window-menu-reveal"),
+            Icon::CornerUpRight,
+            None,
+        ));
+        rows.push(WindowMenuRow::Separator);
+    }
+    rows.extend([
         entry(
             WindowMenuAction::FullScreen,
             t(if facts.full_screen {
@@ -300,7 +316,7 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
             bound(config, ShortcutAction::ToggleMaximize),
         ),
         WindowMenuRow::Separator,
-    ];
+    ]);
     rows.extend(move_rows(facts));
     rows.extend([
         WindowMenuRow::Separator,
@@ -448,11 +464,37 @@ mod tests {
             strips: vec![(StripId(2), "Research".into())],
             workspaces: vec![(WorkspaceId(9), "Studio".into())],
             renamable: false,
+            attention: false,
         }
     }
 
     fn labels(rows: &[WindowMenuRow]) -> Vec<&str> {
         rows.iter().filter_map(WindowMenuRow::label).collect()
+    }
+
+    #[test]
+    fn a_window_that_is_asking_offers_to_take_you_to_it_first() {
+        let config = ShortcutConfig::default();
+        let asking = WindowMenuFacts {
+            attention: true,
+            ..facts(1)
+        };
+        let rows = window_menu_rows(&asking, &config);
+        let shown = labels(&rows);
+        assert_eq!(shown.first(), Some(&"Go to this window"));
+        assert_eq!(
+            rows.first().and_then(WindowMenuRow::action),
+            Some(WindowMenuAction::Reveal)
+        );
+        assert_eq!(
+            WindowMenuAction::from_semantic_key("tabmenu:reveal"),
+            Some(WindowMenuAction::Reveal)
+        );
+        assert_eq!(
+            labels(&window_menu_rows(&facts(1), &config)).first(),
+            Some(&"Full screen"),
+            "a quiet window has no reveal row"
+        );
     }
 
     #[test]

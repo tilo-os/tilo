@@ -234,6 +234,10 @@ pub struct TabDescriptor {
     /// The application's own artwork, painted in place of the `app_kind`
     /// glyph — how an app Tilo did not package is recognisable in its tab.
     pub icon: Option<icons::AppImage>,
+    /// The window is waiting for the person: a refusal, a background open, a
+    /// dialog somewhere they are not looking. Painted as one dot at the
+    /// pill's trailing edge and cleared when the tab takes focus.
+    pub attention: bool,
 }
 
 impl TabDescriptor {
@@ -243,6 +247,7 @@ impl TabDescriptor {
             title: title.into(),
             app_kind: None,
             icon: None,
+            attention: false,
         }
     }
 }
@@ -1375,6 +1380,20 @@ impl TabBar {
             suppress_hover,
             zone,
         };
+        if t.attention {
+            // One quiet dot at the trailing edge: a window asked for this
+            // person and did not get their focus. Cleared when it does.
+            let radius = 3.0;
+            let cx = r.x1 - f64::from(theme.tokens.spacing.s2) - radius;
+            let dot = vello::kurbo::Circle::new(Point::new(cx, r.center().y), radius);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.semantic.info,
+                None,
+                &dot,
+            );
+        }
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         self.draw_pill_body(&mut ctx, &pill);
         self.draw_pill_faces(&mut ctx, presence, &pill);
@@ -5910,6 +5929,7 @@ mod tests {
                     title: "A".into(),
                     app_kind: Some(AppKind::Terminal),
                     icon: None,
+                    attention: false,
                 }],
                 1,
             );
@@ -5961,6 +5981,7 @@ mod tests {
                     title: "Documentation".into(),
                     app_kind: Some(AppKind::Editor),
                     icon: None,
+                    attention: false,
                 }],
                 1,
             );
