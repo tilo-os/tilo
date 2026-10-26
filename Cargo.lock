@@ -20292,7 +20292,10 @@ dependencies = [
 name = "tilo-test-env"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "tempfile",
+ "tilo-automerge",
+ "tilo-automerge-fork",
  "tilo-lock",
  "workspace-hack",
 ]
