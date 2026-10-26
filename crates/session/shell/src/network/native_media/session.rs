@@ -784,7 +784,6 @@ impl Session {
             let Ok(object) = opened.encode() else {
                 continue;
             };
-            let keyframe = opened.keyframe;
             self.video.inbox.admit(
                 Picture {
                     person,
@@ -795,7 +794,8 @@ impl Session {
                     source: video::picture_source(received.source),
                     object,
                 },
-                keyframe,
+                opened.sequence,
+                opened.keyframe,
             );
         }
     }
@@ -816,6 +816,7 @@ impl Session {
                             source: PictureSource::Camera,
                             object: bytes,
                         },
+                        object.sequence,
                         object.keyframe,
                     );
                 }

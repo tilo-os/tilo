@@ -373,3 +373,69 @@ async fn a_publication_no_longer_read_delivers_nothing_more() {
         .collect();
     assert_eq!(queued, [1]);
 }
+
+fn received_picture(sequence: u64, keyframe: bool) -> ReceivedPicture {
+    ReceivedPicture {
+        publisher: PublicationId {
+            namespace: "n".into(),
+            carrier_generation: 1,
+            incarnation: 1,
+        },
+        source: Source::Camera,
+        window: None,
+        object: VideoObject {
+            keyframe,
+            codec: video::Codec::H264,
+            layer: Layer::Mid,
+            sequence,
+            timestamp_us: sequence,
+            width: 640,
+            height: 360,
+            payload: vec![1],
+        },
+        received_at: Instant::now(),
+    }
+}
+
+#[test]
+fn a_picture_queue_holds_a_gap_until_a_keyframe_and_restarts_on_reconnect() {
+    let mut queue = PictureQueue::for_track(video::Track::Picture(Source::Camera, Layer::Mid));
+    queue.admit(received_picture(0, true));
+    queue.admit(received_picture(1, false));
+    assert_eq!(queue.pictures.len(), 2);
+
+    queue.admit(received_picture(3, false));
+    assert_eq!(queue.pictures.len(), 0, "a gap clears the queued pictures");
+    queue.admit(received_picture(4, false));
+    assert_eq!(queue.pictures.len(), 0, "and holds deltas until a keyframe");
+    queue.admit(received_picture(5, true));
+    queue.admit(received_picture(6, false));
+    assert_eq!(queue.pictures.len(), 2);
+
+    queue.chain.lose();
+    queue.pictures.clear();
+    queue.admit(received_picture(0, true));
+    queue.admit(received_picture(1, false));
+    assert_eq!(
+        queue.pictures.len(),
+        2,
+        "a reconnected track starts at zero"
+    );
+}
+
+#[test]
+fn a_full_picture_queue_starts_over_at_the_next_keyframe() {
+    let mut queue = PictureQueue::for_track(video::Track::Picture(Source::Camera, Layer::Mid));
+    queue.admit(received_picture(0, true));
+    for sequence in 1..PICTURES_QUEUED as u64 {
+        queue.admit(received_picture(sequence, false));
+    }
+    assert_eq!(queue.pictures.len(), PICTURES_QUEUED);
+    let next = PICTURES_QUEUED as u64;
+    queue.admit(received_picture(next, false));
+    assert_eq!(queue.pictures.len(), 0, "the full queue gave way");
+    queue.admit(received_picture(next.saturating_add(1), false));
+    assert_eq!(queue.pictures.len(), 0, "nothing until a keyframe");
+    queue.admit(received_picture(next.saturating_add(2), true));
+    assert_eq!(queue.pictures.len(), 1);
+}

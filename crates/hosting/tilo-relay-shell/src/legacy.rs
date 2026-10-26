@@ -117,7 +117,7 @@ struct Stream {
     started: bool,
     /// Which of the session's units continue the coded sequence, by their
     /// `SurfaceFrame::seq`.
-    chain: neighbour_wire::unit_chain::UnitChain,
+    chain: encoded_frame::UnitChain,
     /// A unit went missing on the way here: the unit after the gap, and when
     /// the session was last asked for a keyframe.
     keyframe_wanted: Option<(u64, Option<Instant>)>,
@@ -584,7 +584,7 @@ impl LegacyWindows {
                 sequence: Vec::new(),
                 sequence_bytes: 0,
                 started: false,
-                chain: neighbour_wire::unit_chain::UnitChain::default(),
+                chain: encoded_frame::UnitChain::default(),
                 keyframe_wanted: None,
             },
         );
@@ -601,9 +601,9 @@ impl LegacyWindows {
     ) {
         let key = wire::keyframe(&stream.listed.codec, encoded);
         match stream.chain.admit(unit_seq, key) {
-            neighbour_wire::unit_chain::Admission::Decode => {}
-            neighbour_wire::unit_chain::Admission::Stale => return,
-            neighbour_wire::unit_chain::Admission::AwaitingKeyframe { broke } => {
+            encoded_frame::Admission::Decode => {}
+            encoded_frame::Admission::Stale => return,
+            encoded_frame::Admission::AwaitingKeyframe { broke } => {
                 // A unit lost on the way here: members fed the deltas after
                 // it could not decode them. End the group and ask the session
                 // for a keyframe ([`Self::keyframe_requests`]).

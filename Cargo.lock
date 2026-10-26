@@ -4089,6 +4089,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "encoded-frame"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "workspace-hack",
+]
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17307,6 +17315,7 @@ dependencies = [
 name = "tilo-callstream"
 version = "0.1.0"
 dependencies = [
+ "encoded-frame",
  "gstreamer-app",
  "neighbour-wire",
  "tempfile",
@@ -18881,6 +18890,7 @@ name = "tilo-moq"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "encoded-frame",
  "hex",
  "moq-net",
  "quinn",
@@ -19615,6 +19625,7 @@ dependencies = [
  "bytes",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "encoded-frame",
  "hex",
  "moq-net",
  "neighbour-wire",
@@ -24845,6 +24856,7 @@ dependencies = [
  "elliptic-curve 0.14.1",
  "email_address",
  "emoji",
+ "encoded-frame",
  "encoding_rs",
  "endi",
  "enum-assoc",

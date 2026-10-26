@@ -247,6 +247,7 @@ members = [
     "crates/hosting/tilo-relay-store",
 
     # Media
+    "crates/media/encoded-frame",
     "crates/media/ocr",
     "crates/media/segment",
     "crates/media/thumbnail",

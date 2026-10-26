@@ -55,7 +55,12 @@ def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
 # Crates the page runtime compiles for the browser that reach wasm-bindgen only
 # through others, with the features the web build gives them: the arguments
 # that build each as tilo-browser-runtime's dependency on it does.
-WASM_ALSO = {"tilo-browser-peer": ("--no-default-features", "--features", "toolkit")}
+WASM_ALSO = {
+    "tilo-browser-peer": ("--no-default-features", "--features", "toolkit"),
+    # The frame contract is shared by the browser call path; check it for wasm32
+    # even when no browser crate is selected.
+    "encoded-frame": (),
+}
 # Lints that misfire on wasm32 alone: browser handles are neither Send nor
 # Sync, and std::fs::File there holds nothing to drop.
 WASM_CLIPPY_ALLOW = ("clippy::future_not_send", "clippy::arc_with_non_send_sync", "clippy::drop_non_drop")

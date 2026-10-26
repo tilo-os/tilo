@@ -8,6 +8,7 @@ use crate::{
     video::{self, Layer, Source, VideoObject},
     voice::{self, VoiceObject},
 };
+use encoded_frame::{Admission, UnitChain};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::{Arc, Mutex},
@@ -146,8 +147,8 @@ impl PictureOut {
 /// The pictures received of one shown track.
 struct PictureQueue {
     pictures: VecDeque<ReceivedPicture>,
-    /// The queue overflowed: nothing until the next keyframe.
-    awaiting_keyframe: bool,
+    /// Which picture continues the track's reference chain.
+    chain: UnitChain,
     /// Pictures held before it starts over at the next keyframe.
     capacity: usize,
 }
@@ -167,7 +168,7 @@ impl PictureQueue {
         };
         Self {
             pictures: VecDeque::new(),
-            awaiting_keyframe: false,
+            chain: UnitChain::default(),
             capacity,
         }
     }
@@ -176,14 +177,23 @@ impl PictureQueue {
     /// Queue `picture`, or start over at the next keyframe when behind,
     /// rather than hand a decoder a picture whose reference is gone.
     fn admit(&mut self, picture: ReceivedPicture) {
-        if self.awaiting_keyframe && !picture.object.keyframe {
-            return;
+        match self
+            .chain
+            .admit(picture.object.sequence, picture.object.keyframe)
+        {
+            Admission::Decode => {}
+            Admission::Stale => return,
+            Admission::AwaitingKeyframe { broke } => {
+                if broke {
+                    self.pictures.clear();
+                }
+                return;
+            }
         }
-        self.awaiting_keyframe = false;
         if self.pictures.len() >= self.capacity {
             self.pictures.clear();
+            self.chain.lose();
             if !picture.object.keyframe {
-                self.awaiting_keyframe = true;
                 return;
             }
         }

@@ -226,7 +226,7 @@ pub struct PeerView {
     /// latency then, and when, so a late picture's latency counts the wait.
     pending_push: Option<(Option<u64>, ui::time::Instant)>,
     /// Which units continue the decoder's reference chain.
-    chain: neighbour_wire::unit_chain::UnitChain,
+    chain: tilo_callstream::unit_chain::UnitChain,
     /// Asks the sender for a keyframe once the chain broke.
     keyframe_sink: Option<Arc<dyn Fn(u64) + Send + Sync>>,
     /// When the view last asked for a keyframe.
@@ -280,7 +280,7 @@ impl PeerView {
             late_poll_until: None,
             picture_wake: None,
             pending_push: None,
-            chain: neighbour_wire::unit_chain::UnitChain::default(),
+            chain: tilo_callstream::unit_chain::UnitChain::default(),
             keyframe_sink: None,
             keyframe_requested: None,
             from: ui::arriving::Source::peer(""),
@@ -351,7 +351,7 @@ impl PeerView {
             late_poll_until: None,
             picture_wake: None,
             pending_push: None,
-            chain: neighbour_wire::unit_chain::UnitChain::default(),
+            chain: tilo_callstream::unit_chain::UnitChain::default(),
             keyframe_sink: None,
             keyframe_requested: None,
             from: ui::arriving::Source::peer(""),
@@ -451,9 +451,9 @@ impl PeerView {
     ) -> PushOutcome {
         let keyframe = media::realtime::is_keyframe(self.codec(), nalus);
         match self.chain.admit(seq, keyframe) {
-            neighbour_wire::unit_chain::Admission::Decode => {}
-            neighbour_wire::unit_chain::Admission::Stale => return PushOutcome::Stale,
-            neighbour_wire::unit_chain::Admission::AwaitingKeyframe { broke } => {
+            tilo_callstream::unit_chain::Admission::Decode => {}
+            tilo_callstream::unit_chain::Admission::Stale => return PushOutcome::Stale,
+            tilo_callstream::unit_chain::Admission::AwaitingKeyframe { broke } => {
                 if broke {
                     tracing::debug!(
                         surface = self.surface_id,

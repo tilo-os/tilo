@@ -15,6 +15,9 @@ relay = ["tls", "dep:moq-net", "dep:web-transport-quinn", "dep:quinn", "dep:rust
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
+# The codec table, frame metadata, bounds, validation and reference-chain
+# admission the tilo-video/1 profile shares with the callstream profile.
+encoded-frame = { path = "../../media/encoded-frame" }
 thiserror.workspace = true
 bytes = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }

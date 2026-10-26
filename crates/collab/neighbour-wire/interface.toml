@@ -22,7 +22,6 @@ sources = [
     "crates/collab/neighbour-wire/src/presence_slot.rs",
     "crates/collab/neighbour-wire/src/record_sync.rs",
     "crates/collab/neighbour-wire/src/retention.rs",
-    "crates/collab/neighbour-wire/src/unit_chain.rs",
     "crates/collab/tilo-user-identity/src/cert.rs",
     "crates/collab/collab-types/src/channel.rs",
     "crates/hosting/tilo-relay-protocol/src/voice.rs",

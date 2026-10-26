@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tilo_callstream::unit_chain::{Admission, UnitChain};
 use tilo_lock::MutexRecover as _;
 use tilo_moq::client::{Client, ClientError};
 use tilo_moq::video::{Codec, Layer, Source, VideoObject};
@@ -651,8 +652,8 @@ pub(crate) struct Inbox {
     queue: VecDeque<Queued>,
     next: u64,
     bytes: usize,
-    /// Streams that dropped a picture: nothing of them until a keyframe.
-    behind: BTreeSet<(String, PictureSource)>,
+    /// Which picture continues each stream's reference chain.
+    chains: BTreeMap<(String, PictureSource), UnitChain>,
     signal: Arc<tokio::sync::Notify>,
 }
 struct Queued {
@@ -665,7 +666,7 @@ impl Default for Inbox {
             queue: VecDeque::new(),
             next: 0,
             bytes: 0,
-            behind: BTreeSet::new(),
+            chains: BTreeMap::new(),
             signal: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -675,13 +676,24 @@ impl Inbox {
     pub(crate) fn signal(&self) -> Arc<tokio::sync::Notify> {
         self.signal.clone()
     }
-    /// Queue `picture`, a keyframe or not.
-    pub(crate) fn admit(&mut self, picture: Picture, keyframe: bool) {
+    /// Queue `picture`, a keyframe or not, if `sequence` continues its
+    /// stream's reference chain.
+    pub(crate) fn admit(&mut self, picture: Picture, sequence: u64, keyframe: bool) {
         let key = (picture.stream.clone(), picture.source);
-        if keyframe {
-            self.behind.remove(&key);
-        } else if self.behind.contains(&key) {
-            return;
+        let admission = self
+            .chains
+            .entry(key.clone())
+            .or_default()
+            .admit(sequence, keyframe);
+        match admission {
+            Admission::Decode => {}
+            Admission::Stale => return,
+            Admission::AwaitingKeyframe { broke } => {
+                if broke {
+                    self.drop_stream(&key);
+                }
+                return;
+            }
         }
         let size = picture.object.len();
         while self.bytes.saturating_add(size) > INBOX_BYTES {
@@ -692,7 +704,7 @@ impl Inbox {
             // decode without the one dropped.
             let stream = (oldest.picture.stream.clone(), oldest.picture.source);
             self.drop_stream(&stream);
-            self.behind.insert(stream.clone());
+            self.chains.entry(stream.clone()).or_default().lose();
             if stream == key {
                 return;
             }
@@ -748,13 +760,13 @@ impl Inbox {
     pub(crate) fn behind(&mut self, stream: &str, source: PictureSource) {
         let key = (stream.to_owned(), source);
         self.drop_stream(&key);
-        self.behind.insert(key);
+        self.chains.entry(key).or_default().lose();
     }
     /// The call ended or reconnected: every stream starts over.
     pub(crate) fn clear(&mut self) {
         self.queue.clear();
         self.bytes = 0;
-        self.behind.clear();
+        self.chains.clear();
     }
 }
 
@@ -783,8 +795,8 @@ mod tests {
     #[test]
     fn the_app_collects_pictures_in_order_and_acknowledges_with_its_cursor() {
         let mut inbox = Inbox::default();
-        for _ in 0..3 {
-            inbox.admit(picture("a", 10), true);
+        for sequence in 0..3 {
+            inbox.admit(picture("a", 10), sequence, true);
         }
         let (first, cursor) = inbox.take(0, 15);
         assert_eq!(
@@ -807,22 +819,22 @@ mod tests {
     fn a_stream_that_falls_behind_starts_over_at_its_next_keyframe() {
         let mut inbox = Inbox::default();
         let big = INBOX_BYTES / 4;
-        inbox.admit(picture("slow", big), true);
-        inbox.admit(picture("slow", big), false);
-        inbox.admit(picture("fast", big), true);
-        inbox.admit(picture("fast", big), false);
+        inbox.admit(picture("slow", big), 0, true);
+        inbox.admit(picture("slow", big), 1, false);
+        inbox.admit(picture("fast", big), 0, true);
+        inbox.admit(picture("fast", big), 1, false);
         // One more: the oldest stream gives way whole.
-        inbox.admit(picture("fast", big), false);
+        inbox.admit(picture("fast", big), 2, false);
         let (queued, cursor) = inbox.take(0, usize::MAX);
         assert!(queued.iter().all(|picture| picture.stream == "fast"));
         inbox.take(cursor, usize::MAX);
-        inbox.admit(picture("slow", 10), false);
+        inbox.admit(picture("slow", 10), 2, false);
         assert!(
             inbox.take(cursor, usize::MAX).0.is_empty(),
             "not without its keyframe"
         );
-        inbox.admit(picture("slow", 10), true);
-        inbox.admit(picture("slow", 10), false);
+        inbox.admit(picture("slow", 10), 2, true);
+        inbox.admit(picture("slow", 10), 3, false);
         assert_eq!(inbox.take(cursor, usize::MAX).0.len(), 2);
     }
 

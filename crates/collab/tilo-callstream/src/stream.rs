@@ -37,6 +37,11 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_lock::MutexRecover as _;
 
+use encoded_frame::{
+    Codec as FrameCodec, FrameMeta, MAX_CALLSTREAM_PAYLOAD, Profile, Sequence, SequenceError,
+    SequenceEvent, validate_payload,
+};
+
 /// Opaque numeric peer handle; matches the compositor's `network::protocol::PeerId`.
 pub type PeerId = u64;
 
@@ -50,7 +55,7 @@ pub const FRAME_HEADER_LEN: usize = 8 + 4 + 1;
 /// `u32` wire representation: a single video frame larger than 8 MiB is not
 /// useful to the realtime path, and accepting it would let a peer reserve an
 /// unbounded amount of receiver memory.
-pub const MAX_ENCODED_FRAME_LEN: usize = 8 * 1024 * 1024;
+pub const MAX_ENCODED_FRAME_LEN: usize = MAX_CALLSTREAM_PAYLOAD;
 
 /// Largest amount of incomplete wire data retained for one stream.
 ///
@@ -69,22 +74,32 @@ pub const FLAG_DISPLAY_SIZE: u8 = 0b0001_0000;
 pub const DISPLAY_SIZE_LEN: usize = 4;
 
 /// The codec's 3-bit id in the flags byte.
-fn codec_id(codec: StreamCodec) -> u8 {
-    match codec {
-        StreamCodec::H264 => 0,
-        StreamCodec::Vp9 => 1,
-        StreamCodec::Av1 => 2,
-        StreamCodec::HevcMain10 => 3,
-    }
+fn codec_id(codec: StreamCodec) -> Option<u8> {
+    Profile::Callstream.codec_id(shared_codec(codec))
 }
 
 fn codec_from_id(id: u8) -> Option<StreamCodec> {
-    match id {
-        0 => Some(StreamCodec::H264),
-        1 => Some(StreamCodec::Vp9),
-        2 => Some(StreamCodec::Av1),
-        3 => Some(StreamCodec::HevcMain10),
-        _ => None,
+    Profile::Callstream.codec(id).and_then(media_codec)
+}
+
+/// The shared contract's codec for a media-stack codec.
+const fn shared_codec(codec: StreamCodec) -> FrameCodec {
+    match codec {
+        StreamCodec::H264 => FrameCodec::H264,
+        StreamCodec::Vp9 => FrameCodec::Vp9,
+        StreamCodec::Av1 => FrameCodec::Av1,
+        StreamCodec::HevcMain10 => FrameCodec::HevcMain10,
+    }
+}
+
+/// The media-stack codec for a shared contract codec the profile carries.
+const fn media_codec(codec: FrameCodec) -> Option<StreamCodec> {
+    match codec {
+        FrameCodec::H264 => Some(StreamCodec::H264),
+        FrameCodec::HevcMain10 => Some(StreamCodec::HevcMain10),
+        FrameCodec::Vp9 => Some(StreamCodec::Vp9),
+        FrameCodec::Av1 => Some(StreamCodec::Av1),
+        FrameCodec::Vp8 => None,
     }
 }
 
@@ -123,6 +138,17 @@ impl SurfaceFrame {
 }
 
 impl SurfaceFrame {
+    /// The shared contract's view of this picture.
+    pub fn meta(&self) -> FrameMeta {
+        let meta = FrameMeta::new(self.keyframe, shared_codec(self.codec), self.sequence);
+        if self.codec == StreamCodec::H264 {
+            meta
+        } else {
+            let (width, height) = self.display_size.unwrap_or((0, 0));
+            meta.with_display_size(width, height)
+        }
+    }
+
     /// Serialises into the wire format above (one allocation).
     ///
     /// # Errors
@@ -130,9 +156,8 @@ impl SurfaceFrame {
     /// Returns [`FrameError::PayloadTooLarge`] instead of emitting an invalid
     /// length prefix when the payload exceeds [`MAX_ENCODED_FRAME_LEN`].
     pub fn encode(&self) -> Result<Vec<u8>, FrameError> {
-        if self.payload.len() > MAX_ENCODED_FRAME_LEN {
-            return Err(FrameError::PayloadTooLarge(self.payload.len()));
-        }
+        validate_payload(self.payload.len(), MAX_ENCODED_FRAME_LEN)
+            .map_err(|_| FrameError::PayloadTooLarge(self.payload.len()))?;
         // H.264 frames stay byte-identical to the original format.
         let display = match self.codec {
             StreamCodec::H264 => None,
@@ -153,7 +178,8 @@ impl SurfaceFrame {
             .try_into()
             .map_err(|_| FrameError::PayloadTooLarge(self.payload.len()))?;
         buf.extend_from_slice(&len.to_be_bytes());
-        let mut flags = codec_id(self.codec) << 1;
+        let id = codec_id(self.codec).ok_or(FrameError::UnsupportedCodec(self.codec))?;
+        let mut flags = id << 1;
         if self.keyframe {
             flags |= FLAG_KEYFRAME;
         }
@@ -205,9 +231,7 @@ impl SurfaceFrame {
         } else {
             MAX_ENCODED_FRAME_LEN
         };
-        if length > limit {
-            return Err(FrameError::PayloadTooLarge(length));
-        }
+        validate_payload(length, limit).map_err(|_| FrameError::PayloadTooLarge(length))?;
         if flags & !(FLAG_KEYFRAME | FLAG_CODEC_MASK | FLAG_DISPLAY_SIZE) != 0 {
             return Err(FrameError::InvalidFlags(flags));
         }
@@ -239,9 +263,8 @@ impl SurfaceFrame {
         } else {
             (None, body)
         };
-        if payload_slice.len() > MAX_ENCODED_FRAME_LEN {
-            return Err(FrameError::PayloadTooLarge(payload_slice.len()));
-        }
+        validate_payload(payload_slice.len(), MAX_ENCODED_FRAME_LEN)
+            .map_err(|_| FrameError::PayloadTooLarge(payload_slice.len()))?;
         let payload = payload_slice.to_vec();
         Ok(Some((
             SurfaceFrame {
@@ -272,6 +295,9 @@ pub enum FrameError {
     /// The frame uses currently-unassigned flag bits.
     #[error("frame uses reserved flag bits: {0:#010b}")]
     InvalidFlags(u8),
+    /// The frame's codec has no id in this profile.
+    #[error("codec {0:?} is not carried by the callstream profile")]
+    UnsupportedCodec(StreamCodec),
     /// The finite sequence space has been exhausted; callers must establish a
     /// fresh stream instead of wrapping to zero.
     #[error("surface stream sequence space exhausted")]
@@ -428,7 +454,7 @@ impl SurfaceStreamSender {
 #[derive(Debug)]
 pub struct SurfaceStreamReceiver {
     buffer: Vec<u8>,
-    last_sequence: Option<u64>,
+    sequence: Sequence,
     total_dropped_seq: u64,
 }
 
@@ -447,7 +473,7 @@ impl SurfaceStreamReceiver {
     pub fn new() -> Self {
         Self {
             buffer: Vec::with_capacity(4096),
-            last_sequence: None,
+            sequence: Sequence::default(),
             total_dropped_seq: 0,
         }
     }
@@ -489,35 +515,24 @@ impl SurfaceStreamReceiver {
                 Ok(None) => break,
                 Ok(Some((frame, consumed))) => {
                     self.buffer.drain(..consumed);
-                    if let Some(prev) = self.last_sequence {
-                        let Some(expected) = prev.checked_add(1) else {
-                            self.buffer.clear();
-                            self.last_sequence = None;
-                            return Err(FrameError::SequenceExhausted);
-                        };
-                        if frame.sequence < expected {
-                            self.buffer.clear();
-                            self.last_sequence = None;
-                            return Err(FrameError::StaleSequence {
-                                previous: prev,
-                                received: frame.sequence,
-                            });
-                        }
-                        if frame.sequence > expected {
-                            let dropped = frame.sequence.checked_sub(expected).ok_or(
-                                FrameError::StaleSequence {
-                                    previous: prev,
-                                    received: frame.sequence,
-                                },
-                            )?;
+                    match self.sequence.observe(frame.sequence) {
+                        Ok(SequenceEvent::Gap { dropped }) => {
                             self.total_dropped_seq = self.total_dropped_seq.saturating_add(dropped);
                             out.push(ReceiverEvent::SequenceGap {
                                 dropped,
                                 next_sequence: frame.sequence,
                             });
                         }
+                        Ok(SequenceEvent::First | SequenceEvent::Continuous) => {}
+                        Err(SequenceError::Exhausted) => {
+                            self.buffer.clear();
+                            return Err(FrameError::SequenceExhausted);
+                        }
+                        Err(SequenceError::Stale { previous, received }) => {
+                            self.buffer.clear();
+                            return Err(FrameError::StaleSequence { previous, received });
+                        }
                     }
-                    self.last_sequence = Some(frame.sequence);
                     out.push(ReceiverEvent::Frame(frame));
                 }
             }
@@ -607,6 +622,102 @@ mod tests {
             SurfaceFrame::decode(&bytes),
             Err(FrameError::InvalidFlags(7 << 1))
         );
+    }
+
+    /// Every media codec has the id the shared profile assigns it, the frame's
+    /// metadata names the same codec, and a reconnected stream starts again at
+    /// its own keyframe.
+    /// Runs each phase below in order; every phase builds its own fixture.
+    #[test]
+    fn codec_ids_come_from_the_shared_profile_and_a_reconnect_starts_at_a_keyframe() {
+        codec_ids_agree_with_the_shared_profile();
+        a_reconnected_stream_starts_again_at_its_own_keyframe();
+    }
+
+    fn codec_ids_agree_with_the_shared_profile() {
+        for codec in StreamCodec::ALL {
+            let display_size = (codec != StreamCodec::H264).then_some((640, 360));
+            let frame = SurfaceFrame {
+                sequence: 3,
+                keyframe: false,
+                codec,
+                display_size,
+                payload: vec![1, 2, 3],
+            };
+            let bytes = frame.encode().expect("encode");
+            let id = Profile::Callstream
+                .codec_id(shared_codec(codec))
+                .expect("the callstream profile carries every media codec");
+            assert_eq!((bytes[12] & FLAG_CODEC_MASK) >> 1, id, "{codec:?}");
+            let (back, _) = SurfaceFrame::decode(&bytes)
+                .expect("decode")
+                .expect("whole frame");
+            assert_eq!(back.meta(), frame.meta(), "{codec:?}");
+        }
+    }
+
+    fn a_reconnected_stream_starts_again_at_its_own_keyframe() {
+        let mut rx = SurfaceStreamReceiver::new();
+        rx.push_bytes(
+            &SurfaceFrame {
+                sequence: 7,
+                keyframe: true,
+                codec: StreamCodec::H264,
+                display_size: None,
+                payload: vec![1],
+            }
+            .encode()
+            .expect("encode"),
+        )
+        .expect("push");
+        assert!(matches!(
+            rx.drain().expect("first stream").as_slice(),
+            [ReceiverEvent::Frame(SurfaceFrame { sequence: 7, .. })]
+        ));
+
+        // The new stream's first keyframe is older than the replaced stream's
+        // history, so the receiver refuses it and forgets that history.
+        let reconnect = SurfaceFrame {
+            sequence: 0,
+            keyframe: true,
+            codec: StreamCodec::H264,
+            display_size: None,
+            payload: vec![2],
+        }
+        .encode()
+        .expect("encode");
+        rx.push_bytes(&reconnect).expect("push reconnect keyframe");
+        assert_eq!(
+            rx.drain(),
+            Err(FrameError::StaleSequence {
+                previous: 7,
+                received: 0,
+            })
+        );
+
+        // The same keyframe now starts the new stream, and its delta follows.
+        rx.push_bytes(&reconnect).expect("push fresh keyframe");
+        rx.push_bytes(
+            &SurfaceFrame {
+                sequence: 1,
+                keyframe: false,
+                codec: StreamCodec::H264,
+                display_size: None,
+                payload: vec![3],
+            }
+            .encode()
+            .expect("encode"),
+        )
+        .expect("push delta");
+        let events = rx.drain().expect("fresh stream");
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events.as_slice(),
+            [
+                ReceiverEvent::Frame(SurfaceFrame { sequence: 0, .. }),
+                ReceiverEvent::Frame(SurfaceFrame { sequence: 1, .. })
+            ]
+        ));
     }
 
     #[allow(

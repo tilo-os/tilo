@@ -39,14 +39,18 @@
 //!
 //! followed by the payload.
 
+use encoded_frame::{
+    FrameMeta, MAX_MOQ_OBJECT, MAX_PICTURE_SIDE, Profile, validate_payload, validate_side,
+};
+
 pub const HEADER_BYTES: usize = 32;
 /// The largest object: a keyframe of the largest layer at its bitrate.
-pub const MAX_OBJECT_BYTES: usize = 512 * 1024;
+pub const MAX_OBJECT_BYTES: usize = MAX_MOQ_OBJECT;
 /// Pictures one group holds at most: a keyframe at least every four seconds
 /// at thirty pictures a second.
 pub const MAX_GROUP_OBJECTS: u64 = 120;
 /// The largest picture side a layer may claim.
-pub const MAX_SIDE: u16 = 4096;
+pub const MAX_SIDE: u16 = MAX_PICTURE_SIDE;
 
 /// What a picture shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -68,34 +72,8 @@ pub enum Layer {
     High,
 }
 
-/// How a layer's pictures are coded.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Codec {
-    H264,
-    Vp8,
-    Vp9,
-    Av1,
-}
-
-impl Codec {
-    const fn wire(self) -> u8 {
-        match self {
-            Self::H264 => 1,
-            Self::Vp8 => 2,
-            Self::Vp9 => 3,
-            Self::Av1 => 4,
-        }
-    }
-    const fn from_wire(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(Self::H264),
-            2 => Some(Self::Vp8),
-            3 => Some(Self::Vp9),
-            4 => Some(Self::Av1),
-            _ => None,
-        }
-    }
-}
+/// The codec an object names, shared with the callstream profile.
+pub use encoded_frame::Codec;
 
 impl Layer {
     /// Every layer, smallest first.
@@ -294,25 +272,27 @@ fn byte(bytes: &[u8], at: usize) -> Result<u8, InvalidVideoObject> {
 }
 
 impl VideoObject {
+    /// The shared contract's view of this picture.
+    pub fn meta(&self) -> FrameMeta {
+        FrameMeta::new(self.keyframe, self.codec, self.sequence)
+            .with_timestamp(self.timestamp_us)
+            .with_display_size(self.width, self.height)
+    }
+
     /// Encode this object in the tilo-video/1 wire layout.
     pub fn encode(&self) -> Result<Vec<u8>, InvalidVideoObject> {
-        if self.payload.is_empty()
-            || self.payload.len() > MAX_OBJECT_BYTES.saturating_sub(HEADER_BYTES)
-            || self.width == 0
-            || self.height == 0
-            || self.width > MAX_SIDE
-            || self.height > MAX_SIDE
-        {
+        let max_payload = MAX_OBJECT_BYTES.saturating_sub(HEADER_BYTES);
+        if self.payload.is_empty() {
             return Err(InvalidVideoObject);
         }
+        validate_payload(self.payload.len(), max_payload).map_err(|_| InvalidVideoObject)?;
+        validate_side(self.width, self.height, MAX_SIDE).map_err(|_| InvalidVideoObject)?;
+        let codec = Profile::Moq
+            .codec_id(self.codec)
+            .ok_or(InvalidVideoObject)?;
         let length = u32::try_from(self.payload.len()).map_err(|_| InvalidVideoObject)?;
         let mut bytes = Vec::with_capacity(HEADER_BYTES.saturating_add(self.payload.len()));
-        bytes.extend_from_slice(&[
-            1,
-            u8::from(self.keyframe),
-            self.codec.wire(),
-            self.layer.wire(),
-        ]);
+        bytes.extend_from_slice(&[1, u8::from(self.keyframe), codec, self.layer.wire()]);
         bytes.extend_from_slice(&self.sequence.to_le_bytes());
         bytes.extend_from_slice(&self.timestamp_us.to_le_bytes());
         bytes.extend_from_slice(&self.width.to_le_bytes());
@@ -328,13 +308,13 @@ impl VideoObject {
     pub fn decode(bytes: &[u8]) -> Result<Self, InvalidVideoObject> {
         let header = validate(bytes)?;
         Ok(Self {
-            keyframe: header.keyframe,
-            codec: header.codec,
+            keyframe: header.meta.keyframe,
+            codec: header.meta.codec,
             layer: header.layer,
-            sequence: header.sequence,
-            timestamp_us: u64::from_le_bytes(field(bytes, 12)?),
-            width: header.width,
-            height: header.height,
+            sequence: header.meta.sequence,
+            timestamp_us: header.meta.timestamp_us.unwrap_or(0),
+            width: header.meta.width(),
+            height: header.meta.height(),
             payload: bytes
                 .get(HEADER_BYTES..)
                 .ok_or(InvalidVideoObject)?
@@ -346,43 +326,36 @@ impl VideoObject {
 /// What a relay checks of an object without copying its payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {
-    pub keyframe: bool,
-    pub codec: Codec,
+    pub meta: FrameMeta,
     pub layer: Layer,
-    pub sequence: u64,
-    pub width: u16,
-    pub height: u16,
 }
 
 /// Check one object's header and length.
 pub fn validate(bytes: &[u8]) -> Result<Header, InvalidVideoObject> {
-    if bytes.len() <= HEADER_BYTES || bytes.len() > MAX_OBJECT_BYTES {
+    validate_payload(bytes.len(), MAX_OBJECT_BYTES).map_err(|_| InvalidVideoObject)?;
+    if bytes.len() <= HEADER_BYTES {
         return Err(InvalidVideoObject);
     }
     let flags = byte(bytes, 1)?;
     if byte(bytes, 0)? != 1 || flags & !1 != 0 || field::<4>(bytes, 28)? != [0; 4] {
         return Err(InvalidVideoObject);
     }
-    let codec = Codec::from_wire(byte(bytes, 2)?).ok_or(InvalidVideoObject)?;
+    let codec = Profile::Moq
+        .codec(byte(bytes, 2)?)
+        .ok_or(InvalidVideoObject)?;
     let layer = Layer::from_wire(byte(bytes, 3)?).ok_or(InvalidVideoObject)?;
     let width = u16::from_le_bytes(field(bytes, 20)?);
     let height = u16::from_le_bytes(field(bytes, 22)?);
     let length = u32::from_le_bytes(field(bytes, 24)?);
-    if width == 0
-        || height == 0
-        || width > MAX_SIDE
-        || height > MAX_SIDE
-        || usize::try_from(length).ok() != bytes.len().checked_sub(HEADER_BYTES)
-    {
+    validate_side(width, height, MAX_SIDE).map_err(|_| InvalidVideoObject)?;
+    if usize::try_from(length).ok() != bytes.len().checked_sub(HEADER_BYTES) {
         return Err(InvalidVideoObject);
     }
     Ok(Header {
-        keyframe: flags & 1 == 1,
-        codec,
+        meta: FrameMeta::new(flags & 1 == 1, codec, u64::from_le_bytes(field(bytes, 4)?))
+            .with_timestamp(u64::from_le_bytes(field(bytes, 12)?))
+            .with_display_size(width, height),
         layer,
-        sequence: u64::from_le_bytes(field(bytes, 4)?),
-        width,
-        height,
     })
 }
 
@@ -409,8 +382,9 @@ mod tests {
         let bytes = object.encode().unwrap();
         assert_eq!(VideoObject::decode(&bytes).unwrap(), object);
         let header = validate(&bytes).unwrap();
-        assert!(header.keyframe);
+        assert!(header.meta.keyframe);
         assert_eq!(header.layer, Layer::Mid);
+        assert_eq!(header.meta, object.meta());
 
         let mut versioned = bytes.clone();
         versioned[0] = 2;
@@ -433,6 +407,86 @@ mod tests {
             .encode()
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_picture_keeps_the_pinned_tilo_video_1_header_bytes() {
+        let object = VideoObject {
+            keyframe: true,
+            codec: Codec::H264,
+            layer: Layer::Mid,
+            sequence: 1,
+            timestamp_us: 2,
+            width: 640,
+            height: 360,
+            payload: vec![0x65],
+        };
+        let bytes = object.encode().unwrap();
+        assert_eq!(
+            &bytes[..HEADER_BYTES],
+            &[
+                1, // version
+                1, // keyframe
+                1, // H.264
+                1, // mid layer
+                1, 0, 0, 0, 0, 0, 0, 0, // sequence
+                2, 0, 0, 0, 0, 0, 0, 0, // capture time
+                0x80, 0x02, // width 640
+                0x68, 0x01, // height 360
+                1, 0, 0, 0, // payload length
+                0, 0, 0, 0, // reserved
+            ]
+        );
+        assert_eq!(&bytes[HEADER_BYTES..], &[0x65]);
+    }
+
+    #[test]
+    fn the_profile_names_the_shared_codecs_and_bounds_the_object() {
+        for codec in [Codec::H264, Codec::Vp8, Codec::Vp9, Codec::Av1] {
+            let mut object = picture(codec == Codec::H264);
+            object.codec = codec;
+            let bytes = object.encode().unwrap();
+            let header = validate(&bytes).unwrap();
+            assert_eq!(header.meta.codec, codec);
+            let id = Profile::Moq.codec_id(codec).unwrap();
+            assert_eq!(Profile::Moq.codec(id), Some(codec));
+        }
+        let mut hevc = picture(true);
+        hevc.codec = Codec::HevcMain10;
+        assert!(
+            hevc.encode().is_err(),
+            "the MoQ profile does not carry HEVC"
+        );
+
+        let mut oversized = picture(true);
+        oversized.payload = vec![0; MAX_OBJECT_BYTES];
+        assert!(oversized.encode().is_err());
+        let mut too_wide = picture(true);
+        too_wide.width = MAX_SIDE.saturating_add(1);
+        assert!(too_wide.encode().is_err());
+        let mut zero_wide = picture(true);
+        zero_wide.width = 0;
+        assert!(zero_wide.encode().is_err());
+
+        let valid = picture(true).encode().unwrap();
+        assert!(
+            validate(&[0; HEADER_BYTES]).is_err(),
+            "a header with no payload is not an object"
+        );
+        assert!(validate(&valid[..HEADER_BYTES.saturating_sub(1)]).is_err());
+        assert!(validate(&valid[..HEADER_BYTES]).is_err());
+        let mut unknown_codec = valid.clone();
+        unknown_codec[2] = 9;
+        assert!(validate(&unknown_codec).is_err());
+        let mut unknown_layer = valid.clone();
+        unknown_layer[3] = 9;
+        assert!(validate(&unknown_layer).is_err());
+        let mut reserved = valid.clone();
+        reserved[28] = 1;
+        assert!(validate(&reserved).is_err());
+        let mut oversized_object = valid;
+        oversized_object.resize(MAX_OBJECT_BYTES.saturating_add(1), 0);
+        assert!(validate(&oversized_object).is_err());
     }
 
     #[test]
