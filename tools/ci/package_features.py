@@ -50,6 +50,10 @@ NATIVE_TEST_FEATURES = {
     "tilo-dav": ("test-support",),
     "tilo-crypto": ("srp-test-server",),
     "tilo-resource": ("test-support",),
+    # Its model of a provider (per-field storage, the CRDT edits two devices
+    # make at once) is a feature only the settings hosts enable; its own
+    # tests of it compile only with `model`.
+    "agent-provider-config": ("model",),
     "app-host": ("test-support",),
     "package-store": ("store",),
     "cloud-source": ("conformance",),
