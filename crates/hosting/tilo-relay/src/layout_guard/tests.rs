@@ -166,7 +166,9 @@ fn a_device_writes_its_own_window() {
     let write = page.publish(ADA, |layout| {
         layout.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title = "renamed".into();
     });
-    guard.decide(&write, ADA, "ada", &moderates(ADA)).unwrap();
+    guard
+        .decide(&write, ROOM, ADA, "ada", &moderates(ADA))
+        .unwrap();
     let read = room_layout::read(&guard.doc, None).unwrap();
     assert!(
         read.authors.contains_key(&tab_of(BEN, 1)),
@@ -193,7 +195,7 @@ fn a_device_may_not_write_anothers_window() {
             .retain(|strip| strip.id != StripId(compose_id(namespace_of_device(BEN), 1)));
     });
     let refusal = guard
-        .decide(&write, ADA, "ada", &moderates(ADA))
+        .decide(&write, ROOM, ADA, "ada", &moderates(ADA))
         .unwrap_err();
     assert!(
         matches!(&refusal, LayoutRefusal::NotTheirs { entry, .. } if *entry == tab_of(BEN, 1)),
@@ -209,7 +211,9 @@ fn a_device_may_not_write_anothers_window() {
         layout.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title = "moderated".into();
     });
     assert!(
-        guard.decide(&write, MOD, "mod", &moderates(MOD)).is_err(),
+        guard
+            .decide(&write, ROOM, MOD, "mod", &moderates(MOD))
+            .is_err(),
         "even a moderator asks instead of writing"
     );
 }
@@ -227,7 +231,7 @@ fn a_request_is_judged_where_it_enters() {
     let write = DocumentMutation::Incremental(page.doc.save_after(&heads));
     assert!(
         matches!(
-            guard.decide(&write, ADA, "ada", &moderates(ADA)),
+            guard.decide(&write, ROOM, ADA, "ada", &moderates(ADA)),
             Err(LayoutRefusal::Request { .. })
         ),
         "an editor may not close someone else's window"
@@ -241,7 +245,9 @@ fn a_request_is_judged_where_it_enters() {
     allowed.id = LayoutRequest::id("mod", allowed.to_salt, allowed.at, &allowed.command);
     room_layout::request(&mut moderator.doc, &allowed).unwrap();
     let write = DocumentMutation::Incremental(moderator.doc.save_after(&heads));
-    guard.decide(&write, MOD, "mod", &moderates(MOD)).unwrap();
+    guard
+        .decide(&write, ROOM, MOD, "mod", &moderates(MOD))
+        .unwrap();
     assert_eq!(
         room_layout::pending(&guard.doc, namespace_of_device(BEN)).len(),
         1,
@@ -254,7 +260,7 @@ fn a_request_is_judged_where_it_enters() {
     room_layout::request(&mut forged.doc, &ask).unwrap();
     let write = DocumentMutation::Incremental(forged.doc.save_after(&heads));
     assert!(matches!(
-        guard.decide(&write, BEN, "ben", &moderates(BEN)),
+        guard.decide(&write, ROOM, BEN, "ben", &moderates(BEN)),
         Err(LayoutRefusal::Request { .. })
     ));
 }
@@ -274,7 +280,9 @@ fn only_the_owner_records_what_it_applied() {
     room_layout::write(&mut ben.doc, &applied, namespace_of_device(BEN), Some(BEN)).unwrap();
     room_layout::claim(&mut ben.doc, namespace_of_device(BEN), &ask).unwrap();
     let write = DocumentMutation::Incremental(ben.doc.save_after(&heads));
-    guard.decide(&write, BEN, "ben", &moderates(BEN)).unwrap();
+    guard
+        .decide(&write, ROOM, BEN, "ben", &moderates(BEN))
+        .unwrap();
     assert!(
         room_layout::pending(&guard.doc, namespace_of_device(BEN)).is_empty(),
         "the request is recorded as applied"
@@ -287,7 +295,7 @@ fn only_the_owner_records_what_it_applied() {
     let write = DocumentMutation::Incremental(ada.doc.save_after(&heads));
     assert!(
         matches!(
-            guard.decide(&write, ADA, "ada", &moderates(ADA)),
+            guard.decide(&write, ROOM, ADA, "ada", &moderates(ADA)),
             Err(LayoutRefusal::NotItsMark { .. })
         ),
         "a mark in another device's namespace is refused"
@@ -308,7 +316,7 @@ fn a_write_of_the_old_shape_is_refused() {
     let write = DocumentMutation::Incremental(page.doc.save_after(&heads));
     assert!(
         matches!(
-            guard.decide(&write, ADA, "ada", &moderates(ADA)),
+            guard.decide(&write, ROOM, ADA, "ada", &moderates(ADA)),
             Err(LayoutRefusal::NotALayout { .. })
         ),
         "the old desktop shape is no room layout"
@@ -334,8 +342,55 @@ fn a_document_that_names_no_room_is_no_layout() {
     page.commit();
     let write = DocumentMutation::Incremental(page.save_after(&heads));
     assert!(matches!(
-        guard.decide(&write, ADA, "ada", &moderates(ADA)),
+        guard.decide(&write, ROOM, ADA, "ada", &moderates(ADA)),
         Err(LayoutRefusal::NotALayout { .. })
+    ));
+}
+
+/// The strips the room itself lists are minted in a namespace of the room's
+/// own, never a device's: no device writes there, however its key folds.
+#[test]
+fn a_device_may_not_write_the_rooms_own_strips() {
+    let mut guard = room();
+    let room_salt = tilo_desktop_model::ids::room_strips_salt(ROOM);
+    assert_ne!(room_salt, namespace_of_device(ADA), "fixture namespaces");
+    let id = |base: u64| compose_id(room_salt, base);
+    let listed = Strip {
+        id: StripId(id(1)),
+        name: "Main".into(),
+        window_groups: Vec::new(),
+    };
+    tilo_desktop_model::projection::project_owned_contents(
+        &mut guard.doc,
+        std::slice::from_ref(&listed),
+        room_salt,
+        None,
+        tilo_desktop_model::projection::EmptyStrips::Retain,
+    )
+    .unwrap();
+    guard.doc.commit();
+
+    // Ada's page rewrites the room's strip in the room's own namespace.
+    let mut page = Page::of(&guard);
+    let heads = page.doc.get_heads();
+    page.doc
+        .put(
+            automerge::ROOT,
+            tilo_desktop_model::projection::ROOM_NAME_KEY,
+            "Mine",
+        )
+        .unwrap();
+    let mut layout = room_layout::read(&page.doc, None).unwrap();
+    layout.tree.workspaces[0].strips.push(Strip {
+        id: StripId(id(2)),
+        name: "Not mine".into(),
+        window_groups: Vec::new(),
+    });
+    room_layout::write(&mut page.doc, &layout, room_salt, Some(ADA)).unwrap();
+    let write = DocumentMutation::Incremental(page.doc.save_after(&heads));
+    assert!(matches!(
+        guard.decide(&write, ROOM, ADA, "ada", &moderates(ADA)),
+        Err(LayoutRefusal::NotTheirs { entry, .. }) if entry == id(2)
     ));
 }
 
@@ -344,6 +399,7 @@ fn a_write_that_is_not_automerge_changes_nothing() {
     let mut guard = room();
     let _ = guard.decide(
         &DocumentMutation::Incremental(vec![1, 2, 3]),
+        ROOM,
         ADA,
         "ada",
         &moderates(ADA),

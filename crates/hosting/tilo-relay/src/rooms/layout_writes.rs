@@ -190,7 +190,7 @@ impl Rooms {
         let writer = hex::encode(author);
         let guard = governed.layout_guard().await?;
         guard
-            .decide(&mutation, &writer, &member.person, &allows)
+            .decide(&mutation, &room_id, &writer, &member.person, &allows)
             .map_err(|refusal| refusal.to_string())
     }
 }

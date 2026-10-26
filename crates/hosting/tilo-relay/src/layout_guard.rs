@@ -22,7 +22,7 @@ use automerge::{AutoCommit, ChangeHash};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::commands::BoundCommand;
-use tilo_desktop_model::ids::{namespace_of_device, peer_salt_of};
+use tilo_desktop_model::ids::{namespace_of_device, peer_salt_of, room_strips_salt};
 use tilo_desktop_model::ownership::{Touched, commanded_act};
 use tilo_desktop_model::projection::{
     LayoutRequest, layout_authors_at, layout_digest_at, layout_marks_at, layout_requests_at,
@@ -75,14 +75,16 @@ impl LayoutGuard {
     }
 
     /// Decide `mutation`, a write by the device `writer` (its key, hex) for
-    /// the person `person`: every entry it changes must be minted in
-    /// `writer`'s namespace, every mark it records in its own, and every
-    /// request it makes its own, with `allows` deciding what it may ask of
-    /// a window someone else made. Takes the write in when it is admitted,
-    /// and leaves the layout as it was when it is refused.
+    /// the person `person` in `room`: every entry it changes must be minted
+    /// in `writer`'s namespace (never the room's own, where its operator's
+    /// strips live), every mark it records in its own, and every request it
+    /// makes its own, with `allows` deciding what it may ask of a window
+    /// someone else made. Takes the write in when it is admitted, and leaves
+    /// the layout as it was when it is refused.
     pub(crate) fn decide(
         &mut self,
         mutation: &DocumentMutation,
+        room: &str,
         writer: &str,
         person: &str,
         allows: &dyn Fn(&Touched) -> bool,
@@ -98,6 +100,7 @@ impl LayoutGuard {
             writer,
             person,
             salt: namespace_of_device(writer),
+            room: room_strips_salt(room),
         };
         if room_layout::declared_room(&next, None).is_none() {
             return Err(LayoutRefusal::NotALayout {
@@ -152,6 +155,9 @@ struct Write<'a> {
     writer: &'a str,
     person: &'a str,
     salt: u16,
+    /// The room's own namespace, where its operator's strips live: nobody
+    /// but the room's host writes there.
+    room: u16,
 }
 
 /// Whether one change of an admitted batch, from `deps` to `at`, stays
@@ -170,13 +176,14 @@ fn judge(
         writer: write.writer.to_owned(),
         entry,
     };
+    let theirs = |id: u64| peer_salt_of(id) == write.salt && write.salt != write.room;
     for (id, digest) in &after_entries {
-        if before_entries.get(id) != Some(digest) && peer_salt_of(*id) != write.salt {
+        if before_entries.get(id) != Some(digest) && !theirs(*id) {
             return Err(not_theirs(*id));
         }
     }
     for id in before_entries.keys() {
-        if !after_entries.contains_key(id) && peer_salt_of(*id) != write.salt {
+        if !after_entries.contains_key(id) && !theirs(*id) {
             return Err(not_theirs(*id));
         }
     }
