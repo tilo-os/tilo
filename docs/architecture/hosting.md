@@ -2,8 +2,8 @@
 
 This page is the target for how workspaces are hosted, reached and shared.
 Some of it has no interface yet or comes later. The model must still allow
-it without a rewrite, so every change to rooms, hosts, devices or identity is
-checked against this page. The workspace itself, one room holding layout,
+it without a rewrite, so every change to workspaces, hosts, devices or identity is
+checked against this page. The workspace itself, holding layout,
 people, and state with its history, is defined in
 [`workspace.md`](workspace.md). Rooms and records are in [`rooms.md`](rooms.md),
 and transport and governance in [`collaboration.md`](collaboration.md).
@@ -27,47 +27,163 @@ Nothing about it depends on where it was made.
   Creating needs a host that can take it: tilo.coffee hosts no one's
   workspaces at first, only the Lounge.
 
+## Names
+
+This page uses the names the code is moving to:
+- **Workspace** for what the code and older docs call a room ("a workspace
+  is a room"). "Room" goes away.
+- **Resource** for one thing an app keeps in a workspace (a note, a chat
+  message, a book), stored side included. "Record" goes away.
+- **Part** and **channel** stay: a piece of a large resource, and the path a
+  resource's changes travel on.
+- **Committed**, **sealed** and **legacy** stop being kinds of workspace or
+  code paths (see "Keys" below). **Governor**, **steward** and **native
+  owner** stop being roles (see "Governance" below).
+- **Relay** and **home relay** stay as they are. The room service is renamed
+  for what it is: the host program.
+
 ## Hosts
 
-A host is anything that holds a workspace's room and records for others and
-stays reachable: a person's own device, a home relay, or tilo.coffee.
+A host is any node that holds some of a workspace's resources: a person's
+own device, a home relay, a server, or tilo.coffee. Every host has these
+properties. None of them is a type, and a node's role is just their
+combination.
 
-### Governance and placement are separate
+### Keys
 
-- **One governor per room.** Exactly one host is the room's governor. It
-  admits people and devices, holds the room's grants, and decides what the
-  room document accepts. Governance can be handed over, for example to
-  another of the owner's devices or to a host added later. Handover keeps
-  the room, its ids and its history; see governor succession in
-  [`collaboration.md`](collaboration.md).
-- **Many hosts hold records.** A room's records are separate documents, one
-  route per app, room and record ([`rooms.md`](rooms.md)), so they can be
-  placed independently of governance and of each other. Any number of hosts
-  may hold records:
-  - **Replicated:** several hosts hold the same records, so the workspace
-    stays available while any one of them is off. Adding tilo.coffee as a host
-    keeps a workspace reachable around the clock.
-  - **Sharded:** each host holds only part of the records, so no single host
-    needs the whole workspace.
-- **A placement map in the room says which host holds what.** The governor
-  writes it. A client reads it and connects to the host that holds the
-  record it needs, without asking around. Overhead stays small: one map per
-  room, read like any other part of the room document.
-- **Adding or removing a host** is a change to the placement map, plus a
-  governor handover when the departing host governs. A host leaving never
-  takes records with it that no other host holds: the records move first.
+- **Every resource is end-to-end encrypted, always:** on the wire and at
+  rest, on every host.
+- **A trusted host holds the workspace's keys,** like any of the workspace's
+  devices. It reads, checks changes, searches and can do work.
+- **An encrypted host doesn't.** It stores ciphertext and passes it on.
+  Behaviour with only an encrypted host reachable is the same as with no
+  host at all, except that data can come from it.
+- **Where data comes from is one layer below everything else.** A resource
+  store fetches channels from whichever hosts hold them. Code above it never
+  asks what kind of host that was, only whether some host will take a piece
+  of work (below) or it has to do the work itself.
+- **Every node with keys checks what it receives,** by the same rules. An
+  encrypted host stores what members send, and readers drop what's invalid.
+
+### Always on
+
+A node may say it's always on. That's only a label: it says what the node is
+meant for. It doesn't decide where data comes from or where work runs. A
+node meant to be occasional can be online all the time, and the other way
+round. Decisions use what is actually reachable and how well.
+
+### Taking work
+
+Work is anything expensive done for someone: search, indexing, transcoding,
+rendering, an agent's run, running a shared page. Where it runs is decided
+each time, from:
+- **who will take it:** a person's own trusted devices take their own
+  person's work by default; a node set up as a server takes the workspace's
+  work;
+- **what the node has:** CPU, RAM, GPU, and whether it's plugged in or on
+  battery and power saving;
+- **whether someone is using it right now,** and how loaded it already is;
+- **what the work needs and where that already is:** the resources it reads,
+  and what it costs to move them there. A nearby, powerful device that
+  already holds a video's files may render it far better than an always-on
+  server that would have to fetch them first. Resources likely to be needed
+  move before the work is asked for.
+
+Devices don't take work for collaborators by default. They do exchange
+resources with them.
+
+### Holding resources
+
+How much of a workspace a node keeps is its own setting, one of:
+- **Full mirror:** everything.
+- **Sharded:** several nodes agree to keep every resource on enough of them
+  that any n of them can fail with nothing lost, a bit like RAID. Which node
+  keeps what stays smart: resources stay near where they're used.
+- **Cache:** whatever this node needs often or is close to, kept
+  opportunistically. On a Tilo device the cache may use a lot of storage
+  without asking.
+
+A workspace's placement says which nodes hold what, so a client goes
+straight to a node that has what it needs.
+
+### Collaborators' devices
+
+- A device exchanges resources with the devices of a workspace's other
+  people, and shows how much it sends to each.
+- A person can block exchange with a device that behaves abnormally.
+- Data saving applies per connection: on a metered network (mobile data, a
+  hotspot) a device fetches only what's needed now.
+
+### Setting up a node
+
+The line between a server and an ordinary device is fluent. Turning any
+node into a host for a workspace, for example a small board that takes work
+and keeps everything, is a few plain questions during setup: which
+workspaces, whether to keep everything or part, whether to take work, and
+whether to hold keys. The same questions can be answered again later.
+
+### Search across everything
+
+Search needs plaintext, so the index is built where the keys are. The index
+is a resource like any other: encrypted, placed and held like the rest. A
+trusted node with capacity builds it, and an always-on server keeps it
+current.
+- **With a trusted server:** it holds the whole index and answers at once.
+- **Without one:** a device fetches only the index parts for the terms
+  searched, located by a keyed hash of each term, from wherever they're
+  held, and searches locally. An encrypted host sees which parts are
+  fetched, but not the terms or the content.
+
+So full-text search over a whole workspace works for everyone. A trusted
+server only makes it faster.
 
 ### Members hold what they need
 
-A member's device doesn't need every record of a workspace. It holds what
+A member's device doesn't need every resource of a workspace. It holds what
 the person opens, plus what is predicted they'll open next, and fetches the
-rest from the hosts named in the placement map when it's needed. Records
-being separate routes is what makes this cheap.
+rest from where placement says it's held.
+
+## Governance
+
+Who is in a workspace, which devices belong to whom, and the workspace's
+rules are a signed governance log. Every node keeps it, and every node with
+the log checks it with the same deterministic rules. No host is special, and
+no node orders governance for the others.
+
+- **Any authorized device can act.** A person enrolls a new device from
+  any of their devices.
+- **Rules can require several signatures.** For example, removing one of a
+  person's devices needs two of their devices once they have three or more,
+  and one below that. A request without enough signatures waits, and the
+  person's other devices ask them to approve it.
+- **A person key outranks device keys.** It comes from the one secret typed
+  at sign-in ([`../security/sign-in.md`](../security/sign-in.md)). It can
+  remove any of the person's devices, which covers one or two devices and
+  recovery when every device is lost.
+- **Removal wins.** A removed device's changes are rejected unless they come
+  before its removal in history. A removal can name the point from which
+  that device's changes are also undone, for example since it was stolen.
+- **Keys rotate on removal.** A removed device can read nothing new. What it
+  already read can't be taken back.
+- **Conflicts resolve the same way everywhere:** removals made concurrently,
+  changes to the rules themselves, and quorums that change as devices come
+  and go.
+
+The scenario this must hold up to: a person has three devices and one is
+stolen unlocked. The thief can't remove another of their devices alone,
+because the second signature never comes and the person declines on any
+device. The person removes the stolen device with two signatures. From
+then on, every node rejects its changes.
+
+Open:
+- whether the person key, being the one secret, is the right override;
+- whether undoing a removed device's changes from a chosen time belongs in
+  the first version.
 
 ### One host serves many workspaces
 
 A host, tilo.coffee included, serves many workspaces from one service. No VM,
-container image or process per workspace: rooms are data the room service
+container image or process per workspace: workspaces are data the host program
 loads, admits and serves.
 
 Later, tilo.coffee will also run ordinary Linux, Windows and Android apps for
@@ -85,9 +201,8 @@ the people in a workspace. Each kind gets its own backend, and each must be:
   [`../security/sign-in.md`](../security/sign-in.md), not a key-management
   chore.
 - **Devices are added and removed** as part of that identity. A person's
-  device key is admitted to the rooms the person is in. Removing a device
-  withdraws its key everywhere, and a room it governed passes to one of the
-  person's other devices.
+  device key is admitted to the workspaces the person is in. Removing a
+  device withdraws its key everywhere, as described under "Governance".
 - **Device and person are distinct.** Grants name the person; the device
   key says which of their devices acted. That distinction is what lets an
   agent or a host act for a person without becoming them.
@@ -275,7 +390,7 @@ bounded.
 - **Unload only if the need persists.** An unloaded page gives back its
   memory. Viewing it again loads it at its address, with its scroll
   position, form contents and the shared text of every field restored. The
-  shared texts live in the room, so nobody's typing is lost.
+  shared texts live in the workspace, so nobody's typing is lost.
 - **Never unloaded, only frozen:** a page with something unsaved (one that
   registered a leave-page warning, or with fields someone edited since it
   loaded), a page playing audio or video, and a page holding a call or a
@@ -287,7 +402,7 @@ bounded.
 ### Cases
 
 - **A blog post:** mode 1. Everyone scrolls on their own. Highlights and
-  comments are workspace records anchored to the text.
+  comments are workspace resources anchored to the text.
 - **A video site:** mode 1. The encoded media is forwarded and each viewer
   plays it in its own engine, in sync. DRM video is the exception above.
 - **A stateful application:** mode 1, with the limit above for
@@ -321,14 +436,14 @@ engine, the injected agent and the mirror are not built.
 This section is a pointer, not a guarantee; the issue tracker has the
 details.
 
-- **One workspace hosted on its own device:** the room service on the device
-  stewards the workspace, and members join it peer to peer. This is on the
+- **One workspace hosted on its own device:** the host program on the device
+  holds the workspace, and members join it peer to peer. This is on the
   one-host branch, being brought onto main.
-- **The Lounge on tilo.coffee:** a persistent public room on the room
-  service, joined by invite. A member sees the history from before they
+- **The Lounge on tilo.coffee:** a persistent public workspace on the host
+  program, joined by invite. A member sees the history from before they
   joined.
 - **Not yet built:**
-  - the placement map and record hosting across several hosts;
+  - placement and resource holding across several hosts;
   - opening any workspace from tilo.coffee after signing in;
   - creating a workspace on another of your devices from tilo.coffee;
   - hosting other workspaces on tilo.coffee;
