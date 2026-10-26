@@ -814,7 +814,9 @@ impl WordProcessorWidget {
         let strip_x1 = x - gap;
         self.layout_chips = chips;
 
-        // Trailing: the zoom field, then the counts before it.
+        // Trailing: the zoom field, then the counts before it. A band with no
+        // room left for a count drops it — the zoom control stays, because a
+        // phone has no other way to zoom.
         let zoom_w = self.zoom_input.preferred_width(theme, tr);
         let zoom = Rect::new(
             bar.x1 - s3 - zoom_w,
@@ -871,21 +873,6 @@ impl WordProcessorWidget {
                 );
                 left += f64::from(w) + s4;
             }
-        }
-        // Where the caret is: which page of how many. Every peer says its
-        // position; this is the one app that paginates, so it says the page.
-        let page = self.page_readout();
-        let (w, h) = tr.measure_style(&page, None, &style);
-        if left + f64::from(w) <= right {
-            tr.draw_style(
-                scene,
-                &page,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((left, cy - f64::from(h) / 2.0)),
-                None,
-                &style,
-            );
-            left += f64::from(w) + s4;
         }
         let _ = left;
     }

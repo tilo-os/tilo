@@ -1781,6 +1781,49 @@ impl SlidesApp {
         self.sel = Some(id);
     }
 
+    /// Put the chosen element on the clipboard; `cut` also takes it off the
+    /// slide, so a shape moves rather than being copied twice.
+    pub(crate) fn copy_selected(&mut self, cut: bool) {
+        let Some(element) = self.selected_element().cloned() else {
+            return;
+        };
+        let clip = clipboard::Clip::of(&element);
+        ui::text_selection::clipboard_copy(&clip.text());
+        if cut {
+            self.delete_element();
+        }
+        self.io_toast.show(
+            tr(if cut {
+                "slides-toast-cut-element"
+            } else {
+                "slides-toast-copied-element"
+            }),
+            ToastKind::Info,
+        );
+    }
+
+    /// Place what the clipboard holds on the slide shown, as copies with ids
+    /// of their own. Clipboard text that is not a slide element is left to
+    /// whoever asked for it: pasting words into a text box is the box's job.
+    pub(crate) fn paste_elements(&mut self) {
+        let Some(text) = ui::text_selection::clipboard_paste() else {
+            return;
+        };
+        let Some(clip) = clipboard::Clip::read(&text) else {
+            return;
+        };
+        let Some(slide) = self.slide().map(|slide| slide.id.clone()) else {
+            return;
+        };
+        let mut last = None;
+        for element in clip.pasted(|| uuid::Uuid::new_v4().to_string()) {
+            last = Some(element.id.clone());
+            self.submit(&actions::paste_element_action(&slide, &element));
+        }
+        self.sel = last;
+        self.editing_text = false;
+    }
+
     fn delete_element(&mut self) {
         if let (Some(id), Some(slide)) = (self.sel.clone(), self.slide().map(|s| s.id.clone())) {
             self.submit(&actions::delete_element_action(&slide, &id));
@@ -4574,6 +4617,17 @@ impl SlidesApp {
             *handled = true;
             return;
         }
+        // Copy, cut and paste an element: a shape moves between slides, and
+        // what is pasted is the element itself, not a picture of it.
+        if ctrl && matches!(lc.as_str(), "c" | "x" | "v") {
+            match lc.as_str() {
+                "c" => self.copy_selected(false),
+                "x" => self.copy_selected(true),
+                _ => self.paste_elements(),
+            }
+            *handled = true;
+            return;
+        }
         // A chord the app does not use is the window's, not a plain letter:
         // Ctrl+P is not "start presenting".
         if ctrl {
@@ -4707,6 +4761,7 @@ impl SlidesApp {
     }
 }
 
+mod clipboard;
 mod editor_chrome;
 mod text_box;
 mod window_bar;

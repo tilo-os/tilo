@@ -199,3 +199,8 @@ slides-replace-deck = Replaced the deck with { $title }
 
 slides-zoom-fit = Fit to window
 slides-zoom-at = Zoom: { $zoom }
+
+## Copying and pasting an element
+
+slides-toast-copied-element = Copied the element
+slides-toast-cut-element = Cut the element
