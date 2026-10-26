@@ -706,7 +706,7 @@ impl TilolangPage {
         let Some(host) = self.current_host() else {
             return;
         };
-        match host.open_main(app) {
+        match host.open_main(app).and_then(whole) {
             Ok(view) => {
                 let title = host
                     .packages()
@@ -756,7 +756,7 @@ impl TilolangPage {
         let Some(host) = self.current_host() else {
             return;
         };
-        match host.open_resource(target, with) {
+        match host.open_resource(target, with).and_then(whole) {
             Ok(next) => {
                 if let Mode::Open { view, trail, .. } = &mut self.mode {
                     let left = std::mem::replace(view, Box::new(next));
@@ -1192,6 +1192,13 @@ fn visit_bound(page: &TilolangPage, view: &ViewInstance, node: &UiNode) {
 }
 
 /// The first split of a view, which is where its list and its detail are.
+/// `view` with every row of its lists rendered: this page draws a view's whole tree rather than
+/// asking a list for the rows it shows.
+fn whole(mut view: ViewInstance) -> Result<ViewInstance, tilolang_tilo::host::HostError> {
+    view.set_lazy_rows(false)?;
+    Ok(view)
+}
+
 fn split_of(tree: &UiNode) -> Option<&UiNode> {
     if tree.kind == "split" {
         return Some(tree);
