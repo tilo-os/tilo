@@ -124,7 +124,10 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         } else {
             result.unwrap().validate_for(&request).unwrap();
             assert_ne!(std::fs::read(&path).unwrap(), before);
+            // The tree holds the owner it opened: let both go before the
+            // state file is opened again.
             drop(service);
+            drop(tree);
             let mut reopened = super::super::persist::load_tree_from(&path).unwrap();
             reopened.persist_path = Some(path);
             let owner = super::super::native_workspace_owner::open(reopened.shared()).unwrap();
