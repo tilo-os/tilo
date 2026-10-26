@@ -806,8 +806,10 @@ pub trait Backend {
         false
     }
 
-    /// Whether anyone may be looking at this backend's pixels, and so whether
-    /// shared legacy windows are worth encoding.
+    /// Whether anyone may be looking at this backend's pixels. Shared legacy
+    /// windows are worth encoding then, and also while a viewer of their own
+    /// shows them: their streams are encoded from the windows' buffers, never
+    /// from the backend's.
     fn watched(&self) -> bool {
         true
     }
