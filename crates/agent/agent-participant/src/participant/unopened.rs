@@ -66,10 +66,10 @@ pub(crate) fn desktop_route(room: &str) -> DocumentRoute {
     }
 }
 
-/// The records bound to a tab of a shared desktop `doc`: what people have
+/// The records bound to a tab of the room's layout `doc`: what people have
 /// open. Reads its current value only.
 fn desktop_records(doc: &impl automerge::ReadDoc) -> HashSet<String> {
-    tilo_desktop_model::shared_record::read(doc, None)
+    tilo_desktop_model::room_layout::read(doc, None)
         .map(|desktop| {
             desktop
                 .records
@@ -632,16 +632,30 @@ mod tests {
         changes: usize,
     }
 
+    /// The person's device, whose namespace the layout's windows are minted
+    /// in.
+    const PERSON: &str = "person-device";
+    const ROOM: &str = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+
+    fn salt() -> u16 {
+        tilo_desktop_model::ids::namespace_of_device(PERSON)
+    }
+
+    fn id(counter: u64) -> u64 {
+        tilo_desktop_model::compose_id(salt(), counter)
+    }
+
     /// A desktop of twenty windows, `records` naming theirs.
     fn twenty(records: impl Fn(u64) -> String) -> tilo_desktop_model::ownership::SharedDesktop {
         use tilo_desktop_model::{
-            Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
+            RoomId, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
         };
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
-        let mut strip = Strip::new(StripId(2), "Main");
+        let room = RoomId::parse(ROOM).unwrap();
+        let mut workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Room");
+        let mut strip = Strip::new(StripId(id(2)), "Main");
         let tabs: Vec<Tab> = (0..20_u64)
-            .map(|id| Tab {
-                id: id.saturating_add(100),
+            .map(|counter| Tab {
+                id: id(counter.saturating_add(100)),
                 title: "Notes".into(),
                 tile: TileContent::LocalApp {
                     app_id: "so.tilo.notes".into(),
@@ -652,8 +666,8 @@ mod tests {
             })
             .collect();
         strip.window_groups.push(WindowGroup {
-            id: 3,
-            active_tab: 100,
+            id: id(3),
+            active_tab: id(100),
             tabs,
             width: tilo_desktop_model::WindowWidth::Normal,
             maximized: false,
@@ -662,29 +676,43 @@ mod tests {
         workspace.strips.push(strip);
         tilo_desktop_model::ownership::SharedDesktop {
             tree: tilo_desktop_model::DesktopTree {
+                active: workspace.id,
                 workspaces: vec![workspace],
                 ..tilo_desktop_model::DesktopTree::default()
             },
             records: (0..20_u64)
-                .map(|id| (id.saturating_add(100), records(id)))
+                .map(|counter| (id(counter.saturating_add(100)), records(counter)))
                 .collect(),
             authors: std::collections::BTreeMap::new(),
         }
     }
 
     impl Desktop {
-        /// One change, its last tab bound to `last`.
-        fn change(&mut self, last: &str) -> Vec<u8> {
+        /// One change, naming `rec-open` on the window a person has open and
+        /// `title` as its name: a change of the desktop, not of what a window
+        /// shows (a window keeps the record it was opened with).
+        fn change(&mut self, title: &str) -> Vec<u8> {
             let index = self.changes;
             self.changes = index.saturating_add(1);
-            let desktop = twenty(|tab| {
+            let mut desktop = twenty(|tab| {
                 if tab == 19 {
-                    last.to_owned()
+                    "rec-open".to_owned()
                 } else {
                     format!("rec-{index}-{tab}")
                 }
             });
-            tilo_desktop_model::shared_record::write(&mut self.doc, &desktop).unwrap();
+            if let Some(strip) = desktop
+                .tree
+                .workspaces
+                .first_mut()
+                .and_then(|w| w.strips.first_mut())
+                && let Some(group) = strip.window_groups.first_mut()
+                && let Some(tab) = group.tabs.first_mut()
+            {
+                tab.title = title.to_owned();
+            }
+            tilo_desktop_model::room_layout::write(&mut self.doc, &desktop, salt(), Some(PERSON))
+                .unwrap();
             self.doc.save_incremental()
         }
     }
@@ -738,7 +766,7 @@ mod tests {
                 format!("rec-{tab}")
             }
         });
-        tilo_desktop_model::shared_record::write(&mut doc, &desktop).unwrap();
+        tilo_desktop_model::room_layout::write(&mut doc, &desktop, salt(), Some(PERSON)).unwrap();
         let records = desktop_records(&doc);
         assert!(records.contains("rec-open"));
         assert_eq!(records.len(), 20);
@@ -782,7 +810,12 @@ mod tests {
             Some(&read)
         );
         unopened.receive(desktop_route.clone(), desktop.change("seen"));
-        assert_eq!(unopened.people_first()[0].record, "seen");
+        assert_eq!(unopened.people_first()[0].record, "rec-open");
+        assert_eq!(
+            unopened.desktop.as_ref().unwrap().tabs.as_ref().unwrap()[0].title,
+            "seen",
+            "the desktop changed, so its tabs were read again"
+        );
         let seed = unopened.seed(&desktop_route).unwrap().unwrap();
         assert_seeds(&seed, &mut desktop.doc);
     }

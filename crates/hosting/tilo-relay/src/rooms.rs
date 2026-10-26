@@ -236,7 +236,7 @@ struct GovernedRoom {
     compaction_wait: usize,
     /// The room's shared desktop as members' writes of it are decided,
     /// followed from the first such write ([`desktop_writes`]).
-    desktop: Option<crate::desktop_guard::DesktopGuard>,
+    desktop: Option<crate::desktop_guard::LayoutGuard>,
     /// The segments of members' larger desktop writes, until each is whole.
     desktop_segments: collab_types::DocumentReassembler,
     /// Members' writes the governor took in that the room file lacks.

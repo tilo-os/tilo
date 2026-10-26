@@ -91,47 +91,28 @@ pub(super) fn layout_write(room: &str, body: &[u8]) -> Option<LayoutWrite> {
     }
 }
 
-/// Remove every window and window group from `doc`, a shared desktop
-/// record, and every strip a person made; the strips the room itself has
+/// Remove every window and window group from `doc`, a room's layout
+/// document, and every strip a person made; the strips the room itself has
 /// (its operator's, which name no author) stay. Returns whether it changed
-/// the record.
+/// the document.
 #[cfg(any(feature = "agents", test))]
 pub(super) fn drop_shared_windows(doc: &mut automerge::AutoCommit) -> Result<bool, String> {
-    use automerge::transaction::Transactable as _;
-    use automerge::{ObjType, ROOT, ReadDoc as _, Value};
-    let mut changed = false;
-    for level in ["windows", "groups"] {
-        if let Some((Value::Object(ObjType::Map), map)) =
-            doc.get(ROOT, level).map_err(|error| error.to_string())?
-        {
-            let keys: Vec<String> = doc.keys(&map).collect();
-            for key in keys {
-                doc.delete(&map, key.as_str())
-                    .map_err(|error| error.to_string())?;
-                changed = true;
-            }
-        }
-    }
-    if let Some((Value::Object(ObjType::Map), strips)) =
-        doc.get(ROOT, "strips").map_err(|error| error.to_string())?
-    {
-        let made: Vec<String> = doc
-            .keys(&strips)
-            .filter(|key| {
-                doc.get(&strips, key.as_str())
-                    .ok()
-                    .flatten()
-                    .and_then(|(_, strip)| doc.get(&strip, "author").ok().flatten())
-                    .is_some()
-            })
-            .collect();
-        for key in made {
-            doc.delete(&strips, key.as_str())
-                .map_err(|error| error.to_string())?;
-            changed = true;
-        }
-    }
-    Ok(changed)
+    use tilo_desktop_model::projection::drop_contents_except;
+    let Some(layout) = tilo_desktop_model::room_layout::read(doc, None) else {
+        return Ok(false);
+    };
+    let kept: std::collections::BTreeSet<u64> = layout
+        .tree
+        .workspaces
+        .first()
+        .into_iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .map(|strip| strip.id.raw())
+        .filter(|id| !layout.authors.contains_key(id))
+        .collect();
+    // Every entry that is not a strip the room itself made goes, with what it
+    // holds; the room's strips stay, emptied.
+    Ok(drop_contents_except(doc, &|id| kept.contains(&id)) > 0)
 }
 
 impl Rooms {

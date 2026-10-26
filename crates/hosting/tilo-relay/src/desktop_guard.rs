@@ -1,47 +1,62 @@
-//! The relay's check of each write to a room's shared desktop: nobody
-//! closes, moves or renames a strip or window someone else made unless the
-//! room lets them moderate it ([`tilo_desktop_model::ownership`]).
+//! The relay's check of each write to a room's layout document: one writer
+//! per entry, and rearrangement of someone else's windows as a retained
+//! request rather than a write into their namespace.
 //!
-//! The desktop record keeps every workspace, strip, group and window as an
-//! entry of its own ([`tilo_desktop_model::shared_record`]), so each change
-//! writes only the entries its author changed, and concurrent changes merge.
-//! What a change did is read from the desktop its author saw (the record at
-//! the change's dependencies) and the one it left (the record at the change
-//! itself): someone who never saw a window cannot have closed it, and a
-//! change cannot touch an entry its author never saw, since its own
-//! dependencies are what that entry would have to be among.
+//! The layout document carries every strip, window group and window as an
+//! entry of its own in the room's `contents` map
+//! ([`tilo_desktop_model::room_layout`]), each minted under the id namespace
+//! of the device that published it. A change may only touch entries
+//! carrying its writer's namespace (and only mark applied requests of that
+//! namespace), so two devices' concurrent edits merge and nobody rewrites a
+//! colleague's window. That replaced an earlier rule that read each change
+//! as before/after desktops and judged what it did to other people's
+//! entries: a moderator now asks ([`LayoutRequest`]) instead of writing.
 //!
-//! A write is admitted when every act on what its writer did not make is
-//! one the room lets them do ([`tilo_desktop_model::ownership::act_node`]).
+//! A request is room state: the relay keeps it while the window's owner is
+//! away. It is judged where it enters — its id must be its own content, its
+//! asker must be its writer, and what it asks of an entry that is not its
+//! asker's must be an act `allows` grants them on that entry — and the owner
+//! applies it once, recording that in its own namespace.
 
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ChangeHash};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_desktop_model::ownership::{SharedDesktop, Touched, foreign_acts};
-use tilo_desktop_model::shared_record;
+use tilo_desktop_model::commands::BoundCommand;
+use tilo_desktop_model::ids::{namespace_of_device, peer_salt_of};
+use tilo_desktop_model::ownership::{Touched, commanded_act};
+use tilo_desktop_model::projection::{
+    LayoutRequest, layout_authors_at, layout_digest_at, layout_marks_at, layout_requests_at,
+};
 
-/// A room's shared desktop as the relay follows it.
-pub(crate) struct DesktopGuard {
+/// A room's layout document as the relay follows it.
+pub(crate) struct LayoutGuard {
     doc: AutoCommit,
 }
 
-/// Why a write of the shared desktop is refused.
+/// Why a write of the room's layout is refused.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum DesktopRefusal {
-    /// It does what its writer may not to something someone else made.
-    #[error(
-        "{writer} may not {verb} {id} on the shared desktop, which {owner} made",
-        verb = act.act.verb(),
-        id = act.id,
-        owner = act.owner.as_deref().unwrap_or("nobody")
-    )]
-    NotTheirs { writer: String, act: Touched },
-    /// It is not a desktop, or not one the relay can read.
-    #[error("not a shared desktop: {0}")]
+pub(crate) enum LayoutRefusal {
+    /// It writes, closes or renames an entry a device that is not its
+    /// writer made.
+    #[error("{writer} may not write {entry} on the room's layout, minted by another device")]
+    NotTheirs { writer: String, entry: u64 },
+    /// It marks applied a request in a namespace that is not its writer's.
+    #[error("{writer} may not record {mark} as applied")]
+    NotItsMark { writer: String, mark: String },
+    /// It records a request that is not its asker's, or asks something its
+    /// asker may not do to that window.
+    #[error("{writer} may not ask {request} on the room's layout: {why}")]
+    Request {
+        writer: String,
+        request: String,
+        why: String,
+    },
+    /// It is not a layout document, or not one the relay can read.
+    #[error("not a room layout: {0}")]
     Unreadable(String),
 }
 
-impl DesktopGuard {
+impl LayoutGuard {
     pub(crate) const fn new(doc: AutoCommit) -> Self {
         Self { doc }
     }
@@ -52,42 +67,152 @@ impl DesktopGuard {
         let _ = self.doc.merge_incoming(other);
     }
 
-    /// Decide `mutation`, a write by `writer` (a person id): each act of
-    /// each of its changes on what `writer` did not make, and that is not
-    /// released by its maker leaving the room (`members`: the room's
-    /// current members), must be one `allows` lets them do. Takes the write in when it is admitted, and
-    /// leaves the desktop as it was when it is refused.
+    /// Decide `mutation`, a write by the device `writer` (its key, hex) for
+    /// the person `person`: every entry it changes must be minted in
+    /// `writer`'s namespace, every mark it records in its own, and every
+    /// request it makes its own, with `allows` deciding what it may ask of
+    /// a window someone else made. Takes the write in when it is admitted,
+    /// and leaves the layout as it was when it is refused.
     pub(crate) fn decide(
         &mut self,
         mutation: &DocumentMutation,
         writer: &str,
-        members: Option<&std::collections::BTreeSet<String>>,
+        person: &str,
         allows: &dyn Fn(&Touched) -> bool,
-    ) -> Result<(), DesktopRefusal> {
+    ) -> Result<(), LayoutRefusal> {
         let bytes = match mutation {
             DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
         };
         let mut next = self.doc.clone();
         let before = next.get_heads();
         next.load_incoming(bytes)
-            .map_err(|error| DesktopRefusal::Unreadable(error.to_string()))?;
+            .map_err(|error| LayoutRefusal::Unreadable(error.to_string()))?;
+        let write = Write {
+            writer,
+            person,
+            salt: namespace_of_device(writer),
+        };
         for change in next.get_changes(&before) {
-            let seen = shared_record::read(&next, Some(change.deps())).unwrap_or_default();
-            let left = shared_record::read(&next, Some(&[change.hash()]))
-                .unwrap_or_else(SharedDesktop::default);
-            if let Some(act) = foreign_acts(&seen, &left, writer, members)
-                .into_iter()
-                .find(|act| !allows(act))
-            {
-                return Err(DesktopRefusal::NotTheirs {
-                    writer: writer.to_owned(),
-                    act,
-                });
-            }
+            let deps = change.deps().to_vec();
+            judge(&next, &write, &deps, change.hash(), allows)?;
         }
         self.doc = next;
         Ok(())
     }
+}
+
+/// One admitted batch's writer: its device key (hex), the person it writes
+/// for, and the layout namespace its windows are minted in.
+#[derive(Clone, Copy)]
+struct Write<'a> {
+    writer: &'a str,
+    person: &'a str,
+    salt: u16,
+}
+
+/// Whether one change of an admitted batch, from `deps` to `at`, stays
+/// inside its writer's namespace, and whether the requests it makes are its
+/// own and allowed.
+fn judge(
+    next: &AutoCommit,
+    write: &Write<'_>,
+    deps: &[ChangeHash],
+    at: ChangeHash,
+    allows: &dyn Fn(&Touched) -> bool,
+) -> Result<(), LayoutRefusal> {
+    let before_entries = layout_digest_at(next, Some(deps));
+    let after_entries = layout_digest_at(next, Some(&[at]));
+    let not_theirs = |entry: u64| LayoutRefusal::NotTheirs {
+        writer: write.writer.to_owned(),
+        entry,
+    };
+    for (id, digest) in &after_entries {
+        if before_entries.get(id) != Some(digest) && peer_salt_of(*id) != write.salt {
+            return Err(not_theirs(*id));
+        }
+    }
+    for id in before_entries.keys() {
+        if !after_entries.contains_key(id) && peer_salt_of(*id) != write.salt {
+            return Err(not_theirs(*id));
+        }
+    }
+
+    let prefix = format!("{:04x}/", write.salt);
+    let marks = layout_marks_at(next, Some(deps));
+    for mark in layout_marks_at(next, Some(&[at])) {
+        if !marks.contains(&mark) && !mark.starts_with(&prefix) {
+            return Err(LayoutRefusal::NotItsMark {
+                writer: write.writer.to_owned(),
+                mark,
+            });
+        }
+    }
+
+    let seen = layout_requests_at(next, Some(deps));
+    let authors = layout_authors_at(next, Some(&[at]));
+    for (key, request) in layout_requests_at(next, Some(&[at])) {
+        if seen.get(&key) == Some(&request) {
+            continue;
+        }
+        if let Some(why) = request_refusal(&key, &request, write.person) {
+            return Err(LayoutRefusal::Request {
+                writer: write.writer.to_owned(),
+                request: key,
+                why,
+            });
+        }
+        let Some(act) = request_act(&request).filter(|act| peer_salt_of(act.id) != write.salt)
+        else {
+            continue;
+        };
+        let touched = Touched {
+            owner: authors.get(&act.id).cloned(),
+            ..act
+        };
+        if !allows(&touched) {
+            return Err(LayoutRefusal::Request {
+                writer: write.writer.to_owned(),
+                request: key,
+                why: format!(
+                    "it may not {} {}, which {} made",
+                    touched.act.verb(),
+                    touched.id,
+                    touched.owner.as_deref().unwrap_or("nobody")
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Why `request`, filed under `key`, is not one `person` may make.
+fn request_refusal(key: &str, request: &LayoutRequest, person: &str) -> Option<String> {
+    if request.id != key {
+        return Some("it is filed under another request's id".into());
+    }
+    if request.id != LayoutRequest::id(&request.from, request.to_salt, request.at, &request.command)
+    {
+        return Some("its id is not its own content".into());
+    }
+    if request.from != person {
+        return Some(format!("it is asked in the name of {}", request.from));
+    }
+    if request.to_salt == 0 {
+        return Some("it names no owner".into());
+    }
+    None
+}
+
+/// The act `request` asks of an entry, when the owner's own device is asked
+/// to apply a command whose JSON this build reads.
+fn request_act(request: &LayoutRequest) -> Option<Touched> {
+    let bound: BoundCommand = serde_json::from_slice(&request.command).ok()?;
+    let (id, act) = commanded_act(&bound.command)?;
+    Some(Touched {
+        id,
+        act,
+        owner: None,
+    })
 }
 
 #[cfg(test)]

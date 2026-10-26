@@ -179,7 +179,6 @@ pub(crate) struct PageHistory {
     host: Rc<PageActivityHost>,
     /// Who each desktop change's actor is, from the last read.
     authors: BTreeMap<String, String>,
-    partial: bool,
     person_of: PersonOf,
 }
 
@@ -226,7 +225,6 @@ impl PageHistory {
                 room: room.to_owned(),
             }),
             authors: BTreeMap::new(),
-            partial: false,
             person_of,
         }
     }
@@ -494,7 +492,6 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
         let room = tree.workspaces.iter().find(|w| w.id == workspace)?.room();
         let history = history_log::room_history(self.desktop_log(), room);
         self.authors = history.authors;
-        self.partial = history.truncated;
         let mut desktop = tree.clone();
         desktop.active = workspace;
         ActivitySnapshot::new(desktop, history.doc).ok()
@@ -524,7 +521,9 @@ impl tilo_desktop_surface::HistorySource for PageHistory {
     }
 
     fn history_is_partial(&self) -> bool {
-        self.partial
+        // The room's own document is its whole history: nothing is bounded
+        // away from the pane.
+        false
     }
 
     fn activity_pane(&self) -> ActivityPaneCode {

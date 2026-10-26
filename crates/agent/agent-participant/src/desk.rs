@@ -1,20 +1,24 @@
 //! An agent's view on the person's desk.
 //!
 //! No action is performed out of sight: when an agent starts working in a
-//! record that no window on the room's shared desktop shows, it adds a tab
-//! for that record to the desktop, right after the group showing the record
-//! it worked in before (the view its task already occupies), on whichever
-//! strip holds that. Every page of the room draws it from the synced desktop
-//! as it draws its own tabs, mounting the app over the record locally:
-//! nothing is streamed. A record already on the desk is left where the
-//! people put it.
+//! record that no window on the room's layout shows, it adds a tab for that
+//! record to the layout, right after the group showing the record it worked
+//! in before (the view its task already occupies), on whichever strip holds
+//! that. Every page of the room draws it from the synced layout as it draws
+//! its own tabs, mounting the app over the record locally: nothing is
+//! streamed. A record already on the desk is left where the people put it.
+//!
+//! The tab is the agent's own entry in the room's `contents`, minted in its
+//! namespace ([`salt_of`]), with the record it shows bound by the agent as
+//! its owner: the one layout schema the browser, the relay and the shell
+//! all write.
 
 use automerge::AutoCommit;
 use tilo_desktop_model::commands::{
     DesktopCommand, OpenContext, apply_command, namespace_counter, open_app_placement,
 };
 use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::{IdMinter, TileContent, shared_record};
+use tilo_desktop_model::{IdMinter, TileContent, room_layout};
 
 pub(crate) struct View<'a> {
     pub app_id: &'a str,
@@ -30,23 +34,24 @@ pub(crate) struct View<'a> {
 /// shared desktop.
 pub(crate) fn place_view(desktop: &AutoCommit, author: &str, view: &View<'_>) -> Option<Vec<u8>> {
     let mut doc = desktop.clone();
-    let mut desktop = shared_record::read(&doc, None)?;
-    if desktop
+    let mut layout = room_layout::read(&doc, None)?;
+    if layout
         .records
         .iter()
         .any(|(_, record)| record == view.record)
     {
         return None;
     }
-    let tab = add_tab(&mut desktop, author, view)?;
-    desktop.records.push((tab, view.record.to_owned()));
-    desktop.records.sort_unstable();
+    let tab = add_tab(&mut layout, author, view)?;
+    layout.records.push((tab, view.record.to_owned()));
+    layout.records.sort_unstable();
+    let salt = salt_of(author);
     // The agent opened it: it is the agent's to close, as anyone's window is
-    // theirs.
-    desktop.authors.insert(tab, author.to_owned());
+    // theirs, and the record it shows is bound by its owner.
+    layout.authors.insert(tab, author.to_owned());
     let before = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(author.as_bytes()));
-    shared_record::write(&mut doc, &desktop).ok()?;
+    room_layout::write(&mut doc, &layout, salt, Some(author)).ok()?;
     doc.commit();
     Some(doc.save_after(&before))
 }
@@ -100,16 +105,10 @@ fn add_tab(desktop: &mut SharedDesktop, author: &str, view: &View<'_>) -> Option
     opened
 }
 
-/// `author`'s share of the desktop id space: FNV-1a folded to 16 bits, never
-/// `0` or the reserved namespace.
+/// `author`'s share of the desktop id space, derived the way every host
+/// derives a device's namespace.
 fn salt_of(author: &str) -> u16 {
-    let mut hash: u32 = 0x811c_9dc5;
-    for byte in author.bytes() {
-        hash ^= u32::from(byte);
-        hash = hash.wrapping_mul(0x0100_0193);
-    }
-    let folded = (hash >> 16) ^ (hash & 0xffff);
-    tilo_desktop_model::ids::device_salt(u16::try_from(folded).unwrap_or(1))
+    tilo_desktop_model::ids::namespace_of_device(author)
 }
 
 #[cfg(test)]
@@ -117,7 +116,13 @@ mod tests {
 
     use super::*;
     use tilo_automerge::ApplyIncoming as _;
-    use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceId};
+    use tilo_desktop_model::{
+        RoomId, Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceId, compose_id,
+    };
+
+    /// The person's device, whose namespace its windows are minted in.
+    const PERSON: &str = "person-device";
+    const ROOM: &str = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
 
     fn tab(id: u64, app: &str) -> Tab {
         Tab {
@@ -144,31 +149,38 @@ mod tests {
     }
 
     /// A desk with the person's strip (Chat) and the strip the agent's task
-    /// runs on (Notes, which it works in), as one shared desktop change.
+    /// runs on (Notes, which it works in), as one room layout document.
     fn desk() -> Vec<u8> {
-        let mut workspace = Workspace::new(WorkspaceId(1), "Room");
+        let room = RoomId::parse(ROOM).unwrap();
+        let salt = salt_of(PERSON);
+        let id = |base: u64| compose_id(salt, base);
+        let mut workspace = Workspace::in_room(WorkspaceId::of_room(room), room, "Room");
         workspace.strips = vec![
             Strip {
-                id: StripId(10),
+                id: StripId(id(10)),
                 name: "Mine".into(),
-                window_groups: vec![group(20, tab(21, "so.tilo.chat"))],
+                window_groups: vec![group(id(20), tab(id(21), "so.tilo.chat"))],
             },
             Strip {
-                id: StripId(11),
+                id: StripId(id(11)),
                 name: "Task".into(),
-                window_groups: vec![group(30, tab(31, "so.tilo.notes"))],
+                window_groups: vec![group(id(30), tab(id(31), "so.tilo.notes"))],
             },
         ];
         let desktop = SharedDesktop {
             tree: tilo_desktop_model::DesktopTree {
+                active: workspace.id,
                 workspaces: vec![workspace],
                 ..tilo_desktop_model::DesktopTree::default()
             },
-            records: vec![(21, "chat-record".into()), (31, "notes-record".into())],
+            records: vec![
+                (id(21), "chat-record".into()),
+                (id(31), "notes-record".into()),
+            ],
             authors: std::collections::BTreeMap::new(),
         };
         let mut doc = AutoCommit::new();
-        shared_record::write(&mut doc, &desktop).unwrap();
+        room_layout::write(&mut doc, &desktop, salt, Some(PERSON)).unwrap();
         doc.commit();
         doc.save()
     }
@@ -182,7 +194,7 @@ mod tests {
     }
 
     fn read(changes: &[Vec<u8>]) -> SharedDesktop {
-        shared_record::read(&merged(changes), None).expect("a desktop")
+        room_layout::read(&merged(changes), None).expect("a layout")
     }
 
     #[test]
@@ -200,7 +212,8 @@ mod tests {
         let task = &desktop.tree.workspaces[0].strips[1];
         assert_eq!(task.window_groups.len(), 2, "on the task's strip");
         assert_eq!(
-            task.window_groups[0].id, 30,
+            task.window_groups[0].id,
+            compose_id(salt_of(PERSON), 30),
             "right after the view it works in"
         );
         let added = &task.window_groups[1].tabs[0];

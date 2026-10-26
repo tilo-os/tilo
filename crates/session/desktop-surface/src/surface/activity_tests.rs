@@ -138,6 +138,7 @@ impl Served {
         assert!(crate::history_log::record(
             &mut retained,
             &serde_json::to_value(&tree).unwrap(),
+            7,
             "Ada",
             1_000,
         ));
@@ -145,6 +146,7 @@ impl Served {
         assert!(crate::history_log::record(
             &mut retained,
             &serde_json::to_value(&tree).unwrap(),
+            7,
             "Ada",
             2_000,
         ));
@@ -184,6 +186,7 @@ impl Served {
         assert!(crate::history_log::record(
             &mut self.log.borrow_mut(),
             &serde_json::to_value(&self.tree).unwrap(),
+            7,
             "Ada",
             at_ms,
         ));

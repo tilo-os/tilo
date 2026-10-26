@@ -14,10 +14,14 @@
 //!   into the open record (`RecordStore::merge_replica`, Automerge
 //!   semantics, local undo untouched) or, when no mount has it open, into
 //!   the record's stored document so opening it later shows them.
-//! - **The desktop** (tree plus each tab's record) is one small Automerge
-//!   document on its own route whose `desktop` value is the shared JSON.
-//!   Concurrent layouts resolve last-writer-wins, identically everywhere;
-//!   an inbound value reaches the surface through `replace_tree`.
+//! - **The layout** is the room's own document, in the one room schema
+//!   (`tilo_desktop_model::room_layout`): every strip, window group and
+//!   window is an entry in its `contents` map, minted in the publishing
+//!   device's id namespace, so two devices' concurrent changes merge and
+//!   nobody rewrites a colleague's window. A page publishes only the
+//!   workspace the room is, and folds what arrives into that workspace
+//!   alone. Rearranging another device's window is a request the room
+//!   retains (`LayoutRequest`), applied once by its owner.
 //!
 //! Nothing is published before the host answered `Ready` for the room, so a
 //! page never announces a stale snapshot over what the room already holds.
@@ -92,6 +96,9 @@ pub(crate) struct Room {
     events: PeerEvents,
     uuid: String,
     workspace: u64,
+    /// This device's layout namespace: the entries it publishes into the
+    /// room's `contents` are minted in it, and the room admits only those.
+    salt: u16,
     store: Rc<MemoryStore>,
     /// Where `store` lives.
     kept: Kept,
@@ -190,12 +197,14 @@ pub(crate) fn open(
 ) -> Result<(), String> {
     let workspace =
         tilo_relay_protocol::room_workspace_id(room).map_err(|_| "room must be a uuid")?;
+    let salt = tilo_desktop_model::ids::namespace_of_device(&device);
     let room = Room {
         peer,
         device,
         events,
         uuid: room.to_owned(),
         workspace,
+        salt,
         store,
         kept,
         ready: false,
@@ -585,13 +594,19 @@ impl Room {
     }
 
     /// What `value`, this page's desktop, closes, moves or renames on the
-    /// room's desktop that its person did not make and may not moderate:
-    /// the room refuses such a write, so it is never sent. Said in words
-    /// the person reads; `None` when it touches nothing of anyone else's.
-    fn rearranges_others(&self, value: &serde_json::Value, author: &str) -> Option<String> {
-        if self.moderates.load(Ordering::Relaxed) {
-            return None;
-        }
+    /// room's desktop that its person did not make, with the command that
+    /// would do it: a request to its owner, never a write into their
+    /// entries. Empty when it touches nothing of anyone else's.
+    fn rearranges_others(
+        &self,
+        value: &serde_json::Value,
+        author: &str,
+    ) -> Option<
+        Vec<(
+            tilo_desktop_model::ownership::Touched,
+            tilo_desktop_model::commands::DesktopCommand,
+        )>,
+    > {
         let room = self.desktop_value.as_ref()?;
         let parse = |value: &serde_json::Value| {
             serde_json::from_value::<tilo_desktop_model::ownership::SharedDesktop>(value.clone())
@@ -607,14 +622,19 @@ impl Room {
             self.members.as_ref(),
         );
         let first = acts.first()?;
-        warn(&format!("undid a change to what others made: {acts:?}"));
-        Some(
-            tilo_desktop_model::commands::Refusal::Others {
-                id: first.id,
-                owner: first.owner.clone(),
-            }
-            .to_string(),
-        )
+        let words = tilo_desktop_model::commands::Refusal::Others {
+            id: first.id,
+            owner: first.owner.clone(),
+        }
+        .to_string();
+        let asked: Vec<_> = acts
+            .iter()
+            .filter_map(|act| {
+                let command = request_command(act, &before, &after)?;
+                Some((*act, command))
+            })
+            .collect();
+        Some((asked, words))
     }
 
     /// Every record a mount has open in this room, as wire `(app, record)`.
@@ -1348,38 +1368,105 @@ impl Room {
         if self.own_layout {
             return;
         }
+        let salt = self.salt;
+        // Requests other devices made of this one's windows, while it was
+        // away or since: its owner applies each once, in the same change
+        // that records it did.
+        for mounted in self.mounts.values() {
+            if let Some((handle, shared)) = &mounted.attachment.desktop {
+                crate::desktop::apply_requests(
+                    handle,
+                    shared,
+                    self.desktop.document_mut(),
+                    salt,
+                    self.workspace,
+                );
+            }
+        }
         let Some((value, author)) = self.mounts.values().find_map(|mounted| {
-            mounted.attachment.desktop.as_ref().map(|(handle, shared)| {
-                (
-                    crate::desktop::shared_value(handle, shared),
-                    mounted.attachment.author.clone(),
-                )
-            })
+            let (handle, shared) = mounted.attachment.desktop.as_ref()?;
+            Some((
+                crate::desktop::room_layout_value(handle, shared, self.workspace)?,
+                mounted.attachment.author.clone(),
+            ))
         }) else {
             return;
         };
         if self.local_value.as_ref() == Some(&value) {
             return;
         }
-        if let Some(refusal) = self.rearranges_others(&value, &author) {
-            // Whatever moved someone else's window that the desktop did not
-            // refuse first (a race with their own move) is undone here: it
-            // springs back to where the room has it, nothing is sent, and
-            // the person is told why.
-            if let Some(room) = &self.desktop_value {
+        if let Some((asks, refusal)) = self.rearranges_others(&value, &author) {
+            // Moving another device's window is a request to its owner, never
+            // a write into its entries: the room retains it while the owner
+            // is away, and the owner applies it once. The person's own
+            // desktop springs back to where the room has it meanwhile.
+            let mut asked = Vec::new();
+            if self.moderates.load(Ordering::Relaxed) {
+                let doc = self.desktop.document_mut();
+                let heads = doc.get_heads();
+                let at = ui::time::unix_now_i64();
+                for (act, command) in &asks {
+                    let Ok(command) =
+                        serde_json::to_vec(&tilo_desktop_model::commands::BoundCommand {
+                            source: tilo_desktop_model::commands::CommandSource {
+                                room: self.uuid.clone(),
+                                heads: heads.iter().map(|hash| hash.0).collect(),
+                            },
+                            command: command.clone(),
+                        })
+                    else {
+                        continue;
+                    };
+                    let request = tilo_desktop_model::projection::LayoutRequest {
+                        id: tilo_desktop_model::projection::LayoutRequest::id(
+                            &author,
+                            tilo_desktop_model::ids::peer_salt_of(act.id),
+                            at,
+                            &command,
+                        ),
+                        from: author.clone(),
+                        to_salt: tilo_desktop_model::ids::peer_salt_of(act.id),
+                        at,
+                        command,
+                    };
+                    if tilo_desktop_model::room_layout::request(doc, &request).unwrap_or(false) {
+                        asked.push(request);
+                    }
+                }
+            } else {
                 for mounted in self.mounts.values() {
                     if let Some((handle, shared)) = &mounted.attachment.desktop {
-                        if let Err(error) = crate::desktop::return_to(handle, shared, room) {
+                        if let Some(room) = &self.desktop_value
+                            && let Err(error) = crate::desktop::return_to(handle, shared, room)
+                        {
                             warn(&format!("shared desktop not restored: {error}"));
                         }
                         handle.acknowledge(refusal.clone());
                         (mounted.attachment.notify)();
                     }
                 }
+                return;
             }
+            if let Some(room) = &self.desktop_value {
+                for mounted in self.mounts.values() {
+                    if let Some((handle, shared)) = &mounted.attachment.desktop {
+                        if let Err(error) = crate::desktop::return_to(handle, shared, room) {
+                            warn(&format!("shared desktop not restored: {error}"));
+                        }
+                        (mounted.attachment.notify)();
+                    }
+                }
+            }
+            if asked.is_empty() {
+                return;
+            }
+            // The requests are the change: the person's own entries stay as
+            // they are, and the owners apply what they were asked.
+            self.local_value = Some(value);
+            self.publish_desktop();
             return;
         }
-        // The desktop this page joined with is not something the person did.
+        // The layout this page joined with is not something the person did.
         let joined = self.desktop_value.is_some();
         let doc = self.desktop.document_mut();
         // Only the entries that differ are written, stamped with the time
@@ -1387,6 +1474,7 @@ impl Room {
         let wrote = tilo_desktop_surface::history_log::record(
             doc,
             &value,
+            salt,
             &author,
             ui::time::unix_now_i64(),
         );
@@ -1399,6 +1487,13 @@ impl Room {
             self.local_value = Some(value);
             return;
         }
+        self.local_value = Some(value);
+        self.publish_desktop();
+    }
+
+    /// Send whatever the room's layout document holds and the room has not
+    /// acknowledged.
+    fn publish_desktop(&mut self) {
         let mutation = if self.desktop_snapshotted {
             let (delta, heads) = self.desktop.pending_outbound_delta();
             if delta.is_empty() {
@@ -1414,8 +1509,75 @@ impl Room {
             self.desktop.advance_outbound(mutation.1);
             self.desktop_snapshotted = true;
             self.desktop_value = desktop_value(self.desktop.document());
-            self.local_value = Some(value);
         }
+    }
+}
+
+/// The command that asks a window's owner to do what `act` did to it.
+fn request_command(
+    act: &tilo_desktop_model::ownership::Touched,
+    before: &tilo_desktop_model::ownership::SharedDesktop,
+    after: &tilo_desktop_model::ownership::SharedDesktop,
+) -> Option<tilo_desktop_model::commands::DesktopCommand> {
+    use tilo_desktop_model::commands::{DesktopCommand, TabLocation, TabPlacement};
+    use tilo_desktop_model::ownership::Act;
+    let place = |desktop: &tilo_desktop_model::ownership::SharedDesktop| {
+        desktop.tree.workspaces.iter().find_map(|workspace| {
+            workspace.strips.iter().find_map(|strip| {
+                strip
+                    .window_groups
+                    .iter()
+                    .find(|group| group.tabs.iter().any(|tab| tab.id == act.id))
+                    .map(|group| (strip.id.raw(), group.id))
+            })
+        })
+    };
+    let location = |desktop: &tilo_desktop_model::ownership::SharedDesktop| {
+        let (strip, group) = place(desktop)?;
+        Some(TabLocation {
+            strip,
+            group,
+            tab: act.id,
+        })
+    };
+    match act.act {
+        Act::Close => match location(before) {
+            Some(location) => Some(DesktopCommand::CloseTab { location }),
+            None => Some(DesktopCommand::RemoveStrip { strip: act.id }),
+        },
+        Act::Move => Some(DesktopCommand::MoveTab {
+            location: location(before)?,
+            placement: location(after).map_or(
+                TabPlacement::NewGroup {
+                    strip: 0,
+                    after: None,
+                },
+                |at| TabPlacement::InGroup {
+                    strip: at.strip,
+                    group: at.group,
+                    after: None,
+                },
+            ),
+        }),
+        Act::Reorder => Some(DesktopCommand::ReorderTab {
+            location: location(before)?,
+            before: None,
+        }),
+        Act::Rename => {
+            let name = after
+                .tree
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .find(|strip| strip.id.raw() == act.id)?
+                .name
+                .clone();
+            Some(DesktopCommand::RenameStrip {
+                strip: act.id,
+                name,
+            })
+        }
+        Act::Attribute => None,
     }
 }
 
@@ -1447,6 +1609,6 @@ fn outbound(
 /// Who wrote the newest change of the room's desktop, as its message names
 /// them (`history_log::record`).
 fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {
-    tilo_desktop_model::shared_record::read(doc, None)
-        .and_then(|desktop| serde_json::to_value(desktop).ok())
+    tilo_desktop_model::room_layout::read(doc, None)
+        .and_then(|layout| serde_json::to_value(layout).ok())
 }

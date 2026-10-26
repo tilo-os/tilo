@@ -184,6 +184,23 @@ pub const fn counter_of(id: u64) -> u64 {
     id & PEER_ID_COUNTER_MASK
 }
 
+/// The layout id namespace of the device a name stands for (its device key
+/// in hex, or any stable device name): the fold every host derives the same
+/// way, so a page's windows, the relay that admits them and a native peer
+/// that reads them all spell one device's namespace alike. FNV-1a folded to
+/// 16 bits and passed through [`device_salt`], so it is never `0` and never
+/// [`RESERVED_SALT`].
+#[must_use]
+pub fn namespace_of_device(device: &str) -> u16 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in device.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    let folded = (hash >> 16) ^ (hash & 0xffff);
+    device_salt(u16::try_from(folded).unwrap_or(u16::MAX))
+}
+
 /// Something that hands out fresh ids from the salted id space. Operations
 /// that create windows, groups or strips take one of these rather than
 /// reaching for a global, so a host decides whether ids come from a

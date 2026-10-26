@@ -61,6 +61,25 @@ impl SharedDesktop {
     }
 }
 
+/// The one act `command` asks of a strip or window, when it asks one: the
+/// strip or window it names and what it would do to it. A command that only
+/// makes entries of the caller's own (opening a window, creating a strip)
+/// asks nothing of anyone else's. A host deciding a retained request
+/// ([`crate::projection::LayoutRequest`]) judges it by this act's node, the
+/// same node a write of it would have been judged by.
+#[must_use]
+pub fn commanded_act(command: &crate::commands::DesktopCommand) -> Option<(u64, Act)> {
+    use crate::commands::DesktopCommand;
+    match command {
+        DesktopCommand::CloseTab { location } => Some((location.tab, Act::Close)),
+        DesktopCommand::MoveTab { location, .. } => Some((location.tab, Act::Move)),
+        DesktopCommand::ReorderTab { location, .. } => Some((location.tab, Act::Reorder)),
+        DesktopCommand::RenameStrip { strip, .. } => Some((*strip, Act::Rename)),
+        DesktopCommand::RemoveStrip { strip } => Some((*strip, Act::Close)),
+        _ => None,
+    }
+}
+
 /// What a write did to a strip or window someone else made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Act {

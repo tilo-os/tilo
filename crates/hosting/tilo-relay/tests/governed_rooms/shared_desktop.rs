@@ -1,71 +1,77 @@
-//! A room's shared desktop through a real relay: guests close and move the
-//! windows they opened, never someone else's, and a moderator the room
-//! made closes anyone's. A refused write is neither kept nor forwarded, and
-//! a page committing one is told.
+//! A room's layout through a real relay: each page writes the windows its
+//! own device opened and nobody else's, a moderator rearranges someone
+//! else's only by a request the room retains, and the owner applies that
+//! request once. A refused write is neither kept nor forwarded, and a page
+//! committing one is told.
 
 use std::time::Duration;
 
+use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand, TabLocation};
+use tilo_desktop_model::ids::namespace_of_device;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
-use tilo_desktop_model::ownership::{Authors, DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
+use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
+use tilo_desktop_model::projection::LayoutRequest;
 use tilo_desktop_model::{
-    DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId, shared_record,
+    DesktopTree, RoomId, StripId, WindowWidth, Workspace, WorkspaceId, compose_id, room_layout,
 };
 use tilo_relay::rooms::SetMemberRoleRequest;
 use tilo_relay::{CoeditPayload, RelayClient};
 
 use super::*;
 
-/// The windows of a one-strip desktop: `(tab, group, who opened it)`, in
-/// order, each tab in its own group unless two share one.
-fn desktop(windows: &[(u64, u64, String)]) -> SharedDesktop {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Lounge");
-    let mut strip = Strip::new(StripId(10), "Lounge");
-    for (tab, group, _) in windows {
-        let entry = Tab {
-            id: *tab,
-            title: format!("Notes {tab}"),
-            tile: TileContent::LocalApp {
-                app_id: "so.tilo.notes".into(),
-                label: "Notes".into(),
-                note: String::new(),
-            },
-            app_title: None,
-        };
-        match strip.window_groups.iter_mut().find(|g| g.id == *group) {
-            Some(existing) => existing.tabs.push(entry),
-            None => strip.window_groups.push(WindowGroup {
-                id: *group,
-                tabs: vec![entry],
-                active_tab: *tab,
-                width: WindowWidth::Normal,
-                maximized: false,
-                focus_history: Vec::new(),
-            }),
-        }
-    }
-    workspace.strips.push(strip);
-    let tree = DesktopTree {
-        active: workspace.id,
-        workspaces: vec![workspace],
-        ..DesktopTree::default()
-    };
-    let authors: Authors = windows
-        .iter()
-        .map(|(tab, _, who)| (*tab, who.clone()))
-        .collect();
+/// The layout a page holds: one workspace, whose strips are minted in the
+/// device's own namespace.
+fn layout(room: &str, shown: &str) -> SharedDesktop {
+    let room = RoomId::parse(room).unwrap();
+    let workspace = Workspace::in_room(WorkspaceId::of_room(room), room, shown);
     SharedDesktop {
-        tree,
-        authors,
+        tree: DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        },
         records: Vec::new(),
+        authors: Default::default(),
     }
 }
 
-/// The person id a room knows `user` by.
-fn person(user: &TestUser) -> String {
-    hex::encode(user.user_pk)
+/// `device`'s namespace: the one the relay admits its layout entries in.
+fn salt(device: &TestDevice) -> u16 {
+    namespace_of_device(&hex::encode(device.device_pubkey()))
 }
 
-/// The windows on the room's desktop as its governor follows them, as
+/// A window of `device`'s: `(window counter, group counter)`, in a strip of
+/// its own named `name` unless `strip` is given.
+fn window(device: &TestDevice, strip: u64, group: u64, tab: u64, title: &str) -> Strip {
+    let salt = salt(device);
+    Strip {
+        id: StripId(compose_id(salt, strip)),
+        name: format!("{title} strip"),
+        window_groups: vec![WindowGroup {
+            id: compose_id(salt, group),
+            tabs: vec![Tab {
+                id: compose_id(salt, tab),
+                title: title.into(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.notes".into(),
+                    label: "Notes".into(),
+                    note: String::new(),
+                },
+                app_title: None,
+            }],
+            active_tab: compose_id(salt, tab),
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    }
+}
+
+fn tab_id(device: &TestDevice, tab: u64) -> u64 {
+    compose_id(salt(device), tab)
+}
+
+/// The windows on the room's layout as its governor follows them, as
 /// `(tab, group)` in order; empty while it holds none.
 async fn windows(relay: &Relay, room: &str) -> Vec<(u64, u64)> {
     let Some(bytes) = relay
@@ -78,18 +84,24 @@ async fn windows(relay: &Relay, room: &str) -> Vec<(u64, u64)> {
         return Vec::new();
     };
     let doc = AutoCommit::load(&bytes).unwrap();
-    let Some(desktop) = shared_record::read(&doc, None) else {
+    let Some(layout) = room_layout::read(&doc, None) else {
         return Vec::new();
     };
-    desktop.tree.workspaces[0].strips[0]
-        .window_groups
-        .iter()
-        .flat_map(|g| g.tabs.iter().map(move |t| (t.id, g.id)))
-        .collect()
+    let mut out = Vec::new();
+    for workspace in layout.tree.workspaces {
+        for strip in workspace.strips {
+            for group in strip.window_groups {
+                for tab in group.tabs {
+                    out.push((tab.id, group.id));
+                }
+            }
+        }
+    }
+    out
 }
 
 async fn wait_for_windows(relay: &Relay, room: &str, want: &[(u64, u64)]) {
-    tilo_test_env::within(format!("the room's desktop holds {want:?}"), async {
+    tilo_test_env::within(format!("the room's layout holds {want:?}"), async {
         while windows(relay, room).await != want {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -97,8 +109,8 @@ async fn wait_for_windows(relay: &Relay, room: &str, want: &[(u64, u64)]) {
     .await;
 }
 
-/// A member's page: their device, and their writes of the desktop signed
-/// as that device signs them, each over the desktop the room holds now.
+/// A member's page: their device, and their writes of the layout signed as
+/// that device signs them, each over the layout the room holds now.
 struct Page<'a> {
     device: &'a TestDevice,
     room: String,
@@ -107,17 +119,25 @@ struct Page<'a> {
 }
 
 impl Page<'_> {
-    /// `desktop` written over what the room's desktop holds now, as one
-    /// signed document message.
-    async fn write(&mut self, relay: &Relay, desktop: &SharedDesktop) -> NeighbourMsg {
-        let mut frames = self.write_frames(relay, desktop).await;
+    /// `change` applied to the room's layout as this page holds it, written
+    /// as `self.device`'s own entries: one signed document message.
+    async fn write(
+        &mut self,
+        relay: &Relay,
+        change: impl FnOnce(&mut SharedDesktop),
+    ) -> NeighbourMsg {
+        let mut frames = self.write_frames(relay, change).await;
         assert_eq!(frames.len(), 1, "a small write is one frame");
         frames.remove(0)
     }
 
-    /// `desktop` written as [`Self::write`] does, as the signed frames that
-    /// carry it: one, or one per segment of a larger write.
-    async fn write_frames(&mut self, relay: &Relay, desktop: &SharedDesktop) -> Vec<NeighbourMsg> {
+    /// [`Self::write`] as the signed frames that carry it: one, or one per
+    /// segment of a larger write.
+    async fn write_frames(
+        &mut self,
+        relay: &Relay,
+        change: impl FnOnce(&mut SharedDesktop),
+    ) -> Vec<NeighbourMsg> {
         let held = relay
             .rooms()
             .unwrap()
@@ -125,7 +145,52 @@ impl Page<'_> {
             .await
             .unwrap();
         // A page's every write is its own: a refused one is never the base
-        // of the next, which takes up from the room's desktop again.
+        // of the next, which takes up from the room's layout again.
+        self.seq = self.seq.saturating_add(1);
+        let mut actor = vec![self.actor; 8];
+        actor.extend(self.seq.to_le_bytes());
+        let mut doc = held
+            .map_or_else(AutoCommit::new, |bytes| AutoCommit::load(&bytes).unwrap())
+            .with_actor(automerge::ActorId::from(actor));
+        let mut value =
+            room_layout::read(&doc, None).unwrap_or_else(|| layout(&self.room, "Lounge"));
+        change(&mut value);
+        let heads = doc.get_heads();
+        let author = hex::encode(self.device.device_pubkey());
+        room_layout::write(&mut doc, &value, salt(self.device), Some(&author)).unwrap();
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        );
+        let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&heads));
+        self.sign(mutation)
+    }
+
+    /// A request this page makes of `to`'s device, written into the room.
+    async fn ask(&mut self, relay: &Relay, command: DesktopCommand, to: u16) -> NeighbourMsg {
+        let heads = self.held_heads(relay).await;
+        let asker = person_of(self.device);
+        let command = BoundCommand {
+            source: CommandSource {
+                room: self.room.clone(),
+                heads: heads.iter().map(|hash| hash.0).collect(),
+            },
+            command,
+        };
+        let command = serde_json::to_vec(&command).unwrap();
+        let request = LayoutRequest {
+            id: LayoutRequest::id(&asker, to, 1, &command),
+            from: asker,
+            to_salt: to,
+            at: 1,
+            command,
+        };
+        let held = relay
+            .rooms()
+            .unwrap()
+            .record_document(&self.room, DESKTOP_APP, DESKTOP_RECORD)
+            .await
+            .unwrap();
         self.seq = self.seq.saturating_add(1);
         let mut actor = vec![self.actor; 8];
         actor.extend(self.seq.to_le_bytes());
@@ -133,12 +198,54 @@ impl Page<'_> {
             .map_or_else(AutoCommit::new, |bytes| AutoCommit::load(&bytes).unwrap())
             .with_actor(automerge::ActorId::from(actor));
         let heads = doc.get_heads();
-        shared_record::write(&mut doc, desktop).unwrap();
-        doc.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+        room_layout::request(&mut doc, &request).unwrap();
+        doc.commit();
+        self.sign(collab_types::DocumentMutation::Incremental(
+            doc.save_after(&heads),
+        ))
+    }
+
+    /// This page's device records that it applied `request`, as its owner.
+    async fn claim(&mut self, relay: &Relay, request: &LayoutRequest) -> NeighbourMsg {
+        let held = relay
+            .rooms()
+            .unwrap()
+            .record_document(&self.room, DESKTOP_APP, DESKTOP_RECORD)
+            .await
+            .unwrap();
+        self.seq = self.seq.saturating_add(1);
+        let mut actor = vec![self.actor; 8];
+        actor.extend(self.seq.to_le_bytes());
+        let mut doc = held
+            .map_or_else(AutoCommit::new, |bytes| AutoCommit::load(&bytes).unwrap())
+            .with_actor(automerge::ActorId::from(actor));
+        let heads = doc.get_heads();
+        assert!(
+            room_layout::claim(&mut doc, salt(self.device), request).unwrap(),
+            "the owner applies it once"
         );
-        let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(&heads));
+        doc.commit();
+        let frames = self.sign(collab_types::DocumentMutation::Incremental(
+            doc.save_after(&heads),
+        ));
+        assert_eq!(frames.len(), 1);
+        frames.into_iter().next().unwrap()
+    }
+
+    /// The rooms heads this page's next request is pinned to.
+    async fn held_heads(&self, relay: &Relay) -> Vec<automerge::ChangeHash> {
+        let held = relay
+            .rooms()
+            .unwrap()
+            .record_document(&self.room, DESKTOP_APP, DESKTOP_RECORD)
+            .await
+            .unwrap();
+        held.map_or_else(Vec::new, |bytes| {
+            AutoCommit::load(&bytes).unwrap().get_heads()
+        })
+    }
+
+    fn sign(&mut self, mutation: collab_types::DocumentMutation) -> Vec<NeighbourMsg> {
         let author = collab_types::Ed25519PublicKey::from_bytes(self.device.device_pubkey());
         mutation
             .encode_frames()
@@ -168,7 +275,12 @@ impl Page<'_> {
     }
 }
 
-/// A write that opens nothing: a page's first desktop publication.
+/// The person a test device writes for: its root key, as the room knows it.
+fn person_of(device: &TestDevice) -> String {
+    hex::encode(device.cert.user_public_key)
+}
+
+/// A write that opens nothing: a page's first layout publication.
 async fn ada_page_probe(relay: &Relay, device: &TestDevice, room: &str) -> NeighbourMsg {
     let mut page = Page {
         device,
@@ -176,7 +288,7 @@ async fn ada_page_probe(relay: &Relay, device: &TestDevice, room: &str) -> Neigh
         actor: 9,
         seq: 1,
     };
-    page.write(relay, &desktop(&[])).await
+    page.write(relay, |_| {}).await
 }
 
 /// `device`'s page session in the room's workspace: connected, subscribed.
@@ -278,7 +390,7 @@ async fn admit(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
+async fn each_page_writes_its_own_windows_and_a_moderator_asks_instead() {
     let alice = TestUser::fresh("Alice");
     let ada = TestUser::fresh("Ada");
     let ben = TestUser::fresh("Ben");
@@ -398,48 +510,97 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         page(&mo_browser, 3),
         page(&cy_laptop, 4),
     );
-    let (a, b) = (person(&ada), person(&ben));
+    let (a, b) = (tab_id(&ada_browser, 21), tab_id(&ben_browser, 21));
 
-    // Ada opens window 1, Ben window 2.
+    // Ada opens her window, Ben his.
     let opens = ada_page
-        .write(&relay, &desktop(&[(1, 100, a.clone())]))
+        .write(&relay, |layout| {
+            layout.tree.workspaces[0]
+                .strips
+                .push(window(&ada_browser, 1, 11, 21, "Ada's notes"));
+        })
         .await;
     commit(&ada_client, &ada_browser, workspace, &opens)
         .await
         .unwrap();
-    wait_for_windows(&relay, &room.room, &[(1, 100)]).await;
-    let both = desktop(&[(1, 100, a.clone()), (2, 200, b.clone())]);
-    let opens = ben_page.write(&relay, &both).await;
+    wait_for_windows(
+        &relay,
+        &room.room,
+        &[(a, compose_id(salt(&ada_browser), 11))],
+    )
+    .await;
+    let opens = ben_page
+        .write(&relay, |layout| {
+            layout.tree.workspaces[0]
+                .strips
+                .push(window(&ben_browser, 1, 11, 21, "Ben's notes"));
+        })
+        .await;
     commit(&ben_client, &ben_browser, workspace, &opens)
         .await
         .unwrap();
-    wait_for_windows(&relay, &room.room, &[(1, 100), (2, 200)]).await;
+    wait_for_windows(
+        &relay,
+        &room.room,
+        &[
+            (a, compose_id(salt(&ada_browser), 11)),
+            (b, compose_id(salt(&ben_browser), 11)),
+        ],
+    )
+    .await;
 
-    // Ada may not close Ben's window, nor move it into hers.
+    // Ada may not close Ben's window, nor move it into hers, however she
+    // moderates nothing: both are writes into his namespace.
     let closes = ada_page
-        .write(&relay, &desktop(&[(1, 100, a.clone())]))
+        .write(&relay, |layout| {
+            layout.tree.workspaces[0]
+                .strips
+                .retain(|strip| strip.id != StripId(compose_id(salt(&ben_browser), 1)));
+        })
         .await;
     let refused = commit(&ada_client, &ada_browser, workspace, &closes)
         .await
         .unwrap_err();
-    assert!(refused.contains("may not close"), "{refused}");
-    let into_hers = desktop(&[(1, 100, a.clone()), (2, 100, b.clone())]);
-    let moves = ada_page.write(&relay, &into_hers).await;
+    assert!(refused.contains("minted by another device"), "{refused}");
+    let moves = ada_page
+        .write(&relay, |layout| {
+            // Ben's window put into Ada's group.
+            if let Some(mine) = layout.tree.workspaces[0].strips.first_mut() {
+                mine.window_groups[0].tabs.push(Tab {
+                    id: b,
+                    title: "Ben's notes".into(),
+                    tile: TileContent::LocalApp {
+                        app_id: "so.tilo.notes".into(),
+                        label: "Notes".into(),
+                        note: String::new(),
+                    },
+                    app_title: None,
+                });
+            }
+        })
+        .await;
     let refused = commit(&ada_client, &ada_browser, workspace, &moves)
         .await
         .unwrap_err();
-    assert!(refused.contains("may not move"), "{refused}");
+    assert!(refused.contains("minted by another device"), "{refused}");
     // Nor through a write large enough to travel in segments: they go on as
     // they come, and the last one, which completes it, is refused, so none
     // of it applies anywhere.
-    let mut huge = desktop(&[(1, 100, a.clone())]);
-    huge.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title =
-        (0..400_000u32).fold(String::new(), |mut title, n| {
-            use std::fmt::Write as _;
-            write!(title, "{:x}", n.wrapping_mul(2_654_435_761)).unwrap();
-            title
-        });
-    let frames = ada_page.write_frames(&relay, &huge).await;
+    let frames = ada_page
+        .write_frames(&relay, |layout| {
+            layout.tree.workspaces[0]
+                .strips
+                .retain(|strip| strip.id != StripId(compose_id(salt(&ben_browser), 1)));
+            if let Some(mine) = layout.tree.workspaces[0].strips.first_mut() {
+                mine.window_groups[0].tabs[0].title =
+                    (0..400_000u32).fold(String::new(), |mut title, n| {
+                        use std::fmt::Write as _;
+                        write!(title, "{:x}", n.wrapping_mul(2_654_435_761)).unwrap();
+                        title
+                    });
+            }
+        })
+        .await;
     assert!(frames.len() > 1, "{} frames", frames.len());
     let (last, first) = frames.split_last().unwrap();
     for frame in first {
@@ -450,51 +611,135 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     let refused = commit(&ada_client, &ada_browser, workspace, last)
         .await
         .unwrap_err();
-    assert!(refused.contains("may not close"), "{refused}");
-    // Nor may Cy, through a native session's plain delta: it is dropped,
-    // and his next write, which is his to make, lands without it.
+    assert!(refused.contains("minted by another device"), "{refused}");
+    // Nor may Cy, through a native session's plain delta: it is dropped, and
+    // his next write, which is his to make, lands without it.
     let cy_session = session(&relay, &cy_laptop, workspace).await;
     crate::common::wait_until_subscribed(&relay, workspace, &cy_laptop.device_pubkey()).await;
-    // Both over the same desktop: had the room kept the close, Ada's
-    // window would be gone beside Cy's new one.
-    let three = desktop(&[
-        (1, 100, a.clone()),
-        (2, 200, b.clone()),
-        (3, 300, person(&cy)),
-    ]);
-    let cy_opens = cy_page.write(&relay, &three).await;
     let cy_closes = cy_page
-        .write(&relay, &desktop(&[(2, 200, b.clone())]))
+        .write(&relay, |layout| {
+            layout.tree.workspaces[0]
+                .strips
+                .retain(|strip| strip.id != StripId(compose_id(salt(&ada_browser), 1)));
+        })
+        .await;
+    let cy_opens = cy_page
+        .write(&relay, |layout| {
+            layout.tree.workspaces[0]
+                .strips
+                .push(window(&cy_laptop, 1, 11, 21, "Cy's notes"));
+        })
         .await;
     publish(&cy_session, &cy_closes);
     publish(&cy_session, &cy_opens);
-    wait_for_windows(&relay, &room.room, &[(1, 100), (2, 200), (3, 300)]).await;
-    let cy_closes_his = cy_page.write(&relay, &both).await;
+    wait_for_windows(
+        &relay,
+        &room.room,
+        &[
+            (a, compose_id(salt(&ada_browser), 11)),
+            (b, compose_id(salt(&ben_browser), 11)),
+            (tab_id(&cy_laptop, 21), compose_id(salt(&cy_laptop), 11)),
+        ],
+    )
+    .await;
+    // Cy closes his own window.
+    let cy_closes_his = cy_page
+        .write(&relay, |layout| {
+            layout.tree.workspaces[0]
+                .strips
+                .retain(|strip| strip.id != StripId(compose_id(salt(&cy_laptop), 1)));
+        })
+        .await;
     publish(&cy_session, &cy_closes_his);
-    wait_for_windows(&relay, &room.room, &[(1, 100), (2, 200)]).await;
-    // She may move her own window past his.
-    let reordered = desktop(&[(2, 200, b.clone()), (1, 100, a.clone())]);
-    let hers = ada_page.write(&relay, &reordered).await;
-    commit(&ada_client, &ada_browser, workspace, &hers)
-        .await
-        .unwrap();
-    wait_for_windows(&relay, &room.room, &[(2, 200), (1, 100)]).await;
+    wait_for_windows(
+        &relay,
+        &room.room,
+        &[
+            (a, compose_id(salt(&ada_browser), 11)),
+            (b, compose_id(salt(&ben_browser), 11)),
+        ],
+    )
+    .await;
 
     // Ben closes his own window.
     let closes = ben_page
-        .write(&relay, &desktop(&[(1, 100, a.clone())]))
+        .write(&relay, |layout| {
+            layout.tree.workspaces[0]
+                .strips
+                .retain(|strip| strip.id != StripId(compose_id(salt(&ben_browser), 1)));
+        })
         .await;
     commit(&ben_client, &ben_browser, workspace, &closes)
         .await
         .unwrap();
-    wait_for_windows(&relay, &room.room, &[(1, 100)]).await;
+    wait_for_windows(
+        &relay,
+        &room.room,
+        &[(a, compose_id(salt(&ada_browser), 11))],
+    )
+    .await;
 
-    // Mo moderates the room: he closes Ada's.
-    let clears = mo_page.write(&relay, &desktop(&[])).await;
-    commit(&mo_client, &mo_browser, workspace, &clears)
+    // Mo moderates the room: he asks Ada's device to close her window, the
+    // room retains the request, and Ada's page applies it once and records
+    // that it did.
+    let close_ada = DesktopCommand::CloseTab {
+        location: TabLocation {
+            strip: compose_id(salt(&ada_browser), 1),
+            group: compose_id(salt(&ada_browser), 11),
+            tab: a,
+        },
+    };
+    let ask = mo_page
+        .ask(&relay, close_ada.clone(), salt(&ada_browser))
+        .await;
+    commit(&mo_client, &mo_browser, workspace, &ask)
+        .await
+        .unwrap();
+    let held = relay
+        .rooms()
+        .unwrap()
+        .record_document(&room.room, DESKTOP_APP, DESKTOP_RECORD)
+        .await
+        .unwrap()
+        .unwrap();
+    let held = AutoCommit::load(&held).unwrap();
+    let pending = room_layout::pending(&held, salt(&ada_browser));
+    assert_eq!(pending.len(), 1, "the request waits for Ada's device");
+    // Ada's page applies it, as the owner: it writes only its own entries
+    // and records the request as applied.
+    let applied = ada_page
+        .write(&relay, |layout| {
+            layout.tree.workspaces[0]
+                .strips
+                .retain(|strip| strip.id != StripId(compose_id(salt(&ada_browser), 1)));
+        })
+        .await;
+    commit(&ada_client, &ada_browser, workspace, &applied)
+        .await
+        .unwrap();
+    let mut owner = Page {
+        device: &ada_browser,
+        room: room.room.clone(),
+        actor: 5,
+        seq: 5_000,
+    };
+    let claimed = owner.claim(&relay, &pending[0]).await;
+    commit(&ada_client, &ada_browser, workspace, &claimed)
         .await
         .unwrap();
     wait_for_windows(&relay, &room.room, &[]).await;
+    let held = relay
+        .rooms()
+        .unwrap()
+        .record_document(&room.room, DESKTOP_APP, DESKTOP_RECORD)
+        .await
+        .unwrap()
+        .unwrap();
+    let held = AutoCommit::load(&held).unwrap();
+    assert!(
+        room_layout::pending(&held, salt(&ada_browser)).is_empty(),
+        "the owner recorded it as applied"
+    );
     relay.shutdown().await;
 }
 

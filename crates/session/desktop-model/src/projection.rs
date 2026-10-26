@@ -203,13 +203,13 @@ fn sweep_stale(
 
 /// Every tab entry in a room document's `contents`, joined across concurrent
 /// containers at every level: `(strip, group, tab, tab entry)`.
-pub(crate) fn tab_entries(doc: &AutoCommit) -> Vec<(u64, u64, u64, automerge::ObjId)> {
+pub(crate) fn tab_entries(doc: &impl ReadDoc) -> Vec<(u64, u64, u64, automerge::ObjId)> {
     Reads { doc, heads: None }.tab_entries()
 }
 
 /// [`tab_entries`] as the document stood at `heads` (`None`: now).
 pub(crate) fn tab_entries_at(
-    doc: &AutoCommit,
+    doc: &impl ReadDoc,
     heads: Option<&[automerge::ChangeHash]>,
 ) -> Vec<(u64, u64, u64, automerge::ObjId)> {
     Reads { doc, heads }.tab_entries()
@@ -933,12 +933,12 @@ fn project_owned_tabs_in(
 /// at some heads. Every container a key names is joined, at every level, so
 /// a historical read sees the concurrent copies a live one does.
 #[derive(Clone, Copy)]
-struct Reads<'a> {
-    doc: &'a AutoCommit,
+struct Reads<'a, D: ReadDoc> {
+    doc: &'a D,
     heads: Option<&'a [automerge::ChangeHash]>,
 }
 
-impl Reads<'_> {
+impl<D: ReadDoc> Reads<'_, D> {
     /// Every map stored under `obj[key]`, Automerge's order: the winner
     /// first, then the concurrent losers, each once.
     fn maps(&self, obj: &automerge::ObjId, key: &str) -> Vec<automerge::ObjId> {
@@ -1069,7 +1069,7 @@ impl Reads<'_> {
 /// The strips, window groups and tabs `reads` carries, every level sorted by
 /// `(order, id)`; an entry with no `order` sorts last so it can't displace
 /// one whose owner did state a position.
-fn contents_in(reads: &Reads<'_>) -> Vec<ReplicatedStrip> {
+fn contents_in<D: ReadDoc>(reads: &Reads<'_, D>) -> Vec<ReplicatedStrip> {
     let text = |entry: &automerge::ObjId, key: &str| reads.text(entry, key);
     let mut strips: Vec<ReplicatedStrip> = Vec::new();
     let contents_all = reads.maps(&automerge::ROOT, ROOM_CONTENTS_KEY);
@@ -1124,7 +1124,7 @@ fn contents_in(reads: &Reads<'_>) -> Vec<ReplicatedStrip> {
 /// last so it can't displace one whose owner did state a position.
 /// Concurrently created containers are joined at every level; for an
 /// entry present in several, the winning copy supplies its fields.
-pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
+pub fn contents_of(doc: &impl ReadDoc) -> Vec<ReplicatedStrip> {
     contents_at(doc, None)
 }
 
@@ -1134,7 +1134,7 @@ pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
 ///
 /// Never: the reads it makes are the infallible ones [`contents_of`] uses.
 pub fn contents_at(
-    doc: &AutoCommit,
+    doc: &impl ReadDoc,
     heads: Option<&[automerge::ChangeHash]>,
 ) -> Vec<ReplicatedStrip> {
     contents_in(&Reads { doc, heads })
@@ -1145,7 +1145,7 @@ pub fn contents_at(
 /// governance for each device's person. Entries published before this key
 /// existed name nobody.
 pub fn layout_authors_at(
-    doc: &AutoCommit,
+    doc: &impl ReadDoc,
     heads: Option<&[automerge::ChangeHash]>,
 ) -> std::collections::BTreeMap<u64, String> {
     let reads = Reads { doc, heads };
@@ -1207,6 +1207,84 @@ pub fn owned_contents_digest(doc: Option<&AutoCommit>, local_salt: u16) -> Vec<(
         }
     }
     out.compact_sort();
+    out
+}
+
+/// Every strip, group and tab entry `doc` holds at `heads`, with a digest of
+/// the fields its owner writes: what a host comparing a batch's before and
+/// after tells apart by, entry by entry, to refuse a write into a namespace
+/// that is not the writer's.
+#[must_use]
+pub fn layout_digest_at(
+    doc: &impl ReadDoc,
+    heads: Option<&[automerge::ChangeHash]>,
+) -> std::collections::BTreeMap<u64, String> {
+    let reads = Reads { doc, heads };
+    let mut records: std::collections::BTreeMap<u64, String> = std::collections::BTreeMap::new();
+    for (_, _, tab, entry) in reads.tab_entries() {
+        if let Some(record) = reads.text(&entry, crate::apps::TAB_RECORD_KEY) {
+            records.insert(tab, record);
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    for strip in contents_in(&reads) {
+        out.insert(strip.id, format!("s|{}|{:?}", strip.order, strip.name));
+        for group in strip.groups {
+            out.insert(group.id, format!("g|{}", group.order));
+            for tab in group.tabs {
+                out.insert(
+                    tab.id,
+                    format!(
+                        "t|{}|{}|{:?}|{:?}|{:?}",
+                        tab.order,
+                        tab.title,
+                        tab.app_title,
+                        tab.tile,
+                        records.get(&tab.id),
+                    ),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Every key of the applied-request map at `heads`, as the document spells
+/// them (`"<salt>/<request id>"`): what a host checks a batch against to
+/// refuse a mark in a namespace that is not its writer's.
+#[must_use]
+pub fn layout_marks_at(
+    doc: &impl ReadDoc,
+    heads: Option<&[automerge::ChangeHash]>,
+) -> std::collections::BTreeSet<String> {
+    let reads = Reads { doc, heads };
+    let mut out = std::collections::BTreeSet::new();
+    for map in reads.maps(&automerge::ROOT, ROOM_LAYOUT_APPLIED_KEY) {
+        out.extend(reads.keys(&map));
+    }
+    out
+}
+
+/// Every request `doc` retains at `heads`, with the request map key holding
+/// it: what a host checks a batch's new requests against.
+#[must_use]
+pub fn layout_requests_at(
+    doc: &impl ReadDoc,
+    heads: Option<&[automerge::ChangeHash]>,
+) -> std::collections::BTreeMap<String, LayoutRequest> {
+    let reads = Reads { doc, heads };
+    let mut out = std::collections::BTreeMap::new();
+    for map in reads.maps(&automerge::ROOT, ROOM_LAYOUT_REQUESTS_KEY) {
+        for key in reads.keys(&map) {
+            let Some(request) = reads
+                .bytes(&map, &key)
+                .and_then(|blob| serde_json::from_slice::<LayoutRequest>(&blob).ok())
+            else {
+                continue;
+            };
+            out.entry(key).or_insert(request);
+        }
+    }
     out
 }
 
@@ -1721,13 +1799,13 @@ pub fn apply_admitted_room(
 /// The room's topology namespaces: salt → the device key (64 lowercase hex
 /// digits) that owns it. Malformed entries are skipped; salt `0` is never a
 /// namespace.
-pub fn contents_owners_of(doc: &AutoCommit) -> std::collections::BTreeMap<u16, String> {
+pub fn contents_owners_of(doc: &impl ReadDoc) -> std::collections::BTreeMap<u16, String> {
     contents_owners_at(doc, None)
 }
 
 /// [`contents_owners_of`] as the document stood at `heads` (`None`: now).
 pub fn contents_owners_at(
-    doc: &AutoCommit,
+    doc: &impl ReadDoc,
     heads: Option<&[automerge::ChangeHash]>,
 ) -> std::collections::BTreeMap<u16, String> {
     use automerge::ROOT;
