@@ -172,6 +172,13 @@ impl<T: crate::motion::Animatable> FrameSpring<T> {
 }
 
 impl WindowGroup {
+    /// Whether the slot width is still moving — the window is opening, or a
+    /// resize has not landed.
+    #[cfg(test)]
+    pub(crate) fn has_width_spring_for_tests(&self) -> bool {
+        self.width_spring.is_some()
+    }
+
     /// Move this group and the chrome laid out inside it. Used while a
     /// retained strip is drawn, so the encoded scene stays in canvas
     /// coordinates and a pan does not rewrite it. The caller puts the
