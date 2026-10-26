@@ -1548,6 +1548,11 @@ pub struct ShellNetwork {
     personal_focus_recency: Mutex<crate::shell::continuity_suggestion::FocusRecency>,
     #[cfg(test)]
     continuity_policy_override: Option<crate::shell::continuity_policy::ContinuityPolicySnapshot>,
+    /// The person's rooms this device holds, standing in for an open native
+    /// owner's answer ([`Self::held_personal_rooms`]) in tests that keep the
+    /// workspace list without running a host.
+    #[cfg(test)]
+    held_personal_rooms_override: Option<crate::shell::personal_workspaces::HeldRooms>,
     /// Convergent same-person device state, persisted separately from app
     /// continuation so transport upgrades cannot regress existing handoff.
     device_fabric: Mutex<crate::shell::device_fabric::DeviceFabric>,
@@ -2327,6 +2332,8 @@ impl ShellNetwork {
             personal_reconcile: personal_reconcile::State::default(),
             #[cfg(test)]
             continuity_policy_override: None,
+            #[cfg(test)]
+            held_personal_rooms_override: None,
             device_fabric: Mutex::new(device_fabric),
             #[cfg(test)]
             device_fabric_reads: DeviceFabricReads::default(),
@@ -8276,6 +8283,7 @@ pub(crate) fn shell_network_for_test(
         last_personal_workspaces_snapshot: Mutex::new(None),
         personal_reconcile: personal_reconcile::State::default(),
         personal_focus_recency: Mutex::default(),
+        held_personal_rooms_override: None,
         continuity_policy_override: Some(
             crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
                 serde_json::json!({
