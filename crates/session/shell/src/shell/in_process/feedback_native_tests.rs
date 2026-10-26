@@ -467,14 +467,12 @@ fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner()
             .open(CHAT, &destination.room)
             .ok()
             .and_then(|records| {
-                records
-                    .read(&RecordId::package_primary(), |document| {
-                        chat::feedback::report(document, &submission.id)
-                            .ok()
-                            .flatten()
-                            .is_some()
-                    })
-                    .ok()
+                records.read(&RecordId::package_primary(), |document| {
+                    chat::feedback::report(document, &submission.id)
+                        .ok()
+                        .flatten()
+                        .is_some()
+                })
             })
             .unwrap_or(false)
     };
@@ -549,7 +547,6 @@ fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner()
                     .filter(|message| message.id == format!("m_feedback_{}", submission.id))
                     .count()
             })
-            .ok()
             .filter(|count| *count > 0)
     });
     assert_eq!(
