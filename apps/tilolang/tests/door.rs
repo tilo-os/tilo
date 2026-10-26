@@ -267,3 +267,77 @@ fn history_names_what_was_made_and_changed_by_title_never_by_id() {
         );
     }
 }
+
+#[test]
+fn an_agent_reads_what_a_record_holds_and_each_item_it_names() {
+    let (mut app, root) = notes_open();
+    let notebook = format!("tl:{NOTES}:{root}");
+    let before: Vec<String> = app.read(|doc| {
+        doc.committed_document()
+            .get_heads()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    });
+    let new_note = action_id(&mut app, &notebook, "New note");
+    app.invoke(None, None, &notebook, &new_note, &Map::new(), false)
+        .unwrap();
+    settle(&mut app);
+    let read_at = |app: &mut HostedApp, resource: &str, version: Option<&str>| {
+        let read = action_id(app, resource, "Read the content");
+        let (invoker, context) = task();
+        let mut arguments = Map::new();
+        if let Some(version) = version {
+            arguments.insert("version".into(), json!(version));
+        }
+        app.invoke(
+            Some(invoker),
+            Some(&context),
+            resource,
+            &read,
+            &arguments,
+            false,
+        )
+        .unwrap()
+        .value
+        .unwrap()
+    };
+    let read = |app: &mut HostedApp, resource: &str| read_at(app, resource, None);
+    let content = read(&mut app, &notebook);
+    assert_eq!(content["item"], json!(notebook));
+    assert_eq!(content["kind"], json!(format!("tl.{NOTES}.Notebook")));
+    let resources = app.harness().resources();
+    let published = flattened(&resources)
+        .into_iter()
+        .find(|published| published.id.as_str() == notebook)
+        .map(|published| published.label.clone());
+    assert_eq!(
+        content["label"].as_str(),
+        published.as_deref(),
+        "named as the window publishes it: {content:#}"
+    );
+    let notes = &content["fields"]["notes"];
+    assert_eq!(notes["count"], json!(1), "{content:#}");
+    let note = notes["items"][0]["item"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the note is named by the id a read takes: {content:#}"))
+        .to_owned();
+    assert_eq!(notes["items"][0]["label"], json!("Untitled"), "{content:#}");
+
+    let content = read(&mut app, &note);
+    assert_eq!(content["item"], json!(note));
+    assert_eq!(content["kind"], json!(format!("tl.{NOTES}.Note")));
+    assert_eq!(content["fields"]["title"], json!("Untitled"), "{content:#}");
+    assert_eq!(content["fields"]["body"], json!(""), "{content:#}");
+    assert_eq!(content["fields"]["pinned"], json!(false), "{content:#}");
+
+    // A version of the past is read as it was, and the window's runtime stays where it is.
+    let past = read_at(&mut app, &notebook, Some(&before.join("+")));
+    assert_eq!(
+        past["content"]["fields"]["notes"]["count"],
+        json!(0),
+        "{past:#}"
+    );
+    let now = read(&mut app, &notebook);
+    assert_eq!(now["fields"]["notes"]["count"], json!(1), "{now:#}");
+}

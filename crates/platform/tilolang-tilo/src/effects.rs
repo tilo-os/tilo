@@ -104,6 +104,38 @@ fn tree_json(node: &UiNode) -> Json {
     Json::Object(out)
 }
 
+/// How many items of a list or collection a read shows.
+const READ_ITEMS: usize = 200;
+
+/// How much of one text a read shows; a longer one says it was cut.
+const READ_TEXT_CHARS: usize = 100_000;
+
+/// Name each resource a projection holds (`{"type", "id", ...}`) by its published id too, the
+/// `item` a read or an action of the door takes.
+fn published_ids(value: &mut Json, app: &str) {
+    match value {
+        Json::Object(fields) => {
+            let id = fields
+                .get("id")
+                .and_then(Json::as_str)
+                .filter(|_| fields.contains_key("type"))
+                .map(|id| crate::publish::resource_id(app, id));
+            if let Some(id) = id {
+                fields.insert("item".into(), Json::String(id));
+            }
+            for nested in fields.values_mut() {
+                published_ids(nested, app);
+            }
+        }
+        Json::Array(items) => {
+            for nested in items {
+                published_ids(nested, app);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn output(value: Json) -> ActionOutput {
     ActionOutput {
         value: Some(value),
@@ -263,6 +295,103 @@ impl Host {
             app: package.meta.app,
             target,
         })
+    }
+
+    /// What the room's resources hold, as an agent or a script reads it through the door's
+    /// `read`: with no `item`, every record of the room with its id, kind and title; with an
+    /// `item` (a published id, `tl:<app>:<id>`, an item of a record by its path), that resource
+    /// with its fields, each of the items it holds named by its published id.
+    ///
+    /// # Errors
+    /// The item names nothing in this room.
+    pub fn read_content(&self, item: Option<&str>) -> Result<Json, String> {
+        use crate::meta::MetaExt as _;
+        use tilolang_runtime::store::Store as _;
+        let Some(item) = item else {
+            let records = self
+                .records()
+                .into_iter()
+                .map(|(package, type_name, doc)| {
+                    json!({
+                        "item": crate::publish::resource_id(&package.meta.app, &doc),
+                        "kind": package.meta.kind_of(&type_name),
+                        "title": self.label_of(&doc),
+                    })
+                })
+                .collect::<Vec<_>>();
+            return Ok(json!({ "kind": "tilolang.room", "records": records }));
+        };
+        let unknown = || format!("no resource `{item}`; read the app for the records it holds");
+        let (app, path) = item
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .ok_or_else(unknown)?;
+        let package = self.package(app).ok_or_else(unknown)?;
+        let probe = ResourceRef::parse_id(path, String::new()).ok_or_else(unknown)?;
+        let ty = self.store().type_of(&probe).map_err(|_| unknown())?;
+        let at = ResourceRef::parse_id(path, ty).ok_or_else(unknown)?;
+        let options = tilolang_runtime::project::ProjectOptions {
+            max_items: READ_ITEMS,
+            max_text_chars: READ_TEXT_CHARS,
+            depth: 1,
+        };
+        let runtime = self.runtime();
+        let mut read = runtime.project_with(&tilolang_runtime::Value::resource(&at), options);
+        if let Some(Json::Object(fields)) = read.get_mut("fields") {
+            for (name, shown) in fields.iter_mut() {
+                // A collection projects as its size alone, which is what a prompt needs; a read
+                // is how an agent learns the ids of what the resource holds, so it lists them.
+                if let Ok(tilolang_runtime::Value::List(items)) = runtime.read(&at, name)
+                    && shown.get("items").is_none()
+                {
+                    *shown = self.listed(&items);
+                }
+            }
+        }
+        published_ids(&mut read, app);
+        if let Json::Object(fields) = &mut read {
+            fields.insert("label".into(), json!(self.label_at(&at)));
+            fields.insert("item".into(), json!(item));
+            let type_name = package
+                .meta
+                .type_named(&at.ty)
+                .map_or_else(|| at.ty.clone(), |declared| declared.name.clone());
+            fields.insert("kind".into(), json!(package.meta.kind_of(&type_name)));
+        }
+        Ok(read)
+    }
+
+    /// The resources of a collection as a read lists them: each with its type, id and label, up
+    /// to [`READ_ITEMS`], with the count of all of them.
+    fn listed(&self, items: &[tilolang_runtime::Value]) -> Json {
+        let shown: Vec<Json> = items
+            .iter()
+            .take(READ_ITEMS)
+            .map(|item| match item {
+                tilolang_runtime::Value::Ref(held) => {
+                    let mut listed = self.runtime().project_with(
+                        item,
+                        tilolang_runtime::project::ProjectOptions {
+                            max_items: READ_ITEMS,
+                            max_text_chars: READ_TEXT_CHARS,
+                            depth: 0,
+                        },
+                    );
+                    if let Json::Object(fields) = &mut listed {
+                        fields.insert("label".into(), json!(self.label_at(&held.target)));
+                    }
+                    listed
+                }
+                other => self.runtime().project(other),
+            })
+            .collect();
+        let mut listed = serde_json::Map::new();
+        listed.insert("count".into(), json!(items.len()));
+        listed.insert("items".into(), Json::Array(shown));
+        if items.len() > READ_ITEMS {
+            listed.insert("truncated".into(), json!(true));
+        }
+        Json::Object(listed)
     }
 
     fn resolve_suggestion(

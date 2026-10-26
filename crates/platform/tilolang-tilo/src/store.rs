@@ -417,6 +417,15 @@ impl TiloStore {
         true
     }
 
+    /// Whether the mirror holds exactly what `record` holds: the record it last brought itself
+    /// up to date with, not one before or after it. A record of the past (a version an agent
+    /// reads) is not it, even when it was handed to [`Self::sync_from`], which only moves forward.
+    #[must_use]
+    pub fn is_at(&self, record: &Doc) -> bool {
+        self.inner.borrow().mirror.committed_document().get_heads()
+            == record.committed_document().get_heads()
+    }
+
     /// What the store did so far.
     #[must_use]
     pub fn stats(&self) -> StoreStats {
