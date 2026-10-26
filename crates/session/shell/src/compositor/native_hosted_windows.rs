@@ -7,9 +7,9 @@ use std::collections::HashMap;
 
 use super::{DesiredShares, MemberViewers, PersonalViewers, RoomHosts, all_hosts};
 
-/// The legacy windows to encode for viewers: none while nobody watches the
-/// backend, so a headless machine's encoders stop and receivers get
-/// `SurfaceStreamEnd` at once.
+/// The legacy windows to encode for viewers: none while `watched` is false,
+/// when neither the backend nor any viewer below is looking, so a headless
+/// machine's encoders stop and receivers get `SurfaceStreamEnd` at once.
 ///
 /// `viewer_hosts` are each room's workspace hosts when the backend is
 /// headless: its viewers watch through that host (which decides which of
