@@ -207,7 +207,7 @@ fn a_capture_the_owner_cannot_avoid_respects_the_shared_byte_budget() {
     let custody = Arc::new(AtomicBool::new(true));
     let service = Service::new(Owner::At([1; 32]), false);
     let budget = Arc::new(Budget::default());
-    let held: Vec<_> = std::iter::from_fn(|| budget.reserve().ok()).collect();
+    let held: Vec<_> = std::iter::from_fn(|| budget.try_reserve()).collect();
     assert!(!held.is_empty());
     assert!(
         read_unchanged(

@@ -157,11 +157,15 @@ struct Channel {
 }
 impl Channel {
     fn new(service: &Arc<Service>) -> Self {
+        Self::sharing(service, &Arc::new(Budget::default()))
+    }
+    /// A channel whose captures come out of `budget`, shared with others.
+    fn sharing(service: &Arc<Service>, budget: &Arc<Budget>) -> Self {
         Self {
             slot: Slot::default(),
             custody: Arc::new(AtomicBool::new(true)),
             service: Arc::clone(service),
-            budget: Arc::new(Budget::default()),
+            budget: Arc::clone(budget),
             ids: AtomicU64::new(1),
         }
     }
@@ -375,4 +379,112 @@ fn an_owner_that_reads_only_whole_documents_keeps_answering_whole() {
     let whole = channel.open_changes([1; 32]).unwrap();
     assert!(matches!(whole, Reply::Chunk { revision, .. } if revision == [2; 32]));
     assert_eq!(service.whole.load(Ordering::Acquire), 2);
+}
+
+/// Run `test` on a local set, as the broker runs its channels.
+fn on_the_broker(test: impl std::future::Future<Output = ()>) {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(tokio::task::LocalSet::new().run_until(test));
+}
+
+/// Let the queue's tasks take their places and hand out what was released.
+async fn settle() {
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[test]
+fn reads_beyond_the_budget_wait_their_turn_and_all_complete_in_order() {
+    use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
+    on_the_broker(async {
+        // Room for one capture at a time: every other read must wait.
+        let budget = Arc::new(Budget::with_total(MAX_DOCUMENT_BYTES));
+        let service = Service::new(false, 3);
+        let mut channels: Vec<Channel> = (0..6)
+            .map(|_| Channel::sharing(&service, &budget))
+            .collect();
+        let mut firsts = Vec::new();
+        for channel in &mut channels {
+            firsts.push(channel.open(None).unwrap());
+            settle().await;
+        }
+        assert!(matches!(firsts[0], Reply::Chunk { .. }));
+        assert!(
+            firsts[1..].iter().all(|reply| *reply == Reply::Busy),
+            "the rest wait, refused by nothing: {firsts:?}"
+        );
+        let mut first = firsts.remove(0);
+        for turn in 0..channels.len() {
+            assert_eq!(channels[turn].take(&first), vec![1; 3]);
+            settle().await;
+            for later in channels.iter_mut().skip(turn + 2) {
+                assert_eq!(
+                    later.open(None).unwrap(),
+                    Reply::Busy,
+                    "a later read does not overtake an earlier one"
+                );
+            }
+            if let Some(next) = channels.get_mut(turn + 1) {
+                first = next.open(None).unwrap();
+                assert!(
+                    matches!(first, Reply::Chunk { .. }),
+                    "read {} is served once read {turn} is done: {first:?}",
+                    turn + 1
+                );
+            }
+        }
+        drop(channels);
+        settle().await;
+        assert_eq!(budget.used(), 0);
+    });
+}
+
+#[test]
+fn a_read_larger_than_the_whole_budget_completes() {
+    on_the_broker(async {
+        let budget = Arc::new(Budget::with_total(1024));
+        let service = Service::new(false, 4096);
+        let mut large = Channel::sharing(&service, &budget);
+        let mut other = Channel::sharing(&service, &budget);
+        let first = large.open(None).unwrap();
+        assert_eq!(large.take(&first), vec![1; 4096]);
+        // While it is held, others wait; once it is read, they are served.
+        let first = large.open(None).unwrap();
+        assert_eq!(other.open(None).unwrap(), Reply::Busy);
+        large.take(&first);
+        settle().await;
+        let first = other.open(None).unwrap();
+        assert_eq!(other.take(&first), vec![1; 4096]);
+    });
+}
+
+#[test]
+fn a_refusal_of_authority_stays_final_whatever_the_budget_holds() {
+    use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
+    on_the_broker(async {
+        let budget = Arc::new(Budget::with_total(MAX_DOCUMENT_BYTES));
+        let service = Service::new(false, 3);
+        let mut holder = Channel::sharing(&service, &budget);
+        let held = holder.open(None).unwrap();
+        // A reader whose custody ended is refused, not queued.
+        let mut revoked = Channel::sharing(&service, &budget);
+        revoked.custody.store(false, Ordering::Release);
+        assert!(revoked.open(None).is_err());
+        // A reader queued behind the budget whose owner then refuses it is
+        // refused once its turn comes.
+        let mut queued = Channel::sharing(&service, &budget);
+        assert_eq!(queued.open(None).unwrap(), Reply::Busy);
+        service.readable.store(false, Ordering::Release);
+        holder.take(&held);
+        settle().await;
+        assert!(queued.open(None).is_err());
+        // The refused read released its turn.
+        service.readable.store(true, Ordering::Release);
+        let first = holder.open(None).unwrap();
+        assert!(matches!(first, Reply::Chunk { .. }));
+    });
 }
