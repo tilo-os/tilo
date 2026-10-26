@@ -499,6 +499,26 @@ pub fn run_prepared_with_input_limit(
     )
 }
 
+/// Run a caller-prepared command with its standard input inherited, for a
+/// program that asks whoever is at the terminal (a firmware password) rather
+/// than reading a request body. Capture, deadline and process-tree ownership
+/// are as [`run_prepared`].
+pub fn run_prepared_inheriting_stdin(
+    command: Command,
+    output_limit: usize,
+    timeout: Duration,
+) -> Result<Output, Error> {
+    run_prepared_inner(
+        command,
+        Stdin::Inherit,
+        output_limit,
+        output_limit,
+        timeout,
+        None,
+        None,
+    )
+}
+
 /// Run a prepared command reading `file` as its standard input: a handle the
 /// caller holds (a file the person chose) given to the program as it is,
 /// rather than a path it would open itself.
@@ -522,6 +542,9 @@ pub fn run_prepared_with_stdin(
 /// What a bounded command reads as its standard input.
 enum Stdin {
     Null,
+    /// Whatever the caller's process reads, as a command started directly
+    /// would: a program that asks on the terminal keeps doing so.
+    Inherit,
     /// Bytes written to it through a pipe.
     Bytes(Zeroizing<Vec<u8>>),
     /// A file it reads itself.
@@ -539,6 +562,7 @@ fn run_prepared_inner(
 ) -> Result<Output, Error> {
     let (stdin, input) = match input {
         Stdin::Null => (Stdio::null(), None),
+        Stdin::Inherit => (Stdio::inherit(), None),
         Stdin::Bytes(bytes) => (Stdio::piped(), Some(bytes)),
         Stdin::File(file) => (Stdio::from(file), None),
     };
@@ -569,15 +593,15 @@ fn run_prepared_inner(
     let out_reader = std::thread::spawn(move || read_bounded(stdout, stdout_limit));
     let err_reader =
         std::thread::spawn(move || read_bounded_observed(stderr, stderr_limit, stderr_capture));
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .unwrap_or_else(Instant::now);
+    // A deadline too far away to represent is one the caller cannot miss;
+    // [`wait_timeout`] reads the same value the same way.
+    let deadline = Instant::now().checked_add(timeout);
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break Some(status);
         }
         let cancelled = cancel.is_some_and(|flag| flag.load(Ordering::Acquire));
-        if cancelled || Instant::now() >= deadline {
+        if cancelled || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             kill_tree(&mut child);
             let _ = child.wait();
             break None;
@@ -884,6 +908,43 @@ mod tests {
             Error::OutputTooLarge {
                 stream: "stderr",
                 limit: 1024
+            }
+        ));
+    }
+
+    #[test]
+    fn a_timeout_too_far_away_to_represent_does_not_fire_at_once() {
+        // `Instant::now() + Duration::MAX` overflows. Reading that overflow as
+        // "already due" killed every child of a caller that asked for no
+        // practical deadline before it had started.
+        let output = run("true", &[], None, 64, Duration::MAX).unwrap();
+        assert!(output.status.success());
+        let mut ready = Command::new("sh");
+        ready.args(["-c", "printf ready"]);
+        let inherited = run_prepared_inheriting_stdin(ready, 64, Duration::MAX).unwrap();
+        assert_eq!(inherited.stdout, b"ready");
+    }
+
+    #[test]
+    fn an_inherited_stdin_command_keeps_output_and_deadline_bounds() {
+        let directory = tempfile::tempdir().unwrap();
+        let helper = directory.path().join("helper");
+        fs::write(&helper, OUTLIVES_THE_TEST).unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let error = returns("the inherited-stdin timeout to kill the child", move || {
+            run_prepared_inheriting_stdin(Command::new(helper), 4096, Duration::from_millis(25))
+        })
+        .unwrap_err();
+        assert!(matches!(error, Error::Timeout(_)));
+
+        let mut voluminous = Command::new("sh");
+        voluminous.args(["-c", "head -c 8192 /dev/zero"]);
+        let error = run_prepared_inheriting_stdin(voluminous, 64, UNTESTED_TIMEOUT).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::OutputTooLarge {
+                stream: "stdout",
+                limit: 64
             }
         ));
     }

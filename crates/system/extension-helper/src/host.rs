@@ -12,6 +12,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -24,6 +25,15 @@ use crate::{At, Error, Result};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_REDIRECTS: usize = 10;
+/// How long one tool may take before it is treated as wedged: `rpm` over a
+/// whole base, `systemd-sysext refresh` merging the image's parts, and
+/// `setfiles` relabelling an extension's tree are the slow ones, and they are
+/// minutes, not an open-ended wait.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(600);
+/// The most one tool may write on either stream. `rpm -qa` prints a line per
+/// installed package, tens of kilobytes on a full image; anything near this
+/// is not an answer.
+const TOOL_OUTPUT_LIMIT: usize = 8 * 1024 * 1024;
 
 /// The name, and name-version-release.arch, an RPM's header gives.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +58,7 @@ pub enum HttpError {
 }
 
 /// A finished command: exit status and its output as text.
+#[derive(Debug)]
 pub struct Output {
     pub success: bool,
     pub stdout: String,
@@ -56,18 +67,26 @@ pub struct Output {
 
 /// Run `argv`, capturing its output.
 ///
+/// Every program here answers a request — an RPM header, the base's package
+/// list, a signature check, a merge — so a wedged one is ended, together with
+/// the processes it started, rather than pinning the helper and everything
+/// waiting on its status file.
+///
 /// # Errors
-/// `Os` when it cannot start; with `check`, `Pack` when it fails, with the
-/// last lines of what it said.
+/// `Os` when it cannot start or its deadline passes; with `check`, `Pack` when
+/// it fails, with the last lines of what it said.
 pub(crate) fn run(argv: &[&OsStr], check: bool) -> Result<Output> {
     let (program, rest) = argv
         .split_first()
         .ok_or_else(|| Error::pack("no command"))?;
-    let output = Command::new(program)
-        .args(rest)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|error| Error::os(&error, Some(Path::new(program))))?;
+    let output = bounded_command::run_os(program, rest, None, TOOL_OUTPUT_LIMIT, TOOL_TIMEOUT)
+        .map_err(|error| match error {
+            bounded_command::Error::Process(error) => Error::os(&error, Some(Path::new(program))),
+            // A deadline that passed or an output bound that was crossed is
+            // the tool's failure, not the operating system's, and it is said
+            // in its own words.
+            other => Error::os(&io::Error::other(other.to_string()), None),
+        })?;
     let result = Output {
         success: output.status.success(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -805,6 +824,53 @@ mod tests {
             server.join().unwrap(),
             ["/redirect", "/gone", "/file", "/file"],
             "the refused target is never fetched"
+        );
+    }
+
+    #[test]
+    fn a_tool_is_read_as_its_output_and_status() {
+        let answered = run(
+            &[
+                OsStr::new("sh"),
+                OsStr::new("-c"),
+                OsStr::new("printf out; printf err >&2; exit 3"),
+            ],
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                answered.success,
+                answered.stdout.as_str(),
+                answered.stderr.as_str()
+            ),
+            (false, "out", "err")
+        );
+
+        // With `check`, a failing tool is a `Pack` failure naming the last
+        // thing it said, as the Python original reported it.
+        let failure = run(
+            &[
+                OsStr::new("sh"),
+                OsStr::new("-c"),
+                OsStr::new("echo 'the extension is not signed' >&2; exit 1"),
+            ],
+            true,
+        )
+        .unwrap_err();
+        assert!(failure.is_pack_or_os(), "{failure:?}");
+        assert!(
+            failure.to_string().contains("the extension is not signed"),
+            "{failure}"
+        );
+    }
+
+    #[test]
+    fn a_tool_that_is_not_there_is_an_os_failure() {
+        let failure = run(&[OsStr::new("tilo-no-such-tool")], false).unwrap_err();
+        assert!(
+            matches!(failure, Error::Os(_)),
+            "a missing program is an operating-system refusal: {failure:?}"
         );
     }
 }

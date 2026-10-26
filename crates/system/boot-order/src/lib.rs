@@ -26,6 +26,7 @@ use std::io::Write;
 use std::os::fd::AsFd;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use std::time::Duration;
 
 use rustix::fs::{CWD, FileType, Mode, OFlags, fstat, openat};
 use rustix::io::Errno;
@@ -40,6 +41,12 @@ pub const LOADERS: [&str; 2] = [
 ];
 pub const WINDOWS_LOADER: &str = r"\EFI\Microsoft\Boot\bootmgfw.efi";
 const VARIABLE_LIMIT: usize = 65536;
+/// How long `efibootmgr` may take before it is treated as wedged: a firmware
+/// write is slow, never open-ended.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(60);
+/// The most `efibootmgr` may write on either stream: one boot entry is a few
+/// hundred bytes, and the list it prints is short.
+const TOOL_OUTPUT_LIMIT: usize = 1024 * 1024;
 
 /// Why the helper refused, or what the operating system refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,26 +82,41 @@ pub trait Host {
         PathBuf::from("/sys/firmware/efi/efivars")
     }
 
-    /// Runs `efibootmgr` with `args` and returns what it did.
+    /// Runs `efibootmgr` with `args` and returns what it did: a firmware
+    /// write is slow but finite, so the command has a deadline, bounded
+    /// output and a process tree of its own, while its standard input stays
+    /// the terminal it may ask for the firmware password on.
     ///
     /// # Errors
-    /// `efibootmgr` could not be started.
+    /// `efibootmgr` could not be started, or did not finish within its
+    /// deadline.
     fn efibootmgr(&self, args: &[&str]) -> Result<Output, Refusal> {
-        Command::new("efibootmgr")
-            .args(args)
-            .stdin(Stdio::inherit())
-            .output()
-            .map_err(|error| {
-                Refusal(format!(
-                    "[Errno {}] {}: 'efibootmgr'",
-                    error.raw_os_error().unwrap_or(0),
-                    error
-                        .to_string()
-                        .split(" (os error")
-                        .next()
-                        .unwrap_or_default()
-                ))
-            })
+        let mut command = Command::new("efibootmgr");
+        command.args(args).stdin(Stdio::inherit());
+        let output = bounded_command::run_prepared_inheriting_stdin(
+            command,
+            TOOL_OUTPUT_LIMIT,
+            TOOL_TIMEOUT,
+        )
+        .map_err(|error| match error {
+            bounded_command::Error::Process(error) => Refusal(format!(
+                "[Errno {}] {}: 'efibootmgr'",
+                error.raw_os_error().unwrap_or(0),
+                error
+                    .to_string()
+                    .split(" (os error")
+                    .next()
+                    .unwrap_or_default()
+            )),
+            // A wedged or voluminous firmware tool is not an operating-system
+            // error: it is reported in its own words.
+            other => Refusal(format!("efibootmgr could not be run: {other}")),
+        })?;
+        Ok(Output {
+            status: output.status,
+            stdout: output.stdout,
+            stderr: output.stderr,
+        })
     }
 
     /// The effective user id.

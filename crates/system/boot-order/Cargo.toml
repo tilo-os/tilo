@@ -15,6 +15,9 @@ name = "tilo-boot-order"
 path = "src/main.rs"
 
 [dependencies]
+# `efibootmgr` answered within a deadline, with bounded output and its own
+# process tree, instead of pinning the boot check on a wedged firmware tool.
+bounded-command = { path = "../bounded-command" }
 # No-follow opens of EFI variables and the effective user, without FFI.
 rustix = { workspace = true, features = ["fs", "process", "std"] }
 workspace-hack = { version = "0.1" }

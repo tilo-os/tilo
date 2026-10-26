@@ -17127,6 +17127,7 @@ dependencies = [
 name = "tilo-boot-order"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "rustix 1.1.4",
  "tempfile",
  "tilo-test-env",
@@ -18012,6 +18013,7 @@ dependencies = [
 name = "tilo-extension"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "hex",
  "libc",
  "reqwest 0.13.4",
@@ -20207,6 +20209,7 @@ dependencies = [
 name = "tilo-staging-reclaim"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "rustix 1.1.4",
  "serde_json",
  "tempfile",
