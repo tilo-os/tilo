@@ -139,9 +139,9 @@ impl RoomReadiness {
 }
 
 /// The parts of the tree an authorization decision reads: each
-/// workspace's room, owner, roster, grants, permission profiles, tasks and
-/// pending ownership transfer, and the session's person and stewarded
-/// rooms. Strips, records,
+/// workspace's room, owner, roster, grants, permission profiles, tasks,
+/// saved shortcuts (what a person may start, and as whom) and pending
+/// ownership transfer, and the session's person and stewarded rooms. Strips, records,
 /// presence and effect receipts are written on every frame or by the broker
 /// itself and decide nothing.
 #[derive(Default, PartialEq)]
@@ -160,6 +160,7 @@ struct WorkspacePolicy {
     collaborators: Vec<tilo_desktop_model::Collaborator>,
     policy: tilo_action_policy::RoomPolicy,
     sandbox: Vec<collab_types::caps::CapOverride>,
+    shortcuts: Vec<tilo_automation::Shortcut>,
     pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
 }
 
@@ -177,6 +178,7 @@ impl PolicySnapshot {
                     collaborators: workspace.collaborators.clone(),
                     policy: workspace.policy.clone(),
                     sandbox: workspace.sandbox.clone(),
+                    shortcuts: workspace.shortcuts.clone(),
                     pending_ownership_transfer: workspace.pending_ownership_transfer.clone(),
                 })
                 .collect(),
@@ -201,6 +203,7 @@ impl PolicySnapshot {
                         && seen.collaborators == workspace.collaborators
                         && seen.policy == workspace.policy
                         && seen.sandbox == workspace.sandbox
+                        && seen.shortcuts == workspace.shortcuts
                         && seen.pending_ownership_transfer == workspace.pending_ownership_transfer
                 })
             && self.local_person == tree.local_person

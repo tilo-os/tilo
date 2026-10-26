@@ -864,15 +864,17 @@ impl AgentPreset {
     }
 }
 
-/// The grant making application `app` an author of `room`: it reads and
-/// changes the room's content as the person using it, and reaches nothing
-/// outside it. Given when a person who may change the room opens the app.
+/// The grant making application `app` an author of its own records in
+/// `room`: it reads and changes what it keeps there as the person using it,
+/// and reaches nothing outside it. Another app's actions in the room stay
+/// behind the workspace's own grants and the person's consent. Given when a
+/// person who may change the room opens the app.
 #[must_use]
 pub fn app_authorship(room: &str, app: &str, granted_by: Subject) -> Grant {
     Grant::new(
         format!("app-author:{app}"),
         Subject::App(app.to_owned()),
-        TreePath::room(room),
+        TreePath::room(room).app(app),
         KindSet::READ_UNDOABLE,
         Answer::Allow,
         granted_by,

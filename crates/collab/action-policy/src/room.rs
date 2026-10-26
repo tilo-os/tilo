@@ -415,12 +415,12 @@ impl RoomPolicy {
         Party::new(vec![subject], &self.grants)
     }
 
-    /// Whether application `app` is an author of the room: its grants let it
-    /// change the room's content ([`roles::app_authorship`]).
+    /// Whether application `app` is an author in the room: its grants let
+    /// it change its own records there ([`roles::app_authorship`]).
     #[must_use]
     pub fn app_authors(&self, app: &str, cx: &Context<'_>) -> bool {
         Authority::person(self.party_of(Subject::App(app.to_owned())))
-            .decide(&self.node(), ActionKind::Undoable, cx)
+            .decide(&self.node().app(app), ActionKind::Undoable, cx)
             .answer
             == Answer::Allow
     }
