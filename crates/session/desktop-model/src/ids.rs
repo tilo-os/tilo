@@ -132,8 +132,7 @@ impl From<StripId> for u64 {
     }
 }
 
-pub type GroupId = u64;
-pub type TabId = u64;
+pub use tilo_desktop_layout::{GroupId, TabId};
 pub type FileId = u64;
 
 /// Snapshot of the focused tab, cloned out of the desktop tree so callers

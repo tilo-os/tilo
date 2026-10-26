@@ -121,7 +121,7 @@ fn floor_permille(px: f64, usable: f64) -> u32 {
     }
 }
 
-/// Persisted width of a [`crate::WindowGroup`], as a fraction of the
+/// Persisted width of a window group, as a fraction of the
 /// strip's usable width — a stored pixel count would mean a different
 /// screen share on every monitor.
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]

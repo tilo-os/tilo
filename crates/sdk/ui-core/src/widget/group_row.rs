@@ -256,7 +256,7 @@ fn resisted(delta: vello::kurbo::Vec2) -> vello::kurbo::Vec2 {
 /// Both hover feedback and release consume this value. A target in an
 /// existing group names the exact tab-list insertion point; a group gap names
 /// the slot where a new window group will be made.
-pub use tilo_desktop_model::DropTarget as TabDropTarget;
+pub use tilo_desktop_layout::DropTarget as TabDropTarget;
 
 /// Payload published when a tab drag ends outside the row's own band; the
 /// shell hit-tests the release point against other strips and delivers it
@@ -277,7 +277,7 @@ pub struct CrossStripDetach {
 /// Tile content remains owned by the shell's `WorkspaceTree`; the UI only
 /// reports identities and presentation state, avoiding a second copy of app
 /// data at the widget boundary.
-pub use tilo_desktop_model::GroupShape as GroupTopology;
+pub use tilo_desktop_layout::GroupShape as GroupTopology;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -2233,7 +2233,7 @@ impl GroupRow {
     /// Make room on screen for `group_id`, a window that has just opened,
     /// beside the window next to it: the one it opened to the right of, else
     /// the one after it. When the two don't fit together they share the
-    /// display ([`tilo_desktop_model::width::share_beside`]); when no share
+    /// display ([`tilo_desktop_layout::width::share_beside`]); when no share
     /// leaves both usable, nothing changes and the strip scrolls to the new
     /// window instead. New widths are stamped as pending width changes, so
     /// the host persists them the way it persists a resize. Returns whether
@@ -2273,7 +2273,7 @@ impl GroupRow {
         // The run pans past its leading gutter, so a pair can be seen whole
         // across that too.
         let screen = usable + self.pan_of_lane(lane.unwrap_or(0)).inset;
-        let Some((neighbour_width, opened_width)) = tilo_desktop_model::width::share_beside(
+        let Some((neighbour_width, opened_width)) = tilo_desktop_layout::width::share_beside(
             next_to.width(),
             opened.width(),
             usable,

@@ -46,7 +46,7 @@ pub struct WindowGroupBounds {
 
 /// Group widths are the desktop model's: a fraction of the strip, never
 /// pixels, with one set of tiers and clamps for every host.
-pub use tilo_desktop_model::width::{
+pub use tilo_desktop_layout::width::{
     WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE, WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE,
     WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE, WindowWidth, max_group_px, min_group_px,
     permille_for_px,

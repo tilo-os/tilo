@@ -136,7 +136,7 @@ fn a_window_that_opens_beside_another_is_placed_whole_on_screen_with_it() {
         );
         for (id, x0, x1) in &spans {
             assert!(
-                x1 - x0 >= tilo_desktop_model::width::SIDE_BY_SIDE_MIN_PX,
+                x1 - x0 >= tilo_desktop_layout::width::SIDE_BY_SIDE_MIN_PX,
                 "window {id} opens at a usable width: {spans:?}"
             );
         }

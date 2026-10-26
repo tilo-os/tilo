@@ -10,14 +10,7 @@ use crate::ids::{GroupId, MintIds, StripId, TabId};
 use crate::layout::{Tab, WindowGroup};
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
-
-/// Where a dragged tab lands within a strip: at an exact index in an
-/// existing group, or as a new group at an exact seam between groups.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DropTarget {
-    ExistingGroup { group_id: GroupId, tab_index: usize },
-    GroupGap { gap_index: usize },
-}
+pub use tilo_desktop_layout::{DropTarget, GroupShape};
 
 /// What a tab move did to the tree, for the host's document mirror.
 #[derive(Clone, Debug)]
@@ -530,14 +523,4 @@ pub struct RemovedTab {
     pub tab: Tab,
     /// Whether the tab was its group's last and the group went with it.
     pub group_removed: bool,
-}
-
-/// One window group as a live strip widget reports it: identities, order,
-/// the active tab and width, but no tile content.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GroupShape {
-    pub id: GroupId,
-    pub tab_ids: Vec<TabId>,
-    pub active_tab: TabId,
-    pub width: WindowWidth,
 }

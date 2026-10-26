@@ -1,0 +1,18 @@
+[package]
+name = "tilo-desktop-layout"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "Window-group widths, shapes and tab drop targets: the layout vocabulary the desktop model and the toolkit share."
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

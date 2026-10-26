@@ -16,6 +16,8 @@ description = "The canonical Tilo desktop model shared by every host."
 # `tools/policy/check_desktop_model_dependencies.py` enforces that list.
 
 [dependencies]
+# Widths, group shapes and drop targets, which the toolkit shares.
+tilo-desktop-layout = { version = "0.1.0", path = "../desktop-layout" }
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }

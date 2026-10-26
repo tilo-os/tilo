@@ -1120,6 +1120,7 @@ doc = false
 "tilo-delivery-protocol" = { path = "../../../crates/hosting/tilo-delivery-protocol", default-features = false, features = [] }
 "tilo-desktop" = { path = "../../../crates/session/desktop", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = ["appimage"] }
+"tilo-desktop-layout" = { path = "../../../crates/session/desktop-layout", default-features = false, features = [] }
 "tilo-desktop-model" = { path = "../../../crates/session/desktop-model", default-features = false, features = [] }
 "tilo-desktop-search" = { path = "../../../crates/session/desktop-search", default-features = false, features = [] }
 "tilo-desktop-surface" = { path = "../../../crates/session/desktop-surface", default-features = false, features = [] }

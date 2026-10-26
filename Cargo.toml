@@ -384,6 +384,7 @@ members = [
     # Session
     "crates/session/console-control",
     "crates/session/control-cli",
+    "crates/session/desktop-layout",
     "crates/session/desktop-model",
     "crates/session/desktop-search",
     "crates/session/desktop-surface",

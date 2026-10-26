@@ -33,7 +33,7 @@ pub mod shared_surfaces;
 pub mod topology;
 pub mod tree;
 mod view;
-pub mod width;
+pub use tilo_desktop_layout::width;
 pub mod workspace;
 
 pub use app::{APP_ID_PREFIX, AppId, AppKind};

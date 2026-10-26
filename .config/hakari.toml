@@ -135,6 +135,7 @@ workspace-members = [
     "tilo-sort",
     "tilo-face",
     "tilo-content",
+    "tilo-desktop-layout",
     "tilo-desktop-model",
     "wire-frame",
     # standalone registry-only build

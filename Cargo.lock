@@ -17725,6 +17725,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-desktop-layout"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tilo-desktop-model"
 version = "0.1.0"
 dependencies = [
@@ -17740,6 +17748,7 @@ dependencies = [
  "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-desktop-layout",
  "tilo-sort",
  "uuid",
 ]
@@ -20448,7 +20457,7 @@ dependencies = [
  "tilo-content-blocker",
  "tilo-content-device",
  "tilo-cpu-raster",
- "tilo-desktop-model",
+ "tilo-desktop-layout",
  "tilo-doc",
  "tilo-engine-loader",
  "tilo-face",
@@ -25818,6 +25827,7 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop",
  "tilo-desktop-entry",
+ "tilo-desktop-layout",
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",
