@@ -1505,13 +1505,13 @@ impl AgentParticipant {
         // step with nothing to consume is refused, not half done.
         let arguments = match &step.action {
             StepAction::Invoke { address, arguments } => Some(
-                tilo_agent::plan::carried_arguments(arguments, step.carries.as_deref(), previous)
+                tilo_agent::plan::carried_arguments(arguments, self.carries(step), previous)
                     .map_err(|error| {
-                    format!(
-                        "{} takes what the step before it produced: {error}",
-                        address.action
-                    )
-                })?,
+                        format!(
+                            "{} takes what the step before it produced: {error}",
+                            address.action
+                        )
+                    })?,
             ),
             StepAction::Open | StepAction::Continue(_) | StepAction::Wait(_) => None,
         };
@@ -1568,6 +1568,28 @@ impl AgentParticipant {
             }
             outcome => Performed::Done(outcome.map_err(actions::Refusal::into_text)),
         })
+    }
+
+    /// The parameter `step` is given what the step before it produced
+    /// under, if any. Content that step only handed on (an import answers
+    /// with the source it imported) was made for no step after it: content
+    /// the room keeps that `step` names outright is what it means, as with
+    /// nothing before it. Otherwise a PDF import planned after a DOCX
+    /// import, in one plan or as the next item of a coordinated task, is
+    /// given the DOCX.
+    fn carries<'a>(&self, step: &'a Step) -> Option<&'a str> {
+        let param = step.carries.as_deref()?;
+        let StepAction::Invoke { arguments, .. } = &step.action else {
+            return Some(param);
+        };
+        let handed_on = self
+            .running
+            .as_ref()
+            .is_some_and(|running| running.last.is_some() && running.last_handed_on);
+        let named = handed_on
+            && tilo_agent::plan::named_content(arguments, param)
+                .is_some_and(|hash| self.content.has(&hash));
+        (!named).then_some(param)
     }
 
     /// The operation `address` names on the record at `route`, as the record

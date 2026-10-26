@@ -58,6 +58,10 @@ pub(super) struct Running {
     /// content (a read, a view, an edit), opening a record or planning
     /// again keeps it.
     pub(super) last: Option<ActionOutput>,
+    /// Whether [`Self::last`] only hands on content its step was given,
+    /// as an import answers with the content it imported: nothing made
+    /// for the next step to take ([`hands_on`]).
+    pub(super) last_handed_on: bool,
     /// Content addresses the task's steps produced, oldest first.
     pub(super) produced: Vec<String>,
     /// The app whose step made each of [`Self::produced`], in step.
@@ -603,6 +607,7 @@ impl Running {
             steps: steps.into(),
             performed: 0,
             last: None,
+            last_handed_on: false,
             produced: Vec::new(),
             produced_by: Vec::new(),
             observed: VecDeque::new(),
@@ -706,9 +711,32 @@ impl Running {
         }
         self.looked_at(rendered_picture(&output));
         if !produced(&output).is_empty() {
+            self.last_handed_on = hands_on(step, &output);
             self.last = Some(output);
         }
     }
+}
+
+/// Whether every piece of content `output` names is content `step` was
+/// given by address: an import answers with what it imported, which the
+/// room kept already.
+pub(super) fn hands_on(step: &Step, output: &ActionOutput) -> bool {
+    let StepAction::Invoke { arguments, .. } = &step.action else {
+        return false;
+    };
+    let given = |hash: &str| {
+        arguments.values().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|text| text == hash || tilo_actions::content_hash(text) == Some(hash))
+        })
+    };
+    let made = produced(output);
+    !made.is_empty()
+        && made
+            .iter()
+            .filter_map(|address| tilo_actions::content_hash(address))
+            .all(given)
 }
 
 /// Why `address` names nothing, with what the record offers instead: the
