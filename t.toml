@@ -5306,8 +5306,7 @@ on = ["stable"]
 # fingerprint. Sealing with the publisher identity is a signing step of its own. The preview
 # checks seal with a throwaway key and build the image from that, so a change is checked whole
 # before it lands. Until stable publishes a new definition, release OS images ship no runtime,
-# and a run's dev images (os-dev-image-{arch}) ship one built from the run's own snapshot and
-# sealed with a throwaway key (`env-runtime.sh dev`).
+# and a run's dev images (os-dev-image-{arch}) ship env-runtime-dev-{arch}'s (below).
 [[check]]
 name = "image-env-runtime-tree-{arch}"
 isolation = "vm"
@@ -5321,6 +5320,39 @@ cost = "heavy"
 # A micro-VM step can't grow past what it reserves, and buildah installs and exports the whole
 # runtime tree: the default 4 GiB guest ran out of memory.
 requirement = { cores = 4, memory = "8GiB" }
+default = false
+
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# A dev image's runtime (os-dev-image-{arch}, tools/ci/vm-acceptance.sh): this architecture's
+# tree built from the run's own image-rpms-{arch}, so a package set stable has not published
+# still gets one, and sealed with a throwaway key. Nothing publishes either; release images keep
+# the published runtime of the published snapshot.
+[[check]]
+name = "image-env-runtime-dev-tree-{arch}"
+isolation = "vm"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/env-runtime.sh dev-tree {arch} /target/publish/rpms/{arch} /target/publish/env-runtime/dev-trees"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
+needs = ["image-rpms-{arch}"]
+outputs = ["/target/publish/env-runtime/dev-trees/env-runtime-tree-{arch}.tar", "/target/publish/env-runtime/dev-trees/env-runtime-rpms-{arch}.txt"]
+requires = ["arch={arch}"]
+cost = "heavy"
+requirement = { cores = 4, memory = "8GiB" }
+default = false
+
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "env-runtime-dev-{arch}"
+run = "bash tools/ci/publish/env-runtime.sh dev {arch} /target/publish/env-runtime/dev-trees /target/publish/env-runtime/packer /target/publish/env-runtime/dev/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "os/dev/resolve-env-runtime.sh", "os/Containerfile.env-runtime"]
+needs = ["image-env-runtime-dev-tree-{arch}", "env-runtime-packer"]
+outputs = ["/target/publish/env-runtime/dev/{arch}/**"]
+requires = ["arch=x86_64"]
+cost = "minutes"
 default = false
 
 [check.matrix]
@@ -6275,8 +6307,8 @@ default = false
 name = "os-dev-image-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
-inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "Cargo.lock", "rust-toolchain.toml", ".containerignore", "tools/ci/os/oci_layers.py", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-image.sh"]
-needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "signing-tools"]
+inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "Cargo.lock", "rust-toolchain.toml", ".containerignore", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
+needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "signing-tools"]
 outputs = ["/target/publish/os-dev/{arch}/**"]
 git = true
 requires = ["{node}", "disk-100g"]
@@ -6354,7 +6386,7 @@ arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 name = "os-board-{board}"
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh board {board} /target/publish/os-dev/aarch64 /target/publish/os-board/{board}"
-inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", ".containerignore", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-image.sh"]
+inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", ".containerignore", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
 needs = ["image-rpms-aarch64", "os-dev-image-aarch64", "os-assets", "signing-tools"]
 outputs = ["/target/publish/os-board/{board}/image.oci.tar", "/target/publish/os-board/{board}/digest", "/target/publish/os-board/{board}/revision", "/target/publish/os-board/{board}/board"]
 git = true

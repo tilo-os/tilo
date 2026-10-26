@@ -11,12 +11,13 @@
 #   env-runtime.sh seal TREES PACKER OUT    seal both trees into OUT/env-runtime-ARCH.tapp: with
 #                                           TAPP_PUBLISHER_IDENTITY when given, else a throwaway
 #                                           key, which no release accepts (builder)
-#   env-runtime.sh dev ARCH RPMS_REF PACKER OUT
-#                                           this architecture's tree from RPMS_REF in podman's
-#                                           store (the run's own snapshot while none is
-#                                           published), sealed with a throwaway key into OUT as
-#                                           seal lays it out: what a run's dev image ships while
-#                                           stable has published no runtime; nothing publishes it
+#   env-runtime.sh dev-tree ARCH RPMS OUT   as tree, from the snapshot image-rpms-ARCH built in
+#                                           this run (RPMS: its image.oci.tar and digest), for dev
+#                                           images; no release seals it (buildah image, native)
+#   env-runtime.sh dev ARCH TREES PACKER OUT
+#                                           seal ARCH's dev tree with a throwaway key into OUT as
+#                                           seal lays it out: the runtime a run's dev images ship
+#                                           (os-dev-image-ARCH); nothing publishes it (builder)
 #   env-runtime.sh image SEALED OUT         the published image of both tapps, one per platform,
 #                                           joined into one index (buildah image)
 #   env-runtime.sh release OUT              publish OUT signed as set-<fingerprint>, unless that
@@ -53,6 +54,34 @@ seal_tree() {
   rm -rf "$work"
 }
 
+# Install ARCH's runtime from the snapshot RPMS_REF (an image buildah's store holds or can
+# pull) into an empty root, exported as OUT/env-runtime-tree-ARCH.tar, with SOURCE, what the
+# snapshot is, in OUT/env-runtime-rpms-ARCH.txt.
+build_tree() {
+  local arch=$1 rpms_ref=$2 source=$3 out=$4 context
+  [[ $(uname -m) == "$arch" ]] || die "the $arch runtime is built natively, not on $(uname -m)"
+  . os/base-snapshot.env
+  # The tree stage copies only its own definition; the repository's .containerignore (which
+  # buildah applies, unlike BuildKit) leaves os/Containerfile.* out of a repository context.
+  context=$scratch/env-runtime-context
+  rm -rf "$context"
+  install -D -m 0644 os/Containerfile.env-runtime "$context/os/Containerfile.env-runtime"
+  mkdir -p "$out"
+  b build --layers=false --timestamp 0 --file os/Containerfile.env-runtime --target tree \
+    --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$rpms_ref" \
+    --output "type=tar,dest=$out/env-runtime-tree-$arch.tar" "$context"
+  printf '%s\n' "$source" > "$out/env-runtime-rpms-$arch.txt"
+  ls -l "$out"
+}
+
+# buildah with overlay storage, as oci-build.sh: vfs copies every layer of the RPM snapshot
+# whole, which filled the micro-VM step's scratch disk before the build started.
+use_buildah_overlay() {
+  use_buildah
+  export STORAGE_DRIVER=overlay
+  printf '[storage]\ndriver = "overlay"\n' > "$CONTAINERS_STORAGE_CONF"
+}
+
 # OUT's publisher.hex, read from ARCH's sealed tapp, and SHA256SUMS of its tapps.
 seal_index() {
   local out=$1 packer=$2 arch=$3
@@ -67,26 +96,21 @@ case ${1:-} in
     arch=${2:?usage: env-runtime.sh tree ARCH SNAPSHOT OUT}
     snapshot=${3:?}
     out=${4:?}
-    [[ $(uname -m) == "$arch" ]] || die "the $arch runtime is built natively, not on $(uname -m)"
-    . os/base-snapshot.env
     rpms_ref=$(cat "$snapshot/rpms-ref")
     [[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || die "unexpected snapshot $rpms_ref"
-    # The tree stage copies only its own definition; the repository's .containerignore (which
-    # buildah applies, unlike BuildKit) leaves os/Containerfile.* out of a repository context.
-    context=$scratch/env-runtime-context
-    rm -rf "$context"
-    install -D -m 0644 os/Containerfile.env-runtime "$context/os/Containerfile.env-runtime"
-    use_buildah
-    # overlay, as oci-build.sh: vfs copies every layer of the RPM snapshot whole, which filled
-    # the micro-VM step's scratch disk before the build started. overlay works on that disk.
-    export STORAGE_DRIVER=overlay
-    printf '[storage]\ndriver = "overlay"\n' > "$CONTAINERS_STORAGE_CONF"
-    mkdir -p "$out"
-    b build --layers=false --timestamp 0 --file os/Containerfile.env-runtime --target tree \
-      --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$rpms_ref" \
-      --output "type=tar,dest=$out/env-runtime-tree-$arch.tar" "$context"
-    printf '%s\n' "$rpms_ref" > "$out/env-runtime-rpms-$arch.txt"
-    ls -l "$out"
+    use_buildah_overlay
+    build_tree "$arch" "$rpms_ref" "$rpms_ref" "$out"
+    ;;
+  dev-tree)
+    arch=${2:?usage: env-runtime.sh dev-tree ARCH RPMS OUT}
+    rpms=${3:?}
+    out=${4:?}
+    digest=$(cat "$rpms/digest")
+    [[ $(archive_digest "$rpms/image.oci.tar") == "$digest" ]] || die "$rpms/image.oci.tar is not the build $digest"
+    use_buildah_overlay
+    rpms_ref=localhost/tilo-rpms:dev-$arch
+    b tag "$(b pull -q "oci-archive:$rpms/image.oci.tar")" "$rpms_ref"
+    build_tree "$arch" "$rpms_ref" "image-rpms-$arch $digest" "$out"
     ;;
   packer)
     out=${2:?usage: env-runtime.sh packer OUT}
@@ -121,26 +145,17 @@ case ${1:-} in
     seal_index "$out" "$packer" x86_64
     ;;
   dev)
-    arch=${2:?usage: env-runtime.sh dev ARCH RPMS_REF PACKER OUT}
-    rpms_ref=${3:?}
+    arch=${2:?usage: env-runtime.sh dev ARCH TREES PACKER OUT}
+    trees=${3:?}
     packer=${4:?}/tilo-app-package
     out=${5:?}
-    [[ $(uname -m) == "$arch" ]] || die "the $arch runtime is built natively, not on $(uname -m)"
-    . os/base-snapshot.env
     unset TAPP_PUBLISHER_IDENTITY
-    echo "sealing this run's $arch runtime with a throwaway key for its dev image: nothing is published"
-    context=$scratch/env-runtime-context
-    rm -rf "$context" "$out"
-    install -D -m 0644 os/Containerfile.env-runtime "$context/os/Containerfile.env-runtime"
-    mkdir -p "$out" "$scratch/env-runtime-dev"
-    podman build --layers=false --timestamp 0 --file os/Containerfile.env-runtime --target tree \
-      --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$rpms_ref" \
-      --output "type=tar,dest=$scratch/env-runtime-dev/tree.tar" "$context"
-    printf '%s\n' "$rpms_ref" > "$scratch/env-runtime-dev/rpms.txt"
-    seal_tree "$arch" "$scratch/env-runtime-dev/tree.tar" "$scratch/env-runtime-dev/rpms.txt" \
+    echo "sealing this run's $arch runtime with a throwaway key for its dev images: nothing is published"
+    rm -rf "$out"
+    mkdir -p "$out"
+    seal_tree "$arch" "$trees/env-runtime-tree-$arch.tar" "$trees/env-runtime-rpms-$arch.txt" \
       "$packer" "$out"
     seal_index "$out" "$packer" "$arch"
-    rm -rf "$scratch/env-runtime-dev" "$context"
     ;;
   image)
     sealed=${2:?usage: env-runtime.sh image SEALED OUT}
