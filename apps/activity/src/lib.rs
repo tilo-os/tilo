@@ -6,9 +6,10 @@
 //!   last looked, where you left off, the on-device summary and the morning
 //!   sources you chose. Leaving it, or marking it viewed, counts it seen.
 //! * **History** ([`history`]): every change, grouped by work group and
-//!   day, narrowed by period, person and lens ([`Filter`]); a selected run
-//!   of changes shows in the inspector ([`detail`]) with what it touched and
-//!   what can be done with it: compare, undo, restore, name, split, merge.
+//!   day, narrowed by period, person and lens ([`Filter`]) and by the window
+//!   bar's search; a selected run of changes shows in the inspector
+//!   ([`detail`]) with what it touched and what can be done with it:
+//!   compare, undo, restore, name, split, merge.
 //! * **Replay** ([`replay`]): the workspace's layout at each recent change,
 //!   stepped or played.
 //!

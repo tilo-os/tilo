@@ -29,10 +29,10 @@ pub struct Filter {
     /// Only the changes under this lens (an app, a resource, a work group,
     /// agent tasks), by its key; empty for everything.
     pub lens: String,
-    /// Find
+    /// Search
     ///
     /// Only the changes whose words, person, app or outcome contain this
-    /// text; empty for everything.
+    /// text, as the window bar's search writes it; empty for everything.
     pub query: String,
 }
 
@@ -53,13 +53,14 @@ impl Filter {
         self != &Self::default()
     }
 
-    /// Whether a text find is on: the feed keeps reading past one page
-    /// while it is.
-    pub fn finding(&self) -> bool {
+    /// Whether the window bar's search is on: the feed keeps reading past
+    /// one page while it is.
+    pub fn searching(&self) -> bool {
         !self.query.trim().is_empty()
     }
 
-    /// Whether `haystack`'s words contain the find, ignoring case.
+    /// Whether `haystack`'s words contain the search's query, ignoring
+    /// case.
     pub fn matches(&self, haystacks: &[&str]) -> bool {
         let query = self.query.trim().to_lowercase();
         if query.is_empty() {
