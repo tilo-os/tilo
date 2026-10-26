@@ -123,6 +123,11 @@ fn a_sealed_room_never_receives_a_plaintext_write_from_an_in_process_app() {
     document
         .put(automerge::ROOT, "title", "written in the clear")
         .unwrap();
+    // A change an app makes names the action that made it.
+    document.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
+    );
     let changes = document.save_after(&[]);
 
     // An app in this process with no channel keys to encrypt under: its
