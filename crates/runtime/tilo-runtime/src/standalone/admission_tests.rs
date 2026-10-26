@@ -171,3 +171,26 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
         "a retired runtime cannot admit another run"
     );
 }
+
+/// A room the runtime no longer holds is a confirmed custody change: the
+/// run ends for good, and the client is told that rather than to retry.
+#[tokio::test]
+async fn custody_the_runtime_no_longer_holds_ends_the_run() {
+    let (joined, _directory) = Joined::test_empty().await;
+    let room = RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        joined.test_certificate().user_public_key,
+    );
+    let run = joined
+        .admit_mcp_execution(&room.to_string(), &room.to_string(), &actor)
+        .unwrap();
+    joined.owner.invalidate_identity(room);
+    let refusal = run.check(&joined).unwrap_err();
+    assert_eq!(refusal, super::Refusal::Ended);
+    assert!(!run.caller().execution_is_live());
+    assert_eq!(
+        tilo_actions::remote::ActionHostError::from(refusal),
+        tilo_actions::remote::ActionHostError::NotPermitted,
+        "an ended run says so and is not retried"
+    );
+}

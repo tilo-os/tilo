@@ -1174,6 +1174,18 @@ def ush_environment_refusal(ctx) -> str | None:
     return environment_refusal(journal)
 
 
+def ush_journal_tail(ctx, lines: int = 4) -> str | None:
+    """The last `lines` lines the slot's `tilo-ush` logged, joined with " | ", or None: what a
+    Terminal with no shell, and no refusal to quote, can still say in its detail."""
+    try:
+        journal = ctx.vm.exec("journalctl --user -u tilo-ush.service --no-pager -o cat -n 200 2>&1",
+                              timeout=60, check=False)
+    except VmError:
+        return None
+    said = [_ANSI.sub("", line).strip() for line in journal.splitlines() if line.strip()]
+    return " | ".join(said[-lines:]) or None
+
+
 def ush_diagnostics(ctx) -> str:
     """The shell runtime's units, journal, process tree, per-thread CPU over 5 s,
     store layout and the session log's lines about it."""

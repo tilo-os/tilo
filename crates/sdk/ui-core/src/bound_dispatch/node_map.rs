@@ -247,15 +247,7 @@ impl BoundNodeMap {
         };
         let inherited = (entry.binding.clone(), entry.legacy.clone(), entry.inactive);
         let Some(&pointer) = nodes.get(&child) else {
-            // A node the widget composed around what it mounted (an app in
-            // its History's composition): the widgets under it are what was
-            // mounted.
-            return taffy
-                .children(child)
-                .unwrap_or_default()
-                .into_iter()
-                // SAFETY: forwarded from the caller.
-                .all(|under| unsafe { self.admit_mounted(parent, under, taffy, nodes) });
+            return false;
         };
         let mut boundaries = Boundaries::default();
         // SAFETY: the caller guarantees every admitted pointer is live.

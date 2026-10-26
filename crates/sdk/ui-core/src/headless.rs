@@ -1172,6 +1172,11 @@ impl FrameHarness {
         {
             return false;
         }
+        // Components a widget replaced report their close here, as before a
+        // rebuild.
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root.as_mut()),
+        );
         let mapped = self.node_map.len();
         let mut remount =
             crate::widget::Remount::new(&mut self.taffy, &self.theme, &mut self.node_map);
@@ -1185,11 +1190,14 @@ impl FrameHarness {
         // a build's are, so the next structure check finds the maps live.
         self.admit_layout_maps();
         let after = self.root.take_structure_change();
-        // A change no widget carried out, or any other beside it, needs the
-        // whole tree.
-        if !applied || after != crate::widget::StructureChange::None {
+        // A change no widget carried out, or a rebuild beside it, needs the
+        // whole tree. One the remount itself set off in place (an app that
+        // arrived hears what its window presents) is carried out by the
+        // next pass, in place again.
+        if !applied || after > crate::widget::StructureChange::Children {
             return false;
         }
+        self.remount |= after == crate::widget::StructureChange::Children;
         self.bindings.forget(&unmounted);
         for (parent, child) in mounted {
             // SAFETY: the runner exclusively owns this tree, its maps and

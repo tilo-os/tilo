@@ -373,9 +373,12 @@ def terminal(ctx, res):
         ctx.shot("A01-terminal-no-shell")
         ctx.write("A01-ush.txt", core.ush_diagnostics(ctx))
         refusal = core.ush_environment_refusal(ctx)
+        said = None if refusal else core.ush_journal_tail(ctx)
         raise CheckFailed(f"no shell ran in Terminal's environment within {SHELL_READY_S} s "
                           "of its window opening " + (f"(the shell runtime refused it: {refusal})"
                                                       if refusal else
+                                                      f"(the shell runtime last said: {said})"
+                                                      if said else
                                                       "(A01-ush.txt shows the shell runtime)"))
     probe = f"acc-term-{int(time.time())}"
     ctx.vm.control("type", f"echo ok > ~/{probe}")

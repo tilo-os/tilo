@@ -614,6 +614,9 @@ pub(crate) struct BrowserShell {
     /// them.
     hints: tilo_desktop::control_hints::ControlHints,
     hints_frame: tilo_desktop::control_hints::HintFrame,
+    /// What the hints painted in the frame before the last one drawn: a
+    /// moving hint damages only there and where it is now.
+    hints_painted_before: Option<Rect>,
 }
 
 /// What the top bar's chrome reads from the page besides the desktop tree.
@@ -627,6 +630,27 @@ pub struct ChromeSources {
 }
 
 impl BrowserShell {
+    /// Whether anything of the page besides a hint changed since it was
+    /// drawn: the clock's minute, a menu or picker in motion, or a child.
+    fn page_needs_redraw(&self) -> bool {
+        self.drawn_minute.get() != minute()
+            || self.picker.needs_animation_frame()
+            || (self.people_open && self.people.needs_animation_frame())
+            || self.pinned.needs_animation_frame()
+            || self.navigator.needs_animation_frame(ui::time::now())
+            || [
+                &self.backdrop as &dyn Widget,
+                &self.bar,
+                &self.area,
+                &self.overview,
+                &self.tilo_menu,
+                &self.workspace_menu,
+                &self.profile,
+            ]
+            .iter()
+            .any(|child| child.needs_redraw())
+    }
+
     pub fn new(
         surface: DesktopSurface,
         handle: DesktopHandle,
@@ -709,6 +733,7 @@ impl BrowserShell {
             picker: crate::feedback_pick::PagePicker::default(),
             hints,
             hints_frame: tilo_desktop::control_hints::HintFrame::default(),
+            hints_painted_before: None,
         }
     }
 
@@ -2566,23 +2591,24 @@ impl Widget for BrowserShell {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.drawn_minute.get() != minute()
-            || self.picker.needs_animation_frame()
-            || (self.people_open && self.people.needs_animation_frame())
-            || self.pinned.needs_animation_frame()
-            || self.navigator.needs_animation_frame(ui::time::now())
-            || self.hints.needs_animation_frame(ui::time::now())
-            || [
-                &self.backdrop as &dyn Widget,
-                &self.bar,
-                &self.area,
-                &self.overview,
-                &self.tilo_menu,
-                &self.workspace_menu,
-                &self.profile,
-            ]
-            .iter()
-            .any(|child| child.needs_redraw())
+        self.page_needs_redraw() || self.hints.needs_animation_frame(ui::time::now())
+    }
+
+    /// The page repaints whole for anything of its own that changed; a
+    /// hint that moves alone changes only what it painted, there and where
+    /// it was the frame before.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.page_needs_redraw() {
+            regions.push(self.get_rect());
+            return;
+        }
+        let now = self.hints.painted_rect();
+        if self.hints.needs_animation_frame(ui::time::now()) || now != self.hints_painted_before {
+            regions.extend(match (self.hints_painted_before, now) {
+                (Some(before), Some(now)) => Some(before.union(now)),
+                (before, now) => before.or(now),
+            });
+        }
     }
 
     /// The page asks for animation frames by this, not by

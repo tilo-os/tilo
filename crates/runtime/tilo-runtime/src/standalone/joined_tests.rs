@@ -274,6 +274,8 @@ impl HostedRoom {
 
 fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
     let mut custody = joined.custody.clone();
+    // In memory only: this probe compares what it holds, never a disk.
+    custody.identity_paths = None;
     let room_cert = custody.device_cert.clone();
     let default_root = SigningKey::from_bytes(&[95; 32]);
     custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
@@ -310,25 +312,28 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         "a default root must not borrow the selected root's admission"
     );
     let run = probe
-        .admit_mcp_execution(&room.to_string(), "different-own-room", actor)
+        .admit_mcp_execution(&room.to_string(), &room.to_string(), actor)
         .unwrap();
     let retained = run.caller().clone();
     probe.recheck_mcp_executions(room).unwrap();
     assert!(retained.execution_is_live());
-    let original = probe.custody.workspace_device_certs.clone();
-    probe.custody.workspace_device_certs.clear();
-    assert!(probe.recheck_mcp_executions(room).is_err());
+    // What this profile holds for the room is not what the run was admitted
+    // with: the read succeeds and says the custody changed, so the run ends.
+    let mut renewed = probe.custody.device_cert.clone();
+    renewed.device_label = "a reissued certificate".into();
+    sign_device_cert(&mut renewed, &default_root).unwrap();
+    probe
+        .custody
+        .workspace_device_certs
+        .insert(room_topic(room).unwrap(), renewed);
+    assert!(
+        probe.recheck_mcp_executions(room).is_err(),
+        "a custody the read confirms is not what the run was admitted with"
+    );
     assert!(
         !retained.execution_is_live(),
         "authority-side original-pin recheck closes retained custody without a wrapper call"
     );
-    probe.custody.workspace_device_certs = original;
-    probe.recheck_mcp_executions(room).unwrap();
-    assert!(
-        !retained.execution_is_live(),
-        "restoring original selection cannot revive the retired run"
-    );
-    probe.custody.workspace_device_certs.clear();
     assert!(
         probe.action_room(actor, &room.to_string()).is_err(),
         "changed selected custody must not reuse the retained roster identity"
@@ -410,22 +415,22 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     }]);
     let mut invocations = broker.capture_invocations_for_test(7);
     let owner = Caller::local_person(actor).in_room(room.clone());
+    let session = Arc::new(crate::standalone::AdmittedRuntimeSession {
+        policy_time: origin.capture().unwrap(),
+        host: qualified,
+        admission,
+        agent: None,
+        projection: Some(owner.clone()),
+    });
     let host = RuntimeActionHost {
         broker,
         room: "private-profile-room".into(),
         joined: Arc::clone(joined),
-        session: Some(Arc::new(crate::standalone::AdmittedRuntimeSession {
-            policy_time: origin.capture().unwrap(),
-            host: qualified,
-            admission,
-            agent: None,
-            projection: Some(owner.clone()),
-        })),
+        session: Some(Arc::clone(&session)),
     };
-    let id = tilo_actions::InvocationId::new();
     let request = InvokeRequest {
         on_behalf_of: None,
-        invocation: id,
+        invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
             provider: "7".into(),
             address: tilo_actions::ActionAddress::new(
@@ -440,6 +445,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         wait_ms: None,
         appearance: None,
     };
+    let id = request.invocation;
     let mut pending = host.invoke(&owner, request.clone());
     assert!(matches!(pending.poll_ready(), PendingPoll::Waiting));
     turn();

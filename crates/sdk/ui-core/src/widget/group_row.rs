@@ -292,7 +292,16 @@ pub struct GroupRow {
     pub groups: Vec<WindowGroup>,
     /// One resize handle per gap: `max(0, groups.len() - 1)`.
     handles: Vec<ResizeHandle>,
-    handle_node_ids: Vec<NodeId>,
+    /// Each seam's node and its own style, while it has one.
+    handle_nodes: Vec<Option<(NodeId, Style)>>,
+    /// The row's node in the retained layout tree, while it has one.
+    node: Option<NodeId>,
+    /// One run node per lane of a partitioned strip.
+    run_nodes: Vec<NodeId>,
+    /// The lane each window was laid out in, and whether each lane was
+    /// collapsed to one window: a change moves nodes between runs.
+    laid_lanes: Vec<usize>,
+    laid_collapsed: Vec<bool>,
     rect: Rect,
     node_ids: Vec<NodeId>,
     /// The group ids `node_ids` was built for, in order: a splice or
@@ -1363,7 +1372,11 @@ impl GroupRow {
             close_reports: vec![],
             external_navigation: false,
             handles: Vec::new(),
-            handle_node_ids: Vec::new(),
+            handle_nodes: Vec::new(),
+            node: None,
+            run_nodes: Vec::new(),
+            laid_lanes: Vec::new(),
+            laid_collapsed: Vec::new(),
             rect: Rect::ZERO,
             node_ids: Vec::new(),
             laid_group_ids: Vec::new(),
@@ -4183,6 +4196,356 @@ impl FloatingSurfaceProvider for GroupRow {
     }
 }
 
+/// Where a row's windows go in its layout: the lane each is in, the window
+/// a lane collapses to, and the lane a fullscreen surface covers.
+struct RowPlan {
+    lane_of: Vec<usize>,
+    maximized_in: Vec<Option<usize>>,
+    covered_lane: Option<usize>,
+}
+
+impl RowPlan {
+    /// Whether each of `lanes` lanes collapses to one window or under a
+    /// fullscreen surface.
+    fn collapsed(&self, lanes: usize) -> Vec<bool> {
+        (0..lanes)
+            .map(|lane| {
+                self.maximized_in.get(lane).copied().flatten().is_some()
+                    || self.covered_lane == Some(lane)
+            })
+            .collect()
+    }
+}
+
+/// Set `node`'s style to `style`, unless it has it: a style set marks the
+/// node and its ancestors for layout again.
+fn restyle(taffy: &mut TaffyTree<()>, node: NodeId, style: Style) {
+    if taffy.style(node).ok() != Some(&style) {
+        let _ = taffy.set_style(node, style);
+    }
+}
+
+impl GroupRow {
+    /// What the row keeps up before it lays its windows out: the theme's
+    /// motion, every window's width basis, and every slot's spring stepped
+    /// once for the frame.
+    fn prepare_layout(&mut self, theme: &Theme) {
+        self.reduce_motion = theme.reduce_motion;
+        self.motion = theme.tokens.motion;
+        self.sync_sibling_fade(theme);
+        self.set_width_bases();
+        // Every slot springs from where it is drawn to where it goes, the
+        // closing one to nothing and its neighbours into the room, whether or
+        // not the strip overflows: the pan's bounds follow where the springs
+        // are going ([`Self::dest_content_w`]), so a slot in flight never
+        // makes the strip scrollable. Only a spring aimed at a width the
+        // strip no longer has (the display changed under it) lands.
+        for group in &mut self.groups {
+            group.set_reduce_motion(theme.reduce_motion);
+            group.set_motion_source(self.motion_source);
+            if group.width_target_is_stale() && !group.is_closing() {
+                group.snap_width_spring();
+            } else {
+                group.step_width_spring();
+            }
+        }
+    }
+
+    /// Each window's width basis: the display its left edge lands on, and
+    /// whether it has its run to itself.
+    fn set_width_bases(&mut self) {
+        let usable_per_group = self.usable_per_group();
+        let alone = self.alone_per_group();
+        for ((g, &usable), alone) in self
+            .groups
+            .iter_mut()
+            .zip(usable_per_group.iter())
+            .zip(alone)
+        {
+            g.set_strip_usable_px(usable);
+            g.set_alone(alone);
+        }
+    }
+
+    /// Before the windows lay out: every width fraction resolved (walking
+    /// left to right so each group's basis is the display its left edge
+    /// lands on), with no dependency on a previous frame's layout, which
+    /// keeps a single-frame offscreen render identical to live; and which
+    /// window presents fullscreen.
+    fn present_groups(&mut self) {
+        self.set_width_bases();
+        for group in &mut self.groups {
+            group.set_fullscreen_presentation(
+                self.fullscreen_group == Some(group.id)
+                    && !self.promotion_keeps_gutter
+                    && !self.promotion_keeps_controls,
+            );
+        }
+    }
+
+    /// Grow/truncate the seam pool to `max(0, N-1)`. A seam holds no drag
+    /// state (the row's `edge_drag` does), so its index may change.
+    fn size_handle_pool(&mut self) {
+        let desired = self.desired_handles();
+        if self.handles.len() < desired {
+            self.handles
+                .extend((self.handles.len()..desired).map(|_| ResizeHandle::new()));
+        } else if self.handles.len() > desired {
+            self.handles.truncate(desired);
+        }
+    }
+
+    fn desired_handles(&self) -> usize {
+        if self.external_navigation {
+            0
+        } else {
+            self.groups.len().saturating_sub(1)
+        }
+    }
+
+    /// Where the windows go. The moment any child group is maximized, its
+    /// run collapses to that single group via `display: None` on siblings;
+    /// handles are skipped since there are no visible gaps. Multiple
+    /// simultaneous `maximized` flags in one run: first one wins. A
+    /// transient fullscreen promotion drives the same collapse and wins over
+    /// `maximized`. A partitioned strip collapses per lane, so a window
+    /// maximized on one display leaves the others as they were.
+    fn plan_layout(&self) -> RowPlan {
+        let lane_of: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.lane_index_of(i))
+            .collect();
+        let runs = self.lanes.len().max(1);
+        let mut maximized_in: Vec<Option<usize>> = vec![None; runs];
+        if let Some(fs) = self.fullscreen_idx()
+            && let Some(slot) = maximized_in.get_mut(lane_of.get(fs).copied().unwrap_or(0))
+        {
+            *slot = Some(fs);
+        }
+        for (i, g) in self.groups.iter().enumerate() {
+            if !g.maximized {
+                continue;
+            }
+            if let Some(slot) = maximized_in.get_mut(lane_of.get(i).copied().unwrap_or(0))
+                && slot.is_none()
+            {
+                *slot = Some(i);
+            }
+        }
+        RowPlan {
+            lane_of,
+            maximized_in,
+            covered_lane: self.covered_lane(),
+        }
+    }
+
+    /// Whether the seams between windows have nodes: always in a
+    /// partitioned strip (one between two lanes is parked out of layout),
+    /// and while no window is maximized otherwise.
+    fn handles_laid(&self, plan: &RowPlan) -> bool {
+        !self.lanes.is_empty() || plan.maximized_in.first().copied().flatten().is_none()
+    }
+
+    /// The style the row gives window `i`'s node over the window's `own`.
+    ///
+    /// `flex_shrink: 0.0` on every group: Niri-style, placing a new tile
+    /// never resizes siblings; `content_width` grows past the viewport and
+    /// `draw` clips to it. `flex_shrink: 1.0` was tried and rejected — it
+    /// silently shrinks siblings on every spawn, violating the
+    /// infinite-strip invariant.
+    fn group_node_style(&self, plan: &RowPlan, i: usize, own: Style) -> Style {
+        let mut style = own;
+        style.flex_shrink = 0.0;
+        let lane = plan.lane_of.get(i).copied().unwrap_or(0);
+        if plan.covered_lane == Some(lane) {
+            style.display = Display::None;
+        } else if let Some(max_i) = plan.maximized_in.get(lane).copied().flatten() {
+            if i == max_i {
+                // `maximized` already carries this grow style from
+                // `WindowGroup::own_style`; a fullscreen-promoted group
+                // doesn't, so set it here too.
+                style.size.width = Dimension::auto();
+                style.flex_grow = 1.0e6;
+                style.flex_basis = Dimension::length(0.0);
+                if self.promotion_keeps_gutter
+                    && self.fullscreen_group.is_some()
+                    && self.fullscreen_idx() == Some(i)
+                {
+                    style.margin.left =
+                        LengthPercentageAuto::length(f32_of_f64(self.pan_of_lane(lane).inset));
+                }
+            } else {
+                style.display = Display::None;
+            }
+        }
+        style
+    }
+
+    /// The row's children, from the window nodes `group_nodes` and the
+    /// seams' nodes, and the row's own style. A partitioned strip places one
+    /// run per lane, reusing the runs it has when there are as many.
+    fn assemble(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        plan: &RowPlan,
+        group_nodes: &[NodeId],
+    ) -> (Vec<NodeId>, Style) {
+        let run_style = |display: Display| Style {
+            display,
+            flex_direction: FlexDirection::Row,
+            // Groups past the viewport are the strip's to pan and clip, not
+            // extent of what holds it: without this, taffy carries their
+            // width up as every ancestor's content size and the desktop
+            // column reports itself as wide as the whole strip, reaching
+            // across and past every display. `Clip`, not `Hidden`: the
+            // automatic minimum size, and so the layout, stays as it was.
+            overflow: taffy::Point {
+                x: Overflow::Clip,
+                y: Overflow::Visible,
+            },
+            // Zero here: the inter-group `ResizeHandle` widgets supply the
+            // visible 8-px footprint per gap, so a non-zero gap on top of
+            // that would double the inter-group distance.
+            gap: Size {
+                width: taffy::LengthPercentage::length(0.0),
+                height: taffy::LengthPercentage::length(0.0),
+            },
+            ..Default::default()
+        };
+        // A strip owning no part of the current fullscreen surface
+        // collapses away entirely, so the promoted group in another strip
+        // is the only thing painted.
+        let row_display = if self.hidden || (self.covered_output.is_some() && self.lanes.is_empty())
+        {
+            Display::None
+        } else {
+            Display::Flex
+        };
+        let children: Vec<NodeId> = if self.lanes.is_empty() {
+            // Interleave handle nodes between group nodes:
+            // `[g0, h0, g1, h1, …, g_{N-1}]`. Omitted entirely while any
+            // group is maximized (no visible gaps to mark).
+            let mut children: Vec<NodeId> = Vec::with_capacity(group_nodes.len().saturating_mul(2));
+            for (i, gn) in group_nodes.iter().enumerate() {
+                children.push(*gn);
+                if let Some(Some((hn, own))) = self.handle_nodes.get(i) {
+                    restyle(taffy, *hn, own.clone());
+                    children.push(*hn);
+                }
+            }
+            children
+        } else {
+            // One absolutely placed run per lane, over its display. Every
+            // handle still gets a node; one between two lanes (or in a
+            // collapsed lane) is parked out of layout.
+            // Where the row rests: the deck's shift is a move, not layout.
+            let row = self.rect - vello::kurbo::Vec2::new(0.0, self.deck_shift);
+            let mut lane_children: Vec<Vec<NodeId>> = vec![Vec::new(); self.lanes.len()];
+            let mut parked: Vec<NodeId> = Vec::new();
+            let collapsed = plan.collapsed(self.lanes.len());
+            for (i, gn) in group_nodes.iter().enumerate() {
+                let lane = plan.lane_of.get(i).copied().unwrap_or(0);
+                if let Some(run) = lane_children.get_mut(lane) {
+                    run.push(*gn);
+                }
+                let Some(Some((hn, own))) = self.handle_nodes.get(i) else {
+                    continue;
+                };
+                let same_lane = plan.lane_of.get(i.saturating_add(1)).copied() == Some(lane);
+                let mut style = own.clone();
+                if same_lane && !collapsed.get(lane).copied().unwrap_or(false) {
+                    if let Some(run) = lane_children.get_mut(lane) {
+                        run.push(*hn);
+                    }
+                } else {
+                    style.display = Display::None;
+                    parked.push(*hn);
+                }
+                restyle(taffy, *hn, style);
+            }
+            let reuse = self.run_nodes.len() == self.lanes.len();
+            let mut children = Vec::with_capacity(self.lanes.len().saturating_add(parked.len()));
+            for (k, (lane, run)) in self.lanes.iter_mut().zip(lane_children).enumerate() {
+                let viewport = lane.area();
+                lane.built_viewport = viewport;
+                let style = Style {
+                    position: Position::Absolute,
+                    inset: taffy::Rect {
+                        left: LengthPercentageAuto::length(f32_of_f64(viewport.x0 - row.x0)),
+                        right: LengthPercentageAuto::auto(),
+                        top: LengthPercentageAuto::length(f32_of_f64(viewport.y0 - row.y0)),
+                        bottom: LengthPercentageAuto::auto(),
+                    },
+                    size: Size {
+                        width: Dimension::length(f32_of_f64(viewport.width())),
+                        height: Dimension::length(f32_of_f64(viewport.height())),
+                    },
+                    ..run_style(Display::Flex)
+                };
+                match self.run_nodes.get(k).copied().filter(|_| reuse) {
+                    Some(node) => {
+                        restyle(taffy, node, style);
+                        if taffy.children(node).ok().as_deref() != Some(&run[..]) {
+                            let _ = taffy.set_children(node, &run);
+                        }
+                        children.push(node);
+                    }
+                    None => children.push(taffy.parent_node(style, &run)),
+                }
+            }
+            if !reuse {
+                self.run_nodes.clone_from(&children);
+            }
+            children.extend(parked);
+            children
+        };
+        // Row must fill remaining vertical space so each child's
+        // `height: percent(1.0)` resolves — otherwise the row measures
+        // only as tall as the TabBar and `TileHost` collapses to zero.
+        // Children beyond the viewport are still walked and shifted into
+        // screen-space by the pan; still hit-testable since
+        // `gap_index_for` uses each group's stored post-shift `Rect`.
+        // Its height is the band it is given, never its windows' content: a
+        // window's page scrolls inside it. With the automatic minimum, a
+        // page's content height reached the row through each window (an
+        // app's height there is a cross size, which its content sets), so a
+        // long document raised every window in the strip past the screen.
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            min_size: Size {
+                width: Dimension::auto(),
+                height: Dimension::length(0.0),
+            },
+            flex_grow: 1.0,
+            ..run_style(row_display)
+        };
+        (children, style)
+    }
+
+    /// Whether the windows laid out last are the row's windows now, each
+    /// still holding its node: the row can then change its layout in place.
+    fn laid_same_groups(&self) -> bool {
+        self.node.is_some()
+            && !(self.external_navigation && self.hidden)
+            && self.laid_group_ids.len() == self.groups.len()
+            && self.node_ids.len() == self.groups.len()
+            && self
+                .groups
+                .iter()
+                .zip(&self.laid_group_ids)
+                .zip(&self.node_ids)
+                .all(|((group, &id), &node)| group.id == id && group.layout_node() == Some(node))
+    }
+
+    /// The row's node in the retained layout tree, while it has one.
+    #[must_use]
+    pub fn layout_node(&self) -> Option<NodeId> {
+        self.node
+    }
+}
+
 impl Widget for GroupRow {
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
@@ -4379,36 +4742,11 @@ impl Widget for GroupRow {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.reduce_motion = theme.reduce_motion;
-        self.motion = theme.tokens.motion;
-        self.sync_sibling_fade(theme);
-        let usable_per_group = self.usable_per_group();
-        let alone = self.alone_per_group();
-        for ((g, &usable), alone) in self
-            .groups
-            .iter_mut()
-            .zip(usable_per_group.iter())
-            .zip(alone)
-        {
-            g.set_strip_usable_px(usable);
-            g.set_alone(alone);
-        }
-        // Every slot springs from where it is drawn to where it goes, the
-        // closing one to nothing and its neighbours into the room, whether or
-        // not the strip overflows: the pan's bounds follow where the springs
-        // are going ([`Self::dest_content_w`]), so a slot in flight never
-        // makes the strip scrollable. Only a spring aimed at a width the
-        // strip no longer has (the display changed under it) lands.
-        for group in &mut self.groups {
-            group.set_reduce_motion(theme.reduce_motion);
-            group.set_motion_source(self.motion_source);
-            if group.width_target_is_stale() && !group.is_closing() {
-                group.snap_width_spring();
-            } else {
-                group.step_width_spring();
-            }
-        }
+        self.prepare_layout(theme);
         self.node_ids.clear();
+        self.node = None;
+        self.run_nodes.clear();
+        self.handle_nodes.clear();
         if self.external_navigation && self.hidden {
             // Retained groups remain lifecycle owners, but none of their
             // History handles belong to this hidden row's one-node layout.
@@ -4422,28 +4760,7 @@ impl Widget for GroupRow {
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             return node;
         }
-        // Resolve every group's width fraction before it builds its node
-        // (walking left to right so each group's basis is the display its
-        // left edge lands on), with no dependency on a previous frame's
-        // layout — keeps a single-frame offscreen render identical to live.
-        let usable_per_group = self.usable_per_group();
-        let alone = self.alone_per_group();
-        for ((g, &usable), alone) in self
-            .groups
-            .iter_mut()
-            .zip(usable_per_group.iter())
-            .zip(alone)
-        {
-            g.set_strip_usable_px(usable);
-            g.set_alone(alone);
-        }
-        for group in &mut self.groups {
-            group.set_fullscreen_presentation(
-                self.fullscreen_group == Some(group.id)
-                    && !self.promotion_keeps_gutter
-                    && !self.promotion_keeps_controls,
-            );
-        }
+        self.present_groups();
         let group_nodes: Vec<NodeId> = self
             .groups
             .iter_mut()
@@ -4451,217 +4768,26 @@ impl Widget for GroupRow {
             .collect();
         self.node_ids.clone_from(&group_nodes);
         self.laid_group_ids = self.groups.iter().map(|group| group.id).collect();
-        let lane_of: Vec<usize> = (0..self.groups.len())
-            .map(|i| self.lane_index_of(i))
-            .collect();
-        // The moment any child group is maximized, its run collapses to
-        // that single group via `display: None` on siblings; handles are
-        // skipped since there are no visible gaps. Multiple simultaneous
-        // `maximized` flags in one run: first one wins. A transient
-        // fullscreen promotion drives the same collapse and wins over
-        // `maximized`. A partitioned strip collapses per lane, so a window
-        // maximized on one display leaves the others as they were.
-        let runs = self.lanes.len().max(1);
-        let mut maximized_in: Vec<Option<usize>> = vec![None; runs];
-        if let Some(fs) = self.fullscreen_idx()
-            && let Some(slot) = maximized_in.get_mut(lane_of.get(fs).copied().unwrap_or(0))
-        {
-            *slot = Some(fs);
-        }
-        for (i, g) in self.groups.iter().enumerate() {
-            if !g.maximized {
-                continue;
-            }
-            if let Some(slot) = maximized_in.get_mut(lane_of.get(i).copied().unwrap_or(0))
-                && slot.is_none()
-            {
-                *slot = Some(i);
-            }
-        }
-        // Grow/truncate the seam pool to `max(0, N-1)`. A seam holds no
-        // drag state (the row's `edge_drag` does), so its index may change.
-        let desired_handles = if self.external_navigation {
-            0
-        } else {
-            self.groups.len().saturating_sub(1)
-        };
-        if self.handles.len() < desired_handles {
-            self.handles
-                .extend((self.handles.len()..desired_handles).map(|_| ResizeHandle::new()));
-        } else if self.handles.len() > desired_handles {
-            self.handles.truncate(desired_handles);
-        }
-        // `flex_shrink: 0.0` on every group: Niri-style, placing a new
-        // tile never resizes siblings; `content_width` grows past the
-        // viewport and `draw` clips to it. `flex_shrink: 1.0` was tried
-        // and rejected — it silently shrinks siblings on every spawn,
-        // violating the infinite-strip invariant.
-        let covered_lane = self.covered_lane();
+        self.size_handle_pool();
+        let plan = self.plan_layout();
         for (i, &node) in group_nodes.iter().enumerate() {
-            let mut style = taffy.style(node).cloned().unwrap_or_default();
-            style.flex_shrink = 0.0;
-            let lane = lane_of.get(i).copied().unwrap_or(0);
-            if covered_lane == Some(lane) {
-                style.display = Display::None;
-            } else if let Some(max_i) = maximized_in.get(lane).copied().flatten() {
-                if i == max_i {
-                    // `maximized` already carries this grow style from
-                    // `WindowGroup::build_layout`; a fullscreen-promoted
-                    // group doesn't, so set it here too.
-                    style.size.width = Dimension::auto();
-                    style.flex_grow = 1.0e6;
-                    style.flex_basis = Dimension::length(0.0);
-                    if self.promotion_keeps_gutter
-                        && self.fullscreen_group.is_some()
-                        && self.fullscreen_idx() == Some(i)
-                    {
-                        style.margin.left =
-                            LengthPercentageAuto::length(f32_of_f64(self.pan_of_lane(lane).inset));
-                    }
-                } else {
-                    style.display = Display::None;
-                }
-            }
-            let _ = taffy.set_style(node, style);
+            let own = taffy.style(node).cloned().unwrap_or_default();
+            let _ = taffy.set_style(node, self.group_node_style(&plan, i, own));
         }
-        self.handle_node_ids.clear();
-        let run_style = |display: Display| Style {
-            display,
-            flex_direction: FlexDirection::Row,
-            // Groups past the viewport are the strip's to pan and clip, not
-            // extent of what holds it: without this, taffy carries their
-            // width up as every ancestor's content size and the desktop
-            // column reports itself as wide as the whole strip, reaching
-            // across and past every display. `Clip`, not `Hidden`: the
-            // automatic minimum size, and so the layout, stays as it was.
-            overflow: taffy::Point {
-                x: Overflow::Clip,
-                y: Overflow::Visible,
-            },
-            // Zero here: the inter-group `ResizeHandle` widgets supply the
-            // visible 8-px footprint per gap, so a non-zero gap on top of
-            // that would double the inter-group distance.
-            gap: Size {
-                width: taffy::LengthPercentage::length(0.0),
-                height: taffy::LengthPercentage::length(0.0),
-            },
-            ..Default::default()
-        };
-        // A strip owning no part of the current fullscreen surface
-        // collapses away entirely, so the promoted group in another strip
-        // is the only thing painted.
-        let row_display = if self.hidden || (self.covered_output.is_some() && self.lanes.is_empty())
-        {
-            Display::None
-        } else {
-            Display::Flex
-        };
-        let children: Vec<NodeId> = if self.lanes.is_empty() {
-            // Interleave handle nodes between group nodes:
-            // `[g0, h0, g1, h1, …, g_{N-1}]`. Omitted entirely while any
-            // group is maximized (no visible gaps to mark).
-            let maximized_idx = maximized_in.first().copied().flatten();
-            let mut children: Vec<NodeId> =
-                Vec::with_capacity(group_nodes.len().saturating_add(desired_handles));
-            if maximized_idx.is_some() {
-                children.extend(group_nodes.iter().copied());
-            } else {
-                for (i, gn) in group_nodes.iter().enumerate() {
-                    children.push(*gn);
-                    if i.saturating_add(1) < group_nodes.len() {
-                        let Some(h) = self.handles.get_mut(i) else {
-                            continue;
-                        };
-                        let hn = h.build_layout(taffy, theme, node_map);
-                        self.handle_node_ids.push(hn);
-                        children.push(hn);
-                    }
-                }
-            }
-            children
-        } else {
-            // One absolutely placed run per lane, over its display. Every
-            // handle still gets a node so `handle_node_ids` stays aligned
-            // with the pool; one between two lanes (or in a collapsed lane)
-            // is parked out of layout.
-            // Where the row rests: the deck's shift is a move, not layout.
-            let row = self.rect - vello::kurbo::Vec2::new(0.0, self.deck_shift);
-            let mut lane_children: Vec<Vec<NodeId>> = vec![Vec::new(); self.lanes.len()];
-            let mut parked: Vec<NodeId> = Vec::new();
-            for (i, gn) in group_nodes.iter().enumerate() {
-                let lane = lane_of.get(i).copied().unwrap_or(0);
-                if let Some(run) = lane_children.get_mut(lane) {
-                    run.push(*gn);
-                }
-                if i.saturating_add(1) >= group_nodes.len() {
-                    continue;
-                }
-                let Some(h) = self.handles.get_mut(i) else {
-                    continue;
-                };
-                let hn = h.build_layout(taffy, theme, node_map);
-                self.handle_node_ids.push(hn);
-                let same_lane = lane_of.get(i.saturating_add(1)).copied() == Some(lane);
-                let collapsed = maximized_in.get(lane).copied().flatten().is_some()
-                    || covered_lane == Some(lane);
-                if same_lane && !collapsed {
-                    if let Some(run) = lane_children.get_mut(lane) {
-                        run.push(hn);
-                    }
-                } else {
-                    let mut style = taffy.style(hn).cloned().unwrap_or_default();
-                    style.display = Display::None;
-                    let _ = taffy.set_style(hn, style);
-                    parked.push(hn);
-                }
-            }
-            let mut children = Vec::with_capacity(self.lanes.len().saturating_add(parked.len()));
-            for (lane, run) in self.lanes.iter_mut().zip(lane_children) {
-                let viewport = lane.area();
-                lane.built_viewport = viewport;
-                let style = Style {
-                    position: Position::Absolute,
-                    inset: taffy::Rect {
-                        left: LengthPercentageAuto::length(f32_of_f64(viewport.x0 - row.x0)),
-                        right: LengthPercentageAuto::auto(),
-                        top: LengthPercentageAuto::length(f32_of_f64(viewport.y0 - row.y0)),
-                        bottom: LengthPercentageAuto::auto(),
-                    },
-                    size: Size {
-                        width: Dimension::length(f32_of_f64(viewport.width())),
-                        height: Dimension::length(f32_of_f64(viewport.height())),
-                    },
-                    ..run_style(Display::Flex)
-                };
-                children.push(taffy.parent_node(style, &run));
-            }
-            children.extend(parked);
-            children
-        };
-        // Row must fill remaining vertical space so each child's
-        // `height: percent(1.0)` resolves — otherwise the row measures
-        // only as tall as the TabBar and `TileHost` collapses to zero.
-        // Children beyond the viewport are still walked and shifted into
-        // screen-space by the pan; still hit-testable since
-        // `gap_index_for` uses each group's stored post-shift `Rect`.
-        // Its height is the band it is given, never its windows' content: a
-        // window's page scrolls inside it. With the automatic minimum, a
-        // page's content height reached the row through each window (an
-        // app's height there is a cross size, which its content sets), so a
-        // long document raised every window in the strip past the screen.
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::auto(),
-            },
-            min_size: Size {
-                width: Dimension::auto(),
-                height: Dimension::length(0.0),
-            },
-            flex_grow: 1.0,
-            ..run_style(row_display)
-        };
-        taffy.widget_node(style, &children, node_map, self)
+        let laid = self.handles_laid(&plan);
+        for i in 0..group_nodes.len().saturating_sub(1) {
+            let node = self.handles.get_mut(i).filter(|_| laid).map(|handle| {
+                let node = handle.build_layout(taffy, theme, node_map);
+                (node, taffy.style(node).cloned().unwrap_or_default())
+            });
+            self.handle_nodes.push(node);
+        }
+        let (children, style) = self.assemble(taffy, &plan, &group_nodes);
+        self.laid_lanes.clone_from(&plan.lane_of);
+        self.laid_collapsed = plan.collapsed(self.lanes.len());
+        let node = taffy.widget_node(style, &children, node_map, self);
+        self.node = Some(node);
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -5325,19 +5451,87 @@ impl Widget for GroupRow {
     fn take_structure_dirty(&mut self) -> bool {
         self.take_structure_change().rebuilds()
     }
-    /// A change a window carries out in place stays in place; the row's own
-    /// changes rebuild. Every window's flag is drained, none skipped.
+    /// A change a window carries out in place stays in place. The row's own
+    /// changes (a slot's width, a pan's bounds, a reveal, lanes, a window
+    /// maximized or restored) restyle the nodes it keeps while its windows
+    /// are the ones it laid out; a window come or gone rebuilds. Every
+    /// window's flag is drained, none skipped.
     fn take_structure_change(&mut self) -> super::StructureChange {
-        let own = super::StructureChange::of(std::mem::take(&mut self.structure_dirty));
+        let own = if std::mem::take(&mut self.structure_dirty) {
+            if self.laid_same_groups() {
+                super::StructureChange::Children
+            } else {
+                super::StructureChange::Rebuild
+            }
+        } else {
+            super::StructureChange::None
+        };
         self.groups.iter_mut().fold(own, |change, group| {
             change.join(group.take_structure_change())
         })
     }
-    /// Every window is in the row's layout, shown or not.
+    /// Lay the row out again in the nodes it keeps, as
+    /// [`Widget::build_layout`] would: every slot's spring stepped, every
+    /// window's nodes restyled, the seams mounted or let go as windows are
+    /// maximized and restored, and the row's children and runs set.
     fn remount_children(&mut self, remount: &mut super::Remount<'_>) -> bool {
-        self.groups
+        let Some(row) = self.node else {
+            return false;
+        };
+        if !self.laid_same_groups() || self.desired_handles() != self.handles.len() {
+            return false;
+        }
+        self.prepare_layout(remount.theme());
+        self.present_groups();
+        if !self
+            .groups
             .iter_mut()
-            .all(|group| group.remount_children(remount))
+            .all(|group| group.remount_in_row(remount))
+        {
+            return false;
+        }
+        let plan = self.plan_layout();
+        let partitioned = !self.lanes.is_empty();
+        if partitioned
+            && (plan.lane_of != self.laid_lanes
+                || plan.collapsed(self.lanes.len()) != self.laid_collapsed
+                || self.run_nodes.len() != self.lanes.len())
+        {
+            return false;
+        }
+        let group_nodes = self.node_ids.clone();
+        for (i, (group, &node)) in self.groups.iter().zip(&group_nodes).enumerate() {
+            restyle(
+                remount.taffy(),
+                node,
+                self.group_node_style(&plan, i, group.own_style()),
+            );
+        }
+        let laid = self.handles_laid(&plan);
+        let gaps = group_nodes.len().saturating_sub(1);
+        if self.handle_nodes.len() != gaps {
+            return false;
+        }
+        for (slot, handle) in self.handle_nodes.iter_mut().zip(self.handles.iter_mut()) {
+            match (laid, slot.as_ref()) {
+                (true, None) => {
+                    let node = remount.mount(row, handle);
+                    let own = remount.taffy().style(node).cloned().unwrap_or_default();
+                    *slot = Some((node, own));
+                }
+                (false, Some(&(node, _))) => {
+                    remount.unmount(node);
+                    *slot = None;
+                }
+                _ => {}
+            }
+        }
+        let (children, style) = self.assemble(remount.taffy(), &plan, &group_nodes);
+        restyle(remount.taffy(), row, style);
+        if remount.taffy().children(row).ok().as_deref() != Some(&children[..]) {
+            let _ = remount.set_children(row, &children);
+        }
+        true
     }
 }
 
@@ -10688,10 +10882,10 @@ mod tests {
                 row_w,
             );
 
-            // Pool itself stays sized to N-1; `handle_node_ids` must be
+            // Pool itself stays sized to N-1; `handle_nodes` must be
             // empty so no draw/dispatch runs on collapsed gaps.
             assert_eq!(
-                row.handle_node_ids.len(),
+                row.handle_nodes.iter().flatten().count(),
                 0,
                 "no handle taffy nodes must be built while a group is maximized",
             );
@@ -10742,7 +10936,7 @@ mod tests {
                 );
             }
             assert_eq!(
-                row.handle_node_ids.len(),
+                row.handle_nodes.iter().flatten().count(),
                 2,
                 "handle nodes must be rebuilt on un-maximize (2 gaps → 2 handles)",
             );
@@ -10810,7 +11004,7 @@ mod tests {
                 row.rect.x0,
             );
             assert_eq!(
-                row.handle_node_ids.len(),
+                row.handle_nodes.iter().flatten().count(),
                 0,
                 "no resize handles under fullscreen"
             );
@@ -10819,7 +11013,7 @@ mod tests {
         fn exiting_fullscreen_restores_prior_layout_exactly() {
             let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
             let before: Vec<Rect> = row.groups.iter().map(WindowGroup::get_rect).collect();
-            let handles_before = row.handle_node_ids.len();
+            let handles_before = row.handle_nodes.iter().flatten().count();
             assert_eq!(handles_before, 2);
 
             row.set_fullscreen(Some(300), false);
@@ -10839,7 +11033,7 @@ mod tests {
                 );
             }
             assert_eq!(
-                row.handle_node_ids.len(),
+                row.handle_nodes.iter().flatten().count(),
                 2,
                 "resize handles rebuilt on fullscreen exit",
             );

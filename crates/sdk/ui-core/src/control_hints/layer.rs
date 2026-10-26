@@ -61,6 +61,9 @@ struct Placed {
 pub struct HintLayer<S: 'static> {
     coach: Coach<S>,
     placed: Option<Placed>,
+    /// Everything the last draw painted: the card with its shadow, the lit
+    /// edge, the dot and where it lands.
+    painted: Option<Rect>,
 }
 
 impl<S: Copy + PartialEq + 'static> HintLayer<S> {
@@ -69,6 +72,7 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
         Self {
             coach: Coach::new(specs, learned),
             placed: None,
+            painted: None,
         }
     }
 
@@ -161,6 +165,15 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
             .filter(|card| !card.is_zero_area())
     }
 
+    /// Everything the last draw painted (the card with its shadow, a lit
+    /// edge, the dot it folds into and where that lands): while the hint
+    /// moves, the only pixels it changes are under this and the last
+    /// draw's.
+    #[must_use]
+    pub fn painted_rect(&self) -> Option<Rect> {
+        self.painted
+    }
+
     /// The hint for assistive technology: its words and keys, said
     /// politely when it comes.
     #[must_use]
@@ -193,9 +206,11 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
         now: Instant,
         look: &HintLook,
     ) {
+        self.painted = None;
         let Some(current) = self.coach.current() else {
             return;
         };
+        let mut painted = Painted::default();
         let motion = theme.motion();
         let specs = self.coach.specs();
         let Some(placed) = self.placed.as_mut() else {
@@ -227,8 +242,10 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                 let arrival = Beckon::arrival(age, motion);
                 if let Some(edge) = placed.place.edge {
                     lit_edge(scene, transform, edge, &colours, arrival.opacity);
+                    painted.edge(edge);
                 }
                 let pose = arrival_pose(rect, notch, arrival.scale, arrival.approach);
+                painted.card(pose.transform_rect_bbox(rect));
                 let frame = Frame {
                     rect,
                     notch,
@@ -246,7 +263,9 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                 let opacity = Beckon::leaving(now.saturating_duration_since(since), motion);
                 if let Some(edge) = placed.place.edge {
                     lit_edge(scene, transform, edge, &colours, opacity);
+                    painted.edge(edge);
                 }
+                painted.card(rect);
                 let frame = Frame {
                     rect,
                     notch,
@@ -293,6 +312,7 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                     };
                     // The check lands with a small lift of the whole card.
                     let pop = Affine::scale_about(done.pop, rect.center());
+                    painted.card(pop.transform_rect_bbox(rect));
                     card::paint(scene, transform * pop, text, theme, &frame);
                 }
                 if done.fold >= 0.98 || done.drift > 0.0 {
@@ -312,10 +332,12 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                     );
                     card::dot(scene, transform, at, size, &colours);
                     scene.pop_layer();
+                    painted.mark(Rect::from_center_size(at, (DOT * 6.0, DOT * 6.0)));
                 }
                 if let (Some((spread, strength)), Some(keep)) = (done.landing, look.keep_at) {
                     // Where it lands, the menu it went into lights once.
                     let at = Rect::from_center_size(keep, (LANDING, LANDING));
+                    painted.mark(at.inflate(LANDING * 2.0, LANDING * 2.0));
                     card::pulse(
                         scene,
                         transform,
@@ -328,6 +350,30 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
                 }
             }
         }
+        self.painted = painted.0;
+    }
+}
+
+/// What a draw of the hint covers, for the host's damage.
+#[derive(Default)]
+struct Painted(Option<Rect>);
+
+impl Painted {
+    /// How far a card's shadow and notch reach past its rect.
+    const CARD_REACH: f64 = 40.0;
+    /// How far the lit edge's glow reaches past its line.
+    const EDGE_REACH: f64 = 48.0;
+
+    fn mark(&mut self, rect: Rect) {
+        self.0 = Some(self.0.map_or(rect, |painted| painted.union(rect)));
+    }
+
+    fn card(&mut self, rect: Rect) {
+        self.mark(rect.inflate(Self::CARD_REACH, Self::CARD_REACH));
+    }
+
+    fn edge(&mut self, edge: Line) {
+        self.mark(Rect::from_points(edge.p0, edge.p1).inflate(Self::EDGE_REACH, Self::EDGE_REACH));
     }
 }
 
