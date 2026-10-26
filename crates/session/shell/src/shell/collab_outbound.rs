@@ -41,4 +41,8 @@ impl PeerPublishSink for ShellNetwork {
         let _ = self.register_local_record(app_id, cluster_id, record_id);
         self.request_room_replay(cluster_id);
     }
+
+    fn sealed_history_wanted(&self, _app_id: &str, cluster_id: &str, _record_id: &str) {
+        self.request_sealed_history(cluster_id);
+    }
 }

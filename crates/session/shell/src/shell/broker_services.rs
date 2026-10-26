@@ -54,8 +54,16 @@ pub(crate) struct NativeOwnerCommitService {
     owner: owner_source::OwnerSource,
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
+    /// The broker's admitted ops, where the sealed writes this device holds
+    /// are kept: what a cold read of a sealed room's record opens.
+    sealed_writes: Option<SealedWrites>,
+    /// The channels a pending read of a sealed record waits on for keys.
+    key_watches: Arc<std::sync::Mutex<std::collections::HashSet<collab_types::ChannelId>>>,
     writes: OwnerWrites,
 }
+
+/// The collaboration broker's admitted ops and durable history.
+type SealedWrites = Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>;
 
 /// Where the owner's commits run. A commit waits for the disk (opening the
 /// owner, the state file's data and directory syncs), which on a loaded disk
@@ -92,6 +100,8 @@ impl NativeOwnerCommitService {
             tree,
             network,
             history_keys: None,
+            sealed_writes: None,
+            key_watches: Arc::default(),
             writes: OwnerWrites::default(),
         }
     }
@@ -2041,9 +2051,11 @@ fn native_document_reads(
     tree: &WorkspaceTreeHandle,
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
+    sealed_writes: Option<SealedWrites>,
 ) -> Arc<dyn NativeDocumentReads> {
     Arc::new(NativeOwnerCommitService {
         history_keys,
+        sealed_writes,
         ..NativeOwnerCommitService::new(tree.clone(), network)
     })
 }
@@ -2100,6 +2112,7 @@ pub fn native_services(
     membership: Option<WorkspaceTreeHandle>,
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
+    sealed_writes: Option<SealedWrites>,
 ) -> HostServices {
     let tracker_runs = membership.as_ref().map(|tree| {
         native_tracker(tree, network.clone(), history_keys.clone())
@@ -2107,7 +2120,7 @@ pub fn native_services(
     });
     let committed_documents = membership
         .as_ref()
-        .map(|tree| native_document_reads(tree, network.clone(), history_keys));
+        .map(|tree| native_document_reads(tree, network.clone(), history_keys, sealed_writes));
     let workspace_memberships = membership
         .as_ref()
         .map(|tree| native_workspace_memberships(tree, network.clone()));
