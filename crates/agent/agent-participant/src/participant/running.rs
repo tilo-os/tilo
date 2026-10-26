@@ -2,7 +2,7 @@
 //! turns it is planned again on once they ran (reads answered, an export
 //! missing, its work checked, stale exports run again).
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -15,7 +15,8 @@ use super::obligations::{Checklist, OBLIGATIONS_LEFT};
 use super::repairs::Repairs;
 use super::waits::{Arrival, Waiting, Waits, Woken};
 use crate::planner::{
-    MOST_OBSERVED, MOST_WAITS, Step, StepAction, Wait, observation, rendered_picture,
+    Answered, MOST_OBSERVED, MOST_WAITS, Step, StepAction, Wait, is_untrusted, observation,
+    rendered_picture,
 };
 
 /// A turn a task is planned again on once every step ran.
@@ -66,8 +67,13 @@ pub(super) struct Running {
     pub(super) produced: Vec<String>,
     /// The app whose step made each of [`Self::produced`], in step.
     pub(super) produced_by: Vec<String>,
+    /// The declaration of each operation a step of this task invoked, as
+    /// its app published it then: what the contract says about the content
+    /// the answer carries ([`is_untrusted`]).
+    pub(super) descriptors: HashMap<ActionAddress, ActionDescriptor>,
     /// What the task's steps answered, oldest first, at most
-    /// [`MOST_OBSERVED`]: what the task is planned again with.
+    /// [`MOST_OBSERVED`]: what the task is planned again with, and whether
+    /// any of it carries content from outside the user's data.
     pub(super) observed: VecDeque<Observed>,
     /// The failed steps it was planned around: a model's slip (an argument
     /// out of range, a stale target) is fixed rather than ending the task,
@@ -267,6 +273,7 @@ impl Running {
     /// `step` ran and answered `output`, making `content`; `edited` when it
     /// changed a record. Only an operation changes one: opening a new record
     /// publishes it, but a task that only opened has done none of its work.
+    #[cfg(test)]
     pub(super) fn ran_step(
         &mut self,
         step: &Step,
@@ -274,6 +281,24 @@ impl Running {
         content: Vec<String>,
         edited: bool,
     ) {
+        self.ran_step_published(step, output, content, edited, None);
+    }
+
+    /// [`Self::ran_step`], with the declaration `descriptor` the app
+    /// published for the operation the step invoked: what its contract says
+    /// about the content its answer carries, which every plan shown the
+    /// answer is told.
+    pub(super) fn ran_step_published(
+        &mut self,
+        step: &Step,
+        output: Option<ActionOutput>,
+        content: Vec<String>,
+        edited: bool,
+        descriptor: Option<ActionDescriptor>,
+    ) {
+        if let (StepAction::Invoke { address, .. }, Some(descriptor)) = (&step.action, descriptor) {
+            self.descriptors.insert(address.clone(), descriptor);
+        }
         self.performed = self.performed.saturating_add(1);
         let invoked = matches!(step.action, StepAction::Invoke { .. });
         let edited = edited && invoked;
@@ -602,7 +627,7 @@ impl Running {
         id: String,
         request: String,
         steps: Vec<Step>,
-        read: Vec<(String, String)>,
+        read: Vec<(String, Answered)>,
     ) -> Self {
         let mut running = Self {
             id,
@@ -613,6 +638,7 @@ impl Running {
             last_handed_on: false,
             produced: Vec::new(),
             produced_by: Vec::new(),
+            descriptors: HashMap::new(),
             observed: VecDeque::new(),
             repairs: Repairs::default(),
             news_replans: 0,
@@ -633,8 +659,8 @@ impl Running {
             new_documents: Vec::new(),
             checklist: Checklist::default(),
         };
-        for (app, seen) in read {
-            running.observe(app, seen);
+        for (app, answered) in read {
+            running.observe(app, answered);
         }
         running
     }
@@ -674,22 +700,30 @@ impl Running {
 
     /// Keep `seen`, read from a record of `app`, for the rest of the task to
     /// be planned with: the newest [`MOST_OBSERVED`].
-    pub(super) fn observe(&mut self, app: String, seen: String) {
+    pub(super) fn observe(&mut self, app: String, answered: Answered) {
         if self.observed.len() >= MOST_OBSERVED {
             self.observed.pop_front();
         }
         self.observed.push_back(Observed {
             app,
-            seen,
+            seen: answered.seen,
+            untrusted: answered.untrusted,
             before_change: false,
             edit: false,
         });
     }
 
     /// What the task is planned again with: each answer, those read before
-    /// a later step changed their app's record said to be so.
-    pub(super) fn observations(&self) -> Vec<String> {
-        self.observed.iter().map(Observed::shown).collect()
+    /// a later step changed their app's record said to be so, and the ones
+    /// that carry content from outside the user's data said to be so.
+    pub(super) fn observations(&self) -> Vec<Answered> {
+        self.observed
+            .iter()
+            .map(|observed| Answered {
+                seen: observed.shown(),
+                untrusted: observed.untrusted,
+            })
+            .collect()
     }
 
     /// `step`, which changed its record, answered `output` (a deck's outline,
@@ -718,9 +752,13 @@ impl Running {
     /// step that places it leaves the export to be placed.
     pub(super) fn answered(&mut self, step: &Step, output: ActionOutput) {
         if let StepAction::Invoke { address, .. } = &step.action
-            && let Some(observed) = observation(&step.app, address, &output)
+            && let Some(seen) = observation(&step.app, address, &output)
         {
-            self.observe(step.app.clone(), observed);
+            // The step's own declaration says whether what it answered
+            // came from outside the person's data, so a read that did is
+            // labelled in every plan that is shown it.
+            let untrusted = is_untrusted(address, self.descriptors.get(address));
+            self.observe(step.app.clone(), Answered { seen, untrusted });
         }
         self.looked_at(rendered_picture(&output));
         // A picture read as content: one the task rendered is looked at
@@ -864,6 +902,10 @@ pub(super) const READS_ANSWERED: &str = "The reads above have answered. Now plan
 pub(super) struct Observed {
     pub(super) app: String,
     pub(super) seen: String,
+    /// The answer carries content from outside the user's data (a page, a
+    /// message, someone else's document): it stays labelled wherever the
+    /// task shows it again.
+    pub(super) untrusted: bool,
     /// A later step of the task changed a record of `app`, so this shows it
     /// as it was then.
     pub(super) before_change: bool,

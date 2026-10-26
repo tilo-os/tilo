@@ -10,6 +10,7 @@
 )]
 
 use super::*;
+use crate::planner::Answered;
 use std::time::Duration;
 use tilo_agent::tools::ItemPlan;
 
@@ -114,7 +115,10 @@ fn an_item_s_agent_is_told_its_item_the_checklist_and_what_came_before() {
         Vec::new(),
         vec![(
             "so.tilo.chat".into(),
-            "Rae: the LR-2041 code is 4321".into(),
+            Answered {
+                seen: "Rae: the LR-2041 code is 4321".into(),
+                untrusted: false,
+            },
         )],
     );
     coordinator.item_ended(&Ok("Done: 0 actions.".into()), Some(read));
@@ -169,7 +173,13 @@ fn what_earlier_items_found_is_bounded_oldest_first() {
             "t1".into(),
             "read".into(),
             Vec::new(),
-            vec![("so.tilo.chat".into(), format!("{seen}{word}-end"))],
+            vec![(
+                "so.tilo.chat".into(),
+                Answered {
+                    seen: format!("{seen}{word}-end"),
+                    untrusted: false,
+                },
+            )],
         );
         coordinator.item_ended(&Ok("Done: 0 actions.".into()), Some(read));
     }

@@ -40,6 +40,7 @@ use super::{AgentParticipant, MOST_NEWS_REPLANS, planning};
 use crate::model::ROLE_INTRO;
 use crate::planner::{
     MESSAGE_APPS, MOST_OBLIGATIONS, Obligations, PlanContext, PlanRole, Role, readable,
+    untrusted_answer,
 };
 #[cfg(test)]
 use crate::planner::{MOST_WAITS, Step, StepAction, Wait};
@@ -696,7 +697,16 @@ impl AgentParticipant {
                     let read: Vec<String> = planned
                         .read
                         .iter()
-                        .map(|(app, seen)| format!("{}: {seen}", short_app(app)))
+                        .map(|(app, answered)| {
+                            format!(
+                                "{}: {}",
+                                short_app(app),
+                                match answered.untrusted {
+                                    true => untrusted_answer(answered.seen.clone()),
+                                    false => answered.seen.clone(),
+                                }
+                            )
+                        })
                         .collect();
                     if !read.is_empty() {
                         coordinator.read = Some(items::newest_within(

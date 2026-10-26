@@ -190,12 +190,22 @@ enum Performed {
     Asking,
 }
 
+/// The record and operation a step was settled on as it ran, and what the
+/// record published for it then: its contract says whether the answer
+/// carries content from outside the person's data.
+struct RanStep {
+    descriptor: Option<ActionDescriptor>,
+}
+
 /// A step waiting for the person to confirm it on their own device.
 struct Asking {
     step: Step,
     route: DocumentRoute,
     address: ActionAddress,
     arguments: serde_json::Map<String, serde_json::Value>,
+    /// The operation's declaration, as the app published it before it ran:
+    /// what its contract says about the content it answers.
+    descriptor: Option<ActionDescriptor>,
     /// The person's answer once it arrives; a host that went away without
     /// one answers that confirmation is still required.
     answer: Arc<std::sync::Mutex<Option<WitnessAnswer>>>,
@@ -283,6 +293,10 @@ pub struct AgentParticipant {
     /// The records the current task's plans read while they were made: a
     /// follow-up plan is offered them, as it is the records it touched.
     task_read: Vec<DocumentRoute>,
+    /// What the step running now was settled on, while it runs
+    /// ([`Performed`]): the declaration the record published for it, which
+    /// [`Self::conclude`] keeps with the task's answers.
+    stepped: Option<RanStep>,
     /// The current task's budget for asking a model call lost to the
     /// network again, shared by all of its plans.
     task_retries: crate::planner::TurnRetries,
@@ -435,6 +449,7 @@ impl AgentParticipant {
             task_touched: Vec::new(),
             previous_touched: Vec::new(),
             task_read: Vec::new(),
+            stepped: None,
             task_retries: crate::planner::TurnRetries::default(),
             last_merge: None,
             news: Vec::new(),
@@ -838,7 +853,10 @@ impl AgentParticipant {
             Err(error) => Err(error),
         };
         let edited = self.generation != generation;
-        self.conclude(&id, &step, outcome, edited)
+        // The operation's own declaration, as it ran: what its contract says
+        // about the content it answers.
+        let descriptor = self.stepped.take().and_then(|ran| ran.descriptor);
+        self.conclude(&id, &step, descriptor, outcome, edited)
     }
 
     /// The person's answer to the step they were asked to confirm, once it
@@ -871,7 +889,7 @@ impl AgentParticipant {
         if edited {
             self.own_wrote.insert(asking.route.clone());
         }
-        self.conclude(&id, &asking.step, outcome, edited)
+        self.conclude(&id, &asking.step, asking.descriptor, outcome, edited)
     }
 
     /// Record how `step` of task `id` went (`edited` when it changed its
@@ -882,6 +900,7 @@ impl AgentParticipant {
         &mut self,
         id: &str,
         step: &Step,
+        descriptor: Option<ActionDescriptor>,
         outcome: Result<Option<ActionOutput>, String>,
         edited: bool,
     ) -> bool {
@@ -912,7 +931,7 @@ impl AgentParticipant {
                 let Some(running) = self.running.as_mut() else {
                     return false;
                 };
-                running.ran_step(step, output, content, edited);
+                running.ran_step_published(step, output, content, edited, descriptor);
                 // The next step plans nothing unless it is a `Continue`.
                 !matches!(
                     running.steps.front().map(|step| &step.action),
@@ -1161,10 +1180,11 @@ impl AgentParticipant {
     fn answer_reads(&mut self) {
         for ask in self.planning.asked_reads() {
             let answer = self.read_now(&ask.route, &ask.address, &ask.arguments);
+            let published = self.published(&ask.route, &ask.address);
             if answer.is_ok() && !self.task_read.contains(&ask.route) {
                 self.task_read.push(ask.route.clone());
             }
-            let _ = ask.reply.send(answer);
+            let _ = ask.reply.send((answer, published));
         }
         for ask in self.planning.asked_looks() {
             let answer = self
@@ -1640,6 +1660,12 @@ impl AgentParticipant {
         };
         let (settled, arguments) = self.settle(&route, address, step.carries.as_deref(), arguments);
         let address = &settled;
+        // What the record published for the operation as the step runs it:
+        // its contract says whether the answer carries content from outside
+        // the person's data.
+        self.stepped = Some(RanStep {
+            descriptor: self.published(&route, address),
+        });
         // Values the plan quotes or computes (`{{…}}`) are the record's as
         // the step runs: what the action log records, while the plan log
         // keeps what the model wrote.
@@ -1803,7 +1829,7 @@ impl AgentParticipant {
             )));
             control.wake();
         });
-        let label = offered.map_or_else(
+        let label = offered.as_ref().map_or_else(
             || address.action.clone(),
             |descriptor| {
                 format!(
@@ -1824,6 +1850,7 @@ impl AgentParticipant {
             route,
             address: address.clone(),
             arguments: arguments.clone(),
+            descriptor: offered,
             answer,
         });
         Performed::Asking
@@ -1954,6 +1981,19 @@ impl AgentParticipant {
             .get(route)
             .map(ConfinedReplica::survey)
             .unwrap_or_default()
+    }
+
+    /// The declaration of `address` as the record at `route` publishes it
+    /// now: what its contract says about the content its answer carries.
+    #[must_use]
+    pub fn published(
+        &self,
+        route: &DocumentRoute,
+        address: &ActionAddress,
+    ) -> Option<ActionDescriptor> {
+        self.survey(route)
+            .into_iter()
+            .find(|descriptor| descriptor.address == *address)
     }
 
     /// Invoke one action of the record at `route` as the agent, commit the

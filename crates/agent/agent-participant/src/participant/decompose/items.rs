@@ -16,7 +16,7 @@ use super::super::waits::{Arrival, holds_wanted, short_app, wait_words};
 use crate::model::ROLE_INTRO;
 use crate::planner::{
     MESSAGE_APPS, MOST_OBLIGATIONS, MOST_WAITS, Obligations, PlanRole, Step, StepAction, Wait,
-    message_app,
+    message_app, untrusted_answer,
 };
 
 /// The most characters of the request an item's agent is shown: the
@@ -873,7 +873,14 @@ impl Coordinator {
             if !new.is_empty() {
                 let _ = write!(wrote, " Produced {}.", new.join(", "));
             }
-            let observed = running.observations();
+            let observed: Vec<String> = running
+                .observations()
+                .into_iter()
+                .map(|answered| match answered.untrusted {
+                    true => untrusted_answer(answered.seen),
+                    false => answered.seen,
+                })
+                .collect();
             if !observed.is_empty() {
                 found = Some(newest_within(&observed.join("\n  "), MOST_FOUND_CHARS));
             }

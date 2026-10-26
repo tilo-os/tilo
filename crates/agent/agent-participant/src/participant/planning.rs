@@ -21,11 +21,12 @@ use std::time::Instant;
 
 use tilo_actions::ActionOutput;
 use tilo_actions::door::ActionAddress;
+use tilo_actions::door::ActionDescriptor;
 use tilo_browser_peer::DocumentRoute;
 
 use crate::control::AgentControl;
 use crate::planner::{
-    Obligations, PlanContext, PlanRole, Planner, Reads, Step, observation, rendered_picture,
+    Answered, Obligations, PlanContext, PlanRole, Planner, Reads, Step, answered, rendered_picture,
 };
 
 /// One plan asked of the planner's thread.
@@ -47,8 +48,9 @@ pub(super) struct Planned {
     pub continues: bool,
     pub steps: Result<Vec<Step>, String>,
     /// What the plan's reads found, as observations, each with the app
-    /// of the record read.
-    pub read: Vec<(String, String)>,
+    /// of the record read and whether it carries content from outside the
+    /// user's data.
+    pub read: Vec<(String, Answered)>,
     /// The pictures the plan's reads rendered, by content address.
     pub rendered: Vec<String>,
     /// When the planner returned it.
@@ -67,8 +69,12 @@ pub(super) struct ReadAsk {
     pub address: ActionAddress,
     pub arguments: serde_json::Map<String, serde_json::Value>,
     /// Where the loop answers.
-    pub reply: mpsc::Sender<Result<ActionOutput, String>>,
+    pub reply: ReplyAsk,
 }
+
+/// What the loop answers a read with, and the operation's declaration as it
+/// published it (what the answer's contract says about its content).
+pub(super) type ReplyAsk = mpsc::Sender<(Result<ActionOutput, String>, Option<ActionDescriptor>)>;
 
 /// The bytes of content the planner's thread asks of the loop while it
 /// plans: a picture to show its model.
@@ -97,7 +103,7 @@ struct LoopReads {
     asks: mpsc::Sender<ReadAsk>,
     looks: mpsc::Sender<LookAsk>,
     control: Arc<AgentControl>,
-    found: Vec<(String, String)>,
+    found: Vec<(String, Answered)>,
     rendered: Vec<String>,
 }
 
@@ -118,11 +124,12 @@ impl Reads for LoopReads {
             })
             .map_err(|_| "the agent stopped".to_string())?;
         self.control.wake();
-        let output = answer
+        let (output, descriptor) = answer
             .recv()
-            .map_err(|_| "the agent stopped before it read".to_string())??;
-        if let Some(seen) = observation(&route.app_id, address, &output) {
-            self.found.push((route.app_id.clone(), seen));
+            .map_err(|_| "the agent stopped before it read".to_string())?;
+        let output = output?;
+        if let Some(answered) = answered(&route.app_id, address, &output, descriptor.as_ref()) {
+            self.found.push((route.app_id.clone(), answered));
         }
         if let Some(picture) = rendered_picture(&output) {
             self.rendered.push(picture);

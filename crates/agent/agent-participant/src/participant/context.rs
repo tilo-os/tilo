@@ -454,6 +454,14 @@ impl AgentParticipant {
                 observation_within(&route.app_id, &descriptor.address, &output, left)
             {
                 left = left.saturating_sub(seen.chars().count());
+                // A read whose contract says it answers with content from
+                // outside the user's data is labelled where the plan is
+                // given it, as a task's own reads are.
+                let seen = if crate::planner::is_untrusted(&descriptor.address, Some(descriptor)) {
+                    crate::planner::untrusted_answer(seen)
+                } else {
+                    seen
+                };
                 found.push(format!("(document {}) {seen}", route.record));
             }
         }

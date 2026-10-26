@@ -7,7 +7,7 @@ use super::converse::{
 };
 use super::scripted::{clauses, names_app, words};
 use super::*;
-use crate::planner::read_answer;
+use crate::planner::{Answered, read_answer};
 use crate::vision::LOOK_CONTENT;
 use tilo_model_gateway::host_backend::protocol::{
     Content, ErrorKind, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason,
@@ -1024,14 +1024,15 @@ fn a_plan_after_a_view_is_made_with_what_it_answered() {
         value: Some(serde_json::json!({"artwork": {"width": 640, "height": 480}})),
         resources: Vec::new(),
     };
-    context.observed.push(
-        crate::planner::observation(
+    context.observed.push(Answered {
+        seen: crate::planner::observation(
             "so.tilo.notes",
             &ActionAddress::new("notes.page", "inspect"),
             &answered,
         )
         .unwrap(),
-    );
+        untrusted: false,
+    });
     planner.plan(task, &context).unwrap();
     let asked = asked.lock().unwrap().clone();
     assert_eq!(asked[0], task, "nothing answered yet, nothing added");
@@ -1450,10 +1451,11 @@ fn timeline_context(clips: usize) -> PlanContext {
 fn a_replan_lists_the_clips_earlier_steps_added_beside_the_projects_export() {
     let mut context = timeline_context(40);
     context.request = Some("cut the promo and fade the last clip out".into());
-    context.observed = vec![
-            "so.tilo.video-editor video_editor.project#add-clip answered              {\"clip\":\"00000027-1111-4000-8000-000000000000\",\"track\":\"V1\"}"
-                .into(),
-        ];
+    context.observed = vec![Answered {
+        seen: "so.tilo.video-editor video_editor.project#add-clip answered              {\"clip\":\"00000027-1111-4000-8000-000000000000\",\"track\":\"V1\"}"
+            .into(),
+        untrusted: false,
+    }];
     let (offered, _) = catalogue(&context);
     assert!(offered.offers.len() > 10 * MOST_PUBLISHED);
     let briefed = briefing(&context, &offered);
@@ -1570,7 +1572,10 @@ fn a_replan_whose_reads_name_many_records_still_lists_the_channel_to_reply_in() 
         .filter(|descriptor| !descriptor.address.resource.starts_with("chat."))
         .map(|descriptor| descriptor.address.resource.clone())
         .collect();
-    context.observed = vec![format!("the reads answered {}", ids.join(", "))];
+    context.observed = vec![Answered {
+        seen: format!("the reads answered {}", ids.join(", ")),
+        untrusted: false,
+    }];
     let (offered, _) = catalogue(&context);
     assert!(offered.offers.len() > MOST_PUBLISHED + 50);
     let briefed = briefing(&context, &offered);

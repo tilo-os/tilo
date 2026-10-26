@@ -6,7 +6,7 @@ use super::running::{
 };
 use super::waits::{Arrival, holds_wanted, take_news};
 use super::*;
-use crate::planner::{MOST_OBSERVED, MOST_WAITS, Wait};
+use crate::planner::{Answered, MOST_OBSERVED, MOST_WAITS, Wait};
 
 fn invoke(app: &str, resource: &str, action: &str) -> Step {
     Step {
@@ -40,7 +40,13 @@ fn a_read_before_a_change_to_its_record_is_shown_as_before() {
         "t1".into(),
         "make the deck from the price sheet".into(),
         Vec::new(),
-        vec![("so.tilo.slides".into(), "Untitled deck (1 slides)".into())],
+        vec![(
+            "so.tilo.slides".into(),
+            Answered {
+                seen: "Untitled deck (1 slides)".into(),
+                untrusted: false,
+            },
+        )],
     );
     let slides = "so.tilo.slides";
     running.answered(
@@ -56,7 +62,11 @@ fn a_read_before_a_change_to_its_record_is_shown_as_before() {
         Vec::new(),
         true,
     );
-    let shown = running.observations();
+    let shown: Vec<String> = running
+        .observations()
+        .into_iter()
+        .map(|answered| answered.seen)
+        .collect();
     assert!(shown[0].starts_with(BEFORE_CHANGE), "{shown:?}");
     assert!(shown[0].ends_with("Untitled deck (1 slides)"), "{shown:?}");
     assert!(!shown[1].starts_with(BEFORE_CHANGE), "{shown:?}");
@@ -65,7 +75,13 @@ fn a_read_before_a_change_to_its_record_is_shown_as_before() {
         "t2".into(),
         "export the deck".into(),
         Vec::new(),
-        vec![(slides.into(), "Deck (4 slides)".into())],
+        vec![(
+            slides.into(),
+            Answered {
+                seen: "Deck (4 slides)".into(),
+                untrusted: false,
+            },
+        )],
     );
     exported_only.ran_step(
         &invoke(slides, "slides.deck", "export"),
@@ -73,7 +89,11 @@ fn a_read_before_a_change_to_its_record_is_shown_as_before() {
         vec!["abc".into()],
         false,
     );
-    assert!(!exported_only.observations()[0].starts_with(BEFORE_CHANGE));
+    assert!(
+        !exported_only.observations()[0]
+            .seen
+            .starts_with(BEFORE_CHANGE)
+    );
 }
 
 /// Each edit's answer (a deck's outline) replaces the app's last one, so
@@ -102,7 +122,11 @@ fn an_edit_answer_replaces_the_apps_last_and_keeps_the_reads() {
             true,
         );
     }
-    let shown = running.observations();
+    let shown: Vec<String> = running
+        .observations()
+        .into_iter()
+        .map(|answered| answered.seen)
+        .collect();
     assert_eq!(shown.len(), 2, "{shown:?}");
     assert!(shown[0].contains("Basic"), "{shown:?}");
     assert!(
@@ -118,7 +142,13 @@ fn a_carried_step_is_given_what_the_latest_step_that_made_content_made() {
         "t1".into(),
         "export the artwork, then insert it in the launch page".into(),
         Vec::new(),
-        vec![("so.tilo.notes".into(), "read while planning".into())],
+        vec![(
+            "so.tilo.notes".into(),
+            Answered {
+                seen: "read while planning".into(),
+                untrusted: false,
+            },
+        )],
     );
     assert_eq!(running.observed.len(), 1);
     let canvas = "so.tilo.canvas";
