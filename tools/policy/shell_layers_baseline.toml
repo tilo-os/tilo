@@ -14,11 +14,9 @@
     "crate::shell::launcher",
 ]
 
-# The network bridge writes trusted-identity projections and pending placements into the
-# launcher and answers invitations with an overlay type. These go when the launcher and
-# the overlay read the bridge's events instead.
+# The network bridge answers invitations with an overlay type. This goes when the overlay
+# reads the bridge's events instead.
 "src/shell/network.rs" = [
-    "crate::shell::launcher",
     "crate::shell::overlay_host",
 ]
 

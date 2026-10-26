@@ -3561,6 +3561,7 @@ doc = false
 "tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["chrono", "test-support"] }
 "tilo-rich-text" = { path = "../../../crates/sdk/tilo-rich-text", default-features = false, features = [] }
 "tilo-rollback" = { path = "../../../crates/system/tilo-rollback", default-features = false, features = [] }
+"tilo-room-host" = { path = "../../../crates/hosting/tilo-room-host", default-features = false, features = ["agents", "test-support", "web"] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-runner-native" = { path = "../../../crates/sdk/runner-native", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "priority-contacts", "webview-adblock"] }
 "tilo-runtime" = { path = "../../../crates/runtime/tilo-runtime", default-features = false, features = [] }
