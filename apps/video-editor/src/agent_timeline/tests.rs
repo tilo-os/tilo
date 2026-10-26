@@ -483,19 +483,47 @@ fn colours_and_alignments_are_read_as_people_write_them() {
 }
 
 #[test]
+fn a_field_edit_may_name_the_project_as_the_timeline_reads_it() {
+    let mut app = editor(&Project::new("cut"));
+    // The timeline nests the project's name under `project`, and agents
+    // send that path back.
+    let edit = json!({ "path": [{ "field": "project" }, { "field": "name" }], "op": "set", "value": "Promo" });
+    call(&mut app, "field-edit", json!({ "edit": edit })).unwrap();
+    assert_eq!(app.state().name, "Promo");
+    assert_eq!(
+        read_timeline(&app.state(), None).unwrap()["project"]["name"],
+        "Promo"
+    );
+    let renamed = json!({ "path": [{ "field": "name" }], "op": "set", "value": "Final" });
+    call(&mut app, "field-edit", json!({ "edit": renamed })).unwrap();
+    assert_eq!(app.state().name, "Final");
+}
+
+#[test]
 fn a_field_edit_naming_no_field_says_which_fields_there_are() {
     let mut app = editor(&Project::new("cut"));
-    let edit = json!({ "path": [{ "field": "project" }, { "field": "name" }], "op": "set", "value": "Promo" });
+    let edit = json!({ "path": [{ "field": "audio" }, { "field": "name" }], "op": "set", "value": "Promo" });
     let refused = format!(
         "{:?}",
         call(&mut app, "field-edit", json!({ "edit": edit })).unwrap_err()
     );
-    assert!(refused.contains("no field `project`"), "{refused}");
+    assert!(refused.contains("no field `audio`"), "{refused}");
     assert!(!refused.contains(": : "), "no empty place: {refused}");
-    assert!(refused.contains("name"), "the fields are named: {refused}");
-    let renamed = json!({ "path": [{ "field": "name" }], "op": "set", "value": "Promo" });
-    call(&mut app, "field-edit", json!({ "edit": renamed })).unwrap();
-    assert_eq!(app.state().name, "Promo");
+    assert!(
+        refused.contains("the fields here are name, fps"),
+        "the fields are named: {refused}"
+    );
+    let whole =
+        json!({ "path": [{ "field": "project" }], "op": "set", "value": { "name": "Promo" } });
+    let refused = format!(
+        "{:?}",
+        call(&mut app, "field-edit", json!({ "edit": whole })).unwrap_err()
+    );
+    assert!(
+        refused.contains("`project` is the record itself"),
+        "{refused}"
+    );
+    assert_eq!(app.state().name, "cut");
 }
 
 /// The refusal `result` carries, as text.
