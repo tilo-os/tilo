@@ -123,6 +123,10 @@ chip-operator-disclaimer = Imported reported CPU numerical observations. Artifac
 chip-operator-checks = Reported numerical checks
 
 chip-graph-title = Operator graph
+chip-graph-operators = Operators
+chip-graph-zoom-out = Zoom out
+chip-graph-zoom-in = Zoom in
+chip-graph-fit = Fit graph
 chip-graph-scope = Structural design only. This graph does not run or qualify hardware.
 chip-graph-add-operator = Add operator
 chip-graph-connect-hint = To connect two operators, choose an output, then an input it can feed.

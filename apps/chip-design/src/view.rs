@@ -101,6 +101,10 @@ fn capture_notice(cx: &ViewCx<ChipProject>, selected: &ui::LocalState<Option<Str
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the app's one view names every command and the graph's local state in one place"
+)]
 impl ResourceApp for ChipDesignShell {
     type Resource = ChipProject;
     const ID: &'static str = "so.tilo.chip-design";
@@ -123,6 +127,7 @@ impl ResourceApp for ChipDesignShell {
     fn view(cx: &mut ViewCx<ChipProject>) -> Element {
         let selected = cx.local(None::<String>);
         let graph_selection = cx.local(crate::operator_graph_view::Selection::default());
+        let graph_controls = cx.local(crate::operator_graph_view::GraphControls::default());
         let notice = capture_notice(cx, &selected);
         let opened = selected.clone();
         cx.on_open(move |anchor| opened.set(Some(opened_place(anchor))));
@@ -186,18 +191,27 @@ impl ResourceApp for ChipDesignShell {
                 },
             )),
         });
+        let graph_selection_state = graph_selection.clone();
+        let graph_controls_state = graph_controls;
         let content = cx.switch(&graph_selection, move |cx, graph_selection| {
             let graph_selection = graph_selection.clone();
+            let graph_selection_state = graph_selection_state.clone();
+            let graph_controls_state = graph_controls_state.clone();
             cx.switch(&selected, move |cx, selected| {
                 let selected = selected.clone();
                 let graph_selection = graph_selection.clone();
+                let graph_selection_state = graph_selection_state.clone();
+                let graph_controls_state = graph_controls_state.clone();
                 let evidence = cx.value(ProjectState::of);
                 cx.switch(&evidence, move |cx, state| {
                     if selected.as_deref() == Some(crate::operator_graph::RESOURCE_ID) {
+                        let controls = graph_controls_state.with(Clone::clone);
                         crate::operator_graph_view::body(
                             cx,
                             &state.operator_graph,
                             &graph_selection,
+                            &graph_selection_state,
+                            &controls,
                         )
                     } else {
                         evidence_body(cx, state, selected.as_deref())
@@ -522,7 +536,7 @@ fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyLis
             if let Some(synthesis) = &variant.synthesis {
                 for memory in &synthesis.memories {
                     sections.push((
-                        format!("{} / {}", variant.identity, memory.name),
+                        format!("{}: {}", variant.identity, memory.name),
                         study_memory_properties(&variant.identity, memory),
                     ));
                 }
@@ -672,7 +686,7 @@ fn study_memory_properties(
     vec![
         property(
             "chip-study-memory-name",
-            &format!("{variant} / {}", memory.name),
+            &format!("{variant}: {}", memory.name),
         ),
         property("chip-study-memory-width", &memory.width_bits),
         property("chip-study-memory-depth", &memory.depth_words),

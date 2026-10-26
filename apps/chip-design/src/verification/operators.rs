@@ -716,7 +716,7 @@ fn validate_softmax(
         if !identity_name(&case.name)
             || cases.iter().filter(|other| other.name == case.name).count() != 1
             || case.width == 0
-            || case.width > 65536
+            || case.width > 65536 // allow-breakpoint: a tensor width bound, not a layout breakpoint
             || case.masked >= case.width
             || case
                 .width

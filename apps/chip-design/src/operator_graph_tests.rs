@@ -406,3 +406,35 @@ fn one_add_menu_adds_the_chosen_operator() {
     let text = app.harness().inspection_json().unwrap();
     assert!(text.contains("To connect two operators"), "{text}");
 }
+
+#[test]
+fn every_operator_and_the_zoom_controls_are_reachable_in_the_graph() {
+    let mut capture = TestApp::<ChipDesignShell>::capture(Some("operator-graph")).unwrap();
+    let targets = capture.harness().targets();
+    assert!(targets.contains_key("chip-graph-operators"));
+    assert!(targets.contains_key("chip-graph-zoom-in"));
+    assert!(targets.contains_key("chip-graph-zoom-out"));
+    assert!(targets.contains_key("chip-graph-fit"));
+    let ids: Vec<String> = capture
+        .parsed()
+        .operator_graph
+        .nodes
+        .keys()
+        .cloned()
+        .collect();
+    let rects: Vec<_> = ids
+        .iter()
+        .filter_map(|id| targets.get(&format!("chip-node-{id}")).copied())
+        .collect();
+    assert_eq!(rects.len(), ids.len(), "every operator is in the tree");
+    assert!(
+        rects.windows(2).any(|pair| pair[0] != pair[1]),
+        "operators are laid out, not stacked: {rects:?}"
+    );
+    let graph = capture
+        .harness()
+        .targets()
+        .get("chip-graph-zoom-in")
+        .copied();
+    assert!(graph.is_some_and(|rect| rect.width() > 0.0));
+}
