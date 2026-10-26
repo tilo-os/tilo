@@ -56,11 +56,11 @@ pub(crate) struct Bound {
 
 impl Bound {
     /// The boundary of a view call, not rendered yet.
-    fn new(stub: &Stub<'_>, lazy: bool) -> Self {
+    fn new(stub: Stub<'_>, lazy: bool) -> Self {
         Self {
             key: stub.key.to_owned(),
-            target: Rc::clone(&stub.target),
-            args: stub.args.clone(),
+            target: stub.target,
+            args: stub.args,
             depth: stub.depth,
             children: Vec::new(),
             path: Vec::new(),
@@ -995,7 +995,7 @@ impl Live {
         let lazy = rows.rows.lazy && self.lazy_rows;
         let path = [at, &[index]].concat();
         let stub = rows.rows.stub(&key, args);
-        let mut bound = Bound::new(&stub, lazy);
+        let mut bound = Bound::new(stub, lazy);
         bound.path.clone_from(&path);
         let id = self.add_bound(bound);
         if let Some(holder) = self.bound_mut(step.holder) {
@@ -1319,7 +1319,7 @@ impl Boundaries for Builder<'_> {
             self.old.remove(stub.key);
             self.live.drop_bound(id);
         }
-        let id = self.live.add_bound(Bound::new(&stub, lazy));
+        let id = self.live.add_bound(Bound::new(stub, lazy));
         self.new.push(id);
         if lazy {
             return Ok(Vec::new());
