@@ -398,6 +398,27 @@ fn a_running_app_is_named_by_its_id_or_its_last_part() {
     assert!(none.contains("running: so.tilo.canvas"), "{none}");
 }
 
+/// An agent that guesses a word for what an app is ("host" for the Browser,
+/// which runs as `so.tilo.browser`) is led to the id it may use, and told it
+/// may point at a running app rather than only open one.
+#[test]
+fn a_guessed_app_word_names_the_ids_that_work() {
+    let running = ["so.tilo.browser"];
+    let guessed = page::app_named("host", &running).unwrap_err();
+    assert!(
+        guessed.contains("running: so.tilo.browser (browser)"),
+        "{guessed}"
+    );
+    assert!(
+        guessed.contains("name a running app by its id"),
+        "{guessed}"
+    );
+    assert_eq!(
+        page::app_named("browser", &running).unwrap(),
+        "so.tilo.browser"
+    );
+}
+
 #[test]
 fn a_succeeded_batch_step_is_its_output_alone() {
     let step = succeeded_step(json!({
