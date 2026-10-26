@@ -1,6 +1,6 @@
 # Chat — user-facing strings.
 
-chat-contacts-section = Contacts
+chat-direct-messages-section = Direct messages
 chat-channels-title = Channels
 chat-person-chat-private = Private conversation
 # A message's author or a member, opening their profile card.

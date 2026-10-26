@@ -82,8 +82,13 @@ impl core::fmt::Debug for PrivateOperation {
 pub struct PrivateContact {
     /// Canonical participant public key.
     pub public_key: String,
-    /// Optional participant display name.
+    /// The name the room keeps for the person; never one of their devices'
+    /// labels.
     pub display_name: Option<String>,
+    /// Whether a conversation between the caller and this person holds
+    /// messages: whom a list of direct messages shows, of everyone the
+    /// caller may write to.
+    pub conversation: bool,
 }
 /// A retained owner-private direct message.
 #[derive(Clone, Serialize, Deserialize)]
