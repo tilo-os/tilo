@@ -1916,8 +1916,16 @@ impl Widget for Scrollable {
             }
         }
         let scrollable_now = self.vbar_active() || self.hbar_active();
-        if scrollable_now && !self.was_overflowing && self.last_activity.is_none() {
-            self.wake();
+        // Content that has just begun to overflow is something to scroll, not
+        // something the person did: an overlay bar appears when they scroll
+        // (or reach for it), never because a window was opened at a size its
+        // content does not fit or because a resize made it overflow. A bar
+        // that is always drawn is repainted so the thumb shows at once.
+        if scrollable_now && !self.was_overflowing {
+            self.bar_dirty = true;
+            if !self.overlay && self.last_activity.is_none() {
+                self.wake();
+            }
         }
         self.was_overflowing = scrollable_now;
     }
