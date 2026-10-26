@@ -423,7 +423,7 @@ impl Reconciler {
             "list" => self.rows(node),
             "item" => self.stack(node, Rhythm::Tight),
             "button" => self.button(node),
-            "list_row" => self.list_row(node),
+            "list_row" => self.list_row(node, false),
             "checkbox" => self.checkbox(node),
             "input" => self.input(node),
             "date" => self.date(node),
@@ -645,7 +645,9 @@ impl Reconciler {
 
     /// A list row: the title with its secondary line, hover lift and selection of the design
     /// system's row.
-    fn list_row(&self, node: &UiNode) -> Element {
+    ///
+    /// `avatars`: other rows of its list show an avatar, so a row without one keeps the room.
+    fn list_row(&self, node: &UiNode, avatars: bool) -> Element {
         let title = crate::date::shown(node, "title").unwrap_or_default();
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
@@ -674,8 +676,17 @@ impl Reconciler {
         }
         match prop(node, "avatar") {
             Some(Value::Principal(who)) => row = row.avatar((self.people)(&who.0), who.0.clone()),
-            // A row with no avatar this time keeps the room one takes, in line with the others.
-            Some(Value::Opt(None)) => row = row.avatar_space(),
+            // No participant this time: the row's icon stands in as the item's own avatar (a
+            // conversation's group); else the row keeps the room one takes, in line with the
+            // others of its list that show one.
+            Some(Value::Opt(None)) => match icon_prop(node, "icon") {
+                Some(glyph) => {
+                    let title = crate::date::shown(node, "title").unwrap_or_default();
+                    row = row.avatar(title, node.key.clone()).avatar_glyph(glyph);
+                }
+                None if avatars => row = row.avatar_space(),
+                None => {}
+            },
             _ => {}
         }
         if prop(node, "checked").is_some() {
@@ -1113,13 +1124,20 @@ impl Reconciler {
     /// A list inside content: its rows (a card's preview, which has only those it shows), as a
     /// section of the page.
     fn rows(&mut self, node: &UiNode) -> Element {
+        let avatars = node.children.iter().any(|item| {
+            find(item, "list_row").is_some_and(|row| {
+                matches!(prop(row, "avatar"), Some(Value::Principal(_)))
+                    || (matches!(prop(row, "avatar"), Some(Value::Opt(None)))
+                        && icon_prop(row, "icon").is_some())
+            })
+        });
         let rows: Vec<Element> = node
             .children
             .iter()
             .map(|item| {
                 let row = find(item, "list_row").unwrap_or(item);
                 if row.kind == "list_row" {
-                    self.list_row(row)
+                    self.list_row(row, avatars)
                 } else {
                     self.build(row)
                 }

@@ -326,3 +326,28 @@ fn an_element_a_set_gained_or_lost_is_named() {
         "Removed ops from Tags of Deploy script"
     );
 }
+
+#[test]
+fn a_resource_the_platform_made_reads_as_its_creation() {
+    let made = |label: &str| {
+        ActionContext::default()
+            .with_app("so.tilo.lang.notes", "Notes")
+            .with_described(
+                Described::new(Did::verb(
+                    ActionKey::new(
+                        "so.tilo.lang.notes",
+                        "tl.notes.Note",
+                        tilo_actions::CREATE_ACTION,
+                    ),
+                    [],
+                ))
+                .on("root-1", label),
+            )
+    };
+    let english = Reader::new("en-US");
+    assert_eq!(english.sentence(&made("Plan")), "Created Plan");
+    assert_eq!(english.sentence(&made("")), "Created");
+    let german = Reader::new("de-DE");
+    assert_eq!(german.sentence(&made("Plan")), "Plan erstellt");
+    assert_eq!(german.sentence(&made("")), "Erstellt");
+}

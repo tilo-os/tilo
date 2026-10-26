@@ -89,8 +89,9 @@ fn said(m: Message) -> Text {
 }
 
 /// One conversation in a list: its title, and the last message with who wrote it and when.
+/// Its avatar is whoever wrote last; before anyone has, the group's.
 view conversation_row(c: Conversation) {
-    row(c.title, secondary: last_said(c), meta: last_at(c), avatar: last_author(c))
+    row(c.title, secondary: last_said(c), meta: last_at(c), avatar: last_author(c), icon: .users)
 }
 
 /// What the last message of `c` says, or that there is none yet.

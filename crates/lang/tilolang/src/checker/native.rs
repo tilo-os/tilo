@@ -540,8 +540,10 @@ impl Checker<'_> {
     }
 
     /// A row's `avatar:`: a Principal, or an Option of one. At `.none` (the last message's author
-    /// of a conversation that has none yet) the prop is `.none`: the row shows no avatar and
-    /// keeps the room one takes, in line with the rows that have one.
+    /// of a conversation that has none yet) the prop is `.none`: a row that names an `icon:`
+    /// shows the item itself as its avatar, that glyph on a neutral square (a group); one that
+    /// names none keeps the room an avatar takes, in line with the rows of its list that show
+    /// one, and takes none in a list where no row does.
     fn avatar_arg(&mut self, node: &Ex, value: &ast::Expr) {
         let v = self.expr(value, Some(&Ty::Principal));
         let Ty::Option(inner) = v.ty.clone() else {
