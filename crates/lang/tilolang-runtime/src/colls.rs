@@ -145,6 +145,13 @@ enum Read {
 }
 
 impl Core {
+    /// A reference to the item `id` of `coll`, counted: what reading collections materialized.
+    pub(crate) fn item_ref(&self, coll: &CollRef, id: &str) -> Value {
+        self.items_built
+            .set(self.items_built.get().saturating_add(1));
+        coll.item_ref(id)
+    }
+
     /// The listing of `coll`: the one this view run read already, else the store's.
     pub(crate) fn coll_listing(&self, coll: &Rc<CollRef>) -> Result<Rc<Listing>, String> {
         if let Ok(frame) = self.frames.borrow().top()
@@ -231,7 +238,7 @@ impl Core {
             ));
         };
         self.saw(coll, Read::At(index, Rc::clone(id)), listing.len());
-        Ok(coll.item_ref(id))
+        Ok(self.item_ref(coll, id))
     }
 
     /// The first or last item of `coll`, as an option.
@@ -245,7 +252,7 @@ impl Core {
         .cloned();
         let value = end
             .as_deref()
-            .map_or_else(Value::none, |id| Value::some(coll.item_ref(id)));
+            .map_or_else(Value::none, |id| Value::some(self.item_ref(coll, id)));
         self.saw(
             coll,
             if last {
@@ -271,7 +278,11 @@ impl Core {
         {
             vs.reads.push((coll.target.id_string(), coll.field.clone()));
         }
-        Ok(listing.items.iter().map(|id| coll.item_ref(id)).collect())
+        Ok(listing
+            .items
+            .iter()
+            .map(|id| self.item_ref(coll, id))
+            .collect())
     }
 
     /// `v`, with a collection read whole into a list: what goes into another value.

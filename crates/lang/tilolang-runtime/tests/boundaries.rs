@@ -45,6 +45,29 @@ action rename(bag: Bag, name: Text) {
     bag.name = name
 }
 
+action check(item: Item) {
+    item.done = true
+}
+
+enum Which {
+    all
+    open
+}
+
+fn shown(bag: Bag, which: Which) -> List<Item> {
+    match which {
+        .all => bag.items,
+        .open => bag.items.filter(item -> not item.done),
+    }
+}
+
+view chosen(bag: Bag) {
+    window which: Which = .all
+    list(shown(bag, which), filter: which) { item ->
+        row(item.title, checkbox: item.done)
+    }
+}
+
 view item_row(item: Item) {
     row {
         text(item.title)
@@ -298,7 +321,15 @@ view count(bag: Bag) {
         assert_eq!(view.list_len(&list), Some(1_000));
         let opened = view.stats();
         assert_eq!(opened.renders, 1, "no row ran before it was shown");
-        assert_eq!(opened.unrendered, 1_000);
+        // Nor was one built: the list costs the rows on screen, not its length.
+        assert_eq!(opened.boundaries, 1, "{opened:?}");
+        assert_eq!(view.tree().count(), 1, "{:?}", view.tree());
+        let final_row = view.row_key(&list, 999).unwrap();
+        assert!(
+            final_row.ends_with(&format!("/{}", rows.items[999].id_string())),
+            "{final_row}"
+        );
+        assert_eq!(view.row_key(&list, 1_000), None);
 
         // The host shows what fits.
         for i in 0..20 {
@@ -509,6 +540,130 @@ view count(bag: Bag) {
                 "item 8", "item 9"
             ]
         );
+    }
+
+    /// Every row key of `list`, as the host reads them.
+    fn row_keys(view: &ViewInstance, list: &str) -> Vec<String> {
+        (0..view.list_len(list).unwrap())
+            .map(|i| view.row_key(list, i).unwrap())
+            .collect()
+    }
+
+    /// Apply `patches` to the row keys `held` of `list`, as a host keeps them; a list replaced
+    /// whole is read anew.
+    fn follow(view: &ViewInstance, list: &str, held: &mut Vec<String>, patches: &[Patch]) {
+        for patch in patches {
+            match patch {
+                Patch::Insert {
+                    parent,
+                    index,
+                    node,
+                } if parent.last().map(String::as_str) == Some(list) => {
+                    held.insert(*index, node.key.clone());
+                }
+                Patch::Remove { parent, key }
+                    if parent.last().map(String::as_str) == Some(list) =>
+                {
+                    let at = held.iter().position(|k| k == key).unwrap();
+                    held.remove(at);
+                }
+                Patch::Move { parent, key, to }
+                    if parent.last().map(String::as_str) == Some(list) =>
+                {
+                    let at = held.iter().position(|k| k == key).unwrap();
+                    let row = held.remove(at);
+                    held.insert(*to, row);
+                }
+                Patch::SetRoot(_) => *held = row_keys(view, list),
+                Patch::Insert { node, .. } if node.key == list => {
+                    *held = row_keys(view, list);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The keys of the rows built in the tree are among the rows, in their order.
+    fn built_in_order(view: &ViewInstance, list: &str, held: &[String]) {
+        let built: Vec<&String> = of_kind(view.tree(), "list")
+            .into_iter()
+            .find(|n| n.key == list)
+            .unwrap()
+            .children
+            .iter()
+            .map(|row| &row.key)
+            .collect();
+        let mut rest = held.iter();
+        for key in &built {
+            assert!(rest.any(|k| &k == key), "{key} out of order in {built:?}");
+        }
+    }
+
+    #[test]
+    fn a_virtual_lists_rows_follow_steps_and_a_filter_chosen() {
+        let rows = Rows::new(30);
+        for i in [1, 3, 5] {
+            rows.call("check", vec![Value::resource(&rows.items[i])]);
+        }
+        let mut view = rows.view("chosen");
+        let list = list_key(&view);
+        let mut held = row_keys(&view, &list);
+        assert_eq!(held.len(), 30);
+        for i in 0..10 {
+            view.row(&list, i).unwrap();
+        }
+        let built = view.stats().boundaries;
+
+        // A new item: one row more for the host, none built.
+        rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+        let added = view.poll_patches().unwrap();
+        follow(&view, &list, &mut held, &added);
+        assert_eq!(held, row_keys(&view, &list));
+        assert_eq!(view.stats().boundaries, built, "{added:?}");
+
+        // A shown row moved down, and one moved into the rows shown.
+        rows.call(
+            "move_to",
+            vec![
+                Value::resource(&rows.bag),
+                Value::resource(&rows.items[2]),
+                Value::Int(20),
+            ],
+        );
+        rows.call(
+            "move_to",
+            vec![
+                Value::resource(&rows.bag),
+                Value::resource(&rows.items[25]),
+                Value::Int(4),
+            ],
+        );
+        let moved = view.poll_patches().unwrap();
+        follow(&view, &list, &mut held, &moved);
+        assert_eq!(held, row_keys(&view, &list));
+        built_in_order(&view, &list, &held);
+
+        // A shown row removed.
+        rows.call(
+            "remove",
+            vec![Value::resource(&rows.bag), Value::resource(&rows.items[0])],
+        );
+        let removed = view.poll_patches().unwrap();
+        follow(&view, &list, &mut held, &removed);
+        assert_eq!(held, row_keys(&view, &list));
+        built_in_order(&view, &list, &held);
+
+        // Another filter: the rows that stay are kept, the others leave.
+        view.fire(&list, "filter.open").unwrap();
+        let chosen = view.poll_patches().unwrap();
+        follow(&view, &list, &mut held, &chosen);
+        assert_eq!(held, row_keys(&view, &list));
+        assert_eq!(held.len(), 27, "{chosen:?}");
+        built_in_order(&view, &list, &held);
+        let titles_now: Vec<String> = (0..4)
+            .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
+            .collect();
+        assert_eq!(titles_now, ["item 4", "item 25", "item 6", "item 7"]);
     }
 
     #[test]
