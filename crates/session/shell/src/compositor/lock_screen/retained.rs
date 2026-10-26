@@ -1,9 +1,9 @@
-//! Only the credential parts — the password field and the status row — may
-//! change over a retained lock image. The complete scene remains
+//! Only the credential part — the password prompt and its unlock action —
+//! may change over a retained lock image. The complete scene remains
 //! authoritative; an unproven difference (the clock, artwork, media card,
 //! keyboard, an alert, the theme) always repaints it all.
 
-use super::{LockFeedback, LockOutput, LockView};
+use super::{LockOutput, LockView};
 use crate::shell::frame::{FrameBuilder, FramePaint};
 use crate::shell::osd::Osd;
 use ui::scene_parts::SectionParts;
@@ -28,32 +28,33 @@ pub(crate) struct LockComposition<'a> {
 #[derive(Default)]
 pub(crate) struct RetainedLockScene {
     previous: Option<Previous>,
-    /// The answer transitions of this lock session: when a verification or a
-    /// refusal arrived, so the frame that shows it can paint the next phase.
-    feedback: LockFeedback,
+    /// When the prompt's answer in flight (a verification or a refusal
+    /// arriving) comes to rest, as of the last frame drawn.
+    answer_deadline: Option<std::time::Instant>,
 }
 
 impl RetainedLockScene {
     /// Both lock edges are boundaries, even if no unlocked frame was painted.
     pub(crate) fn clear(&mut self) {
         self.previous = None;
-        self.feedback.reset();
+        self.answer_deadline = None;
     }
 
-    /// Whether the answer in flight needs its next frame at `now`, including
+    /// Whether the answer in flight needs another frame, including
     /// the frame that paints it at rest.
     ///
     /// The lock's frames are otherwise filtered to the clock and the hardware
     /// readout, so the host must ask this (and [`Self::next_feedback_deadline`])
     /// where it asks those.
-    pub(crate) fn feedback_frame_due(&self, now: std::time::Instant) -> bool {
-        self.feedback.moving(now) || self.feedback.next_deadline().is_some_and(|end| end <= now)
+    pub(crate) fn feedback_frame_due(&self) -> bool {
+        // Moving until the deadline, then the resting frame at it.
+        self.answer_deadline.is_some()
     }
 
     /// When the answer in flight comes to rest; `None` once its resting frame
     /// has been painted.
     pub(crate) fn next_feedback_deadline(&self) -> Option<std::time::Instant> {
-        self.feedback.next_deadline()
+        self.answer_deadline
     }
 
     /// The live producer and pixel oracles record the same complete scene.
@@ -62,24 +63,6 @@ impl RetainedLockScene {
         builder: &mut FrameBuilder,
         composition: &LockComposition<'_>,
     ) -> FramePaint {
-        // Timestamp the answer before painting it: the paint is pure and reads
-        // only this snapshot, so authentication state and the accessibility
-        // tree never move with an animation frame.
-        self.feedback.observe(
-            composition.view,
-            composition.now,
-            composition.theme.motion(),
-        );
-        let status = self.feedback.paint(composition.now);
-        if self.feedback_frame_due(composition.now)
-            && let Some(until) = self.next_feedback_deadline()
-        {
-            // The answer moves until `until`. The lock draws outside the
-            // widget tree, so say it on the motion clock too: a host whose
-            // frame pump follows that clock asks for these frames without the
-            // compositor having to know about this scene.
-            ui::motion::want_frames_until(until);
-        }
         let mut scene = Scene::new();
         let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
             super::draw_lock_scene_into(
@@ -90,7 +73,7 @@ impl RetainedLockScene {
                 composition.view,
                 composition.wallpaper,
                 ui::auth_backdrop::STILL_SECONDS,
-                &status,
+                composition.now,
             );
             if let Some(osd) = composition.osd {
                 // An OSD can declare bounded parts of its own. They are not
@@ -108,15 +91,19 @@ impl RetainedLockScene {
                 scene.append(&overlay, None);
             }
         });
-        // The resting frame is the last one the answer asks for.
-        self.feedback.rest_if_settled(composition.now);
+        // The prompt timestamps its answer as it paints, and asks for the
+        // answer's frames on the motion clock; the resting frame is the last.
+        self.answer_deadline = composition
+            .view
+            .prompt
+            .and_then(|prompt| prompt.borrow().answer_deadline());
         self.finish(scene, parts, composition.outputs, builder)
     }
 
     /// Called after the complete composition, including OSD. Changes outside
     /// the credential parts (wallpaper, clock, media, keyboard, an alert,
     /// theme) cannot pass the byte-for-byte scene-parts proof; a change inside
-    /// the field or the status row damages just that part's old and new
+    /// the prompt damages just that part's old and new
     /// bounds.
     fn finish(
         &mut self,

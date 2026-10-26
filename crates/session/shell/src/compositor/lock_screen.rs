@@ -10,11 +10,11 @@
 //! surface.)
 //!
 //! Colours come from the OS [`Theme`] so the lock screen matches the rest of
-//! the desktop. An answer — a verification starting, a refusal — cross-fades
-//! into the status row, and a refusal also shakes it once
-//! (the `feedback` module); both are named motions, both rest, and both
-//! stay inside the credential card's field and status parts so a retained
-//! lock damages those bounds instead of the output.
+//! the desktop. The password is asked with the shared password prompt: an
+//! answer (a verification starting, a refusal) arrives in the line under its
+//! field as the prompt's own named motions, which rest, and the prompt is one
+//! bounded part of the scene, so a retained lock damages that part instead of
+//! the output.
 
 use std::f64::consts::PI;
 
@@ -31,16 +31,14 @@ use ui::accesskit::{
     TreeId, TreeInfo, TreeUpdate,
 };
 
-use crate::compositor::lock_auth::UNAVAILABLE_MSG;
+use crate::compositor::lock_controller::{LockPrompt, refusal_line};
 
-mod feedback;
 mod retained;
 use crate::shell::i18n::{t, t_args};
 use crate::shell::now_playing::PlayerSnapshot;
 use crate::shell::quick_settings::now_playing::{
     Transport, paint_song_at_rest, paint_transport, transport_rects,
 };
-pub(crate) use feedback::{LockFeedback, LockStatus, LockStatusPaint};
 pub(crate) use retained::{LockComposition, RetainedLockScene};
 
 // `ui::accesskit_bridge` reserves 0, low ids, 1<<60, 2<<60, 1<<62 and
@@ -83,11 +81,12 @@ const fn transport_node(transport: Transport) -> AccessNodeId {
 /// stays pure and unit-testable (no clock reads, no auth state of its own).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LockView<'a> {
-    /// Number of password characters typed so far — rendered as masked
-    /// dots. The plaintext never reaches this layer.
-    pub password_len: usize,
-    /// Authentication error to show under the field (e.g. "Incorrect
-    /// username or password"), or `None`. Rendered in the danger colour.
+    /// The password prompt, drawn in the card: its field, show/hide button
+    /// and the one line under it (press Enter, verifying, why an attempt
+    /// was refused, Caps Lock). `None` draws the card without it.
+    pub prompt: Option<&'a LockPrompt>,
+    /// Authentication error of the last attempt, or `None`: what assistive
+    /// technology is told. The prompt says it in the card.
     pub error: Option<&'a str>,
     /// Preformatted wall-clock time (e.g. `"13:37"`). Empty hides the clock.
     pub clock: &'a str,
@@ -97,9 +96,7 @@ pub struct LockView<'a> {
     pub notification_count: usize,
     /// Credential verification running on the worker thread
     /// ([`crate::compositor::lock_controller::LockController::is_verifying`]);
-    /// renders "Verifying…", gives the field its waiting marks and suppresses
-    /// the empty-field placeholder, so the screen reads as checking, not
-    /// "type here".
+    /// assistive technology hears "Verifying…" and the field is inert.
     pub verifying: bool,
     /// What is playing, shown as a compact card with transport controls
     /// only. `None` hides the card.
@@ -192,6 +189,42 @@ pub fn lock_outputs(
     }
 }
 
+/// The scale of the lock chrome and the scale of the card's controls, on
+/// an output `available` tall whose card fits across at `width_fit`. The
+/// password and status rows (`rows` units) hold the controls: they keep the
+/// display's scale (`desired`) when the rest of the chrome (`rest` units in
+/// the column the card is in, or a separate `column` beside it) shrinks to
+/// fit, and the card is that much taller. Only an output with no room for
+/// them at that scale shrinks them with the rest.
+fn fit_scales(
+    desired: f64,
+    width_fit: f64,
+    available: f64,
+    rows: f64,
+    rest: f64,
+    column: Option<f64>,
+) -> (f64, f64) {
+    let room = available - rows * desired;
+    let mut rest_fit = room / rest.max(f64::EPSILON);
+    if let Some(column) = column {
+        rest_fit = rest_fit.min(available / column.max(f64::EPSILON));
+    }
+    if room > 0.0 && rest_fit > 0.0 {
+        let scale = desired.min(width_fit).min(rest_fit).max(f64::EPSILON);
+        return (scale, desired.max(scale));
+    }
+    let whole = (rows + rest).max(column.unwrap_or(0.0)).max(f64::EPSILON);
+    let scale = desired
+        .min(width_fit)
+        .min((available / whole).max(0.0))
+        .max(f64::EPSILON);
+    (scale, scale)
+}
+
+/// The height of the card's password and status rows, in units of the
+/// theme at 1x text: the label, the field and the line under it.
+const PROMPT_ROWS_HEIGHT: f64 = 50.0 + 10.0 + 28.0;
+
 /// Responsive geometry for one output's lock chrome. Keeping layout separate
 /// from painting makes containment and non-overlap contractual instead of a
 /// property inferred from screenshots.
@@ -207,6 +240,11 @@ pub struct LockLayout {
     pub status: Rect,
     pub notifications: Rect,
     pub scale: f64,
+    /// Physical pixels per unit of the theme for the card's controls: the
+    /// display's scale times Tilo's UI scale. A display too small for the
+    /// card at that scale narrows the card's rows, never its controls, so
+    /// the field and the unlock action stay the theme's control height.
+    pub control_scale: f64,
     /// Where the keyboard for unlocking by touch sits, when it shows.
     pub keyboard: Option<Rect>,
 }
@@ -283,25 +321,29 @@ impl LockLayout {
         let stack_height =
             clock_height + clock_date_gap + date_height + panel_gap + unscaled_panel_height;
         let width_fit = ((width - edge * 2.0) / (unscaled_panel_width + 32.0)).max(0.0);
-        let height_fit = ((height - edge * 2.0)
-            / if wide {
-                unscaled_panel_height.max(clock_height + date_height + clock_date_gap)
+        let rows = PROMPT_ROWS_HEIGHT * text_scale;
+        let (scale, control_scale) = fit_scales(
+            desired_scale,
+            width_fit,
+            height - edge * 2.0,
+            rows,
+            if wide {
+                unscaled_panel_height - rows
             } else {
-                stack_height
-            })
-        .max(0.0);
-        let scale = desired_scale
-            .min(width_fit)
-            .min(height_fit)
-            .max(f64::EPSILON);
+                stack_height - rows
+            },
+            wide.then_some(clock_height + date_height + clock_date_gap),
+        );
         let panel_width = unscaled_panel_width * scale;
-        let panel_height = unscaled_panel_height * scale;
+        let panel_height = unscaled_panel_height * scale + rows * (control_scale - scale);
         let cx = output.origin.0 + width * if wide { 0.755 } else { 0.5 };
         let top = output.origin.1
             + if wide {
                 height * 0.30
             } else {
-                (height - stack_height * scale) / 2.0
+                ((height - stack_height * scale - (panel_height - unscaled_panel_height * scale))
+                    / 2.0)
+                    .max(0.0)
             };
         let clock = if wide {
             Rect::new(
@@ -331,7 +373,14 @@ impl LockLayout {
             cx + panel_width / 2.0,
             panel_y + panel_height,
         );
-        Self::with_panel(output_rect, clock, date, panel, scale, text_scale)
+        Self::with_panel(
+            output_rect,
+            clock,
+            date,
+            panel,
+            (scale, control_scale),
+            text_scale,
+        )
     }
 
     /// The form keeps the same row relationships in either screen composition.
@@ -340,7 +389,7 @@ impl LockLayout {
         clock: Rect,
         date: Rect,
         panel: Rect,
-        scale: f64,
+        (scale, control_scale): (f64, f64),
         text_scale: f64,
     ) -> Self {
         let cx = panel.center().x;
@@ -361,13 +410,13 @@ impl LockLayout {
             panel.x0 + 32.0 * scale,
             title.y1 + 20.0 * scale,
             panel.x1 - 32.0 * scale,
-            title.y1 + (20.0 + 50.0 * text_scale) * scale,
+            title.y1 + 20.0 * scale + 50.0 * text_scale * control_scale,
         );
         let status = Rect::new(
             password.x0,
-            password.y1 + 10.0 * scale,
+            password.y1 + 10.0 * control_scale,
             password.x1,
-            password.y1 + (10.0 + 28.0 * text_scale) * scale,
+            password.y1 + (10.0 + 28.0 * text_scale) * control_scale,
         );
         let notifications = Rect::new(
             password.x0,
@@ -387,6 +436,7 @@ impl LockLayout {
             status,
             notifications,
             scale,
+            control_scale,
             keyboard: None,
         }
     }
@@ -716,7 +766,7 @@ pub fn build_accessibility_tree(
     let status = if view.verifying {
         Some(t("lock-screen-verifying-password"))
     } else if let Some(error) = view.error {
-        Some(lock_error_status(error))
+        Some(refusal_line(error))
     } else if view.notification_count > 0 {
         Some(count_label(view.notification_count))
     } else {
@@ -765,7 +815,7 @@ pub fn narration_tree(view: &LockView<'_>) -> ui::a11y::AccessNode {
     } else if let Some(error) = view.error {
         status = status
             .with_live(Politeness::Assertive)
-            .with_value(lock_error_status(error));
+            .with_value(refusal_line(error));
     } else if let Some(alert) = view.alert {
         status = status.with_live(Politeness::Assertive).with_value(alert);
     } else {
@@ -906,7 +956,6 @@ pub fn draw_lock_scene_at_time(
     wallpaper: Option<&ImageData>,
     elapsed_seconds: f64,
 ) -> Scene {
-    let status = LockStatusPaint::settled(view);
     let mut scene = Scene::new();
     draw_lock_scene_into(
         &mut scene,
@@ -916,15 +965,15 @@ pub fn draw_lock_scene_at_time(
         view,
         wallpaper,
         elapsed_seconds,
-        &status,
+        ui::motion::frame_now(),
     );
     scene
 }
 
 /// Paint into the caller's scene so retained-part recording includes the
-/// entire lock composition and any readout appended over it. `status` is the
-/// status row at this frame's instant: a still passes its resting form, and
-/// the live retained producer passes the phase it timestamped.
+/// entire lock composition and any readout appended over it. `now` is the
+/// frame's instant, the prompt's answer is painted at it: a still passes the
+/// frame clock, and the live retained producer the instant it timestamped.
 pub(crate) fn draw_lock_scene_into(
     scene: &mut Scene,
     outputs: &[LockOutput],
@@ -933,7 +982,7 @@ pub(crate) fn draw_lock_scene_into(
     view: &LockView<'_>,
     wallpaper: Option<&ImageData>,
     elapsed_seconds: f64,
-    status: &LockStatusPaint,
+    now: std::time::Instant,
 ) {
     // 1. Opaque backdrop over the combined geometry of every output — the
     //    full bounding box (not per-output rects) guarantees no gap ever
@@ -997,7 +1046,7 @@ pub(crate) fn draw_lock_scene_into(
         if Some(*output) == primary {
             let layout =
                 LockLayout::for_output_with_keyboard(*output, theme, view.keyboard.is_some());
-            draw_lock_widget(scene, &layout, theme, text, view, status);
+            draw_lock_widget(scene, &layout, theme, text, view, now);
             if let (Some(keyboard), Some(pad)) = (view.keyboard, layout.keyboard) {
                 keyboard.paint(
                     scene,
@@ -1096,7 +1145,7 @@ fn draw_lock_widget(
     theme: &Theme,
     text: &mut TextRenderer,
     view: &LockView<'_>,
-    status: &LockStatusPaint,
+    now: std::time::Instant,
 ) {
     // The lock chrome sizes its type from the theme's text scale itself
     // (`scaled_text_size`); the renderer must not scale it again (HIG §7a)
@@ -1147,8 +1196,9 @@ fn draw_lock_widget(
     // already carries the UI scale that `layout.scale` includes), its ground
     // is `panel_ground` (walked clear of the wallpaper-dimmed desktop) and
     // its edge is the derived Panel border rather than a declared colour.
+    let (card, notifications) = place_card(layout, theme, text, view, renderer_scale);
     let panel = RoundedRect::from_rect(
-        layout.panel,
+        card,
         f64::from(theme.tokens.radii.panel) * layout.scale / f64::from(theme.ui_scale).max(0.1),
     );
     scene.fill(
@@ -1175,8 +1225,12 @@ fn draw_lock_widget(
         theme.text_primary,
         layout.title,
     );
-    draw_password_field(scene, layout, theme, text, view, status);
-    draw_status_field(scene, layout, theme, text, status);
+    if let Some(prompt) = view.prompt {
+        // The prompt sizes its own type: the renderer's text scale is its.
+        text.set_text_scale(renderer_scale);
+        draw_lock_prompt_part(scene, theme, text, prompt, now);
+        text.set_text_scale(1.0);
+    }
     if let (Some(player), Some(media)) =
         (view.now_playing, LockMediaLayout::for_layout(layout, theme))
     {
@@ -1190,7 +1244,7 @@ fn draw_lock_widget(
             &label,
             scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme),
             theme.text_dim,
-            layout.notifications,
+            notifications,
         );
     }
     text.set_text_scale(renderer_scale);
@@ -1433,211 +1487,130 @@ fn draw_lock_icon(scene: &mut Scene, layout: &LockLayout, theme: &Theme) {
     );
 }
 
-fn draw_password_field(
-    scene: &mut Scene,
+/// Where the card and its notification count stand: the prompt is placed
+/// first, a refusal that wraps pushes what is under it down, and without a
+/// notification count the card ends under the prompt.
+fn place_card(
     layout: &LockLayout,
     theme: &Theme,
     text: &mut TextRenderer,
     view: &LockView<'_>,
-    status: &LockStatusPaint,
+    renderer_scale: f32,
+) -> (Rect, Rect) {
+    let mut card = layout.panel;
+    let mut notifications = layout.notifications;
+    let Some(prompt) = view.prompt else {
+        return (card, notifications);
+    };
+    // Touch is the input in use while the keyboard for it shows.
+    prompt.set_touch(view.keyboard.is_some());
+    text.set_text_scale(renderer_scale);
+    let bottom = place_lock_prompt(layout, theme, text, prompt);
+    text.set_text_scale(1.0);
+    let push = (bottom + 8.0 * layout.scale - notifications.y0).max(0.0);
+    notifications.y0 += push;
+    notifications.y1 += push;
+    card.y1 = if view.notification_count == 0 {
+        bottom.max(layout.status.y1) + 24.0 * layout.scale
+    } else {
+        card.y1 + push
+    };
+    (card, notifications)
+}
+
+/// Place the password prompt in the card's password and status rows and
+/// say where it ends, in the scene's pixels. The prompt lays out in the
+/// theme's units; its controls are `layout.control_scale` physical pixels
+/// per unit of the UI scale, so it is placed in those units and drawn
+/// scaled, and pointer positions are divided by the same scale. It is never
+/// drawn smaller to fit a narrow card: the rows narrow and the card grows
+/// down to where the prompt ends. The unlock action stands beside the
+/// field, as at sign-in: a square as tall as the field.
+fn place_lock_prompt(
+    layout: &LockLayout,
+    theme: &Theme,
+    text: &mut TextRenderer,
+    prompt: &LockPrompt,
+) -> f64 {
+    let k = (layout.control_scale / f64::from(theme.ui_scale).max(0.1)).max(f64::EPSILON);
+    let rows = layout.password.union(layout.status);
+    let side = prompt.borrow().current_field_height(theme);
+    let gap = f64::from(theme.tokens.spacing.s2);
+    let rect = Rect::new(
+        rows.x0 / k,
+        rows.y0 / k,
+        (rows.x1 / k - side - gap).max(rows.x0 / k),
+        rows.y1 / k,
+    );
+    prompt.set_scale(k);
+    let mut shown = prompt.borrow_mut();
+    shown.place(rect, text, theme);
+    let field = shown.layout().fields.first().copied().unwrap_or(Rect::ZERO);
+    let bottom = shown.layout().notice.y1.max(field.y1) * k;
+    drop(shown);
+    let button = Rect::new(
+        field.x1 + gap,
+        field.y0,
+        field.x1 + gap + field.height(),
+        field.y1,
+    );
+    prompt.set_submit(button.scale_from_origin(k));
+    bottom
+}
+
+/// The prompt and its unlock action as one bounded part of the scene: a
+/// keystroke, an answer arriving or a refusal's shake damages the part's
+/// own old and new bounds, never the output. The bounds come from the
+/// commands, so no locale, theme or shake can outgrow them.
+fn draw_lock_prompt_part(
+    scene: &mut Scene,
+    theme: &Theme,
+    text: &mut TextRenderer,
+    prompt: &LockPrompt,
+    now: std::time::Instant,
 ) {
     if ui::scene_parts::is_tracked(scene) {
-        let mut field = Scene::new();
-        draw_password_contents(&mut field, layout, theme, text, view, status);
-        // Derive bounds from the commands, including placeholder glyph overhang,
-        // the focus stroke and the waiting marks. No locale or theme may outgrow
-        // a guessed rect.
+        let mut part = Scene::new();
+        draw_lock_prompt(&mut part, theme, text, prompt, now);
         let bounds = ui::scene_parts::DrawBounds::default()
-            .of(field.encoding())
+            .of(part.encoding())
             .unwrap_or_default();
         ui::scene_parts::part(
             scene,
             ui::scene_parts::PartKey::new("lock-password", 0_u8),
             bounds,
-            |scene| scene.append(&field, None),
+            |scene| scene.append(&part, None),
         );
     } else {
-        draw_password_contents(scene, layout, theme, text, view, status);
+        draw_lock_prompt(scene, theme, text, prompt, now);
     }
 }
 
-fn draw_password_contents(
+/// Draw the prompt [`place_lock_prompt`] placed, its answer at `now`, and
+/// the unlock action.
+fn draw_lock_prompt(
     scene: &mut Scene,
-    layout: &LockLayout,
     theme: &Theme,
     text: &mut TextRenderer,
-    view: &LockView<'_>,
-    status: &LockStatusPaint,
+    prompt: &LockPrompt,
+    now: std::time::Instant,
 ) {
-    let field = RoundedRect::from_rect(
-        layout.password,
-        f64::from(theme.tokens.radii.control) * layout.scale / f64::from(theme.ui_scale).max(0.1),
-    );
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        theme.tokens.colors.surfaces.base,
-        None,
-        &field,
-    );
-    // The ring says whether the field can take a secret, is checking one, or
-    // is handing the person back a retry. It is the focus colour at rest
-    // because the field always holds focus while locked.
-    scene.stroke(
-        &Stroke::new((1.5 * layout.scale).max(1.0)),
-        Affine::IDENTITY,
-        LockStatus::of(view).field_ring(theme),
-        None,
-        &field,
-    );
-    if view.verifying {
-        // Three waiting marks in the informational role, wider apart than
-        // the password's mask: the typed dots are gone, the marks stand still
-        // (nothing on the lock loops or keeps animating), and they settle in
-        // with the status row as the ring says the field is checking.
-        let ink = theme
-            .tokens
-            .colors
-            .semantic
-            .info
-            .with_alpha(status.shown_alpha);
-        draw_field_dots(scene, layout, 3, 18.0, 3.0, ink);
-    } else if view.password_len == 0 {
-        draw_centered_text(
-            scene,
-            text,
-            &t("lock-screen-enter-password"),
-            scaled_text_size(
-                ui::tokens::Typography::default().size(ui::TextRole::Body),
-                layout.scale,
-                theme,
-            ),
-            theme.text_dim,
-            layout.password,
-        );
-    } else {
-        draw_field_dots(
-            scene,
-            layout,
-            view.password_len.min(18),
-            14.0,
-            4.0,
-            theme.text_primary,
-        );
-    }
-}
-
-/// `count` marks centred on the field: the password's mask, or the three
-/// waiting marks a verification shows. `gap` and `radius` are reference
-/// pixels, scaled with the lock chrome.
-fn draw_field_dots(
-    scene: &mut Scene,
-    layout: &LockLayout,
-    count: usize,
-    gap: f64,
-    radius: f64,
-    ink: vello::peniko::Color,
-) {
-    let gap = gap * layout.scale;
-    let dot_r = radius * layout.scale;
-    // Every caller bounds `count` (at most 18, or the three waiting marks), so
-    // both usize -> f64 conversions below are always exact.
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "count and i are bounded by the callers' `.min(18)` or a literal 3, so this usize -> f64 cast never loses precision"
-    )]
-    {
-        let total_w = (count as f64 - 1.0).max(0.0) * gap;
-        let start_x = layout.password.center().x - total_w / 2.0;
-        let dot_y = layout.password.center().y;
-        for i in 0..count {
-            let dot = Circle::new(Point::new(start_x + i as f64 * gap, dot_y), dot_r);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, ink, None, &dot);
-        }
-    }
-}
-
-/// The status row's bounded part: a cross-fade between answers, a refusal's
-/// shake, or a change of line damages the row's own new and old bounds, never
-/// the output. The bounds come from the commands, so a shake or a longer
-/// translation cannot outgrow them.
-fn draw_status_field(
-    scene: &mut Scene,
-    layout: &LockLayout,
-    theme: &Theme,
-    text: &mut TextRenderer,
-    status: &LockStatusPaint,
-) {
-    if ui::scene_parts::is_tracked(scene) {
-        let mut row = Scene::new();
-        draw_status(&mut row, layout, theme, text, status);
-        let bounds = ui::scene_parts::DrawBounds::default()
-            .of(row.encoding())
-            .unwrap_or_default();
-        ui::scene_parts::part(
-            scene,
-            ui::scene_parts::PartKey::new("lock-status", 0_u8),
-            bounds,
-            |scene| scene.append(&row, None),
-        );
-    } else {
-        draw_status(scene, layout, theme, text, status);
-    }
-}
-
-fn draw_status(
-    scene: &mut Scene,
-    layout: &LockLayout,
-    theme: &Theme,
-    text: &mut TextRenderer,
-    status: &LockStatusPaint,
-) {
-    // One status role for every state (Control sub-line, HIG §9.6): the
-    // 14 / 13 / 12 the three states used to pick between were not sizes on
-    // the scale and made the row jump as the state changed. The row's rect
-    // never moves with the tone; only a refusal's shake offsets the ink for a
-    // moment, so the form below never reflows.
-    let type_scale = ui::tokens::Typography::default();
-    let size = scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme);
-    let dx = status.dx * layout.scale;
-    let row = Rect::new(
-        layout.status.x0 + dx,
-        layout.status.y0,
-        layout.status.x1 + dx,
-        layout.status.y1,
-    );
-    if let Some((tone, line, alpha)) = &status.replaced {
-        draw_centered_text(
-            scene,
-            text,
-            line,
-            size,
-            tone.ink(theme).with_alpha(*alpha),
-            row,
-        );
-    }
-    draw_centered_text(
+    let k = prompt.scale();
+    let mut shown = prompt.borrow_mut();
+    shown.paint_at(scene, Affine::scale(k), text, theme, now);
+    let busy = shown.busy().is_some();
+    drop(shown);
+    let button = prompt.submit_rect().scale_from_origin(1.0 / k);
+    let name = t("lock-screen-unlock");
+    ui::widget::Button::paint(
         scene,
+        Affine::scale(k),
         text,
-        &status.shown,
-        size,
-        status.tone.ink(theme).with_alpha(status.shown_alpha),
-        row,
+        theme,
+        &ui::widget::ButtonFace::icon_only(button, ui::icons::Icon::ArrowRight, &name)
+            .role(ui::widget::ButtonRole::Primary)
+            .disabled(busy),
     );
-}
-
-/// The visual and accessible recovery line after a failed unlock.
-///
-/// Auth deliberately returns generic, non-leaky prose, but the full
-/// diagnostic plus a recovery instruction exceeded the fixed status row at
-/// common 1280x800 layouts. Keep the action in the line while preserving the
-/// distinction between a rejected credential and an unavailable verifier.
-fn lock_error_status(error: &str) -> String {
-    if error == UNAVAILABLE_MSG {
-        t("lock-screen-cannot-verify")
-    } else {
-        t("lock-screen-sign-in-failed")
-    }
 }
 
 /// Lock-screen count label: "N notifications" (empty for zero); reuses the
@@ -1650,6 +1623,16 @@ fn count_label(count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compositor::lock_auth::UNAVAILABLE_MSG;
+
+    /// A prompt holding `password`, as typed.
+    fn typed(password: &str) -> LockPrompt {
+        let prompt = LockPrompt::new();
+        if let Some(field) = prompt.borrow_mut().field_mut(ui::widget::FieldRole::Secret) {
+            field.set_text(password);
+        }
+        prompt
+    }
 
     fn view() -> LockView<'static> {
         LockView {
@@ -1667,6 +1650,124 @@ mod tests {
             size: (w, h),
             scale: 1.0,
         }]
+    }
+
+    /// A refusal mid-shake and a check mid-fade change only the prompt's
+    /// part of the scene, and that part stays on the credential card.
+    #[test]
+    fn an_answer_damages_only_the_credential_part_and_never_the_output() {
+        use std::time::Duration;
+        use ui::scene_parts;
+        let theme = Theme::dark();
+        let outputs = single(1280.0, 800.0);
+        let layout = LockLayout::for_output(outputs[0], &theme);
+        let mut text = TextRenderer::new();
+        let start = std::time::Instant::now();
+        let prompt = typed("abc");
+        let record = |view: &LockView<'_>, now, text: &mut TextRenderer| {
+            let mut scene = Scene::new();
+            let ((), parts) = scene_parts::record(&mut scene, |scene| {
+                draw_lock_scene_into(
+                    scene,
+                    &outputs,
+                    &theme,
+                    text,
+                    view,
+                    None,
+                    ui::auth_backdrop::STILL_SECONDS,
+                    now,
+                );
+            });
+            (scene, parts.expect("the lock records its credential part"))
+        };
+        let shown = LockView {
+            prompt: Some(&prompt),
+            ..view()
+        };
+        let (idle_scene, idle_parts) = record(&shown, start, &mut text);
+
+        prompt
+            .borrow_mut()
+            .reject(refusal_line("Incorrect password"));
+        let _ = record(&shown, start, &mut text);
+        let mid_shake = start + Duration::from_millis(40);
+        let (refused_scene, refused_parts) = record(&shown, mid_shake, &mut text);
+
+        prompt
+            .borrow_mut()
+            .set_busy(Some(t("lock-screen-verifying")));
+        let later = start + Duration::from_millis(2_000);
+        let _ = record(&shown, later, &mut text);
+        let mid_fade = later + Duration::from_millis(30);
+        let (pending_scene, pending_parts) = record(&shown, mid_fade, &mut text);
+
+        let allowed = layout.panel.inflate(2.0 * layout.scale, 2.0 * layout.scale);
+        for (name, scene, parts) in [
+            ("refusal", refused_scene, refused_parts),
+            ("pending", pending_scene, pending_parts),
+        ] {
+            let rects = scene_parts::damage(&idle_scene, &idle_parts, &scene, &parts)
+                .expect("a change inside the prompt's part is proven");
+            assert!(!rects.is_empty(), "{name} must damage the prompt's part");
+            for rect in rects {
+                assert!(
+                    allowed.contains(rect.origin()) && allowed.contains((rect.x1, rect.y1)),
+                    "{name} damage {rect:?} escapes the credential card {allowed:?}"
+                );
+            }
+        }
+    }
+
+    /// A phone-sized display narrows the card, never its controls: under a
+    /// mouse the field and the unlock action are the toolkit's field height
+    /// times the display's scale, and while touch is in use (its keyboard
+    /// shows) they are touch targets.
+    #[test]
+    fn a_narrow_display_keeps_the_password_field_and_unlock_action_full_size() {
+        let theme = Theme::light();
+        for (size, scale) in [((390.0, 844.0), 1.0), ((780.0, 1688.0), 2.0)] {
+            let outputs = [LockOutput {
+                origin: (0.0, 0.0),
+                size,
+                scale,
+            }];
+            for touch in [false, true] {
+                let prompt = typed("password");
+                let view = LockView {
+                    prompt: Some(&prompt),
+                    keyboard: touch.then(ui::passcode_keyboard::PasscodeKeyboard::default),
+                    ..view()
+                };
+                let mut text = TextRenderer::new();
+                let _scene = draw_lock_scene(&outputs, &theme, &mut text, &view);
+                let field = prompt
+                    .borrow()
+                    .layout()
+                    .fields
+                    .first()
+                    .copied()
+                    .expect("the password field")
+                    .scale_from_origin(prompt.scale());
+                let button = prompt.submit_rect();
+                let least = if touch {
+                    44.0
+                } else {
+                    ui::widget::SecretPrompt::field_height(&theme)
+                } * scale;
+                for (what, rect) in [("field", field), ("unlock action", button)] {
+                    assert!(
+                        rect.height() + 1e-6 >= least,
+                        "{size:?} at {scale}x, touch {touch}: the {what} is {} px tall, \
+                         at least {least}",
+                        rect.height()
+                    );
+                }
+                assert!(
+                    button.x1 <= size.0 && field.x0 >= 0.0,
+                    "{size:?}: the field and the action fit across the display"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1715,8 +1816,9 @@ mod tests {
     fn lock_accessibility_tree_exposes_one_hidden_password_field() {
         // Phase `lock_accessibility_tree_has_one_actionable_password_and_hides_its_value`.
         {
+            let prompt = typed("twelve chars");
             let v = LockView {
-                password_len: 12,
+                prompt: Some(&prompt),
                 notification_count: 4,
                 ..view()
             };
@@ -1857,15 +1959,16 @@ mod tests {
             assert!(scene.encoding().is_empty());
         }
         // Phase `lock_scene_renders_password_field_states`.
-        // The password field renders both empty (placeholder) and populated
-        // (masked dots) without panicking, including a very long password that
-        // must be capped to the field width.
+        // The password prompt renders both empty and populated (masked)
+        // without panicking, including a very long password that must be
+        // capped to the field width.
         {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
             for len in [0usize, 1, 8, 200] {
+                let prompt = typed(&"x".repeat(len));
                 let v = LockView {
-                    password_len: len,
+                    prompt: Some(&prompt),
                     ..view()
                 };
                 let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
@@ -1877,24 +1980,28 @@ mod tests {
         {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
+            let prompt = LockPrompt::new();
+            prompt
+                .borrow_mut()
+                .reject(refusal_line("Incorrect username or password"));
             let v = LockView {
-                password_len: 0,
+                prompt: Some(&prompt),
                 error: Some("Incorrect username or password"),
                 ..view()
             };
             let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
             assert!(!scene.encoding().is_empty());
         }
-        // Phase `lock_error_status_is_concise_and_preserves_retry_guidance`.
+        // Phase `refusal_line_is_concise_and_preserves_retry_guidance`.
         assert_eq!(
-            lock_error_status("Incorrect username or password"),
+            refusal_line("Incorrect username or password"),
             "Sign-in failed. Enter your password again."
         );
         assert_eq!(
-            lock_error_status(UNAVAILABLE_MSG),
+            refusal_line(UNAVAILABLE_MSG),
             "Can't verify your password. Enter it again."
         );
-        // Phase `lock_error_status_stays_on_one_line_at_1280_by_800`.
+        // Phase `refusal_line_stays_on_one_line_at_1280_by_800`.
         {
             let theme = Theme::dark();
             let output = LockOutput {
@@ -1905,8 +2012,8 @@ mod tests {
             let layout = LockLayout::for_output(output, &theme);
             let mut text = TextRenderer::new();
             for message in [
-                lock_error_status("Incorrect username or password"),
-                lock_error_status(UNAVAILABLE_MSG),
+                refusal_line("Incorrect username or password"),
+                refusal_line(UNAVAILABLE_MSG),
             ] {
                 let (width, height) =
                     text.measure(&message, scaled_text_size(12.0, layout.scale, &theme), None);
@@ -1925,7 +2032,12 @@ mod tests {
         {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
+            let prompt = LockPrompt::new();
+            prompt
+                .borrow_mut()
+                .set_busy(Some(t("lock-screen-verifying")));
             let v = LockView {
+                prompt: Some(&prompt),
                 verifying: true,
                 ..view()
             };
@@ -1991,8 +2103,9 @@ mod tests {
             let renderer = if w == 1280 { &mut desktop } else { &mut laptop };
             let outputs = single(f64::from(w), f64::from(h));
             let mut text = TextRenderer::new();
+            let prompt = typed("secret");
             let typed = LockView {
-                password_len: 6,
+                prompt: Some(&prompt),
                 notification_count: 3,
                 ..view()
             };
@@ -2028,7 +2141,12 @@ mod tests {
                 e.b
             );
             if name == "dark-2x-1280x800" {
+                let prompt = LockPrompt::new();
+                prompt
+                    .borrow_mut()
+                    .reject(refusal_line("Incorrect password"));
                 let errored = LockView {
+                    prompt: Some(&prompt),
                     error: Some("Incorrect password"),
                     ..view()
                 };
@@ -2170,8 +2288,8 @@ mod tests {
                         &theme,
                     );
                     let mut text = TextRenderer::new();
-                    let failed = lock_error_status("wrong password");
-                    let unavailable = lock_error_status(UNAVAILABLE_MSG);
+                    let failed = refusal_line("wrong password");
+                    let unavailable = refusal_line(UNAVAILABLE_MSG);
                     for (value, base_size, row) in [
                         (title.as_str(), 22.0, layout.title),
                         ("Enter password", 15.0, layout.password),
@@ -2686,208 +2804,6 @@ mod tests {
             );
             let mut text = TextRenderer::new();
             let _ = draw_lock_scene(&outputs, &theme, &mut text, &view);
-        }
-    }
-
-    /// The live answer's widest and lowest-contrast form: a refusal mid-shake
-    /// with both lines fading, and a verification mid-fade with the pending
-    /// mark arriving.
-    fn a_refusal_at_its_widest() -> LockStatusPaint {
-        let failed = LockView {
-            error: Some("Incorrect username or password"),
-            ..LockView::default()
-        };
-        LockStatusPaint {
-            tone: LockStatus::Failed,
-            shown: LockStatus::Failed.copy(&failed),
-            shown_alpha: 0.5,
-            replaced: Some((
-                LockStatus::Idle,
-                LockStatus::Idle.copy(&LockView::default()),
-                0.5,
-            )),
-            dx: 8.0,
-        }
-    }
-
-    fn a_pending_answer() -> LockStatusPaint {
-        let verifying = LockView {
-            verifying: true,
-            ..LockView::default()
-        };
-        LockStatusPaint {
-            tone: LockStatus::Verifying,
-            shown: LockStatus::Verifying.copy(&verifying),
-            shown_alpha: 0.5,
-            replaced: Some((
-                LockStatus::Failed,
-                LockStatus::Failed.copy(&LockView {
-                    error: Some("Incorrect username or password"),
-                    ..LockView::default()
-                }),
-                0.4,
-            )),
-            dx: 0.0,
-        }
-    }
-
-    #[test]
-    fn an_answer_damages_only_the_credential_parts_and_never_the_output() {
-        use ui::scene_parts;
-        let theme = Theme::dark();
-        let outputs = single(1280.0, 800.0);
-        let layout = LockLayout::for_output(outputs[0], &theme);
-        let idle = LockView {
-            password_len: 3,
-            ..view()
-        };
-        let failed = LockView {
-            error: Some("Incorrect username or password"),
-            ..view()
-        };
-        let verifying = LockView {
-            verifying: true,
-            ..view()
-        };
-        let mut text = TextRenderer::new();
-        let record = |view: &LockView<'_>, status: &LockStatusPaint, text: &mut TextRenderer| {
-            let mut scene = Scene::new();
-            let ((), parts) = scene_parts::record(&mut scene, |scene| {
-                draw_lock_scene_into(
-                    scene,
-                    &outputs,
-                    &theme,
-                    text,
-                    view,
-                    None,
-                    ui::auth_backdrop::STILL_SECONDS,
-                    status,
-                );
-            });
-            (scene, parts.expect("the lock records its credential parts"))
-        };
-        let (idle_scene, idle_parts) = record(&idle, &LockStatusPaint::settled(&idle), &mut text);
-        let (refused_scene, refused_parts) = record(&failed, &a_refusal_at_its_widest(), &mut text);
-        let (pending_scene, pending_parts) = record(&verifying, &a_pending_answer(), &mut text);
-
-        // The card's own gutter contains even the shake's reach, so no answer
-        // can paint outside the credential card.
-        let allowed = layout.panel.inflate(2.0 * layout.scale, 2.0 * layout.scale);
-        for (name, scene, parts) in [
-            ("refusal", refused_scene, refused_parts),
-            ("pending", pending_scene, pending_parts),
-        ] {
-            let rects = scene_parts::damage(&idle_scene, &idle_parts, &scene, &parts)
-                .expect("a change inside the status and field parts is proven");
-            assert!(!rects.is_empty(), "{name} must damage its own parts");
-            for rect in rects {
-                assert!(
-                    allowed.contains(rect.origin()) && allowed.contains((rect.x1, rect.y1)),
-                    "{name} damage {rect:?} escapes the credential card {allowed:?}"
-                );
-            }
-        }
-        // Only the answer changed: every row of the form keeps its place.
-        assert_eq!(
-            LockLayout::for_output(outputs[0], &theme),
-            LockLayout::for_output(single(1280.0, 800.0)[0], &theme)
-        );
-    }
-
-    #[test]
-    fn the_pending_field_shows_still_waiting_marks_and_never_the_password() {
-        let theme = Theme::dark();
-        let layout = LockLayout::for_output(single(1280.0, 800.0)[0], &theme);
-        let mut text = TextRenderer::new();
-        let idle = LockView::default();
-        let verifying = LockView {
-            verifying: true,
-            ..LockView::default()
-        };
-        let mut placeholder = Scene::new();
-        draw_password_contents(
-            &mut placeholder,
-            &layout,
-            &theme,
-            &mut text,
-            &idle,
-            &LockStatusPaint::settled(&idle),
-        );
-        let mut pending = Scene::new();
-        draw_password_contents(
-            &mut pending,
-            &layout,
-            &theme,
-            &mut text,
-            &verifying,
-            &a_pending_answer(),
-        );
-        assert!(
-            pending.encoding().n_paths > placeholder.encoding().n_paths,
-            "the field draws the waiting marks as more shapes"
-        );
-        assert!(
-            pending.encoding().resources.glyphs.is_empty(),
-            "a checking field shows no text at all"
-        );
-        assert!(
-            !placeholder.encoding().resources.glyphs.is_empty(),
-            "the empty field still says what to do"
-        );
-    }
-
-    #[test]
-    fn every_answer_keeps_the_form_still_and_its_row_single_line() {
-        let mut text = TextRenderer::new();
-        let caption = ui::tokens::Typography::default().size(ui::TextRole::Caption);
-        for theme in [
-            Theme::dark(),
-            Theme::light(),
-            Theme::high_contrast(),
-            Theme::dark().with_text_scale(2.0),
-            Theme::dark().with_reduce_motion(true),
-        ] {
-            for size in [(800.0, 600.0), (1280.0, 800.0), (1600.0, 900.0)] {
-                let output = single(size.0, size.1)[0];
-                let layout = LockLayout::for_output(output, &theme);
-                for view in [
-                    LockView::default(),
-                    LockView {
-                        error: Some("Incorrect username or password"),
-                        ..LockView::default()
-                    },
-                    LockView {
-                        error: Some(UNAVAILABLE_MSG),
-                        ..LockView::default()
-                    },
-                    LockView {
-                        verifying: true,
-                        ..LockView::default()
-                    },
-                ] {
-                    let tone = LockStatus::of(&view);
-                    let copy = tone.copy(&view);
-                    let (width, height) = text.measure(
-                        &copy,
-                        scaled_text_size(caption, layout.scale, &theme),
-                        Some(ui::num::f32_of_f64(layout.status.width())),
-                    );
-                    assert!(
-                        f64::from(width) <= layout.status.width() + 0.5
-                            && f64::from(height) <= layout.status.height() + 0.5,
-                        "{copy:?} must stay on its one status line at {size:?}, {theme:?}",
-                        theme = theme.name
-                    );
-                }
-                // The refusal's nudge fits the card's gutter, so the row never
-                // leaves the panel, and the answer never changes the rows.
-                assert!(layout.status.x0 - 8.0 * layout.scale >= layout.panel.x0);
-                assert!(layout.status.y1 < layout.notifications.y0);
-                assert_eq!(
-                    layout.password,
-                    LockLayout::for_output(output, &theme).password
-                );
-            }
         }
     }
 }
