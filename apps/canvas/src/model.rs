@@ -75,6 +75,11 @@ pub struct Layer {
     /// Held still: the pointer passes through its marks to those beneath.
     pub locked: bool,
     /// Colour and tone adjustments of everything on the layer.
+    ///
+    /// The first adjustment on an absent record is one assignment of that
+    /// record: two people creating it at the same moment choose one value,
+    /// not a merge of both. Once it exists, qualities they change apart
+    /// merge (the path is `layers.*.adjust.exposure`, `…saturation`, …).
     pub adjust: Option<Adjust>,
     /// The layer this layer masks, or empty for an ordinary layer. A mask's
     /// marks are drawn in greys: where it is light that layer shows, where
@@ -148,10 +153,11 @@ impl Selection {
 pub type StrokePoint = Vec<f64>;
 
 /// The geometry of a mark.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Model)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Shape {
     /// An axis-aligned rectangle; `radius` rounds its corners.
+    #[model(default)]
     Rect {
         x: f64,
         y: f64,
@@ -366,6 +372,11 @@ pub struct Style {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feather: Option<f64>,
     /// Colour and tone adjustments: a picture's pixels, a shape's colours.
+    ///
+    /// The first adjustment on an absent record is one assignment of that
+    /// record: two people creating it at the same moment choose one value,
+    /// not a merge of both. Once it exists, qualities they change apart
+    /// merge (the path is `marks.*.style.adjust.exposure`, `…saturation`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adjust: Option<Adjust>,
 }
@@ -608,13 +619,15 @@ impl Default for Artwork {
     }
 }
 
-// A mark's geometry, the picture it traces, the area selected and a medium
-// are each replaced together: they stay one value, last writer wins. What a
-// mark looks like ([`Style`], [`Adjust`]) and the ground are editable one
-// field at a time, so they are models with a field each: two people painting
-// one mark do not overwrite the field they did not touch.
+// A mark's shape is a data enum: its variant name is one scalar, and the
+// fields of that variant are stored beside it, each edited on its own. Two
+// people changing a text's position and its width therefore keep both; a
+// change of variant is one last-writer-wins write of the name, and fields
+// the new variant does not carry stay as unused history for a later return.
+// The picture a mark traces, the area selected and a medium are each replaced
+// together: they stay one value, last writer wins. What a mark looks like
+// ([`Style`], [`Adjust`]) and the ground are editable one field at a time too.
 tilo_resource::json_model!(
-    Shape,
     Gradient,
     Shadow,
     Reference,
@@ -622,7 +635,8 @@ tilo_resource::json_model!(
     crate::media::MediumSpec
 );
 
-/// A blank rectangle: what a mark is before it is given a shape.
+/// A blank rectangle: what a mark is before it is given a shape, and what an
+/// absent shape reads as.
 impl Default for Shape {
     fn default() -> Self {
         Self::Rect {
@@ -880,15 +894,18 @@ pub fn valid_group(group: &str) -> bool {
 
 impl Artwork {}
 
-/// Bring a document written when a mark's style and adjustments were stored
-/// whole up to the storage its model reads now.
+/// Bring a document written when a mark's style, adjustments, shape and the
+/// ground were stored whole up to the storage its model reads now.
 ///
-/// Version 1 stored a mark's [`Style`], a mark's and a layer's [`Adjust`] and
-/// the artwork's [`Ground`] as one JSON string each, last writer wins: two
-/// people changing different fields of one mark — a fill and an opacity —
-/// overwrote each other. Version 2 stores each as a map of its fields, so
-/// each field merges on its own. [`retype_json`] rewrites an old string as
-/// the form its value already had, so nothing else about the document moves.
+/// Version 1 stored a mark's [`Style`], a mark's and a layer's [`Adjust`],
+/// a mark's [`Shape`] and the artwork's [`Ground`] as one JSON string each,
+/// last writer wins: two people changing different fields of one mark — a
+/// fill and an opacity, or a text's position and its width — overwrote each
+/// other. Version 2 stores the style, adjustments and ground as maps of
+/// their fields. Version 3 stores the shape as a data enum: the variant's
+/// name and its fields beside it, so geometry controls merge field by field.
+/// [`retype_json`] rewrites an old string as the form its value already had,
+/// so nothing else about the document moves.
 ///
 /// # Errors
 /// Returns why an old value does not read, or the document's write error.
@@ -897,7 +914,7 @@ pub fn upgrade(
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::tilo_resource::evolution::{map_values, retype_json};
-    if from != 1 {
+    if !(1..=2).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no canvas migration from storage version {from}"
         )));
@@ -905,13 +922,18 @@ pub fn upgrade(
     let root = &ui::automerge::ROOT;
     // Keyed collections hold each item as a map under its id.
     for (_, mark) in map_values(doc, root, "marks")? {
-        retype_json::<Style>(doc, &mark, "style")?;
-        retype_json::<Adjust>(doc, &mark, "adjust")?;
+        if from == 1 {
+            retype_json::<Style>(doc, &mark, "style")?;
+            retype_json::<Adjust>(doc, &mark, "adjust")?;
+        }
+        retype_json::<Shape>(doc, &mark, "shape")?;
     }
-    for (_, layer) in map_values(doc, root, "layers")? {
-        retype_json::<Adjust>(doc, &layer, "adjust")?;
+    if from == 1 {
+        for (_, layer) in map_values(doc, root, "layers")? {
+            retype_json::<Adjust>(doc, &layer, "adjust")?;
+        }
+        retype_json::<Ground>(doc, root, "ground")?;
     }
-    retype_json::<Ground>(doc, root, "ground")?;
     Ok(())
 }
 

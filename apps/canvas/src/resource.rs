@@ -672,7 +672,7 @@ mod prepare {
     search = Artwork::entries,
     answer = crate::answer::answer,
     effects = ViewOp,
-    version = 2,
+    version = 3,
     migrate = crate::model::upgrade
 )]
 impl Artwork {
