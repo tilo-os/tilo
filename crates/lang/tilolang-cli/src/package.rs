@@ -46,6 +46,12 @@ pub struct BuildOptions {
 pub struct BuiltApp {
     pub app: String,
     pub title: String,
+    /// The compiled package's metadata: what decides whether a build takes over a running one
+    /// in place ([`tilolang_tilo::upgrade`]).
+    pub meta: PackageMeta,
+    /// SHA-256 (hex) of what the app is: its manifest and its payload. Two builds with the same
+    /// digest are the same app.
+    pub digest: String,
     /// The staged payload directory.
     pub payload: PathBuf,
     pub manifest: PathBuf,
@@ -227,6 +233,8 @@ pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<B
         apps.push(BuiltApp {
             app: meta.app.clone(),
             title: meta.title.clone(),
+            meta: meta.clone(),
+            digest: digest(&text, &bundle),
             payload,
             manifest: manifest_path,
             tapp,
@@ -235,7 +243,31 @@ pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<B
     Ok(apps)
 }
 
-fn write_tapp(path: &Path, packed: &tilo_app_package::pack::Packed) -> Result<(), String> {
+/// SHA-256 (hex) of a manifest and the bundle staged with it.
+fn digest(manifest: &str, bundle: &Bundle) -> String {
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    for part in [
+        manifest.as_bytes(),
+        &bundle.wasm,
+        bundle.ids.as_bytes(),
+        &bundle.surface(),
+    ] {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    for import in &bundle.imports {
+        let bytes = import.to_json_bytes();
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
+    }
+    hex::encode(hasher.finalize())
+}
+
+pub(crate) fn write_tapp(
+    path: &Path,
+    packed: &tilo_app_package::pack::Packed,
+) -> Result<(), String> {
     use std::io::Write as _;
     let temp = path.with_extension("tapp.tmp");
     let file = std::fs::File::create(&temp).map_err(io(&temp))?;
