@@ -162,6 +162,18 @@ pub(crate) fn report_governance_refusals(st: &mut crate::shell::chrome_state::Ch
     }
     let refusals = st.tree_mut().take_governance_refusals();
     for refusal in refusals {
+        if let crate::shell::state::RoomChange::Governance(GovernanceRequest::Policy(
+            tilo_action_policy::Change::Grant(grant),
+        )) = &refusal.change
+            && let tilo_action_policy::Subject::Agent(agent) = &grant.subject
+        {
+            // An agent the door is admitting waits on this answer too.
+            st.refused_agent_admissions.push((
+                refusal.room.to_string(),
+                agent.clone(),
+                refusal.reason.clone(),
+            ));
+        }
         let title = crate::shell::i18n::t(match &refusal.change {
             crate::shell::state::RoomChange::Governance(request) => refused_change_label(request),
             crate::shell::state::RoomChange::Receipt(_) => "governance-change-history",
