@@ -38,6 +38,7 @@ impl BrowserShell {
             colour: Some(self.chrome.own_chip().rgb),
             quiet: self.hints_quiet(),
             presented: self.chrome.shared.presented.get(),
+            touch: self.interaction.pointer_precision == ui::PointerPrecision::Coarse,
         }
     }
 
