@@ -2,10 +2,15 @@
 //! member's own business (`tilo.member` `shortcut.save`), signed by this
 //! device as its person's. The host, the owner's device or a node, commits it
 //! into the room document every member admits; nothing is written here.
+//!
+//! A save is done once the room as this device holds it carries it: the
+//! shortcut runs from here the moment its save ends, as a grant is in force
+//! before the call it was given for goes on ([`super::grant_in_force`]).
+//! The wait lasts as long as the room's sessions with its host do.
 use std::sync::Arc;
 
-use super::ShellNetwork;
 use super::relay_rooms::receipt_value;
+use super::{NetCmd, ShellNetwork, room_topic_id};
 use crate::shell::state::RoomId;
 use tilo_relay_session::rooms::SAVE_SHORTCUT;
 
@@ -63,16 +68,76 @@ impl ShellNetwork {
             Ok(answer) => answer,
             Err(error) => return Some(Err(error)),
         };
-        Some(
-            tokio::task::spawn_blocking(move || answer.recv())
-                .await
-                .map_err(|_| "the request to the workspace's host stopped".to_owned())
-                .and_then(|answer| {
-                    answer.map_err(|_| "the connection to the workspace's host was lost".to_owned())
-                })
-                .and_then(|answer| answer)
-                .and_then(receipt_value)
-                .map(drop),
-        )
+        let committed = tokio::task::spawn_blocking(move || answer.recv())
+            .await
+            .map_err(|_| "the request to the workspace's host stopped".to_owned())
+            .and_then(|answer| {
+                answer.map_err(|_| "the connection to the workspace's host was lost".to_owned())
+            })
+            .and_then(|answer| answer)
+            .and_then(receipt_value);
+        if let Err(error) = committed {
+            return Some(Err(error));
+        }
+        Some(self.shortcut_change_arrives(room, &change).await)
+    }
+
+    /// Wait until the room as this device holds it carries `change`, which
+    /// its host committed. A write that changes a room's shortcuts announces
+    /// a policy change (`WorkspaceTreeHandle::write`): armed before each
+    /// look, so a change arriving between the look and the wait still wakes
+    /// it.
+    async fn shortcut_change_arrives(
+        &self,
+        room: RoomId,
+        change: &tilo_automation::ShortcutChange,
+    ) -> Result<(), String> {
+        let (watch, mut closed) = tokio::sync::oneshot::channel();
+        self.cmd_tx
+            .try_send(NetCmd::WatchHostSessions {
+                ws: room_topic_id(room),
+                ended: watch,
+            })
+            .map_err(|_| "the network is not running")?;
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let wake = Arc::clone(&arrived);
+        let announcements =
+            tilo_identity_host::policy_change::Watch::new(move || wake.notify_one());
+        loop {
+            announcements.arm();
+            if self.holds_shortcut_change(room, change) {
+                return Ok(());
+            }
+            tokio::select! {
+                () = arrived.notified() => {}
+                _ = &mut closed => {
+                    return Err("the connection to the workspace's host was lost".into());
+                }
+            }
+        }
+    }
+
+    /// Whether `room`'s workspace here carries `change`: the shortcut under
+    /// the saver's proof it was saved with, or none by a deleted id.
+    fn holds_shortcut_change(
+        &self,
+        room: RoomId,
+        change: &tilo_automation::ShortcutChange,
+    ) -> bool {
+        self.tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .is_some_and(|workspace| match change {
+                tilo_automation::ShortcutChange::Save(saved) => workspace
+                    .shortcuts
+                    .iter()
+                    .any(|held| held.id == saved.id && held.saved_proof == saved.saved_proof),
+                tilo_automation::ShortcutChange::Delete(id) => {
+                    !workspace.shortcuts.iter().any(|held| &held.id == id)
+                }
+            })
     }
 }
