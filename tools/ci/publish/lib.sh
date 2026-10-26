@@ -151,6 +151,24 @@ registry_login() {
   printf '%s' "$password" | skopeo login --authfile "$auth" -u "$user" --password-stdin "$registry" >/dev/null
 }
 
+# skopeo copy SRC DST (docker://REGISTRY/...), with the auth file AUTH and further skopeo flags,
+# logged in afresh before each attempt: an identity token lasts minutes, so a push that outlives
+# it (a multi-GB image) fails to authenticate its next blob; the next attempt logs in again, and
+# the blobs already pushed are not sent twice. DOCKER_CONFIG, when set, gets the same login.
+registry_copy() {
+  local auth=$1 src=$2 dst=$3 registry attempt
+  shift 3
+  registry=${dst#docker://}
+  registry=${registry%%/*}
+  for attempt in 1 2 3 4 5; do
+    registry_login "$registry" "$auth"
+    [[ -z ${DOCKER_CONFIG:-} ]] || cp "$auth" "$DOCKER_CONFIG/config.json"
+    skopeo copy --preserve-digests --retry-times 3 --authfile "$auth" "$@" "$src" "$dst" && return
+    printf 'publish: copy attempt %s to %s failed; logging in again\n' "$attempt" "$dst" >&2
+  done
+  die "could not copy $src to $dst"
+}
+
 # The board's firmware, into os/hardware/firmware/BOARD (writable_sources), where the image
 # builds take it from: the Lenovo's from its pinned artifact, the Orange Pi's Wi-Fi files from
 # their pinned public copies.
