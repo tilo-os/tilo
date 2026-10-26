@@ -316,7 +316,9 @@ containerfile="$repo/os/Containerfile"
 # payload rows on the existing recovery-files and user-unit COPY instructions.
 # tilo-update-channel, which names the image the update path follows, travels
 # with tilo-verified-update in the component files: one payload row.
-expected_contract=e847bfe162c18fb2294b506a5899e12cd287d67b57a5d8c1bedca28b991e6bf4
+# tilo-authselect-unchanged rides the libexec COPY and the authselect-apply-changes
+# drop-in that uses it is one payload row: an unchanged boot skips authselect.
+expected_contract=282acf21292aeff8e79de9bd354721d4bad6f4b6587733bfc73edd1bcc9ed8fc
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
