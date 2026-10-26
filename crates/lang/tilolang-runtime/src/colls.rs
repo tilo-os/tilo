@@ -31,6 +31,11 @@ pub(crate) struct CollSeen {
     pub first: End,
     pub last: End,
     pub at: Vec<(usize, Rc<str>)>,
+    /// How many items were read one after the other from the first: a loop over the
+    /// collection. Once it read them all, the view depends on the whole collection (a read of
+    /// its field) and what it reads of it item by item is no longer kept.
+    sweep: usize,
+    whole: bool,
 }
 
 impl CollSeen {
@@ -42,6 +47,8 @@ impl CollSeen {
             first: End::Unread,
             last: End::Unread,
             at: Vec::new(),
+            sweep: 0,
+            whole: false,
         }
     }
 
@@ -66,10 +73,12 @@ impl CollSeen {
 
     /// Whether everything seen is still so in `listing`.
     pub fn holds(&self, listing: &Listing) -> bool {
-        self.len.is_none_or(|len| len == listing.len())
-            && self.first.holds(listing.items.first())
-            && self.last.holds(listing.items.last())
-            && self.at.iter().all(|(i, id)| listing.get(*i) == Some(id))
+        // Read whole, it depends on the collection's field instead.
+        self.whole
+            || self.len.is_none_or(|len| len == listing.len())
+                && self.first.holds(listing.items.first())
+                && self.last.holds(listing.items.last())
+                && self.at.iter().all(|(i, id)| listing.get(*i) == Some(id))
     }
 
     /// Whether everything seen is still so in the store.
@@ -84,6 +93,11 @@ impl CollSeen {
 
     /// Take on what `other`, of the same collection, saw.
     fn absorb(&mut self, other: Self) {
+        if self.whole || other.whole {
+            self.whole = true;
+            self.at = Vec::new();
+            return;
+        }
         self.len = self.len.or(other.len);
         if matches!(self.first, End::Unread) {
             self.first = other.first;
@@ -159,8 +173,8 @@ impl Core {
         Ok(listing)
     }
 
-    /// Record, in a view's frame, what one read of `coll` saw.
-    fn saw(&self, coll: &Rc<CollRef>, read: Read) {
+    /// Record, in a view's frame, what one read of `coll`, of `len` items, saw.
+    fn saw(&self, coll: &Rc<CollRef>, read: Read, len: usize) {
         let mut frames = self.frames.borrow_mut();
         let Ok(frame) = frames.top_mut() else {
             return;
@@ -179,18 +193,31 @@ impl Core {
         let Some(seen) = vs.colls.get_mut(at) else {
             return;
         };
+        if seen.whole {
+            return;
+        }
         match read {
             Read::Len(len) => seen.len = Some(len),
             Read::First(id) => seen.first = End::Read(id),
             Read::Last(id) => seen.last = End::Read(id),
-            Read::At(i, id) => seen.at.push((i, id)),
+            Read::At(i, id) => {
+                if i == seen.sweep {
+                    seen.sweep = seen.sweep.saturating_add(1);
+                }
+                seen.at.push((i, id));
+            }
+        }
+        if seen.sweep == len && len > 0 {
+            seen.whole = true;
+            seen.at = Vec::new();
+            vs.reads.push((seen.resource.clone(), coll.field.clone()));
         }
     }
 
     /// How many items `coll` has.
     pub(crate) fn coll_len(&self, coll: &Rc<CollRef>) -> HResult<usize> {
         let len = self.coll_listing(coll)?.len();
-        self.saw(coll, Read::Len(len));
+        self.saw(coll, Read::Len(len), len);
         Ok(len)
     }
 
@@ -203,7 +230,7 @@ impl Core {
                 listing.len()
             ));
         };
-        self.saw(coll, Read::At(index, Rc::clone(id)));
+        self.saw(coll, Read::At(index, Rc::clone(id)), listing.len());
         Ok(coll.item_ref(id))
     }
 
@@ -226,6 +253,7 @@ impl Core {
             } else {
                 Read::First(end)
             },
+            listing.len(),
         );
         Ok(value)
     }

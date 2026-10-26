@@ -95,6 +95,12 @@ view newest(bag: Bag) {
     }
 }
 
+view done_count(bag: Bag) {
+    section(bag.name) {
+        text("{bag.items.count(item -> not item.done)} open")
+    }
+}
+
 view count(bag: Bag) {
     section(bag.name) {
         text("{bag.items.len()}")
@@ -503,5 +509,21 @@ view count(bag: Bag) {
                 "item 8", "item 9"
             ]
         );
+    }
+
+    #[test]
+    fn a_view_that_reads_every_item_follows_every_change() {
+        let rows = Rows::new(300);
+        let mut view = rows.view("done_count");
+        assert_eq!(texts(view.tree()), ["300 open"]);
+        rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+        view.poll_patches().unwrap();
+        assert_eq!(texts(view.tree()), ["301 open"]);
+        rows.call(
+            "remove",
+            vec![Value::resource(&rows.bag), Value::resource(&rows.items[7])],
+        );
+        view.poll_patches().unwrap();
+        assert_eq!(texts(view.tree()), ["300 open"]);
     }
 }
