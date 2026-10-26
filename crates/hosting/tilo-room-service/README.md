@@ -233,10 +233,48 @@ sent for it. No log line names an address, a link or a secret.
   still copy the link.
 
 Without them the door sends no mail and says so: an address is listed at
-once, and Invite hands the inviter the link to send. The mails are in
-`mail/` beside the sources (plain text and HTML, English and German);
-`tilo-room-service mail-preview <dir>` writes each as sent and prints the
-paths.
+once, and Invite hands the inviter the link to send. The words are the ones
+built into the service (`mail/` beside the sources: plain text and HTML,
+English and German), unless `TILO_ROOMS_MAIL_TEMPLATES` names a directory of
+the same shape — `layout.html` and `<language>/<mail>.{txt,html}` — as the
+shared mail repository's `generated/coffee` set, laid out in the image (for
+example `/usr/local/share/tilo/room-mail`). A configured directory that is
+missing, or that holds a file the door cannot fill, stops the service: it
+never falls back to the built-in words. Only `{{workspace}}`, `{{email}}`,
+`{{link}}`, `{{remove_link}}` and `{{door}}` are filled in a mail, and only
+`{{body}}` (and, if the layout wants it, `{{language}}`) in a layout; each is
+filled once, so a name or address that spells a placeholder stays text; a
+link the door mails is `https`, or a plain `http` loopback address in the
+local review mode (`TILO_ROOMS_LOCAL`) only.
+`tilo-room-service mail-preview <dir>` writes every mail as it would be sent,
+in every language, from the same templates (`TILO_ROOMS_MAIL_TEMPLATES` is
+read here too) and prints the paths.
+
+Every mail is kept in the room's outbox until the mail service takes it
+(`TILO_ROOMS_STATE/<name>/mail-outbox`, one `0600` file in a `0700`
+directory, written atomically): a restart, a busy service or an unreachable
+one delays a mail instead of losing it, and the next start sends what the
+last one did not. An attempt the service answers with `429`, `5xx` or no
+answer at all is tried again, honouring `Retry-After`, seven times at most
+over the day before the door gives up; a mail refused with any other `4xx`
+is not tried again. Each
+mail carries one id as Resend's `Idempotency-Key`, kept across attempts and
+restarts, so a repeated attempt after an uncertain answer is still one mail.
+The outbox keeps at most 512 mails and 16 MiB of mail fields, including on
+recovery, and refuses serialized entries above 1 MiB before acknowledging
+them. It drops mail more than a day old and records each bounded attempt
+before sending. Confirmations and invitations are checked against the
+relay's durable wait-list state before every attempt; removal cancels
+queued mail, including after restart. A provider request already in flight
+cannot be recalled.
+
+The door acknowledges invitation enqueue to the relay, so queue failure is
+reported to the inviter rather than counted as completed mailing. A bounded,
+private `receipts.json` records accepted confirmation addresses as hashes
+for one hour; without this evidence a suppressed repeat returns unavailable,
+not a claim that mail was queued. Mail bodies and links are kept only until
+sent or discarded; the API key is never written there. Nothing logs an
+address, a link or a secret.
 
 **One origin.** The room API and the relay share one public origin
 (e.g. `https://rooms.example`). The relay serves browsers on its plain HTTP
@@ -277,6 +315,7 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_MAIL_FROM` | unset | the sender of the door's mail, `Name <address>` or an address; set with `TILO_ROOMS_RESEND_KEY_FILE` (and `TILO_ROOMS_WEB_ENTRY`), or neither |
 | `TILO_ROOMS_RESEND_KEY_FILE` | unset | a file holding the Resend API key the door mails with; read at start, never logged |
 | `TILO_ROOMS_RESEND_URL` | Resend's API | where mail is posted; only a test points it at a stand-in on loopback |
+| `TILO_ROOMS_MAIL_TEMPLATES` | unset: the built-in words | a directory of the door's mail: `layout.html` and `<language>/<mail>.{txt,html}` for English and German, as the shared mail repository's `generated/coffee` holds them. A file that is missing or that the door cannot fill stops the service; `mail-preview` reads it too |
 | `TILO_ROOMS_GUEST_JOINS_PER_10_MIN`, `TILO_ROOMS_GUEST_JOINS_PER_DAY` | `5`, `30` | guest joins one address may make (an IPv6 address counts by its /64); a visitor past them watches until the window frees up. The windows are rebuilt from the guest ledger on the volume at start, so a restart does not reset them; a join the room never answered (it was restarting) does not count. Raise them where many visitors share an address: offices, schools, mobile carriers' NAT |
 | `TILO_ROOMS_SPECTATES_PER_10_MIN` | `30` | spectator certificates one address may take |
 | `TILO_ROOMS_OWNERS`, `TILO_ROOMS_MODERATORS` | none | user keys (hex), comma-separated |

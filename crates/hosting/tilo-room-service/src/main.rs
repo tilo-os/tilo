@@ -5,6 +5,7 @@ mod guests;
 mod limits;
 mod mail;
 mod ops;
+mod outbox;
 mod persistent;
 mod room;
 mod tls;
@@ -1034,7 +1035,15 @@ async fn main() -> Result<()> {
         let dir = args
             .get(1)
             .context("usage: tilo-room-service mail-preview <dir>")?;
-        for path in mail::preview(std::path::Path::new(dir))? {
+        // The same words the door would send: a configured directory is
+        // read and checked here too, never quietly replaced by the built-in
+        // ones.
+        let templates = match std::env::var_os("TILO_ROOMS_MAIL_TEMPLATES") {
+            Some(templates) => mail::Templates::load(std::path::Path::new(&templates))
+                .context("TILO_ROOMS_MAIL_TEMPLATES")?,
+            None => mail::Templates::baked(),
+        };
+        for path in mail::preview(std::path::Path::new(dir), &templates)? {
             println!("{}", path.display());
         }
         return Ok(());
