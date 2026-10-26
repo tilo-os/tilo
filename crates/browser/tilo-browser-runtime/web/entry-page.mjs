@@ -924,10 +924,15 @@ export async function startEntryPage({mode}) {
         },
       }});
     identityActions = attachIdentity();
+    // What the kept profile says of linked accounts, or that none is kept:
+    // either way a linked account's picture may be worn now, and never
+    // over one the person uploaded.
     void followProfile(page, name => { displayName = name; }, kept => {
       ownPhoto = typeof kept.photo === 'string' ? kept.photo : null;
       identityActions?.pictured?.();
-    });
+      void identityActions?.perform('set-linked', {photoFrom: typeof kept.photo_from === 'string' ? kept.photo_from : null,
+        linked: Array.isArray(kept.linked) ? kept.linked : [], keep: false});
+    }, () => void identityActions?.perform('set-linked', {photoFrom: null, linked: [], keep: false}));
     // A drawn name someone else here already goes by is drawn again; a
     // name the person chose stays theirs. A page with no host to join has
     // no peer and nobody to share a name with.
@@ -1433,13 +1438,13 @@ async function setUpFromLink(secret, setUp) {
  * The name the person this page joined as chose on any of their devices,
  * from the profile their hosts keep; one chosen only here goes to them.
  */
-async function followProfile(page, onName, onKept = () => {}) {
+async function followProfile(page, onName, onKept = () => {}, onNone = () => {}) {
   const userPublicKey = page.peer?.userPublicKey;
   if (!userPublicKey || !page.peer.setDisplayName) return;
   const origins = [page.peer.origin, ...membershipOrigins(userPublicKey),
     ...listedWorkspaces({home: page.entry?.home}).map(workspace => workspace.host.origin)].filter(Boolean);
   try {
-    await syncProfile({userPublicKey, origins, identity: currentIdentity(), chosen: chosenDisplayName(userPublicKey), onKept,
+    await syncProfile({userPublicKey, origins, identity: currentIdentity(), chosen: chosenDisplayName(userPublicKey), onKept, onNone,
       apply: name => {
         const kept = chooseDisplayName(userPublicKey, name);
         page.peer.setDisplayName(kept);

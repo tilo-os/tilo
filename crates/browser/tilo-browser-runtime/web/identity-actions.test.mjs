@@ -257,6 +257,31 @@ test('a linked account names itself in the profile and lends its picture until o
   assert.deepEqual(published.at(-1), {photo: 'data:image/webp;base64,UklGRg==', photoFrom: null, linked: []});
 });
 
+test('a new member with no saved profile wears their linked account’s picture', async () => {
+  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const published = [];
+  let current = null;
+  const photos = {current: () => current, choose: async () => null, show: url => { current = url; }};
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'], name: () => 'Quinten',
+    profile: async ({photo, photoFrom, linked}) => { published.push({photo, photoFrom, linked}); },
+    photos, naming: {ask: async () => null, set: chosen => chosen}});
+  await actions.attach(fakeMount());
+  const avatar = 'data:image/png;base64,iVBORw0KGgo=';
+  await actions.perform(LINKED_ID, {accounts: [{service: 'Discord', handle: 'quik2007', picture: avatar}], keep: true});
+  assert.deepEqual(published, [], 'not before the hosts were asked');
+  // Their hosts answered and keep no profile: read, so the picture goes on.
+  const nones = [];
+  await syncProfile({userPublicKey: identity.userPublicKey, origins: ['https://a.example'], apply: () => {},
+    find: async () => null, onNone: () => nones.push('none')});
+  // No host answered: not read, nothing is said.
+  await syncProfile({userPublicKey: identity.userPublicKey, origins: ['https://a.example'], apply: () => {},
+    find: async () => undefined, onNone: () => nones.push('unreachable')});
+  assert.deepEqual(nones, ['none']);
+  await actions.perform(LINKED_ID, {photoFrom: null, linked: [], keep: false});
+  assert.deepEqual(published, [{photo: avatar, photoFrom: 'Discord', linked: [{service: 'Discord', handle: 'quik2007'}]}]);
+  assert.equal(current, avatar);
+});
+
 test('unlinking takes away the picture the account lent', async () => {
   const identity = await browserIdentity({storage: memoryStorage(), persist: null});
   const published = [];
