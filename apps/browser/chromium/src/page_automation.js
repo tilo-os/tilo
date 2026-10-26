@@ -1073,7 +1073,10 @@ globalThis.__tiloPage ||= (() => {
         selection.removeAllRanges();
         selection.addRange(range);
       }
-      inserted = document.execCommand(text ? 'insertText' : 'delete', false, text);
+      // A region is emptied here and then typed into by keys (see `typed`),
+      // so the page hears the edit it would hear from a person: every key's
+      // beforeinput, and no one write of the whole text in between.
+      inserted = document.execCommand(field && text ? 'insertText' : 'delete', false, text);
     }
     if (field && (!inserted || element.value !== text)) {
       // Controls without editing (dates, colours) or pages that cancel the
@@ -1089,7 +1092,82 @@ globalThis.__tiloPage ||= (() => {
     if (field && element.value !== text)
       throw failure('rejected', secret(element) ? `${ref} did not accept the text`
         : `${ref} did not accept ${quote(clean(text, MAX_VALUE))}; it holds ${quote(clean(element.value, MAX_VALUE))}`);
-    return {ok: true, message: `Filled ${summary(element)}`};
+    if (field) return {ok: true, message: `Filled ${summary(element)}`};
+    if (!text) return {ok: true, message: `Filled ${summary(element)}`};
+    // The native editing command runs none of the page's beforeinput
+    // listeners and writes one paragraph per line, while a person at the
+    // keyboard gives the page a line at a time, each edit heard before it is
+    // made. So the region is emptied here and its text typed by keys, which
+    // the host does (see `typed`).
+    // The region is empty and focused, with the caret where its text was:
+    // what it holds now is what the typing over it writes.
+    const caret = document.createRange();
+    caret.selectNodeContents(element);
+    caret.collapse(false);
+    const selection = getSelection();
+    selection.removeAllRanges();
+    selection.addRange(caret);
+    typedRegions.set(element, {text});
+    return {ok: true, message: `Filled ${summary(element)}`, input: inputRuns(text),
+      kept: true, shown: secret(element) ? '' : caretText(element)};
+  }
+
+  // The region's text as a caret writes it: a block boundary is a line break,
+  // a <br> that ends a block is the empty line after it, and the trailing
+  // break a region puts at its end is not a line of its own.
+  function caretText(element) {
+    let text = '';
+    const isBlock = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DD|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|UL)$/;
+    const walk = node => {
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3) { text += child.data; continue; }
+        if (child.nodeType !== 1) continue;
+        const name = child.localName.toUpperCase();
+        if (name === 'BR') { text += '\n'; continue; }
+        const as_block = isBlock.test(name);
+        if (as_block && text && !text.endsWith('\n')) text += '\n';
+        walk(child);
+        if (as_block && !text.endsWith('\n')) text += '\n';
+      }
+    };
+    walk(element);
+    return text.endsWith('\n') ? text.slice(0, -1) : text;
+  }
+
+  // What typing writes, line by line: the field's whole text is its own first
+  // line, and text with line breaks is one line after another. A carriage
+  // return is not a line break of its own.
+  function inputRuns(text) {
+    const unified = text.replace(/\r\n?/g, '\n');
+    if (!unified.includes('\n')) return [unified];
+    return unified.split('\n');
+  }
+
+  // The region a typed fill is writing, once its last key has reached the page.
+  // It says whether the text is all there, and withdraws the change event that
+  // was announced before the typing, so the page hears one edit and one
+  // completion, as it does from a person.
+  const typedRegions = new WeakMap();
+  // Text as the lines a person would read, whatever blocks a page made of them.
+  function linesOf(text) {
+    return text.split('\n').map(line => line.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
+  }
+
+  function typed() {
+    const element = activeTextElement();
+    const region = element && typedRegions.get(element);
+    typedRegions.delete(element);
+    if (!region) throw failure('rejected', 'The field the text was typed into is gone');
+    const shown = caretText(element);
+    // An editor with a model of its own draws the text again after every edit,
+    // with blocks and line breaks of its making: what it holds is the lines
+    // typed, not the nodes they were typed as.
+    if (linesOf(shown) !== linesOf(region.text)) {
+      // Nothing typed reached a page that changed its own text: say what the
+      // page says, not what the fill meant to write.
+      throw failure('rejected', `${refOf(element)} did not take the whole text; it holds ${quote(clean(shown, MAX_VALUE))}`);
+    }
+    return {ok: true, message: `Filled ${summary(element)}`, shown};
   }
 
   function select(ref, values) {
@@ -1676,7 +1754,7 @@ globalThis.__tiloPage ||= (() => {
   }
 
   return {
-    nativeTextInputElement, configureNativeTextEditor, fillFilesElement, fence,
+    nativeTextInputElement, configureNativeTextEditor, fillFilesElement, fence, typed,
     run(command) {
       try {
         if (!doc) doc = command.doc;
@@ -1745,7 +1823,7 @@ globalThis.__tiloPage ||= (() => {
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
           case 'locate_box': return locateBox(command.element);
-          case 'fill': arm('script'); return fill(command.element, command.text, command.secret);
+          case 'fill': { arm('script'); return fill(command.element, command.text, command.secret); }
           case 'fill_files': arm('script'); return fillFilesTarget(command.element, command.paths);
           case 'select': arm('script'); return select(command.element, command.values);
           case 'submit': arm('script'); return submit(command.element, command.cross_origin);
