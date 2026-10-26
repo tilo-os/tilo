@@ -173,7 +173,7 @@ impl BrokerHandle {
     /// an app connected with an explicit endpoint identity
     /// ([`ui::collaboration::CertifiedEndpointIdentity::with_channel_keys`]):
     /// what its writes are encrypted under, as a launched app's are.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn endpoint_channel_keys(&self) -> ui::collaboration::EndpointChannelKeys {
         use tilo_identity_host::broker::ChannelKeySource as _;
         let keys = session_channel_keys(self.channel_encryption.clone());
