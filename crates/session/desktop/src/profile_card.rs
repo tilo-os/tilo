@@ -247,13 +247,16 @@ impl ProfileChoice {
 struct CardFocus {
     rect: Rect,
     focused: bool,
+    /// What the card is called: theirs, or yours.
+    label: String,
 }
 
 impl CardFocus {
-    fn new() -> Self {
+    fn new(label: String) -> Self {
         Self {
             rect: Rect::ZERO,
             focused: false,
+            label,
         }
     }
 }
@@ -307,7 +310,7 @@ impl Widget for CardFocus {
         use ui::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::Group)
-                .with_name(t("profile-card"))
+                .with_name(self.label.clone())
                 .with_semantic_key("profile-card-focus")
                 .with_state(AccessState::new().focusable(true).focused(self.focused)),
         )
@@ -447,7 +450,10 @@ impl ProfileCard {
         let mut body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
-            .push(Box::new(CardFocus::new()))
+            .push(Box::new(CardFocus::new(t_args(
+                "profile-card-of",
+                &[("name", model.name.clone().into())],
+            ))))
             .push(Box::new(header));
         if let Some(status) = &other.status {
             body = body.push(Self::status_row(status));
@@ -586,7 +592,7 @@ impl ProfileCard {
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
             // First in the card's focus order: the card opens focused on
             // itself, not in its name field.
-            .push(Box::new(CardFocus::new()))
+            .push(Box::new(CardFocus::new(t("profile-card"))))
             .push(Box::new(header));
         if let Some(photo) = self.photo_buttons(model) {
             body = body.push(photo);
