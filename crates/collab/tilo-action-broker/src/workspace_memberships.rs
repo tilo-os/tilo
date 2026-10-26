@@ -247,15 +247,15 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>()
         })?;
         for (room, mut actions) in rooms {
-            if service.requires_room(&room) {
-                actions.extend(super::workspace_checkpoints::actions());
-            } else if service.grants_authorship_at_host(&room) {
-                // Governed by the node that stewards it: this device keeps
-                // the room's own membership changes and asks that host to
-                // commit them, but a checkpoint is this device's custody
-                // and is not the host's to make.
-            } else {
+            // A room its host stewards keeps its own membership changes
+            // here too: this device asks that host to commit them.
+            if !(service.requires_room(&room) || service.grants_authorship_at_host(&room)) {
                 continue;
+            }
+            // Checkpoints are their governor's custody: offered where this
+            // device governs the room, whichever model its records follow.
+            if service.keeps_checkpoints(&room) {
+                actions.extend(super::workspace_checkpoints::actions());
             }
 
             let existing = self
@@ -342,7 +342,7 @@ impl CapnpBrokerState {
         pending: &super::PendingInvocation,
         service: &dyn crate::services::WorkspaceMemberships,
     ) -> Result<serde_json::Value, String> {
-        if !service.requires_room(room) {
+        if !service.keeps_checkpoints(room) {
             return Err("checkpoint room changed".into());
         }
         if command.mutates() {

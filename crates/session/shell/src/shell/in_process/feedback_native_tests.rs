@@ -165,10 +165,11 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
     );
     admit(&restarted);
     crate::shell::persist::wait_for_saves();
-    assert_eq!(
-        std::fs::read(&path).unwrap(),
-        before,
-        "startup creates no enrollment, grant or document write"
+    let after = std::fs::read(&path).unwrap();
+    assert!(
+        after == before,
+        "startup creates no enrollment, grant or document write; {}",
+        first_difference(&before, &after)
     );
     restored.native_owner().unwrap().fence_all();
     assert!(
@@ -176,6 +177,26 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
         "uncertain owner custody cannot borrow a cached admission"
     );
     assert!(Delivery::new(restored, destination(), &author).is_err());
+}
+/// Where two state files first differ, with the text around it, to name
+/// what a write changed.
+fn first_difference(before: &[u8], after: &[u8]) -> String {
+    let first = before
+        .iter()
+        .zip(after)
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| before.len().min(after.len()));
+    let around = |bytes: &[u8]| {
+        String::from_utf8_lossy(&bytes[first.saturating_sub(120)..(first + 120).min(bytes.len())])
+            .into_owned()
+    };
+    format!(
+        "{} bytes became {}, first at {first}: {:?} became {:?}",
+        before.len(),
+        after.len(),
+        around(before),
+        around(after)
+    )
 }
 /// An admission stands only while the room's sandbox is the one it was
 /// given under, as well as the reporter's standing.
