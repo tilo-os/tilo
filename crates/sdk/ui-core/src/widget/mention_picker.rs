@@ -517,3 +517,31 @@ mod tests {
         assert!(!picker.is_open(), "a finished mention offers nothing");
     }
 }
+
+#[cfg(test)]
+mod roster_tests {
+    use super::*;
+    use crate::permissions::UserId;
+
+    #[test]
+    fn the_room_and_an_owners_candidates_merge_once_by_id_sorted_by_name() {
+        let mut presence = crate::presence::PresenceCtx::empty();
+        presence
+            .names
+            .insert(UserId("u_ada".into()), "Ada Lovelace".into());
+        presence
+            .names
+            .insert(UserId("u_alan".into()), "Alan Turing".into());
+        let extra = vec![
+            MentionCandidate::new("u_ada", "Ada L.", false),
+            MentionCandidate::new("u_old", "Zoe Zebra", false),
+            MentionCandidate::new("u_blank", "   ", false),
+        ];
+        let merged = merged_roster(&presence, &extra);
+        let names: Vec<_> = merged
+            .iter()
+            .map(|candidate| candidate.name.as_str())
+            .collect();
+        assert_eq!(names, ["Ada Lovelace", "Alan Turing", "Zoe Zebra"]);
+    }
+}
