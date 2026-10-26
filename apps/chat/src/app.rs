@@ -2161,22 +2161,12 @@ impl ChatApp {
                 self.history_open = Some("m_sora".into());
                 self.history_anchor = Point::new(424.0, 420.0);
             }
-            "msgmenu" => {
-                // The right-click action menu over one of your own messages,
-                // offering Edit — the discoverable entry point to editing.
-                self.right_flap.snap(false);
-                self.thread_open = None;
-                self.call = CallState::default();
-                self.menu = Some(self.context_menu(
-                    MenuTarget::Message("m_me2".into()),
-                    Point::new(360.0, 300.0),
-                    MenuAction::for_message().to_vec(),
-                ));
-            }
-            "msgbar" | "msgbar-shift" => {
+            "msgbar" | "msgbar-shift" | "msgmenu" => {
                 // The pointer over one of your own messages: its row lifts
                 // under its action bar; with Shift held the bar grows the
-                // quick actions that go ahead at once.
+                // quick actions that go ahead at once. `msgmenu` then clicks
+                // the bar's More, opening the message's whole menu under it
+                // ([`crate::resource`]'s scenario input).
                 self.right_flap.snap(false);
                 self.thread_open = None;
                 self.call = CallState::default();

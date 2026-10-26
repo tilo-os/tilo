@@ -594,6 +594,16 @@ fn the_bars_more_opens_the_messages_menu() {
     ui::widget::note_shift(false);
     let (mut app, mut doc) = app_with_doc();
     let id = send_own(&mut app, &mut doc, "more please");
+    app.message_bar.settle_for_visual_review();
+    render_frame(&mut app, 1440.0, 900.0);
+    app.hovered_message = Some(id.clone());
+    render_frame(&mut app, 1440.0, 900.0);
+    let more = app
+        .hits
+        .iter()
+        .find(|(_, hit)| matches!(hit, Hit::MessageMore { msg } if *msg == id))
+        .map(|(rect, _)| *rect)
+        .expect("the bar shows More");
     app.on_hit(
         Hit::MessageMore { msg: id.clone() },
         &mut ui::widget::Edits::lend(&mut doc),
@@ -601,6 +611,18 @@ fn the_bars_more_opens_the_messages_menu() {
     let menu = app.menu.as_ref().expect("the menu opens");
     assert_eq!(menu.target, MenuTarget::Message(id));
     assert_eq!(menu.items, MenuAction::for_message().to_vec());
+    // At the button, not where the pointer last was: its trailing edge on
+    // the button's, under it or (near the window's bottom) above it.
+    let at = menu.widget.get_rect();
+    assert!((at.x1 - more.x1).abs() < 1.0, "{at:?} ends at {more:?}");
+    assert!(
+        at.y0 >= more.y1 || at.y1 <= more.y0,
+        "{at:?} opens off {more:?}, not across it"
+    );
+    assert!(
+        (at.y0 - more.y1).abs() < 12.0 || (more.y0 - at.y1).abs() < 12.0,
+        "{at:?} stays at {more:?}"
+    );
 }
 
 #[test]

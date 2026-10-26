@@ -786,12 +786,15 @@ impl ChatApp {
                 }
             }
             Hit::MessageMore { msg } => {
-                let anchor = self
+                let button = self
                     .hits
                     .iter()
                     .find(|(_, hit)| matches!(hit, Hit::MessageMore { msg: m } if *m == msg))
-                    .map_or(self.last_mouse, |(rect, _)| Point::new(rect.x0, rect.y1));
-                self.open_message_menu(msg, anchor);
+                    .map(|(rect, _)| *rect);
+                match button {
+                    Some(button) => self.open_message_menu_from(msg, button),
+                    None => self.open_message_menu(msg, self.last_mouse),
+                }
             }
             Hit::OpenThread(id) => self.on_hit_open_thread(id),
             Hit::EditHistory { msg, anchor } => {
