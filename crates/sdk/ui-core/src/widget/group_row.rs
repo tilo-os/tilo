@@ -7338,6 +7338,70 @@ mod tests {
         assert!(!row.take_structure_dirty());
     }
 
+    /// A width change lands on a slot whose opening spring is still in
+    /// flight, with a second window arriving beside it. Every frame after
+    /// that must settle: the springs move the slots, so each frame's rebuild
+    /// reports work and the composition has to come back to rest before the
+    /// next one — this is the frame the compositor draws.
+    #[test]
+    fn a_width_change_on_an_opening_window_lets_its_frames_settle() {
+        crate::motion::forget_frames_for_tests();
+        // A real strip, so the slots resolve against its viewport the way a
+        // live one does.
+        let mut row = strip_at(1, 1280.0, 0.0, crate::widget::WIDTH_NORMAL_PERMILLE);
+        row.groups[0].start_spawn_animation();
+        let t0 = crate::time::now();
+        let frame_at = |row: &mut GroupRow, frame: u64| {
+            crate::time::testing::with_monotonic_time(
+                t0 + Duration::from_millis(frame * 16),
+                || {
+                    row.frame_presented();
+                    let settle =
+                        crate::widget::layout::settle_widget_composition(false, |rebuild| {
+                            if rebuild {
+                                relayout_strip(row, 1280.0);
+                            }
+                            Ok((Some(Vec::new()), row.take_structure_dirty()))
+                        });
+                    if settle.is_ok() {
+                        row.mark_drawn();
+                    }
+                    settle
+                },
+            )
+        };
+        for frame in 0..3u64 {
+            let settle = frame_at(&mut row, frame);
+            assert!(settle.is_ok(), "frame {frame} of the opening settles");
+        }
+        assert!(
+            row.groups[0].has_width_spring_for_tests(),
+            "the window is still opening"
+        );
+        // A second window arrives beside the one still opening.
+        row.insert_group(make_group(200, &[2]), 1);
+        row.groups[1].start_spawn_animation();
+        for frame in 3..6u64 {
+            let settle = frame_at(&mut row, frame);
+            assert!(settle.is_ok(), "frame {frame} of the arrival settles");
+        }
+        assert!(
+            row.groups.iter().all(|g| g.has_width_spring_for_tests()),
+            "both slots are still opening"
+        );
+        // Both widths change while those springs are in flight.
+        for group in &mut row.groups {
+            group.set_width(WindowWidth::Fraction(333));
+        }
+        for frame in 6..30u64 {
+            let settle = frame_at(&mut row, frame);
+            assert!(
+                settle.is_ok(),
+                "frame {frame} after the width change settles: {settle:?}"
+            );
+        }
+    }
+
     fn drawn_strip(windows: u64) -> (GroupRow, Scene) {
         let specs: Vec<Vec<u64>> = (1..=windows).map(|id| vec![id]).collect();
         let specs: Vec<&[u64]> = specs.iter().map(Vec::as_slice).collect();
