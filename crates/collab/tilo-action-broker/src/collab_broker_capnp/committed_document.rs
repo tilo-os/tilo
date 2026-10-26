@@ -135,6 +135,12 @@ pub enum RecordRead {
 pub trait NativeDocumentReads: Send + Sync {
     /// Durable native installation obligation, independent of runtime health.
     fn requires_room(&self, room: &str) -> bool;
+    /// Whether `room` seals every record write under the record channel's
+    /// keys: no write in it is taken unencrypted, from any app.
+    fn seals_records(&self, room: &str) -> bool {
+        let _ = room;
+        false
+    }
     /// Who answers an app's read of `app`'s `record` in `room`.
     fn record_read(&self, room: &str, app: &str, record: &str) -> RecordRead {
         let _ = (app, record);
@@ -451,6 +457,16 @@ impl CapnpChannelHandle {
     pub(super) fn document_read_context(&self) -> Result<NativeDocumentReadContext, String> {
         self.read_context(false)
     }
+    /// Whether this channel's room seals every write
+    /// ([`NativeDocumentReads::seals_records`]).
+    pub(super) fn seals_records(&self) -> bool {
+        let route = self.route();
+        self.state
+            .services
+            .committed_documents
+            .as_ref()
+            .is_some_and(|service| service.seals_records(&route.cluster_id))
+    }
     /// Who answers this channel's read of its own record.
     fn record_read(&self) -> RecordRead {
         let route = self.route();
@@ -637,6 +653,11 @@ impl CapnpChannelHandle {
             }
             return Ok(Reply::ConnectionSnapshot(snapshot));
         }
+        if matches!(request, Request::Writes) {
+            return Ok(Reply::Writes {
+                sealed: self.seals_records(),
+            });
+        }
         if self.record_read() == RecordRead::Own {
             return Ok(Reply::Legacy);
         }
@@ -645,6 +666,7 @@ impl CapnpChannelHandle {
         slot.supersede_wait();
         match request {
             Request::ConnectionSnapshot => Err("connection snapshot was not handled".into()),
+            Request::Writes => Err("the channel's writes were not answered".into()),
             Request::Await { .. } => Err("a committed read wait is answered asynchronously".into()),
             Request::PrivateWindowBinding => Ok(Reply::PrivateWindowBinding {
                 instance: self.native_private_window_instance()?,
