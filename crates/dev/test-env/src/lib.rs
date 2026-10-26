@@ -40,6 +40,9 @@
 //!   test run put it, which an archived run moves away from Cargo's path.
 //! - [`in_own_process`] runs a test that changes what the whole process
 //!   sees, such as a held wall clock, in a process no other test shares.
+//! - [`net`] is a network several devices share, whose delivery the test owns:
+//!   `FakeNet` with a `Peer` per device, partitions and heals, and the
+//!   `Converged` assertion that says which path or device disagrees.
 //! - [`scenario!`] folds a group of related tests into one test with a
 //!   labelled phase per former test, each phase in its own scope, and still
 //!   reports a failure by the case it came from.
@@ -86,6 +89,7 @@ mod desktop;
 mod fixture;
 pub mod hang;
 pub mod idle;
+pub mod net;
 mod own_process;
 pub mod scenario;
 pub mod swtpm;
@@ -98,6 +102,9 @@ pub use capability::{chown_to, switch_identity};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
 pub use fixture::{Fixture, WORKSPACE_DOCUMENT};
 pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, within};
+#[cfg(feature = "document")]
+pub use net::document::{FakeDocumentNet, at_path};
+pub use net::{Converged, FakeNet, Peer};
 pub use own_process::in_own_process;
 
 use std::ffi::{OsStr, OsString};
