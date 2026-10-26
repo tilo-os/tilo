@@ -315,9 +315,12 @@ def block():
 # from your tree (no LTO, the apps and desktop of the commit, its UKI sealing a placeholder
 # composefs digest) and leaves it as an OCI layout (`t outputs`).
 """,
+           # Fetched by the cache script itself, not through build-layer.sh: a change to how
+           # layers are built would otherwise fetch them again, and rebuild the RPM snapshot,
+           # the assembler and every image above them, which take these as needs.
            check([("name", '"os-assets"'),
-                  ("run", '"bash os/image/build-layer.sh assets"'),
-                  ("inputs", arr(["os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/image/build-layer.sh"])),
+                  ("run", '"bash os/dev/cache-github-assets.sh"'),
+                  ("inputs", arr(["os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh"])),
                   ("outputs", arr(["os/external-assets/cache/**"])),
                   ("cost", '"minutes"'), ("default", "false")]),
            signing_tools_check(),

@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # One action of the OS image (os/image/layers.toml), as t runs it.
 #
-#   build-layer.sh assets                        the checksum-pinned external assets, into
-#                                                os/external-assets/cache (no root)
 #   build-layer.sh base ARCH OUT                 the pinned base as the registry serves it,
 #                                                into OUT/oci (no root)
 #   build-layer.sh image NAME ARCH OUT           an image action's targets (the OS builder,
@@ -242,10 +240,6 @@ build_target() {
     TILO_LAYER_ARGS="${layer_args[*]}" bash os/dev/build-image.sh
 }
 
-cmd_assets() {
-  bash os/dev/cache-github-assets.sh
-}
-
 cmd_base() {
   . os/base-snapshot.env
   rm -rf "$out/oci"
@@ -391,10 +385,9 @@ if [[ -n $board ]]; then
     os/image/layers.toml "$board" || die "$board is not among release_boards in os/image/layers.toml"
 fi
 case ${1:-} in
-  assets) cmd_assets ;;
   base) arch=${2:?} out=${3:?} os=${TILO_OS_ROOT:-/target/os}/$arch; cmd_base ;;
   image) arch=${3:?} out=${4:?} os=${TILO_OS_ROOT:-/target/os}/$arch; cmd_image "${2:?}" ;;
   layer) arch=${3:?} out=${4:?} os=${TILO_OS_ROOT:-/target/os}/$arch; [[ $(uname -m) == "$arch" ]] || die "the $arch layers build natively"; cmd_layer "${2:?}" ;;
   compose) arch=${2:?} out=${3:?} os=${TILO_OS_ROOT:-/target/os}/$arch; cmd_compose ;;
-  *) die "usage: build-layer.sh assets | base ARCH OUT | image NAME ARCH OUT | layer NAME ARCH OUT | compose ARCH OUT" ;;
+  *) die "usage: build-layer.sh base ARCH OUT | image NAME ARCH OUT | layer NAME ARCH OUT | compose ARCH OUT" ;;
 esac

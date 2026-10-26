@@ -7547,8 +7547,8 @@ board = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board 
 
 [[check]]
 name = "os-assets"
-run = "bash os/image/build-layer.sh assets"
-inputs = ["os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/image/build-layer.sh"]
+run = "bash os/dev/cache-github-assets.sh"
+inputs = ["os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh"]
 outputs = ["os/external-assets/cache/**"]
 cost = "minutes"
 default = false
