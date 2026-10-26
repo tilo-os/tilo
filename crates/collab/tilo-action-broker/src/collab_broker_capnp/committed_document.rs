@@ -313,8 +313,70 @@ pub(super) struct Slot {
     /// The last revision this channel handed out whole or as changes (its
     /// last piece acknowledged), when its owner named the heads.
     delivered: Option<HeldRevision>,
+    /// This channel's place in the byte budget's queue, after an Open found
+    /// the budget held and answered `Busy`.
+    queued: Option<Queued>,
+    /// The record another device prepared for an Open that then answered
+    /// `Busy`: the next Open answers with it, so a creation is never lost.
+    prepared: Option<PreparedElsewhere>,
+}
+/// A channel's turn in the byte budget's queue: a task on the broker's local
+/// set that waits for the reservation, keeps it for the channel's next Open
+/// and wakes the channel's held `Await`. Dropped with the channel (or once
+/// the Open took the reservation), which takes it out of the queue or
+/// releases what it was granted.
+struct Queued {
+    granted: Rc<std::cell::RefCell<Option<capture::Reservation>>>,
+    wake: Rc<tokio::sync::Notify>,
+    task: tokio::task::AbortHandle,
+}
+impl Queued {
+    fn start(budget: &Arc<Budget>) -> Self {
+        let granted = Rc::new(std::cell::RefCell::new(None));
+        let wake = Rc::new(tokio::sync::Notify::new());
+        let turn = budget.wait();
+        let task = {
+            let granted = Rc::clone(&granted);
+            let wake = Rc::clone(&wake);
+            tokio::task::spawn_local(async move {
+                if let Some(reservation) = turn.await {
+                    *granted.borrow_mut() = Some(reservation);
+                    wake.notify_one();
+                }
+            })
+            .abort_handle()
+        };
+        Self {
+            granted,
+            wake,
+            task,
+        }
+    }
+}
+impl Drop for Queued {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 impl Slot {
+    /// The reservation an Open captures under: the one this channel's turn
+    /// was granted, or one taken now when nobody waits ahead. `None` puts
+    /// the channel in the queue (or keeps its place) and the Open answers
+    /// `Busy`.
+    fn admit(&mut self, budget: &Arc<Budget>) -> Option<capture::Reservation> {
+        if let Some(queued) = &self.queued {
+            let granted = queued.granted.borrow_mut().take();
+            if granted.is_some() {
+                self.queued = None;
+            }
+            return granted;
+        }
+        let reservation = budget.try_reserve();
+        if reservation.is_none() {
+            self.queued = Some(Queued::start(budget));
+        }
+        reservation
+    }
     /// Close the channel once an unacknowledged capture outlived its
     /// deadline; refuse every request on a closed channel.
     fn expire(&mut self) -> Result<(), String> {
@@ -328,6 +390,7 @@ impl Slot {
         }
         if self.closed {
             self.active = None;
+            self.queued = None;
             return Err("committed read channel expired".into());
         }
         Ok(())
@@ -714,9 +777,20 @@ fn open_read(
     if slot.active.is_some() {
         return Err("committed read requires previous response acknowledgement".into());
     }
+    // Custody and admission first: a reader that may no longer read is
+    // refused, never queued. Then capacity: a read that must wait its turn
+    // has done nothing yet, and a record prepared elsewhere for it is kept
+    // for its next Open.
+    context.revalidate()?;
+    let Some(reservation) = slot.admit(budget) else {
+        if let Some(prepared) = prepared {
+            slot.prepared = Some(prepared);
+        }
+        return Ok((Reply::Busy, None));
+    };
+    let prepared = prepared.or_else(|| slot.prepared.take());
     let created = context.prepare_application(service.as_ref(), prepared)?;
     service.authorize(&context)?;
-    let reservation = budget.reserve()?;
     let read = match held {
         Some(held) => service.capture_since(&context, held, MAX_DOCUMENT_BYTES)?,
         None => service.capture(&context, known_revision, MAX_DOCUMENT_BYTES)?,
@@ -801,7 +875,7 @@ fn captured_unchanged(
     budget: &Arc<Budget>,
     known_revision: Option<[u8; 32]>,
 ) -> Option<bool> {
-    let _reservation = budget.reserve().ok()?;
+    let _reservation = budget.try_reserve()?;
     Some(
         match service
             .capture(context, known_revision, MAX_DOCUMENT_BYTES)
@@ -918,12 +992,33 @@ impl CapnpChannelHandle {
                 generation,
                 wake: Arc::clone(&wake),
             });
-            generation
+            let turn = slot
+                .queued
+                .as_ref()
+                .map(|queued| (Rc::clone(&queued.granted), Rc::clone(&queued.wake)));
+            (generation, turn)
         };
+        let (generation, turn) = generation;
         let _guard = WaitGuard {
             handle: &self,
             generation,
         };
+        if let Some((granted, turn)) = turn {
+            // A read waiting in the budget's queue: what changes its Open's
+            // answer is its turn coming, announced by the queue itself.
+            loop {
+                if !self.holds_wait(generation) {
+                    return Err("committed read wait was replaced".into());
+                }
+                if granted.borrow().is_some() {
+                    return Ok(Reply::Stale);
+                }
+                tokio::select! {
+                    () = turn.notified() => {}
+                    () = wake.notified() => {}
+                }
+            }
+        }
         let watch = {
             let wake = Arc::clone(&wake);
             tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())

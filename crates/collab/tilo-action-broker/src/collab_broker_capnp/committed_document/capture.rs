@@ -1,53 +1,102 @@
 //! Byte custody for immutable native reads. Reservations precede capture work:
 //! each capture reserves the most a native save may produce before it runs,
 //! and keeps only what the save produced for as long as the capture lives.
+//!
+//! The budget is a queue, not a gate: a read that finds it held waits its
+//! turn ([`Budget::wait`]), served in order as reservations are released or
+//! shrink. Running out of room is load, never a refusal.
 use runtime_collab::committed_document::{
     CHANGES_FIRST_BYTES, CHUNK_BYTES, MAX_CHANGES_BASE, MAX_DOCUMENT_BYTES,
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 const TOTAL_BYTES: usize = 64 * 1024 * 1024;
 /// The actual bounded native save remains owned by its provider.
 pub trait DocumentBytes: Send + Sync {
     fn bytes(&self) -> &[u8];
 }
-#[derive(Default)]
-pub(crate) struct Budget(AtomicUsize);
+/// The bytes every capture of the broker holds, as permits of one fair
+/// semaphore: a waiting read is served before any later one, and a release
+/// goes to the oldest waiting read first.
+pub(crate) struct Budget {
+    total: usize,
+    permits: Arc<Semaphore>,
+}
+impl Default for Budget {
+    fn default() -> Self {
+        Self::with_total(TOTAL_BYTES)
+    }
+}
+/// Permits taken out of the budget's semaphore, given back as the capture
+/// shrinks and when it ends.
 pub(in crate::collab_broker_capnp) struct Reservation {
-    budget: Arc<Budget>,
+    permits: Arc<Semaphore>,
     bytes: usize,
 }
 impl Budget {
-    pub(in crate::collab_broker_capnp) fn reserve(self: &Arc<Self>) -> Result<Reservation, String> {
-        self.0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(MAX_DOCUMENT_BYTES)
-                    .filter(|next| *next <= TOTAL_BYTES)
-            })
-            .map_err(|_| "committed document capture capacity exhausted".to_string())?;
-        Ok(Reservation {
-            budget: self.clone(),
-            bytes: MAX_DOCUMENT_BYTES,
-        })
+    pub(in crate::collab_broker_capnp) fn with_total(total: usize) -> Self {
+        let total = total.clamp(1, Semaphore::MAX_PERMITS);
+        Self {
+            total,
+            permits: Arc::new(Semaphore::new(total)),
+        }
+    }
+    /// What a capture reserves before its save runs: the most a save may
+    /// produce, or the whole budget when that is more. One capture larger
+    /// than the budget is then served once nothing else is held, rather than
+    /// never.
+    fn admitted(&self) -> u32 {
+        u32::try_from(MAX_DOCUMENT_BYTES.min(self.total)).unwrap_or(u32::MAX)
+    }
+    /// A reservation now, if the budget has room and no read is waiting for
+    /// it: a read never overtakes one that waits.
+    pub(in crate::collab_broker_capnp) fn try_reserve(self: &Arc<Self>) -> Option<Reservation> {
+        let admitted = self.admitted();
+        self.permits
+            .try_acquire_many(admitted)
+            .ok()
+            .map(|permit| Reservation::of(&self.permits, permit, admitted))
+    }
+    /// A reservation once this read's turn comes: after every read that
+    /// waited before it, as soon as releases leave room. `None` only if the
+    /// budget were closed, which it never is.
+    pub(in crate::collab_broker_capnp) fn wait(
+        self: &Arc<Self>,
+    ) -> impl std::future::Future<Output = Option<Reservation>> + 'static {
+        let permits = Arc::clone(&self.permits);
+        let admitted = self.admitted();
+        async move {
+            let permit = permits.acquire_many(admitted).await.ok()?;
+            Some(Reservation::of(&permits, permit, admitted))
+        }
+    }
+    /// The bytes held now, by every reservation.
+    #[cfg(test)]
+    pub(in crate::collab_broker_capnp) fn used(&self) -> usize {
+        self.total - self.permits.available_permits()
     }
 }
 impl Reservation {
+    fn of(permits: &Arc<Semaphore>, permit: tokio::sync::SemaphorePermit<'_>, bytes: u32) -> Self {
+        permit.forget();
+        Self {
+            permits: Arc::clone(permits),
+            bytes: usize::try_from(bytes).unwrap_or(usize::MAX),
+        }
+    }
     /// Keep only `bytes` of this reservation, once the capture it was made
     /// for holds that many: a capture waiting to be read holds its body, not
-    /// the most any body could be. Two captures of a few kilobytes each
-    /// reading slowly would otherwise hold the whole budget, and every other
-    /// app's read would be refused until one finished.
+    /// the most any body could be. What is released goes to the oldest
+    /// waiting read.
     fn keep(&mut self, bytes: usize) {
         let released = self.bytes.saturating_sub(bytes);
-        self.budget.0.fetch_sub(released, Ordering::AcqRel);
+        self.permits.add_permits(released);
         self.bytes = self.bytes.saturating_sub(released);
     }
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
-        self.budget.0.fetch_sub(self.bytes, Ordering::AcqRel);
+        self.permits.add_permits(self.bytes);
     }
 }
 pub(super) struct Capture {
@@ -265,7 +314,7 @@ mod tests {
                 &mut |_| Err("empty plaintext record has no epoch opener".into()),
             )
             .unwrap();
-        let reservation = Arc::new(Budget::default()).reserve().unwrap();
+        let reservation = Arc::new(Budget::default()).try_reserve().unwrap();
         let mut stream = Capture::new(
             Box::new(Bytes(record.into_bytes())),
             reservation,
@@ -297,21 +346,21 @@ mod tests {
     #[test]
     fn committed_capture_reserves_before_work_and_releases_on_drop() {
         let budget = Arc::new(Budget::default());
-        let first = budget.reserve().unwrap();
-        let second = budget.reserve().unwrap();
-        assert!(budget.reserve().is_err());
+        let first = budget.try_reserve().unwrap();
+        let second = budget.try_reserve().unwrap();
+        assert!(budget.try_reserve().is_none());
         drop(first);
-        assert!(budget.reserve().is_ok());
+        assert!(budget.try_reserve().is_some());
         drop(second);
-        assert_eq!(budget.0.load(Ordering::Acquire), 0);
+        assert_eq!(budget.used(), 0);
     }
     #[test]
     fn committed_capture_expiry_is_terminal_and_keeps_quota_until_owner_drops() {
         let budget = Arc::new(Budget::default());
-        let second = budget.reserve().unwrap();
+        let second = budget.try_reserve().unwrap();
         let mut capture = Capture::new(
             Box::new(Bytes(vec![7; CHUNK_BYTES + 1])),
-            budget.reserve().unwrap(),
+            budget.try_reserve().unwrap(),
             1,
             [7; 32],
         )
@@ -339,12 +388,12 @@ mod tests {
             "current token cannot revive an expired capture"
         );
         assert_eq!(
-            budget.0.load(Ordering::Acquire),
+            budget.used(),
             MAX_DOCUMENT_BYTES + CHUNK_BYTES + 1,
             "expiry cannot free bytes while an unread response owner remains"
         );
         drop(capture);
-        assert_eq!(budget.0.load(Ordering::Acquire), MAX_DOCUMENT_BYTES);
+        assert_eq!(budget.used(), MAX_DOCUMENT_BYTES);
         drop(second);
     }
     #[test]
@@ -356,32 +405,98 @@ mod tests {
             .map(|id| {
                 Capture::new(
                     Box::new(Bytes(vec![1; 4096])),
-                    budget.reserve().expect("room for another small capture"),
+                    budget
+                        .try_reserve()
+                        .expect("room for another small capture"),
                     id,
                     [1; 32],
                 )
                 .unwrap()
             })
             .collect();
-        assert_eq!(budget.0.load(Ordering::Acquire), 16 * 4096);
+        assert_eq!(budget.used(), 16 * 4096);
         drop(waiting);
-        assert_eq!(budget.0.load(Ordering::Acquire), 0);
+        assert_eq!(budget.used(), 0);
         // What is held is still bounded: bodies as large as a capture may be
         // fill the budget.
         let large: Vec<Capture> = (1..=2)
             .map(|id| {
                 Capture::new(
                     Box::new(Bytes(vec![1; MAX_DOCUMENT_BYTES])),
-                    budget.reserve().unwrap(),
+                    budget.try_reserve().unwrap(),
                     id,
                     [1; 32],
                 )
                 .unwrap()
             })
             .collect();
-        assert!(budget.reserve().is_err());
+        assert!(budget.try_reserve().is_none());
         drop(large);
-        assert_eq!(budget.0.load(Ordering::Acquire), 0);
+        assert_eq!(budget.used(), 0);
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn reads_beyond_the_budget_wait_and_all_complete_in_order() {
+        let budget = Arc::new(Budget::default());
+        let held = [budget.try_reserve().unwrap(), budget.try_reserve().unwrap()];
+        let served = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut waiting = Vec::new();
+        for read in 0..12 {
+            let turn = budget.wait();
+            let served = Arc::clone(&served);
+            let budget = Arc::clone(&budget);
+            waiting.push(tokio::spawn(async move {
+                let reservation = turn.await.unwrap();
+                served.lock().unwrap().push(read);
+                // The capture holds a small body for a moment, then is read.
+                let capture = Capture::new(
+                    Box::new(Bytes(vec![1; 4096])),
+                    reservation,
+                    read + 1,
+                    [1; 32],
+                )
+                .unwrap();
+                tokio::task::yield_now().await;
+                drop(capture);
+                drop(budget);
+            }));
+            // Polled once, so it joins the queue before the next read.
+            tokio::task::yield_now().await;
+        }
+        assert!(served.lock().unwrap().is_empty(), "the budget is held");
+        assert!(
+            budget.try_reserve().is_none(),
+            "a later read does not overtake the waiting ones"
+        );
+        drop(held);
+        for read in waiting {
+            read.await.unwrap();
+        }
+        assert_eq!(*served.lock().unwrap(), (0..12).collect::<Vec<u64>>());
+        assert_eq!(budget.used(), 0);
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_capture_larger_than_the_whole_budget_is_served_when_it_is_alone() {
+        let budget = Arc::new(Budget::with_total(1024));
+        let other = budget.try_reserve().unwrap();
+        let large = budget.wait();
+        let large = tokio::spawn(async move {
+            let capture = Capture::new(
+                Box::new(Bytes(vec![2; 4096])),
+                large.await.unwrap(),
+                1,
+                [2; 32],
+            )
+            .unwrap();
+            capture.body.bytes().len()
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !large.is_finished(),
+            "it waits while another read holds bytes"
+        );
+        drop(other);
+        assert_eq!(large.await.unwrap(), 4096);
+        assert_eq!(budget.used(), 0);
     }
     #[test]
     fn changes_start_with_a_bounded_changes_piece_and_continue_in_chunks() {
@@ -392,7 +507,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut capture = Capture::new(
             Box::new(Bytes(original.clone())),
-            budget.reserve().unwrap(),
+            budget.try_reserve().unwrap(),
             3,
             [6; 32],
         )
@@ -436,7 +551,7 @@ mod tests {
         assert!(
             Capture::new(
                 Box::new(Bytes(vec![1])),
-                budget.reserve().unwrap(),
+                budget.try_reserve().unwrap(),
                 4,
                 [6; 32]
             )
@@ -452,7 +567,7 @@ mod tests {
         let original = vec![5; CHUNK_BYTES + 17];
         let mut capture = Capture::new(
             Box::new(Bytes(original.clone())),
-            budget.reserve().unwrap(),
+            budget.try_reserve().unwrap(),
             9,
             [4; 32],
         )
@@ -478,6 +593,6 @@ mod tests {
         assert!(capture.finished());
         assert!(capture.chunk(original.len() as u32, continuation).is_err());
         drop(capture);
-        assert_eq!(budget.0.load(Ordering::Acquire), 0);
+        assert_eq!(budget.used(), 0);
     }
 }

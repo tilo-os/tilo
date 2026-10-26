@@ -2072,6 +2072,22 @@ impl ByteBudget {
         self.reserve_with(bytes, limit, true)
     }
 
+    /// Wait until [`Self::reserve_sole`] of `bytes` would succeed: woken by
+    /// each release, and at once when there is room already.
+    async fn until_room(&self, bytes: usize, limit: usize) {
+        loop {
+            let released = self.1.notified();
+            tokio::pin!(released);
+            // Enabled before looking, so a release in between is not missed.
+            released.as_mut().enable();
+            let used = self.0.load(Ordering::Acquire);
+            if used == 0 || used.checked_add(bytes).is_some_and(|next| next <= limit) {
+                return;
+            }
+            released.await;
+        }
+    }
+
     fn reserve_with(&self, bytes: usize, limit: usize, sole: bool) -> Option<ByteReservation> {
         let mut used = self.0.load(Ordering::Acquire);
         loop {
@@ -8009,6 +8025,14 @@ mod tests {
         /// broker does when an announced change leaves the reader's Open to
         /// decide.
         committed_await_stale: bool,
+        /// Answer Opens `Busy`, as a broker whose byte budget other reads
+        /// hold: the reader's place in its queue. While set, a held `Await`
+        /// waits for the turn (cleared, then [`Captures::committed_awaits`]
+        /// notified) as the broker's does.
+        committed_busy: bool,
+        /// An Open was answered `Busy`: once the turn comes the held
+        /// `Await` answers `Stale`, as the broker's does.
+        committed_queued: bool,
         /// The changes `OpenChanges` answers a reader holding their `from`
         /// revision with. `OpenChanges` is answered as the broker does: with
         /// these changes when they fit, otherwise exactly as the `Open` it
@@ -8664,15 +8688,26 @@ mod tests {
                         let notified = change.notified();
                         tokio::pin!(notified);
                         notified.as_mut().enable();
-                        let current = {
+                        // `None`: the wait ends; `Some(current)`: it holds
+                        // while `current` is what the reader knows, or while
+                        // its turn in a busy broker's queue has not come.
+                        let holds = {
                             let mut captures = captures.lock().unwrap();
                             let stale = std::mem::take(&mut captures.committed_await_stale);
-                            (!stale
-                                && captures.committed_open_failure.is_none()
-                                && captures.committed_history_fixture.is_some())
-                            .then(|| captures.committed_revision.unwrap_or([7; 32]))
+                            if !stale && captures.committed_busy {
+                                Some(known_revision)
+                            } else if std::mem::take(&mut captures.committed_queued) {
+                                None
+                            } else {
+                                (!stale
+                                    && captures.committed_open_failure.is_none()
+                                    && captures.committed_history_fixture.is_some())
+                                .then(|| captures.committed_revision.unwrap_or([7; 32]))
+                                .filter(|current| Some(*current) == known_revision)
+                                .map(Some)
+                            }
                         };
-                        if current.is_none() || current != known_revision {
+                        if holds.is_none() {
                             break;
                         }
                         notified.await;
@@ -8695,9 +8730,15 @@ mod tests {
                 {
                     return Err(capnp::Error::failed(error));
                 }
+                let busy = matches!(request, Request::Open { .. } | Request::OpenChanges { .. })
+                    && captures.committed_busy;
                 let current_revision = captures.committed_revision.unwrap_or([7; 32]);
                 let reply = match captures.committed_history_fixture.as_ref() {
                     None => Reply::Legacy,
+                    Some(_) if busy => {
+                        captures.committed_queued = true;
+                        Reply::Busy
+                    }
                     Some(bytes) => match request {
                         Request::PrivateWindowBinding => Reply::PrivateWindowBinding {
                             instance: captures.committed_private_binding,

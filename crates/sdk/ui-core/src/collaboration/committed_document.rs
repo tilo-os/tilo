@@ -1125,6 +1125,9 @@ mod tests {
     }
 }
 
+/// The bytes of committed reads this process holds at once, beyond a single
+/// capture larger than that.
+const CAPTURE_LIMIT: usize = MAX_DOCUMENT_BYTES * 2;
 fn capture_budget() -> &'static ByteBudget {
     static BUDGET: std::sync::OnceLock<ByteBudget> = std::sync::OnceLock::new();
     BUDGET.get_or_init(ByteBudget::new)
@@ -1134,18 +1137,24 @@ fn capture_budget() -> &'static ByteBudget {
 const ACKNOWLEDGEMENT_DEADLINE: Duration = Duration::from_secs(2);
 
 /// Only local deadlines permit retiring a capture and renewing its read epoch,
-/// or retrying a renewal. Broker refusals, invalid replies and authority
-/// failures remain terminal.
+/// or retrying a renewal, and only a full local budget makes a read wait and
+/// Open again. Broker refusals, invalid replies and authority failures remain
+/// terminal.
 #[derive(Debug)]
 enum CaptureFailure {
     Deadline(&'static str),
     Rejected(String),
+    /// This process's committed read budget had no room for a capture of
+    /// this many bytes. The broker's capture was cancelled; the read waits
+    /// for room ([`ByteBudget::until_room`]) and Opens again.
+    Capacity(usize),
 }
 impl std::fmt::Display for CaptureFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Deadline(message) => formatter.write_str(message),
             Self::Rejected(message) => formatter.write_str(message),
+            Self::Capacity(_) => formatter.write_str("SDK committed read capacity"),
         }
     }
 }
@@ -1214,14 +1223,15 @@ async fn capture_using(
     };
     let prepared = (|| {
         if total == 0 || total > MAX_DOCUMENT_BYTES {
-            return Err("committed document initial bounds".into());
+            return Err(CaptureFailure::from("committed document initial bounds"));
         }
         // Charge the validated raw payload before allocating its destination.
-        // Clones share this one lease; the aggregate limit is unchanged.
+        // Clones share this one lease; the aggregate limit is unchanged. A
+        // capture alone in the budget always fits, so waiting for room ends.
         let reservation = budget
-            .reserve(total, MAX_DOCUMENT_BYTES * 2)
-            .ok_or("SDK committed read capacity")?;
-        Ok::<_, String>((reservation, Assembly::start(first)?))
+            .reserve_sole(total, CAPTURE_LIMIT)
+            .ok_or(CaptureFailure::Capacity(total))?;
+        Ok::<_, CaptureFailure>((reservation, Assembly::start(first)?))
     })();
     let (reservation, mut assembly) = match prepared {
         Ok(prepared) => prepared,
@@ -1234,7 +1244,7 @@ async fn capture_using(
                 }),
             )
             .await;
-            return Err(error.into());
+            return Err(error);
         }
     };
     let id = assembly.id;
@@ -1484,13 +1494,14 @@ pub(super) async fn install(
     }
     let mut ready = inbound.state.document_reads.pending(&key)?;
     let (initial, revision) = match first {
-        Reply::Chunk { .. } | Reply::Created { .. } => {
-            let (read, revision) = read_capture(channel, first)
-                .await
-                .map_err(|error| error.to_string())?;
-            (Some(read), Some(revision))
-        }
-        Reply::Unavailable => (None, None),
+        Reply::Chunk { .. } | Reply::Created { .. } => match read_capture(channel, first).await {
+            Ok((read, revision)) => (Some(read), Some(revision)),
+            // The read loop waits for room and Opens again.
+            Err(CaptureFailure::Capacity(_)) => (None, None),
+            Err(error) => return Err(error.to_string()),
+        },
+        // Queued behind other reads: the read loop waits its turn.
+        Reply::Unavailable | Reply::Busy => (None, None),
         _ => return Err("invalid initial committed read mode".into()),
     };
     let mut channel = channel.clone();
@@ -1591,6 +1602,13 @@ pub(super) async fn install(
                             revision = Some(next);
                             continue;
                         }
+                        Err(CaptureFailure::Capacity(bytes)) => {
+                            // Load, not a failure: wait for this process
+                            // to release committed bytes, then Open again.
+                            drop(turn);
+                            capture_budget().until_room(bytes, CAPTURE_LIMIT).await;
+                            continue;
+                        }
                         Err(error) => {
                             #[cfg(any(test, feature = "test-support"))]
                             tracing::warn!(error = %error, route = ?spec, "committed document capture failed");
@@ -1608,6 +1626,13 @@ pub(super) async fn install(
                 Ok(Ok(Reply::Unavailable)) => {
                     set_read_ready(&inbound, &ready, false);
                     revision = None;
+                    false
+                }
+                // The broker's byte budget is held by other reads. This read
+                // keeps its place in the queue and what it holds; the Await
+                // below answers once its turn has come.
+                Ok(Ok(Reply::Busy)) => {
+                    set_read_ready(&inbound, &ready, false);
                     false
                 }
                 Err(_) if !renewed => true,
@@ -1683,7 +1708,7 @@ pub(super) async fn install(
                                 break 'read;
                             }
                         }
-                        Err(CaptureFailure::Rejected(_)) => {
+                        Err(CaptureFailure::Rejected(_) | CaptureFailure::Capacity(_)) => {
                             inbound
                                 .state
                                 .fail_closed("committed read renewal unavailable");
@@ -1723,5 +1748,6 @@ fn reply_kind(reply: &Reply) -> &'static str {
         Reply::Stale => "stale",
         Reply::Changes { .. } => "changes",
         Reply::ConnectionSnapshot(_) => "connection snapshot",
+        Reply::Busy => "busy",
     }
 }

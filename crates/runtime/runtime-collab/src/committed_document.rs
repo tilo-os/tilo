@@ -199,6 +199,11 @@ pub enum Reply {
         token: [u8; 16],
     },
     ConnectionSnapshot(ConnectionSnapshot),
+    /// An Open the broker cannot capture yet: its byte budget is held by
+    /// other reads. The read is queued in order, and nothing is refused: an
+    /// [`Request::Await`] on this channel answers [`Reply::Stale`] once the
+    /// read's turn has come, and the next Open captures.
+    Busy,
 }
 impl Request {
     /// Encode a valid request for the wire.
@@ -345,6 +350,12 @@ impl Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn busy_is_a_tag_of_its_own_after_every_earlier_reply() {
+        assert_eq!(Reply::Busy.encode().unwrap(), [11]);
+        assert_eq!(Reply::decode(&[11]).unwrap(), Reply::Busy);
+    }
+
     #[test]
     fn connection_snapshot_is_bounded_and_keeps_original_principal_and_route() {
         assert_eq!(Request::ConnectionSnapshot.encode().unwrap(), [7]);

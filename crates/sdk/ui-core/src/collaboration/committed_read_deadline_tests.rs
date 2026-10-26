@@ -696,3 +696,60 @@ fn an_idle_native_reader_asks_the_broker_nothing_while_nothing_changes() {
     );
     assert!(ready_after, "the reader is ready on the new revision");
 }
+
+/// The broker's byte budget is held by other reads: the reader's Opens are
+/// answered `Busy`. That is load, not a refusal: the reader keeps its route,
+/// waits on its `Await` for its turn instead of asking again, and reads once
+/// the turn comes.
+#[test]
+fn a_busy_broker_queues_the_read_and_never_ends_collaboration() {
+    let mut reader = ReadyReader::start();
+    reader.commit("written while the budget is held");
+    reader.captures.lock().unwrap().committed_revision = Some([9; 32]);
+    reader.captures.lock().unwrap().committed_busy = true;
+    // The reader's wait ends (the read changed); its Open finds the budget held.
+    reader.captures.lock().unwrap().committed_await_stale = true;
+    reader.wake_waits();
+    let opens = reader.opens();
+    tilo_test_env::wait_until("the reader to wait for its turn", || {
+        reader.pump();
+        let captures = reader.captures.lock().unwrap();
+        open_count(&captures) > opens && waits(&captures) > 0 && {
+            let last = captures.committed_reads.last();
+            matches!(
+                last,
+                Some(runtime_collab::committed_document::Request::Await { .. })
+            )
+        }
+    });
+    let busy_opens = reader.opens();
+    // Nothing is asked while the turn has not come, however long.
+    for _ in 0..20 {
+        reader.pump();
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let connected_while_busy = reader.manager.is_connected();
+    let opens_while_busy = reader.opens() - busy_opens;
+    let ready_while_busy = reader.ready();
+    // The turn comes.
+    reader.captures.lock().unwrap().committed_busy = false;
+    reader.wake_waits();
+    let applied = reader.apply_next_read("the read once its turn came");
+    let ready = reader.ready();
+    let connected = reader.manager.is_connected();
+    reader.finish();
+    assert!(
+        connected_while_busy,
+        "a busy broker never ends collaboration"
+    );
+    assert_eq!(
+        opens_while_busy, 0,
+        "the reader waits on its Await, it does not poll"
+    );
+    assert!(
+        !ready_while_busy,
+        "readiness stays withheld while the read waits"
+    );
+    assert_eq!(applied, 1, "the read reaches the owner once its turn comes");
+    assert!(ready && connected);
+}
