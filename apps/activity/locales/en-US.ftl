@@ -74,9 +74,6 @@ activity-replay-one-tab = One tab
 activity-replay-window = { $window }, { $share }% of the width
 activity-presence-trail = Present
 
-# History's find, and how much of it the words leave.
-activity-find-placeholder = Find in the history
-activity-find-count = { $found } of { $all }
 # What the system did, beside the workspace's changes.
 activity-ledger-heading = What this device did
 # How a changed field reads: its name, and what it was before.

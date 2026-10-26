@@ -322,6 +322,7 @@ answer:
 | **find something the app holds** (a message, a video, a note) | a `SearchProvider` per findable kind, rows that say what a hit is (`SearchRow`), scopes (`ScopeDecl`), facets (`Facet`) | the one platform palette, opened by Ctrl+K, `/`, or the app's magnifier button (`search::search_button`) |
 | **narrow the list already on screen** | `Filterable` on the list | `SearchField::filter()` in the navigation shell's filter slot (or `Filtered`), with a "3 of 120" count; Enter or "Search everywhere" escalates to the platform search |
 | **find in the document on screen** | `Findable` on the document view | the `FindBar` band at the top of the content region (`FindScope`), opened by Ctrl+F |
+| **narrow what the app holds** (a history, a library), as the app's own view | `Queryable` on the app widget, or `QueryView` around a view that is a function | the bar's field searches the app in place (“Search Activity”), with a “3 of 6” count; Enter or Down hands the keyboard to the results |
 
 - **In a Tilo window, the window bar searches in place.** The bar's search
   control, right after the window's place, expands into a field where it
@@ -338,6 +339,14 @@ answer:
   drops its own whole-app search button (`search::APP_SEARCH_BUTTON_ID`) while
   the bar presents search. The `FindBar` band and the filter slot stay for
   windows the shell does not frame.
+- **An app whose view is a function is a query view.** A framework
+  `ResourceApp` returns the view it draws rather than being a widget, so it
+  wraps that view in `widget::QueryView`: the bar offers the app's own search
+  in place, hands over what is typed as it changes (`""` when the search
+  closes), and shows the count the view kept, which is the count a
+  `Filterable` list reports. The query lives in the app's resource, written
+  through the same door as every other edit: the search writes no state of
+  its own, and the view draws no field.
 - **Typing in a focused list jumps.** A `TreeView` (and so a `NavList`) moves
   to the first row whose name begins with what was typed; a `VirtualList`
   does when its model names its rows (`ListModel::label`).
