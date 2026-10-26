@@ -91,6 +91,7 @@ impl BrowserShell {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.hints_painted_before = self.hints.painted_rect();
         self.hints.draw(
             &self.hints_frame,
             scene,

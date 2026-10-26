@@ -1158,24 +1158,33 @@ impl TileHost {
         self.hosted_window.as_ref()
     }
 
+    /// Whether the app's widgets may be laid out again in place under the
+    /// tile's node: not while a framework History composes around the app,
+    /// whose owners, custody and nodes are its own and are rebuilt with it,
+    /// nor under a bound component, whose callbacks name the tile's nodes.
+    fn lays_out_in_place(&self) -> bool {
+        self.history.is_none() && self.binding.is_none()
+    }
+
+    /// Stand where this tile stands from now on: `next`, built for the same
+    /// window (an app whose code or record arrived where a placeholder held
+    /// its place), goes on with the arrival ([`Self::continue_arrival`])
+    /// and takes this tile's retained layout node: the app is laid out under
+    /// that node in place and the rest of the host's tree is kept, unless a
+    /// History around it is busy.
+    pub fn take_place_of(&mut self, mut next: Self) {
+        next.continue_arrival(self);
+        next.node = self.node;
+        next.remount = self.node.is_some() && next.lays_out_in_place();
+        next.structure_dirty = !next.remount;
+        *self = next;
+    }
+
     /// Built in place of `previous` (an app whose code or record just
     /// arrived, in the window that reserved its place): while `previous`
     /// still stood for content not shown, this host goes on with that
     /// arrival, so its placeholder keeps its timing and the app cross-fades
     /// in over it instead of the window cutting or starting over.
-    /// Stand where this tile stands from now on: `next`, built for the same
-    /// window (an app whose code or record arrived where a placeholder held
-    /// its place), goes on with the arrival ([`Self::continue_arrival`])
-    /// and takes this tile's retained layout node: the app is laid out under
-    /// that node in place and the rest of the host's tree is kept.
-    pub fn take_place_of(&mut self, mut next: Self) {
-        next.continue_arrival(self);
-        next.node = self.node;
-        next.remount = self.node.is_some();
-        next.structure_dirty = !next.remount;
-        *self = next;
-    }
-
     pub fn continue_arrival(&mut self, previous: &Self) {
         let Some(standing) = previous
             .arrival
@@ -3146,8 +3155,9 @@ impl Widget for TileHost {
         match (rebuilds, self.node) {
             // The tile's content, its History or the app's own widgets were
             // replaced: they are built again under the tile's node, and
-            // nothing outside it.
-            (true, Some(_)) => {
+            // nothing outside it. While a History around the app is busy
+            // (open, returning, reviewing), the host builds everything again.
+            (true, Some(_)) if self.lays_out_in_place() => {
                 // The host lets go of every node under the tile's own.
                 self.remount = true;
                 self.live_callback_node = None;
@@ -3156,8 +3166,9 @@ impl Widget for TileHost {
                 }
                 StructureChange::Children
             }
-            (true, None) => StructureChange::Rebuild,
-            (false, _) => inner,
+            (true, _) => StructureChange::Rebuild,
+            (false, _) if self.lays_out_in_place() => inner,
+            (false, _) => StructureChange::of(inner.rebuilds()),
         }
     }
     fn relaid_layout_node(&self) -> Option<NodeId> {

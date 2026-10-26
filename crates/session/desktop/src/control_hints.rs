@@ -275,6 +275,12 @@ impl ControlHints {
         self.layer.coach().current().is_some()
     }
 
+    /// Everything the hint's last draw painted ([`HintLayer::painted_rect`]).
+    #[must_use]
+    pub fn painted_rect(&self) -> Option<Rect> {
+        self.layer.painted_rect()
+    }
+
     /// Where the hint's card was last drawn.
     #[must_use]
     pub fn card_rect(&self) -> Option<Rect> {

@@ -49,6 +49,12 @@ impl<'a> Remount<'a> {
         self.taffy
     }
 
+    /// The theme the tree is laid out with.
+    #[must_use]
+    pub fn theme(&self) -> &'a Theme {
+        self.theme
+    }
+
     /// Build `child`'s layout into the tree, for the widget remounting,
     /// whose node is `owner`, to place under its own nodes through
     /// [`Self::set_children`]. Returns its node.
