@@ -402,17 +402,31 @@ impl DesktopHandle {
                 return (local.clone(), Vec::new());
             };
             let id = room.id;
-            let base = DesktopTree {
-                workspaces: local
-                    .workspaces
-                    .iter()
-                    .filter(|workspace| workspace.id == id)
-                    .cloned()
-                    .collect(),
-                active: id,
-                ..DesktopTree::default()
-            };
-            let merged = crate::shared_tree::receive(&base, incoming.clone(), local_tabs);
+            // What this device shows of that workspace — the strip in front
+            // and the group — is carried into the merge as it stands, so a
+            // peer's layout does not move the person's focus.
+            let mut base = local.clone();
+            base.workspaces.retain(|workspace| workspace.id == id);
+            base.active = id;
+            base.active_strip.retain(|workspace, _| *workspace == id);
+            // Every window this device still has open survives a room layout
+            // that has not heard of it yet: its own entries are its to
+            // publish, and a room never closes another device's window. A
+            // window the room removed was removed here first (its owner
+            // applied the request), so it is not in `base` to keep.
+            let mut keep: Vec<TabId> = local_tabs.to_vec();
+            for workspace in &base.workspaces {
+                for strip in &workspace.strips {
+                    for group in &strip.window_groups {
+                        for tab in &group.tabs {
+                            if !keep.contains(&tab.id) {
+                                keep.push(tab.id);
+                            }
+                        }
+                    }
+                }
+            }
+            let merged = crate::shared_tree::receive(&base, incoming.clone(), &keep);
             let mut out = local.clone();
             if let Some(workspace) = merged.workspaces.into_iter().next() {
                 match out.workspaces.iter_mut().find(|held| held.id == id) {

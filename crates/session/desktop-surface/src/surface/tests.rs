@@ -628,6 +628,65 @@ fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
     assert!(handle.read(|tree| tree.workspaces.is_empty()));
 }
 
+/// A room layout folds into the workspace it belongs to: a window this
+/// device still has open survives a layout that has not heard of it yet,
+/// the workspace's own strip stays in front, and every other workspace this
+/// desktop holds is untouched.
+#[test]
+fn a_room_layout_lands_in_its_workspace_and_leaves_the_others_alone() {
+    let (mut surface, handle) = desktop(2);
+    let state = AutoCommit::new();
+    surface.update(&state, &ui::automerge::ROOT);
+    let room = tilo_desktop_model::RoomId::parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap();
+    let mut tree = handle.read(Clone::clone);
+    let room_id = tilo_desktop_model::WorkspaceId::of_room(room);
+    tree.workspaces[0].id = room_id;
+    tree.active = room_id;
+    // A second workspace of another room, and one more window here that the
+    // room's layout has not heard of.
+    let mut other = seed_tree(&mut IdMinter::new(9), "Elsewhere", Vec::new());
+    other.workspaces[0].id = tilo_desktop_model::WorkspaceId(42);
+    tree.workspaces.extend(other.workspaces);
+    let mine = tree.workspaces[0].strips[0].window_groups[1].tabs[0].id;
+    handle.replace_tree(tree);
+    let strip = handle.read(|tree| tree.workspaces[0].strips[0].id);
+
+    // The room's layout knows only the first window of that strip.
+    let mut incoming = handle.shared_tree();
+    incoming
+        .workspaces
+        .retain(|workspace| workspace.id == room_id);
+    incoming.workspaces[0].strips[0].window_groups.truncate(1);
+    incoming.workspaces[0].strips[0].name = "Room".into();
+    handle.apply_room_layout(incoming, &[]);
+
+    handle.read(|tree| {
+        assert_eq!(tree.workspaces.len(), 2, "the other room's desk stays");
+        assert!(
+            tree.workspaces.iter().any(|w| w.id.0 == 42),
+            "the other room's workspace is untouched"
+        );
+        let held = tree.workspaces.iter().find(|w| w.id == room_id).unwrap();
+        assert_eq!(held.strips[0].name, "Room", "the room's strip is done");
+        let tabs: Vec<_> = held.strips[0]
+            .window_groups
+            .iter()
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        assert!(
+            tabs.contains(&mine),
+            "a window this device still has open survives"
+        );
+        assert_eq!(
+            tree.active_strip.get(&room_id).copied(),
+            Some(strip),
+            "the strip in front stays in front"
+        );
+    });
+    surface.update(&state, &ui::automerge::ROOT);
+}
+
 #[test]
 fn a_retained_notice_can_reopen_its_application_after_its_window_closed() {
     struct Relaunch;

@@ -68,7 +68,7 @@ pub(crate) fn desktop_route(room: &str) -> DocumentRoute {
 
 /// The records bound to a tab of the room's layout `doc`: what people have
 /// open. Reads its current value only.
-fn desktop_records(doc: &impl automerge::ReadDoc) -> HashSet<String> {
+fn desktop_records(doc: &impl ReadDoc) -> HashSet<String> {
     tilo_desktop_model::room_layout::read(doc, None)
         .map(|desktop| {
             desktop
