@@ -27,11 +27,9 @@ git-confirm-discard-body = Your edits are lost. This can't be undone.
 git-confirm-delete-branch-body = Commits that only this branch holds are lost.
 git-confirm-discard = Discard
 git-confirm-switch-title = Switch to { $name }?
-git-confirm-switch-body = The working tree is clean, so nothing changes hands but the branch.
-git-confirm-switch-dirty-body = You have uncommitted changes. Park them on the stash and switch, or take them with you; a change that would be overwritten refuses either way.
+git-confirm-switch-body = You have uncommitted changes. Park them on the stash and switch, or take them with you; a change that would be overwritten refuses either way.
 git-switch-stash = Stash and switch
-git-switch-carry = Switch, keeping my changes
-git-switch-go = Switch
+git-switch-carry = Keep my changes
 git-cancel = Cancel
 
 # Changes
@@ -70,6 +68,7 @@ git-stage-hunk = Stage hunk
 git-unstage-hunk = Unstage hunk
 git-discard-hunk = Discard hunk
 git-renamed-from = Renamed from { $path }
+git-split-needs-width = Two columns need a wider window, so this is one.
 git-binary-file = Binary file
 git-binary-file-detail = There is no text to compare.
 git-mode-only = No changes to show
@@ -175,6 +174,15 @@ git-conflict-theirs = their side
 git-conflict-take-ours = Take ours
 git-conflict-take-theirs = Take theirs
 git-conflict-explainer = This file is conflicted.
+# The choice above a conflicted file, costing each side: $ours is how many
+# lines only your side has, $theirs how many only theirs does.
+git-conflict-cost = Both sides changed this file. Keeping ours drops { $theirs ->
+    [one] one line of theirs
+   *[other] { $theirs } lines of theirs
+}; keeping theirs drops { $ours ->
+    [one] one of your lines
+   *[other] { $ours } lines of yours
+}.
 git-back-to-commit = Back to commit
 git-commit-file-heading = { $file } in { $commit }
 git-commit-file-name = { $file } ({ $kind })

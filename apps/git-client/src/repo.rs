@@ -935,6 +935,92 @@ pub enum ConflictSide {
     Theirs,
 }
 
+/// What each side of a conflicted file brings, so the choice can name what
+/// it costs before it is made: the lines each side has that the other does
+/// not. Keeping one side discards the other's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConflictCost {
+    /// Lines only our side has: what keeping *theirs* discards.
+    pub ours: usize,
+    /// Lines only their side has: what keeping *ours* discards.
+    pub theirs: usize,
+}
+
+impl ConflictCost {
+    /// The lines lost by keeping `side`.
+    #[must_use]
+    pub const fn discards(self, side: ConflictSide) -> usize {
+        match side {
+            ConflictSide::Ours => self.theirs,
+            ConflictSide::Theirs => self.ours,
+        }
+    }
+}
+
+/// What keeping each side of `file` would discard: the lines of the side
+/// that loses.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened, the file has no
+/// conflict in the index, or a side's content cannot be read.
+pub fn conflict_cost(path: &Path, file: &str) -> anyhow::Result<ConflictCost> {
+    let repo = open(path)?;
+    let index = repo.index()?;
+    let blob_of = |stage: i32| -> anyhow::Result<Vec<u8>> {
+        let entry = index.get_path(Path::new(file), stage).ok_or_else(|| {
+            anyhow!(
+                "{file} has no {} side — it is not a conflict in both directions",
+                if stage == 2 { "our" } else { "their" }
+            )
+        })?;
+        Ok(repo.find_blob(entry.id)?.content().to_vec())
+    };
+    let ours = blob_of(2)?;
+    let theirs = blob_of(3)?;
+    cost_between(&repo, file, &ours, &theirs)
+}
+
+/// The lines each of two versions has that the other does not, as git's own
+/// diff counts them: ours → theirs adds what only theirs has, and removes
+/// what only ours has.
+fn cost_between(
+    repo: &Repository,
+    file: &str,
+    ours: &[u8],
+    theirs: &[u8],
+) -> anyhow::Result<ConflictCost> {
+    let old = repo.find_blob(repo.blob(ours)?)?;
+    let new = repo.find_blob(repo.blob(theirs)?)?;
+    let mut opts = DiffOptions::new();
+    opts.context_lines(0);
+    // A line the diff adds is one only their side has; a line it removes is
+    // one only ours has.
+    let mut cost = ConflictCost::default();
+    let mut count = |_delta: git2::DiffDelta<'_>,
+                     _hunk: Option<git2::DiffHunk<'_>>,
+                     line: git2::DiffLine<'_>| {
+        match line.origin() {
+            '+' => cost.theirs = cost.theirs.saturating_add(1),
+            '-' => cost.ours = cost.ours.saturating_add(1),
+            _ => {}
+        }
+        true
+    };
+    repo.diff_blobs(
+        Some(&old),
+        Some(file),
+        Some(&new),
+        Some(file),
+        Some(&mut opts),
+        None,
+        None,
+        None,
+        Some(&mut count),
+    )?;
+    Ok(cost)
+}
+
 /// Resolve a conflicted file by keeping one side: the chosen stage's
 /// content is written to the working tree and staged, which clears the
 /// file's conflict. The other side is discarded — the merge is still in

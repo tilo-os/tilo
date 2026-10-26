@@ -27,11 +27,9 @@ git-confirm-discard-body = Deine Änderungen gehen verloren. Das lässt sich nic
 git-confirm-delete-branch-body = Commits, die nur dieser Branch enthält, gehen verloren.
 git-confirm-discard = Verwerfen
 git-confirm-switch-title = Zu { $name } wechseln?
-git-confirm-switch-body = Das Arbeitsverzeichnis ist sauber; es wechselt nur der Branch.
-git-confirm-switch-dirty-body = Du hast nicht festgeschriebene Änderungen. Lege sie in den Stash und wechsle, oder nimm sie mit; eine Änderung, die überschrieben würde, lehnt beides ab.
-git-switch-stash = In den Stash legen und wechseln
-git-switch-carry = Wechseln und Änderungen mitnehmen
-git-switch-go = Wechseln
+git-confirm-switch-body = Du hast nicht festgeschriebene Änderungen. Lege sie in den Stash und wechsle, oder nimm sie mit; eine Änderung, die überschrieben würde, lehnt beides ab.
+git-switch-stash = Stash und wechseln
+git-switch-carry = Änderungen behalten
 git-cancel = Abbrechen
 
 # Changes
@@ -70,6 +68,7 @@ git-stage-hunk = Abschnitt vormerken
 git-unstage-hunk = Abschnitt zurücknehmen
 git-discard-hunk = Abschnitt verwerfen
 git-renamed-from = Umbenannt von { $path }
+git-split-needs-width = Zwei Spalten brauchen ein breiteres Fenster, also ist es eine.
 git-binary-file = Binärdatei
 git-binary-file-detail = Es gibt keinen Text zum Vergleichen.
 git-mode-only = Keine Änderungen anzuzeigen
@@ -175,6 +174,15 @@ git-conflict-theirs = ihre Seite
 git-conflict-take-ours = Unsere nehmen
 git-conflict-take-theirs = Ihre nehmen
 git-conflict-explainer = Diese Datei ist im Konflikt.
+# The choice above a conflicted file, costing each side: $ours is how many
+# lines only your side has, $theirs how many only theirs does.
+git-conflict-cost = Beide Seiten haben diese Datei geändert. Unsere zu behalten verwirft { $theirs ->
+    [one] eine Zeile der anderen Seite
+   *[other] { $theirs } Zeilen der anderen Seite
+}; ihre zu behalten verwirft { $ours ->
+    [one] eine Ihrer Zeilen
+   *[other] { $ours } Ihrer Zeilen
+}.
 git-back-to-commit = Zurück zum Commit
 git-commit-file-heading = { $file } in { $commit }
 git-commit-file-name = { $file } ({ $kind })

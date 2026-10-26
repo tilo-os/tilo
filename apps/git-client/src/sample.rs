@@ -648,3 +648,65 @@ index 0000000..89abcde
 +}",
     )
 }
+
+// --- A repository in the middle of a merge ------------------------------
+//
+// The changes screen's other half is the *decision*: a conflicted file is
+// the one change whose resolution alters the repository, so the shot that
+// shows it needs a conflict on disk. It is a scenario of its own
+// ([`model_with_conflict`]) so every other capture keeps the clean tree.
+
+/// The file the sample repository leaves conflicted: a merge of
+/// `wgpu-pipeline` into `main` where both sides rewrote the same lines.
+pub const CONFLICTED: &str = "src/render/bindings.rs";
+
+/// The bundled repository with one file left conflicted by a merge, as the
+/// `conflict` capture shows it.
+pub fn model_with_conflict() -> (RepoModel, DiffMap) {
+    let (mut model, mut diffs) = model();
+    model.unstaged.insert(
+        0,
+        fc(
+            CONFLICTED,
+            ChangeArea::Unstaged,
+            ChangeKind::Conflicted,
+            5,
+            2,
+        ),
+    );
+    diffs.insert(DiffKey::worktree(CONFLICTED), diff_conflicted());
+    (model, diffs)
+}
+
+/// What each side of the sample's conflicted file brings, as
+/// [`crate::repo::conflict_cost`] reads it from a real index: the lines only
+/// our side changed, and the lines only theirs did. They are the markers in
+/// [`diff_conflicted`] — ours writes two lines, theirs three.
+pub fn conflict_cost(file: &str) -> Option<crate::repo::ConflictCost> {
+    (file == CONFLICTED).then_some(crate::repo::ConflictCost { ours: 2, theirs: 3 })
+}
+
+/// The conflicted file as the working tree holds it: both sides, between
+/// git's markers.
+fn diff_conflicted() -> FileDiff {
+    build(
+        CONFLICTED,
+        "\
+diff --git a/src/render/bindings.rs b/src/render/bindings.rs
+index 5d1e0a4..8b7c9f2 100644
+--- a/src/render/bindings.rs
++++ b/src/render/bindings.rs
+@@ -14,6 +14,13 @@ impl Bindings {
+     pub fn rebuild(&mut self) {
++<<<<<<< HEAD
++        let uniforms = self.uniforms.repack(&self.limits);
++        self.groups.write(uniforms);
++=======
++        let uniforms = self.uniforms.repacking(&self.limits.max_bindings);
++        self.groups.write(uniforms);
++        self.groups.flush();
++>>>>>>> wgpu-pipeline
+     }
+ }",
+    )
+}
