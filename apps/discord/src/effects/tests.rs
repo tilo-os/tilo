@@ -127,6 +127,8 @@ fn linked_guild() -> Guild {
         display_name: Some("Ada L".into()),
         avatar: None,
         interaction: None,
+        photo: Some("data:image/png;base64,AAAA".into()),
+        photo_avatar: None,
     });
     guild.link_offers.push(crate::LinkOffer {
         check: link_check(&link_proof("FROM-DISCORD")),

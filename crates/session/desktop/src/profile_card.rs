@@ -160,6 +160,35 @@ pub struct OtherPerson {
     /// The host can open a direct conversation with them in Chat: their
     /// root key is known and Chat holds person-only conversations here.
     pub can_message: bool,
+    /// Their accounts elsewhere, as their profile names them.
+    pub linked: Vec<tilo_app::linked_accounts::ProfileLink>,
+}
+
+/// The most characters a linked account's line holds beside Unlink: the
+/// card is one utility panel wide, so longer is cut short, never wrapped.
+const LINKED_LINE_CHARS: usize = 22;
+
+/// A linked account on one line: its handle, and the name it shows when that
+/// is another, each cut short with an ellipsis to fit
+/// [`LINKED_LINE_CHARS`]; the name is left out before the handle is cut.
+fn linked_line(name: &tilo_app::linked_accounts::AccountName) -> (String, Option<String>) {
+    let cut = |text: &str, room: usize| -> String {
+        if text.chars().count() <= room {
+            return text.to_owned();
+        }
+        let kept: String = text.chars().take(room.saturating_sub(1)).collect();
+        format!("{}…", kept.trim_end())
+    };
+    let handle = cut(&name.handle(), LINKED_LINE_CHARS);
+    let room = LINKED_LINE_CHARS.saturating_sub(handle.chars().count().saturating_add(1));
+    let shown = name
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|shown| !shown.is_empty() && *shown != name.user_name)
+        .filter(|_| room >= 4)
+        .map(|shown| cut(shown, room));
+    (handle, shown)
 }
 
 /// The host actions about the person's picture, which the card offers
@@ -463,6 +492,9 @@ impl ProfileCard {
             .push(Box::new(header));
         if let Some(status) = &other.status {
             body = body.push(Self::status_row(status));
+        }
+        for link in &other.linked {
+            body = body.push(Self::linked_to(link));
         }
         if let Some(key) = &model.key {
             body = body
@@ -893,7 +925,10 @@ impl ProfileCard {
         let app = account.app.clone();
         let mut column = Column::new()
             .with_no_padding()
-            .with_rhythm(ui::tokens::Rhythm::Tight);
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            // As tall as what it says: filling the card's column pushed
+            // the rows after it out of the card.
+            .with_intrinsic_height();
         match &account.state {
             LinkState::Unlinked { connect, elsewhere } => {
                 if *connect {
@@ -1004,6 +1039,31 @@ impl ProfileCard {
             ))
     }
 
+    /// Someone's account elsewhere: "Linked to @quik2007 on Discord".
+    fn linked_to(link: &tilo_app::linked_accounts::ProfileLink) -> Box<dyn Widget> {
+        let icon = tilo_app::linked_accounts::service_name_icon(&link.service);
+        Box::new(
+            Row::new()
+                .no_wrap()
+                .with_align_items(taffy::AlignItems::Center)
+                .push(Box::new(ui::widget::IconWidget::new(icon)))
+                .push(Box::new(
+                    Text::new(&t_args(
+                        "profile-linked-to",
+                        &[
+                            ("handle", format!("@{}", link.handle).into()),
+                            ("service", link.service.clone().into()),
+                        ],
+                    ))
+                    .with_id(format!(
+                        "profile-other-linked-{}",
+                        link.service.to_lowercase()
+                    ))
+                    .with_role(TextRole::Caption),
+                )),
+        )
+    }
+
     /// The linked account, with Unlink.
     fn linked_as(
         &self,
@@ -1013,25 +1073,32 @@ impl ProfileCard {
         let icon = service_icon(&account.app);
         let chosen = Rc::clone(&self.chosen);
         let app = account.app.clone();
+        // One line under the section's "Linked accounts": the handle, and
+        // the name the account shows when that is another, muted. Cut
+        // short rather than wrapped; read out whole.
+        let (handle, shown) = linked_line(name);
+        let mut who = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center)
+            .push(Box::new(ui::widget::IconWidget::new(icon)))
+            .push(Box::new(
+                Text::new(&handle)
+                    .with_id(format!("profile-linked-{}", account.app))
+                    .with_spoken(t_args(
+                        "profile-linked-as",
+                        &[("account", ui::i18n::ArgValue::Text(name.label()))],
+                    ))
+                    .with_live(ui::a11y::Politeness::Polite),
+            ));
+        if let Some(shown) = shown {
+            who = who.push(Box::new(Text::new(&shown).dimmed()));
+        }
         Box::new(
             Row::new()
                 .no_wrap()
                 .with_align_items(taffy::AlignItems::Center)
                 .with_justify(taffy::JustifyContent::SpaceBetween)
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .with_align_items(taffy::AlignItems::Center)
-                        .push(Box::new(ui::widget::IconWidget::new(icon)))
-                        .push(Box::new(
-                            Text::new(&t_args(
-                                "profile-linked-as",
-                                &[("account", ui::i18n::ArgValue::Text(name.label()))],
-                            ))
-                            .with_id(format!("profile-linked-{}", account.app))
-                            .with_live(ui::a11y::Politeness::Polite),
-                        )),
-                ))
+                .push(Box::new(who))
                 .push(Box::new(
                     Button::new(
                         &format!("profile-unlink-{}", account.app),
@@ -1537,12 +1604,92 @@ mod tests {
         assert!(frame.is_open());
     }
 
+    /// A page's own card with a linked account keeps its status field its
+    /// height, and its rows follow one another: a linked row that outgrew
+    /// its first measure squashed the field above it to nothing.
+    #[test]
+    fn a_linked_card_keeps_its_status_field() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &ProfileModel {
+                linked: vec![discord(LinkState::Linked(
+                    tilo_app::linked_accounts::AccountName {
+                        user_name: "quinn.davis".into(),
+                        display_name: Some("Quinn".into()),
+                    },
+                ))],
+                sharing: Some(ui::StatusSharing::Automatic),
+                status: "Sketching".into(),
+                control_hints: Some(true),
+                ..model()
+            },
+            Rect::new(1350.0, 2.0, 1370.0, 22.0),
+            Rect::new(0.0, 0.0, 1440.0, 900.0),
+        );
+        let mut frame =
+            ui::headless::Framed::new(ui::State::new(), card, (1440, 900), Theme::dark());
+        let harness = ui::headless::Framed::harness_mut(&mut frame);
+        harness.poll_frame().unwrap();
+        let targets = harness.targets();
+        let at = |name: &str| {
+            *targets
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} is laid out: {targets:?}"))
+        };
+        let status = at("profile-status");
+        let sharing = at("profile-sharing");
+        let unlink = at("profile-unlink-so.tilo.discord");
+        let hints = at("profile-control-hints-toggle");
+        assert!(status.height() > 0.0, "the status field has its height");
+        assert!(status.y1 <= sharing.y0, "{status:?} above {sharing:?}");
+        assert!(sharing.y1 <= unlink.y0, "{sharing:?} above {unlink:?}");
+        assert!(unlink.y1 <= hints.y0, "{unlink:?} above {hints:?}");
+        // The linked row is one line, and the switch follows it closely,
+        // inside the viewport: no gap where a wrapped line was measured.
+        let linked = at("profile-linked-so.tilo.discord");
+        assert!(linked.height() < 2.0 * 16.0 * 1.2, "one line: {linked:?}");
+        assert!(
+            hints.y0 - unlink.y1 < 72.0,
+            "the switch follows the linked row: {unlink:?} then {hints:?}"
+        );
+        assert!(hints.y1 <= 900.0, "the switch is on screen: {hints:?}");
+    }
+
+    #[test]
+    fn a_linked_line_is_cut_short_never_wrapped() {
+        let account = |user: &str, shown: Option<&str>| tilo_app::linked_accounts::AccountName {
+            user_name: user.into(),
+            display_name: shown.map(str::to_owned),
+        };
+        assert_eq!(
+            linked_line(&account("quinn.davis", Some("Quinn"))),
+            ("@quinn.davis".into(), Some("Quinn".into()))
+        );
+        assert_eq!(
+            linked_line(&account("quinn.davis", Some("quinn.davis"))),
+            ("@quinn.davis".into(), None),
+            "the name only when it is another"
+        );
+        let (handle, shown) =
+            linked_line(&account("a_very_long_discord_username_x", Some("Someone")));
+        assert_eq!(handle.chars().count(), LINKED_LINE_CHARS);
+        assert!(handle.ends_with('…'), "{handle}");
+        assert_eq!(shown, None, "the name gives way first");
+        let (handle, shown) = linked_line(&account("quinn", Some("Quinn Davis-Montgomery")));
+        assert_eq!(handle, "@quinn");
+        let shown = shown.expect("room for some of the name");
+        assert!(shown.ends_with('…'), "{shown}");
+        assert!(handle.chars().count() + 1 + shown.chars().count() <= LINKED_LINE_CHARS);
+    }
+
     #[test]
     fn a_linked_account_offers_unlink() {
         let mut frame = framed(vec![discord(LinkState::Linked(ada_account()))]);
+        let said = says(&mut frame);
         assert!(
-            says(&mut frame).contains("Linked as Ada L · @ada.l"),
-            "shown by name"
+            said.contains("@ada.l") && said.contains("Ada L"),
+            "shown by handle and name: {said}"
         );
         click(&mut frame, "profile-unlink-so.tilo.discord");
         assert_eq!(
@@ -1678,7 +1825,7 @@ mod tests {
         let harness = ui::headless::Framed::harness_mut(&mut frame);
         harness.poll_frame().unwrap();
         let before = harness.rebuilt_frames();
-        *next.borrow_mut() = Some(vec![discord(LinkState::Unlinked)]);
+        *next.borrow_mut() = Some(vec![discord(unlinked())]);
         harness.poll_frame().unwrap();
         assert_eq!(
             harness.rebuilt_frames(),
@@ -1815,6 +1962,7 @@ mod tests {
                 following: false,
                 can_follow: true,
                 can_message,
+                linked: Vec::new(),
             }),
             ..ProfileModel::default()
         }
@@ -1883,5 +2031,26 @@ mod tests {
             Some(ProfileChoice::Action(SET_PHOTO.into()))
         );
         assert_eq!(short_key("abc"), "abc");
+    }
+
+    #[test]
+    fn someone_elses_card_names_their_linked_accounts() {
+        let mut model = ada(true, crate::collaborators::LineSource::Written);
+        let mut frame = framed_model(&model);
+        assert!(!says(&mut frame).contains("Linked to"));
+        if let Some(other) = &mut model.other {
+            other.linked = vec![tilo_app::linked_accounts::ProfileLink {
+                service: "Discord".into(),
+                handle: "quik2007".into(),
+                picture: None,
+            }];
+        }
+        let mut frame = framed_model(&model);
+        let said = says(&mut frame);
+        assert!(said.contains("Linked to @quik2007 on Discord"), "{said}");
+        assert!(
+            !said.contains("Unlink"),
+            "only their own card unlinks: {said}"
+        );
     }
 }

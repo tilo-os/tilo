@@ -511,6 +511,35 @@ fn progress(job: &Job) -> Section {
     ])
 }
 
+/// One summary tile: `fact`'s value over the caption that says where it
+/// came from and when.
+fn fact_tile(
+    label: &str,
+    fact: &Measured,
+    unit: Option<String>,
+    tone: Option<Tone>,
+    at: std::time::SystemTime,
+) -> Element {
+    let mut tile = StatTile::new(label, fact.value_or_dash().to_owned());
+    if let Some(unit) = unit {
+        tile = tile.unit(unit);
+    }
+    if let Some(tone) = tone {
+        tile = tile.tone(tone);
+    }
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(tile))
+            .push(Box::new(
+                Text::new(&fact.caption(at))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            )),
+    )
+}
+
 /// Protected size, snapshot count, last backup and next run, all derived
 /// from the catalog and the schedules.
 fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGroup {
@@ -522,26 +551,9 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
     let count = catalog.timeline(filter).len();
     let at = ui::time::wall();
     let tile = |label: &str, fact: Measured, unit: Option<String>, tone: Option<Tone>| {
-        let mut tile = StatTile::new(label, fact.value_or_dash().to_owned());
-        if let Some(unit) = unit {
-            tile = tile.unit(unit);
-        }
-        if let Some(tone) = tone {
-            tile = tile.tone(tone);
-        }
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(tile))
-                .push(Box::new(
-                    Text::new(&fact.caption(at))
-                        .with_role(TextRole::Caption)
-                        .dimmed(),
-                )),
-        ) as Element
+        fact_tile(label, &fact, unit, tone, at)
     };
-    let protected_fact = Measured::measured(
+    let protected_fact = Measured::known(
         Measure::new("Protected size").unit(unit.clone()),
         value,
         "repository manifest",
@@ -552,7 +564,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
         tile("Protected", protected_fact, Some(unit), None),
         tile(
             "Snapshots",
-            Measured::measured(
+            Measured::known(
                 Measure::new("Snapshots"),
                 i18n::group_digits(count as u64),
                 "repository manifest",
@@ -569,7 +581,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
             let tone = (now - last.taken > chrono::Duration::days(2)).then_some(Tone::Warning);
             tile(
                 "Last backup",
-                Measured::measured(
+                Measured::known(
                     Measure::new("Time since last backup").unit(unit.clone()),
                     value,
                     "repository manifest",
@@ -595,7 +607,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
             let (value, unit) = ahead(next, now);
             tile(
                 "Next run",
-                Measured::measured(
+                Measured::known(
                     Measure::new("Time to next run").unit(unit.clone()),
                     value,
                     "schedule",

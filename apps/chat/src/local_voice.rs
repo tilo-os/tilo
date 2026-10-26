@@ -1014,10 +1014,16 @@ impl crate::app::ChatApp {
         self.call_person(id).0
     }
 
-    /// What a call names `id` by: their name, and for someone a bridge
-    /// carries in where they are, as their bridged messages read ("Dana
-    /// (via Discord)").
+    /// What a call shows `id` as: their name alone. Where a bridge carries
+    /// them in from shows as its mark beside it ([`Self::call_mark`]), as
+    /// on their messages.
     pub(crate) fn call_name(&self, id: &str) -> String {
+        self.call_person(id).0
+    }
+
+    /// What a call names `id` to assistive technology: their name, and for
+    /// someone a bridge carries in where they are ("Dana, from Discord").
+    pub(crate) fn call_label(&self, id: &str) -> String {
         match self.call_person(id) {
             (name, Some(service)) => crate::i18n::t_args(
                 "chat-via-attribution",
@@ -1025,6 +1031,18 @@ impl crate::app::ChatApp {
             ),
             (name, None) => name,
         }
+    }
+
+    /// The mark of the service a bridge carries `id` in from, and what it
+    /// says when hovered ("From Discord"), where the toolkit has one.
+    pub(crate) fn call_mark(&self, id: &str) -> Option<(ui::icons::ServiceMark, String)> {
+        let guest = self.call_guest(id)?;
+        let mark = ui::icons::service_mark(&guest.service)?;
+        let account = guest
+            .id
+            .strip_prefix(&format!("{}:", guest.service))
+            .unwrap_or_default();
+        Some((mark, ui::author::service_tip(&guest.service, account)))
     }
 
     /// The colour `id` wears in a call: a linked guest their member's.
@@ -2020,11 +2038,18 @@ mod tests {
             [("u_aria", false), ("discord:1", true), ("discord:2", false)],
             "each guest is their own participant, talking on their own"
         );
-        assert_eq!(app.call_name("discord:1"), "Dana (via Discord)");
+        assert_eq!(app.call_name("discord:1"), "Dana");
+        assert_eq!(app.call_label("discord:1"), "Dana, from Discord");
+        assert_eq!(
+            app.call_mark("discord:1").map(|(_, tip)| tip).as_deref(),
+            Some("From Discord"),
+            "the mark beside the name says where they are"
+        );
+        assert!(app.call_mark("u_aria").is_none());
         assert_eq!(app.call_face_name("discord:1"), "Dana");
         assert_eq!(
             app.call_name("discord:2"),
-            "benji (via Discord)",
+            "benji",
             "linked to a member this window does not know: as the bridge says"
         );
         app.users.push(crate::model::User {
@@ -2037,7 +2062,7 @@ mod tests {
         });
         assert_eq!(
             app.call_name("discord:2"),
-            "Milo (via Discord)",
+            "Milo",
             "a linked guest is their member, reached through Discord"
         );
         assert_eq!(app.call_colour("discord:2"), app.identity_colour("u_milo"));
@@ -2064,7 +2089,7 @@ mod tests {
             .iter()
             .find(|child| child.id.ends_with("/discord:1"))
             .expect("Dana sits in the call");
-        assert_eq!(dana.label, "Dana (via Discord)");
+        assert_eq!(dana.label, "Dana", "no words about Discord beside her name");
         let face = dana.person.as_ref().expect("her face");
         assert_eq!(face.name.as_deref(), Some("Dana"));
     }

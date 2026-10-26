@@ -326,7 +326,7 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
     });
     assert_eq!(app.message_author_name(&message), "Discord bridge");
     let label = app.model_message_label(&message);
-    assert!(label.starts_with("Dana (via Discord): "), "{label}");
+    assert!(label.starts_with("Dana, from Discord: "), "{label}");
     assert!(!label.contains("Someone"), "{label}");
 
     // A member named alike: an unlinked persona says where it is from, one
@@ -341,7 +341,7 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
     });
     let label = app.model_message_label(&message);
     assert!(
-        label.starts_with("Dana · Discord (via Discord): "),
+        label.starts_with("Dana · Discord, from Discord: "),
         "{label}"
     );
     if let Some(persona) = message
@@ -352,7 +352,7 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
         persona.linked = Some("u_dana".into());
     }
     let label = app.model_message_label(&message);
-    assert!(label.starts_with("Dana (via Discord): "), "{label}");
+    assert!(label.starts_with("Dana, from Discord: "), "{label}");
     // One person, one colour: the bridged tile wears the linked member's.
     let name = app.message_author_name(&message);
     let ui::author::Author::Bot { linked_color, .. } =

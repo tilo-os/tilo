@@ -480,7 +480,7 @@ fn status_timeline(pane: &Pane) -> Element {
         else {
             continue;
         };
-        let fact = ui::fact::Measured::measured(
+        let fact = ui::fact::Measured::known(
             ui::fact::Measure::new("Application status"),
             summary.clone(),
             "registry",

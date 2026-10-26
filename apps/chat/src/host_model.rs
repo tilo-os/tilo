@@ -184,7 +184,7 @@ impl ChatApp {
             && let Some(service) = bridged_service(message)
         {
             // A person a bridge speaks for, by their own name and where
-            // they are: "Dana (via Discord)".
+            // they are: "Dana, from Discord".
             let members: Vec<&str> = self.users.iter().map(|user| user.name.as_str()).collect();
             let shown = self
                 .message_author(message, &name, "", None)

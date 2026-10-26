@@ -91,7 +91,9 @@ impl ContextMenu {
         let mut widget = SharedContextMenu::new();
         for action in &items {
             let name = label(*action);
-            let item = if action.is_destructive() {
+            let item = if action.asks_first() {
+                MenuItem::destructive_selection(&name).asking_first()
+            } else if action.is_destructive() {
                 MenuItem::destructive_selection(&name)
             } else {
                 MenuItem::selection(&name)
@@ -109,6 +111,7 @@ impl ContextMenu {
                 | MenuAction::NewCategory => Icon::Plus,
                 MenuAction::Archive => Icon::Archive,
                 MenuAction::PinMessage => Icon::Pin,
+                MenuAction::CopyText => Icon::Copy,
                 MenuAction::AddReaction => Icon::SmilePlus,
                 MenuAction::ReplyInThread => Icon::Reply,
                 MenuAction::ReportMessage | MenuAction::ReportAuthor => Icon::Flag,
@@ -177,6 +180,8 @@ pub(crate) enum MenuAction {
     PinMessage,
     /// Delete one of your own messages, or as a moderator someone else's.
     DeleteMessage,
+    /// Put a message's text on the clipboard.
+    CopyText,
     /// Report someone else's message to the room's moderators.
     ReportMessage,
     /// Report a message's author to the room's moderators.
@@ -211,6 +216,7 @@ impl MenuAction {
             MenuAction::EditMessage => "chat-menu-edit-message",
             MenuAction::PinMessage => "chat-menu-pin-message",
             MenuAction::DeleteMessage => "chat-menu-delete-message",
+            MenuAction::CopyText => "chat-menu-copy-text",
             MenuAction::ReportMessage => "chat-menu-report-message",
             MenuAction::ReportAuthor => "chat-menu-report-sender",
             MenuAction::BanAuthor => "chat-menu-ban",
@@ -224,6 +230,24 @@ impl MenuAction {
             self,
             MenuAction::Delete | MenuAction::DeleteMessage | MenuAction::BanAuthor
         )
+    }
+    /// Whether choosing it from a menu asks first: a removal, which Shift
+    /// skips for what Undo takes back
+    /// ([`ui::framework::Dispatcher::submit_confirming`]).
+    pub fn asks_first(self) -> bool {
+        matches!(self, MenuAction::Delete | MenuAction::DeleteMessage)
+    }
+    /// The stable key a message bar's button is published under.
+    pub fn bar_key(self) -> &'static str {
+        match self {
+            MenuAction::AddReaction => "react",
+            MenuAction::ReplyInThread => "reply",
+            MenuAction::EditMessage => "edit",
+            MenuAction::PinMessage => "pin",
+            MenuAction::CopyText => "copy",
+            MenuAction::DeleteMessage => "delete",
+            _ => "other",
+        }
     }
     /// Menu items for a channel row, in order: the destructive one last.
     pub fn for_channel() -> [MenuAction; 6] {
@@ -252,12 +276,13 @@ impl MenuAction {
         ]
     }
     /// Menu items for one of your own messages.
-    pub fn for_message() -> [MenuAction; 5] {
+    pub fn for_message() -> [MenuAction; 6] {
         [
             MenuAction::AddReaction,
             MenuAction::ReplyInThread,
             MenuAction::EditMessage,
             MenuAction::PinMessage,
+            MenuAction::CopyText,
             MenuAction::DeleteMessage,
         ]
     }
@@ -274,10 +299,11 @@ impl MenuAction {
     }
     /// Menu items for someone else's message: reporting it or its sender,
     /// and removing it, which only the room's moderators may.
-    pub fn for_others_message() -> [MenuAction; 5] {
+    pub fn for_others_message() -> [MenuAction; 6] {
         [
             MenuAction::AddReaction,
             MenuAction::ReplyInThread,
+            MenuAction::CopyText,
             MenuAction::ReportMessage,
             MenuAction::ReportAuthor,
             MenuAction::DeleteMessage,
@@ -360,6 +386,16 @@ pub(crate) enum Hit {
     MessageMenu {
         msg: Id,
     },
+    /// A button of the bar over the message the pointer or the keyboard
+    /// is on: what the same row of its menu does.
+    MessageBar {
+        msg: Id,
+        action: MenuAction,
+    },
+    /// The bar's "More" button: the message's whole menu.
+    MessageMore {
+        msg: Id,
+    },
     /// Commit the inline message editor to the CRDT.
     EditSave,
     /// Discard the inline message editor without writing.
@@ -433,6 +469,9 @@ pub(crate) enum Hit {
     /// Someone else in the call, by person or guest id: opens how loud
     /// they play here.
     CallParticipant(String),
+    /// The mark of the service a bridge carries a call guest in from,
+    /// beside their name: hovering it says where they are.
+    CallMark(String),
     /// Toggle the right flap (members / thread).
     ToggleRightFlap,
     /// Show or hide the open channel's pinned messages in the detail drawer.
@@ -494,6 +533,10 @@ impl Hit {
             Self::CloseThread => "chat.close-thread".into(),
             Self::Reaction { msg, emoji } => format!("chat.reaction:{msg}:{emoji}"),
             Self::AddReaction { msg, .. } => format!("chat.add-reaction:{msg}"),
+            Self::MessageBar { msg, action } => {
+                format!("chat.message-bar:{msg}:{}", action.bar_key())
+            }
+            Self::MessageMore { msg } => format!("chat.message-more:{msg}"),
             Self::EmojiChoice(emoji) => format!("chat.emoji-choice:{emoji}"),
             Self::EmojiGroup(group) => format!("chat.emoji-group:{group}"),
             Self::EmojiAddCustom => "chat.emoji-add".into(),
@@ -581,6 +624,17 @@ pub struct ChatApp {
     /// Any later step of theirs in the chat takes the offer down: Undo
     /// would take back that step instead.
     pub(crate) deleted: std::cell::RefCell<Option<(u64, Id)>>,
+    /// A message of the person's own whose deletion they were asked to
+    /// confirm, with the part it is in and its channel: once it is gone,
+    /// their Undo is offered as for one deleted at once.
+    pub(crate) asked_delete: Option<(ui::tilo_resource::Id, Option<u64>, Id)>,
+    /// The message the pointer is over, which shows its action bar.
+    pub(crate) hovered_message: Option<Id>,
+    /// Where each message row was painted this frame, whole: what the
+    /// pointer is over when it is over a message.
+    pub(crate) message_rows: Vec<(Rect, Id)>,
+    /// The action bar's arrival: which message it is over, and its fade.
+    pub(crate) message_bar: crate::app::message_bar::BarMotion,
     /// The last message posted from the main composer, by channel: put back
     /// in the composer if the room refuses it after it was applied here.
     pub(crate) last_post: Option<(Id, String)>,
@@ -1067,6 +1121,10 @@ impl ChatApp {
             composer_main: crate::composer::DraftComposer::shared(),
             not_sent: None,
             deleted: std::cell::RefCell::default(),
+            asked_delete: None,
+            hovered_message: None,
+            message_rows: Vec::new(),
+            message_bar: crate::app::message_bar::BarMotion::default(),
             last_post: None,
             channel_sheet: None,
             pins_open: false,
@@ -1298,6 +1356,72 @@ impl ChatApp {
         if let Some(dispatch) = &self.dispatch {
             // A refusal changes nothing; the dispatcher reports it.
             let _ = dispatch.submit_now(doc, invoke);
+        }
+    }
+
+    /// One node per control Chat paints, with its state, value and target.
+    fn control_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        self.semantic_hits()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (rect, hit, name, role, selected))| {
+                let input = self.text_field_access(&hit);
+                let focused = self.host_focused
+                    && self.keyboard_target.map_or_else(
+                        || input.as_ref().is_some_and(|(focused, _, _)| *focused),
+                        |target| target == index,
+                    );
+                let mut state = AccessState::new().focusable(true).focused(focused);
+                // Of the buttons, the picker's emoji say which is the
+                // highlighted one.
+                if matches!(role, Role::Tab | Role::ListItem) || matches!(hit, Hit::EmojiChoice(_))
+                {
+                    state = state.selected(selected);
+                }
+                if matches!(role, Role::ToggleButton) {
+                    state = state.checked(selected);
+                }
+                let mut node = AccessNode::new(role)
+                    .with_name(name.text)
+                    .with_interface_name(name.interface)
+                    .with_state(state)
+                    .with_bounds(rect)
+                    .with_key(index as u64)
+                    .with_action_target(hit.semantic_id());
+                if let Some((_, value, (anchor, focus))) = input {
+                    node = node.with_value(&value).with_text_selection(anchor, focus);
+                } else if let Hit::Reaction { msg, emoji } = &hit
+                    && let Some(reaction) = self.message(msg).and_then(|message| {
+                        message
+                            .reactions
+                            .iter()
+                            .find(|reaction| reaction.emoji == *emoji)
+                    })
+                {
+                    node =
+                        node.with_value(ui::widget::reaction_strip::pill_count(reaction.count()));
+                }
+                node
+            })
+            .collect()
+    }
+
+    /// [`Self::apply_now`] of a removal the person chose from a menu: asked
+    /// first, unless they hold Shift and Undo takes it back
+    /// ([`ui::framework::Dispatcher::submit_confirming`]).
+    pub(crate) fn apply_confirming(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        submit: impl ui::framework::Submit<crate::resource::Chat>,
+    ) {
+        let Some(invoke) = self.dispatched(submit) else {
+            return;
+        };
+        if let Some(dispatch) = &self.dispatch {
+            // A refusal changes nothing; the dispatcher reports it.
+            let _ = dispatch.submit_confirming(doc, invoke);
         }
     }
 
@@ -2040,17 +2164,18 @@ impl ChatApp {
                 self.history_open = Some("m_sora".into());
                 self.history_anchor = Point::new(424.0, 420.0);
             }
-            "msgmenu" => {
-                // The right-click action menu over one of your own messages,
-                // offering Edit — the discoverable entry point to editing.
+            "msgbar" | "msgbar-shift" | "msgmenu" => {
+                // The pointer over one of your own messages: its row lifts
+                // under its action bar; with Shift held the bar grows the
+                // quick actions that go ahead at once. `msgmenu` then clicks
+                // the bar's More, opening the message's whole menu under it
+                // ([`crate::resource`]'s scenario input).
                 self.right_flap.snap(false);
                 self.thread_open = None;
                 self.call = CallState::default();
-                self.menu = Some(self.context_menu(
-                    MenuTarget::Message("m_me2".into()),
-                    Point::new(360.0, 300.0),
-                    MenuAction::for_message().to_vec(),
-                ));
+                self.hovered_message = Some("m_me2".into());
+                self.message_bar.settle_for_visual_review();
+                ui::widget::note_shift(scenario == "msgbar-shift");
             }
             _ => {
                 self.thread_open = None;
@@ -3034,12 +3159,22 @@ impl ChatApp {
 
     pub(crate) fn reload(&mut self, doc: &AutoCommit) {
         self.read_kept_messages(doc);
-        let chat = crate::projection::read(doc);
+        let chat = ui::tilo_resource::profiling::measure("chat.reload.read", || {
+            crate::projection::read(doc)
+        });
         #[cfg(test)]
         {
             *self.last_read.borrow_mut() = std::rc::Rc::new(chat.clone());
         }
         let held = self.held_messages();
+        // A deletion the person confirmed has gone: offer its Undo.
+        if let Some((message, part, channel)) = self.asked_delete.take() {
+            if held.contains(&message) {
+                self.asked_delete = Some((message, part, channel));
+            } else if let Some(part) = part {
+                *self.deleted.get_mut() = Some((part, channel));
+            }
+        }
         self.chain_seen = self.chain.as_ref().map(ui::framework::Chain::revision);
         self.channels = chat.channel_rows();
         self.categories = chat.category_rows();
@@ -4017,6 +4152,17 @@ impl ChatApp {
                     Hit::AddReaction { .. } => {
                         (copy("chat-emoji-add-reaction"), Role::Button, false)
                     }
+                    Hit::MessageBar { msg, action } => (
+                        content(self.bar_label(msg, *action)),
+                        if *action == MenuAction::PinMessage {
+                            Role::ToggleButton
+                        } else {
+                            Role::Button
+                        },
+                        *action == MenuAction::PinMessage
+                            && self.message(msg).is_some_and(|m| m.pinned),
+                    ),
+                    Hit::MessageMore { .. } => (copy("chat-message-more"), Role::Button, false),
                     Hit::EmojiChoice(emoji) => (
                         content(crate::i18n::t_args(
                             "chat-emoji-choose",
@@ -4094,7 +4240,7 @@ impl ChatApp {
                     Hit::CallParticipant(id) => (
                         content(crate::i18n::t_args(
                             "chat-call-participant",
-                            &[("name", self.call_name(id).into())],
+                            &[("name", self.call_label(id).into())],
                         )),
                         Role::Button,
                         false,
@@ -4140,6 +4286,16 @@ impl ChatApp {
         }) {
             return Some(tip);
         }
+        // So does a call guest's, beside their name. It lies under their
+        // tile's own target, which takes the click.
+        if let Some(tip) = self.hits.iter().find_map(|(rect, hit)| match hit {
+            Hit::CallMark(user) if rect.contains(point) => {
+                self.call_mark(user).map(|(_, tip)| (*rect, tip))
+            }
+            _ => None,
+        }) {
+            return Some(tip);
+        }
         // A reaction pill says who reacted, with the strip's shared wording.
         if let Some((_, Hit::Reaction { msg, .. })) = self
             .hits
@@ -4169,6 +4325,8 @@ impl ChatApp {
                         | Hit::Send
                         | Hit::ComposerEmoji(_)
                         | Hit::AddReaction { .. }
+                        | Hit::MessageBar { .. }
+                        | Hit::MessageMore { .. }
                 )
         }) && let Some((_, _, label, _, _)) = self
             .semantic_hits_from(&[(*rect, hit.clone())])
@@ -4645,7 +4803,7 @@ impl Widget for ChatApp {
                     });
             if !unchanged {
                 self.canonical_dirty = true;
-                self.reload(doc);
+                ui::tilo_resource::profiling::measure("chat.sync.reload", || self.reload(doc));
                 self.synced = Some((heads, pending));
             }
         }
@@ -4811,6 +4969,7 @@ impl Widget for ChatApp {
         presence: &PresenceCtx,
     ) {
         // The attachments painted below say when they step on next.
+        let _draw_phase = ui::tilo_resource::profiling::Phase::start("chat.draw");
         self.arriving_wake.set(None);
         // Adopt this theme's chrome and advance the drawers for this frame.
         self.layout_text_scale = theme.text_scale;
@@ -4834,7 +4993,9 @@ impl Widget for ChatApp {
         if !self.thread_is_page() {
             self.draw_conversation(&mut parts, scene, tf, tr, theme, presence, &mut hits);
         }
+        let drawers_phase = ui::tilo_resource::profiling::Phase::start("chat.draw.drawers");
         self.draw_drawers(&mut parts, scene, tf, tr, theme, presence, &mut hits);
+        drawers_phase.end();
         self.declare_window_toolbar();
 
         // Call layers. The host tile is a real VideoPlayer, painted only once
@@ -4956,6 +5117,7 @@ impl Widget for ChatApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let _phase = ui::tilo_resource::profiling::Phase::start("chat.handle_event");
         // What is typed belongs to the control that has the keyboard. A
         // desktop where no window holds it offers each key to every window
         // in turn, and Chat must not write into its composer what was not
@@ -5067,55 +5229,12 @@ impl Widget for ChatApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
+        use ui::a11y::{AccessNode, Role};
 
         #[cfg(test)]
         crate::component_tests::ACCESSIBILITY_BUILDS
             .set(crate::component_tests::ACCESSIBILITY_BUILDS.get() + 1);
-        let controls = self
-            .semantic_hits()
-            .into_iter()
-            .enumerate()
-            .map(|(index, (rect, hit, name, role, selected))| {
-                let input = self.text_field_access(&hit);
-                let focused = self.host_focused
-                    && self.keyboard_target.map_or_else(
-                        || input.as_ref().is_some_and(|(focused, _, _)| *focused),
-                        |target| target == index,
-                    );
-                let mut state = AccessState::new().focusable(true).focused(focused);
-                // Of the buttons, the picker's emoji say which is the
-                // highlighted one.
-                if matches!(role, Role::Tab | Role::ListItem) || matches!(hit, Hit::EmojiChoice(_))
-                {
-                    state = state.selected(selected);
-                }
-                if matches!(role, Role::ToggleButton) {
-                    state = state.checked(selected);
-                }
-                let mut node = AccessNode::new(role)
-                    .with_name(name.text)
-                    .with_interface_name(name.interface)
-                    .with_state(state)
-                    .with_bounds(rect)
-                    .with_key(index as u64)
-                    .with_action_target(hit.semantic_id());
-                if let Some((_, value, (anchor, focus))) = input {
-                    node = node.with_value(&value).with_text_selection(anchor, focus);
-                } else if let Hit::Reaction { msg, emoji } = &hit
-                    && let Some(reaction) = self.message(msg).and_then(|message| {
-                        message
-                            .reactions
-                            .iter()
-                            .find(|reaction| reaction.emoji == *emoji)
-                    })
-                {
-                    node =
-                        node.with_value(ui::widget::reaction_strip::pill_count(reaction.count()));
-                }
-                node
-            })
-            .collect();
+        let controls = self.control_accessibility();
 
         let conversation = self.conversation_accessibility();
         let mut children: Vec<AccessNode> = controls;
@@ -5323,6 +5442,7 @@ impl Widget for ChatApp {
             || (self.thread_open.is_some() && self.thread_scroll.needs_animation_frame())
             || self.flap_animating
             || self.call_chrome_motion.animating
+            || self.message_bar.animating
             || self.speaking.animating
             || self.call.placement.is_dragging()
             || self.call.placement.is_handoff_animating()
@@ -5659,5 +5779,6 @@ mod call_chrome_motion;
 mod floating_surfaces;
 #[cfg(test)]
 mod live_draft_presence_tests;
+pub(crate) mod message_bar;
 mod own_delete;
 pub(crate) use call_chrome_motion::CallChromeMotion;

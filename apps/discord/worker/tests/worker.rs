@@ -758,6 +758,7 @@ async fn fetch_asset_sends_the_bytes_then_the_result() {
             url: url.clone(),
             max_bytes: 1_000,
             attachment: None,
+            inline: false,
         }))
         .await;
     let Outcome::Done { result } = outcome else {
@@ -774,6 +775,7 @@ async fn fetch_asset_sends_the_bytes_then_the_result() {
             url,
             max_bytes: 3,
             attachment: None,
+            inline: false,
         }))
         .await;
     assert!(matches!(too_big, Outcome::Refused { .. }), "{too_big:?}");
@@ -782,6 +784,7 @@ async fn fetch_asset_sends_the_bytes_then_the_result() {
             url: "https://example.com/a.png".to_owned(),
             max_bytes: 1_000,
             attachment: None,
+            inline: false,
         }))
         .await;
     assert!(

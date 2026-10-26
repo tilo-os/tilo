@@ -3,6 +3,7 @@ tab-modified = Unsaved changes
 tab-search-in = Search in { $title }
 tab-held-by = { $name }’s window
 tab-controls-desktop = Controls your desktop
+tab-dev-build = Dev build · by { $installer }
 standalone-search-title = Search
 standalone-history-title = History
 standalone-history-close = Close history

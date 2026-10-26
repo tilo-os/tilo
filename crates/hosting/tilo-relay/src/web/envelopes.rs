@@ -41,8 +41,8 @@ pub(super) const PROFILE_LABEL: &[u8] = b"tilo person profile v1\0";
 /// A profile's picture, as its `data:` URL: a 96 px square encodes in a few
 /// kilobytes, so this bounds a profile without cramping one.
 pub(super) const MAX_PHOTO_CHARS: usize = 48 * 1024;
-/// A profile is a name, a key and at most one small picture.
-const MAX_PROFILE_BYTES: usize = MAX_PHOTO_CHARS + 1024;
+/// A profile is a name, a key, at most one small picture and a few lines.
+const MAX_PROFILE_BYTES: usize = MAX_PHOTO_CHARS + 2048;
 /// The image types a profile's picture may be.
 const PHOTO_PREFIXES: [&str; 3] = [
     "data:image/png;base64,",
@@ -77,6 +77,47 @@ struct Profile {
     /// How they share what they are doing: `automatic`, `manual` or `off`.
     #[serde(default)]
     sharing: Option<String>,
+    /// The service the picture is their account's avatar on ("Discord"),
+    /// when it is not one they uploaded.
+    #[serde(default)]
+    photo_from: Option<String>,
+    /// Their accounts elsewhere that a room here linked to them.
+    #[serde(default)]
+    linked: Vec<LinkedHandle>,
+}
+
+/// An account elsewhere a profile names: the service and its handle there.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LinkedHandle {
+    service: String,
+    handle: String,
+}
+
+/// The most accounts elsewhere a profile names.
+const MAX_LINKED: usize = 4;
+/// The longest service name or handle a profile names, in characters.
+const MAX_HANDLE_CHARS: usize = 64;
+
+/// Whether `word` is a service name or handle a profile may carry.
+fn valid_handle(word: &str) -> bool {
+    !word.is_empty()
+        && word.chars().count() <= MAX_HANDLE_CHARS
+        && !word.chars().any(char::is_control)
+}
+
+/// Whether what a profile says of its accounts elsewhere may be kept: a
+/// few named ones, and a picture from one only beside a picture.
+fn valid_links(profile: &Profile) -> bool {
+    profile.linked.len() <= MAX_LINKED
+        && profile
+            .linked
+            .iter()
+            .all(|link| valid_handle(&link.service) && valid_handle(&link.handle))
+        && profile
+            .photo_from
+            .as_deref()
+            .is_none_or(|from| valid_handle(from) && profile.photo.is_some())
 }
 
 /// The longest status a profile keeps, in characters.
@@ -147,6 +188,7 @@ impl Kind {
                         .sharing
                         .as_deref()
                         .is_some_and(|sharing| !matches!(sharing, "automatic" | "manual" | "off"))
+                    || !valid_links(&profile)
                 {
                     return Err(Refusal::Malformed("not a profile"));
                 }
@@ -553,5 +595,58 @@ mod tests {
             ));
         }
         assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(said));
+    }
+
+    #[tokio::test]
+    async fn a_profile_names_its_linked_accounts_and_where_its_picture_is_from() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let root = SigningKey::from_bytes(&[9; 32]);
+        let hex_root = hex::encode(root.verifying_key().to_bytes());
+        let publish = |text: String, at: u64| {
+            let mut statement = PROFILE_LABEL.to_vec();
+            statement.extend_from_slice(&at.to_le_bytes());
+            statement.extend_from_slice(text.as_bytes());
+            let body = serde_json::to_vec(&serde_json::json!({
+                "profile": text,
+                "issued_at_ms": at,
+                "signature": hex::encode(root.sign(&statement).to_bytes()),
+            }))
+            .unwrap_or_default();
+            let profiles = &profiles;
+            async move { profiles.publish(&body, at, |_| async { true }).await }
+        };
+        let linked = serde_json::json!({"version": 1, "user_public_key": hex_root,
+            "display_name": "Quinten", "photo": "data:image/png;base64,iVBORw0KGgo=",
+            "photo_from": "Discord", "linked": [{"service": "Discord", "handle": "quik2007"}]})
+        .to_string();
+        publish(linked.clone(), 4_000)
+            .await
+            .expect("kept with its link");
+        assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(linked));
+        let five: Vec<_> = (0..5)
+            .map(|i| serde_json::json!({"service": "Discord", "handle": format!("h{i}")}))
+            .collect();
+        for bad in [
+            // A picture from a service, without a picture.
+            serde_json::json!({"photo_from": "Discord"}),
+            serde_json::json!({"linked": [{"service": "Discord", "handle": ""}]}),
+            serde_json::json!({"linked": [{"service": "Discord", "handle": "a\nb"}]}),
+            serde_json::json!({"linked": five}),
+            serde_json::json!({"linked": [{"service": "Discord", "handle": "x", "url": "y"}]}),
+        ] {
+            let mut text = serde_json::json!({"version": 1, "user_public_key": hex_root,
+                "display_name": "Quinten"});
+            for (key, value) in bad.as_object().into_iter().flatten() {
+                text[key] = value.clone();
+            }
+            assert!(
+                matches!(
+                    publish(text.to_string(), 5_000).await,
+                    Err(Refusal::Malformed(_))
+                ),
+                "{bad}"
+            );
+        }
     }
 }
