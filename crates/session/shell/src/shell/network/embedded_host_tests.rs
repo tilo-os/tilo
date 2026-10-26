@@ -497,3 +497,60 @@ fn a_request_that_changed_nothing_does_not_wake_the_frame_loop() {
     assert!(!network.placements_pending(), "nor asks for another pass");
     drop(network);
 }
+
+/// Synchronous shell code calls the network through one path: the work
+/// runs as a task of the network's runtime, and the caller waits on a plain
+/// channel. From a thread of its own that answers; from a task on the
+/// network's own runtime, which may run on its one worker, the wait is
+/// refused, never deadlocked (in a debug build it panics naming the call),
+/// and the network goes on answering.
+#[test]
+fn a_network_call_waits_from_a_thread_and_is_refused_from_a_network_task() {
+    let dir = tempfile::tempdir().expect("temp");
+    let net = Arc::new(
+        ShellNetwork::spawn_with(
+            WorkspaceTree::default().shared(),
+            &dir.path().join("device-private/keypair.bin"),
+            &dir.path().join("peer-sync"),
+            crate::shell::network::Reach::Loopback,
+            |_, _| None,
+        )
+        .expect("the network starts"),
+    );
+
+    let from_thread = {
+        let net = Arc::clone(&net);
+        std::thread::spawn(move || net.wait_on(async { tokio::spawn(async { 7 }).await }))
+            .join()
+            .expect("the calling thread")
+    };
+    assert_eq!(from_thread.expect("answered").expect("the task ran"), 7);
+
+    let inner = Arc::clone(&net);
+    let nested = net
+        .wait_on(async move { tokio::spawn(async move { inner.wait_on(async { 8 }) }).await })
+        .expect("the network answers the outer call");
+    match nested {
+        Ok(refused) => {
+            let error = refused.expect_err("a network task may not wait on the network");
+            assert!(error.contains("inside an async runtime"), "{error}");
+        }
+        Err(panicked) => {
+            let message = panicked.into_panic();
+            let message = message
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| message.downcast_ref::<&str>().copied())
+                .unwrap_or_default();
+            assert!(
+                message.contains("waited from inside a runtime"),
+                "the debug build names the call: {message}"
+            );
+        }
+    }
+    assert_eq!(
+        net.wait_on(async { 9 }).expect("the network still answers"),
+        9
+    );
+    drop(net);
+}

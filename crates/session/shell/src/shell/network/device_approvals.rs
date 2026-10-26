@@ -215,7 +215,6 @@ impl ShellNetwork {
         }
         let root = self.pairing_root()?;
         let approver = root.approver()?;
-        let runtime = self.runtime_handle()?;
         let mut origins: Vec<&str> = invites
             .iter()
             .map(|invite| invite.origin.as_str())
@@ -225,11 +224,11 @@ impl ShellNetwork {
         let mut asking = Vec::new();
         for origin in origins {
             let http = HostHttp::new(origin)?;
-            let pending = runtime
-                .block_on(tilo_browser_peer::pending_pairings(
-                    http.as_ref(),
-                    approver.as_ref(),
-                ))
+            let approver = Arc::clone(&approver);
+            let pending = self
+                .wait_on(async move {
+                    tilo_browser_peer::pending_pairings(http.as_ref(), approver.as_ref()).await
+                })?
                 .map_err(|error| error.to_string())?;
             asking.extend(
                 pending
@@ -269,14 +268,10 @@ impl ShellNetwork {
             None
         };
         let http = HostHttp::new(&asking.origin)?;
-        self.runtime_handle()?
-            .block_on(tilo_browser_peer::decide_pairing(
-                http.as_ref(),
-                approver.as_ref(),
-                digest,
-                cert,
-            ))
-            .map_err(|error| error.to_string())?;
+        self.wait_on(async move {
+            tilo_browser_peer::decide_pairing(http.as_ref(), approver.as_ref(), digest, cert).await
+        })?
+        .map_err(|error| error.to_string())?;
         self.device_approvals
             .invites
             .lock_recover()

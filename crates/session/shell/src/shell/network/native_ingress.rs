@@ -204,7 +204,15 @@ impl ShellNetwork {
                 record_id,
                 envelope,
             } if envelope.encryption.is_some() && self.native_room_seals_records(room) => {
-                if *peer == self.local_peer_hash || cluster_id != &room.to_string() {
+                if cluster_id != &room.to_string() {
+                    return true;
+                }
+                // This device's own write comes back live only as an echo.
+                // In the host's retained replay it is the room's history,
+                // which a device that started again holds no more of than
+                // the host gives it: later writes build on it, so its apps
+                // take it again, the broker dropping what they still hold.
+                if *peer == self.local_peer_hash && !input.retained() {
                     return true;
                 }
                 // The relay authenticated the author; the room's governance
