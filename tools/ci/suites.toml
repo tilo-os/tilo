@@ -85,7 +85,7 @@ requirement = { cores = 1, memory = "1GiB" }
 # The container policy is generated from keys/ by tools/signing/release_trust.py;
 # the image recipes install what it names, and t's signing scripts sign the
 # repositories it verifies.
-inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/t_matrix.py"]
+inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/t_matrix.py"]
 suites = ["os/tests/test_container_signature_policy.py"]
 
 [[group]]
