@@ -34,8 +34,6 @@ pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, RoomContent};
 #[cfg(test)]
 mod device_rejoin_tests;
-mod layout_writes;
-pub(crate) use layout_writes::writes_layout;
 mod listing;
 mod member_records;
 pub use member_records::PreparedRecord;
@@ -234,11 +232,6 @@ struct GovernedRoom {
     /// whole history.
     #[cfg(any(feature = "agents", feature = "web"))]
     compaction_wait: usize,
-    /// The room's layout as members' writes of it are decided, followed
-    /// from the first such write ([`layout_writes`]).
-    layout: Option<crate::layout_guard::LayoutGuard>,
-    /// The segments of members' larger layout writes, until each is whole.
-    layout_segments: collab_types::DocumentReassembler,
     /// Members' writes the governor took in that the room file lacks.
     unkept: bool,
     /// Whether writing them through is due already ([`Rooms::keep_soon`]).
@@ -346,8 +339,6 @@ impl GovernedRoom {
             publisher: Arc::default(),
             #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
-            layout: None,
-            layout_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
             rebased: false,
@@ -401,8 +392,6 @@ impl GovernedRoom {
             publisher: Arc::default(),
             #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
-            layout: None,
-            layout_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
             rebased: false,
@@ -900,6 +889,74 @@ impl std::fmt::Debug for Rooms {
     }
 }
 
+/// Why the requests `after` adds to `before` are not `person`'s to ask:
+/// each must be filed under its own content, name its asker, and, when it
+/// acts on an entry another device minted, be allowed by `allows` on that
+/// entry's moderation node. `write_salt` is the namespace of the device
+/// that wrote the batch. Mirrors the retired layout guard's judgment, now
+/// on the room document the host admits.
+fn judge_new_layout_requests(
+    before: &automerge::AutoCommit,
+    after: &automerge::AutoCommit,
+    room: &str,
+    person: &str,
+    write_salt: u16,
+    allows: &dyn Fn(&tilo_desktop_model::ownership::Touched) -> bool,
+) -> Result<(), String> {
+    use tilo_desktop_model::ownership::commanded_act;
+    use tilo_desktop_model::projection::LayoutRequest;
+    let seen = tilo_desktop_model::room_layout::requests(before)
+        .into_iter()
+        .map(|request| request.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let authors = tilo_desktop_model::projection::layout_authors_at(after, None);
+    for request in tilo_desktop_model::room_layout::requests(after) {
+        if seen.contains(&request.id) {
+            continue;
+        }
+        if request.id
+            != LayoutRequest::id(&request.from, request.to_salt, request.at, &request.command)
+        {
+            return Err("a retained request's id is not its own content".into());
+        }
+        if request.from != person {
+            return Err(format!(
+                "a retained request is asked in the name of {}",
+                request.from
+            ));
+        }
+        if request.to_salt == 0 {
+            return Err("a retained request names no owner".into());
+        }
+        let Ok(bound) =
+            serde_json::from_slice::<tilo_desktop_model::commands::BoundCommand>(&request.command)
+        else {
+            continue;
+        };
+        let Some((id, act)) = commanded_act(&bound.command) else {
+            continue;
+        };
+        if tilo_desktop_model::ids::peer_salt_of(id) == write_salt {
+            continue;
+        }
+        let touched = tilo_desktop_model::ownership::Touched {
+            id,
+            act,
+            owner: authors.get(&id).cloned(),
+        };
+        if !allows(&touched) {
+            return Err(format!(
+                "{} may not {} {}, which {} made, in {room}",
+                person,
+                touched.act.verb(),
+                touched.id,
+                touched.owner.as_deref().unwrap_or("nobody")
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl Rooms {
     /// Open every room recorded under `dir` and bind each to the relay:
     /// its workspace pinned and admitting only governed members, its
@@ -1203,6 +1260,24 @@ impl Rooms {
     /// The room is not governed here.
     pub async fn summary(&self, room: &str) -> Result<RoomSummary, CollaborationError> {
         Ok(self.room(room).await?.lock().await.summary())
+    }
+
+    /// The room's own admitted document, saved: its governance, every
+    /// device's topology namespace, retained commands and marks. A host
+    /// that reads or shows the room reads this one document.
+    ///
+    /// # Errors
+    /// The room is not governed here, or it holds no admitted document.
+    pub async fn admitted_room_document(&self, room: &str) -> Result<Vec<u8>, CollaborationError> {
+        let state = self.room(room).await?;
+        let governed = state.lock().await;
+        let mut doc = governed
+            .peer()
+            .admitted_room()
+            .cloned()
+            .ok_or_else(|| CollaborationError::new("room governance missing"))?;
+        drop(governed);
+        Ok(doc.save())
     }
 
     /// The spectators watching `room` now: those holding a seat, not every
@@ -1632,6 +1707,7 @@ impl Rooms {
         let host = &self.inner.host;
         let room = self.room(room).await.map_err(|error| error.to_string())?;
         let mut room = room.lock().await;
+        let room_id = room.room().to_owned();
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
         let outcome = candidate.receive_from(
@@ -1639,7 +1715,50 @@ impl Rooms {
             message,
             now,
         )?;
-        if !outcome.changed {
+        // The requests this batch adds are judged where they enter, as the
+        // layout guard did: the asker must be the device that wrote them,
+        // and may ask an act on another device's entry only where the
+        // room's policy allows it on that entry's moderation node. A batch
+        // that carries an unauthorised one is not committed at all.
+        let before_doc = room
+            .peer()
+            .admitted_room()
+            .ok_or("room governance missing")?
+            .clone();
+        let after_doc = candidate
+            .admitted_room()
+            .ok_or("room governance missing")?
+            .clone();
+        let member = candidate.permissions(author, now)?;
+        let person = member.person.clone();
+        let write_salt = tilo_desktop_model::ids::namespace_of_device(&hex::encode(author));
+        let allows = |touched: &tilo_desktop_model::ownership::Touched| {
+            member.allows(
+                &tilo_desktop_model::ownership::act_node(&room_id, touched),
+                tilo_action_policy::ActionKind::Undoable,
+                now,
+            )
+        };
+        judge_new_layout_requests(
+            &before_doc,
+            &after_doc,
+            &room_id,
+            &person,
+            write_salt,
+            &allows,
+        )?;
+        // The host is an owner too: commands other people retained for its
+        // own strips and windows are applied here, once, and marked in its
+        // namespace in the same change.
+        let host_person = hex::encode(host.cert.user_public_key);
+        let host_salt =
+            tilo_desktop_model::ids::namespace_of_device(&hex::encode(host.cert.device_public_key));
+        let applied = candidate
+            .governance_mut()
+            .author_room_document(&host.key, now, |doc| {
+                crate::rooms::layout_scope::apply_requests(doc, &room_id, host_salt, &host_person)
+            })?;
+        if !outcome.changed && !applied {
             return Ok(());
         }
         room.commit(candidate, &host.key, now, |record, _| {

@@ -169,12 +169,10 @@ pub fn validate(
         if !checkpoint && source != owner {
             return Err("owned-content conflict: topology writer is not owner".into());
         }
-        if id.1 == 2
-            && let (Some(a), Some(b)) = (old.get(id), new.get(id))
-            && a.get("record_id") != b.get("record_id")
-        {
-            return Err("canonical record route cannot be rebound".into());
-        }
+        // A window's owner may point the tab at another record: a reused
+        // window follows what its person opened. The old binding stays in
+        // the room document's history, so provenance is not rewritten. The
+        // loop above already keeps every other writer out of this entry.
     }
     Ok(())
 }
@@ -243,9 +241,15 @@ mod tests {
         assert!(validate(Some(&after), &bad, &other, &authority).is_err());
     }
     #[test]
-    fn even_pinned_authority_cannot_rebind_a_live_record_route() {
+    fn a_tabs_owner_may_rebind_its_record_and_nobody_else_may() {
         let authority = "aa".repeat(32);
+        let owner = "bb".repeat(32);
+        let other = "cc".repeat(32);
         let mut before = AutoCommit::new();
+        let owners = before
+            .put_object(ROOT, "contents_owners_v1", ObjType::Map)
+            .unwrap();
+        before.put(&owners, "0001", owner.as_str()).unwrap();
         let contents = before.put_object(ROOT, "contents", ObjType::Map).unwrap();
         let strip = before
             .put_object(contents, "0001000000000001", ObjType::Map)
@@ -262,13 +266,22 @@ mod tests {
             .put(&tab, "record_id", "tab:0000000000000001")
             .unwrap();
         before.commit();
-        let mut after = before.clone();
-        after.put(tab, "record_id", "tab:0000000000000002").unwrap();
-        after.commit();
+        let mut rebound = before.clone();
+        rebound
+            .put(tab, "record_id", "tab:0000000000000002")
+            .unwrap();
+        rebound.commit();
         assert!(
-            validate(Some(&before), &after, &authority, &authority)
-                .unwrap_err()
-                .contains("record route")
+            validate(Some(&before), &rebound, &owner, &authority).is_ok(),
+            "the device whose namespace minted the tab may point it elsewhere"
+        );
+        assert!(
+            validate(Some(&before), &rebound, &other, &authority).is_err(),
+            "another device may not rebind someone else's tab"
+        );
+        assert!(
+            validate(Some(&before), &rebound, &authority, &authority).is_ok(),
+            "the governor's checkpoint republishes the owner's own rebind"
         );
     }
 }

@@ -1367,8 +1367,8 @@ store (`StorageKey::PackageRecord("so.tilo.browser-desktop", room)`, JSON)
 and committed with the records, so a reload restores the same windows on
 the same documents; a profile without one is seeded (one workspace, one
 strip, a window per requested application; without `apps`, none, so the
-empty workspace shows the launchpad). In a certified room the
-tree is also shared with the room's other pages ([Shared sessions](#shared-sessions)).
+empty workspace shows the launchpad). In a certified room the tree's own
+entries are also published into the room's document ([Shared sessions](#shared-sessions)).
 
 ## Shared sessions
 
@@ -1388,13 +1388,16 @@ host's admission replay reaches mounts created later.
   merged into its stored document (`RecordId::storage_key`), so opening it
   later shows the edits. Conflicts are Automerge merges; the host orders
   commits (`Commit`/`Committed`) and fans them out before persisting.
-- **Desktop.** The tree plus each tab's record is one small Automerge
-  document on `so.tilo.browser-desktop/desktop` whose `desktop` value is the
-  shared JSON; concurrent layouts resolve last-writer-wins identically on
-  every page, and an inbound value reaches the surface through
-  `replace_tree` (running tabs survive). Records go out before the desktop
-  in each publication, so a page never sees a tab before its record.
-  Desktop ids are salted with the certified device key.
+- **Layout.** The room's own governance document is the layout: each page
+  claims its id namespace (a member action) and publishes only its own strips,
+  groups, windows, bindings and retained-command marks as `SyncResp`. The
+  host admits it through the room's `StatePeer` (one writer per namespace)
+  and republishes the one admitted document; an inbound layout folds into
+  the room's workspace alone (`apply_room_layout`, running tabs and the strip
+  in front survive). Moving another device's window is a `LayoutRequest` the
+  room retains and its owner applies once. Records go out before the layout
+  in each publication, so a page never sees a tab before its record. Layout
+  ids are salted with the certified device key.
 - **Readiness.** Nothing is published before the host answered `Ready` for
   the room, so a page never announces a stale snapshot over what the room
   holds.

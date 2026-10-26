@@ -640,8 +640,10 @@ fn a_room_layout_lands_in_its_workspace_and_leaves_the_others_alone() {
     let room = tilo_desktop_model::RoomId::parse("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap();
     let mut tree = handle.read(Clone::clone);
     let room_id = tilo_desktop_model::WorkspaceId::of_room(room);
+    let first_strip = tree.workspaces[0].strips[0].id;
     tree.workspaces[0].id = room_id;
     tree.active = room_id;
+    tree.active_strip.insert(room_id, first_strip);
     // A second workspace of another room, and one more window here that the
     // room's layout has not heard of.
     let mut other = seed_tree(&mut IdMinter::new(9), "Elsewhere", Vec::new());

@@ -288,6 +288,10 @@ pub struct PeerStatus {
     /// id: what someone no longer among them made on the room's desktop is
     /// released ([`tilo_desktop_model::ownership::released`]).
     pub room_members: BTreeMap<String, BTreeSet<String>>,
+    /// The device certificate the host pinned at certification: the room
+    /// governor a page asks for its own namespace claim or another owner's
+    /// retained command.
+    pub host_device: [u8; 32],
 }
 
 /// Something the session produced for its consumers.
@@ -302,6 +306,18 @@ pub enum PeerEvent {
     Ready {
         /// The room's workspace.
         workspace_id: u64,
+    },
+    /// The room's own document changed: a governance checkpoint, a member's
+    /// topology, or the governor republishing both. `changes` are the
+    /// Automerge changes in the order the host sent them; the page admits
+    /// them into the room's replica.
+    RoomChanged {
+        /// The room's workspace.
+        workspace_id: u64,
+        /// The room's UUID.
+        room: String,
+        /// The room document's changes.
+        changes: Vec<Vec<u8>>,
     },
     /// A commit became durable on the host.
     Committed {
@@ -470,6 +486,13 @@ enum Command {
     Join(u64),
     OpenRecord(u64, DocumentRoute),
     Publish(DocumentRoute, Vec<Vec<u8>>),
+    /// Publish this page's changes to `room`'s own document as a retained
+    /// `SyncResp`, for the room's governor to admit and republish.
+    PublishRoom {
+        workspace_id: u64,
+        room: String,
+        changes: Vec<Vec<u8>>,
+    },
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
     InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
     OpenRoute(DocumentRoute),
@@ -675,6 +698,7 @@ impl PeerHandle {
                 channels: String::new(),
                 personal_rooms: BTreeSet::new(),
                 room_members: BTreeMap::new(),
+                host_device: config.host_cert.device_public_key,
             },
             queues: Vec::new(),
             wakes: Vec::new(),
@@ -793,6 +817,33 @@ impl PeerHandle {
             .encode_frames()
             .map_err(|error| error.to_string())?;
         self.send(Command::Publish(route, frames))
+    }
+
+    /// Publish `changes`, this page's own changes to `room`'s document, as a
+    /// retained `SyncResp`. The room's governor admits them through its
+    /// canonical `StatePeer` exactly as it admits a native device's topology,
+    /// then republishes the room document to every member.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session is closed.
+    pub fn publish_room_changes(
+        &self,
+        workspace_id: u64,
+        room: &str,
+        changes: Vec<Vec<u8>>,
+    ) -> Result<(), String> {
+        self.send(Command::PublishRoom {
+            workspace_id,
+            room: room.to_owned(),
+            changes,
+        })
+    }
+
+    /// The host device key pinned at certification: the room governor a page
+    /// addresses its own namespace claim to.
+    pub fn host_device(&self) -> [u8; 32] {
+        lock(&self.shared).status.host_device
     }
 
     /// Answer [`PeerEvent::CompactionRequested`] `request` with `snapshot`,
@@ -1931,6 +1982,11 @@ impl Task {
                 true
             }
             Command::Publish(route, frames) => self.publish(route, frames, client).await,
+            Command::PublishRoom {
+                workspace_id,
+                room,
+                changes,
+            } => self.publish_room(workspace_id, &room, changes, client),
             Command::Compact(request, snapshot) => self.compact(request, snapshot, client).await,
             Command::Barrier(done) => {
                 if self.held_outbound.is_empty() {
@@ -2018,6 +2074,7 @@ impl Task {
             Command::LiveJoin(_)
             | Command::Live(..)
             | Command::Publish(..)
+            | Command::PublishRoom { .. }
             | Command::Compact(..)
             | Command::SendContent(..) => {}
             Command::RemoteAction(workspace_id, to, _) => {
@@ -2526,6 +2583,62 @@ impl Task {
             .map_or(Opening::Dropped, Opening::Opened)
     }
 
+    /// Publish `changes`, this page's own changes to `room`'s document, as a
+    /// retained `SyncResp` for the governor to admit. The commit joins the
+    /// outbox, so a disconnected page sends it again after reconnecting and
+    /// the host deduplicates it by operation id.
+    fn publish_room(
+        &mut self,
+        workspace_id: u64,
+        room: &str,
+        changes: Vec<Vec<u8>>,
+        client: Option<&Link>,
+    ) -> bool {
+        if self.config.watching || changes.is_empty() {
+            return true;
+        }
+        let message = neighbour_wire::NeighbourMsg::SyncResp {
+            changes,
+            room: room.to_owned(),
+        };
+        let Some((channel, retention)) = neighbour_wire::retention(&message, false) else {
+            self.fail("protocol-rejected", "a room change is not retainable");
+            return true;
+        };
+        let Ok(body) = postcard::to_allocvec(&message) else {
+            self.fail("protocol-rejected", "a room change could not be encoded");
+            return true;
+        };
+        let entry = OutboxEntry {
+            op: rand::random(),
+            workspace_id,
+            route: DocumentRoute {
+                app_id: crate::document::ROOM_DOCUMENT_APP.to_owned(),
+                cluster_id: room.to_owned(),
+                record: crate::document::ROOM_DOCUMENT_RECORD.to_owned(),
+            },
+            channel,
+            checkpoint: retention == neighbour_wire::Retention::Checkpoint,
+            body,
+        };
+        let mut delivered = true;
+        if let Some(client) = client {
+            delivered = client.send(commit(&entry, &self.config.cert)).is_ok();
+        }
+        self.outbox.push_back(entry.clone());
+        self.update(|status| {
+            status.outgoing_pending = status.outgoing_pending.saturating_add(1);
+            let pending = &mut status
+                .routes
+                .entry(entry.route)
+                .or_default()
+                .pending_operations;
+            *pending = pending.saturating_add(1);
+        });
+        self.persist();
+        delivered
+    }
+
     async fn publish(
         &mut self,
         route: DocumentRoute,
@@ -2785,6 +2898,13 @@ impl Task {
             }
             // The room's topology, for whether it shares its members' layout.
             Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
+                if let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(&room) {
+                    self.emit(&PeerEvent::RoomChanged {
+                        workspace_id,
+                        room: room.clone(),
+                        changes: changes.clone(),
+                    });
+                }
                 let personal = self.room_layouts.hear(&room, &changes).is_personal();
                 let members = self.room_layouts.members(&room);
                 if self.status().room_members.get(&room) != members.as_ref() {
@@ -3719,6 +3839,7 @@ mod tests {
             channels: String::new(),
             personal_rooms: BTreeSet::new(),
             room_members: BTreeMap::new(),
+            host_device: [0; 32],
         }
     }
 

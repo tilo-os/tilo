@@ -232,6 +232,9 @@ pub struct AgentParticipant {
     content: tilo_content::ContentStore,
     /// Records the agent has not mounted, each merged as it changes.
     unopened: unopened::Unopened,
+    /// When this agent last asked the host to register its desk namespace
+    /// (Unix milliseconds; 0: not yet).
+    desk_claim_at_ms: u64,
     live: LiveState,
     focus: Option<LiveRecord>,
     /// Where in the focused record its last operation left it.
@@ -412,6 +415,7 @@ impl AgentParticipant {
             beside: BTreeMap::new(),
             content: config.content,
             unopened,
+            desk_claim_at_ms: 0,
             live: LiveState::starting_now(),
             focus: None,
             place: None,
@@ -606,9 +610,21 @@ impl AgentParticipant {
                     self.settling = Some(Instant::now());
                 }
                 self.ready = true;
+                let author = format!(
+                    "agent:{}",
+                    crate::control::agent_id(&self.identity.delegation)
+                );
+                self.claim_desk_namespace(crate::desk::salt_of(&author));
                 if self.control.status() == AgentStatus::Starting {
                     self.control.set_status(AgentStatus::Waiting);
                 }
+            }
+            PeerEvent::RoomChanged {
+                workspace_id,
+                room,
+                changes,
+            } if workspace_id == self.workspace_id && room == self.room => {
+                self.unopened.receive_room(changes);
             }
             PeerEvent::Document(document) => {
                 if document.author != self.identity.cert.device_public_key
@@ -2008,9 +2024,10 @@ impl AgentParticipant {
 
     /// Put the view of the record at `route` on the room's shared desktop
     /// when no tab shows it, beside the view the agent worked in last, so
-    /// the people see where it acts ([`crate::desk`]).
+    /// the people see where it acts ([`crate::desk`]). The view is this
+    /// agent's own entries in the room's document, admitted by the host
+    /// within the namespace it claims first.
     fn show_on_desk(&mut self, route: &DocumentRoute) {
-        let desktop = desktop_route(&self.room);
         let Some(record) = self
             .apps
             .get(route)
@@ -2046,30 +2063,71 @@ impl AgentParticipant {
             "agent:{}",
             crate::control::agent_id(&self.identity.delegation)
         );
-        let place = |doc: &automerge::AutoCommit| crate::desk::place_view(doc, &author, &view);
-        let change = match self.unopened.desktop() {
-            Some(doc) => place(doc),
-            None => self
-                .apps
-                .get(&desktop)
-                .and_then(|app| app.read(place))
-                .flatten(),
-        };
-        let Some(change) = change else {
+        let salt = crate::desk::salt_of(&author);
+        let Some(desktop) = self.unopened.desktop() else {
             return;
         };
-        let mutation = collab_types::DocumentMutation::Incremental(change.clone());
-        if let Err(error) = self.peer.publish(desktop.clone(), &mutation) {
-            tracing::warn!(%error, "agent: its view did not reach the desk");
+        let claimed = tilo_desktop_model::projection::contents_owners_of(desktop)
+            .get(&salt)
+            .is_some_and(|device| {
+                device.eq_ignore_ascii_case(&hex::encode(self.identity.cert.device_public_key))
+            });
+        if !claimed {
+            self.claim_desk_namespace(salt);
             return;
         }
-        match self.apps.get(&desktop) {
-            Some(app) => {
-                if let Err(error) = app.apply(&mutation) {
-                    tracing::warn!(%error, "agent: the desk it holds did not take its view");
-                }
-            }
-            None => self.unopened.receive(desktop, change),
+        let Some(changes) = crate::desk::place_view(desktop, &author, &view) else {
+            return;
+        };
+        self.unopened.receive_room(changes.clone());
+        if let Err(error) = self
+            .peer
+            .publish_room_changes(self.workspace_id, &self.room, changes)
+        {
+            tracing::warn!(%error, "agent: its view did not reach the room");
+        }
+    }
+
+    /// Ask the host to register the namespace this agent's desk entries are
+    /// minted in. Asked again while the room has not admitted it.
+    fn claim_desk_namespace(&mut self, salt: u16) {
+        let now = tilo_clock::unix_now_ms();
+        if now < self.desk_claim_at_ms {
+            return;
+        }
+        self.desk_claim_at_ms = now.saturating_add(5_000);
+        let request = tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: "tilo.member".to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    format!("workspace.member:{}", self.room),
+                    "topology-namespace.claim",
+                ),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(
+                [("salt".to_owned(), serde_json::json!(salt))]
+                    .into_iter()
+                    .collect(),
+            ),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let Ok(frame) = tilo_actions::remote::RemoteActionFrame::new(
+            tilo_actions::remote::RemoteActionMessage::Invoke(request),
+        )
+        .encode() else {
+            return;
+        };
+        if let Err(error) =
+            self.peer
+                .send_remote_action(self.workspace_id, self.peer.host_device(), frame)
+        {
+            tracing::warn!(%error, "agent: its desk namespace claim did not go");
         }
     }
 

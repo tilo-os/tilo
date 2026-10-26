@@ -35,17 +35,16 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
-use tilo_sort::CompactSort as _;
 
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_browser_peer::content::ContentWants;
 use tilo_browser_peer::{DocumentRoute, PeerEvent, PeerEvents, PeerHandle};
-use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
+use ui::automerge::{AutoCommit, ReadDoc as _};
 use ui::collaboration::record_content::ContentLane;
 use ui::record::{RecordCheckout, RecordId, RecordStore};
-use ui::state::{DocumentFrontier, DocumentReplica};
+use ui::state::DocumentFrontier;
 
 /// The desktop document's route. Changing it splits rooms by build.
 pub(crate) const DESKTOP_APP: &str = "so.tilo.browser-desktop";
@@ -104,13 +103,23 @@ pub(crate) struct Room {
     kept: Kept,
     ready: bool,
     mounts: HashMap<u64, Mounted>,
-    desktop: DocumentReplica,
-    desktop_snapshotted: bool,
-    /// The room's desktop as this page last published or applied it.
+    /// The room's own admitted document as this page holds it: the one the
+    /// host's `StatePeer` admitted and republished, carrying governance,
+    /// every device's topology namespace, retained layout requests and the
+    /// marks their owners wrote.
+    room_doc: AutoCommit,
+    /// Changes this page published that the admitted document does not hold
+    /// yet, in the order they were made. A projection builds on them, and
+    /// they are sent again until the room takes them.
+    room_pending: Vec<Vec<u8>>,
+    /// The room's layout as this page last published or applied it.
     desktop_value: Option<serde_json::Value>,
-    /// This page's own desktop as it last wrote it into the record: a
-    /// frame that changed nothing shared writes nothing.
+    /// This page's own desktop as it last wrote it into the room document:
+    /// a frame that changed nothing shared writes nothing.
     local_value: Option<serde_json::Value>,
+    /// When this page last asked the host to claim its topology namespace
+    /// (Unix milliseconds; 0: not yet).
+    claimed_at_ms: u64,
     /// Records the room delivered that no mount had open, as wire
     /// `(app, record)`.
     stored: BTreeSet<(String, String)>,
@@ -209,10 +218,11 @@ pub(crate) fn open(
         kept,
         ready: false,
         mounts: HashMap::new(),
-        desktop: DocumentReplica::new(AutoCommit::new()),
-        desktop_snapshotted: false,
+        room_doc: AutoCommit::new(),
+        room_pending: Vec::new(),
         desktop_value: None,
         local_value: None,
+        claimed_at_ms: 0,
         stored: BTreeSet::new(),
         delivered: HashMap::new(),
         waiting: HashMap::new(),
@@ -297,20 +307,19 @@ pub(crate) fn workspace_name(id: u32) -> Option<String> {
         .and_then(tilo_desktop_surface::history_log::workspace_name)
 }
 
-/// The room's desktop document with every peer's changes, for Activity.
-/// `None` until the room delivered or published one.
+/// The room's admitted document with every peer's changes, for Activity.
+/// `None` until the room delivered or published a layout.
 pub(crate) fn desktop_history(id: u32) -> Option<AutoCommit> {
     let room = room(id)?;
-    let room = room.borrow();
-    let doc = room.desktop.document();
-    (!doc.base_heads().is_empty()).then(|| doc.clone())
+    let mut room = room.borrow_mut();
+    (!room.room_doc.get_heads().is_empty()).then(|| room.room_doc.clone())
 }
 
-/// Read the retained desktop's frontier without cloning its whole history.
+/// Read the retained room document's frontier without cloning its history.
 pub(crate) fn desktop_history_heads(id: u32) -> Option<Vec<ui::automerge::ChangeHash>> {
     let room = room(id)?;
-    let room = room.borrow();
-    let heads = room.desktop.document().base_heads();
+    let mut room = room.borrow_mut();
+    let heads = room.room_doc.get_heads();
     (!heads.is_empty()).then_some(heads)
 }
 
@@ -601,12 +610,13 @@ impl Room {
         &self,
         value: &serde_json::Value,
         author: &str,
-    ) -> Option<
+    ) -> Option<(
         Vec<(
             tilo_desktop_model::ownership::Touched,
             tilo_desktop_model::commands::DesktopCommand,
         )>,
-    > {
+        String,
+    )> {
         let room = self.desktop_value.as_ref()?;
         let parse = |value: &serde_json::Value| {
             serde_json::from_value::<tilo_desktop_model::ownership::SharedDesktop>(value.clone())
@@ -631,7 +641,7 @@ impl Room {
             .iter()
             .filter_map(|act| {
                 let command = request_command(act, &before, &after)?;
-                Some((*act, command))
+                Some((act.clone(), command))
             })
             .collect();
         Some((asked, words))
@@ -684,6 +694,15 @@ impl Room {
                     self.follow_layout(&mut woken);
                 }
                 PeerEvent::RoomLayout { .. } => self.follow_layout(&mut woken),
+                PeerEvent::RoomChanged {
+                    workspace_id,
+                    room,
+                    changes,
+                } if workspace_id == self.workspace && room == self.uuid => {
+                    if let Err(error) = self.apply_room_changes(&changes, &mut woken) {
+                        warn(&format!("the room document did not apply: {error}"));
+                    }
+                }
                 PeerEvent::CompactionRequested { route, request }
                     if route.cluster_id == self.uuid =>
                 {
@@ -744,8 +763,6 @@ impl Room {
         for route in answered {
             self.answered(&route, &mut woken);
         }
-        // Records first: a desktop naming a new tab's record finds it.
-        batches.compact_sort_by_key(|(route, _)| route.app_id == DESKTOP_APP);
         for (route, mutations) in batches {
             if let Err(error) =
                 self.apply(&route, tilo_browser_peer::coalesce(mutations), &mut woken)
@@ -847,23 +864,28 @@ impl Room {
         reason: &str,
         woken: &mut HashSet<u64>,
     ) {
-        let personal = route.app_id == DESKTOP_APP
-            && reason.trim() == tilo_relay_protocol::refusal::PERSONAL_LAYOUT;
-        if personal {
-            // Expected in a public room, not a fault: said once, quietly.
-            if !self.own_layout {
-                debug("this room keeps each member's layout to themselves");
-                self.keep_own_layout(woken);
+        if route.app_id == tilo_browser_peer::document::ROOM_DOCUMENT_APP {
+            if reason.trim() == tilo_relay_protocol::refusal::PERSONAL_LAYOUT {
+                // Expected in a public room, not a fault: said once, quietly.
+                if !self.own_layout {
+                    debug("this room keeps each member's layout to themselves");
+                    self.keep_own_layout(woken);
+                }
+                self.room_pending.clear();
+                return;
             }
+            warn(&format!("the room refused this page's layout: {reason}"));
+            // The admitted document is the truth; the person's own desktop
+            // keeps what they arranged until the room can take it again
+            // (a claim in flight, a reconnect).
+            self.room_pending.clear();
+            self.local_value = None;
             return;
         }
         warn(&format!(
             "{}/{}: the room refused a change: {reason}",
             route.app_id, route.record
         ));
-        if route.app_id == DESKTOP_APP {
-            return;
-        }
         if changes.is_empty() {
             return;
         }
@@ -959,15 +981,12 @@ impl Room {
     }
 
     /// The route's document as this page holds it, for a host compaction
-    /// request: an open record's replica, the desktop, or a record's stored
-    /// document. `None` when the page cannot vouch for every change it was
-    /// delivered for the route.
+    /// request: an open record's replica or a record's stored document.
+    /// `None` when the page cannot vouch for every change it was delivered
+    /// for the route.
     fn snapshot_of(&mut self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
         if self.unapplied.contains(route) {
             return Ok(None);
-        }
-        if route.app_id == DESKTOP_APP {
-            return Ok(Some(self.desktop.document_mut().save()));
         }
         for mounted in self.mounts.values() {
             for store in mounted.attachment.stores.borrow().iter() {
@@ -1003,12 +1022,6 @@ impl Room {
         mutations: Vec<DocumentMutation>,
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
-        if route.app_id == DESKTOP_APP {
-            for mutation in mutations {
-                self.apply_desktop(mutation, woken)?;
-            }
-            return Ok(());
-        }
         let app = route.app_id.clone();
         let record = route.record.clone();
         let key = (app.clone(), record.clone());
@@ -1190,17 +1203,25 @@ impl Room {
             .map_err(|error| error.to_string())
     }
 
-    fn apply_desktop(
+    /// Take `changes` of the room's own document into the replica, exactly
+    /// the changes the host admitted and republished. A change this page
+    /// published stops waiting once it is here.
+    fn apply_room_changes(
         &mut self,
-        mutation: DocumentMutation,
+        changes: &[Vec<u8>],
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
-        match mutation {
-            DocumentMutation::Snapshot(bytes) => self.desktop.merge_snapshot(&bytes),
-            DocumentMutation::Incremental(bytes) => self.desktop.load_incremental(&bytes).map(drop),
+        for change in changes {
+            self.room_doc
+                .load_incoming(change)
+                .map_err(|error| error.to_string())?;
         }
-        .map_err(|error| error.to_string())?;
-        let Some(value) = desktop_value(self.desktop.document()) else {
+        self.room_pending.retain(|bytes| {
+            ui::automerge::Change::from_bytes(bytes.clone())
+                .ok()
+                .is_none_or(|change| self.room_doc.get_change_by_hash(&change.hash()).is_none())
+        });
+        let Some(value) = desktop_value(&self.room_doc) else {
             return Ok(());
         };
         if self.desktop_value.as_ref() == Some(&value) {
@@ -1214,7 +1235,7 @@ impl Room {
         // A peer renaming the workspace is news to everyone else here; the
         // first desktop this page receives is not.
         let renamed = tilo_desktop_surface::history_log::WorkspaceRename::merged(
-            self.desktop.document(),
+            &self.room_doc,
             self.desktop_value.as_ref(),
             &value,
         );
@@ -1364,26 +1385,55 @@ impl Room {
         }
     }
 
+    /// Publish this page's part of the room's layout into the room document
+    /// itself: claim its namespace, apply the retained commands others asked
+    /// of its windows, write only its own entries, and send the new changes
+    /// as a `SyncResp` for the host's canonical `StatePeer` admission.
     fn send_desktop(&mut self) {
-        if self.own_layout {
+        if self.own_layout || !self.ready {
+            return;
+        }
+        let Some(room) = tilo_desktop_model::RoomId::parse(&self.uuid) else {
+            return;
+        };
+        if tilo_desktop_model::room_layout::declared_room(&self.room_doc, None) != Some(room) {
+            // The room's admitted document has not reached this page yet.
             return;
         }
         let salt = self.salt;
+        if salt == 0 {
+            return;
+        }
+        let Some(author) = self.mounts.values().find_map(|mounted| {
+            mounted
+                .attachment
+                .desktop
+                .as_ref()
+                .map(|_| mounted.attachment.author.clone())
+        }) else {
+            return;
+        };
+        if !self.namespace_claimed() {
+            self.claim_namespace();
+            return;
+        }
+        // The projection builds on what the room admitted and on what this
+        // page already sent: two changes with one actor and sequence number
+        // must never be made.
+        let mut doc = self.room_doc.clone();
+        for change in &self.room_pending {
+            let _ = doc.load_incoming(change);
+        }
         // Requests other devices made of this one's windows, while it was
         // away or since: its owner applies each once, in the same change
         // that records it did.
         for mounted in self.mounts.values() {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
-                crate::desktop::apply_requests(
-                    handle,
-                    shared,
-                    self.desktop.document_mut(),
-                    salt,
-                    self.workspace,
-                );
+                crate::desktop::apply_requests(handle, shared, &mut doc, salt, self.workspace);
             }
         }
-        let Some((value, author)) = self.mounts.values().find_map(|mounted| {
+        let pending_heads = doc.get_heads();
+        let Some((value, _)) = self.mounts.values().find_map(|mounted| {
             let (handle, shared) = mounted.attachment.desktop.as_ref()?;
             Some((
                 crate::desktop::room_layout_value(handle, shared, self.workspace)?,
@@ -1392,9 +1442,7 @@ impl Room {
         }) else {
             return;
         };
-        if self.local_value.as_ref() == Some(&value) {
-            return;
-        }
+        let joined = self.desktop_value.is_some();
         if let Some((asks, refusal)) = self.rearranges_others(&value, &author) {
             // Moving another device's window is a request to its owner, never
             // a write into its entries: the room retains it while the owner
@@ -1402,15 +1450,13 @@ impl Room {
             // desktop springs back to where the room has it meanwhile.
             let mut asked = Vec::new();
             if self.moderates.load(Ordering::Relaxed) {
-                let doc = self.desktop.document_mut();
-                let heads = doc.get_heads();
                 let at = ui::time::unix_now_i64();
                 for (act, command) in &asks {
                     let Ok(command) =
                         serde_json::to_vec(&tilo_desktop_model::commands::BoundCommand {
                             source: tilo_desktop_model::commands::CommandSource {
                                 room: self.uuid.clone(),
-                                heads: heads.iter().map(|hash| hash.0).collect(),
+                                heads: pending_heads.iter().map(|hash| hash.0).collect(),
                             },
                             command: command.clone(),
                         })
@@ -1429,7 +1475,8 @@ impl Room {
                         at,
                         command,
                     };
-                    if tilo_desktop_model::room_layout::request(doc, &request).unwrap_or(false) {
+                    if tilo_desktop_model::room_layout::request(&mut doc, &request).unwrap_or(false)
+                    {
                         asked.push(request);
                     }
                 }
@@ -1445,6 +1492,7 @@ impl Room {
                         (mounted.attachment.notify)();
                     }
                 }
+                self.local_value = None;
                 return;
             }
             if let Some(room) = &self.desktop_value {
@@ -1457,58 +1505,117 @@ impl Room {
                     }
                 }
             }
+            self.local_value = None;
             if asked.is_empty() {
                 return;
             }
             // The requests are the change: the person's own entries stay as
             // they are, and the owners apply what they were asked.
-            self.publish_desktop(value);
+            self.publish_room_changes(doc, pending_heads, value, joined, false);
             return;
         }
-        // The layout this page joined with is not something the person did.
-        let joined = self.desktop_value.is_some();
-        let doc = self.desktop.document_mut();
-        // Only the entries that differ are written, stamped with the time
-        // and who made the change, as the history pane tells it.
-        let wrote = tilo_desktop_surface::history_log::record(
-            doc,
-            &value,
-            salt,
-            &author,
-            ui::time::unix_now_i64(),
-        );
-        if wrote && joined {
-            // Windows opened, closed, moved or renamed: the person's own
-            // work on the desktop.
-            self.authored = self.authored.saturating_add(1);
+        let Ok(layout) =
+            serde_json::from_value::<tilo_desktop_model::ownership::SharedDesktop>(value.clone())
+        else {
+            warn("the page's layout is not a room layout");
+            return;
+        };
+        let wrote = tilo_desktop_model::room_layout::write(&mut doc, &layout, salt, Some(&author))
+            .unwrap_or(false);
+        if !wrote && self.local_value.as_ref() == Some(&value) {
+            self.publish_room_changes(doc, pending_heads, value, joined, wrote);
+            return;
         }
-        if !wrote && self.desktop_snapshotted {
+        self.publish_room_changes(doc, pending_heads, value, joined, wrote);
+    }
+
+    /// Whether the room's admitted document registers this page's topology
+    /// namespace to this device.
+    fn namespace_claimed(&self) -> bool {
+        tilo_desktop_model::projection::contents_owners_of(&self.room_doc)
+            .get(&self.salt)
+            .is_some_and(|device| device.eq_ignore_ascii_case(&self.device))
+    }
+
+    /// Ask the host to register this page's topology namespace, as a member
+    /// action. Asked again while the room has not admitted it; a namespace
+    /// already owned by another device is never rebound.
+    fn claim_namespace(&mut self) {
+        let now = crate::shell::now_ms();
+        if now < self.claimed_at_ms {
+            return;
+        }
+        self.claimed_at_ms = now.saturating_add(5_000);
+        let request = tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: "tilo.member".to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    format!("workspace.member:{}", self.uuid),
+                    "topology-namespace.claim",
+                ),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(
+                [("salt".to_owned(), serde_json::json!(self.salt))]
+                    .into_iter()
+                    .collect(),
+            ),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let Ok(frame) = tilo_actions::remote::RemoteActionFrame::new(
+            tilo_actions::remote::RemoteActionMessage::Invoke(request),
+        )
+        .encode() else {
+            return;
+        };
+        if let Err(error) =
+            self.peer
+                .send_remote_action(self.workspace, self.peer.host_device(), frame)
+        {
+            debug(&format!("namespace claim not sent: {error}"));
+        }
+    }
+
+    /// Publish the changes `doc` holds since `pending_heads` and remember
+    /// them until the room admits them. `value` is the layout this page
+    /// wrote; it is remembered only once the send was taken.
+    fn publish_room_changes(
+        &mut self,
+        mut doc: AutoCommit,
+        pending_heads: Vec<ui::automerge::ChangeHash>,
+        value: serde_json::Value,
+        joined: bool,
+        wrote: bool,
+    ) {
+        // `room_layout::write` and the claims leave their edits pending so
+        // the caller can commit them with its own message; here the commit
+        // is the room change itself.
+        doc.commit();
+        let changes: Vec<Vec<u8>> = doc
+            .get_changes(&pending_heads)
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        if changes.is_empty() {
             self.local_value = Some(value);
             return;
         }
-        self.publish_desktop(value);
-    }
-
-    /// Send whatever the room's layout document holds and the room has not
-    /// acknowledged. `value` is the layout as this page wrote it: only a
-    /// send the room took is remembered as published, so a change a
-    /// disconnected session could not send is sent when it next can.
-    fn publish_desktop(&mut self, value: serde_json::Value) {
-        let mutation = if self.desktop_snapshotted {
-            let (delta, heads) = self.desktop.pending_outbound_delta();
-            if delta.is_empty() {
-                return;
+        if self
+            .peer
+            .publish_room_changes(self.workspace, &self.uuid, changes.clone())
+            .is_ok()
+        {
+            if wrote && joined {
+                // Windows opened, closed, moved or renamed: the person's own
+                // work on the desktop.
+                self.authored = self.authored.saturating_add(1);
             }
-            (DocumentMutation::Incremental(delta), heads)
-        } else {
-            let doc = self.desktop.document_mut();
-            (DocumentMutation::Snapshot(doc.save()), doc.get_heads())
-        };
-        let route = self.route(DESKTOP_APP, DESKTOP_RECORD);
-        if self.peer.publish(route, &mutation.0).is_ok() {
-            self.desktop.advance_outbound(mutation.1);
-            self.desktop_snapshotted = true;
-            self.desktop_value = desktop_value(self.desktop.document());
+            self.room_pending.extend(changes);
             self.local_value = Some(value);
         }
     }

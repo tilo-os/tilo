@@ -108,11 +108,12 @@ are new governance actions: a ban is a removal plus the `block:<person>` Deny
 
 A room's shared desktop follows the same rule. It keeps every strip and
 window as an entry of its own, with who made it
-(`tilo_desktop_model::shared_record`), so concurrent changes merge; people
+(`tilo_desktop_model::room_layout`), so concurrent changes merge; people
 close, move and rename what they made as an ordinary edit, and doing it to
 what someone else made (or to a strip the room itself lists) is moderation on
-that item's `moderation` node (`tilo_desktop_model::ownership`). The relay
-decides every write of the desktop against it before keeping it, and a
+that item's `moderation` node (`tilo_desktop_model::ownership`). The room's
+`StatePeer` admits every write by its one-writer-per-entry rule, the relay
+judges a retained ask against that node before admitting it, and a
 desktop asks the room (`RoomsRequest::Permits`) before it offers a close or a
 drag on someone else's window.
 

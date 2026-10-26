@@ -770,6 +770,17 @@ impl Room {
                 } if ready == workspace_id => {
                     self.ready = true;
                 }
+                PeerEvent::RoomChanged {
+                    workspace_id: at,
+                    room,
+                    changes,
+                } if at == workspace_id
+                    && tilo_relay_protocol::room_workspace_id(&room).ok() == Some(workspace_id) =>
+                {
+                    for change in changes {
+                        self.desktop.receive(change);
+                    }
+                }
                 PeerEvent::Document(document) => {
                     if tilo_relay_protocol::room_workspace_id(&document.route.cluster_id).ok()
                         != Some(workspace_id)
@@ -786,6 +797,8 @@ impl Room {
                         .first()
                         .map_or(&document.route.cluster_id, |(first, _)| &first.cluster_id);
                     if document.route == crate::participant::desktop_route(room) {
+                        // Legacy desktop-record rooms before the one room
+                        // schema: their layout still arrives as a record.
                         self.desktop.receive(bytes.clone());
                     }
                     self.log.push((document.route, (digest, bytes)));

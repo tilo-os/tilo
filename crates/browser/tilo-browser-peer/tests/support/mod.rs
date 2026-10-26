@@ -230,6 +230,25 @@ pub async fn start_room_host(
     state: &Path,
     keep_web_identity: bool,
 ) -> TestHost {
+    start_room_host_at(
+        root,
+        host,
+        state,
+        keep_web_identity,
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+}
+
+/// [`start_room_host`] on a fixed web address, so a restarted host answers
+/// where the page's session already looks.
+pub async fn start_room_host_at(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    keep_web_identity: bool,
+    listen: SocketAddr,
+) -> TestHost {
     let relay = Relay::start(
         tilo_relay::RelayConfig {
             state_root: state.to_path_buf(),
@@ -246,7 +265,7 @@ pub async fn start_room_host(
     .unwrap();
     let web = relay
         .serve_web(WebConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
+            listen,
             tls: TlsSource::Development {
                 hosts: vec!["localhost".into(), "127.0.0.1".into()],
                 store: keep_web_identity.then(|| state.join("web-dev-identity")),

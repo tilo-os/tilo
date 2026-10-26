@@ -102,7 +102,6 @@ mod handshake;
 #[cfg(not(target_arch = "wasm32"))]
 mod host_authority;
 #[cfg(not(target_arch = "wasm32"))]
-mod layout_guard;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod legacy_host;
 #[cfg(target_os = "linux")]

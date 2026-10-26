@@ -13,28 +13,28 @@
 //! The governor writes the scope into the room's governance
 //! ([`tilo_desktop_model::projection::ROOM_LAYOUT_KEY`]), where every
 //! member's device reads it, and in a personal room:
-//! - refuses a member's change to the room's topology (`SyncResp`) or to its
-//!   layout document at every door it enters by
-//!   ([`Rooms::judge_layout_write`]): neither kept, nor forwarded, nor
-//!   taken in; the room's admission refuses it too
+//! - refuses a member's change to the room's topology (`SyncResp`) at every
+//!   door it enters by ([`Rooms::decide_layout_write`]): neither kept, nor
+//!   forwarded, nor taken in; the room's admission refuses it too
 //!   (`RoomRefusal::PersonalLayout`);
 //! - replays to nobody what the relay retained of such changes before
 //!   ([`crate::store::WorkspaceStore::replay_member_layout`]);
 //! - removes what it committed of members' windows while the room shared
-//!   its layout, from the room document and the layout document, when
-//!   the room becomes personal and whenever the relay opens it
-//!   ([`Rooms::keep_personal`]). Each device keeps its own layout: that
-//!   lives on the device, not in the room.
+//!   its layout, from the room document, when the room becomes personal and
+//!   whenever the relay opens it ([`Rooms::keep_personal`]). Each device
+//!   keeps its own layout: that lives on the device, not in the room.
 
 use std::collections::HashMap;
 
-#[cfg(feature = "agents")]
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
 use tilo_desktop_model::projection::RoomLayout;
+use tilo_desktop_model::room_layout;
 use tilo_lock::MutexRecover as _;
 
-use super::layout_writes::is_layout;
-use super::{CollaborationError, GovernedRoom, Rooms, SystemTime};
+use super::authority::RoomOp;
+use super::{CollaborationError, GovernedRoom, Rooms, SystemTime, system_time};
+use crate::host_authority::HostOperation;
+use tilo_user_identity::DeviceCert;
 
 /// Why a room whose layout is personal refuses a member's change to it. A
 /// device from before personal rooms sends its windows again every few
@@ -68,54 +68,119 @@ impl Layouts {
     }
 }
 
-/// What a member's retained write `body` does to a room's shared layout.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum LayoutWrite {
-    /// Changes the room document of `room`: its topology, windows included.
-    Topology,
-    /// Writes the room's layout document on its record route.
-    Document,
-}
-
 /// Whether `body`, a member's retained write to `room`, changes the room's
-/// shared layout, and how: what a door asks before deciding it.
-pub(super) fn layout_write(room: &str, body: &[u8]) -> Option<LayoutWrite> {
-    match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body).ok()? {
-        neighbour_wire::NeighbourMsg::SyncResp { room: named, .. } if named == room => {
-            Some(LayoutWrite::Topology)
-        }
-        neighbour_wire::NeighbourMsg::AppDocument {
-            app_id, record_id, ..
-        } if is_layout(&app_id, &record_id) => Some(LayoutWrite::Document),
-        _ => None,
-    }
+/// own document: its topology, windows and retained commands included. What
+/// a door asks before deciding it.
+pub(super) fn writes_topology(room: &str, body: &[u8]) -> bool {
+    matches!(
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body),
+        Ok(neighbour_wire::NeighbourMsg::SyncResp { room: named, .. }) if named == room
+    )
 }
 
-/// Remove every window and window group from `doc`, a room's layout
-/// document, and every strip a person made; the strips the room itself has
-/// (its operator's, which name no author) stay. Returns whether it changed
-/// the document.
-#[cfg(any(feature = "agents", test))]
-pub(super) fn drop_shared_windows(doc: &mut automerge::AutoCommit) -> Result<bool, String> {
-    use tilo_desktop_model::projection::drop_contents_except;
-    let Some(layout) = tilo_desktop_model::room_layout::read(doc, None) else {
+/// Apply every retained command addressed to `salt`'s owner in `doc`, the
+/// room's document, then record that it did in the same change. The owner is
+/// the host itself here: its operator strips and its own windows. Returns
+/// whether `doc` changed.
+pub(super) fn apply_requests(
+    doc: &mut automerge::AutoCommit,
+    room: &str,
+    salt: u16,
+    person: &str,
+) -> Result<bool, String> {
+    use tilo_desktop_model::commands::{BoundCommand, apply_command};
+    let requests = room_layout::pending(doc, salt);
+    if requests.is_empty() {
+        return Ok(false);
+    }
+    let Some(mut layout) = room_layout::read(doc, None) else {
         return Ok(false);
     };
-    let kept: std::collections::BTreeSet<u64> = layout
-        .tree
-        .workspaces
-        .first()
-        .into_iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .map(|strip| strip.id.raw())
-        .filter(|id| !layout.authors.contains_key(id))
-        .collect();
-    // Every entry that is not a strip the room itself made goes, with what it
-    // holds; the room's strips stay, emptied.
-    Ok(drop_contents_except(doc, &|id| kept.contains(&id)) > 0)
+    let mut changed = false;
+    for request in requests {
+        let Ok(bound) = serde_json::from_slice::<BoundCommand>(&request.command) else {
+            continue;
+        };
+        let Some(workspace) = layout
+            .tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room().to_string() == room)
+        else {
+            continue;
+        };
+        if apply_command(
+            workspace,
+            &bound.command,
+            &mut || Err("a retained command opens nothing".into()),
+            &mut |_, _| Err("a retained command opens nothing".into()),
+        )
+        .is_ok()
+        {
+            changed = true;
+        }
+        changed |= room_layout::claim(doc, salt, &request).map_err(|e| e.to_string())?;
+    }
+    if changed {
+        changed |= room_layout::write(doc, &layout, salt, Some(person))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(changed)
 }
 
 impl Rooms {
+    /// Author `change`'s edit of `room`'s own document as its exact governor:
+    /// its operator strips, retained command marks, or a host-owned window.
+    /// The room's `StatePeer` takes the edit in exactly as it takes a
+    /// member's `SyncResp`, so a host write has one admission path.
+    ///
+    /// # Errors
+    /// Refuses another governor's certificate, stale custody, an edit that
+    /// fails, or a document the room refuses.
+    pub async fn author_room_document(
+        &self,
+        room: &str,
+        governor: &DeviceCert,
+        change: impl FnOnce(&mut automerge::AutoCommit) -> Result<bool, String>,
+    ) -> Result<bool, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        self.authorize(
+            governor,
+            None,
+            RoomOp::Host(HostOperation::AuthorApplications),
+            now,
+        )?;
+        if governor != &self.inner.host.cert {
+            return Err(CollaborationError::new(
+                "room document authoring requires exact governor custody",
+            ));
+        }
+        let state = self.room(room).await?;
+        let mut governed = state.lock().await;
+        if governed.peer().authority() != governor {
+            return Err(CollaborationError::new(
+                "room document governor differs from current room authority",
+            ));
+        }
+        governed
+            .peer()
+            .workspace()
+            .check_workspace_administration(governor.device_public_key, system_time(now))?;
+        let mut candidate = governed.peer().clone();
+        let changed = candidate
+            .governance_mut()
+            .author_room_document(&self.inner.host.key, system_time(now), change)
+            .map_err(CollaborationError::new)?;
+        if changed {
+            let collaboration = governed.collaboration().clone();
+            governed.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
+                Ok(collaboration)
+            })?;
+            self.settle(&mut governed).await?;
+        }
+        Ok(changed)
+    }
+
     /// `room`'s layout scope, as its governance says.
     #[must_use]
     pub fn layout(&self, room: &str) -> RoomLayout {
@@ -264,49 +329,14 @@ impl Rooms {
                 tracing::info!(%room, "removed members' windows from a personal room's document");
             }
         }
-        self.clear_shared_desktop(room).await
-    }
-
-    /// Remove what members put on `room`'s layout document
-    /// ([`drop_shared_windows`]), as its governor.
-    ///
-    /// # Errors
-    ///
-    /// The record could not be read or the change committed.
-    #[cfg(feature = "agents")]
-    async fn clear_shared_desktop(&self, room: &str) -> Result<(), CollaborationError> {
-        let cleared = self
-            .author_room_record(
-                room,
-                &self.inner.host.cert,
-                (DESKTOP_APP, DESKTOP_RECORD),
-                drop_shared_windows,
-            )
-            .await?;
-        if cleared {
-            tracing::info!(%room, "removed members' windows from a personal room's layout");
-        }
         Ok(())
     }
 
-    /// Without the browser plane's record authoring this relay keeps no
-    /// layout document a member's page wrote: nothing to remove.
-    #[cfg(not(feature = "agents"))]
-    #[expect(
-        clippy::unused_async,
-        reason = "one signature with the build that authors room records"
-    )]
-    async fn clear_shared_desktop(&self, room: &str) -> Result<(), CollaborationError> {
-        let _ = room;
-        Ok(())
-    }
-
-    /// Decide `author`'s write `body` (a retained message) to `room`'s
-    /// shared layout: in a room whose layout is personal a member's change
-    /// to the room's topology or layout is refused, and a layout
-    /// write anywhere is decided by what it does to what others made
-    /// ([`Self::judge_layout_write`]). Anything else, and the relay's own
-    /// writes, pass untouched.
+    /// Decide `author`'s write `body` (a retained message) to `room`'s own
+    /// document: in a room whose layout is personal a member's change to its
+    /// topology is refused. Anything else, and the relay's own writes, pass
+    /// untouched. The room's `StatePeer` decides every accepted change by
+    /// the one-writer-per-entry rule; there is no second authority here.
     ///
     /// # Errors
     /// Why the room refuses it.
@@ -319,16 +349,10 @@ impl Rooms {
         if author == self.inner.host.cert.device_public_key {
             return Ok(());
         }
-        let Some(write) = layout_write(room, body) else {
-            return Ok(());
-        };
-        if self.is_public(room) {
+        if self.is_public(room) && writes_topology(room, body) {
             return Err(LAYOUT_REFUSAL.into());
         }
-        match write {
-            LayoutWrite::Topology => Ok(()),
-            LayoutWrite::Document => self.judge_layout_write(room, author, body).await,
-        }
+        Ok(())
     }
 
     /// Whether the governor of `room` takes in `author`'s retained write
@@ -346,8 +370,9 @@ impl Rooms {
         else {
             return true;
         };
+        let legacy_layout = app_id == DESKTOP_APP && record_id == DESKTOP_RECORD;
         author == self.inner.host.cert.device_public_key
-            || !is_layout(app_id, record_id)
+            || !legacy_layout
             || !self.is_public(room.room())
     }
 }
@@ -357,41 +382,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_personal_rooms_shared_desktop_keeps_only_the_rooms_own_strips() {
-        use automerge::transaction::Transactable as _;
-        use automerge::{ObjType, ROOT, ReadDoc as _};
-        let mut doc = automerge::AutoCommit::new();
-        let strips = doc.put_object(ROOT, "strips", ObjType::Map).unwrap();
-        let operator = doc.put_object(&strips, "1", ObjType::Map).unwrap();
-        doc.put(&operator, "name", "Lobby").unwrap();
-        let made = doc.put_object(&strips, "2", ObjType::Map).unwrap();
-        doc.put(&made, "name", "Mine").unwrap();
-        doc.put(&made, "author", "ab".repeat(32)).unwrap();
-        let groups = doc.put_object(ROOT, "groups", ObjType::Map).unwrap();
-        doc.put_object(&groups, "3", ObjType::Map).unwrap();
-        let windows = doc.put_object(ROOT, "windows", ObjType::Map).unwrap();
-        let window = doc.put_object(&windows, "4", ObjType::Map).unwrap();
-        doc.put(&window, "tab", "{\"title\":\"Alacritty\"}")
-            .unwrap();
-        doc.commit();
-
-        assert!(drop_shared_windows(&mut doc).unwrap());
-        assert_eq!(doc.keys(&strips).collect::<Vec<_>>(), ["1"]);
-        assert_eq!(doc.keys(&groups).count(), 0);
-        assert_eq!(doc.keys(&windows).count(), 0);
-        assert!(!drop_shared_windows(&mut doc).unwrap(), "nothing left");
-    }
-
-    #[test]
-    fn a_door_knows_a_layout_write_from_any_other() {
+    fn a_door_knows_a_room_document_write_from_any_other() {
         let room = "07848ffe-1898-4f72-8419-0b54c93e6dad";
         let topology = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
             changes: vec![vec![1]],
             room: room.into(),
         })
         .unwrap();
-        assert_eq!(layout_write(room, &topology), Some(LayoutWrite::Topology));
-        assert_eq!(layout_write("another-room", &topology), None);
-        assert_eq!(layout_write(room, b"not a message"), None);
+        assert!(writes_topology(room, &topology));
+        assert!(!writes_topology("another-room", &topology));
+        assert!(!writes_topology(room, b"not a message"));
     }
 }
