@@ -368,6 +368,10 @@ pub struct AppTrayItem {
     /// Stable key the host addresses the item by.
     pub key: String,
     pub id: String,
+    /// The application whose connection registered the item, proven from
+    /// its process. `None` when it could not be proven; an item's own id is
+    /// never trusted for this.
+    pub owner_app: Option<String>,
     /// What to call the item: the application's own title for it, else its
     /// id. Named to the person and to assistive technology, never empty.
     pub title: String,
@@ -424,6 +428,12 @@ pub trait DesktopChromeSource {
     /// The running applications' tray items, in the host's order.
     fn app_tray(&self) -> Vec<AppTrayItem> {
         Vec::new()
+    }
+    /// How many unread notifications the application with this verified id
+    /// owns, as its icon says on the bar. Zero when it owns none, or when
+    /// this person turned app badges off.
+    fn app_notification_badge(&self, _app_id: &str) -> u32 {
+        0
     }
 }
 pub type Chrome = std::rc::Rc<dyn DesktopChromeSource>;

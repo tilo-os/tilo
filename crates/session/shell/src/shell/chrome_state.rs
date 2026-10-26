@@ -4016,23 +4016,34 @@ impl ChromeState {
     pub fn notification_badge_total(&self) -> u32 {
         self.notification_badges
             .iter()
-            .filter(|(app_id, _)| {
-                self.notification_policy
-                    .per_app
-                    .get(*app_id)
-                    .and_then(|rule| rule.badges)
-                    .unwrap_or(self.notification_policy.show_badges)
-            })
+            .filter(|(app_id, _)| self.badges_shown_for(app_id))
             .map(|(_, count)| *count)
             .fold(0_u32, u32::saturating_add)
             .min(9_999)
     }
 
+    /// How many notifications the app with this verified id is showing as
+    /// unread: what its own icon and tab say. The count is kept even while
+    /// this person has app badges off, so turning them back on shows the
+    /// real number rather than whatever was last painted.
     pub fn notification_badge_for(&self, verified_app_id: &str) -> u32 {
+        if !self.badges_shown_for(verified_app_id) {
+            return 0;
+        }
         self.notification_badges
             .get(verified_app_id)
             .copied()
             .unwrap_or(0)
+    }
+
+    /// Whether this app's unread count is shown: its own `badges` setting,
+    /// else the desktop's.
+    fn badges_shown_for(&self, verified_app_id: &str) -> bool {
+        self.notification_policy
+            .per_app
+            .get(verified_app_id)
+            .and_then(|rule| rule.badges)
+            .unwrap_or(self.notification_policy.show_badges)
     }
 
     /// Clear the history log (the "Clear all" affordance in the
