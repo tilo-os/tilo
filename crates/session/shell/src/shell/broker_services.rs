@@ -1462,7 +1462,7 @@ impl ShortcutLibraryServices for NativeShortcutLibrary {
             .await;
             crate::network::actor::room_governance::trace::note(|| {
                 format!(
-                    "shortcut store {} in {room}: {committed:?}",
+                    "shortcut store {:?} in {room}: {committed:?}",
                     request.invocation
                 )
             });
