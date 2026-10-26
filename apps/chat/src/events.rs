@@ -768,7 +768,7 @@ impl ChatApp {
             Hit::AddCategory if self.keeps_layout() => self.on_hit_add_to_room(),
             Hit::FocusEdit => self.set_composer_focus(),
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
-            Hit::AddReaction { msg, anchor } => self.open_emoji_picker(Some(msg), anchor),
+            Hit::AddReaction { msg, anchor } => self.open_emoji_picker(msg, anchor),
             Hit::MessageBar { msg, action } => {
                 let anchor = self
                     .hits
@@ -780,7 +780,7 @@ impl ChatApp {
                 if action == MenuAction::AddReaction {
                     let anchor = anchor
                         .unwrap_or_else(|| Rect::from_origin_size(self.last_mouse, (1.0, 1.0)));
-                    self.open_emoji_picker(Some(msg), anchor);
+                    self.open_emoji_picker(msg, anchor);
                 } else if self.can_participate() {
                     self.apply_menu_action(MenuTarget::Message(msg), action, doc);
                 }
@@ -830,9 +830,6 @@ impl ChatApp {
                 if !self.expanded_reasoning.remove(&id) {
                     self.expanded_reasoning.insert(id);
                 }
-            }
-            Hit::ComposerEmoji(anchor) if self.can_participate() => {
-                self.open_emoji_picker(None, anchor);
             }
             Hit::EmojiGroup(group) => self.emoji_picker.select_group(group),
             Hit::EmojiAddCustom => {
@@ -1183,11 +1180,13 @@ impl ChatApp {
         }
     }
 
-    /// Open the picker fresh: an empty query on the first group, with the
-    /// search field taking the keyboard so typing filters at once.
-    fn open_emoji_picker(&mut self, target: Option<Id>, anchor: Rect) {
+    /// Open the picker fresh on the message it reacts to: an empty query on
+    /// the first group, with the search field taking the keyboard so typing
+    /// filters at once. Chat's emoji picker reacts and nothing else — a field
+    /// puts emoji in its own text.
+    fn open_emoji_picker(&mut self, target: Id, anchor: Rect) {
         self.emoji_open = true;
-        self.emoji_target = target;
+        self.emoji_target = Some(target);
         self.emoji_anchor = anchor;
         self.emoji_picker.reopen();
         // Space and Enter now type into the query rather than re-activating
@@ -1197,13 +1196,13 @@ impl ChatApp {
 
     fn on_hit_emoji_choice(&mut self, e: &str, doc: &mut ui::widget::Edits<'_>) {
         ui::emoji_catalogue::record_recent(e);
-        if let Some(target) = self.emoji_target.take() {
-            if self.can_participate() {
-                self.toggle_reaction(doc, &target, e);
-                self.reload(doc);
-            }
-        } else {
-            self.insert_text(doc, e);
+        // A pick with no target left (the picker closed under it) reacts to
+        // nothing.
+        if let Some(target) = self.emoji_target.take()
+            && self.can_participate()
+        {
+            self.toggle_reaction(doc, &target, e);
+            self.reload(doc);
         }
         self.close_emoji_picker();
     }
@@ -1293,7 +1292,7 @@ impl ChatApp {
             MenuTarget::Message(id) => match action {
                 MenuAction::AddReaction => {
                     let anchor = Rect::from_origin_size(self.last_mouse, (1.0, 1.0));
-                    self.open_emoji_picker(Some(id), anchor);
+                    self.open_emoji_picker(id, anchor);
                 }
                 MenuAction::ReplyInThread => {
                     if self.thread_open.as_ref() != Some(&id) {
