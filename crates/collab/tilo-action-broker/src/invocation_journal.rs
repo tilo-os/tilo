@@ -946,7 +946,7 @@ impl InvocationJournal {
         wire_id: u64,
         admission: Option<crate::action_evidence::AdmissionEvidence>,
     ) -> Result<(bool, Durable), String> {
-        self.check()?;
+        self.ready()?;
         if let Some(evidence) = &admission {
             check_evidence(&key, &intent, evidence)?;
             evidence
@@ -1050,7 +1050,7 @@ impl InvocationJournal {
         update: InvocationUpdate,
         uncertain: bool,
     ) -> Result<Durable, String> {
-        self.check()?;
+        self.ready()?;
         let (at, record) = self.record_mut(key)?;
         if record.update.is_terminal() || update.invocation() != key.invocation {
             return Err("invocation journal transition rejected".into());
@@ -1097,7 +1097,7 @@ impl InvocationJournal {
         key: &InvocationKey,
         selection: [u8; 32],
     ) -> Result<(), String> {
-        self.check()?;
+        self.ready()?;
         let (at, record) = self.record_mut(key)?;
         if let Some(guarded) = &record.guarded {
             return if guarded.selection() == &selection {
@@ -1128,7 +1128,7 @@ impl InvocationJournal {
         basis: [u8; 32],
         bytes: u32,
     ) -> Result<(), String> {
-        self.check()?;
+        self.ready()?;
         let (at, record) = self.record_mut(key)?;
         if !matches!(record.update, InvocationUpdate::Accepted { .. })
             || record.uncertain
@@ -1162,7 +1162,7 @@ impl InvocationJournal {
 
     /// The cancellation request is durable once the returned write resolves.
     pub fn record_cancellation(&mut self, key: &InvocationKey) -> Result<Durable, String> {
-        self.check()?;
+        self.ready()?;
         let (at, record) = self.record_mut(key)?;
         if record.update.is_terminal() {
             return Err("invocation is no longer running".into());
@@ -1189,6 +1189,17 @@ impl InvocationJournal {
         }
     }
 
+    /// [`Self::check`] for a transition about to be staged: a journal whose
+    /// writer stopped at a write that may be durable recovers here first, so
+    /// one failed barrier never needs a restart. A journal that could not
+    /// stage at all stays failed.
+    pub(super) fn ready(&mut self) -> Result<(), String> {
+        if !self.poisoned && self.failed() {
+            self.recover()?;
+        }
+        self.check()
+    }
+
     /// Whether this journal requires recovery.
     pub fn failed(&self) -> bool {
         self.poisoned || self.writer.as_ref().is_some_and(Writer::failed)
@@ -1203,10 +1214,9 @@ impl InvocationJournal {
         if self.poisoned {
             return Err("invocation journal requires recovery after a failed barrier".into());
         }
-        let Some(writer) = self.writer.as_mut() else {
+        if self.writer.is_none() {
             return Err("invocation journal requires recovery after a failed barrier".into());
-        };
-        writer.recovered();
+        }
         self.reopen()
     }
 
@@ -1240,11 +1250,25 @@ impl InvocationJournal {
                 record.uncertain = true;
             }
         }
-        // Compaction rewrites the store through the atomic rename a reader
-        // only ever sees whole; waiting for its write waits there for the
-        // writer that holds the store's lock, so recovery completes before
-        // this returns.
-        self.compact()
+        // The recovered snapshot rewrites the store through the atomic
+        // rename a reader only ever sees whole. The writer that holds the
+        // store's lock reaches it after every write staged before recovery,
+        // all of them stopped, and goes on only once it is durable; waiting
+        // for it here means recovery completes before this returns.
+        let outcome = self
+            .encode_snapshot()
+            .map(|snapshot| match snapshot {
+                Staged::Snapshot(bytes) => Staged::Recovery(bytes),
+                other => other,
+            })
+            .and_then(|write| self.stage(write, Injected::default()));
+        match outcome {
+            Ok(durable) => durable.wait_blocking(),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
+        }
     }
 
     /// Stages record `at` as it now stands for the writer: one appended
@@ -1293,7 +1317,7 @@ impl InvocationJournal {
         let outcome = ticket.as_ref().and_then(|ticket| ticket.outcome());
         let withdrawn = outcome.as_ref().is_some_and(writer::withdrew);
         if withdrawn {
-            self.roll_back(at, started.clone());
+            self.roll_back(at, &started);
         }
         self.undurable.retain(|_, undurable| !undurable.settled());
         // What readers see is what is durable, never a write still in flight
@@ -1334,14 +1358,15 @@ impl InvocationJournal {
 
     /// Puts record `at` back as `started`, as the store still has it: a
     /// write that left nothing durable must not be read as durable.
-    fn roll_back(&mut self, at: usize, started: DurableInvocation) {
+    fn roll_back(&mut self, at: usize, started: &DurableInvocation) {
         if let Some(record) = self.snapshot.records.get_mut(at) {
-            record.clone_from(&started);
+            record.clone_from(started);
         }
     }
 
     /// `write` as durable here: the outcome, once it is waited for, with the
     /// record it made put back if the write left nothing durable.
+    #[cfg(test)]
     fn settle(
         &mut self,
         at: usize,
@@ -1349,8 +1374,8 @@ impl InvocationJournal {
         write: Durable,
     ) -> Result<(), String> {
         let outcome = write.wait_blocking();
-        if outcome.as_ref().is_err_and(writer::withdrew_error) {
-            self.roll_back(at, started);
+        if writer::withdrew(&outcome) {
+            self.roll_back(at, &started);
         }
         outcome
     }
