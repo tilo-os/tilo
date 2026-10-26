@@ -134,6 +134,55 @@ enum Confirm {
     SwitchBranch { name: String },
 }
 
+/// Where the first-run screen puts its three controls: the path to type in,
+/// the system file chooser beside it, and the button that opens it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct OpenControls {
+    field: Rect,
+    choose: Rect,
+    open: Rect,
+}
+
+impl OpenControls {
+    /// One row while the path keeps `path_room` beside the two buttons; under
+    /// that the buttons stand on their own row under it. A path field
+    /// squeezed to nothing is not a field: at a large text scale in a long
+    /// language the three controls do not fit side by side, and the row that
+    /// cannot hold them has to become two.
+    fn at(
+        lane: Rect,
+        y: f64,
+        h: f64,
+        gap: f64,
+        choose_w: f64,
+        open_w: f64,
+        path_room: f64,
+    ) -> Self {
+        let room = lane.width() - choose_w - open_w - 2.0 * gap;
+        let path_room = path_room.min(lane.width() / 2.0);
+        if room >= path_room {
+            let open = Rect::new(lane.x1 - open_w, y, lane.x1, y + h);
+            let choose = Rect::new(open.x0 - gap - choose_w, y, open.x0 - gap, y + h);
+            return Self {
+                field: Rect::new(lane.x0, y, choose.x0 - gap, y + h),
+                choose,
+                open,
+            };
+        }
+        let choose = Rect::new(
+            lane.x0,
+            y + h + gap,
+            (lane.x0 + choose_w).min(lane.x1),
+            y + 2.0 * h + gap,
+        );
+        Self {
+            field: Rect::new(lane.x0, y, lane.x1, y + h),
+            open: Rect::new(lane.x1 - open_w, choose.y0, lane.x1, choose.y1),
+            choose,
+        }
+    }
+}
+
 /// One answer to a confirmation sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConfirmChoice {
@@ -1702,16 +1751,22 @@ impl GitClientApp {
         let h = ButtonFace::height(ControlSize::Regular, theme);
         let label = t("git-open");
         let button_w = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(ctx.text, theme);
-        let button = Rect::new(lane.x1 - button_w, y, lane.x1, y + h);
         // Beside the path, the system's file chooser: most people pick the
         // folder rather than type where it is.
         let choose_label = t("git-choose");
         let choose_face =
             || ButtonFace::new(Rect::ZERO, &choose_label).icon(ui::icons::Icon::FolderOpen);
         let choose_w = choose_face().intrinsic_width(ctx.text, theme);
-        let choose_x1 = button.x0 - f64::from(s.s2);
-        let choose = Rect::new(choose_x1 - choose_w, y, choose_x1, y + h);
-        let field = Rect::new(lane.x0, y, choose.x0 - f64::from(s.s2), y + h);
+        let controls = OpenControls::at(
+            lane,
+            y,
+            h,
+            f64::from(s.s2),
+            choose_w,
+            button_w,
+            f64::from(theme.tokens.metrics.content_min_width),
+        );
+        let (field, choose, button) = (controls.field, controls.choose, controls.open);
         self.open_input.apply_layout_external(field);
         self.open_input
             .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
@@ -1763,7 +1818,7 @@ impl GitClientApp {
         }
 
         if let Some(error) = &self.last_error {
-            let top = button.y1 + f64::from(s.s4);
+            let top = button.y1.max(choose.y1) + f64::from(s.s4);
             let content = BannerContent::new(BannerKind::Error, error);
             let h = Banner::height(&content, lane.width(), ctx.text, theme);
             let banner = Rect::new(lane.x0, top, lane.x1, top + h);
@@ -3791,6 +3846,49 @@ impl GitClientApp {
 mod tests {
     use super::*;
     use ui::widget::Widget;
+
+    /// The first-run screen's three controls fit the lane they are drawn in:
+    /// side by side while the path keeps room to type in, and in two rows
+    /// below that, so neither a field nor a button is squeezed to nothing.
+    #[test]
+    fn the_open_screen_folds_its_row_before_it_squeezes_the_path() {
+        let wide_lane = Rect::new(0.0, 0.0, 400.0, 400.0);
+        let wide = OpenControls::at(wide_lane, 60.0, 32.0, 8.0, 102.0, 58.0, 180.0);
+        assert!(
+            (wide.field.y0 - wide.choose.y0).abs() < f64::EPSILON,
+            "one row when it fits"
+        );
+        assert!(
+            wide.field.width() >= 180.0,
+            "the path keeps its room: {:?}",
+            wide.field
+        );
+        assert!(wide.choose.x1 <= wide.open.x0, "the buttons do not overlap");
+        assert!(!wide.field.overlaps(wide.choose) && !wide.choose.overlaps(wide.open));
+
+        // The same lane at a 1.5 text scale in an expanded language: the two
+        // buttons take almost all of it.
+        let lane = Rect::new(0.0, 0.0, 342.0, 400.0);
+        let narrow = OpenControls::at(lane, 60.0, 48.0, 12.0, 215.0, 85.0, 180.0);
+        assert!(
+            narrow.field.y1 <= narrow.choose.y0,
+            "the buttons moved under the path: {:?} {:?}",
+            narrow.field,
+            narrow.choose
+        );
+        assert!(
+            (narrow.field.width() - lane.width()).abs() < f64::EPSILON,
+            "the path keeps the whole row"
+        );
+        assert!(
+            narrow.choose.width() >= 215.0,
+            "the chooser keeps its label"
+        );
+        assert!(
+            narrow.choose.x1 <= narrow.open.x0,
+            "the buttons do not overlap"
+        );
+    }
 
     #[test]
     fn live_initial_view_stays_empty_until_the_repository_is_explicitly_bound() {
