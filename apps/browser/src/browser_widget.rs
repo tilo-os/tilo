@@ -104,6 +104,33 @@ const PAGE_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// A page action that started a navigation waits this long for it to load.
 const PAGE_NAVIGATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// A failure one of this app's invocations reports.
+///
+/// A retryable failure is only legal under a contract that permits a retry,
+/// and the broker refuses one reported under any other: it then drops the
+/// whole collaboration bridge, and from that moment the tab answers every
+/// later action with "outcome unknown" for the rest of the run.  Rather than
+/// keep that decision beside each failure, every failure this app reports is
+/// built here and claims no retry: a caller that wants to act again does so
+/// as a new invocation, which is what the at-most-once page actions require
+/// and what the idempotent ones do not mind.
+fn action_failed(
+    invocation: ui::tilo_actions::InvocationId,
+    code: impl Into<String>,
+    message: impl Into<String>,
+    details: Option<serde_json::Value>,
+) -> ui::tilo_actions::InvocationUpdate {
+    ui::tilo_actions::InvocationUpdate::Failed {
+        invocation,
+        error: ui::tilo_actions::ActionFailure {
+            code: code.into(),
+            message: message.into(),
+            details,
+            retryable: false,
+        },
+    }
+}
+
 /// A page action admitted through the resource surface.
 struct PageOperation {
     invocation: ui::tilo_actions::InvocationId,
@@ -1690,16 +1717,12 @@ impl BrowserWidget {
                 if let Some(invocation) = self.resource_navigation_invocation.take() {
                     self.resource_navigation_deadline = None;
                     self.cancel_owned_navigation();
-                    self.resource_navigation_result =
-                        Some(ui::tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: ui::tilo_actions::ActionFailure {
-                                code: "browser.navigation_stopped".into(),
-                                message: "Page loading stopped.".into(),
-                                details: None,
-                                retryable: true,
-                            },
-                        });
+                    self.resource_navigation_result = Some(action_failed(
+                        invocation,
+                        "browser.navigation_stopped",
+                        "Page loading stopped.",
+                        None,
+                    ));
                 }
             }
             BrowserOperation::OpenInNewTab { url, background } => {
@@ -2072,17 +2095,18 @@ impl BrowserWidget {
                 Some("the page it opened is still loading"),
             ),
             PagePhase::Queued { .. } | PagePhase::Sent => {
-                ui::tilo_actions::InvocationUpdate::Failed {
-                    invocation: operation.invocation,
-                    error: ui::tilo_actions::ActionFailure {
-                        code: "browser.page.timeout".into(),
-                        message: "The page did not answer in time.".into(),
-                        details: Some(serde_json::json!({
-                            "timeout_seconds": PAGE_OPERATION_TIMEOUT.as_secs(),
-                        })),
-                        retryable: true,
-                    },
-                }
+                // The page never answered: it may still do what was asked, so
+                // the failure says what is unknown rather than inviting a
+                // replay that could do it twice.
+                action_failed(
+                    operation.invocation,
+                    "browser.page.timeout",
+                    "The page did not answer in time; it may still complete the action it was given.",
+                    Some(serde_json::json!({
+                        "timeout_seconds": PAGE_OPERATION_TIMEOUT.as_secs(),
+                        "outcome": "unknown",
+                    })),
+                )
             }
         });
     }
@@ -2147,18 +2171,17 @@ impl BrowserWidget {
                 return;
             }
             Ok(reply) => self.page_success(operation.invocation, &reply, None),
-            // A page action runs once, so its failure is reported once: a
-            // caller that wants the wheel turned again asks again, and no
-            // retry of a request already run at the page is advertised.
-            Err(failure) => ui::tilo_actions::InvocationUpdate::Failed {
-                invocation: operation.invocation,
-                error: ui::tilo_actions::ActionFailure {
-                    retryable: false,
-                    code: format!("browser.page.{}", failure.code),
-                    message: failure.message,
-                    details: None,
-                },
-            },
+            // A page that refused the action because it was busy, or never
+            // answered, is reported as what it is.  Calling it retryable here
+            // would contradict the at-most-once contract this app publishes
+            // and the broker would refuse the answer, taking the whole
+            // session's page actions down with it.
+            Err(failure) => action_failed(
+                operation.invocation,
+                format!("browser.page.{}", failure.code),
+                failure.message,
+                None,
+            ),
         });
     }
 
@@ -2769,15 +2792,7 @@ impl BrowserWidget {
         };
         self.resource_pip_request = None;
         self.resource_pip_deadline = None;
-        self.resource_pip_result = Some(ui::tilo_actions::InvocationUpdate::Failed {
-            invocation,
-            error: ui::tilo_actions::ActionFailure {
-                code: code.into(),
-                message: message.into(),
-                details: None,
-                retryable: false,
-            },
-        });
+        self.resource_pip_result = Some(action_failed(invocation, code, message, None));
     }
 
     /// Ordinary layout passes retain control state, including pending native paste replies.
@@ -3405,15 +3420,12 @@ impl BrowserWidget {
                         self.resource_navigation_request = None;
                         self.resource_navigation_deadline = None;
                         self.resource_navigation_result = Some(match error {
-                            Some(message) => ui::tilo_actions::InvocationUpdate::Failed {
+                            Some(message) => action_failed(
                                 invocation,
-                                error: ui::tilo_actions::ActionFailure {
-                                    code: "browser.navigation_failed".into(),
-                                    message,
-                                    details: Some(serde_json::json!({ "uri": uri })),
-                                    retryable: true,
-                                },
-                            },
+                                "browser.navigation_failed",
+                                message,
+                                Some(serde_json::json!({ "uri": uri })),
+                            ),
                             None => ui::tilo_actions::InvocationUpdate::Succeeded {
                                 invocation,
                                 output: ui::tilo_actions::ActionOutput {
@@ -5948,17 +5960,14 @@ impl BrowserWidget {
             self.resource_pip_invocation = None;
             self.resource_pip_request = None;
             self.resource_pip_deadline = None;
-            return Some(ui::tilo_actions::InvocationUpdate::Failed {
+            return Some(action_failed(
                 invocation,
-                error: ui::tilo_actions::ActionFailure {
-                    code: "browser.picture_in_picture_timed_out".into(),
-                    message: "Picture in Picture did not receive a media response in time.".into(),
-                    details: Some(serde_json::json!({
-                        "timeout_seconds": PIP_OPERATION_TIMEOUT.as_secs(),
-                    })),
-                    retryable: true,
-                },
-            });
+                "browser.picture_in_picture_timed_out",
+                "Picture in Picture did not receive a media response in time.",
+                Some(serde_json::json!({
+                    "timeout_seconds": PIP_OPERATION_TIMEOUT.as_secs(),
+                })),
+            ));
         }
         if self.resource_navigation_invocation == Some(invocation)
             && self
@@ -5968,17 +5977,14 @@ impl BrowserWidget {
             self.resource_navigation_invocation = None;
             self.resource_navigation_deadline = None;
             self.cancel_owned_navigation();
-            return Some(ui::tilo_actions::InvocationUpdate::Failed {
+            return Some(action_failed(
                 invocation,
-                error: ui::tilo_actions::ActionFailure {
-                    code: "browser.navigation_timed_out".into(),
-                    message: "The page did not finish loading in time.".into(),
-                    details: Some(serde_json::json!({
-                        "timeout_seconds": NAVIGATION_TIMEOUT.as_secs(),
-                    })),
-                    retryable: true,
-                },
-            });
+                "browser.navigation_timed_out",
+                "The page did not finish loading in time.",
+                Some(serde_json::json!({
+                    "timeout_seconds": NAVIGATION_TIMEOUT.as_secs(),
+                })),
+            ));
         }
         None
     }
@@ -6300,16 +6306,12 @@ impl BrowserWidget {
         if let Some(previous) = self.resource_navigation_invocation.take() {
             self.resource_navigation_request = None;
             self.resource_navigation_deadline = None;
-            self.replaced_navigations
-                .push(ui::tilo_actions::InvocationUpdate::Failed {
-                    invocation: previous,
-                    error: ui::tilo_actions::ActionFailure {
-                        code: "browser.navigation_replaced".into(),
-                        message: "Another navigation replaced this one.".into(),
-                        details: None,
-                        retryable: false,
-                    },
-                });
+            self.replaced_navigations.push(action_failed(
+                previous,
+                "browser.navigation_replaced",
+                "Another navigation replaced this one.",
+                None,
+            ));
         }
         self.replaced_navigations
             .extend(self.resource_navigation_result.take());
