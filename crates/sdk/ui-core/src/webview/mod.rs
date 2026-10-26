@@ -705,6 +705,12 @@ pub enum WebViewCommand {
         request_id: u32,
         request: PageRequest,
     },
+    /// Stop the page action that is running. An action nobody waits for any
+    /// more must not hold the page: the tab answers it as settled with an
+    /// unknown outcome rather than running the next action behind it. No
+    /// request id is carried: a tab runs one page action at a time, so the
+    /// action that is running is the one to stop.
+    CancelPage,
     /// Capture the page's layout for the paint stream: every box and text
     /// line the engine laid out (see `tilo_paint_stream::snapshot`). Exactly
     /// one [`WebViewEvent::PaintSnapshot`] with the same id answers it.

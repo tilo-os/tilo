@@ -2131,6 +2131,9 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                     "clear" | "revoke" | "reset" | "enable" | "disable" | "reload"
                 )
         }
+        // Cancelling a page action carries nothing to check: a tab runs one
+        // such action at a time, and stopping it is always well formed.
+        WebViewCommand::CancelPage => true,
         WebViewCommand::ContextMenuAction { id, command } => {
             *id > 0 && i32::try_from(*id).is_ok() && i32::try_from(*command).is_ok()
         }
@@ -2790,6 +2793,7 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             request_id,
             request,
         } => super::page::encode_request(request_id, &request),
+        WebViewCommand::CancelPage => json!({ "op": "page_cancel" }),
         WebViewCommand::PaintCapture { request_id } => json!({
             "op": "paint_capture",
             "request_id": request_id,

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cctype>
 #include <string>
+#include <string_view>
 
 namespace tilo {
 // The IPC carries logical key names and, when the sender knows it, the
@@ -14,18 +15,35 @@ struct KeyMapping {
   char16_t character = 0;
   char16_t mac_character = 0;
 };
+struct NamedKey { const char* name; KeyMapping mapping; };
+inline const NamedKey kNamedKeys[] = {
+  {"Enter", {13,36,36,'\r','\r'}}, {"Tab", {9,48,23,'\t','\t'}},
+  {"Backspace", {8,51,22,'\b',0x7f}}, {"Delete", {46,117,119,0,0xf728}},
+  {"Escape", {27,53,9,27,27}}, {"ArrowLeft", {37,123,113,0,0xf702}},
+  {"ArrowUp", {38,126,111,0,0xf700}}, {"ArrowRight", {39,124,114,0,0xf703}},
+  {"ArrowDown", {40,125,116,0,0xf701}}, {"Home", {36,115,110,0,0xf729}},
+  {"End", {35,119,115,0,0xf72b}}, {"PageUp", {33,116,112,0,0xf72c}},
+  {"PageDown", {34,121,117,0,0xf72d}},
+};
+// The named key `key` spells, in any letter case: `END`, `end` and `End` are
+// all the key `End`. Empty when it spells none.
+inline std::string_view NamedKeyName(const std::string& key) {
+  for (const auto& item : kNamedKeys)
+    if (key.size() == std::string_view(item.name).size() &&
+        std::equal(key.begin(), key.end(), item.name,
+                   [](char a, char b) { return std::tolower(a) == std::tolower(b); }))
+      return item.name;
+  return {};
+}
+// The mapping of the named key `key` spells, in any letter case, or null when
+// it names no key.
+inline const KeyMapping* NamedKeyMapping(const std::string& key) {
+  for (const auto& item : kNamedKeys)
+    if (NamedKeyName(key) == item.name) return &item.mapping;
+  return nullptr;
+}
 inline KeyMapping MapKey(const std::string& key) {
-  struct NamedKey { const char* name; KeyMapping mapping; };
-  static const NamedKey named[] = {
-    {"Enter", {13,36,36,'\r','\r'}}, {"Tab", {9,48,23,'\t','\t'}},
-    {"Backspace", {8,51,22,'\b',0x7f}}, {"Delete", {46,117,119,0,0xf728}},
-    {"Escape", {27,53,9,27,27}}, {"ArrowLeft", {37,123,113,0,0xf702}},
-    {"ArrowUp", {38,126,111,0,0xf700}}, {"ArrowRight", {39,124,114,0,0xf703}},
-    {"ArrowDown", {40,125,116,0,0xf701}}, {"Home", {36,115,110,0,0xf729}},
-    {"End", {35,119,115,0,0xf72b}}, {"PageUp", {33,116,112,0,0xf72c}},
-    {"PageDown", {34,121,117,0,0xf72d}},
-  };
-  for (const auto& item : named) if (key == item.name) return item.mapping;
+  if (const KeyMapping* named = NamedKeyMapping(key)) return *named;
   if (key.size() != 1) return {};
   const unsigned char character = key[0];
   const char lower = static_cast<char>(std::tolower(character));
