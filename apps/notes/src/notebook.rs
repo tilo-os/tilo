@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, Refusal, Set, resource,
+    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, Reactions, Refusal, Set, resource,
 };
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
@@ -81,6 +81,10 @@ pub struct Page {
     #[model(readonly)]
     #[model(default = None)]
     pub creator: Option<Atom>,
+    /// Reactions
+    ///
+    /// What people answered the note with, shown under its title.
+    pub reactions: Reactions,
 }
 
 /// A named tag notes carry.
@@ -414,6 +418,8 @@ impl Notebook {
                 body: written(&blocks),
                 tags: original.tags.clone(),
                 creator: None,
+                // People reacted to the original; the copy starts unanswered.
+                reactions: Reactions::new(),
             }
             .made(cx);
             self.pages.insert(at, copy.clone(), page_copy);

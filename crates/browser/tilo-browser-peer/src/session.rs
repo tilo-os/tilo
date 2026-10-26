@@ -498,6 +498,10 @@ enum Command {
     ),
     Rooms(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
     Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
+    Private(
+        tilo_relay_protocol::rooms::private::PrivateCall,
+        PrivateCompletion,
+    ),
     Node(NodeCompletion),
     Compact([u8; 16], Vec<u8>),
     /// What the room's steward answered a watching page asking for a
@@ -551,6 +555,9 @@ pub type NodeCompletion = Box<dyn FnOnce(Result<Option<[u8; 32]>, String>) + Sen
 /// Called once with who is here, see [`PeerHandle::here_then`].
 pub type HereCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::web::HereReply, String>) + Send>;
+/// Called once with the governor's answer, see [`PeerHandle::private_then`].
+pub type PrivateCompletion =
+    Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::private::PrivateReply, String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::RoomsReply, String>) + Send>;
@@ -1012,6 +1019,17 @@ impl PeerHandle {
         done: HereCompletion,
     ) -> Result<(), String> {
         self.send(Command::Here(request, done))
+    }
+
+    /// Ask the room's governor for a private operation
+    /// ([`tilo_relay_client::https::private`]) over the current HTTPS session;
+    /// `done` receives its answer.
+    pub fn private_then(
+        &self,
+        request: tilo_relay_protocol::rooms::private::PrivateCall,
+        done: PrivateCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::Private(request, done))
     }
 
     /// Send `request` to the host's room administration over the current
@@ -1934,6 +1952,7 @@ impl Task {
                 Self::request_legacy_codecs(request, done, client)
             }
             Command::Here(request, done) => Self::request_here(request, done, client),
+            Command::Private(request, done) => Self::request_private(request, done, client),
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
             Command::VoiceCall(room, request, op) => self.voice_call(room, request, op, client),
             Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
@@ -2010,6 +2029,11 @@ impl Task {
             }
             Command::Here(_, done) => {
                 done(Err("a page that only watches is not listed as here".into()));
+            }
+            Command::Private(_, done) => {
+                done(Err(
+                    "a page that only watches has no private conversations".into()
+                ));
             }
             Command::OpenRoute(route) => self.watched.want(route),
             command => return Some(command),
@@ -2244,6 +2268,31 @@ impl Task {
             }
             #[cfg(feature = "iroh")]
             Some(Link::Iroh(_)) => done(Err("who is here is served over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+        true
+    }
+
+    /// Always `true`: the session takes it whatever the answer.
+    fn request_private(
+        request: tilo_relay_protocol::rooms::private::PrivateCall,
+        done: PrivateCompletion,
+        client: Option<&Link>,
+    ) -> bool {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let reply =
+                        tilo_relay_client::https::private(http.as_ref(), &session, &request).await;
+                    done(reply.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err(
+                "a page's private conversations are served over HTTPS".into(),
+            )),
             None => done(Err("not connected to the host".into())),
         }
         true

@@ -77,7 +77,7 @@ impl Talk {
         self.part.set_now_ms(now_ms);
     }
 
-    /// Apply a verb on the messages, as the person confirming it would.
+    /// Apply a verb or field edit on the messages, as the person confirming it would.
     pub(super) fn apply(&mut self, invoke: Invoke<ChatPart>) -> Result<(), DoorError> {
         use ui::framework::{Chained as _, Submit as _};
         let invoke = invoke.into_invoke().map_err(DoorError::InvalidArguments)?;
@@ -419,12 +419,7 @@ fn reactions_are_each_persons_own() {
     let mut ada = Talk::new();
     ada.apply(post("ship it")).unwrap();
     let message = ada.said("ship it");
-    let react = |emoji: &str| {
-        ChatPart::REACT.with(chat_part::React {
-            message: message.clone(),
-            emoji: emoji.into(),
-        })
-    };
+    let react = |emoji: &str| reaction(&message).react(emoji).into();
     let mut bo = ada.fork_as(BO);
     ada.apply(react("🎉")).unwrap();
     bo.apply(react("🎉")).unwrap();
@@ -434,7 +429,7 @@ fn reactions_are_each_persons_own() {
         talk.rows("c_chat")[0]
             .reactions
             .iter()
-            .map(|reaction| (reaction.emoji.clone(), reaction.users.clone()))
+            .map(|reaction| (reaction.emoji.clone(), reactors(reaction)))
             .collect::<Vec<_>>()
     };
     assert_eq!(
@@ -445,16 +440,8 @@ fn reactions_are_each_persons_own() {
         ],
         "both first reactions with one emoji count"
     );
-    bo.apply(ChatPart::UNREACT.with(chat_part::Unreact {
-        message: message.clone(),
-        emoji: "👍".into(),
-    }))
-    .unwrap();
-    bo.apply(ChatPart::UNREACT.with(chat_part::Unreact {
-        message: message.clone(),
-        emoji: "🎉".into(),
-    }))
-    .unwrap();
+    bo.apply(reaction(&message).unreact("👍").into()).unwrap();
+    bo.apply(reaction(&message).unreact("🎉").into()).unwrap();
     assert_eq!(
         reactions(&bo),
         [("🎉".to_owned(), vec![ADA.to_owned()])],
@@ -907,12 +894,7 @@ fn two_replicas_converge_on_concurrent_posts_reactions_and_renames() {
     let mut bo = ada.fork_as(BO);
     ada.apply(post("from ada")).unwrap();
     bo.apply(post("from bo")).unwrap();
-    let react = || {
-        ChatPart::REACT.with(chat_part::React {
-            message: base.clone(),
-            emoji: "🎉".into(),
-        })
-    };
+    let react = || reaction(&base).react("🎉").into();
     ada.apply(react()).unwrap();
     bo.apply(react()).unwrap();
     bo.chat
@@ -927,7 +909,7 @@ fn two_replicas_converge_on_concurrent_posts_reactions_and_renames() {
     assert_eq!(ada.part.state().unwrap(), bo.part.state().unwrap());
     let rows = ada.rows("c_chat");
     assert_eq!(rows.len(), 4);
-    assert_eq!(rows[0].reactions[0].users, [ADA, BO]);
+    assert_eq!(reactors(&rows[0].reactions[0]), [ADA, BO]);
     assert_eq!(
         ada.chat
             .state()
@@ -948,11 +930,7 @@ fn replaying_the_log_reproduces_the_record() {
     ada.apply(post("one")).unwrap();
     let one = ada.said("one");
     ada.apply(reply(&one, "two")).unwrap();
-    ada.apply(ChatPart::REACT.with(chat_part::React {
-        message: one,
-        emoji: "👍".into(),
-    }))
-    .unwrap();
+    ada.apply(reaction(&one).react("👍").into()).unwrap();
     for envelope in ada.part.log().to_vec() {
         fresh.replay(&envelope).unwrap();
     }
@@ -1508,4 +1486,18 @@ fn an_unreadable_category_is_kept_through_the_migration() {
         "a later write keeps it"
     );
     assert_eq!(ada.state().unwrap().categories.quarantined().len(), 1);
+}
+
+/// The reactions of `message`, the path reacting edits it at.
+fn reaction(message: &Id) -> ui::tilo_resource::Path<ChatPart, ui::tilo_resource::Reactions> {
+    ChatPart::paths().messages.item(message).reactions
+}
+
+/// Who reacted in `group`, first first.
+fn reactors(group: &crate::model::Reaction) -> Vec<String> {
+    group
+        .reactors
+        .iter()
+        .map(|reactor| reactor.by.clone())
+        .collect()
 }

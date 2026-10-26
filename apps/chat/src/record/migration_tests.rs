@@ -30,6 +30,7 @@ fn submission() -> ui::feedback::Submission {
             text: "The sidebar flickers".into(),
             context: Vec::new(),
             screenshot: None,
+            ..Default::default()
         },
     }
 }

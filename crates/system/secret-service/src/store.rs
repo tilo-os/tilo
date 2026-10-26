@@ -1,18 +1,22 @@
-//! The store: the vault, sealed at rest under a key the device identity
+//! The store: the vault, sealed at rest under a key the person's own key
 //! releases, and every operation on it gated by the caller's identity.
 //!
 //! # Locked and open
 //!
 //! The store is **locked** until its key can be derived. The key comes from
-//! the machine's device identity (see [`DeviceIdentityKey`]), which the
-//! session can read however the person signed in: with a password, a
-//! fingerprint, or automatically. Nothing about the login method reaches
-//! this module, and there is no prompt: a store whose identity is missing
-//! stays locked and every operation says so, until the identity appears.
+//! the person's own key — the identity the machine knows them by, whose
+//! private half only their login releases (see [`UserKey`]) — so the vault
+//! belongs to the person rather than to this machine: the same person on
+//! another device opens the same store, and a home copied onto another
+//! machine opens it too, because that is where the person's key travels.
+//! Nothing about the login method reaches this module, and there is no
+//! prompt: a store whose person key is unavailable stays locked and every
+//! operation says so, until it appears.
 //!
-//! A vault that exists but cannot be opened (another device identity, or
+//! A vault that exists but cannot be opened (a different key or salt, or
 //! damage) is never replaced: the store stays locked with the reason, and
-//! the file is left as it is.
+//! the file is left as it is. Nor is it ever sealed under a second key: a
+//! vault [`Locked::KeyChanged`] stays exactly as it was sealed.
 //!
 //! # Attribution
 //!
@@ -28,7 +32,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tilo_seal::secret_service::CallerKey;
 use tilo_seal::{Context, Label, SymmetricKey, envelope};
-use tilo_user_identity::persist::{IdentityPaths, PersistError, load_device_key};
+use tilo_user_identity::persist::{IdentityPaths, PersistError, load_device_key, read_signing_key};
 use zeroize::Zeroizing;
 
 use crate::app::AppId;
@@ -53,11 +57,13 @@ pub const SANDBOX_SECRET_LEN: usize = 32;
 /// Why the store is locked.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Locked {
-    /// The device has no identity yet, or this session cannot read it.
-    #[error("the device identity is not available")]
+    /// The person's key is not available yet, or this session cannot read
+    /// it. The machine relays ciphertext only until the person signs in.
+    #[error("the person's key is not available")]
     NoIdentity,
-    /// The vault was sealed under another device identity.
-    #[error("the vault belongs to another device identity")]
+    /// The vault was sealed under another key: another person's key, or
+    /// another salt.
+    #[error("the vault belongs to another key")]
     KeyChanged,
     /// The vault file does not authenticate.
     #[error("the vault is damaged")]
@@ -88,6 +94,12 @@ pub trait KeySource: Send + Sync {
     /// The key, or why it cannot be released now.
     fn release(&self) -> std::result::Result<SymmetricKey, Locked>;
 
+    /// An equivalent source, for a store that keeps one handle for the
+    /// vault's current seal and hands `release` to another. Every source is
+    /// a handle onto something external — a file, a loaded secret — so this
+    /// copies the handle, not key material.
+    fn another(&self) -> Box<dyn KeySource>;
+
     /// The key a caller the store cannot examine proves it holds the
     /// device identity with ([`crate::app`]). A source with no device
     /// identity behind it has none, and such callers stay refused.
@@ -96,8 +108,76 @@ pub trait KeySource: Send + Sync {
     }
 }
 
+/// The key derived from the person's own key, their salt and their public
+/// identity (`tilo_seal::secret_service::user_store_key`).
+///
+/// The person's private key is the root this machine knows them by; it is
+/// written into every session's identity tree, and only that person's login
+/// releases it. The same key on another device derives the same store.
+pub struct UserKey {
+    paths: IdentityPaths,
+    salt_path: PathBuf,
+    /// The public half of the person's key, 32 bytes. It names the person in
+    /// the derivation, so two people sharing a data directory never share a
+    /// store. `None` on a machine no person has been set up on yet.
+    identity: Option<[u8; 32]>,
+}
+
+impl UserKey {
+    /// `paths` hold the person's key pair; `salt_path` is a file in the
+    /// person's own data directory; `identity` is the public half of their
+    /// key as the session knows it, or `None` when this machine knows no
+    /// person.
+    #[must_use]
+    pub fn new(paths: IdentityPaths, salt_path: PathBuf, identity: Option<[u8; 32]>) -> Self {
+        Self {
+            paths,
+            salt_path,
+            identity,
+        }
+    }
+}
+
+impl UserKey {
+    /// The person's private key, read with the owner-only checks every
+    /// other reader of it applies.
+    fn user_secret(&self) -> std::result::Result<Zeroizing<[u8; 32]>, Locked> {
+        let key = read_signing_key(&self.paths.user_privkey).map_err(|error| match error {
+            PersistError::Io(io) if io.kind() == io::ErrorKind::NotFound => Locked::NoIdentity,
+            other => Locked::Unreadable(other.to_string()),
+        })?;
+        Ok(Zeroizing::new(key.to_bytes()))
+    }
+}
+
+impl KeySource for UserKey {
+    fn another(&self) -> Box<dyn KeySource> {
+        Box::new(Self::new(
+            self.paths.clone(),
+            self.salt_path.clone(),
+            self.identity,
+        ))
+    }
+
+    fn release(&self) -> std::result::Result<SymmetricKey, Locked> {
+        let identity = self.identity.ok_or(Locked::NoIdentity)?;
+        let secret = self.user_secret()?;
+        let salt = load_or_create_salt(&self.salt_path)
+            .map_err(|error| Locked::Unreadable(format!("salt: {error}")))?;
+        tilo_seal::secret_service::user_store_key(secret.as_ref(), &salt, &identity)
+            .map_err(|error| Locked::Unreadable(error.to_string()))
+    }
+}
+
 /// The key derived from the machine's device identity and the person's own
 /// salt (`tilo_seal::secret_service::store_key`).
+///
+/// This build seals nothing with it. It answers two things still: a caller
+/// the store cannot examine proves it holds this machine's identity with the
+/// key ([`KeySource::caller_key`]), and a vault an earlier build sealed this
+/// way is opened through it once and copied under the person's key, so a
+/// machine upgraded in place does not lose what the person saved before.
+#[derive(Clone)]
 pub struct DeviceIdentityKey {
     paths: IdentityPaths,
     salt_path: PathBuf,
@@ -128,6 +208,14 @@ impl DeviceIdentityKey {
 }
 
 impl KeySource for DeviceIdentityKey {
+    fn another(&self) -> Box<dyn KeySource> {
+        Box::new(Self::new(
+            self.paths.clone(),
+            self.salt_path.clone(),
+            &self.account,
+        ))
+    }
+
     fn caller_key(&self) -> std::result::Result<CallerKey, Locked> {
         CallerKey::derive(self.device_seed()?.as_ref())
             .map_err(|error| Locked::Unreadable(error.to_string()))
@@ -240,6 +328,14 @@ struct Inner {
 pub struct Store {
     path: PathBuf,
     keys: Box<dyn KeySource>,
+    /// The key every vault written from now on is sealed under. A vault the
+    /// store opened under any other key (`previous`) is resealed under this
+    /// one, once.
+    key: Box<dyn KeySource>,
+    /// The machine's device identity, which is what a caller the store
+    /// cannot examine proves. Sealing the vault and proving a caller are
+    /// different questions asked of different keys.
+    caller: Box<dyn KeySource>,
     inner: Mutex<Inner>,
 }
 
@@ -248,19 +344,67 @@ fn context() -> Context<'static> {
 }
 
 impl Store {
-    /// A store over the vault file `path`. Nothing is read until first use.
+    /// A store over the vault file `path`, sealed and opened under `keys`.
+    /// Nothing is read until first use.
     #[must_use]
     pub fn new(path: impl Into<PathBuf>, keys: Box<dyn KeySource>) -> Self {
+        let caller = keys.another();
+        Self::opening(path, keys.another(), keys, caller)
+    }
+
+    /// A store over `path` that seals vaults under `keys`, takes callers it
+    /// cannot examine to `caller` (the device identity), and also opens a
+    /// vault `previous` sealed under an earlier key. See
+    /// [`Store::open_vault_keyed_by`].
+    #[must_use]
+    pub fn keyed_by(
+        path: impl Into<PathBuf>,
+        keys: Box<dyn KeySource>,
+        previous: Box<dyn KeySource>,
+        caller: Box<dyn KeySource>,
+    ) -> Self {
+        Self::opening(path, previous, keys, caller)
+    }
+
+    /// A store that also opens a vault `previous` sealed under an earlier
+    /// key (`tilo_seal::secret_service::store_key`), and reseals it under
+    /// `keys`' key on the first use that succeeds.
+    ///
+    /// The migration is a copy and a verify: the vault is opened with the
+    /// earlier key, written whole under the current one beside it, and only
+    /// a write that reads back is renamed over `path`. Nothing is rewritten
+    /// in place, no collection or item id changes, and until the new file is
+    /// whole the old one is the store. Until the person signs in, `previous`
+    /// cannot release anything either, and the machine relays the ciphertext
+    /// untouched.
+    #[must_use]
+    pub fn open_vault_keyed_by(
+        path: impl Into<PathBuf>,
+        keys: Box<dyn KeySource>,
+        previous: Box<dyn KeySource>,
+    ) -> Self {
+        let caller = keys.another();
+        Self::opening(path, previous, keys, caller)
+    }
+
+    fn opening(
+        path: impl Into<PathBuf>,
+        sealed_under: Box<dyn KeySource>,
+        keys: Box<dyn KeySource>,
+        caller: Box<dyn KeySource>,
+    ) -> Self {
         Self {
             path: path.into(),
+            key: sealed_under,
             keys,
+            caller,
             inner: Mutex::new(Inner::default()),
         }
     }
 
     /// The key callers prove they hold the device identity with.
     pub fn caller_key(&self) -> std::result::Result<CallerKey, Locked> {
-        self.keys.caller_key()
+        self.caller.caller_key()
     }
 
     /// Why the store is locked, or `None` when it is open. Tries to open it.
@@ -274,35 +418,79 @@ impl Store {
     }
 
     fn open_now(&self) -> std::result::Result<Open, Locked> {
-        let key = self.keys.release()?;
         let now = now();
-        let vault = match std::fs::read(&self.path) {
-            Ok(bytes) => {
-                let plain =
-                    envelope::open(&key, context(), &bytes).map_err(|error| match error {
-                        tilo_seal::Error::WrongKey => Locked::KeyChanged,
-                        _ => Locked::Corrupt,
-                    })?;
-                let vault: Vault = postcard::from_bytes(&plain).map_err(|_| Locked::Corrupt)?;
-                if vault.version != VAULT_VERSION {
-                    return Err(Locked::Unreadable(format!(
-                        "vault version {} is not supported",
-                        vault.version
-                    )));
-                }
-                vault
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Vault::new(now),
+        let sealed = match std::fs::read(&self.path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(Locked::Unreadable(error.to_string())),
         };
-        // A fresh vault is written on the first change, not now: opening
-        // must not create state.
-        Ok(Open {
-            key,
-            vault,
-            dirty: false,
-            now,
-        })
+        let Some(sealed) = sealed else {
+            // A fresh vault is written on the first change, not now:
+            // opening must not create state.
+            return Ok(Open {
+                key: self.keys.release()?,
+                vault: Vault::new(now),
+                dirty: false,
+                now,
+            });
+        };
+
+        // The current key first: that is the vault the person owns.
+        if let Some(vault) = Self::opens_with(&*self.keys, &sealed)? {
+            return Ok(Open {
+                key: self.keys.release()?,
+                vault,
+                dirty: false,
+                now,
+            });
+        }
+        // Then the key an earlier build sealed it under: copy it whole under
+        // the current key, keep the old file until the new one reads back,
+        // and switch. Every id survives: the plaintext is written as it was
+        // read.
+        if let Some(vault) = Self::opens_with(&*self.key, &sealed)? {
+            let open = Open {
+                key: self.keys.release()?,
+                vault,
+                dirty: false,
+                now,
+            };
+            // A copy that cannot be written leaves the old vault as the
+            // store, and says so: nothing was lost, nothing was switched.
+            self.commit(&open).map_err(|error| match error {
+                StoreError::Io(why) => Locked::Unreadable(format!("resealing the vault: {why}")),
+                other => Locked::Unreadable(other.to_string()),
+            })?;
+            return Ok(open);
+        }
+        Err(Locked::KeyChanged)
+    }
+
+    /// The vault `sealed` holds under `source`'s key, or `None` when that
+    /// key does not open it.
+    fn opens_with(
+        source: &dyn KeySource,
+        sealed: &[u8],
+    ) -> std::result::Result<Option<Vault>, Locked> {
+        let key = match source.release() {
+            Ok(key) => key,
+            Err(Locked::NoIdentity) => return Ok(None),
+            Err(other) => return Err(other),
+        };
+        let plain = match envelope::open(&key, context(), sealed) {
+            Ok(plain) => plain,
+            // Another key: not this source's vault.
+            Err(tilo_seal::Error::WrongKey) => return Ok(None),
+            Err(_) => return Err(Locked::Corrupt),
+        };
+        let vault: Vault = postcard::from_bytes(&plain).map_err(|_| Locked::Corrupt)?;
+        if vault.version != VAULT_VERSION {
+            return Err(Locked::Unreadable(format!(
+                "vault version {} is not supported",
+                vault.version
+            )));
+        }
+        Ok(Some(vault))
     }
 
     fn with_open<R>(&self, work: impl FnOnce(&mut Open) -> Result<R>) -> Result<R> {
@@ -326,6 +514,8 @@ impl Store {
         result
     }
 
+    /// Write the vault beside `path` under the open key, read the copy back,
+    /// and only then rename it over the store.
     fn commit(&self, open: &Open) -> Result<()> {
         let plain = Zeroizing::new(
             postcard::to_allocvec(&open.vault.persistable())
@@ -339,8 +529,40 @@ impl Store {
             .ok_or_else(|| StoreError::Io("no parent directory".into()))?;
         tilo_files::native::private::directory(parent)
             .map_err(|error| StoreError::Io(error.to_string()))?;
-        tilo_files::native::private::write_atomic(&self.path, &sealed)
-            .map_err(|error| StoreError::Io(error.to_string()))
+        let written = self.write_beside(&sealed)?;
+        let copied = std::fs::read(&written).map_err(|error| {
+            let _ = std::fs::remove_file(&written);
+            StoreError::Io(error.to_string())
+        })?;
+        // The copy must open under the key that sealed it and hold the same
+        // vault, or it never replaces the store it was copied from.
+        let round_trip = envelope::open(&open.key, context(), &copied)
+            .ok()
+            .and_then(|plain| postcard::from_bytes::<Vault>(&plain).ok())
+            .is_some_and(|vault| vault == open.vault);
+        if !round_trip {
+            let _ = std::fs::remove_file(&written);
+            return Err(StoreError::Io("the written vault did not read back".into()));
+        }
+        std::fs::rename(&written, &self.path).map_err(|error| {
+            let _ = std::fs::remove_file(&written);
+            StoreError::Io(error.to_string())
+        })
+    }
+
+    /// `sealed` in a fresh file beside the store, so the store itself is
+    /// never rewritten in place.
+    fn write_beside(&self, sealed: &[u8]) -> Result<PathBuf> {
+        let name = self
+            .path
+            .file_name()
+            .ok_or_else(|| StoreError::Io("no file name".into()))?;
+        let mut fresh = name.to_os_string();
+        fresh.push(format!(".new-{}", random_id()?));
+        let beside = self.path.with_file_name(fresh);
+        tilo_files::native::private::write_atomic(&beside, sealed)
+            .map_err(|error| StoreError::Io(error.to_string()))?;
+        Ok(beside)
     }
 
     /// Record `caller` in the ledger and refuse it if it was revoked.

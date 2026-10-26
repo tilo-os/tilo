@@ -221,6 +221,45 @@ impl<T: Animatable> MotionValue<T> {
         }
     }
 
+    /// Move the whole motion by `by`: where it is going and every point of
+    /// its way there, keeping its pace. For a value measured in a frame that
+    /// moved under it (a pan whose canvas lost a window before the view):
+    /// what it shows on screen goes on unchanged.
+    pub fn shift_by(&mut self, by: T) {
+        let by = by.to_channels();
+        let mut target = self.target.to_channels();
+        for (t, d) in target.iter_mut().zip(by.iter()) {
+            *t += d;
+        }
+        self.target = T::from_channels(target);
+    }
+
+    /// The value and its velocity `elapsed` into the current segment,
+    /// whatever the clock says: a capture posing a motion at a chosen point
+    /// of its run, since an offscreen frame costs more wall time than the
+    /// whole motion lasts. Never for a live frame, which reads [`Self::get`]
+    /// at its instant.
+    #[must_use]
+    pub fn sampled_after(&self, elapsed: Duration) -> (T, T) {
+        let goal = self.target.to_channels();
+        if self.settles_at.is_none() {
+            return (self.target, T::from_channels([0.0; 4]));
+        }
+        let t = elapsed.as_secs_f64();
+        let mut position = goal;
+        let mut velocity = [0.0; 4];
+        for ((p, v), (x0, v0)) in position
+            .iter_mut()
+            .zip(velocity.iter_mut())
+            .zip(self.from.iter().zip(self.velocity.iter()))
+        {
+            let (x, dx) = self.spring.state(*x0, *v0, t);
+            *p += x;
+            *v = dx;
+        }
+        (T::from_channels(position), T::from_channels(velocity))
+    }
+
     /// Jump to `value` and rest there. A motion that was on its way takes
     /// back its wish for frames: whoever landed it draws the change.
     pub fn snap(&mut self, value: T) {

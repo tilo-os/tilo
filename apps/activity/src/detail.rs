@@ -123,7 +123,7 @@ fn content(cx: &ViewCx<Filter>, nav: &Nav, range: &wire::Range, detail: &wire::D
         None => {}
     }
     if let Some(run) = &detail.run {
-        parts.extend(agent_run(run));
+        parts.extend(agent_run(&provider, range, run));
     }
     parts.push(name(cx, &provider, range, detail));
     crate::page(parts)
@@ -159,7 +159,7 @@ fn offers(provider: &Provider, nav: &Nav, range: &wire::Range, detail: &wire::De
     Box::new(row)
 }
 
-fn agent_run(run: &wire::Run) -> Vec<Element> {
+fn agent_run(provider: &Provider, range: &wire::Range, run: &wire::Run) -> Vec<Element> {
     let facts = vec![
         Property::new(tr("activity-why-this-work"), run.instruction.clone()),
         Property::new(tr("activity-agent-task-by"), run.byline.clone()),
@@ -174,6 +174,9 @@ fn agent_run(run: &wire::Run) -> Vec<Element> {
     for status in [&run.undo_blocked, &run.undo_status].into_iter().flatten() {
         items.push(Box::new(Text::new(status).dimmed()));
     }
+    for left in &run.unreverted {
+        items.push(Box::new(Text::new(left).dimmed()));
+    }
     let mut parts: Vec<Element> = vec![Box::new(Section::titled(tr("activity-agent-task"), items))];
     if !run.records.is_empty() {
         let rows = run
@@ -181,13 +184,31 @@ fn agent_run(run: &wire::Run) -> Vec<Element> {
             .iter()
             .enumerate()
             .map(|(index, changed)| -> Element {
+                let row = ListRow::new(
+                    format!("activity-run-record-{index}"),
+                    changed.record.clone(),
+                )
+                .subtitle(changed.change.clone())
+                .secondary(changed.app.clone());
+                // One record undone on its own, beside the task-wide undo:
+                // the same step, asked of the run in this record alone.
+                let Some(offer) = &changed.undo else {
+                    return Box::new(row);
+                };
+                let query = wire::RecordQuery {
+                    range: range.clone(),
+                    app_id: changed.app_id.clone(),
+                    id: changed.id.clone(),
+                };
+                let (provider, action) = (provider.clone(), offer.action);
                 Box::new(
-                    ListRow::new(
-                        format!("activity-run-record-{index}"),
-                        changed.record.clone(),
-                    )
-                    .subtitle(changed.change.clone())
-                    .secondary(changed.app.clone()),
+                    Row::new()
+                        .with_rhythm(ui::tokens::Rhythm::Related)
+                        .push(Box::new(row))
+                        .push(Box::new(
+                            Button::new(&format!("activity-run-record-{index}-undo"), &offer.label)
+                                .on_view(move || provider.ask(action.action(), &query)),
+                        )),
                 )
             })
             .collect();

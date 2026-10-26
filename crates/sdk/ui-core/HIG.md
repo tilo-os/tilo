@@ -97,11 +97,14 @@ email client's accounts + folders.
     the app says what its content is (`.content_kind(ContentKind::List)`,
     `Reading`, `Page`, `Grid`, `Document`) and the shell knows what that
     needs (`list_min_width` 320, `reading_min_width` 360, `page_min_width`
-    360, `grid_min_width` 280). The sidebar first shrinks from
-    `sidebar_width` toward `sidebar_min_width`; the layout changes only
-    below `sidebar_min_width` + the content's minimum (a Files window docks
-    down to 520). Hiding it is the person's choice, remembered per size
-    class; showing it again docks it and the content reflows.
+    360, `grid_min_width` 280). The sidebar **docks at its own width**; on
+    the way down it shrinks only toward its own minimum
+    (`panel_min_width` 200), and the layout changes below that minimum plus
+    the content's minimum (a Files window docks down to 520, Settings to
+    560, Mail to 720). A panel never widens to fill a roomy window, and it
+    never narrows past the width it needs to read so the content can stay
+    wider. Hiding it is the person's choice, remembered per size class;
+    showing it again docks it and the content reflows.
   - **One at a time (push)** below that: the list (sidebar or overview) or
     the page fills the window, with Back — the Settings list or a setting,
     Files' places or a folder. A new narrow window opens on the list;
@@ -1354,6 +1357,7 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   |---|---|---|
   | `header_height` | 56 | the one header row: `min_pointer_target` 32 in an `s3` inset |
   | `sidebar_width` | 280 | a docked sidebar (drag range `sidebar_min_width` 200 – `sidebar_max_width` 420) |
+  | `panel_min_width` | 200 | the narrowest a docked sidebar or panel shrinks to before it floats (`sidebar_min_width`); a content column beside it pans out of view at this width rather than shrinking further |
   | `drawer_width` | 320 | the floating drawer, `s2` in from the window edges |
   | `rail_width` | 76 | a docked icon rail (`NavMode::Docked`, `NavList::rail`) |
   | `overview_width` | 340 | the overview column |
@@ -1366,21 +1370,27 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   | `inspector_width` | 300 | the inspector; it floats from the trailing edge when it does not fit |
   | `nav_row_height` | 32 | a navigation row (`NavList`, `paint_nav_row`) |
 
-  The breakpoints follow from them: the sidebar docks while
-  `sidebar_min_width` + the content's minimum fits (with an overview,
-  `sidebar_min_width + overview_width +` the minimum), shrinking from
-  `sidebar_width` first: Files docks down to 520, Settings to 560, Mail to
-  900. The overview and detail stand side by side while `overview_width +`
-  the minimum fits. The shell's buttons (sidebar toggle, Back,
+  The breakpoints follow from them: the sidebar docks at `sidebar_width`
+  while `panel_min_width` + the content's minimum fits (with an overview,
+  `panel_min_width + overview_width +` the minimum), shrinking from
+  `sidebar_width` toward `panel_min_width` first: Files docks down to 520,
+  Settings to 560, Mail to 720. The overview and detail stand side by side
+  while `overview_width +` the minimum fits. The shell's buttons (sidebar toggle, Back,
   inspector toggle, the window's History control) are Plain icon buttons of
   `min_pointer_target` in the `s3` inset. `content_min_width` (560) and
   `detail_min_width` (360) remain for painted apps that split their own
-  window; a painted app's `SidebarDrawer` takes the same content kinds
+  window; a painted app's own content column states it with
+  `SidebarDrawer::content_is_column(min)`, and the panel keeps its own width
+  beside that column instead of shrinking so the column can become a phone.
+  A painted app's `SidebarDrawer` takes the same content kinds
   (`.content_kind(..)`) and shrinks, docks and keeps hysteresis the same way.
   Too narrow to dock, its list and its content take turns filling the
   window (`SidebarDrawer::is_push`: the list on the sidebar region under the
-  header row, the toggle bringing the content back) — Music, Calendar, Chat;
-  only a `Document` kind floats as a drawer.
+  header row, the toggle bringing the content back) — Music, Calendar, Chat,
+  and the video library beside a picture too narrow to keep it. Every other
+  panel floats as a drawer over the content: a `Document` kind's outline, an
+  inspector, and `SidebarDrawer::with_push()` for a panel that would cover
+  what the content is for (Video Player's library beside the picture).
   Chat's channel list and conversation form a master/detail composition:
   its conversation reserves a reading column, rather than the form-sheet
   `content_min_width`: it is a `Reading` kind, and the panel docks down to
@@ -1437,6 +1447,7 @@ says how (no curve, duration, spring constant or eased ratio of its own):
 | `Ambient` | chrome that comes back on its own (leaves at once, arrives slowly unless asked) |
 | `Feedback` | press and hover tints: on at once, off over `fast` |
 | `Attention` | a refusal's shake, a single pulse; a tint under reduced motion |
+| `Beckon` | a control hint (`ui::control_hints`): arrives with the library's one deliberate overshoot and a glow pulse, loops its gesture picture while it shows, and when the gesture is done checks, folds to a dot and drifts to the person's avatar. The overshoot and the loop are the exception to "nothing bounces" and "nothing moves at idle": a hint exists to be noticed, shows once, and goes on its own. Reduced motion: a fade in, the picture at its resting frame, the check held briefly |
 
 They all run on `MotionValue`, a damped spring solved in closed form: exact
 at any frame rate, interruptible (a new target continues from the drawn

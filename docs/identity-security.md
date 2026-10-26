@@ -50,17 +50,27 @@ signing broker**; it is intentionally not described as encrypted or
 hardware-backed.
 
 On a Tilo image the Secret Service is `tilo-secret-service`
-(`os/usr/share/doc/tilo/secret-service.md`). Its store is sealed under a key
-derived from the machine's device identity (`/var/lib/tilo/device-private`,
-created at early boot and readable through the `tilo-identity` group), not
-from a login password. It therefore opens after any sign-in method (password,
-fingerprint, automatic login) and never prompts; GNOME Keyring is read once at
-a password login for import and serves nothing. It is locked only while the
-device identity is unavailable, or the store belongs to another device
-identity or is damaged. Then a new identity key falls back to the file store
-above and Settings says so, while a key already in the Secret Service fails to
-load: it is neither re-keyed nor moved to a file, and the store file is never
-replaced, so the key loads again once the device identity is back.
+(`os/usr/share/doc/tilo/secret-service.md`). Its store is the person's own:
+it is sealed under a key derived from their identity key pair, their random
+salt and their public identity, and that private half is released by their
+sign-in. It therefore opens after any sign-in method (password, fingerprint,
+automatic login) and never prompts; GNOME Keyring is read once at a password
+login for import and serves nothing. The machine's device identity
+(`/var/lib/tilo/device-private`, created at early boot and readable through
+the `tilo-identity` group) is what a caller proves, never what seals the
+vault. So the store is not the machine's: the same person's key on another
+device derives the same store, and losing or replacing the device does not
+lose it.
+
+Because the vault is the person's, it is locked whenever their key is not
+available, when it belongs to another person, or when it is damaged. Then a
+new identity key falls back to the file store above and Settings says so,
+while a key already in the Secret Service fails to load: it is neither
+re-keyed nor moved to a file, and the store file is never replaced, so the
+key loads again once the person's key is back. A vault an earlier build
+sealed under the device identity is copied once, whole, under the person's
+key when both are available (written beside it, read back, verified, then
+renamed over), so an upgraded machine keeps what was already stored.
 
 Metadata replacement uses an exclusive no-follow temporary file, fsync,
 rename, and directory fsync. Record and secret reads open once with
@@ -103,8 +113,9 @@ key proves it, on each bus connection, to the store:
    read from its own `/proc/self/exe`, and `HMAC-SHA256(CallerKey, challenge
    ‖ its unique bus name ‖ that executable)`. The portal backend proves on
    its own connection the same way when the store refuses it.
-3. The store derives the same key from the device key it opens the vault
-   with, spends the challenge, and checks the proof in constant time. If it
+3. The store derives the same key from the device key — not from the key
+   the vault is sealed under, which is the person's — spends the challenge,
+   and checks the proof in constant time. If it
    holds, the named executable stands in for `/proc/<pid>/exe` for that one
    connection, but only while the kernel refuses the link (`EACCES`): a
    readable link always names the caller, and a link that is gone (the

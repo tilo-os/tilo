@@ -91,6 +91,22 @@ impl JoinRates {
         per_ten_minutes: 5,
         per_day: 20,
     };
+
+    /// Wait-list entries taken off by their removal secret: a person does
+    /// it once, maybe again after joining from another browser, so 10 per
+    /// 10 minutes and 50 per day; guessing at secrets gets no further.
+    pub const WAIT_LIST_REMOVALS: Self = Self {
+        per_ten_minutes: 10,
+        per_day: 50,
+    };
+
+    /// Confirmation links opened and doors asking where an entry stands:
+    /// each page load of a door that holds a secret asks once, so 30 per 10
+    /// minutes and 300 per day.
+    pub const WAIT_LIST_LOOKUPS: Self = Self {
+        per_ten_minutes: 30,
+        per_day: 300,
+    };
 }
 
 /// Sliding windows of joins per address hash.

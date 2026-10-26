@@ -13,6 +13,12 @@
 //! container without a GPU passed through, or `libcuda.so.1` not mounted (so
 //! `nvcodec` exposes zero features). On a host with `vavp9dec` or `nvvp9dec`
 //! the first branch applies.
+//!
+//! `h264_decodes_through_the_codec_block_where_the_machine_has_one` is the same
+//! proof for H.264, the codec a board's own codec block exists to decode. Its
+//! subject is generated where an H.264 encoder is installed and is a failure
+//! where none is, because the question only has an answer on a machine that
+//! can pose it.
 
 mod common;
 
@@ -145,6 +151,79 @@ mod real {
             "'not yet known' must never read as 'yes, hardware'"
         );
         assert!(!report.is_dmabuf());
+    }
+
+    /// A board whose `SoC` carries an H.264 codec block decodes H.264 through
+    /// it — or this test names the software decoder that ran instead.
+    ///
+    /// H.264 is the codec phone and camera footage arrives in, and on a laptop
+    /// whose GPU has no VA-API the `SoC`'s own block is the only fixed-function
+    /// decoder there is. So the subject is H.264, and the observation is the
+    /// same one every hardware claim in this file rests on: the element
+    /// `GStreamer` really plugged, read back from the running pipeline.
+    ///
+    /// Both branches assert. A machine with an H.264 hardware decoder must
+    /// have plugged it, and one that has none must prove that from the
+    /// registry and then show the CPU decoded the clip. The one outcome that
+    /// is neither — no H.264 encoder on this machine, so the clip cannot
+    /// exist — fails with that reason: a check that cannot observe its subject
+    /// must fail, never report a decode it did not perform.
+    #[test]
+    fn h264_decodes_through_the_codec_block_where_the_machine_has_one() {
+        let clip = h264_fixture().unwrap_or_else(|reason| {
+            panic!(
+                "{reason}. This test's subject is an H.264 clip, so it has nothing to \
+                 assert without one"
+            )
+        });
+        let capable = tilo_media::gst_backend::decoders_for(H264_CAPS);
+        let listed = capable
+            .iter()
+            .map(|d| format!("{}({}, rank {})", d.name, d.kind.as_str(), d.rank))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("H.264-capable decoders: [{listed}]");
+
+        let _registry = registry_policy_lock();
+        let mut engine = MediaEngine::with_config(EngineConfig::gpu().frames_only());
+        assert!(
+            engine.is_real_decode(),
+            "the decode feature is compiled but the GStreamer backend did not come up; \
+             nothing below would be testing a real pipeline"
+        );
+        engine.open(tilo_media::Source::LocalFile(clip));
+        let frame = decode_frame_at(&mut engine, 0, "H.264 hardware decode probe");
+        assert_eq!(frame.width, FIXTURE_WIDTH);
+        assert_eq!(frame.height, FIXTURE_HEIGHT);
+
+        let report = engine.hw_report();
+        let element = report.decoder_element.clone().unwrap_or_else(|| {
+            panic!(
+                "an H.264 picture was decoded but no decoder element was recorded, so any \
+                 claim about hardware decode would be unfounded"
+            )
+        });
+        println!("H.264 decoder: {} ({element})", report.describe());
+
+        if capable.iter().any(|d| d.kind.is_hardware()) {
+            assert!(
+                report.is_hardware(),
+                "this machine has an H.264 hardware decoder but the pipeline plugged \
+                 {element:?} ({:?}). Hardware decode is not engaging. [{listed}]",
+                report.decoder_kind
+            );
+        } else {
+            // Proven from the registry rather than assumed: there is genuinely
+            // no hardware H.264 decoder here, so the CPU one is the answer.
+            assert_eq!(
+                report.decoder_kind,
+                Some(DecoderKind::Software),
+                "no H.264 hardware decoder is registered, yet {element:?} was classified \
+                 as {:?}. [{listed}]",
+                report.decoder_kind
+            );
+            println!("no H.264 hardware decoder on this machine; {element} decoded instead");
+        }
     }
 
     /// When a decoder that exports dmabufs is available, the frame it produces

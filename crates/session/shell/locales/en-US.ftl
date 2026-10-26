@@ -198,6 +198,7 @@ shortcut-name-power-menu = Power menu
 shortcut-name-next-input-source = Next keyboard layout
 shortcut-name-emoji-picker = Emoji
 shortcut-name-say-something = Say something here
+shortcut-name-report-problem = Report a problem
 shortcut-name-ask-agent = Ask agent about selection
 
 # The groups desktop shortcuts are listed in
@@ -608,6 +609,11 @@ host-source-app-actions = Application actions
 # App launches and session actions
 host-app-did-not-open-title = Application did not open
 host-app-did-not-open-body = The app started but did not create a window. Check the session log and try again.
+# A live view of a resource shared into a conversation, when it cannot show.
+live-view-not-installed = Its app isn't on this computer
+live-view-gone = It is no longer there
+live-view-did-not-open = It didn't open here
+live-view-closed = Its app closed
 host-session-action-failed = Session action failed
 host-session-lock-failed = Couldn’t lock the session. Check the session log and try again.
 host-session-logout-failed = Couldn’t log out. Check the session log and try again.
@@ -836,11 +842,6 @@ overview-site-here = { $count ->
    *[other] { $count } people here
 }
 a11y-leave-workspace = Leave { $name }
-
-# Following someone's view
-follow-label = Following { $person }
-follow-stopped = Stopped following
-follow-stop = Stop
 
 # Search filter chips
 search-filter-all = All
@@ -1447,7 +1448,7 @@ search-app-job-streaming = streaming
 search-app-job-succeeded = succeeded
 search-app-job-failed = failed
 search-app-job-cancelled = cancelled
-search-app-resource-contains = contains resources
+search-app-content-contains = contains resources
 
 # Search: session actions
 search-session-logout = Log out of Tilo
@@ -2307,16 +2308,6 @@ overview-items-shared = { $count ->
 }
 
 # Windows and documents the shell hosts
-shell-window-restoring = Restoring this window…
-shell-window-opening = Opening…
-shell-window-opening-slow = Opening { $app }… taking longer than usual
-shell-window-installing-slow = Installing { $app }… taking longer than usual
-shell-window-installing-of = Installing { $app }… { $received } of { $total }
-shell-window-installing-received = Installing { $app }… { $received }
-shell-window-updating = Updating { $app }…
-shell-window-updating-slow = Updating { $app }… taking longer than usual
-shell-window-updating-of = Updating { $app }… { $received } of { $total }
-shell-window-updating-received = Updating { $app }… { $received }
 peer-window-not-installed = Not installed on this device.
 peer-window-install = Install { $app }
 peer-window-installing = Installing { $app }…
@@ -2469,7 +2460,6 @@ pad-map-dial-brightness = Brightness
 
 # Peer views, opening documents, identity backup and invitations
 peer-view-surface-title = Peer surface #{ $id }
-peer-view-awaiting = Awaiting peer surface…
 doc-open-no-handler = no app on this desktop opens .{ $ext } files ({ $name })
 doc-open-no-file-type = { $name } has no file type to open it by
 doc-open-no-workspace = there is no active workspace to open it in
@@ -2858,6 +2848,7 @@ shell-launch-registry-unavailable = The app process registry is unavailable.
 shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.
 
 shell-window-restore-interrupted = This saved window did not finish reopening.
+shell-window-open-failed = This window didn’t open
 shell-window-retry = Reopen
 shell-window-app-missing = { $app } isn't on this computer
 shell-window-get-app = Get { $app }
@@ -3013,7 +3004,7 @@ onboarding-backup-unavailable = A personal identity backup can’t be created on
 
 onboarding-ready-welcome = Welcome to Tilo
 
-onboarding-ready-next = Make yourself at home, or take a quick tour first.
+onboarding-ready-next = The desktop is ready. Start with anything: open an app, search for what you need, or invite someone to a workspace.
 
 onboarding-migration-cleanup-pending = Your things are ready in Tilo. Some temporary files still need to be removed.
 
@@ -3430,3 +3421,7 @@ search-action-app-remove-from-apps = Remove an app from your apps…
 search-action-app-remove-from-apps-subtitle = It stays on this computer
 search-apps-uninstall = Uninstall
 search-apps-remove-from-apps = Remove from apps
+
+# The pinned people overlay's message box
+people-overlay-messages-unavailable = Direct messages are not available right now
+people-overlay-message-failed = The message to { $name } did not go

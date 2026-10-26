@@ -98,6 +98,11 @@ pub(crate) struct Launched {
     pub(crate) handoff: Option<ui_core::application::PlaybackHandoff>,
     /// The services the host that mounts the app in-process lent it.
     pub(crate) lent: Lent,
+    /// The item the launch asked to show ([`LaunchTarget::Record`]'s
+    /// `reveal`), until a view that opens items has shown it.
+    ///
+    /// [`LaunchTarget::Record`]: ui_core::application::LaunchTarget::Record
+    pub(crate) reveal: std::cell::RefCell<Option<String>>,
 }
 
 /// What an in-process host lent the app

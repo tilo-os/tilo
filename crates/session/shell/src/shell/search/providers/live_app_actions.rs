@@ -2567,6 +2567,8 @@ impl LiveAppActionsProvider {
     }
 
     fn directory_resource_result(
+        &self,
+        ctx: &SearchContext<'_>,
         root: &ActionDirectoryRoot,
         row: &CatalogueRow,
         needle: &str,
@@ -2591,14 +2593,27 @@ impl LiveAppActionsProvider {
             kind: row.resource.kind.clone(),
         };
         let title = row.resource.label.clone();
+        // The app's content, not a record of its own: it leaves the palette
+        // to the indexed row for the same resource, which opens it whether
+        // or not the app runs ([`Self::gives_way_to_content`]).
+        let content = self.gives_way_to_content(
+            ctx,
+            &root.app_id,
+            &root.cluster_id,
+            &row.resource.id,
+            tilo_actions::OperationKind::View,
+        );
+        let kind = if content {
+            ResourceKind::Record
+        } else if row.resource.kind.is_empty() {
+            ResourceKind::Custom("Resources".into())
+        } else {
+            ResourceKind::Custom(row.resource.kind.clone())
+        };
         SearchResult {
             shortcut: None,
             operation_kind: tilo_actions::OperationKind::View,
-            kind: ResourceKind::Custom(if row.resource.kind.is_empty() {
-                "Resources".into()
-            } else {
-                row.resource.kind.clone()
-            }),
+            kind,
             provider_id: PROVIDER_ID.into(),
             id: format!(
                 "directory-resource{ID_SEPARATOR}{}{ID_SEPARATOR}{}",
@@ -2610,7 +2625,7 @@ impl LiveAppActionsProvider {
                 let app = app_name(&root.app_id);
                 match presentation.as_ref().and_then(|value| value.detail.clone()) {
                     Some(detail) => vec![app, detail],
-                    None => vec![app, t("search-app-resource-contains")],
+                    None => vec![app, t("search-app-content-contains")],
                 }
             },
             badge: presentation.and_then(|value| value.badge),
@@ -3397,7 +3412,7 @@ impl SearchProvider for LiveAppActionsProvider {
                             work = work.saturating_add(1);
                             continue;
                         }
-                        Self::directory_resource_result(root, row, &needle)
+                        self.directory_resource_result(&ctx, root, row, &needle)
                     }
                 };
                 position = position.saturating_add(1);
@@ -5318,6 +5333,118 @@ mod tests {
             provider
                 .resolve(&id, context("", &chrome.borrow(), &doc))
                 .is_none()
+        );
+    }
+
+    /// An app's content found while it runs says no more than the same entry
+    /// found after it closes: one row, under the person's content, which
+    /// opens it. A live row of an app the index does not hold keeps the
+    /// app's own kind.
+    #[test]
+    fn a_running_apps_indexed_content_is_the_indexed_row_and_nothing_more() {
+        use crate::shell::search::app_content_index::{AppContentIndex, SlotKey};
+        use crate::shell::search::providers::AppContentProvider;
+        use ui::search::index_publication::{IndexDelta, IndexEntry};
+
+        let chrome = chrome();
+        let room = chrome.borrow().tree().desktop.workspaces[0]
+            .room()
+            .to_string();
+        let broker = broker_for(&chrome);
+        let actor = chrome
+            .borrow()
+            .local_user_for_room(&chrome.borrow().tree().desktop.workspaces[0].room());
+        let reader = ActionDirectoryRoot {
+            peer_id: 9,
+            app_id: "so.tilo.reader".into(),
+            cluster_id: room.clone(),
+            record_id: "library".into(),
+        };
+        broker.replace_action_directory_roots_for_test(vec![reader]);
+        let provider = LiveAppActionsProvider::new_with_fixture_identity(broker.clone());
+        let resource = |id: &str, label: &str| CatalogueRow {
+            provider: "9".into(),
+            app_id: "so.tilo.reader".into(),
+            parent_resource: String::new(),
+            resource: CatalogueResource {
+                id: id.into(),
+                kind: "book".into(),
+                label: label.into(),
+                presentation: None,
+            },
+            action: None,
+            has_children: true,
+            visibility: None,
+        };
+        provider.directory_pages_mut().insert(
+            (9, actor, "book".into(), Vec::new()),
+            page(
+                vec![
+                    resource("book:42", "Book of Tilo"),
+                    resource("book:43", "Unindexed"),
+                ],
+                Vec::new(),
+            ),
+        );
+
+        // The index keeps one of the two: the other is the app's own.
+        let index = std::sync::Arc::new(AppContentIndex::in_memory());
+        index.apply(
+            &SlotKey::new("so.tilo.reader", &room, "tab:0001"),
+            IndexDelta {
+                reset: true,
+                upsert: vec![IndexEntry {
+                    key: "book:42".into(),
+                    resource: "book:42".into(),
+                    action: None,
+                    title: "Book of Tilo".into(),
+                    subtitle: None,
+                    group: None,
+                    icon: None,
+                    boost: 0,
+                    fields: Vec::new(),
+                    secret: false,
+                }],
+                ..IndexDelta::default()
+            },
+        );
+        provider.set_app_content(Rc::new(AppContentProvider::new(
+            std::sync::Arc::clone(&index),
+            broker,
+        )));
+
+        let doc = AutoCommit::new();
+        let wanted = [ResourceKind::Custom("Resources".into())];
+        let chrome_ref = chrome.borrow();
+        let page = provider.query_page(
+            SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "book",
+                wanted: &wanted,
+                chrome: &chrome_ref,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            },
+            None,
+            SearchBudget::PALETTE,
+        );
+        drop(chrome_ref);
+        let row = |title: &str| {
+            page.results
+                .iter()
+                .find(|row| row.title == title)
+                .unwrap_or_else(|| panic!("{title} is listed"))
+        };
+        assert_eq!(
+            row("Book of Tilo").kind,
+            ResourceKind::Record,
+            "a running app's indexed content is the person's content"
+        );
+        assert_eq!(
+            row("Unindexed").kind,
+            ResourceKind::Custom("book".into()),
+            "a resource no index holds keeps the app's own kind"
         );
     }
 

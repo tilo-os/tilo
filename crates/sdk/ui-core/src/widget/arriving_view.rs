@@ -15,7 +15,8 @@
 //!   naming where the data comes from after
 //!   [`NAME_SOURCE_AFTER`](crate::arriving::NAME_SOURCE_AFTER).
 //! - The answer cross-fades in ([`CrossFade::arrive`]); a failure shows the
-//!   error with a retry when the read offers one.
+//!   one failure face ([`arrival_failure`](super::arrival_failure)) with a
+//!   retry when the read offers one.
 //!
 //! Each step is a deadline ([`Widget::next_wake_deadline`]), never a frame
 //! loop: a pending view draws nothing between its steps.
@@ -31,16 +32,17 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-use crate::arriving::{Arrival, ArrivalClock, Arriving, Source, Step};
+use crate::arriving::{Arrival, ArrivalClock, Arriving, Progress, Source, Step};
 use crate::motion::CrossFade;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
+use crate::tokens::TextRole;
 use crate::widget::{
-    AppModel, Banner, Button, Element, ModelPath, ModelView, SkeletonFace, SkeletonShape,
-    TaffyTreeExt, Widget,
+    AppModel, Button, Element, ModelPath, ModelView, SkeletonFace, SkeletonShape, TaffyTreeExt,
+    Widget,
 };
 
 /// The box a widget fills when it is the answer of a read: what an
@@ -81,6 +83,8 @@ pub struct ArrivalFace<'a> {
     /// Whether this placeholder is the one in its region that says where
     /// its data comes from ([`NamedOnce`]).
     names: bool,
+    /// How much of what it waits on has come, when that measures itself.
+    progress: Option<Progress>,
 }
 
 /// The sources a pending region already named: each source is named once
@@ -108,6 +112,7 @@ impl<'a> ArrivalFace<'a> {
             step: clock.step(now),
             source: clock.source(),
             names: true,
+            progress: None,
         }
     }
 
@@ -119,7 +124,17 @@ impl<'a> ArrivalFace<'a> {
             step,
             source,
             names: true,
+            progress: None,
         }
+    }
+
+    /// Say how much of the data has come, when what it waits on measures
+    /// itself: from the skeleton on, a line says the amount, over a bar
+    /// when the whole is known, under the skeleton.
+    #[must_use]
+    pub fn with_progress(mut self, progress: Option<Progress>) -> Self {
+        self.progress = progress;
+        self
     }
 
     /// Whether this placeholder says where its data comes from, once it
@@ -165,17 +180,85 @@ impl<'a> ArrivalFace<'a> {
         ))
     }
 
-    /// Paint the step in `rect`: nothing on the ground, the skeleton, or the
-    /// skeleton with a line saying where the data comes from in a place the
-    /// shape keeps for it. All of it inside `rect`, so a step never moves
-    /// anything.
-    pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
-        match self.step {
-            Step::Ground | Step::Shown => {}
-            Step::Skeleton | Step::Named => {
-                let caption = self.caption();
-                SkeletonFace::new(self.shape).paint_naming(ctx, rect, caption.as_deref());
+    /// How much has come, once the placeholder says anything.
+    #[must_use]
+    pub fn amount(&self) -> Option<String> {
+        if !matches!(self.step, Step::Skeleton | Step::Named) {
+            return None;
+        }
+        let progress = self.progress?;
+        let mut args = fluent::FluentArgs::new();
+        args.set("received", crate::format::size(progress.received));
+        let key = match progress.total.filter(|total| *total > 0) {
+            Some(total) => {
+                args.set("total", crate::format::size(total));
+                "arriving-received-of"
             }
+            None => "arriving-received",
+        };
+        Some(crate::i18n::I18nManager::lookup(key, Some(&args)))
+    }
+
+    /// What it says, for a screen reader: where the data comes from and how
+    /// much of it has come, or that it is loading.
+    #[must_use]
+    pub fn description(&self) -> String {
+        let said: Vec<String> = self.caption().into_iter().chain(self.amount()).collect();
+        if said.is_empty() {
+            crate::i18n::I18nManager::lookup_plain("arriving-loading")
+        } else {
+            said.join("\n")
+        }
+    }
+
+    /// Paint the step in `rect`: nothing on the ground; the skeleton, with a
+    /// line saying where the data comes from in a place the shape keeps for
+    /// it; under it how much has come, over its bar. A shape of nothing
+    /// ([`SkeletonShape::Ground`]) keeps its first line for the source
+    /// whenever the source has a name. All of it inside `rect`, so a step
+    /// never moves anything.
+    pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        if matches!(self.step, Step::Ground | Step::Shown) {
+            return;
+        }
+        let caption = self.caption();
+        let line = ctx.line_box(TextRole::Caption);
+        let gap = f64::from(ctx.theme.tokens.spacing.s1);
+        let mut top = if self.shape == SkeletonShape::Ground {
+            if let Some(caption) = &caption {
+                crate::widget::skeleton::paint_caption(
+                    ctx,
+                    caption,
+                    (rect.x0, rect.y0),
+                    rect.width(),
+                    line,
+                );
+            }
+            if self.source.name().is_some() {
+                rect.y0 + line + gap
+            } else {
+                rect.y0
+            }
+        } else {
+            let skeleton = SkeletonFace::new(self.shape);
+            skeleton.paint_naming(ctx, rect, caption.as_deref());
+            rect.y0 + skeleton.height(ctx.text, ctx.theme, rect.width()) + gap
+        };
+        let Some(amount) = self.amount() else {
+            return;
+        };
+        crate::widget::skeleton::paint_caption(ctx, &amount, (rect.x0, top), rect.width(), line);
+        top += line + gap;
+        if let Some(fraction) = self.progress.and_then(|progress| progress.fraction()) {
+            let height = crate::widget::ProgressBarFace::height(ctx.theme);
+            let width = rect
+                .width()
+                .min(f64::from(ctx.theme.tokens.metrics.menu_min_width));
+            let bar = Rect::new(rect.x0, top, rect.x0 + width, top + height);
+            crate::widget::ProgressBarFace::new(fraction).paint(ctx, bar);
         }
     }
 }
@@ -571,7 +654,7 @@ fn failure(read: &Rc<dyn ArrivalRead>, message: String, shape: SkeletonShape) ->
     let compact = match shape {
         SkeletonShape::Row(_) | SkeletonShape::Chip => true,
         SkeletonShape::Text { lines } => lines <= 2,
-        SkeletonShape::Media(_) | SkeletonShape::Page => false,
+        SkeletonShape::Media(_) | SkeletonShape::Page | SkeletonShape::Ground => false,
     };
     if compact {
         let mut row = crate::widget::ListRow::new("arriving.failed", failed);
@@ -587,7 +670,7 @@ fn failure(read: &Rc<dyn ArrivalRead>, message: String, shape: SkeletonShape) ->
         }
         return Box::new(row);
     }
-    let mut banner = Banner::error(failed).with_message(message);
+    let mut banner = super::arrival_failure(failed, message);
     if let Some(retry) = retry {
         banner = banner.with_action(retry);
     }

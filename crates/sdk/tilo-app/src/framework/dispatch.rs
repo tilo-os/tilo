@@ -33,6 +33,21 @@ enum Asked {
 use ui_core::widget::Edits;
 use ui_core::widget::controls::{AttributedControlInvocation, Origin};
 
+/// What reacting needs: an undoable change below the reactions field,
+/// wherever it is.
+fn reaction_need() -> ActionNeed {
+    ActionNeed::reactions()
+}
+
+/// Whether the field edit in `arguments` reacts or takes a reaction back.
+fn reacts(arguments: &serde_json::Map<String, serde_json::Value>) -> bool {
+    arguments
+        .get(tilo_resource::EDIT_PARAM)
+        .and_then(|edit| edit.get("op"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|op| op == "react" || op == "unreact")
+}
+
 /// A queued invocation and who asked for it.
 type Queued = (AttributedControlInvocation, Origin);
 
@@ -146,10 +161,45 @@ pub struct Dispatcher<R: Resource> {
     last: Rc<RefCell<Option<Serialed<R>>>>,
 }
 
+/// What a dispatcher keeps that does not name the resource's action type
+/// ([`DispatchState`]), dropped out of line: a dispatcher is dropped in code
+/// generic over its resource, and dropping each of these fields there would
+/// compile it into every app.
+pub(crate) struct DispatchCore(std::mem::ManuallyDrop<DispatchState>);
+
+impl Drop for DispatchCore {
+    #[inline(never)]
+    fn drop(&mut self) {
+        // SAFETY: the state is dropped here once, as its owner goes, and
+        // nothing reads it after.
+        unsafe { std::mem::ManuallyDrop::drop(&mut self.0) }
+    }
+}
+
+impl DispatchCore {
+    fn of(state: DispatchState) -> Self {
+        Self(std::mem::ManuallyDrop::new(state))
+    }
+}
+
+impl std::ops::Deref for DispatchCore {
+    type Target = DispatchState;
+
+    fn deref(&self) -> &DispatchState {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for DispatchCore {
+    fn deref_mut(&mut self) -> &mut DispatchState {
+        &mut self.0
+    }
+}
+
 /// What a dispatcher keeps that does not name the resource's action type:
 /// who edits, the door's queue, permissions, refusals and the undo-step
 /// bookkeeping.
-pub(crate) struct DispatchCore {
+pub(crate) struct DispatchState {
     app_id: &'static str,
     resource_id: Rc<str>,
     /// [`Resource::KIND`] and [`Resource::LABEL`] of the resource.
@@ -231,7 +281,7 @@ impl Clone for DispatchCore {
     /// compiles for its resource.
     #[inline(never)]
     fn clone(&self) -> Self {
-        Self {
+        Self(std::mem::ManuallyDrop::new(DispatchState {
             app_id: self.app_id,
             resource_id: self.resource_id.clone(),
             kind: self.kind,
@@ -261,7 +311,7 @@ impl Clone for DispatchCore {
             past: self.past,
             continuable: self.continuable.clone(),
             gesture: self.gesture.clone(),
-        }
+        }))
     }
 }
 
@@ -316,7 +366,7 @@ impl DispatchCore {
         read_only: bool,
         me: Option<&str>,
     ) -> Self {
-        Self {
+        Self(std::mem::ManuallyDrop::new(DispatchState {
             app_id,
             resource_id: Rc::from(resource_id),
             kind,
@@ -346,7 +396,7 @@ impl DispatchCore {
             continuable: Rc::default(),
             gesture: Rc::default(),
             applied_as: None,
-        }
+        }))
     }
 
     /// The core of the dispatcher of another record than this resource's,
@@ -357,7 +407,7 @@ impl DispatchCore {
         (kind, label): (&'static str, &'static str),
         read_only: bool,
     ) -> Self {
-        Self {
+        Self::of(DispatchState {
             app_id: self.app_id,
             me: self.me.clone(),
             custody: self.custody.clone(),
@@ -387,21 +437,20 @@ impl DispatchCore {
             continuable: Rc::default(),
             gesture: Rc::default(),
             applied_as: None,
-        }
+        })
     }
 
     /// The core of the dispatcher of a resource nested in this one at `id`
     /// ([`Dispatcher::child`]): it shares this one's permissions and undo
     /// steps.
     fn child(&self, id: &str, (kind, label): (&'static str, &'static str)) -> Self {
-        Self {
-            resource_id: Rc::from(id),
-            kind,
-            label,
-            applied_as: self.applied_as.or(Some((self.kind, self.label))),
-            resource_label: LocalState::new(label.to_owned()),
-            ..self.clone()
-        }
+        let mut child = self.clone();
+        child.resource_id = Rc::from(id);
+        child.kind = kind;
+        child.label = label;
+        child.applied_as = self.applied_as.or(Some((self.kind, self.label)));
+        child.resource_label = LocalState::new(label.to_owned());
+        child
     }
 
     fn queue_invocation(
@@ -506,6 +555,50 @@ impl DispatchCore {
         })
     }
 
+    /// Whether the participant may react here: never in a past version,
+    /// else as the room grants reactions, which the Commenter role does as
+    /// it grants comments.
+    pub(crate) fn may_react(&self) -> bool {
+        !self.past && self.may(&reaction_need())
+    }
+
+    /// Whether the room this record is in has anyone besides this window's
+    /// participant, its owner or a member, here now or not: what it holds is
+    /// shared with them.
+    pub(crate) fn room_has_others(&self) -> bool {
+        self.permissions
+            .borrow()
+            .as_ref()
+            .is_some_and(ui_core::permissions::LivePermissions::room_has_others)
+    }
+
+    /// React (or take a reaction back) at `path`, a [`Reactions`](tilo_resource::Reactions)
+    /// field of the resource, as the person this window is for: the field
+    /// edit `op` through the door, as [`Dispatcher::submit`] submits one,
+    /// for code that does not know the resource's type (the window's bar).
+    pub(crate) fn submit_reaction(
+        &self,
+        path: Vec<tilo_resource::Segment>,
+        op: tilo_resource::EditOp,
+    ) {
+        let id = tilo_resource::FIELD_EDIT;
+        if self.refusal(id, false) {
+            return;
+        }
+        if !self.may_react() {
+            self.refuse(id, self.not_allowed(&reaction_need()));
+            return;
+        }
+        let edit = Edit::<()>::new(path, op);
+        match tilo_resource::__private::json_via_bytes(&edit) {
+            Ok(edit) => self.queue_invocation(
+                ActionAddress::new(self.resource_id.as_ref(), id),
+                serde_json::Map::from_iter([(tilo_resource::EDIT_PARAM.to_owned(), edit)]),
+            ),
+            Err(error) => self.refuse(id, error.to_string()),
+        }
+    }
+
     fn may_govern(&self) -> bool {
         self.may_scope(&PermissionScope::governance(
             policy::roles::governance::SETTINGS,
@@ -556,6 +649,9 @@ impl DispatchCore {
         match (&need.field, need.kind) {
             (Some(field), _) if field == policy::roles::COMMENTS_FIELD => {
                 format!("you may not comment on this {}", self.label.to_lowercase())
+            }
+            (Some(field), _) if field == policy::roles::REACTIONS_FIELD => {
+                format!("you may not react to this {}", self.label.to_lowercase())
             }
             (None, ActionKind::Undoable) => self.view_only(),
             _ => format!("you may not do this to this {}", self.label.to_lowercase()),
@@ -728,6 +824,11 @@ impl DispatchCore {
     /// Who edits through this dispatcher; `None` in a view of a past version.
     pub(crate) fn me(&self) -> Option<&str> {
         self.me.as_deref()
+    }
+
+    /// Whether it is a view of a past version.
+    pub(crate) fn is_past(&self) -> bool {
+        self.past
     }
 
     pub(crate) fn note_landed(&self, action: &str, output: &tilo_actions::ActionOutput) {
@@ -942,6 +1043,12 @@ impl<R: Resource> Dispatcher<R> {
         self.core.may_govern()
     }
 
+    /// Whether the record is shared: someone else belongs to its room, or
+    /// is in it with `people` now. Where it is, reactions are offered.
+    pub fn is_shared(&self, people: &super::People) -> bool {
+        self.core.room_has_others() || people.others_here()
+    }
+
     /// Whether the participant may apply `action`
     /// ([`tilo_resource::need_of`]).
     pub fn may_apply(&self, action: &R::Action) -> bool {
@@ -1107,6 +1214,12 @@ impl<R: Resource> Dispatcher<R> {
     /// that only feeds a write (an index it would keep with a row), so a
     /// participant who may not make the write is not sent it.
     pub fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
+        // A reaction is decided where the room places it, below the
+        // reactions field, as the door decides it: someone who may only
+        // comment may react too.
+        if invoke.id == tilo_resource::FIELD_EDIT && reacts(&invoke.arguments) {
+            return self.core.may_react();
+        }
         if invoke.id == tilo_resource::APPLY || invoke.id == tilo_resource::FIELD_EDIT {
             return match invoke.build(0) {
                 Ok(action) => self.may_apply(&action),
@@ -1148,8 +1261,18 @@ impl<R: Resource> Dispatcher<R> {
 
     /// The client of the session's action door the views' opens and
     /// reads go through.
-    pub(crate) const fn opener(&self) -> &super::reference::Opener {
+    pub(crate) fn opener(&self) -> &super::reference::Opener {
         &self.core.opener
+    }
+
+    /// Open what `href`, a `tilo://open#…` address a link in this view's
+    /// text carries, names: the app that keeps that resource shows it,
+    /// started first when no window does.
+    ///
+    /// # Errors
+    /// Why it cannot be asked: the address names no app of this desktop.
+    pub fn open_link(&self, href: &str) -> Result<(), String> {
+        super::reference::open_link(&self.core.opener, href)
     }
 
     /// Open `reference`, which `app` keeps in its `record` (`None`: the

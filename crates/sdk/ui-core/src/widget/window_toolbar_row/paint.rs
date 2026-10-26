@@ -5,7 +5,7 @@ use super::slot_change::{Pose, SlotKey};
 use super::{
     Affine, Breadcrumb, ButtonFace, FieldFace, Icon, LOCATION_ICON_PX, LocationLabel, Point,
     PresenceCtx, Rect, Scene, SegmentedFace, Slot, Slots, TextRenderer, Theme, ToggleGroup,
-    ToolbarRow, VIEWS_SIZE, Widget, WindowToolbar, paint_icon_button,
+    ToolbarRow, VIEWS_SIZE, Widget, WindowToolbar, paint_icon_button, trailing_word,
 };
 
 impl ToolbarRow {
@@ -22,6 +22,7 @@ impl ToolbarRow {
         if self.suggestions_open() {
             self.suggestions.paint(scene, transform, tr, theme);
         }
+        self.paint_picker(scene, transform, (tr, theme, presence));
     }
 
     pub(crate) fn paint(
@@ -104,6 +105,7 @@ impl ToolbarRow {
             ),
         );
         self.paint_leaving(scene, transform, (tr, theme, presence), incoming);
+        self.paint_reactions(scene, transform, (tr, theme));
     }
 
     /// Start moving the slots the app changed since the last paint, now
@@ -367,7 +369,7 @@ pub(super) fn paint_slots(
         let picker = match toolbar.location.as_ref() {
             Some(location) if slots.views_in_location() => {
                 let (shown, ink) = location_shown(location, slots.form, theme);
-                PickerText::new(shown, ink).edited(location.edited)
+                PickerText::new(shown, ink).trailing(trailing_word(location))
             }
             _ => {
                 let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
@@ -503,7 +505,7 @@ pub(super) fn paint_location(
             scene,
             transform,
             (tr, theme),
-            PickerText::new(shown, ink).edited(location.edited),
+            PickerText::new(shown, ink).trailing(trailing_word(location)),
             rect,
             lift,
         ));
@@ -543,7 +545,8 @@ pub(super) fn paint_location(
     if shown.is_empty() || text_rect.width() <= 0.0 {
         return None;
     }
-    let label = LocationLabel::measure(tr, theme, shown, location.edited, text_rect.width());
+    let label =
+        LocationLabel::measure(tr, theme, shown, trailing_word(location), text_rect.width());
     let y = rect.center().y - label.height / 2.0;
     label.paint(scene, transform, (tr, theme), (text_rect.x0, y), ink);
     None
@@ -585,11 +588,11 @@ pub(crate) fn picker_width(label_w: f64, theme: &Theme) -> f64 {
 
 /// What a picker ([`paint_picker`]) says: its label in its ink, and
 /// whether the document it names has unsaved edits.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct PickerText<'a> {
     shown: &'a str,
     ink: vello::peniko::Color,
-    edited: bool,
+    word: Option<String>,
 }
 
 impl<'a> PickerText<'a> {
@@ -597,13 +600,13 @@ impl<'a> PickerText<'a> {
         Self {
             shown,
             ink,
-            edited: false,
+            word: None,
         }
     }
 
-    /// The document it names has unsaved edits: the edited word follows.
-    pub(crate) fn edited(mut self, edited: bool) -> Self {
-        self.edited = edited;
+    /// The word that follows the label ([`trailing_word`]).
+    pub(crate) fn trailing(mut self, word: Option<String>) -> Self {
+        self.word = word;
         self
     }
 }
@@ -624,7 +627,7 @@ pub(crate) fn paint_picker(
     let pad = f64::from(theme.tokens.spacing.s2);
     let gap = f64::from(theme.tokens.spacing.s1);
     let room = (rect.width() - pad * 2.0 - gap - LOCATION_ICON_PX).max(0.0);
-    let label = LocationLabel::measure(tr, theme, text.shown, text.edited, room);
+    let label = LocationLabel::measure(tr, theme, text.shown, text.word, room);
     let label_w = label.width.min(room);
     let face_rect = Rect::new(
         rect.x0,

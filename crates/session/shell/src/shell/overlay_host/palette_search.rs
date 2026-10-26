@@ -138,6 +138,7 @@ impl ShellOverlayHost {
             self.palette.close();
             return;
         }
+        ui::control_hints::performed::note(ui::control_hints::performed::Performed::OpenedSearch);
         self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::Workspace);
     }
 

@@ -3040,7 +3040,7 @@ impl TopBarChrome {
             center_y + side / 2.0,
         );
         let (r, g, b) = own.rgb;
-        ui::widget::AvatarFace::new(&own.name, "")
+        ui::widget::AvatarFace::new(&own.name, &own.identity)
             .presence(Color::from_rgb8(r, g, b))
             .ringed_on(theme.tokens.colors.surfaces.base)
             .paint(
@@ -6070,6 +6070,7 @@ mod tests {
         chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
             name: "Kim Lee".into(),
             rgb: (200, 120, 90),
+            identity: String::new(),
         });
         let mut bar = TopBarChrome::from_tree(&tree)
             .with_chrome(chrome.clone())

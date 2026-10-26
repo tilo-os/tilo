@@ -1,21 +1,24 @@
 //! A member's own business in a room this relay governs, as actions
 //! (provider [`MEMBER_ACTIONS_PROVIDER`]): claiming their topology namespace,
-//! recording their own effect receipt, and having the host create the empty
-//! record of an app they open there first.
+//! recording their own effect receipt, having the host create the empty
+//! record of an app they open there first, sharing one record or item with
+//! the room and ending that share, and asking what they may do at a node.
 //!
-//! None is governance, and none grants anything: each runs a room method
-//! that decides it for the person the room certified the calling device to
-//! (a claim needs their current Write, a receipt is only their own, and a
-//! record only for an app the room lets author and a record they may
-//! change). Every person the room admitted is offered all three; an agent or
-//! a bot is offered none.
+//! None is governance: each runs a room method that decides it for the
+//! person the room certified the calling device to (a claim needs their
+//! current Write, a receipt is only their own, a record only for an app the
+//! room lets author and a record they may change). A share grants the room
+//! only what the sharer holds, on one record or one item of it, and only
+//! its sharer ends it (`crate::rooms::shares`). Every person the room
+//! admitted is offered all of them; an agent or a bot is offered none.
 
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionHostError, Caller, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_relay_session::rooms::{
     CLAIM_TOPOLOGY_NAMESPACE, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND,
-    PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, member_resource,
+    PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS, SHARE_RESOURCE,
+    UNSHARE_RESOURCE, member_resource,
 };
 
 use super::{Args, Publisher, Verb, invalid, refused};
@@ -28,7 +31,7 @@ pub(super) const MEMBER: Publisher = Publisher {
 };
 
 /// What a member does for themselves, in catalogue order.
-const MEMBER_VERBS: [Verb; 3] = [
+const MEMBER_VERBS: [Verb; 6] = [
     Verb {
         id: CLAIM_TOPOLOGY_NAMESPACE,
         label: "Claim topology namespace",
@@ -50,7 +53,69 @@ const MEMBER_VERBS: [Verb; 3] = [
         kind: ActionKind::Outside,
         params: record_params,
     },
+    Verb {
+        id: SHARE_RESOURCE,
+        label: "Share with the room",
+        gate: SHARE_RESOURCE,
+        kind: ActionKind::Outside,
+        params: share_params,
+    },
+    Verb {
+        id: UNSHARE_RESOURCE,
+        label: "Stop sharing",
+        gate: UNSHARE_RESOURCE,
+        kind: ActionKind::Outside,
+        params: unshare_params,
+    },
+    Verb {
+        id: RESOURCE_PERMITS,
+        label: "What may I do here",
+        gate: RESOURCE_PERMITS,
+        kind: ActionKind::Read,
+        params: permits_params,
+    },
 ];
+
+fn share_id_param() -> ActionParam {
+    ActionParam::required(
+        "share",
+        ParamType::Text,
+        "The share's id, such as the message that shares it: 1 to 128 letters, digits or . _ : -",
+    )
+}
+
+fn node_param(what: &'static str) -> ActionParam {
+    ActionParam::required("node", ParamType::Text, what)
+}
+
+fn share_params() -> Vec<ActionParam> {
+    vec![
+        share_id_param(),
+        node_param(
+            "The record or item shared, as a node of the room's tree: room:…/app:…/kind:…/resource:…[/item:…]",
+        ),
+        ActionParam::required(
+            "access",
+            ParamType::Text,
+            "`view` lets the room see it; `edit` also lets it make undoable changes.",
+        ),
+    ]
+}
+
+fn unshare_params() -> Vec<ActionParam> {
+    vec![share_id_param()]
+}
+
+fn permits_params() -> Vec<ActionParam> {
+    vec![node_param("A node of the room's tree, in its text form.")]
+}
+
+/// `args`' `node`, parsed.
+fn node_of(args: &Args) -> Result<tilo_action_policy::TreePath, ActionHostError> {
+    args.required_text("node")?
+        .parse()
+        .map_err(|_| invalid("`node` is not a node of the room's tree"))
+}
 
 fn claim_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
@@ -149,6 +214,32 @@ impl Rooms {
                     .prepare_member_application_record(&room, &device, &request)
                     .await
                     .map(|done| json!({ "created": done.created, "generation": done.generation }))
+                    .map_err(|error| refused(&error));
+            }
+            SHARE_RESOURCE => {
+                let access = args
+                    .required_text("access")?
+                    .parse()
+                    .map_err(|_| invalid("`access` is `view` or `edit`"))?;
+                let share = args.required_text("share")?;
+                return self
+                    .share_resource(&room, &device, share, &node_of(&args)?, access)
+                    .await
+                    .map(|grants| json!({ "grants": grants }))
+                    .map_err(|error| refused(&error));
+            }
+            UNSHARE_RESOURCE => {
+                return self
+                    .unshare_resource(&room, &device, args.required_text("share")?)
+                    .await
+                    .map(|revoked| json!({ "revoked": revoked }))
+                    .map_err(|error| refused(&error));
+            }
+            RESOURCE_PERMITS => {
+                return self
+                    .resource_permits(&room, &device, &node_of(&args)?)
+                    .await
+                    .map(|may| json!({ "read": may.read, "undoable": may.undoable }))
                     .map_err(|error| refused(&error));
             }
             _ => return Err(ActionHostError::UnknownAction),

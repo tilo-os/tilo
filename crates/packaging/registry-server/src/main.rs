@@ -125,7 +125,8 @@ enum Cmd {
         /// Reverse-DNS namespace the publisher's package ids must lie in
         /// (`com.example`, `io.github.<account>`); repeatable and required.
         /// Tilo's own publishers are added with `--namespace so.tilo
-        /// --first-party`.
+        /// --first-party`. An existing row is replaced, so this is a grant
+        /// and not the whole of it: `--grant` keeps what it already owns.
         #[arg(long = "namespace", required = true)]
         namespaces: Vec<String>,
         /// Confirm a grant of Tilo's own namespace `so.tilo` (or one inside
@@ -133,6 +134,11 @@ enum Cmd {
         /// first-party grant is always deliberate.
         #[arg(long)]
         first_party: bool,
+        /// Add these namespaces to what an existing row already owns instead
+        /// of replacing the row: the allowlisted publisher that releases Tilo's
+        /// own apps keeps `so.tilo` while it is granted another one.
+        #[arg(long)]
+        grant: bool,
     },
     /// Remove an unreferenced publisher from the allowlist. Public entries,
     /// the current snapshot, and pending requests must be drained first.
@@ -394,6 +400,7 @@ async fn serve_cli() -> anyhow::Result<()> {
             note,
             namespaces,
             first_party,
+            grant,
         } => cmd_add_publisher(
             &storage,
             &pubkey,
@@ -402,6 +409,7 @@ async fn serve_cli() -> anyhow::Result<()> {
             NamespaceGrant {
                 namespaces,
                 first_party,
+                extending: grant,
             },
         ),
         Cmd::RemovePublisher { pubkey } => cmd_remove_publisher(&storage, &pubkey),
@@ -1916,18 +1924,20 @@ fn cmd_init(
     Ok(())
 }
 
-/// The namespaces `add-publisher` grants, and whether the operator confirmed
-/// that a grant of Tilo's own namespace is meant.
+/// The namespaces `add-publisher` grants, whether the operator confirmed that
+/// a grant of Tilo's own namespace is meant, and whether it adds to an existing
+/// row's namespaces rather than replacing them.
 struct NamespaceGrant {
     namespaces: Vec<String>,
     first_party: bool,
+    extending: bool,
 }
 
 impl NamespaceGrant {
     /// The granted namespaces, once each is valid and any first-party one is
     /// confirmed. An empty list is refused: a row that owns nothing is never
     /// what `add-publisher` was asked for.
-    fn validated(self) -> anyhow::Result<Vec<String>> {
+    fn validated(&self) -> anyhow::Result<Vec<String>> {
         use registry_types::namespace::{TILO_NAMESPACE, namespace_owns, valid_namespace};
         if self.namespaces.is_empty() {
             anyhow::bail!(
@@ -1949,7 +1959,29 @@ impl NamespaceGrant {
                 "{first_party:?} is Tilo's own namespace; pass --first-party to confirm this key publishes first-party apps"
             );
         }
-        Ok(self.namespaces)
+        Ok(self.namespaces.clone())
+    }
+
+    /// The row's namespaces with this grant's added to those it owns already,
+    /// for `--grant`. The row has to exist: a grant extends what a publisher
+    /// may name, it never creates the publisher.
+    fn extended_with(
+        self,
+        existing: Option<&PublisherRow>,
+        pubkey: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        let existing = existing.ok_or_else(|| {
+            anyhow::anyhow!(
+                "--grant adds namespaces to an allowed publisher, and {pubkey} is not one; add it without --grant"
+            )
+        })?;
+        let mut extended = existing.namespaces.clone();
+        for namespace in self.namespaces {
+            if !extended.iter().any(|owned| owned == &namespace) {
+                extended.push(namespace);
+            }
+        }
+        Ok(extended)
     }
 }
 
@@ -1967,6 +1999,11 @@ fn cmd_add_publisher(
     let mut allow: PublisherAllowlist = storage
         .load_allowlist()
         .map_err(|e| anyhow::anyhow!("load allowlist: {e}"))?;
+    let namespaces = if grant.extending {
+        grant.extended_with(allow.row(pubkey), pubkey)?
+    } else {
+        namespaces
+    };
     let row = PublisherRow {
         pubkey_hex: pubkey.to_string(),
         can_add_new,
@@ -2582,6 +2619,7 @@ mod tests {
             NamespaceGrant {
                 namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
                 first_party: true,
+                extending: false,
             },
         )
         .unwrap();
@@ -2686,6 +2724,7 @@ mod tests {
             NamespaceGrant {
                 namespaces: vec![registry_types::namespace::TILO_NAMESPACE.to_owned()],
                 first_party: true,
+                extending: false,
             },
         )
         .unwrap();

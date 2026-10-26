@@ -80,8 +80,13 @@ impl Relay<'_> {
         // A request is asked once: after an answer systemd-cryptsetup asks
         // again, if it must, with a new request.
         let mut asked = Vec::new();
+        eprintln!(
+            "tilo-boot-signin: asking the questions of systemd-cryptsetup {} on the boot screen",
+            self.pid
+        );
         let outcome = loop {
             if !running(self.pid) {
+                eprintln!("tilo-boot-signin: systemd-cryptsetup {} is done", self.pid);
                 break Relayed::Done;
             }
             let Some(ask) = self.next_request(&asked) else {
@@ -89,15 +94,23 @@ impl Relay<'_> {
                 continue;
             };
             asked.push(ask.socket.clone());
+            eprintln!("tilo-boot-signin: asking \"{}\"", ask.message);
             match self.carry(&ask) {
-                Carried::Answer(reply) => {
-                    if let Err(error) = answer(&ask, &reply) {
-                        eprintln!("tilo-boot-signin: {error:#}");
-                    }
+                Carried::Answer(reply) => match answer(&ask, &reply) {
+                    Ok(()) => eprintln!("tilo-boot-signin: answer passed on"),
+                    Err(error) => eprintln!("tilo-boot-signin: {error:#}"),
+                },
+                Carried::Back => {
+                    eprintln!("tilo-boot-signin: empty answer: back to signing in");
+                    break Relayed::Back;
                 }
-                Carried::Back => break Relayed::Back,
-                Carried::Withdrawn => {}
-                Carried::Failed => break Relayed::SteppedAside,
+                Carried::Withdrawn => {
+                    eprintln!("tilo-boot-signin: the question was answered elsewhere");
+                }
+                Carried::Failed => {
+                    eprintln!("tilo-boot-signin: Plymouth could not ask; its agent takes over");
+                    break Relayed::SteppedAside;
+                }
             }
         };
         self.plymouth.message(OTHER_WAYS_OFF);

@@ -421,6 +421,10 @@ pub(crate) const IDLE_KEEP_ALIVE: Duration = Duration::from_secs(25);
 /// a 25 s keep-alive would not reliably beat.
 pub(crate) const IDLE_TIMEOUT_MS: u32 = 60_000;
 
+/// The endpoint a mount or a `fs serve` reaches its peers on: number 0's
+/// relays, and number 0's directory only as a reader — a filesystem peer is
+/// dialled by the devices that mounted it, which hold its address already,
+/// so publishing its key would only sign in for a lookup nothing makes.
 fn endpoint_builder(secret: iroh::SecretKey, lookup: &MemoryLookup) -> iroh::endpoint::Builder {
     use iroh::endpoint::{QuicTransportConfig, VarInt};
     /// Unacknowledged bytes one stream, and one connection, may have in
@@ -439,7 +443,9 @@ fn endpoint_builder(secret: iroh::SecretKey, lookup: &MemoryLookup) -> iroh::end
         .default_path_max_idle_timeout(Duration::from_millis(u64::from(IDLE_TIMEOUT_MS)))
         .max_idle_timeout(Some(VarInt::from_u32(IDLE_TIMEOUT_MS).into()))
         .build();
-    Endpoint::builder(presets::N0)
+    Endpoint::builder(presets::Minimal)
+        .address_lookup(tilo_endpoint_reachability::Watchonly)
+        .relay_mode(iroh::endpoint::default_relay_mode())
         .transport_config(transport)
         .secret_key(secret)
         .address_lookup(lookup.clone())

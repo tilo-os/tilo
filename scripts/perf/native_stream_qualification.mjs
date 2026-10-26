@@ -11,7 +11,7 @@
 // usage: node scripts/perf/native_stream_qualification.mjs BUNDLE_DIR --out REPORT_JSON
 //          --relay TILO_RELAY --source LEGACY_STREAM_SOURCE --renderer gpu|swiftshader
 //          [--seconds S] [--window WxH] [--fps N] [--inputs N] [--carrier webtransport|https] [--warm-up S]
-//          [--codec h264|vp9|av1] [--reopen]
+//          [--codec h264|vp9|av1] [--reopen] [--platform chrome|safari]
 //          [--viewport WxH] [--expect-revision SHA] [--allow-dev] [--max-load L] [--enforce-goals]
 //
 // The pieces, all built from one commit:
@@ -26,7 +26,10 @@
 //            blocks (the session's `draw_code`)
 //   page     the desktop bundle (build.sh --bundle desktop) as a certified
 //            browser device of the same user in the same room, through the
-//            production peer.mjs and host.mjs
+//            production peer.mjs and host.mjs, in Chrome (headless, over the
+//            DevTools protocol) or in Safari (--platform safari, over
+//            WebDriver: macOS, a logged-in user, `safaridriver --enable`
+//            once, and a person to accept the dev host's certificate)
 //
 // The room is one the host governs, as a shared workspace is: the page
 // creates it and enters it as its owner's device, and the session enters it
@@ -57,6 +60,13 @@
 //             viewer who watches but cannot drive, recovery from a dropped
 //             stream and typing that never reaches a stale window, with a
 //             second window, a second device of the owner and a second person
+//
+// Safari's run (--platform safari) is the second browser a qualification
+// needs beside Chrome: its WebDriver drives one window, which is other
+// people's, with no browser context and no input method, and Safari has no
+// WebTransport, so it takes --carrier https. A Safari report names its driver
+// (`browser.driver`) and the cases it could not drive; tools/perf/adapters.py
+// refuses one whose carrier or codec is not what the run asked for.
 //
 // Correctness, judged on every run (a miss exits 1, with the report): no
 // decoder error; the desktop under the window presents at most
@@ -91,7 +101,8 @@ import {createServer} from 'node:http';
 import os from 'node:os';
 import {extname, join, normalize, resolve} from 'node:path';
 import {createInterface} from 'node:readline';
-import {launch, sleep} from '../../tools/web/chrome.mjs';
+import {launch as launchChrome, sleep} from '../../tools/web/chrome.mjs';
+import {Unavailable, launch as launchSafari} from '../../tools/web/webdriver.mjs';
 import {VIDEO_DECODER_CONFIGS} from '../../crates/browser/tilo-browser-runtime/web/legacy-windows.mjs';
 import {Invalid, RENDERERS, chromeFlags, classifyAdapter, hostState, parseViewport, stats, verifyBundle, within}
   from './browser_qualification.mjs';
@@ -107,6 +118,13 @@ export const EARLIER_SURFACE = 6;
 const EARLIER_SECONDS = 4;
 export const MEASURED_SURFACE = 7;
 export const CARRIERS = ['webtransport', 'https'];
+/**
+ * The browsers a run drives: Chrome over CDP (tools/web/chrome.mjs) and
+ * Safari over WebDriver (tools/web/webdriver.mjs). Safari runs on macOS
+ * alone, and has no WebTransport, so it takes `--carrier https`, and an
+ * input method and a clipboard cannot be driven from its driver.
+ */
+export const PLATFORMS = ['chrome', 'safari'];
 /** The stream's codec (`--codec`): VP9 and AV1 are what a session without an
  * H.264 encoder streams once every member's page decodes them. */
 export const CODECS = Object.keys(VIDEO_DECODER_CONFIGS);
@@ -116,11 +134,11 @@ const VIEWPORT = {width: 1280, height: 800, deviceScaleFactor: 1};
 const HARNESS_PATH = '/native-stream-qualification.html';
 const USAGE = 'usage: native_stream_qualification.mjs BUNDLE_DIR --out REPORT_JSON --relay BIN --source BIN '
   + '--renderer gpu|swiftshader [--seconds S] [--window WxH] [--fps N] [--inputs N] [--carrier webtransport|https] [--warm-up S] '
-  + '[--codec h264|vp9|av1] [--reopen] [--viewport WxH] [--expect-revision SHA] [--allow-dev] [--max-load L] [--enforce-goals]';
+  + '[--codec h264|vp9|av1] [--reopen] [--platform chrome|safari] [--viewport WxH] [--expect-revision SHA] [--allow-dev] [--max-load L] [--enforce-goals]';
 
 export function parseArgs(argv) {
   const options = {seconds: 10, inputs: 20, carrier: 'webtransport', codec: 'h264', allowDev: false, enforceGoals: false, reopen: false,
-    window: {width: 1280, height: 720}};
+    platform: 'chrome', window: {width: 1280, height: 720}};
   const positionals = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -149,6 +167,7 @@ export function parseArgs(argv) {
     else if (arg === '--expect-revision') options.expectRevision = argv[++i];
     else if (arg === '--allow-dev') options.allowDev = true;
     else if (arg === '--reopen') options.reopen = true;
+    else if (arg === '--platform') options.platform = argv[++i];
     else if (arg === '--enforce-goals') options.enforceGoals = true;
     else if (arg.startsWith('--')) throw Error(`unknown option ${arg}\n${USAGE}`);
     else positionals.push(arg);
@@ -156,6 +175,7 @@ export function parseArgs(argv) {
   if (positionals.length !== 1 || !options.out || !options.relay || !options.source || !options.renderer) throw Error(USAGE);
   if (!RENDERERS.includes(options.renderer)) throw Error(`--renderer must be one of ${RENDERERS.join(', ')}`);
   if (!CARRIERS.includes(options.carrier)) throw Error(`--carrier must be one of ${CARRIERS.join(', ')}`);
+  if (!PLATFORMS.includes(options.platform)) throw Error(`--platform must be one of ${PLATFORMS.join(', ')}`);
   if (!CODECS.includes(options.codec)) throw Error(`--codec must be one of ${CODECS.join(', ')}`);
   for (const name of ['inputs']) if (!Number.isInteger(options[name])) throw Error(`--${name} must be a whole number`);
   if (options.fps !== undefined && !Number.isInteger(options.fps)) throw Error('--fps must be a whole number');
@@ -218,6 +238,9 @@ export function readCode(rows, width) {
 // answers on and never becomes ready. Each canvas a window is drawn on is an
 // epoch: a window the page opens again (after its live plane came back) is
 // drawn on a new one.
+//
+// A browser that has no WebTransport at all (Safari's) has none to wrap, and
+// the page takes the HTTPS stream it offers instead.
 const PROBE = `(() => {
   const readCode = ${readCode.toString()};
   const probe = globalThis.__tiloStream = {draws: [], decoder: {created: 0, configs: [], chunks: 0, keys: 0, outputs: 0, errors: []},
@@ -323,6 +346,46 @@ try {
 const TYPES = {'.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript',
   '.json': 'application/json', '.wasm': 'application/wasm', '.png': 'image/png', '.css': 'text/css',
   '.ttf': 'font/ttf', '.otf': 'font/otf', '.woff2': 'font/woff2', '.ftl': 'text/plain; charset=utf-8'};
+
+/**
+ * The host's WebSocket endpoint, `ws(s)://HOST/peer/v1/ws`, from an
+ * `http(s)` origin: a page's connection needs it, and a browser whose root
+ * certificate the run has not accepted yet answers this one GET with the
+ * exception its certificate needs.
+ */
+export function hostSocketUrl(origin) {
+  return new URL(`${new URL(origin).pathname.replace(/\/$/, '')}/peer/v1/ws`,
+    new URL(origin).origin).href.replace(/^http/, 'ws');
+}
+
+/** How long Safari waits for a person to accept the host's certificate. */
+export const CERTIFICATE_WAIT_MS = Number(process.env.TILO_SAFARI_CERTIFICATE_WAIT_MS ?? 300_000);
+
+/**
+ * Safari's exception for the dev host's self-signed certificate is a
+ * person's, asked once per Safari profile, and WebDriver cannot press it: the
+ * page visits the host alone first, which is that dialog and nothing else, and
+ * the run waits for the person watching to accept it. `ask` answers what a
+ * fetch of `url` said; a browser that trusts it answers 'trusted' on the
+ * first visit.
+ */
+export async function acceptHostCertificate({ask, socket, waitMs = CERTIFICATE_WAIT_MS, sleep: pause = sleep,
+  log = message => console.error(message)}) {
+  const trusted = async () => (await ask().catch(() => null)) === 'trusted';
+  if (await trusted()) return 'trusted';
+  log(`Safari has not accepted the host's certificate yet: accept it in the window the driver opened, within `
+    + `${Math.round(waitMs / 1000)} s (${socket})`);
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    await pause(2000);
+    if (await trusted()) return 'trusted';
+  }
+  throw new Invalid(`Safari was not given the host's certificate within ${Math.round(waitMs / 1000)} s. A person accepts it `
+    + `once per Safari profile, in the window the driver opened; the run then goes on`);
+}
+
+/** A page's fetch of `url`, as 'trusted' when it answered. */
+export const askForUrl = (evaluate, url) => () => evaluate(`fetch(${JSON.stringify(url)}, {mode: 'no-cors'}).then(() => 'trusted', error => String(error))`);
 
 /** The bundle and the harness page on 127.0.0.1. */
 function servePages(bundle) {
@@ -503,7 +566,7 @@ export function formatSummary(report) {
   const lines = [
     `native stream qualification: bundle ${report.bundle.revision.slice(0, 12)} (${report.bundle.profile}), `
       + `encoder ${report.session.encoder}, ${report.session.width}x${report.session.height} at ${report.session.fps} fps, carrier ${report.workload.carrier} (took ${report.live?.carrier ?? "unknown"})`,
-    `  ${report.browser.product} | adapter ${report.renderer} | decoders ${c.codecs.join(', ') || 'none'}`,
+    `  ${report.browser.product}${report.browser.driver === 'webdriver' ? ' (WebDriver)' : ''} | adapter ${report.renderer} | decoders ${c.codecs.join(', ') || 'none'}`,
     `  sent ${c.sent} frames (${c.sentFps} fps, ${c.keyframes} keyframes), drawn ${c.distinctDrawn} (${c.drawnFps} fps), `
       + `delivered ${c.delivered}/${c.owed} (${c.deliveredPercent} %), desktop under it presented ${c.desktopFramesPerSecond} frames/s (${c.desktopStillWindowFramesPerSecond} once the window was still`
       + `${c.earlierDesktopFramesPerSecond === undefined ? '' : `, ${c.earlierDesktopFramesPerSecond} under the window before it`})`,
@@ -515,7 +578,8 @@ export function formatSummary(report) {
     : `  correct: no decoder errors, no corrupt, misnamed or older pictures, ended on frame ${k.lastSent}, `
       + `${k.inputsArrived}/${k.inputsSent} presses arrived in order`);
   for (const [name, found] of Object.entries(report.acceptance?.cases ?? {})) {
-    lines.push(`  ${found.failures.length ? 'FAIL' : 'PASS'} acceptance ${name}${found.failures.length ? `: ${found.failures.join('; ')}` : ''}`);
+    lines.push(`  ${found.skipped ? `SKIP acceptance ${name}: ${found.skipped}`
+      : `${found.failures.length ? 'FAIL' : 'PASS'} acceptance ${name}${found.failures.length ? `: ${found.failures.join('; ')}` : ''}`}`);
   }
   for (const goal of report.goals) {
     lines.push(`  ${goal.met ? 'MET ' : 'MISS'} ${goal.name}: ${goal.measured} vs ${goal.target}`);
@@ -526,19 +590,52 @@ export function formatSummary(report) {
 // --- the run --------------------------------------------------------------------
 
 /**
- * A page in `context` (a browser context of its own: another person's
- * browser) or the browser's default one, in a window of its own with
- * `window` (so every page stays visible and keeps presenting), with
- * WebTransport made to fail with `block`.
+ * The harness's input sources, in one vocabulary over the two drivers: keys
+ * by name (native_stream_acceptance.mjs `KEYS`), the pointer from a point,
+ * and text. Chrome's are Input.* protocol calls; Safari's are WebDriver
+ * actions, with no input method and no clipboard (its driver has neither).
  */
-async function attachPage(browser, viewport, {context, window = false, block = false} = {}) {
-  const {result: {targetId}} = await browser.send('Target.createTarget', {url: 'about:blank',
-    ...(context ? {browserContextId: context} : {}), ...(window ? {newWindow: true} : {})});
-  const {result: {sessionId}} = await browser.send('Target.attachToTarget', {targetId, flatten: true});
+const KEYS = Object.freeze({
+  a: {key: 'a', code: 'KeyA', keyCode: 65}, b: {key: 'b', code: 'KeyB', keyCode: 66},
+  c: {key: 'c', code: 'KeyC', keyCode: 67}, d: {key: 'd', code: 'KeyD', keyCode: 68},
+  e: {key: 'e', code: 'KeyE', keyCode: 69}, f: {key: 'f', code: 'KeyF', keyCode: 70},
+  z: {key: 'z', code: 'KeyZ', keyCode: 90}, v: {key: 'v', code: 'KeyV', keyCode: 86},
+  Control: {key: 'Control', code: 'ControlLeft', keyCode: 17},
+});
+const LIFTED = {name: '', code: '', keyCode: 0, text: ''};
+const keyFields = name => ({...LIFTED, ...KEYS[name]});
+// Input.dispatchMouseEvent's button name for a WebDriver button number.
+const POINTER_BUTTONS = {0: 'left', 1: 'middle', 2: 'right'};
+
+/** The protocol name of a platform, for the report. */
+const DRIVER = {chrome: 'cdp', safari: 'webdriver'};
+
+/** Wrap a Chrome window (tools/web/chrome.mjs) as the pages plus input a run drives. */
+function chromiumBrowser(chrome) {
+  return {
+    driver: DRIVER.chrome,
+    product: `Chrome`,
+    version: async () => (await chrome.send('Browser.getVersion')).result,
+    browser: chrome,
+    // When this page was attached, for the two-page timed windows.
+    now: () => Number(process.hrtime.bigint() / 1000n) / 1000,
+    /** A browser context of its own: another person's browser, or the second device of the same one. */
+    context: () => chrome.context(),
+    close: () => chrome.close(),
+    diagnostics: () => chrome.diagnostics(),
+    evalTimeoutMs: 180_000,
+    attach: page => chromiumAttach(chrome, page),
+  };
+}
+
+async function chromiumAttach(chrome, page) {
+  const {result: {targetId}} = await chrome.send('Target.createTarget', {url: 'about:blank',
+    ...(page.context ? {browserContextId: page.context} : {}), ...(page.window ? {newWindow: true} : {})});
+  const {result: {sessionId}} = await chrome.send('Target.attachToTarget', {targetId, flatten: true});
   const errors = [];
   // The page's own errors and warnings, for an invalid run's diagnosis.
   const console_ = [];
-  browser.on(message => {
+  chrome.on(message => {
     if (message.sessionId !== sessionId) return;
     if (message.method === 'Runtime.exceptionThrown') {
       const details = message.params.exceptionDetails;
@@ -548,27 +645,120 @@ async function attachPage(browser, viewport, {context, window = false, block = f
       console_.push(message.params.args.map(arg => arg.value ?? arg.description ?? '').join(' ').slice(0, 300));
     }
   });
-  const send = (method, params = {}) => browser.send(method, params, sessionId);
-  // Generous: on SwiftShader one GPU process rasterizes every page's desktop,
-  // and a page waiting on it does not answer for a minute or more.
-  const evaluate = async (expression, ms = 180_000) => {
-    const reply = await within(send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true}), ms,
-      `the ${page.name ?? 'first'} page (${expression.replace(/\s+/g, ' ').slice(0, 120)})`);
-    if (reply.error) throw Error(reply.error.message);
-    if (reply.result.exceptionDetails) {
-      const details = reply.result.exceptionDetails;
-      throw Error(details.exception?.description ?? details.text);
-    }
-    return reply.result.result.value;
-  };
+  const send = (method, params = {}) => chrome.send(method, params, sessionId);
   await send('Runtime.enable');
   await send('Page.enable');
-  await send('Emulation.setDeviceMetricsOverride', {...viewport, mobile: false});
+  await send('Emulation.setDeviceMetricsOverride', {...page.viewport, mobile: false});
   await send('Emulation.setFocusEmulationEnabled', {enabled: true});
-  if (block) await send('Page.addScriptToEvaluateOnNewDocument', {source: 'globalThis.__tiloBlockWebTransport = true;'});
+  if (page.block) await send('Page.addScriptToEvaluateOnNewDocument', {source: 'globalThis.__tiloBlockWebTransport = true;'});
   await send('Page.addScriptToEvaluateOnNewDocument', {source: PROBE});
-  const page = {send, evaluate, errors, console: console_, targetId};
-  return page;
+  return {
+    targetId, errors, console: console_,
+    // Generous: on SwiftShader one GPU process rasterizes every page's desktop,
+    // and a page waiting on it does not answer for a minute or more.
+    evaluate: async (expression, ms = 180_000) => {
+      const reply = await within(send('Runtime.evaluate', {expression, awaitPromise: true, returnByValue: true}), ms,
+        `the ${page.name ?? 'first'} page (${expression.replace(/\s+/g, ' ').slice(0, 120)})`);
+      if (reply.error) throw Error(reply.error.message);
+      if (reply.result.exceptionDetails) {
+        const details = reply.result.exceptionDetails;
+        throw Error(details.exception?.description ?? details.text);
+      }
+      return reply.result.result.value;
+    },
+    navigate: url => send('Page.navigate', {url}),
+    key: async name => {
+      const fields = keyFields(name);
+      await send('Input.dispatchKeyEvent', {type: 'keyDown', key: fields.key, code: fields.code,
+        windowsVirtualKeyCode: fields.keyCode, text: fields.text});
+      await send('Input.dispatchKeyEvent', {type: 'keyUp', key: fields.key, code: fields.code,
+        windowsVirtualKeyCode: fields.keyCode});
+    },
+    keyDown: async (name, {modifiers = 0} = {}) => {
+      const fields = keyFields(name);
+      await send('Input.dispatchKeyEvent', {type: 'rawKeyDown', key: fields.key, code: fields.code,
+        windowsVirtualKeyCode: fields.keyCode, modifiers});
+    },
+    keyUp: async (name, {modifiers = 0} = {}) => {
+      const fields = keyFields(name);
+      await send('Input.dispatchKeyEvent', {type: 'keyUp', key: fields.key, code: fields.code,
+        windowsVirtualKeyCode: fields.keyCode, modifiers});
+    },
+    move: async ({x, y}) => { await send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y}); },
+    press: async ({x, y}, {button = 0} = {}) => {
+      const name = POINTER_BUTTONS[button];
+      await send('Input.dispatchMouseEvent', {type: 'mousePressed', x, y, button: name, clickCount: 1});
+      await send('Input.dispatchMouseEvent', {type: 'mouseReleased', x, y, button: name, clickCount: 1});
+    },
+    wheel: async ({x, y}, {dy = 0, dx = 0} = {}) => {
+      await send('Input.dispatchMouseEvent', {type: 'mouseWheel', x, y, deltaX: dx, deltaY: dy});
+    },
+    // Input methods and the clipboard are Chrome's protocol's, not Safari's.
+    imeCompose: text => send('Input.imeSetComposition', {text, selectionStart: text.length, selectionEnd: text.length}),
+    insertText: text => send('Input.insertText', {text}),
+    viewport: ({width, height, deviceScaleFactor}) => send('Emulation.setDeviceMetricsOverride',
+      {width, height, deviceScaleFactor, mobile: false}),
+  };
+}
+
+/** Wrap a Safari window (tools/web/webdriver.mjs) as the same pages and input. */
+function safariBrowser(safari) {
+  return {
+    driver: DRIVER.safari,
+    product: safari.product,
+    version: async () => safari.version,
+    browser: safari,
+    // The timed windows are WebDriver round trips from this clock.
+    now: () => performance.now(),
+    // One Safari window: the cases that need a second device or a second person
+    // run in Chrome, on the CI runner.
+    context: async () => { throw new Invalid('one drove one Safari window: a second browser context is Chrome\'s'); },
+    close: () => safari.close(),
+    diagnostics: () => '',
+    evalTimeoutMs: 180_000,
+    attach: page => safariAttach(safari, page),
+  };
+}
+
+async function safariAttach(safari, page) {
+  const errors = [], console_ = [];
+  await safari.navigate('about:blank');
+  // A page step reports its own errors to its result; `__tiloStream` holds
+  // what the run reads, as in Chrome.
+  await safari.evaluate(PROBE);
+  await safari.setWindowRect(page.viewport ?? {width: 1280, height: 800});
+  return {
+    targetId: safari.session, errors, console: console_,
+    evaluate: (expression, ms = 180_000) => within(safari.evaluate(expression), ms,
+      `the ${page.name ?? 'first'} page (${expression.replace(/\s+/g, ' ').slice(0, 120)})`),
+    navigate: url => safari.navigate(url),
+    key: name => safari.actions([{key: {value: keyFields(name).key}}]),
+    keyDown: (name, {modifiers = 0} = {}) => safari.actions([{key: {value: keyFields(name).key, up: false}}]).then(
+      () => modifiers && safari.actions([{key: {value: modifiers & 2 ? '\uE009' : '\uE008', up: false}}])),
+    keyUp: (name, {modifiers = 0} = {}) => safari.actions([
+      ...(modifiers & 2 ? [{key: {value: '\uE009', down: false}}] : []), {key: {value: keyFields(name).key, down: false}}]),
+    move: ({x, y}) => safari.actions([{pointer: {type: 'pointerMove', x, y, origin: 'viewport', duration: 0}}]),
+    press: ({x, y}, {button = 0} = {}) => safari.click(x, y, {button}),
+    wheel: async ({x, y}, {dy = 0, dx = 0} = {}) => {
+      await safari.actions([{pointer: {type: 'pointerMove', x, y, origin: 'viewport', duration: 0}}]);
+      await safari.evaluate(`(() => { const at = document.elementFromPoint(${x}, ${y});
+        (at ?? document.body).dispatchEvent(new WheelEvent('wheel', {deltaX: ${dx}, deltaY: ${dy}, bubbles: true, cancelable: true})); })()`);
+    },
+    imeCompose: () => { throw new Invalid('WebDriver drives no input method: Safari runs this case in Chrome'); },
+    insertText: () => { throw new Invalid('WebDriver drives no input method: Safari runs this case in Chrome'); },
+    viewport: ({width, height}) => safari.setWindowRect({width, height}),
+  };
+}
+
+/**
+ * A page in `context` (a browser context of its own: another person's
+ * browser) or the browser's default one, in a window of its own with
+ * `window` (so every page stays visible and keeps presenting), with
+ * WebTransport made to fail with `block`. Each driver's own `attach` is that
+ * page: Chrome's a tab of the protocol's, Safari's its one window's.
+ */
+async function attachPage(browser, viewport, options = {}) {
+  return browser.attach({viewport, ...options});
 }
 
 /**
@@ -583,9 +773,9 @@ async function openPage(browser, {name, url, params, viewport, page: options, re
   // GPU process other pages may be keeping busy (`mountMs`). The desktop gives
   // that a minute and then fails its mount; the pipelines it compiled stay in
   // the GPU process's cache, so the page is loaded again, up to twice.
-  const mountMs = options.mountMs ?? 240_000, opened = Date.now();
+  const mountMs = options.mountMs ?? 240_000, opened = browser.now();
   for (let attempt = 1; ; attempt++) {
-    await page.send('Page.navigate', {url: `${url}?${new URLSearchParams(params)}`});
+    await page.navigate(`${url}?${new URLSearchParams(params)}`);
     await until(page, 'globalThis.harnessReady || globalThis.harnessError', mountMs, `the ${name} page's desktop did not mount`)
       .catch(async error => {
         throw new Invalid(`${error.message} (stuck ${await page.evaluate('globalThis.harnessStage ?? null', 10_000).catch(() => 'unanswered')}; `
@@ -607,7 +797,7 @@ async function openPage(browser, {name, url, params, viewport, page: options, re
     `the ${name} page's live plane did not come up`).catch(async error => {
     throw new Invalid(`${error.message}: ${await page.evaluate(LIVE).catch(() => 'unavailable')}; page console: ${page.console.slice(-15).join(' | ')}; host log: ${relay.lines.slice(-30).join('\n').slice(-4000)}`);
   });
-  console.error(`the ${name} page presented its desktop, live, in ${Math.round((Date.now() - opened) / 1000)} s`);
+  console.error(`the ${name} page presented its desktop, live, in ${Math.round((browser.now() - opened) / 1000)} s`);
   return page;
 }
 
@@ -638,12 +828,11 @@ async function clickWindow(page, inputs) {
   const presses = [];
   const at = await page.evaluate(WINDOW);
   if (!at) return {presses, control: false};
-  await page.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: at.x, y: at.y});
+  await page.move({x: at.x, y: at.y});
   await sleep(300);
   for (let i = 0; i < inputs; i++) {
     presses.push(Math.round((performance.timeOrigin + performance.now()) * 1000));
-    await page.send('Input.dispatchMouseEvent', {type: 'mousePressed', x: at.x, y: at.y, button: 'left', clickCount: 1});
-    await page.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x: at.x, y: at.y, button: 'left', clickCount: 1});
+    await page.press({x: at.x, y: at.y});
     await sleep(200);
   }
   return {presses, control: at.control};
@@ -670,10 +859,18 @@ async function main() {
     const origin = options.carrier === 'https' ? host.plainOrigin : host.origin;
     if (!origin) throw new Invalid(`the host announced no ${options.carrier} origin`);
     // The dev host's certificate is self-signed: WebTransport pins it by
-    // hash, and its HTTPS routes need the exception.
+    // hash, Chrome's HTTPS routes take the exception below, and Safari takes
+    // it by the page's first visit to the host (which it asks a person about).
     const flags = [...chromeFlags(options.renderer, process.getuid?.()), '--ignore-certificate-errors'];
-    browser = await launch({args: flags});
-    const version = (await browser.send('Browser.getVersion')).result;
+    browser = options.platform === 'safari' ? safariBrowser(await launchSafari()) : chromiumBrowser(await launchChrome({args: flags}));
+    const version = await browser.version();
+    // Safari's exception for the dev host's self-signed certificate is the
+    // person watching's: the page visits the host alone first, which is that
+    // dialog and nothing else.
+    if (options.platform === 'safari') {
+      await acceptHostCertificate({ask: askForUrl(expression => browser.browser.evaluate(expression), hostSocketUrl(host.plainOrigin)),
+        socket: hostSocketUrl(host.plainOrigin)});
+    }
     const url = `${pages.origin}${HARNESS_PATH}`;
     const open = (name, params, {viewport = options.viewport, ...page} = {}) =>
       openPage(browser, {name, url, params: {origin, user: host.userPublicKey, profile: `stream-${randomUUID()}`, ...params}, viewport, page, relay});
@@ -817,13 +1014,13 @@ async function main() {
       ...Object.entries(acceptance.cases).flatMap(([name, found]) => found.failures.map(failure => `${name}: ${failure}`))]};
     const report = {
       schema: 1, measuredAt: new Date().toISOString(), bundle, renderer: options.renderer, adapter,
-      browser: {product: version.product, userAgent: version.userAgent}, viewport: options.viewport,
+      browser: {product: version.product, userAgent: version.userAgent, driver: browser.driver}, viewport: options.viewport,
       host: {...before, before, after, maxLoad: options.maxLoad ?? null, platform: `${os.platform()} ${os.release()} ${os.arch()}`},
       session: {encoder: session.encoder, hardware: session.hardware, fps: session.fps, width: session.width, height: session.height,
         codec: session.codec ?? options.codec},
       live: {carrier: live.live?.carrier ?? null, state: live.live?.state ?? null},
       workload: {seconds: options.seconds, inputs: options.inputs, carrier: options.carrier, codec: options.codec, warmUpSeconds: options.warmUp,
-        reopen: options.reopen, chromeFlags: flags},
+        reopen: options.reopen, platform: options.platform, chromeFlags: flags},
       summary, counts: analysis.counts, correctness, goals: judgeGoals(summary, analysis.counts),
       acceptance: {cases: acceptance.cases, pageErrors: acceptance.pageErrors},
       samples: analysis.samples,

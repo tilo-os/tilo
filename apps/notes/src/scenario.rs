@@ -66,6 +66,7 @@ pub const SCENARIOS: &[&str] = &[
     "scrolled",
     "sidebar_scroll",
     "mention",
+    "reactions",
 ];
 
 /// A 16:9-ish desktop window that shows the sidebar and a full page.
@@ -371,6 +372,25 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
     out
 }
 
+/// The reactions `scenario` adds to the launch checklist: the person's own,
+/// under the note's tags.
+#[must_use]
+pub fn reactions(
+    scenario: Option<&str>,
+) -> Vec<ui::tilo_resource::Invoke<crate::resource::Notebook>> {
+    if scenario != Some("reactions") {
+        return Vec::new();
+    }
+    let field = crate::resource::Notebook::paths()
+        .pages
+        .item(&crate::notebook::page_id(page(3)))
+        .reactions;
+    ["🎉", "👍"]
+        .into_iter()
+        .filter_map(|emoji| ui::tilo_resource::Invoke::edit(&field.react(emoji)).ok())
+        .collect()
+}
+
 /// What a person does in `scenario`, through the window's event path.
 #[allow(
     clippy::too_many_lines,
@@ -513,6 +533,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             show_room(driver);
             driver.type_text("Ask @");
         }
+        Some("reactions") => show_room(driver),
         Some("slash_query") => driver.type_text("Groceries for Monday /c"),
         Some("slash_applied") => {
             driver.type_text("/h1");

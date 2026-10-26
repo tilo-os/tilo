@@ -17,8 +17,8 @@ use tilo_doc::snapshot::BlockView;
 use tilo_document::action::{TableEdit, TocTarget};
 use tilo_document::{ClipBlock, RichText, RichTextAction, RichTextState, TextAnchor};
 use ui::tilo_resource::{
-    ActionCx, Collection, Demand, Derived, Doc, Edit, Id, Model, ModelError, Place, Refusal,
-    Resource, resource,
+    ActionCx, Collection, Demand, Derived, Doc, Edit, Id, Model, ModelError, Place, Reactions,
+    Refusal, Resource, resource,
 };
 
 /// The field of [`Document`] the rich text is stored under.
@@ -35,6 +35,11 @@ pub struct Document {
     /// someone who may only comment is held to the threads.
     #[model(unit)]
     pub comments: Collection<Comment>,
+    /// The reactions to the document, which its window's bar shows. A
+    /// storage unit of its own, as the threads are: reacting never writes
+    /// the text.
+    #[model(unit)]
+    pub reactions: Reactions,
 }
 
 /// A comment thread on some text of the document.

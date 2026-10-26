@@ -245,6 +245,33 @@ pub async fn here(
     .await
 }
 
+/// Ask the room's governor for a private operation as this session's
+/// device ([`tilo_relay_protocol::rooms::private`]): the same door a native
+/// device reaches over iroh. A watch is held by the host up to its poll
+/// bound.
+///
+/// # Errors
+///
+/// Returns [`LinkError::Refused`] when the session is gone, and
+/// [`LinkError::Malformed`] for an answer past the reply bound. A refused
+/// operation answers [`PrivateReply::Refused`](tilo_relay_protocol::rooms::private::PrivateReply::Refused).
+pub async fn private(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::rooms::private::PrivateCall,
+) -> Result<tilo_relay_protocol::rooms::private::PrivateReply, LinkError> {
+    use tilo_relay_protocol::rooms::private::{MAX_REPLY_BYTES, MAX_REQUEST_BYTES, PRIVATE_PATH};
+    let body = encode(request)?;
+    if body.len() > MAX_REQUEST_BYTES {
+        return Err(LinkError::Malformed("private request exceeds bound".into()));
+    }
+    let bytes = call_raw(client, PRIVATE_PATH, Some(session), body).await?;
+    if bytes.len() > MAX_REPLY_BYTES {
+        return Err(LinkError::Malformed("private reply exceeds bound".into()));
+    }
+    postcard::from_bytes(&bytes).map_err(|_| LinkError::Malformed("private reply".into()))
+}
+
 /// Take a record's channel content keys from the room's steward, as a
 /// public room's spectator, which is no channel member and asks nothing
 /// over the channel. The answer carries the keys in their encoded form.

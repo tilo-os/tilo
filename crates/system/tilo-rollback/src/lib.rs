@@ -77,6 +77,7 @@ pub mod policy;
 pub mod retention;
 pub mod token;
 pub mod tpm_policy;
+pub mod verified;
 
 /// Everything that is a deployment policy rather than a constant.
 #[derive(Debug, Clone, PartialEq, Eq)]

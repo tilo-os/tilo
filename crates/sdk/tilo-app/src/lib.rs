@@ -165,6 +165,10 @@ pub fn register_built_in_surface(app_id: &str, bytes: Option<&'static [u8]>) {
 /// `#[derive(Model)]` expansions resolve through `use ui::prelude::*`.
 pub use tilo_resource;
 
+/// The workspace's own emoji record, which every window opens: re-exported
+/// for the app that keeps it and for hosts that show it.
+pub use tilo_workspace_emoji;
+
 /// References to what apps keep ([`tilo_reference::ResourceRef`]), which
 /// [`framework::ViewCx::reference`] shows and opens, re-exported so an app
 /// names them without a dependency of its own.
@@ -205,7 +209,7 @@ pub mod prelude {
         ActionControl, Actions, Bindable, Command, Dispatcher, Each, EditsText, EffectCx,
         EffectStatus, Effected, Fixture, Form, Jobs, LaunchInput, Live, LiveRow, PersonRecord,
         Query, ReadFailure, Records, ResourceApp, ResourceSelection, ResourceSurface, RunMode,
-        SeedCx, Setting, Submit, SurfaceCx, TextControl, ViewCx,
+        SeedCx, Setting, Submit, SurfaceCx, TextControl, ViewCx, WorkspaceRecord,
     };
     pub use tilo_resource::{
         self, ActionCx, ActionDecl, ActionKind, Atom, Collection, Counter, Delta, Demand, Edit,

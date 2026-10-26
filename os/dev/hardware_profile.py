@@ -14,7 +14,12 @@ DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
-OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards", "firmware_exclude", "crash_record"}
+OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards", "firmware_exclude", "crash_record",
+               "dmi"}
+# A board whose firmware describes its devices (ACPI, as every x86-64 handheld
+# does) has no device tree for a model-bound quirk to match on. `dmi` names the
+# DMI system identity instead, so such a quirk stays confined to that model.
+DMI_FIELDS = {"sys_vendor", "product_name"}
 # Fedora firmware RPMs a board layer may remove (`firmware_exclude`), each with
 # the /usr/lib/firmware subtrees it owns. Closed on purpose: a board can only
 # drop vendor firmware known to be separable, and never one whose subtree its
@@ -350,6 +355,7 @@ def validate_definition(data):
                 or data["id"] != "lenovo-83ed" or data["architecture"] != "aarch64"
                 or data["devicetree"] != "qcom/x1e80100-lenovo-yoga-slim7x.dtb"):
             raise ValueError("Wi-Fi wake policy requires the Lenovo 83ED definition and disabled WoWLAN")
+    validate_dmi(data)
     validate_internal_keyboards(data)
     # Every board declares where its record of a crash goes, so a board that
     # keeps none is a written-down decision rather than an omission.
@@ -360,7 +366,9 @@ def validate_definition(data):
     for argument in kernel_args:
         # One unquoted token each: the argument is sealed into the UKI command
         # line verbatim, so whitespace or quotes would split or merge arguments.
-        if not isinstance(argument, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})?", argument):
+        # A value may carry a further `=`, as the kernel's own sub-option
+        # syntax does ("video=<connector>:<option>=<value>").
+        if not isinstance(argument, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})*", argument):
             raise ValueError("hardware definition kernel argument is invalid")
     if len(set(kernel_args)) != len(kernel_args):
         raise ValueError("hardware definition kernel arguments must be unique")
@@ -379,15 +387,15 @@ def validate_internal_keyboards(data):
     keyboards = data.get("internal_keyboards", [])
     if not isinstance(keyboards, list) or len(keyboards) > 8:
         raise ValueError("hardware definition internal keyboards must be a bounded list")
-    if keyboards and data["devicetree"] is None:
-        # The device-tree compatible confines the quirk to this board; a
-        # firmware-described board would need a DMI match instead.
-        raise ValueError("hardware definition internal keyboards require a device-tree board")
+    if keyboards and data["devicetree"] is None and "dmi" not in data:
+        # Something has to confine the quirk to this board: the device tree's
+        # compatible, or the DMI identity of a firmware-described board.
+        raise ValueError("hardware definition internal keyboards require a device-tree or DMI board")
     seen = set()
     for keyboard in keyboards:
         if not isinstance(keyboard, dict) or set(keyboard) != INTERNAL_KEYBOARD_FIELDS:
             raise ValueError("hardware definition internal keyboard has missing or unknown fields")
-        if not all(isinstance(value, str) for value in keyboard.values()):
+        if not all(isinstance(value, str) for value in keyboard.values() if value is not None):
             raise ValueError("hardware definition internal keyboard fields must be strings")
         if keyboard["bus"] not in ("i2c", "spi"):
             # USB and Bluetooth keyboards are external to libinput, PS/2
@@ -397,12 +405,45 @@ def validate_internal_keyboards(data):
             raise ValueError("hardware definition internal keyboard ids must be four uppercase hex digits")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 :._()-]{0,79}", keyboard["name"]):
             raise ValueError("hardware definition internal keyboard name is invalid")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*,[a-z0-9][a-z0-9._-]*", keyboard["devicetree_compatible"]):
+        # A device-tree board confines the quirk by its compatible; a
+        # firmware-described one has no compatible and is confined by the
+        # definition's DMI identity instead. Requiring exactly the one that
+        # matches the board keeps a quirk from naming an identity that cannot
+        # both apply and be true of the machine it runs on.
+        compatible = keyboard["devicetree_compatible"]
+        if data["devicetree"] is None:
+            if compatible is not None:
+                raise ValueError("hardware definition internal keyboard on a DMI board has no device-tree compatible")
+        elif not isinstance(compatible, str) or not re.fullmatch(
+                r"[a-z0-9][a-z0-9._-]*,[a-z0-9][a-z0-9._-]*", compatible):
             raise ValueError("hardware definition internal keyboard device-tree compatible is invalid")
         identity = (keyboard["bus"], keyboard["vendor"], keyboard["product"])
         if identity in seen:
             raise ValueError("hardware definition internal keyboards must be unique")
         seen.add(identity)
+
+
+def validate_dmi(data):
+    """The DMI system identity a firmware-described board matches on.
+
+    `sys_vendor` and `product_name` are what `/sys/class/dmi/id` holds for a
+    machine. A libinput quirk matches them through `MatchDMIModalias=dmi:`
+    plus the kernel's `dmi:<sys_vendor>:<product_name>:` modalias prefix, so a
+    colon, which is what separates those fields there, cannot appear in
+    either value.
+    """
+    if "dmi" not in data:
+        return
+    dmi = data["dmi"]
+    if not isinstance(dmi, dict) or set(dmi) != DMI_FIELDS:
+        raise ValueError("hardware definition DMI has missing or unknown fields")
+    for field in sorted(DMI_FIELDS):
+        if not isinstance(dmi[field], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}", dmi[field]):
+            raise ValueError(f"hardware definition DMI {field} is invalid")
+    if data["devicetree"] is not None:
+        # A device tree already names the model, and two identities could
+        # disagree about which board an image was built for.
+        raise ValueError("hardware definition DMI requires a firmware-described board")
 
 
 def validate_crash_record(data, schema):

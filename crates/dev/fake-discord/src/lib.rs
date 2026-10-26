@@ -177,6 +177,8 @@ struct State {
     webhooks: Vec<Webhook>,
     member_roles: HashMap<String, Vec<String>>,
     bans: Vec<String>,
+    /// The guild's custom emoji, as Discord's emoji objects.
+    emojis: Vec<Value>,
     bot_reactions: Vec<(String, String)>,
     audit: Vec<Value>,
     cdn: HashMap<String, (String, Vec<u8>)>,
@@ -241,6 +243,7 @@ impl State {
             "channels": channels,
             "threads": threads,
             "roles": self.roles,
+            "emojis": self.emojis,
             "members": members,
             "voice_states": voice_states,
             "member_count": 3,
@@ -277,6 +280,29 @@ impl State {
             }
         }
         message
+    }
+
+    /// `emoji` as a reaction event carries it: a Unicode emoji by itself,
+    /// a custom one (`:name:` as a person picks it, `name:id` as the
+    /// reaction routes name it) with its id and animation. A name the guild
+    /// has no emoji of gets a made-up id, as an emoji of another server
+    /// would have.
+    fn emoji_json(&self, emoji: &str) -> Value {
+        let named = emoji
+            .strip_prefix(':')
+            .and_then(|e| e.strip_suffix(':'))
+            .map(|name| (name, None))
+            .or_else(|| emoji.split_once(':').map(|(name, id)| (name, Some(id))));
+        let Some((name, id)) = named else {
+            return json!({"id": null, "name": emoji});
+        };
+        self.emojis
+            .iter()
+            .find(|e| e["name"] == name && id.is_none_or(|id| e["id"] == id))
+            .map_or_else(
+                || json!({"id": id.unwrap_or("5000"), "name": name, "animated": false}),
+                |e| json!({"id": e["id"], "name": e["name"], "animated": e["animated"]}),
+            )
     }
 
     fn with_member(message: &Value, author: &User) -> Value {
@@ -456,6 +482,26 @@ impl FakeDiscord {
         id
     }
 
+    /// A message posted through `webhook` as `name` at `at_ms`, before
+    /// anyone connected, as a bridge posts: in the channel's history like
+    /// [`Self::post_written`]'s.
+    pub fn post_written_through(
+        &self,
+        webhook: &str,
+        channel: &str,
+        name: &str,
+        content: &str,
+        at_ms: u64,
+    ) -> String {
+        let id = self.post_written(channel, &User::new(webhook, name), content, at_ms);
+        let mut state = self.shared.lock();
+        if let Some(message) = state.messages.iter_mut().find(|m| m["id"] == id.as_str()) {
+            message["webhook_id"] = json!(webhook);
+            message["author"]["bot"] = json!(true);
+        }
+        id
+    }
+
     fn post_message(
         &self,
         channel: &str,
@@ -556,25 +602,48 @@ impl FakeDiscord {
         drop(state);
     }
 
-    /// `user` adds `emoji` (unicode, or a custom emoji's name) to `message`.
+    /// `user` adds `emoji` (unicode, or a custom emoji as `:name:`, the
+    /// guild's of that name when it has one) to `message`.
     pub fn react(&self, channel: &str, message: &str, user: &User, emoji: &str) {
+        let mut state = self.shared.lock();
         let event = json!({
             "user_id": user.id, "channel_id": channel, "message_id": message, "guild_id": GUILD,
             "member": {"nick": user.name, "roles": [], "user": user.json()},
-            "emoji": emoji_json(emoji),
+            "emoji": state.emoji_json(emoji),
         });
-        self.shared.lock().dispatch("MESSAGE_REACTION_ADD", event);
+        state.dispatch("MESSAGE_REACTION_ADD", event);
     }
 
     /// `user` takes `emoji` off `message`.
     pub fn unreact(&self, channel: &str, message: &str, user: &User, emoji: &str) {
+        let mut state = self.shared.lock();
         let event = json!({
             "user_id": user.id, "channel_id": channel, "message_id": message, "guild_id": GUILD,
-            "emoji": emoji_json(emoji),
+            "emoji": state.emoji_json(emoji),
         });
-        self.shared
-            .lock()
-            .dispatch("MESSAGE_REACTION_REMOVE", event);
+        state.dispatch("MESSAGE_REACTION_REMOVE", event);
+    }
+
+    /// The guild's custom emoji become `emojis`, `(name, id, animated)`,
+    /// as a server's moderator uploads or deletes them: in the guild a
+    /// worker connecting later is sent, and as `GUILD_EMOJIS_UPDATE` to one
+    /// connected now.
+    pub fn set_emojis(&self, emojis: &[(&str, &str, bool)]) {
+        let mut state = self.shared.lock();
+        state.emojis = emojis
+            .iter()
+            .map(|(name, id, animated)| {
+                json!({"id": id, "name": name, "animated": animated, "available": true, "require_colons": true, "managed": false})
+            })
+            .collect();
+        let update = json!({"guild_id": GUILD, "emojis": state.emojis});
+        state.dispatch("GUILD_EMOJIS_UPDATE", update);
+    }
+
+    /// The guild's custom emoji, as Discord's emoji objects.
+    #[must_use]
+    pub fn emojis(&self) -> Vec<Value> {
+        self.shared.lock().emojis.clone()
     }
 
     /// A user starts a thread on `message` in `parent`; returns the thread
@@ -796,10 +865,21 @@ impl FakeDiscord {
         self.shared.lock().bans.clone()
     }
 
-    /// `(message, emoji)` the bot user has reacted with.
+    /// `(message, emoji)` the bot user has reacted with, the emoji as the
+    /// reaction route named it: Unicode, or `name:id` for a custom one.
     #[must_use]
     pub fn bot_reactions(&self) -> Vec<(String, String)> {
         self.shared.lock().bot_reactions.clone()
+    }
+
+    /// The emoji the bot user has reacted to `message` with, oldest first.
+    #[must_use]
+    pub fn bot_reactions_on(&self, message: &str) -> Vec<String> {
+        self.bot_reactions()
+            .into_iter()
+            .filter(|(on, _)| on == message)
+            .map(|(_, emoji)| emoji)
+            .collect()
     }
 
     /// `(webhook id, channel)` of every webhook.
@@ -1076,16 +1156,6 @@ impl FakeDiscord {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
-}
-
-fn emoji_json(emoji: &str) -> Value {
-    emoji
-        .strip_prefix(':')
-        .and_then(|e| e.strip_suffix(':'))
-        .map_or_else(
-            || json!({"id": null, "name": emoji}),
-            |name| json!({"id": "5000", "name": name}),
-        )
 }
 
 fn seed_channels() -> Vec<Value> {

@@ -20,6 +20,7 @@ pub mod diff;
 pub mod document;
 pub mod export;
 pub mod model;
+pub mod reconcile;
 pub mod restore;
 pub mod schema;
 pub mod semantic_read;
@@ -37,6 +38,9 @@ pub use export::{ActiveChange, InlineBoundary, InlinePlan, InlinePoint, InlineRu
 #[doc(hidden)]
 pub use model::DocMut;
 pub use model::{Containers, DocRef, IdGen, NoteKind, Region, ordered_keys_scan_count};
+pub use reconcile::{
+    ReconcileStats, reads_as, reconcile_document, reconcile_into, reconcile_under,
+};
 pub use sheet::{CellInput, CellType, CellView, SheetView, Workbook, WorkbookSnapshot};
 pub use snapshot::{
     AttrVal, BlockView, BookmarkView, ChangeKind, ChangeView, CommentView, DocSnapshot, NoteView,

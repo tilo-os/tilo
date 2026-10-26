@@ -39,9 +39,12 @@ use crate::voice::CallCommand;
 use crate::voice::call::{Calls, LinkEvent};
 
 /// `GUILDS`, `GUILD_MEMBERS`, `GUILD_MODERATION` (bans),
-/// `GUILD_VOICE_STATES` (who is in voice, and the bot's own voice joins),
-/// `GUILD_MESSAGES`, `GUILD_MESSAGE_REACTIONS` and `MESSAGE_CONTENT`.
-pub const INTENTS: u64 = 1 | (1 << 1) | (1 << 2) | (1 << 7) | (1 << 9) | (1 << 10) | (1 << 15);
+/// `GUILD_EXPRESSIONS` (the guild's custom emoji, which Tilo reactions of
+/// the same name are mirrored as), `GUILD_VOICE_STATES` (who is in voice,
+/// and the bot's own voice joins), `GUILD_MESSAGES`,
+/// `GUILD_MESSAGE_REACTIONS` and `MESSAGE_CONTENT`.
+pub const INTENTS: u64 =
+    1 | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 7) | (1 << 9) | (1 << 10) | (1 << 15);
 /// Messages read back per channel when a session could not be resumed.
 pub const BACKFILL_LIMIT: u32 = 100;
 /// The newest messages read from each text channel the first time the
@@ -502,9 +505,17 @@ impl Gateway {
                     self.flush_checkpoint();
                 }
             }
-            "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE" | "THREAD_CREATE"
-            | "THREAD_UPDATE" | "THREAD_DELETE" | "THREAD_LIST_SYNC" | "GUILD_ROLE_CREATE"
-            | "GUILD_ROLE_UPDATE" | "GUILD_ROLE_DELETE" => {
+            "CHANNEL_CREATE"
+            | "CHANNEL_UPDATE"
+            | "CHANNEL_DELETE"
+            | "THREAD_CREATE"
+            | "THREAD_UPDATE"
+            | "THREAD_DELETE"
+            | "THREAD_LIST_SYNC"
+            | "GUILD_ROLE_CREATE"
+            | "GUILD_ROLE_UPDATE"
+            | "GUILD_ROLE_DELETE"
+            | "GUILD_EMOJIS_UPDATE" => {
                 if !self.ours(data) {
                     return;
                 }
@@ -887,8 +898,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn intents_are_the_seven_the_bridge_needs() {
-        assert_eq!(INTENTS, 34_439);
+    fn intents_are_the_eight_the_bridge_needs() {
+        assert_eq!(INTENTS, 34_447);
     }
 
     #[test]

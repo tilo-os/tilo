@@ -358,6 +358,11 @@ impl GroupRow {
         let Some(drag) = self.edge_drag.take() else {
             return;
         };
+        if commit {
+            crate::control_hints::performed::note(
+                crate::control_hints::performed::Performed::ResizedWindow,
+            );
+        }
         let mut settle = 0.0;
         for id in std::iter::once(drag.grabbed_id).chain(drag.other_id) {
             let Some(group) = self.groups.iter_mut().find(|g| g.id == id) else {
@@ -374,8 +379,8 @@ impl GroupRow {
                 settle = change;
             }
         }
-        let now = crate::time::now();
-        let omega = self.move_omega;
+        let now = crate::motion::frame_now();
+        let timing = self.move_timing(crate::tokens::MotionSource::Pointer);
         let reduce_motion = self.reduce_motion;
         let pan = self.pan_of_lane_mut(drag.lane);
         pan.scroll_x = if commit {
@@ -391,7 +396,7 @@ impl GroupRow {
         if reduce_motion {
             pan.jump_to(rest);
         } else if (rest - pan.scroll_x).abs() > super::SNAP_SETTLED_PX {
-            pan.glide_to(rest, now, omega);
+            pan.glide_to(rest, now, timing);
         }
         self.scroll_dirty = true;
         self.hover_edge(self.last_cursor, false);

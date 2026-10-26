@@ -111,6 +111,8 @@ mod hosted_header_controls;
 mod note_context_menu;
 #[path = "note_header.rs"]
 mod note_header;
+#[path = "note_reactions.rs"]
+mod note_reactions;
 #[path = "semantic_input.rs"]
 mod semantic_input;
 

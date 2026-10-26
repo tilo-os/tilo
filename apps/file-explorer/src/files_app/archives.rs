@@ -9,9 +9,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use sha2::{Digest as _, Sha256};
 use ui::lock::MutexRecover as _;
 
-use super::{
-    FileExplorerWidget, OpFollowUp, TRANSFER_SHOWN_AFTER, clash, hex_prefix, recovery_button,
-};
+use super::{FileExplorerWidget, OpFollowUp, TRANSFER_SHOWN_AFTER, clash, hex_prefix};
 use crate::config;
 use crate::i18n::{arg, t, t_args};
 use crate::model::{Entry, sort_entries};
@@ -342,7 +340,6 @@ impl FileExplorerWidget {
             Err(error) => {
                 self.entries.clear();
                 self.shown_folder = None;
-                self.state_retry = recovery_button(false);
                 self.error = Some(t_args(
                     "files-directory-read-failed",
                     &[arg("error", error.to_string())],

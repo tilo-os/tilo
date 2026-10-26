@@ -794,16 +794,28 @@ impl NotificationStack {
             self.on_screen.push(n.id);
             let (alpha, slide_dx) =
                 Self::animation_state(n, now, (self.reduce_motion, held), width);
+            let card_x0 = x0_rest + slide_dx;
+            let top = self.slot_top(n.id, y, now, held);
+            let card_rect = Rect::new(card_x0, top, card_x0 + width, top + height);
+            bounds.expand(card_rect.y0, card_rect.y1);
             if alpha <= 0.0 {
+                // A banner's fade starts the frame it first comes on screen,
+                // at no opacity. That frame still records its card, unseen,
+                // so it differs from the last one where the banner arrives:
+                // drawn as nothing, the frame matched the last and repainted
+                // nothing until a later frame happened to come.
+                ui::widget::toast::paint_card_surface(
+                    ctx.scene,
+                    ctx.transform,
+                    card_rect,
+                    0.0,
+                    ctx.theme,
+                );
                 y += height + TOAST_GAP;
                 continue;
             }
             let mut card = card;
             card.alpha = alpha;
-            let card_x0 = x0_rest + slide_dx;
-            let top = self.slot_top(n.id, y, now, held);
-            let card_rect = Rect::new(card_x0, top, card_x0 + width, top + height);
-            bounds.expand(card_rect.y0, card_rect.y1);
             let hit = ui::widget::toast::paint_card(
                 ctx.scene,
                 ctx.transform,
@@ -1416,6 +1428,30 @@ pub(super) mod tests {
             );
             assert!(stack.action_rects.is_empty());
             assert!(!stack.click_at(&host, actions[1].2.center()));
+        }
+    }
+
+    #[test]
+    fn the_frame_a_banner_arrives_differs_from_the_one_before() {
+        // The running clock: an arriving banner's fade is at its start.
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            for theme in [theme.clone().with_reduce_motion(true), theme] {
+                let host = TestHost::default();
+                let mut stack = NotificationStack::new();
+                stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+                let mut text = TextRenderer::new();
+                let mut before = Scene::new();
+                stack.draw(&host, &mut before, Affine::IDENTITY, &mut text, &theme);
+                host.push(Notification::new("Build finished", "it passed its tests"));
+                let mut arriving = Scene::new();
+                stack.draw(&host, &mut arriving, Affine::IDENTITY, &mut text, &theme);
+                assert_ne!(
+                    arriving.encoding().n_paths,
+                    before.encoding().n_paths,
+                    "the frame a banner arrives records it, though unseen"
+                );
+                assert!(!stack.rect().is_zero_area(), "it covers where it arrives");
+            }
         }
     }
 

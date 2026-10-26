@@ -731,6 +731,25 @@ impl AppActionBroker {
         self.state.has_finished_shortcut_runs()
     }
 
+    /// The shortcut runs going in `room`: what the workspace says is
+    /// running, and what can be stopped.
+    #[must_use]
+    pub fn running_shortcut_runs(&self, room: &str) -> Vec<crate::automation::RunningRun> {
+        self.state.running_shortcut_runs(room)
+    }
+
+    /// Stop the shortcut runs `request` names in `room`, before their next
+    /// step. What they already did stands and stays undoable as one step.
+    #[must_use]
+    pub fn stop_shortcut_runs(
+        &self,
+        room: &str,
+        request: &crate::automation::StopRequest,
+        reason: &str,
+    ) -> Vec<crate::automation::RunningRun> {
+        self.state.stop_shortcut_runs(room, request, reason)
+    }
+
     /// Agent runs of workspace tasks that ended since the last call, oldest
     /// first, for the history recorder to record against the documents they
     /// changed.

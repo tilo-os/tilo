@@ -14,9 +14,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use discord_wire::event::{
-    AttachmentInfo, Author, ChannelInfo, Command, LayoutChanged, MemberChanged, MessageCreated,
-    MessageDeleted, MessageUpdated, OverwriteInfo, ReactionChanged, RoleInfo, ThreadRef, UserName,
-    code_sha256, event_id, source,
+    AttachmentInfo, Author, ChannelInfo, Command, EmojiInfo, LayoutChanged, MemberChanged,
+    MessageCreated, MessageDeleted, MessageUpdated, OverwriteInfo, ReactionChanged, RoleInfo,
+    ThreadRef, UserName, code_sha256, event_id, source,
 };
 use discord_wire::op::ChannelKind;
 use serde::Serialize;
@@ -63,6 +63,8 @@ pub struct Guild {
     pub owner: String,
     /// The bot's own roles, for its permissions in a channel.
     pub bot_roles: Vec<String>,
+    /// The guild's custom emoji, by id.
+    pub emojis: BTreeMap<String, EmojiInfo>,
 }
 
 fn text(value: &Value) -> String {
@@ -145,14 +147,19 @@ pub fn display_name(user: &Value, member: &Value) -> String {
         .unwrap_or_default()
 }
 
-/// A unicode emoji as is, a custom one as `:name:`.
+/// A unicode emoji as is, a custom one as `:name:` (how Tilo writes a
+/// workspace's own emoji, under the same naming rule), with its id and
+/// whether it is animated.
 #[must_use]
-pub fn emoji_name(emoji: &Value) -> String {
+pub fn emoji_name(emoji: &Value) -> (String, Option<String>, bool) {
     let name = text(&emoji["name"]);
-    if emoji["id"].is_null() {
-        name
-    } else {
-        format!(":{name}:")
+    match opt_text(&emoji["id"]) {
+        Some(id) => (
+            format!(":{name}:"),
+            Some(id),
+            emoji["animated"].as_bool().unwrap_or(false),
+        ),
+        None => (name, None, false),
     }
 }
 
@@ -183,7 +190,35 @@ impl Guild {
         for role in data["roles"].as_array().into_iter().flatten() {
             guild.put_role(role);
         }
+        guild.put_emojis(&data["emojis"]);
         guild
+    }
+
+    /// The guild's whole list of custom emoji (`GUILD_CREATE`'s, or a
+    /// `GUILD_EMOJIS_UPDATE`'s, which always carries all of them).
+    fn put_emojis(&mut self, emojis: &Value) {
+        self.emojis = emojis
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|emoji| {
+                let id = opt_text(&emoji["id"])?;
+                let name = opt_text(&emoji["name"])?;
+                // One the guild cannot use now (its boost level dropped)
+                // cannot be reacted with either.
+                if emoji["available"].as_bool() == Some(false) {
+                    return None;
+                }
+                Some((
+                    id.clone(),
+                    EmojiInfo {
+                        id,
+                        name,
+                        animated: emoji["animated"].as_bool().unwrap_or(false),
+                    },
+                ))
+            })
+            .collect();
     }
 
     fn put_channel(&mut self, channel: &Value) {
@@ -259,8 +294,8 @@ impl Guild {
         );
     }
 
-    /// Apply a channel, thread or role event. True when the layout (the
-    /// channels and roles, not threads) changed.
+    /// Apply a channel, thread, role or emoji event. True when the layout
+    /// (the channels, roles and custom emoji, not threads) changed.
     pub fn apply(&mut self, kind: &str, data: &Value) -> bool {
         match kind {
             "CHANNEL_CREATE" | "CHANNEL_UPDATE" => {
@@ -294,6 +329,11 @@ impl Guild {
                 self.roles
                     .remove(data["role_id"].as_str().unwrap_or_default());
                 true
+            }
+            "GUILD_EMOJIS_UPDATE" => {
+                let before = self.emojis.clone();
+                self.put_emojis(&data["emojis"]);
+                self.emojis != before
             }
             _ => false,
         }
@@ -343,6 +383,7 @@ impl Guild {
             bot_user: self.bot_user.clone(),
             channels: self.channels.values().cloned().collect(),
             roles: self.roles.values().cloned().collect(),
+            emojis: self.emojis.values().cloned().collect(),
         };
         Emit::new(
             source::LAYOUT_CHANGED,
@@ -469,7 +510,7 @@ impl Guild {
     pub fn reaction(&self, data: &Value, added: bool, sequence: u64) -> Option<Emit> {
         let message = opt_text(&data["message_id"])?;
         let user = opt_text(&data["user_id"])?;
-        let emoji = emoji_name(&data["emoji"]);
+        let (emoji, emoji_id, animated) = emoji_name(&data["emoji"]);
         let member = &data["member"];
         let (channel_id, _) = self.place(data["channel_id"].as_str().unwrap_or_default());
         let event = ReactionChanged {
@@ -480,6 +521,8 @@ impl Guild {
             user_name: display_name(&member["user"], member),
             user_avatar_url: self.avatar_url(&member["user"]),
             emoji: emoji.clone(),
+            emoji_id,
+            animated,
         };
         Some(Emit::new(
             if added {
@@ -664,7 +707,7 @@ mod tests {
         let guild = guild();
         let emit = guild
             .reaction(
-                &json!({"message_id": "9", "user_id": "7", "channel_id": "1101", "emoji": {"id": "55", "name": "tilo_hello"},
+                &json!({"message_id": "9", "user_id": "7", "channel_id": "1101", "emoji": {"id": "55", "name": "tilo_hello", "animated": true},
                         "member": {"nick": "Ada", "user": {"id": "7", "username": "ada"}}}),
                 true,
                 42,
@@ -672,6 +715,20 @@ mod tests {
             .unwrap();
         assert_eq!(emit.id, "9:7::tilo_hello::add:42");
         assert_eq!(emit.payload["user_name"], "Ada");
+        // A custom emoji keeps its id and animation beside its `:name:`.
+        assert_eq!(emit.payload["emoji"], ":tilo_hello:");
+        assert_eq!(emit.payload["emoji_id"], "55");
+        assert_eq!(emit.payload["animated"], true);
+        let unicode = guild
+            .reaction(
+                &json!({"message_id": "9", "user_id": "7", "channel_id": "1101", "emoji": {"id": null, "name": "👍🏽"}}),
+                false,
+                43,
+            )
+            .unwrap();
+        assert_eq!(unicode.source, "reaction-removed");
+        assert_eq!(unicode.payload["emoji"], "👍🏽");
+        assert_eq!(unicode.payload["emoji_id"], Value::Null);
         let command = guild
             .command(&json!({
                 "id": "77", "type": 2, "member": {"user": {"id": "7"}},
@@ -704,6 +761,44 @@ mod tests {
         ));
         assert!(guild.apply("GUILD_ROLE_DELETE", &json!({"role_id": "1000"})));
         assert!(guild.roles.is_empty());
+    }
+
+    #[test]
+    fn the_guilds_custom_emoji_are_part_of_its_layout() {
+        let mut guild = Guild::from_create(
+            &json!({
+                "id": "1000",
+                "emojis": [
+                    {"id": "55", "name": "tilo_hello", "animated": false, "available": true},
+                    {"id": "56", "name": "party_parrot", "animated": true},
+                    {"id": "57", "name": "gone", "available": false},
+                ],
+            }),
+            "2000",
+            "",
+        );
+        let layout = guild.layout(1);
+        assert_eq!(
+            layout.payload["emojis"],
+            json!([
+                {"id": "55", "name": "tilo_hello", "animated": false},
+                {"id": "56", "name": "party_parrot", "animated": true},
+            ]),
+            "an emoji the guild cannot use is left out"
+        );
+        // An update carries the whole list; the same list changes nothing.
+        assert!(!guild.apply(
+            "GUILD_EMOJIS_UPDATE",
+            &json!({"guild_id": "1000", "emojis": [
+                {"id": "55", "name": "tilo_hello"},
+                {"id": "56", "name": "party_parrot", "animated": true},
+            ]})
+        ));
+        assert!(guild.apply(
+            "GUILD_EMOJIS_UPDATE",
+            &json!({"guild_id": "1000", "emojis": [{"id": "58", "name": "wave"}]})
+        ));
+        assert_eq!(guild.layout(2).payload["emojis"][0]["name"], "wave");
     }
 
     #[test]

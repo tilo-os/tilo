@@ -33,8 +33,9 @@ pub struct Sealed {
 pub struct Tries {
     /// Wrong secrets left before the TPM makes everyone wait.
     pub left: u32,
-    /// Seconds until one more try comes back.
-    pub retry_in_s: u32,
+    /// When none is left, the seconds until one comes back; while tries are
+    /// left there is nothing to wait for.
+    pub retry_in_s: Option<u32>,
 }
 
 pub enum Unseal {
@@ -241,16 +242,42 @@ enum Failure {
     Other,
 }
 
-/// `TPM_RC_AUTH_FAIL` (0x98E with the session bit) is a wrong value that
-/// incremented the counter; `TPM_RC_LOCKOUT` (0x921) is the TPM refusing.
+/// `TPM_RC_LOCKOUT`, a warning: the TPM refuses every DA-protected
+/// authorisation until its lockout decays.
+const TPM_RC_LOCKOUT: u32 = 0x921;
+/// `TPM_RC_AUTH_FAIL`: a wrong value that incremented the counter.
+const TPM_RC_AUTH_FAIL: u32 = 0x08E;
+/// `TPM_RC_BAD_AUTH`: a wrong value for an object without DA protection.
+const TPM_RC_BAD_AUTH: u32 = 0x0A2;
+
+/// By the TPM's response code, which tpm2-tools prints as
+/// `Esys_Unseal(0x98E)`, never by the words around it.
 fn classify(out: &Output) -> Failure {
-    let text = out.stderr.to_ascii_lowercase();
-    if text.contains("0x921") || text.contains("lockout") {
-        Failure::LockedOut
-    } else if text.contains("0x98e") || text.contains("authorization hmac check failed") {
-        Failure::Wrong
+    match response_code(&out.stderr).map(base_code) {
+        Some(TPM_RC_LOCKOUT) => Failure::LockedOut,
+        Some(TPM_RC_AUTH_FAIL | TPM_RC_BAD_AUTH) => Failure::Wrong,
+        _ => Failure::Other,
+    }
+}
+
+/// The last `Esys_…(0x…)` code tpm2-tools reported.
+fn response_code(stderr: &str) -> Option<u32> {
+    stderr.lines().rev().find_map(|line| {
+        let start = line.find("Esys_")?;
+        let rest = line.get(start..)?;
+        let code = rest.split_once("(0x")?.1.split_once(')')?.0;
+        u32::from_str_radix(code, 16).ok()
+    })
+}
+
+/// The code without the TSS layer and, for a format-one code, without the
+/// handle, session or parameter it names.
+const fn base_code(code: u32) -> u32 {
+    let code = code & 0xFFFF;
+    if code & 0x080 != 0 {
+        code & 0x0BF
     } else {
-        Failure::Other
+        code
     }
 }
 
@@ -266,7 +293,7 @@ pub fn tries(runner: &dyn Runner) -> Option<Tries> {
     };
     Some(Tries {
         left,
-        retry_in_s: params.recovery_time,
+        retry_in_s: (left == 0).then_some(params.recovery_time),
     })
 }
 
@@ -307,6 +334,18 @@ mod tests {
             classify(&failure(
                 "ERROR: Esys_Load(0x1DF) - tpm:parameter(1):integrity check failed"
             )),
+            Failure::Other
+        ));
+        // The code decides, whatever words come with it: a wrong value named
+        // by its handle, and a text that mentions the lockout.
+        assert!(matches!(
+            classify(&failure(
+                "ERROR: Esys_Unseal(0x18E) - tpm:handle(1):the lockout counter was incremented"
+            )),
+            Failure::Wrong
+        ));
+        assert!(matches!(
+            classify(&failure("ERROR: no lockout here, and no code either")),
             Failure::Other
         ));
     }

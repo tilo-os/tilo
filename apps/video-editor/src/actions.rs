@@ -250,6 +250,14 @@ pub fn surface_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<Project>> 
     add(Project::TRIM_TAIL
         .bind(video_project::TrimTail::paths().at, playhead)
         .declaration("trim-out-here", "Trim clip out to playhead"));
+    // Two angles of one moment, side by side: offered only where two
+    // pictures meet that may be moved to their halves, so the control is
+    // absent rather than inert.
+    if ctx.project.side_by_side_available(playhead) {
+        add(Project::PLACE_SIDE_BY_SIDE
+            .bind(video_project::PlaceSideBySide::paths().at, playhead)
+            .declaration("place-two-angles-here", "Place side by side"));
+    }
     if let Some(marker) = ctx
         .project
         .markers

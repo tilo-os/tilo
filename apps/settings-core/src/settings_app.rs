@@ -1585,6 +1585,13 @@ mod tests {
             .expect("the real shared sidebar toggle is exposed");
         let pointer = |x, y| ui::synthetic_input::cursor_moved(x, y);
         harness.send(&pointer(1190.0, 690.0));
+        // The page at rest before the hover: the Network page's first scan
+        // lands on a thread of its own, and on a loaded machine it could
+        // otherwise land in the hover's frame and repaint the page with it.
+        assert!(
+            harness.settle_for_capture(tilo_test_env::hang_bound()),
+            "the page comes to rest"
+        );
         let mut renderer =
             ui::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(1200, 700)
                 .expect("the pixel oracle requires the production GPU fine rasterizer");

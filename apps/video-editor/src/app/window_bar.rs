@@ -24,10 +24,10 @@ use crate::actions::VideoEditorEffect;
 
 /// The bar actions, by the published action each runs.
 pub(crate) const SPLIT: &str = "video.split";
-/// Undo and Redo, as the bar carries them while the transport strip has no
-/// room for its own pair. They are the window's history verbs, not the
-/// editor's (`ui::UndoAccess` asks the host), so they have no published
-/// action of their own to run.
+pub(crate) const SIDE_BY_SIDE: &str = "video.side-by-side";
+/// Undo and redo are the editor's own (the host is asked), so they have no
+/// published action to run; the bar's menu carries them while the transport
+/// strip is too narrow to.
 pub(crate) const UNDO: &str = "video.undo";
 pub(crate) const REDO: &str = "video.redo";
 pub(crate) const EXPORT: &str = "video.export";
@@ -53,54 +53,32 @@ impl VideoEditorApp {
                 choices: self.project_choices(),
                 ..ToolbarLocation::default()
             }),
-            actions: self.history_off_the_strip().into_iter().fold(
-                vec![
-                    ToolbarAction::new(SPLIT, "scissors", "Split at playhead")
-                        .enabled(self.can_split_selection()),
-                    self.export_action(),
-                    ToolbarAction::new(
-                        INSPECTOR,
-                        "panel-right",
-                        if inspector_open {
-                            "Hide inspector"
-                        } else {
-                            "Show inspector"
-                        },
-                    )
-                    .on(inspector_open),
-                    ToolbarAction::new(IMPORT, "folder-open", "Import media").in_menu(),
-                ],
-                |mut actions, action| {
-                    actions.push(action);
-                    actions
-                },
-            ),
+            actions: vec![
+                ToolbarAction::new(SPLIT, "scissors", "Split at playhead")
+                    .enabled(self.can_split_selection()),
+                ToolbarAction::new(SIDE_BY_SIDE, "columns-2", "Place side by side")
+                    .enabled(self.can_place_side_by_side()),
+                self.export_action(),
+                ToolbarAction::new(
+                    INSPECTOR,
+                    "panel-right",
+                    if inspector_open {
+                        "Hide inspector"
+                    } else {
+                        "Show inspector"
+                    },
+                )
+                .on(inspector_open),
+                ToolbarAction::new(UNDO, "undo-2", "Undo")
+                    .in_menu()
+                    .enabled(self.undo.can(ui::UndoRequest::Undo)),
+                ToolbarAction::new(REDO, "redo-2", "Redo")
+                    .in_menu()
+                    .enabled(self.undo.can(ui::UndoRequest::Redo)),
+                ToolbarAction::new(IMPORT, "folder-open", "Import media").in_menu(),
+            ],
             ..WindowToolbar::default()
         }
-    }
-
-    /// Undo and Redo while the transport strip has no room to draw them.
-    ///
-    /// A narrow strip gives the buttons up before the playhead time, which
-    /// nothing else on the strip carries — but no capability is lost to a
-    /// width: off the strip they stand in the bar's overflow menu, named, and
-    /// disabled exactly when the strip's pair would have been. They are
-    /// menu-only, so the row of the bar is unchanged by a resize.
-    fn history_off_the_strip(&self) -> Vec<ToolbarAction> {
-        if !self.history_buttons(&self.regions()).is_empty() {
-            return Vec::new();
-        }
-        [
-            (UNDO, ui::UndoRequest::Undo, "undo-2", "Undo"),
-            (REDO, ui::UndoRequest::Redo, "redo-2", "Redo"),
-        ]
-        .into_iter()
-        .map(|(id, which, icon, label)| {
-            ToolbarAction::new(id, icon, label)
-                .in_menu()
-                .enabled(self.undo.can(which))
-        })
-        .collect()
     }
 
     /// Export: it opens the export settings, where the destination, a
@@ -147,6 +125,13 @@ impl VideoEditorApp {
         })
     }
 
+    /// Whether there is a cut to make at the playhead: two pictures meeting
+    /// there, on tracks that may be edited, neither already beside the
+    /// other.
+    fn can_place_side_by_side(&self) -> bool {
+        self.project.side_by_side_available(self.playhead)
+    }
+
     /// Run what the person did in the window's bar, then declare the slots
     /// for what the editor shows now.
     pub(super) fn run_window_toolbar(&mut self) {
@@ -168,19 +153,17 @@ impl VideoEditorApp {
         if ours && self.bin_overlay_is_open() {
             self.close_bin_overlay();
         }
+        // Two angles in one frame is the project's own edit, submitted the
+        // way an agent or the palette submits it; the bar is the gesture.
+        if let ToolbarEvent::Action { id } = event
+            && id == SIDE_BY_SIDE
+        {
+            self.place_side_by_side();
+            return;
+        }
         let effect = match event {
             ToolbarEvent::ToggleSidebar => VideoEditorEffect::ToggleMedia,
             ToolbarEvent::Action { id } => match id.as_str() {
-                // The strip's own pair, when the strip is too narrow to
-                // draw it: one request to the host, as a press there makes.
-                UNDO => {
-                    self.undo.request(ui::UndoRequest::Undo);
-                    return;
-                }
-                REDO => {
-                    self.undo.request(ui::UndoRequest::Redo);
-                    return;
-                }
                 SPLIT => VideoEditorEffect::SplitSelection,
                 EXPORT => VideoEditorEffect::ShowExport,
                 INSPECTOR => VideoEditorEffect::ToggleInspector,

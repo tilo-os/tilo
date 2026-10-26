@@ -1369,14 +1369,22 @@ where
 
     #[must_use]
     pub fn visible_range(&self) -> Range<usize> {
+        self.range_around(self.overscan, self.overscan)
+    }
+
+    /// Half-open item range intersecting the viewport stretched `above`
+    /// pixels up and `below` pixels down.
+    #[must_use]
+    pub fn range_around(&self, above: f64, below: f64) -> Range<usize> {
         if self.count == 0 {
             return 0..0;
         }
         if self.viewport <= 0.0 {
             return 0..self.count;
         }
-        let start_y = (self.offset - self.overscan).max(0.0);
-        let end_y = (self.offset + self.viewport + self.overscan).min(self.content_extent());
+        let start_y = (self.offset - finite_non_negative(above)).max(0.0);
+        let end_y =
+            (self.offset + self.viewport + finite_non_negative(below)).min(self.content_extent());
         let start = self.index_at_content_offset(start_y).unwrap_or(0);
         let end = if end_y >= self.content_extent() {
             self.count

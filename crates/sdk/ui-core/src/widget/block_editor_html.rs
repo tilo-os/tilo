@@ -19,6 +19,18 @@ const MAX_PASTED_BLOCKS: usize = 20_000;
 /// The scheme a link to a Tilo page is written with.
 const PAGE_SCHEME: &str = "tilo-page:";
 
+/// The scheme a link to a resource of this desktop is written with, the one
+/// the native link uses, so a resource link survives a copy as HTML.
+const RESOURCE_LINK_SCHEME: &str = "tilo://open#";
+
+/// `target` is an address a resource of this desktop answers, rather than a
+/// web page: a link written with it opens the resource where it lives.
+pub fn is_resource_link(target: &str) -> bool {
+    target
+        .strip_prefix(RESOURCE_LINK_SCHEME)
+        .is_some_and(|route| !route.trim().is_empty())
+}
+
 // ===========================================================================
 // Blocks to HTML
 // ===========================================================================
@@ -160,6 +172,9 @@ fn mark_tags(mark: &Mark) -> Option<(String, &'static str)> {
         Mark::Strikethrough => ("<s>".into(), "</s>"),
         Mark::Code => ("<code>".into(), "</code>"),
         Mark::ExternalLink(url) => (format!("<a href=\"{}\">", escape_attr(url)), "</a>"),
+        // A resource link keeps its own address, so HTML carries it as the
+        // link it is.
+        Mark::ResourceLink(href) => (format!("<a href=\"{}\">", escape_attr(href)), "</a>"),
         Mark::Link(page) => (format!("<a href=\"{PAGE_SCHEME}{page}\">"), "</a>"),
         Mark::Mention(id) => (
             format!("<span data-mention=\"{}\">", escape_attr(id)),
@@ -853,6 +868,8 @@ fn inline_marks(name: &str, attrs: &str) -> Vec<Mark> {
             if let Ok(page) = page.parse() {
                 marks.push(Mark::Link(page));
             }
+        } else if href.starts_with(RESOURCE_LINK_SCHEME) {
+            marks.push(Mark::ResourceLink(href.to_owned()));
         } else if href.starts_with("https://")
             || href.starts_with("http://")
             || href.starts_with("mailto:")

@@ -16,6 +16,7 @@ fields = [
   { path = "comments.*.replies.*.date", type = "String", readonly = true },
   { path = "comments.*.replies.*.text", type = "String", label = true },
   { path = "comments.*.replies.*.body", type = "Vec<ClipBlock>", readonly = true },
+  { path = "reactions", type = "Reactions", unit = true },
 ]
 
 [[resources.verbs]]

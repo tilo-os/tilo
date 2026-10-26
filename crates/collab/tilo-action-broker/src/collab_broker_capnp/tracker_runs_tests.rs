@@ -59,6 +59,7 @@ fn asked(answer: TrackerAnswer, shown: &str) -> TrackerRun {
         action: "send".into(),
         arguments_digest: hex::encode(tilo_actions::draft::arguments_digest(&arguments())),
         draft: serde_json::to_value(draft(shown)).unwrap(),
+        before: None,
         answer,
     });
     run

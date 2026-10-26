@@ -518,6 +518,17 @@ async fn start_browser(
     state: &Path,
     page: Option<&str>,
 ) -> Hosted {
+    start_lending(root, host, state, page, None).await
+}
+
+/// A host lending its rooms' reporters `feedback_reviewer`.
+async fn start_lending(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    page: Option<&str>,
+    feedback_reviewer: Option<Arc<dyn tilo_agent_participant::FeedbackReviewer>>,
+) -> Hosted {
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
         state_root: state.join("relay"),
@@ -544,6 +555,7 @@ async fn start_browser(
             state_dir: state.join("agents"),
             model: ModelChoice::Scripted,
             catalogue: Some(Arc::new(common::catalogue)),
+            feedback_reviewer,
         },
     )
     .await

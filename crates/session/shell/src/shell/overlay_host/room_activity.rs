@@ -439,10 +439,10 @@ impl ShellOverlayHost {
         &mut self.room_activity
     }
 
-    /// Name-input rect inside the ws-settings modal. Matches the drawn
-    /// rect in `draw_ws_settings` so hit-test and draw stay in sync.
+    /// Name-input rect inside the ws-settings modal, as the last draw
+    /// laid it out, so hit-test and draw stay in sync.
     pub(super) fn ws_settings_name_rect(&self) -> Rect {
-        WorkspaceSettingsOverlay::name_rect_for(self.ws_settings_rect())
+        self.workspace_settings_overlay.name_rect()
     }
 
     /// A contextual lens docked beside the live workspace. Narrow displays

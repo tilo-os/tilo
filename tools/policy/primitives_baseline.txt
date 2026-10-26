@@ -136,7 +136,6 @@ hand-rolled 1 crates/session/desktop-surface/src/notifications/center.rs
 hand-rolled 1 crates/session/desktop/src/overview_panel.rs
 hand-rolled 1 crates/session/desktop/src/topbar.rs
 hand-rolled 2 crates/session/desktop/src/workspace_settings.rs
-hand-rolled 2 crates/session/desktop/src/workspace_settings/overlay.rs
 hand-rolled 1 crates/session/shell/src/shell/display_confirm.rs
 raw-colour 1 apps/calculator/src/app.rs
 raw-colour 1 apps/calculator/src/graph3d.rs

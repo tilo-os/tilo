@@ -13,11 +13,12 @@ globalThis.__tiloPage ||= (() => {
   const MAX_LINES = 1200, MAX_CHARS = 100000, MAX_VISITED = 40000;
   const MAX_TEXT = 200, MAX_NAME = 120, MAX_VALUE = 200, MAX_OPTIONS = 30;
   const INPUT_ROLES = {button: 'button', submit: 'button', reset: 'button', image: 'button',
-    file: 'button', color: 'button', checkbox: 'checkbox', radio: 'radio', range: 'slider',
+    file: 'file', color: 'button', checkbox: 'checkbox', radio: 'radio', range: 'slider',
     number: 'spinbutton', search: 'searchbox'};
   const INTERACTIVE = new Set(['link', 'button', 'checkbox', 'radio', 'switch', 'textbox',
     'searchbox', 'combobox', 'listbox', 'option', 'slider', 'spinbutton', 'tab', 'menuitem',
-    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable']);
+    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable', 'file', 'draggable', 'canvas',
+    'hoverable']);
   const CONTAINERS = new Set(['navigation', 'main', 'banner', 'contentinfo', 'complementary',
     'form', 'dialog', 'alertdialog', 'region', 'search', 'list', 'listitem', 'table', 'row',
     'cell', 'columnheader', 'rowheader', 'menu', 'menubar', 'tablist', 'tabpanel', 'tree',
@@ -26,9 +27,9 @@ globalThis.__tiloPage ||= (() => {
   const COLLAPSE = new Set(['list', 'listitem', 'row', 'cell', 'columnheader', 'rowheader', 'group']);
   const NAMED_FROM_CONTENT = new Set(['link', 'button', 'heading', 'option', 'tab', 'menuitem',
     'menuitemcheckbox', 'menuitemradio', 'treeitem', 'checkbox', 'radio', 'switch', 'cell',
-    'columnheader', 'rowheader', 'clickable']);
+    'columnheader', 'rowheader', 'clickable', 'draggable', 'canvas', 'hoverable']);
   const SKIP = new Set(['script', 'style', 'noscript', 'template', 'head', 'meta', 'link',
-    'title', 'base', 'svg', 'canvas', 'object', 'embed']);
+    'title', 'base', 'svg', 'object', 'embed']);
   const NOT_TEXT = new Set(['button', 'submit', 'reset', 'image', 'file', 'checkbox', 'radio',
     'hidden']);
   const SET_VALUE = new Set(['date', 'time', 'datetime-local', 'month', 'week', 'color', 'range']);
@@ -100,6 +101,7 @@ globalThis.__tiloPage ||= (() => {
       case 'fieldset': return 'group';
       case 'iframe': case 'frame': return 'iframe';
       case 'option': return 'option';
+      case 'canvas': return 'canvas';
     }
     if (element.isContentEditable && !element.parentElement?.isContentEditable) return 'textbox';
     return '';
@@ -169,6 +171,16 @@ globalThis.__tiloPage ||= (() => {
     }
     if (tag === 'select' && kind === 'combobox' && element.selectedOptions[0])
       out.push(`value=${quote(clean(element.selectedOptions[0].label, MAX_VALUE))}`);
+    if (kind === 'file') {
+      // A file input's own rule is what an upload has to satisfy, so the
+      // outline states it and what it holds now.
+      out.push('type=file');
+      if (element.multiple) out.push('multiple');
+      const accept = clean(element.getAttribute('accept'), MAX_VALUE);
+      if (accept) out.push(`accept=${quote(accept)}`);
+      const chosen = [...(element.files || [])].map(file => clean(file.name, MAX_NAME));
+      out.push(chosen.length ? `files=${quote(chosen.join(', '))}` : 'files=none');
+    }
     if (kind === 'checkbox' || kind === 'radio' || kind === 'switch' || kind === 'menuitemcheckbox') out.push(checked(element));
     if (element.getAttribute('aria-pressed') === 'true') out.push('pressed');
     const expanded = element.getAttribute('aria-expanded');
@@ -326,6 +338,45 @@ globalThis.__tiloPage ||= (() => {
       throw failure('cross_origin_submit', `This form sends its data to ${target}, another site than ${location.origin}; submit it with cross_origin to allow that`);
   }
 
+  // Elements a page keeps something hidden under, shown while the pointer
+  // rests on them. A hand has to find them, so the outline names them.
+  const HOVER_RULES = 4000;
+  function hoverTargets() {
+    const found = new Set();
+    const texts = [];
+    for (const style of document.querySelectorAll('style, link[rel=stylesheet]')) {
+      if (style.localName === 'style') texts.push(style.textContent || '');
+    }
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try { rules = sheet.cssRules; } catch { continue; }
+      texts.push([...(rules || [])].map(rule => rule.cssText || '').join('\n'));
+    }
+    const declarations = text => text.split('}');
+    let seen = 0;
+    for (const text of texts) {
+      if (!text.includes(':hover')) continue;
+      for (const rule of declarations(text)) {
+        if (++seen > HOVER_RULES) return [...found];
+        const brace = rule.indexOf('{');
+        if (brace < 0 || !rule.slice(0, brace).includes(':hover')) continue;
+        // Something has to appear when the pointer arrives, or the rule is
+        // only a colour change and nothing waits to be revealed.
+        if (!/(display|visibility|opacity|height|max-height)\s*:/.test(rule.slice(brace))) continue;
+        for (const selector of rule.slice(0, brace).split(',')) {
+          const index = selector.indexOf(':hover');
+          if (index < 0) continue;
+          const before = selector.slice(0, index).trim();
+          let owner = null;
+          try { owner = document.querySelector(before.endsWith('>') || before.endsWith('+') || before.endsWith('~')
+            ? before.slice(0, -1) : before || ':root'); } catch { continue; }
+          if (owner) found.add(owner);
+        }
+      }
+    }
+    return [...found];
+  }
+
   function outlineLines() {
     const lines = [];
     let chars = 0, visited = 0, truncated = false, pending = '', pendingDepth = 0;
@@ -341,6 +392,7 @@ globalThis.__tiloPage ||= (() => {
       pending = '';
       if (text) emit(pendingDepth, `text ${quote(text)}`);
     };
+    const hovering = new Set(hoverTargets());
     const children = parent => {
       if (parent.shadowRoot) return parent.shadowRoot.childNodes;
       const assigned = parent.localName === 'slot' ? parent.assignedNodes({flatten: true}) : null;
@@ -372,6 +424,13 @@ globalThis.__tiloPage ||= (() => {
       if (block) flush();
       const pointer = style.cursor === 'pointer';
       let kind = visible ? role(element) : '';
+      // A page's drag source is what a gesture grabs, so a gesture addresses
+      // it by ref: a list item that is also a listitem is still the thing a
+      // hand moves. Roles only a container carries keep their words.
+      if (!INTERACTIVE.has(kind) && kind !== 'heading' && element.draggable) kind = 'draggable';
+      // A page that keeps a menu hidden until the pointer rests on it names
+      // the element a hand has to reach, so a gesture can address it by ref.
+      if (!INTERACTIVE.has(kind) && kind !== 'heading' && hovering.has(element)) kind = 'hoverable';
       if (!kind && visible && !context.inside && tag !== 'label' && tag !== 'body' && tag !== 'html' &&
           (element.hasAttribute('onclick') || (element.hasAttribute('tabindex') && element.tabIndex >= 0) ||
            (pointer && !context.pointer))) kind = 'clickable';
@@ -381,6 +440,14 @@ globalThis.__tiloPage ||= (() => {
         flush();
         const label = kind === 'img' ? name(element, kind) : clean(element.title || element.name || element.src, MAX_NAME);
         emit(depth, label ? `${kind} ${quote(label)}` : kind);
+        return;
+      }
+      // A drawing surface is one element a gesture draws on, never the boxes
+      // of whatever the page painted into it.
+      if (tag === 'canvas') {
+        flush();
+        const label = name(element, kind);
+        emit(depth, `${kind}${label ? ' ' + quote(label) : ''} [ref=${refOf(element)}]`);
         return;
       }
       if (INTERACTIVE.has(kind) || kind === 'heading') {
@@ -494,11 +561,23 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, x: center.x, y: center.y, message: `Clicked ${summary(element)}`};
   }
 
+  // A pointer step named this element, so the box it is stepped around
+  // is the element's own scroll-adjusted box, never a point inside it.
+  function locateBox(ref) {
+    const element = resolve(ref);
+    const box = element.getBoundingClientRect();
+    if (!(box.width > 0 && box.height > 0))
+      throw failure('not_visible', `${ref} has no box on the page`);
+    return {ok: true, message: `Found ${summary(element)}`, data: {x: box.left, y: box.top, width: box.width, height: box.height}};
+  }
+
   function fill(ref, text, allowSecret) {
     const element = resolve(ref), tag = element.localName, kind = type(element);
     if (secret(element) && !allowSecret)
       throw failure('secret_field', `${ref} is a password or card field; fill it with fill_secret, which keeps the text out of logs and history`);
     const field = tag === 'textarea' || (tag === 'input' && !NOT_TEXT.has(kind));
+    if (kind === 'file')
+      throw failure('not_editable', `${ref} (${summary(element)}) takes files, not text; choose them with fill-page-files`);
     if (!field && !element.isContentEditable)
       throw failure('not_editable', `${ref} (${summary(element)}) is not a text field; click or select it instead`);
     if (element.disabled || element.readOnly) throw failure('not_editable', `${ref} is disabled or read-only`);
@@ -579,6 +658,65 @@ globalThis.__tiloPage ||= (() => {
       throw failure('not_focusable', `${ref} (${summary(element)}) cannot take keyboard focus`);
     return {ok: true, message: `Focused ${summary(element)}`};
   }
+
+  // A file input's files are not writable from script: the browser process
+  // sets them through the DevTools DOM domain, which is what makes the page
+  // see a real picker's result. This side is the element's own rule: the ref
+  // must name a file input, and each chosen file must pass its `accept`. The
+  // host then answers the page with the same trusted input and change events
+  // a person's picker dispatches.
+  const FILE_EXTENSIONS = {pdf: ['application/pdf'], jpg: ['image/jpeg'],
+    jpeg: ['image/jpeg'], png: ['image/png'], gif: ['image/gif'], webp: ['image/webp'],
+    txt: ['text/plain'], csv: ['text/csv'], json: ['application/json'],
+    doc: ['application/msword'], docx: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    odt: ['application/vnd.oasis.opendocument.text'], rtf: ['application/rtf']};
+  const MIME_EXTENSIONS = {pdf: 'pdf', jpeg: 'jpg', png: 'png', gif: 'gif', webp: 'webp',
+    plain: 'txt', csv: 'csv', json: 'json'};
+  function baseName(path) {
+    const name = String(path).split(/[\\/]/).pop() || '';
+    return name;
+  }
+  function mimeOf(name) {
+    const dot = name.lastIndexOf('.');
+    if (dot < 1 || dot === name.length - 1) return '';
+    const extension = name.slice(dot + 1).toLowerCase();
+    return (FILE_EXTENSIONS[extension] || [''])[0] || 'application/octet-stream';
+  }
+  function acceptsFile(accept, name) {
+    const rules = String(accept || '').split(',').map(rule => rule.trim().toLowerCase()).filter(Boolean);
+    if (!rules.length) return true;
+    const lower = name.toLowerCase(), dot = lower.lastIndexOf('.');
+    const extension = dot < 1 ? '' : lower.slice(dot + 1);
+    const mime = mimeOf(lower);
+    return rules.some(rule => rule === '*/*' ||
+      (rule.startsWith('.') ? (MIME_EXTENSIONS[mime.split('/').pop()] || extension) === rule.slice(1)
+        : rule.endsWith('/*') ? mime.startsWith(rule.slice(0, -1)) : mime === rule));
+  }
+  function fileField(ref) {
+    const element = resolve(ref);
+    enabled(element, ref);
+    if (element.localName !== 'input' || type(element) !== 'file')
+      throw failure('not_file_input', `${ref} (${summary(element)}) is not a file input; click it to open the page's own chooser`);
+    return element;
+  }
+  // Validate one fill and answer what the outline should now show. The host
+  // performs it and re-reads the line from the page.
+  function fillFilesTarget(ref, paths) {
+    const element = fileField(ref);
+    if (!Array.isArray(paths) || !paths.length)
+      throw failure('invalid_request', 'A file input needs at least one path');
+    if (!element.multiple && paths.length > 1)
+      throw failure('multiple_files', `${ref} takes one file; it was given ${paths.length}`);
+    const accept = element.getAttribute('accept') || '';
+    for (const path of paths) {
+      const name = baseName(path);
+      if (!name) throw failure('invalid_request', `${path} names no file`);
+      if (!acceptsFile(accept, name))
+        throw failure('not_accepted', `${ref} accepts ${quote(clean(accept, MAX_VALUE))}, not ${quote(name)}`);
+    }
+    return {ok: true, message: `Choosing ${paths.map(baseName).join(', ')} for ${summary(element)}`};
+  }
+  function fillFilesElement(ref) { return resolve(ref); }
 
   // Private text-input leases share this isolated world, not the page's agent
   // log. Preparation never focuses a field or exports its contents. A final
@@ -984,7 +1122,7 @@ globalThis.__tiloPage ||= (() => {
   }
 
   return {
-    nativeTextInputElement, configureNativeTextEditor, fence,
+    nativeTextInputElement, configureNativeTextEditor, fillFilesElement, fence,
     run(command) {
       try {
         if (!doc) doc = command.doc;
@@ -996,7 +1134,9 @@ globalThis.__tiloPage ||= (() => {
           case 'at': return at(command.x, command.y);
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
+          case 'locate_box': return locateBox(command.element);
           case 'fill': arm('script'); return fill(command.element, command.text, command.secret);
+          case 'fill_files': arm('script'); return fillFilesTarget(command.element, command.paths);
           case 'select': arm('script'); return select(command.element, command.values);
           case 'submit': arm('script'); return submit(command.element, command.cross_origin);
           case 'focus': {
