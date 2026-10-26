@@ -4789,10 +4789,17 @@ impl Widget for ChatApp {
         self.laid_video = Some((self.call.expanded, self.call_video_rect()));
     }
 
-    /// Dirty only when the call tile's node would be placed elsewhere: the
-    /// call opened or closed over the window, or the tile was moved.
+    /// Chat paints what it shows itself; under it only the call's video
+    /// tile is laid out. So a frame elsewhere on the desktop (another window
+    /// opening, an animation, a peer's pointer) re-solves nothing here: the
+    /// layout is dirty only while the expanded call's tile follows the
+    /// participant grid, or when the tile's node would be placed elsewhere
+    /// than it was laid, because the call closed or the tile moved.
     fn is_layout_dirty(&self) -> bool {
-        self.laid_video != Some((self.call.expanded, self.call_video_rect()))
+        self.call.expanded
+            || self
+                .laid_video
+                .is_some_and(|laid| laid != (self.call.expanded, self.call_video_rect()))
     }
 
     fn draw(
