@@ -246,15 +246,13 @@ pub(crate) fn open_cold(
 pub(crate) fn chat_channels(owners: &RecordOwners, room: RoomId) -> Option<Vec<String>> {
     let mut owners = owners.clone();
     let records = owners.open(CHAT, &room.to_string()).ok()?;
-    records
-        .read(&RecordId::package_primary(), |document| {
-            chat::projection::read(document)
-                .channel_rows()
-                .iter()
-                .map(|channel| channel.id.clone())
-                .collect::<Vec<_>>()
-        })
-        .ok()
+    records.read(&RecordId::package_primary(), |document| {
+        chat::projection::read(document)
+            .channel_rows()
+            .iter()
+            .map(|channel| channel.id.clone())
+            .collect::<Vec<_>>()
+    })
 }
 
 #[test]
