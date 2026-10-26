@@ -126,7 +126,6 @@
 "crates/sdk/ui-core/src/widget/toggle_group.rs" = 4000
 "crates/sdk/ui-core/src/widget/toolbar.rs" = 4000
 "crates/sdk/ui-core/src/widget/tree_view.rs" = 7000
-"crates/sdk/ui-core/src/widget/virtual_list.rs" = 3500
 "crates/sdk/ui-core/src/widget/window_group.rs" = 7000
 "crates/session/desktop-surface/src/activity/pane.rs" = 8000
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 4500
