@@ -667,7 +667,9 @@ impl Mount {
             report.result.map(|()| report.completed)
         });
         if attempted {
-            self.frame.request_layout();
+            // Serving retired the layout tree, so the next frame composes it
+            // again before any input reads it; asking for a layout as well
+            // only repeated that.
             self.pending = true;
             self.save_desktop();
             if let Some(peer) = self.peer {
