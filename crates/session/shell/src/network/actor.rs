@@ -2203,31 +2203,7 @@ impl ActorState {
                 (*held_ws, *surface) != key || peers.contains(peer)
             });
         let workspace_peer_count = peers.len();
-        // Each viewer is an independent QUIC route: write on the open ones
-        // concurrently, so one viewer whose route is still opening (or will
-        // not open) never holds up the healthy ones. Its units wait for its
-        // route instead, in their order.
-        let mut targets = Vec::new();
-        // Held for a viewer whose route is opening: on its way, not missed.
-        let mut on_the_way = 0usize;
-        for peer in peers {
-            let held = (ws, key.1, peer);
-            match self.live_surface_route(peer) {
-                Some(connection) if !self.held_surface_units.contains_key(&held) => {
-                    targets.push((peer, connection));
-                }
-                _ => {
-                    self.hold_surface_unit(held, &msg);
-                    if self
-                        .held_surface_units
-                        .get(&held)
-                        .is_some_and(|held| !held.unreachable)
-                    {
-                        on_the_way = on_the_way.saturating_add(1);
-                    }
-                }
-            }
-        }
+        let (targets, on_the_way) = self.surface_fanout_targets(ws, key.1, peers, &msg);
         if targets.is_empty() {
             if !targeted && (workspace_peer_count == 0 || on_the_way < workspace_peer_count) {
                 publish(
@@ -2274,6 +2250,44 @@ impl ActorState {
         });
         self.surface_fanout_tasks.insert(key, (generation, task));
         true
+    }
+
+    /// Split `peers` into those whose route is open and takes `msg` now,
+    /// and those it is held for; the count is of the held ones whose route
+    /// is opening, for which it is on its way.
+    fn surface_fanout_targets(
+        &mut self,
+        ws: WorkspaceId,
+        surface: SurfaceId,
+        peers: Vec<EndpointId>,
+        msg: &NeighbourMsg,
+    ) -> (Vec<(EndpointId, iroh::endpoint::Connection)>, usize) {
+        // Each viewer is an independent QUIC route: write on the open ones
+        // concurrently, so one viewer whose route is still opening (or will
+        // not open) never holds up the healthy ones. Its units wait for its
+        // route instead, in their order.
+        let mut targets = Vec::new();
+        // Held for a viewer whose route is opening: on its way, not missed.
+        let mut on_the_way = 0usize;
+        for peer in peers {
+            let held = (ws, surface, peer);
+            match self.live_surface_route(peer) {
+                Some(connection) if !self.held_surface_units.contains_key(&held) => {
+                    targets.push((peer, connection));
+                }
+                _ => {
+                    self.hold_surface_unit(held, msg);
+                    if self
+                        .held_surface_units
+                        .get(&held)
+                        .is_some_and(|held| !held.unreachable)
+                    {
+                        on_the_way = on_the_way.saturating_add(1);
+                    }
+                }
+            }
+        }
+        (targets, on_the_way)
     }
 
     /// The open window-stream route to `peer`, if there is one.
