@@ -228,3 +228,42 @@ fn the_installed_package_is_the_app_and_opens_on_its_root_committed_through_the_
         "the notebook exists"
     );
 }
+
+#[test]
+fn history_names_what_was_made_and_changed_by_title_never_by_id() {
+    let (mut app, root) = notes_open();
+    let notebook = format!("tl:{NOTES}:{root}");
+    let new_note = action_id(&mut app, &notebook, "New note");
+    app.invoke(None, None, &notebook, &new_note, &Map::new(), false)
+        .unwrap();
+    settle(&mut app);
+    // History reads the labels the window publishes, which a live window learns as it
+    // publishes them.
+    let resources = app.harness().resources();
+    ui::history_source::sentence::learn_labels(&resources);
+    let versions = app.read(ui::tilo_resource::history::versions);
+    let sentences: Vec<String> = versions
+        .iter()
+        .filter_map(|version| version.context.as_ref())
+        .filter(|context| context.what.is_some())
+        .map(ui::history_source::sentence::sentence)
+        .collect();
+    assert!(
+        sentences
+            .iter()
+            .any(|sentence| sentence == "Created Notebook"),
+        "the notebook the window made reads as native history's creation: {sentences:?}"
+    );
+    assert!(
+        sentences
+            .iter()
+            .any(|sentence| sentence == "New note: Notebook"),
+        "the person's action reads by its label: {sentences:?}"
+    );
+    for sentence in &sentences {
+        assert!(
+            !sentence.contains(&root) && !sentence.contains('$'),
+            "no id in history: {sentence:?}"
+        );
+    }
+}

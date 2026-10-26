@@ -36,6 +36,8 @@ history-edit-unnamed = { $field } geändert
 history-verb = { $action }: { $item }
 history-verb-unnamed = { $action }
 history-verb-in = { $action } in { $item }
+history-verb-create = { $item } erstellt
+history-verb-create-unnamed = Erstellt
 
 history-group = { $count ->
     [one] Eine Änderung
