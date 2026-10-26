@@ -47,7 +47,9 @@ pub enum NetMsg {
     /// Reverse-geocoded label for a coordinate (used to name a device-location
     /// origin with a human place instead of raw lat/lon).
     ReverseGeocode(Result<String, String>),
-    Route(Result<Route, String>),
+    /// Every route the service offered for the trip, the best first: a
+    /// person who does not like the one shown has another to look at.
+    Route(Result<Vec<Route>, String>),
     Transit(Result<Vec<TransitJourney>, String>),
     /// Point-of-interest markers for the current viewport (Overpass). Carries
     /// the query generation so a stale in-flight reply for an old viewport can
@@ -362,10 +364,11 @@ fn tag_string(tags: &Value, key: &str) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-/// Route between two coordinates with the OSRM public demo server.
-pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, String> {
+/// Routes between two coordinates with the OSRM public demo server, the
+/// service's best first and its alternatives after it.
+pub async fn routes(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Vec<Route>, String> {
     let url = format!(
-        "https://router.project-osrm.org/route/v1/{}/{:.6},{:.6};{:.6},{:.6}?overview=full&geometries=geojson&steps=true",
+        "https://router.project-osrm.org/route/v1/{}/{:.6},{:.6};{:.6},{:.6}?overview=full&geometries=geojson&steps=true&alternatives=true",
         mode.osrm_profile(),
         from.lon,
         from.lat,
@@ -380,13 +383,24 @@ pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, 
             .unwrap_or("routing failed")
             .to_string());
     }
-    let r0 = v
-        .get("routes")
-        .and_then(|r| r.get(0))
-        .unwrap_or(&Value::Null);
-    let distance_m = r0["distance"].as_f64().unwrap_or(0.0);
-    let duration_s = r0["duration"].as_f64().unwrap_or(0.0);
-    let raw_geometry = r0
+    let offered = v.get("routes").and_then(Value::as_array);
+    let routes = offered
+        .into_iter()
+        .flatten()
+        .filter_map(|r| route_from_json(r, mode, from, to))
+        .collect::<Vec<_>>();
+    if routes.is_empty() {
+        return Err("the service offered no route".to_string());
+    }
+    Ok(routes)
+}
+
+/// One route of the service's answer, or `None` when it carries nothing a
+/// person could follow.
+fn route_from_json(value: &Value, mode: TravelMode, from: LatLon, to: LatLon) -> Option<Route> {
+    let distance_m = value["distance"].as_f64().unwrap_or(0.0);
+    let duration_s = value["duration"].as_f64().unwrap_or(0.0);
+    let raw_geometry = value
         .get("geometry")
         .and_then(|g| g.get("coordinates"))
         .and_then(Value::as_array)
@@ -400,11 +414,14 @@ pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, 
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    if raw_geometry.len() < 2 {
+        return None;
+    }
     // Simplify on the worker so the render thread projects fewer points.
     let geometry = crate::geo::simplify_polyline(&raw_geometry, GEOMETRY_SIMPLIFY_M);
 
     let mut steps = Vec::new();
-    if let Some(legs) = r0["legs"].as_array() {
+    if let Some(legs) = value["legs"].as_array() {
         for leg in legs {
             if let Some(s) = leg["steps"].as_array() {
                 for step in s {
@@ -432,7 +449,7 @@ pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, 
         }
     }
 
-    Ok(Route {
+    Some(Route {
         mode,
         distance_m,
         duration_s,

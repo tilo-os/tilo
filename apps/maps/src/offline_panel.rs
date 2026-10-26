@@ -44,6 +44,8 @@ pub(crate) enum OfflineAction {
     Close,
     ZoomDelta(i8),
     Download,
+    /// Stop the download in progress; what arrived stays.
+    StopDownload,
     DeleteRegion(String),
     ClearCache,
     Consume,
@@ -326,6 +328,9 @@ impl OfflinePanel {
                     "Download selected area",
                     "maps.offline.download".to_string(),
                 ),
+                OfflineAction::StopDownload => {
+                    ("Stop downloading", "maps.offline.stop-download".to_string())
+                }
                 OfflineAction::DeleteRegion(id) => (
                     "Delete downloaded area",
                     format!("maps.offline.region:{id}:delete"),
@@ -533,6 +538,15 @@ impl OfflinePanel {
             || "Download this view".to_string(),
             |pick| format!("Download {}", pick.name),
         );
+        // While a download runs, the one action the sheet offers stops it:
+        // picking the wrong city must not mean waiting out hundreds of tiles
+        // and then deleting the region.
+        let running = frame.progress.is_active();
+        let label = if running {
+            "Stop downloading".to_string()
+        } else {
+            label
+        };
         let primary = [ModalAction::primary(&label)];
         let offered: &[ModalAction<'_>] = if downloads { &primary } else { &[] };
         let spec = ModalSpec::new("Offline maps")
@@ -556,8 +570,15 @@ impl OfflinePanel {
         if let Some(close) = layout.close {
             self.targets.push((close, OfflineAction::Close));
         }
-        if let Some(download) = layout.actions.first() {
-            self.targets.push((*download, OfflineAction::Download));
+        if let Some(action) = layout.actions.first() {
+            self.targets.push((
+                *action,
+                if running {
+                    OfflineAction::StopDownload
+                } else {
+                    OfflineAction::Download
+                },
+            ));
         }
 
         let ink = theme.on_ground(ui::chrome::panel_ground(theme));
@@ -763,6 +784,11 @@ impl OfflinePanel {
             format!(
                 "Downloading {} of {} tiles…",
                 frame.progress.done, frame.progress.total
+            )
+        } else if frame.progress.stopped {
+            format!(
+                "Stopped after {} tiles; they stay available offline",
+                frame.progress.total
             )
         } else if frame.progress.total > 0 && frame.progress.done >= frame.progress.total {
             if frame.progress.failed > 0 {

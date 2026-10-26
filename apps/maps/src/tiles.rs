@@ -26,6 +26,8 @@ use std::num::NonZeroUsize;
 
 use lru::LruCache;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 use ui::time::Instant;
@@ -237,6 +239,8 @@ pub struct DownloadProgress {
     pub total: u32,
     pub done: u32,
     pub failed: u32,
+    /// The person stopped it: what arrived stays, the rest is not fetched.
+    pub stopped: bool,
 }
 
 impl DownloadProgress {
@@ -293,6 +297,10 @@ pub struct TileLayer {
     cache_dir: PathBuf,
     /// Live offline-download progress.
     progress: DownloadProgress,
+    /// Set by [`Self::stop_download`], read by the worker before each tile it
+    /// would fetch: a download of a whole region is hundreds of tiles, and
+    /// picking the wrong city must not mean waiting them all out.
+    stop: Arc<AtomicBool>,
 }
 
 impl TileLayer {
@@ -357,8 +365,9 @@ impl TileLayer {
         let base_url = self.base_url.clone();
         let style = self.style;
         let wake = self.wake.clone();
+        let stop = Arc::clone(&self.stop);
         let spawned = ui::rt::spawn_thread("maps-tiles", move || {
-            worker(&job_rx, &done_tx, &wake, &dir, &base_url, style);
+            worker(&job_rx, &done_tx, &wake, &dir, &base_url, style, &stop);
         })
         .is_ok();
         self.job_tx = spawned.then_some(job_tx);
@@ -416,6 +425,7 @@ impl TileLayer {
             cache_root: None,
             cache_dir,
             progress: DownloadProgress::default(),
+            stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -650,10 +660,12 @@ impl TileLayer {
         }
         let ids = region.tiles_in_range(z0, z1);
         let total = ids.len() as u32;
+        self.stop.store(false, Ordering::Relaxed);
         self.progress = DownloadProgress {
             total,
             done: 0,
             failed: 0,
+            stopped: false,
         };
         if let Some(tx) = &self.job_tx {
             for id in ids {
@@ -664,6 +676,21 @@ impl TileLayer {
             self.progress.done = total;
         }
         total
+    }
+
+    /// Stop the download in progress: the worker fetches nothing more, and the
+    /// progress reads as what arrived before the person stopped it. The tiles
+    /// already on disk stay, and the region keeps them.
+    ///
+    /// Returns whether there was a download to stop.
+    pub fn stop_download(&mut self) -> bool {
+        if !self.progress.is_active() {
+            return false;
+        }
+        self.stop.store(true, Ordering::Relaxed);
+        self.progress.done = self.progress.total;
+        self.progress.stopped = true;
+        true
     }
 
     /// Estimate how many tiles a download of `region` across `z0..=z1` covers,
@@ -835,6 +862,7 @@ fn worker(
     cache_dir: &std::path::Path,
     base_url: &str,
     style: TileStyle,
+    stop: &AtomicBool,
 ) {
     let client = match tilo_net::Client::builder()
         .user_agent(USER_AGENT)
@@ -861,6 +889,11 @@ fn worker(
                 wake.wake();
             }
             Job::Download(id) => {
+                // Stopped: leave the rest of the region unfetched. What already
+                // arrived stays on disk and in the region's record.
+                if stop.load(Ordering::Relaxed) {
+                    continue;
+                }
                 // For downloads we only need the bytes on disk; decoding is the
                 // live path's concern. Skip if already cached.
                 let path = cache_dir.join(id.cache_rel());

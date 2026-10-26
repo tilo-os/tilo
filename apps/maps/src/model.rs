@@ -487,6 +487,10 @@ pub struct MapModel {
     pub selected: Option<String>,
     /// Active road route, if any.
     pub route: Option<Route>,
+    /// The routes the service offered for this trip, the active one first:
+    /// a single route when it offered no other, and what "another route"
+    /// steps through.
+    pub route_alternatives: Vec<Route>,
     /// Public-transport itinerary options.
     pub transit: Vec<TransitJourney>,
     /// Index of the highlighted transit option.
@@ -537,6 +541,7 @@ impl Default for MapModel {
             recents: Vec::new(),
             selected: None,
             route: None,
+            route_alternatives: Vec::new(),
             transit: Vec::new(),
             transit_choice: 0,
             panel: Panel::Explore,
