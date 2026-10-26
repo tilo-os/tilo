@@ -3,6 +3,13 @@
 
 use super::*;
 
+fn contact_digest(contact: &str) -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(
+        tilo_relay_protocol::rooms::contact_key(contact),
+    ))
+}
+
 /// Leaves `email` at the door from `address`, answering as the relay
 /// with `answer` (given the command's request) when the door asks it.
 async fn wait_once(
@@ -69,6 +76,17 @@ async fn unlist_once(
     address: &str,
     secret: &str,
 ) -> (std::result::Result<(), WaitRefusal>, String) {
+    unlist_report(persistent, relay, address, secret, None, None).await
+}
+
+async fn unlist_report(
+    persistent: &Arc<Persistent>,
+    relay: &mut Relay,
+    address: &str,
+    secret: &str,
+    told: Option<WaitListMailbox>,
+    contact_sha256: Option<String>,
+) -> (std::result::Result<(), WaitRefusal>, String) {
     let leaving = tokio::spawn({
         let persistent = Arc::clone(persistent);
         let address = ip(address);
@@ -85,7 +103,8 @@ async fn unlist_once(
     relay
         .report(&RoomEvent::Unlisted {
             request,
-            told: None,
+            told,
+            contact_sha256,
         })
         .await;
     (leaving.await.unwrap(), removal_sha256)
@@ -324,6 +343,15 @@ async fn an_open_room_keeps_no_wait_list() {
 async fn mailing(
     mailer: Arc<crate::mail::FakeMailer>,
 ) -> (Arc<Persistent>, Relay, tempfile::TempDir) {
+    mailing_with(mailer, false).await
+}
+
+/// [`mailing`], and with `durable` the room's door keeping each mail in the
+/// room's own state until it is sent, as the persistent room's door does.
+async fn mailing_with(
+    mailer: Arc<dyn crate::mail::Mailer>,
+    durable: bool,
+) -> (Arc<Persistent>, Relay, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let mut shared = Shared::with_key(
         dir.path().to_path_buf(),
@@ -335,11 +363,19 @@ async fn mailing(
     .unwrap();
     shared.invite_only = true;
     shared.wait_list = true;
-    shared.mail = Some(crate::mail::DoorMail::new(
-        mailer,
-        "https://tilo.example/",
-        "Lounge",
-    ));
+    shared.mail = Some(if durable {
+        crate::mail::DoorMail::durable(
+            mailer,
+            "https://tilo.example/",
+            "Lounge",
+            crate::mail::Templates::baked(),
+            true,
+            &dir.path().join("mail-outbox"),
+        )
+        .unwrap()
+    } else {
+        crate::mail::DoorMail::new(mailer, "https://tilo.example/", "Lounge")
+    });
     let (stdin, relay_stdin) = tokio::io::duplex(64 * 1024);
     let (mut relay_stdout, stdout) = tokio::io::duplex(64 * 1024);
     let started = RoomEvent::Started {
@@ -364,9 +400,48 @@ async fn mailing(
 }
 
 /// The mails `mailer` was asked to send by now.
-async fn mailed(mailer: &crate::mail::FakeMailer, count: usize) -> Vec<crate::mail::Mail> {
-    taken_in("the mail", || mailer.sent.lock().unwrap().len() >= count).await;
+async fn mailed(
+    mailer: &crate::mail::FakeMailer,
+    relay: &mut Relay,
+    count: usize,
+) -> Vec<crate::mail::Mail> {
+    tilo_test_env::within("the mail", async {
+        loop {
+            tokio::select! {
+                () = taken_in("the mail", || mailer.sent.lock().unwrap().len() >= count) => break,
+                command = relay.command() => match command {
+                    OperatorCommand::Standing { request, .. } => relay.report(&RoomEvent::Standing {
+                        request, standing: WaitListStanding::Listed,
+                    }).await,
+                    OperatorCommand::InviteMailQueued { queued, .. } => assert!(queued),
+                    other => panic!("unexpected mail command: {other:?}"),
+                }
+            }
+        }
+    })
+    .await;
     mailer.sent.lock().unwrap().clone()
+}
+
+/// An enqueue acknowledgement may race the worker's eligibility query.
+async fn invitation_queued(relay: &mut Relay, expected: &str) -> bool {
+    loop {
+        match relay.command().await {
+            OperatorCommand::Standing { request, .. } => {
+                relay
+                    .report(&RoomEvent::Standing {
+                        request,
+                        standing: WaitListStanding::Listed,
+                    })
+                    .await;
+            }
+            OperatorCommand::InviteMailQueued { request, queued } => {
+                assert_eq!(request, expected);
+                return queued;
+            }
+            other => panic!("unexpected invitation command: {other:?}"),
+        }
+    }
 }
 
 /// The secret (hex) a mailed link carries in `parameter`.
@@ -418,7 +493,7 @@ async fn a_mailing_door_mails_a_confirmation_link_the_room_holds_only_hashes_of(
         .await;
     let answer = waiting.await.unwrap().unwrap();
     assert!(answer.mail);
-    let [mail] = mailed(&mailer, 1).await.try_into().unwrap();
+    let [mail] = mailed(&mailer, &mut relay, 1).await.try_into().unwrap();
     assert_eq!(mail.to, "Ada@Example.org");
     assert!(mail.subject.contains("Warteliste"));
     let token = carried(&mail.text, "wait-list-confirm");
@@ -481,6 +556,21 @@ async fn a_mailing_door_mails_a_confirmation_link_the_room_holds_only_hashes_of(
 async fn an_address_left_again_within_the_hour_reads_the_same_and_is_not_mailed_again() {
     let mailer = Arc::new(crate::mail::FakeMailer::default());
     let (persistent, mut relay, _dir) = mailing(Arc::clone(&mailer)).await;
+    // A relay timestamp alone is not evidence that a mail was accepted.
+    let (first, _) = wait_once(
+        &persistent,
+        &mut relay,
+        "203.0.113.1",
+        "ada@example.org",
+        |request| RoomEvent::WaitListed {
+            request,
+            added: true,
+            mail: true,
+        },
+    )
+    .await;
+    assert!(first.unwrap().mail);
+    mailed(&mailer, &mut relay, 1).await;
     let again = tokio::spawn({
         let persistent = Arc::clone(&persistent);
         async move {
@@ -508,8 +598,8 @@ async fn an_address_left_again_within_the_hour_reads_the_same_and_is_not_mailed_
     assert!(again.await.unwrap().unwrap().mail);
     tokio::task::yield_now().await;
     assert!(
-        mailer.sent.lock().unwrap().is_empty(),
-        "the room said not to"
+        mailer.sent.lock().unwrap().len() == 1,
+        "the room said not to send another"
     );
 }
 
@@ -524,19 +614,29 @@ async fn a_member_s_invitation_and_word_of_a_removal_are_mailed_from_the_door() 
     // A link elsewhere is not mailed; one on the door is.
     relay
         .report(&RoomEvent::InviteMail {
+            request: "aa".repeat(32),
             to: to.clone(),
             link: "https://evil.example/?invite=AAEC".into(),
             removal: "cd".repeat(32),
         })
         .await;
+    assert_eq!(
+        relay.command().await,
+        OperatorCommand::InviteMailQueued {
+            request: "aa".repeat(32),
+            queued: false,
+        }
+    );
     relay
         .report(&RoomEvent::InviteMail {
+            request: "bb".repeat(32),
             to: to.clone(),
             link: "https://tilo.example/#/desktop/room/x?invite=AAEC".into(),
             removal: "cd".repeat(32),
         })
         .await;
-    let [invite] = mailed(&mailer, 1).await.try_into().unwrap();
+    assert!(invitation_queued(&mut relay, &"bb".repeat(32)).await);
+    let [invite] = mailed(&mailer, &mut relay, 1).await.try_into().unwrap();
     assert_eq!(invite.to, "bo@example.org");
     assert!(
         invite
@@ -566,11 +666,284 @@ async fn a_member_s_invitation_and_word_of_a_removal_are_mailed_from_the_door() 
     relay
         .report(&RoomEvent::Unlisted {
             request,
+            contact_sha256: None,
             told: Some(to),
         })
         .await;
     assert!(leaving.await.unwrap().is_ok());
-    let mails = mailed(&mailer, 2).await;
+    let mails = mailed(&mailer, &mut relay, 2).await;
     assert_eq!(mails[1].to, "bo@example.org");
     assert!(mails[1].subject.contains("off the"));
+}
+
+#[tokio::test]
+async fn failed_confirmation_enqueue_is_not_success_when_the_relay_suppresses_a_repeat() {
+    let mailer = Arc::new(crate::mail::FakeMailer::default());
+    let (persistent, mut relay, dir) = mailing_with(mailer.clone(), true).await;
+    let outbox = dir.path().join("mail-outbox");
+    let moved = dir.path().join("offline-outbox");
+    std::fs::rename(&outbox, &moved).unwrap();
+    std::fs::write(&outbox, "not a directory").unwrap();
+    let (failed, _) = wait_once(
+        &persistent,
+        &mut relay,
+        "203.0.113.1",
+        "ada@example.org",
+        |request| RoomEvent::WaitListed {
+            request,
+            added: true,
+            mail: true,
+        },
+    )
+    .await;
+    assert!(matches!(failed, Err(WaitRefusal::Unavailable)));
+    std::fs::remove_file(&outbox).unwrap();
+    std::fs::rename(&moved, &outbox).unwrap();
+    let (suppressed, _) = wait_once(
+        &persistent,
+        &mut relay,
+        "203.0.113.1",
+        "ADA@example.org",
+        |request| RoomEvent::WaitListed {
+            request,
+            added: false,
+            mail: false,
+        },
+    )
+    .await;
+    assert!(matches!(suppressed, Err(WaitRefusal::Unavailable)));
+    assert!(mailer.sent.lock().unwrap().is_empty());
+    let restarted = crate::mail::DoorMail::durable(
+        mailer.clone(),
+        "https://tilo.example/",
+        "Lounge",
+        crate::mail::Templates::baked(),
+        false,
+        &outbox,
+    )
+    .unwrap();
+    assert!(!restarted.confirmation_kept("ada@example.org"));
+}
+
+#[tokio::test]
+async fn durable_unlisting_succeeds_even_when_its_notification_cannot_be_queued() {
+    let mailer = Arc::new(crate::mail::FakeMailer::default());
+    let (persistent, mut relay, dir) = mailing_with(mailer.clone(), true).await;
+    let outbox = dir.path().join("mail-outbox");
+    std::fs::rename(&outbox, dir.path().join("offline-outbox")).unwrap();
+    std::fs::write(&outbox, "not a directory").unwrap();
+    for (secret, told, contact) in [
+        (
+            "aa".repeat(32),
+            Some(WaitListMailbox {
+                contact: "ada@example.org".into(),
+                language: "en".into(),
+            }),
+            Some(contact_digest("ada@example.org")),
+        ),
+        (
+            "bb".repeat(32),
+            None,
+            Some(contact_digest("bo@example.org")),
+        ),
+        ("cc".repeat(32), None, None),
+        ("aa".repeat(32), None, None),
+    ] {
+        let (answer, _) = unlist_report(
+            &persistent,
+            &mut relay,
+            "203.0.113.1",
+            &secret,
+            told,
+            contact,
+        )
+        .await;
+        assert!(
+            answer.is_ok(),
+            "committed, pending, unknown and repeated removals answer alike"
+        );
+    }
+    assert!(mailer.sent.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_invitation_that_cannot_be_enqueued_is_negatively_acknowledged() {
+    let mailer = Arc::new(crate::mail::FakeMailer::default());
+    let (_persistent, mut relay, dir) = mailing_with(mailer.clone(), true).await;
+    let outbox = dir.path().join("mail-outbox");
+    let moved = dir.path().join("offline-outbox");
+    std::fs::rename(&outbox, &moved).unwrap();
+    std::fs::write(&outbox, "not a directory").unwrap();
+    relay
+        .report(&RoomEvent::InviteMail {
+            request: "aa".repeat(32),
+            to: WaitListMailbox {
+                contact: "ada@example.org".into(),
+                language: "de".into(),
+            },
+            link: "https://tilo.example/?invite=AAEC".into(),
+            removal: "cd".repeat(32),
+        })
+        .await;
+    assert_eq!(
+        relay.command().await,
+        OperatorCommand::InviteMailQueued {
+            request: "aa".repeat(32),
+            queued: false,
+        }
+    );
+    assert!(mailer.sent.lock().unwrap().is_empty());
+}
+
+/// A cancelled receipt cannot stand in for a newly queued confirmation.
+async fn assert_rejoining_needs_a_new_confirmation(
+    persistent: &Arc<Persistent>,
+    relay: &mut Relay,
+) {
+    let (rejoined, _) = wait_once(
+        persistent,
+        relay,
+        "203.0.113.1",
+        "ADA@example.org",
+        |request| RoomEvent::WaitListed {
+            request,
+            added: true,
+            mail: false,
+        },
+    )
+    .await;
+    assert!(matches!(rejoined, Err(WaitRefusal::Unavailable)));
+}
+
+#[tokio::test]
+async fn unlisting_cancels_a_confirmation_even_if_an_eligibility_answer_is_in_flight() {
+    let mailer = Arc::new(crate::mail::FakeMailer::default());
+    let (persistent, mut relay, dir) = mailing_with(mailer.clone(), true).await;
+    let (answer, _) = wait_once(
+        &persistent,
+        &mut relay,
+        "203.0.113.1",
+        "ada@example.org",
+        |request| RoomEvent::WaitListed {
+            request,
+            added: true,
+            mail: true,
+        },
+    )
+    .await;
+    let secret = answer.unwrap().removal;
+    let OperatorCommand::Standing {
+        request: checking, ..
+    } = relay.command().await
+    else {
+        panic!("expected a pre-send eligibility check");
+    };
+    // A repeat request has another removal token for the same entry;
+    // the queued mail still holds the first one.
+    let (again, _) = wait_once(
+        &persistent,
+        &mut relay,
+        "203.0.113.1",
+        "ada@example.org",
+        |request| RoomEvent::WaitListed {
+            request,
+            added: false,
+            mail: false,
+        },
+    )
+    .await;
+    let other_secret = again.unwrap().removal;
+    assert_ne!(other_secret, secret);
+    // The removal is durably accepted while the sender waits for an older
+    // snapshot of eligibility. A late positive answer cannot undo it.
+    let (removed, _) = unlist_report(
+        &persistent,
+        &mut relay,
+        "203.0.113.1",
+        &other_secret,
+        None,
+        Some(contact_digest("ADA@example.org")),
+    )
+    .await;
+    assert!(removed.is_ok());
+    assert!(
+        !persistent
+            .shared
+            .mail
+            .as_ref()
+            .unwrap()
+            .confirmation_kept("ada@example.org")
+    );
+    // Rejoining during the relay's suppression window cannot reuse the
+    // cancelled mail's receipt and falsely claim a confirmation is queued.
+    assert_rejoining_needs_a_new_confirmation(&persistent, &mut relay).await;
+    relay
+        .report(&RoomEvent::Standing {
+            request: checking,
+            standing: WaitListStanding::Pending,
+        })
+        .await;
+    taken_in("the cancelled mail", || {
+        std::fs::read_dir(dir.path().join("mail-outbox"))
+            .unwrap()
+            .all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(|c: char| c.is_ascii_digit())
+            })
+    })
+    .await;
+    assert!(mailer.sent.lock().unwrap().is_empty());
+    let queued = std::fs::read_dir(dir.path().join("mail-outbox"))
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(|c: char| c.is_ascii_digit())
+        })
+        .count();
+    assert_eq!(queued, 0);
+    let restarted = crate::mail::DoorMail::durable(
+        mailer.clone(),
+        "https://tilo.example/",
+        "Lounge",
+        crate::mail::Templates::baked(),
+        false,
+        &dir.path().join("mail-outbox"),
+    )
+    .unwrap();
+    assert!(!restarted.confirmation_kept("ada@example.org"));
+}
+
+#[tokio::test]
+async fn the_room_s_door_keeps_a_mail_in_the_room_s_state_until_it_is_sent() {
+    let mailer = Arc::new(crate::mail::FakeMailer::default());
+    let (_persistent, mut relay, dir) = mailing_with(mailer.clone(), true).await;
+    let outbox = dir.path().join("mail-outbox");
+    assert!(outbox.is_dir(), "the room's door has an outbox of its own");
+    let to = WaitListMailbox {
+        contact: "bo@example.org".into(),
+        language: "en".into(),
+    };
+    relay
+        .report(&RoomEvent::InviteMail {
+            request: "cc".repeat(32),
+            to,
+            link: "https://tilo.example/#/desktop/room/x?invite=AAEC".into(),
+            removal: "cd".repeat(32),
+        })
+        .await;
+    assert!(invitation_queued(&mut relay, &"cc".repeat(32)).await);
+    let [invite] = mailed(&mailer, &mut relay, 1).await.try_into().unwrap();
+    assert_eq!(invite.to, "bo@example.org");
+    // Sent, so nothing of it stays on the volume.
+    taken_in("the empty outbox", || {
+        std::fs::read_dir(&outbox).is_ok_and(|mut kept| kept.next().is_none())
+    })
+    .await;
 }

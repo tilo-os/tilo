@@ -89,6 +89,8 @@ pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListed};
 /// An invitation someone who may invite asked the room to mail to an
 /// address on its wait list ([`Rooms::mail_wait_list`]).
 pub struct WaitListMail {
+    /// Completed only after the operator durably accepts the mail.
+    pub queued: tokio::sync::oneshot::Sender<bool>,
     pub to: Mailbox,
     /// The invitation's web link.
     pub link: String,
