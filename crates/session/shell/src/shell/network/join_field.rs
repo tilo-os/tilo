@@ -261,6 +261,7 @@ impl ShellNetwork {
             invitation,
         )
         .map_err(|_| "That invitation is damaged. Ask for a new link.")?;
+        tracing::info!(%room, %origin, "join link: asking the workspace's host about the invitation");
         let name = match runtime.block_on(tilo_relay_client::https::join(
             http.as_ref(),
             &tilo_relay_protocol::rooms::JoinStep::Inspect { invitation: bytes },
@@ -305,6 +306,7 @@ impl ShellNetwork {
             progress,
         };
         self.hosted_sites.set_join(joining(JoinProgress::Joining));
+        tracing::info!(%room, "join link: the host named the workspace; redeeming the invitation");
         let via = Via::Https { http, door: None };
         self.accept_invitation_via(local, invitation, via)
             .inspect_err(|error| {
