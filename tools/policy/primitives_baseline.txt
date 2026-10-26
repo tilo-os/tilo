@@ -17,9 +17,7 @@ glyph-join 1 apps/browser/src/browser_widget/library.rs
 glyph-join 1 apps/calendar/src/model.rs
 glyph-join 1 apps/calendar/src/reminders.rs
 glyph-join 1 apps/canvas/src/actions.rs
-glyph-join 1 apps/chat/src/app.rs
 glyph-join 8 apps/chat/src/demo.rs
-glyph-join 3 apps/chat/src/render_chat.rs
 glyph-join 1 apps/chat/src/resource.rs
 glyph-join 1 apps/code-editor/src/app.rs
 glyph-join 3 apps/code-editor/src/sample_project.rs
@@ -169,3 +167,5 @@ raw-colour 1 crates/session/shell/src/shell/overlay_host/follow.rs
 raw-colour 1 crates/session/shell/src/shell/overlay_host/overview_paint.rs
 raw-colour 1 crates/session/shell/src/shell/projection_overlay.rs
 raw-colour 1 crates/session/shell/src/shell/render/paint/retained_target.rs
+glyph-join 1 apps/chat/src/app/scenarios.rs
+glyph-join 3 apps/chat/src/render_chat/members.rs

@@ -1265,8 +1265,8 @@ fn parse_image_data(hints: &HashMap<String, OwnedValue>) -> Option<IncomingImage
         || !(3..=4).contains(&channels)
         || width == 0
         || height == 0
-        || width > 512
-        || height > 512
+        || width > 512 // allow-breakpoint: an icon's pixel size, not a layout
+        || height > 512 // allow-breakpoint: an icon's pixel size, not a layout
         || rowstride < (width as usize).checked_mul(channels)?
     {
         return None;
