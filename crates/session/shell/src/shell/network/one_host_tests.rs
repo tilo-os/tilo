@@ -52,6 +52,7 @@ mod old_rooms;
 mod own_devices;
 mod pointers;
 mod sealed_records;
+mod sealed_writes;
 
 /// The app whose document the tests edit, and its record.
 pub(crate) const NOTES: &str = "so.tilo.notes";
@@ -199,6 +200,9 @@ pub(crate) struct Device {
     /// Every sealed write to the note in each room this device made or
     /// opened, in order, as it travelled.
     note_writes: Mutex<HashMap<RoomId, Vec<collab_types::SignedOp>>>,
+    /// The channel keys this device's session broker hands its apps, once
+    /// it serves through one: what an app connected to it encrypts under.
+    pub(crate) endpoint_keys: Mutex<Option<ui::collaboration::EndpointChannelKeys>>,
 }
 
 /// The session broker's drain, as far as channels go: parked until the
@@ -338,6 +342,7 @@ impl Device {
             secret_store: true,
             notes: Mutex::default(),
             note_writes: Mutex::default(),
+            endpoint_keys: Mutex::default(),
         };
         device.go_online();
         device

@@ -97,6 +97,10 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         super::super::state::RoomId::parse(room)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
     }
+    fn seals_records(&self, room: &str) -> bool {
+        super::super::state::RoomId::parse(room)
+            .is_some_and(|room| self.tree.read().seals_records(room))
+    }
     /// A room this device commits answers every read. A sealed room answers
     /// the records it already holds, which a cold app has no other way to
     /// load: its own channel only carries what is written while it is open.
