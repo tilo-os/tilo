@@ -128,6 +128,7 @@ impl Machine {
             }),
             handoff: None,
             volume_key: None,
+            sessions: self.path("sessions"),
         }
     }
 
@@ -153,6 +154,22 @@ impl Machine {
     }
 
     /// The disk passphrase this boot unlocked with, as tilo-rollback leaves it.
+    /// logind's state file for `uid`, with a session or with none left.
+    fn session(&self, uid: u32, running: bool) {
+        let dir = self.path("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sessions = if running {
+            "SESSIONS=3\n"
+        } else {
+            "SESSIONS=\n"
+        };
+        std::fs::write(
+            dir.join(uid.to_string()),
+            format!("STATE=active\n{sessions}"),
+        )
+        .unwrap();
+    }
+
     fn leave_proof(&self) {
         std::fs::write(self.path("proof.key"), DISK_PASSPHRASE).unwrap();
     }
@@ -547,6 +564,41 @@ fn without_a_tpm_only_a_strong_password_stands_alone() {
 }
 
 #[test]
+fn a_key_is_held_for_the_sessions_its_sign_in_starts_and_no_longer() {
+    let m = machine!(true, &[("ada", "123456")]);
+    m.leave_proof();
+    let daemon = m.daemon();
+    let held =
+        |peer: Peer, user: &str| reply(daemon.handle(peer, Request::KeyHeld { user: user.into() }));
+    assert_eq!(held(ROOT, "ada").key_held, Some(false));
+
+    // Signed in at the login screen: held, but no session of hers runs yet.
+    assert_eq!(verify(&daemon, ROOT, "ada", "123456"), Reply::success());
+    assert_eq!(held(GREETER, "ada").key_held, Some(false));
+
+    m.session(ADA.uid, true);
+    assert_eq!(held(ADA, "ada").key_held, Some(true));
+    assert_eq!(held(GREETER, "ada").key_held, Some(true), "switching back");
+    assert_eq!(held(BOB, "ada"), refused(Refusal::NotPermitted));
+
+    // Her sessions end, and the key with them: a later session that no
+    // factor unwrapped for, an ssh login by key say, does not bring it back.
+    m.session(ADA.uid, false);
+    assert_eq!(held(ROOT, "ada").key_held, Some(false));
+    m.session(ADA.uid, true);
+    assert_eq!(held(ROOT, "ada").key_held, Some(false));
+
+    // A wrong entry holds nothing.
+    assert_eq!(
+        verify(&daemon, ADA, "ada", "000000").error,
+        Some(Refusal::Wrong)
+    );
+    assert_eq!(held(ROOT, "ada").key_held, Some(false));
+    assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
+    assert_eq!(held(ROOT, "ada").key_held, Some(true));
+}
+
+#[test]
 fn people_may_only_ask_about_themselves() {
     let m = machine!(false, &[("ada", "correct horse battery staple")]);
     let daemon = m.daemon();
@@ -865,6 +917,12 @@ mod keyring {
         assert_eq!(claim("bob"), refused(Refusal::NoBootSignIn));
         assert_eq!(claim("ada"), Reply::success());
         assert_eq!(claim("ada"), refused(Refusal::NoBootSignIn));
+        // The session the boot sign-in started holds her key.
+        m.session(ADA.uid, true);
+        assert_eq!(
+            reply(daemon.handle(ROOT, Request::KeyHeld { user: "ada".into() })).key_held,
+            Some(true)
+        );
         assert_eq!(pending(&daemon, GREETER), None);
     }
 }

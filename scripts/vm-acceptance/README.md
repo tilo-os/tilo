@@ -70,10 +70,12 @@ this README or unit tests changed, and every check when anything else in this di
 `tools/ci/vm-acceptance.sh` changed. A dispatched run, and `vm-acceptance-perf`, run every
 check unless `only` names some.
 
-The disk is the tree's own dev image: the check needs `os-dev-image-x86_64`, which t builds
-from the same tree (and takes from its cache when the image's inputs are unchanged), and
-installs it with `os/dev/build-image.sh` as Release / Dev VM disk installs a dev image. The
-script writes the provenance record itself, so P01 reads the tree's commit.
+The disk is the tree's own dev image as `os-dev-gate-x86_64` installed it with
+`os/dev/build-image.sh` (the disk the dev channel publishes, which the gate never boots
+itself); each run boots a throwaway overlay of it, so R06 times a cold boot. tilo-vm is
+`tilo-vm-binary-x86_64`'s. Both come from t's cache when their inputs are unchanged, and
+so does the run itself when the suite, its driver and the files the scenarios read are
+too. The script writes the provenance record itself, so P01 reads the tree's commit.
 
 `swap` (default `none`) exercises the swap path on top: run.py `--swap` runs `tilo device
 swap <component> --builder host` from a copy of the tree (`--swap-from`) after the slot is

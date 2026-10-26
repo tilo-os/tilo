@@ -560,3 +560,72 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         );
     }
 }
+#[test]
+fn a_settled_page_result_nobody_waits_for_does_not_hold_the_tab() {
+    let mut widget = BrowserWidget::new_headless();
+    widget.current_uri = "https://site.test/form".into();
+    let abandoned = ui::tilo_actions::InvocationId::new();
+    widget
+        .start_page_operation(abandoned, PageRequest::Outline { frame: None })
+        .unwrap();
+    // Its page answered after the caller was answered `accepted`.
+    widget.page_operation = None;
+    widget.page_operation_result = Some(ui::tilo_actions::InvocationUpdate::Succeeded {
+        invocation: abandoned,
+        output: ui::tilo_actions::ActionOutput::default(),
+    });
+    assert!(
+        !widget.reply_outstanding(abandoned),
+        "nothing waits on the abandoned invocation"
+    );
+
+    // The next action in this tab runs rather than being refused.
+    let next = ui::tilo_actions::InvocationId::new();
+    widget
+        .start_page_operation(next, PageRequest::Outline { frame: None })
+        .expect("an unwatched result must not refuse the next page action");
+    assert!(
+        widget
+            .page_operation
+            .as_ref()
+            .is_some_and(|operation| operation.invocation == next),
+        "the next action took the slot"
+    );
+
+    // The decision is the reply set, never the age of the result: a settled
+    // result whose invocation a reply still waits on stays for that reply.
+    assert!(!widget.reply_outstanding(next));
+    widget.page_operation = None;
+    widget.page_operation_result = Some(ui::tilo_actions::InvocationUpdate::Succeeded {
+        invocation: next,
+        output: ui::tilo_actions::ActionOutput::default(),
+    });
+    widget.abandon_unwatched_page_result();
+    assert!(
+        widget.page_operation_result.is_none(),
+        "a settled result no reply waits on is let go"
+    );
+
+    // An operation still running is left alone: it settles at its own
+    // deadline, and refusing the next action while it runs is right.
+    let running = ui::tilo_actions::InvocationId::new();
+    widget
+        .start_page_operation(running, PageRequest::Outline { frame: None })
+        .unwrap();
+    assert!(
+        widget
+            .start_page_operation(
+                ui::tilo_actions::InvocationId::new(),
+                PageRequest::Outline { frame: None }
+            )
+            .is_err(),
+        "a second page action is refused while one runs"
+    );
+    assert!(
+        widget
+            .page_operation
+            .as_ref()
+            .is_some_and(|operation| operation.invocation == running),
+        "the running action keeps the slot"
+    );
+}

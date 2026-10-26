@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use tilo_render_protocol::Limits;
 use tilo_render_protocol::channel::{Channel, ChannelError, Received};
-use tilo_render_protocol::control::{AppMessage, Plane, Refusal, ServiceMessage};
+use tilo_render_protocol::control::{AppMessage, Plane, Refusal, Renderer, ServiceMessage};
 use tilo_render_protocol::frame;
 use tilo_render_protocol::shm::Mapping;
 use tilo_render_protocol::{PROTOCOL_VERSION, SurfaceId};
@@ -243,6 +243,7 @@ impl Service {
                         version: version.min(PROTOCOL_VERSION),
                         limits,
                         font_roots,
+                        renderer: renderer(self.gpu.as_ref()),
                     },
                     &[],
                 );
@@ -592,6 +593,24 @@ impl Service {
     }
 }
 
+/// What draws the frames: the adapter in wgpu's words, or the CPU rasteriser
+/// into shared memory when the service holds no device.
+fn renderer(gpu: Option<&Gpu>) -> Renderer {
+    gpu.map_or_else(
+        || Renderer {
+            name: "CPU rasteriser".to_owned(),
+            device_type: "Cpu".to_owned(),
+            backend: "Shm".to_owned(),
+            driver: "render service".to_owned(),
+        },
+        |gpu| Renderer {
+            name: gpu.adapter.name.clone(),
+            device_type: format!("{:?}", gpu.adapter.device_type),
+            backend: format!("{:?}", gpu.adapter.backend),
+            driver: gpu.adapter.driver.clone(),
+        },
+    )
+}
 fn send(
     (channel, app): (&Channel, &str),
     message: &ServiceMessage,

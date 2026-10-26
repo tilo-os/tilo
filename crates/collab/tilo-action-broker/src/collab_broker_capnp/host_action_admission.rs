@@ -122,7 +122,7 @@ impl CapnpBrokerState {
                     self.current_native_person(room, certificate)
                         .map_err(unavailable)?;
                 }
-                original.owner()
+                original.owner().map_err(unavailable)?
             }
             Some(InvocationCaller::Local {
                 route,
