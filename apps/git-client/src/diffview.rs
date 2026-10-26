@@ -458,10 +458,9 @@ fn paint_file_header(
 
     // Actions trail: the file's toggle last, discard before it.
     let mut right = band.x1 - m.pad;
-    let mut buttons: Vec<(String, ButtonRole, DiffHit)> = if !input.actions {
-        Vec::new()
-    } else {
-        vec![(
+    let mut buttons: Vec<(String, ButtonRole, DiffHit)> = Vec::new();
+    if input.actions {
+        buttons.push((
             t(if input.staged {
                 "git-unstage-file"
             } else {
@@ -469,8 +468,8 @@ fn paint_file_header(
             }),
             ButtonRole::Secondary,
             DiffHit::StageFile,
-        )]
-    };
+        ));
+    }
     if input.actions && input.can_discard && !input.staged {
         buttons.push((
             t("git-discard-file"),
