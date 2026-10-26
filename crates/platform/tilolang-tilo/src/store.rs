@@ -33,8 +33,8 @@ use tilo_resource::{Edit, EditOp, Id, Model, Segment};
 use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{AppId, DocId, RunId, TypeId};
 use tilolang_runtime::store::{
-    ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Mutation,
-    NewRecord, OutboxEntry, Scalar, Store, StoreError, SubId, Txn,
+    ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Listing,
+    ListingChange, Mutation, NewRecord, OutboxEntry, Scalar, Splice, Store, StoreError, SubId, Txn,
 };
 use tilolang_runtime::value::ResourceRef;
 
@@ -71,6 +71,25 @@ struct TxnState {
     /// How many of the store's writes the mirror held when the transaction began.
     start: usize,
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
+    /// How the collections it changed changed, in order.
+    listings: Vec<ListingChange>,
+}
+
+/// Items of collections a change touched: per collection, the ids of the items added, removed
+/// or moved. The store's read cache moves each in the collection's listing
+/// ([`ReadCache::reconcile`]) instead of listing the collection again.
+pub(crate) type ItemTouches = BTreeMap<FieldKey, BTreeSet<String>>;
+
+/// Add `splices` to the steps of the collection `key` in `out`: none at all says that it did
+/// not change after all.
+fn record_splices(out: &mut Vec<ListingChange>, key: &FieldKey, splices: Vec<Splice>) {
+    match out.iter_mut().find(|change| change.key == *key) {
+        Some(change) => change.splices.extend(splices),
+        None => out.push(ListingChange {
+            key: key.clone(),
+            splices,
+        }),
+    }
 }
 
 /// One write the store made into the mirror's open transaction: what to apply again to put the
@@ -81,6 +100,8 @@ struct LocalWrite {
     edit: DynEdit,
     seed: Vec<u8>,
     touched: Vec<FieldKey>,
+    /// The collection items it added, removed or moved.
+    items: Vec<(FieldKey, String)>,
 }
 
 /// What the store did, for tests and the benchmark.
@@ -171,6 +192,13 @@ pub struct Changes {
     pub whole: BTreeSet<DocId>,
     /// Anything anywhere may have changed: the mirror was copied from the record anew.
     pub everything: bool,
+    /// How collections' items changed, in the order the changes happened (see
+    /// [`ChangeSummary::listings`]); a collection named in `docs` without steps here changed in
+    /// a way the store could not say.
+    pub listings: Vec<ListingChange>,
+    /// The fields named by a change that did not say how its listing changed: steps for one of
+    /// these collections are not the whole story.
+    unsaid: BTreeSet<FieldKey>,
 }
 
 impl Changes {
@@ -183,6 +211,26 @@ impl Changes {
                 .or_default()
                 .extend(summary.fields.iter().cloned());
         }
+        for change in &summary.listings {
+            record_splices(&mut self.listings, &change.key, change.splices.clone());
+        }
+        for key in &summary.fields {
+            if summary.listing(key).is_none() {
+                self.unsaid.insert(key.clone());
+            }
+        }
+    }
+
+    /// The steps that changed the collection `key`, in order, when the store could say.
+    #[must_use]
+    pub fn listing(&self, key: &FieldKey) -> Option<&[Splice]> {
+        if self.unsaid.contains(key) {
+            return None;
+        }
+        self.listings
+            .iter()
+            .find(|change| change.key == *key)
+            .map(|change| change.splices.as_slice())
     }
 
     /// Whether nothing changed.
@@ -365,7 +413,9 @@ impl TiloStore {
         if inner.seen == heads {
             return false;
         }
-        inner.drop_local_from(0);
+        // The store's own writes leave the mirror: what they touched is forgotten, and the items
+        // they added, removed or moved are moved again below, as the record has them.
+        let mut items = inner.drop_local_from(0);
         inner.mirror.rollback();
         let changed = if inner.mirror.get_heads() == inner.seen {
             let changes = record.committed_document().get_changes(&inner.seen);
@@ -378,8 +428,11 @@ impl TiloStore {
             None
         };
         inner.seen = heads;
-        if let Some(changed) = changed {
+        if let Some(mut changed) = changed {
             inner.stats.incremental_syncs = inner.stats.incremental_syncs.saturating_add(1);
+            for (key, ids) in std::mem::take(&mut changed.items) {
+                items.entry(key).or_default().extend(ids);
+            }
             {
                 let mut cache = inner.cache.borrow_mut();
                 if changed.unplaced || changed.layout {
@@ -389,7 +442,9 @@ impl TiloStore {
                     if fields.is_empty() {
                         cache.forget_doc(doc);
                     }
-                    for key in fields {
+                    // A collection whose items the change names keeps its listing: they are
+                    // moved in it below.
+                    for key in fields.iter().filter(|key| !items.contains_key(*key)) {
                         cache.forget(key);
                     }
                 }
@@ -397,11 +452,17 @@ impl TiloStore {
             if changed.structure || changed.unplaced {
                 inner.index = scan(&inner.mirror);
             }
+            let mut listings = inner.reconcile(&items);
             if changed.unplaced {
                 inner.notify_all();
             } else {
                 for (doc, fields) in changed.docs {
-                    inner.notify(&ChangeSummary { doc, fields });
+                    let listings = listings.remove(&doc).unwrap_or_default();
+                    inner.notify(&ChangeSummary {
+                        doc,
+                        fields,
+                        listings,
+                    });
                 }
             }
         } else {
@@ -508,8 +569,10 @@ impl TiloStore {
     /// anyone follows.
     pub fn rewind(&self, checkpoint: Checkpoint) {
         let mut inner = self.mutate();
-        inner.drop_local_from(checkpoint.local);
+        let items = inner.drop_local_from(checkpoint.local);
         inner.reapply();
+        // Nobody heard of the trial's steps, so nobody hears of them being taken back.
+        inner.reconcile(&items);
         inner.index = checkpoint.index;
         inner.notes = checkpoint.notes;
         inner.held.truncate(checkpoint.held);
@@ -645,6 +708,20 @@ impl TiloStore {
             .first_text(&inner.mirror, (&app, &ty), at)
     }
 
+    /// Where the item `item` is in the collection `field` of `at`, as its listing has it: found
+    /// by its order key, not by walking the listing.
+    #[must_use]
+    pub fn position(&self, at: &ResourceRef, field: &str, item: &str) -> Option<usize> {
+        let spec = FieldSpec {
+            id: field.to_owned(),
+            kind: tilolang_runtime::meta::FieldKind::Collection,
+        };
+        // Listed once, then kept up to date by the changes.
+        Store::listing(self, at, &spec).ok()?;
+        let inner = self.inner.borrow();
+        inner.cache.borrow().position(&at.id_string(), field, item)
+    }
+
     /// Create the resource `id` as one committed change: how a per-room singleton gets the same
     /// id on every replica.
     ///
@@ -666,7 +743,13 @@ impl TiloStore {
             resource: id.to_owned(),
             field: ANY_FIELD.to_owned(),
         }];
-        inner.write(&record.app, edit.clone(), id.as_bytes().to_vec(), touched)?;
+        inner.write(
+            &record.app,
+            edit.clone(),
+            id.as_bytes().to_vec(),
+            touched,
+            Vec::new(),
+        )?;
         inner
             .index
             .insert(id.to_owned(), (record.app.clone(), record.ty.clone()));
@@ -710,32 +793,38 @@ impl Inner {
         self.watched(|changes| changes.everything = true);
         let docs: BTreeSet<DocId> = self.subs.iter().map(|sub| sub.doc.clone()).collect();
         for doc in docs {
-            self.notify(&ChangeSummary {
-                doc,
-                fields: Vec::new(),
-            });
+            self.notify(&ChangeSummary::whole(doc));
         }
     }
 
-    /// Apply one edit to the mirror's open transaction. `touched` names what it changes.
+    /// Apply one edit to the mirror's open transaction. `touched` names what it changes, and
+    /// `items` the collection items it adds, removes or moves, which are moved in what the
+    /// cache listed of their collections. Returns the steps each listed collection took.
     fn write(
         &mut self,
         app: &str,
         edit: DynEdit,
         seed: Vec<u8>,
         touched: Vec<FieldKey>,
-    ) -> Result<(), StoreError> {
+        items: Vec<(FieldKey, String)>,
+    ) -> Result<BTreeMap<DocId, Vec<ListingChange>>, StoreError> {
         let applied = apply_edits(&mut self.mirror, app, std::slice::from_ref(&edit), &seed);
-        // Forgotten either way: a failed edit may have written part of itself.
+        // Forgotten or moved either way: a failed edit may have written part of itself.
         self.forget(&touched);
+        let mut moved = ItemTouches::new();
+        for (key, id) in &items {
+            moved.entry(key.clone()).or_default().insert(id.clone());
+        }
+        let listings = self.reconcile(&moved);
         applied.map_err(|error| invalid(error.to_string()))?;
         self.local.push(LocalWrite {
             app: app.to_owned(),
             edit,
             seed,
             touched,
+            items,
         });
-        Ok(())
+        Ok(listings)
     }
 
     fn forget(&self, touched: &[FieldKey]) {
@@ -745,16 +834,35 @@ impl Inner {
         }
     }
 
+    /// Move the items `items` in the listings of their collections as the mirror holds them
+    /// now; returns the steps taken, per document.
+    fn reconcile(&self, items: &ItemTouches) -> BTreeMap<DocId, Vec<ListingChange>> {
+        let mut cache = self.cache.borrow_mut();
+        let mut out: BTreeMap<DocId, Vec<ListingChange>> = BTreeMap::new();
+        for (key, ids) in items {
+            if let Some(splices) = cache.reconcile(&self.mirror, key, ids) {
+                record_splices(out.entry(key.doc().to_owned()).or_default(), key, splices);
+            }
+        }
+        out
+    }
+
     /// Drop the store's writes from the `start`th on (the caller applies the rest again), and
-    /// forget what they changed.
-    fn drop_local_from(&mut self, start: usize) {
+    /// forget what they changed. Returns the collection items they added, removed or moved:
+    /// once the mirror is as it will be, the caller moves them back ([`Self::reconcile`]).
+    fn drop_local_from(&mut self, start: usize) -> ItemTouches {
         let start = start.min(self.local.len());
+        let mut items = ItemTouches::new();
         for write in self.local.drain(start..) {
             let mut cache = self.cache.borrow_mut();
             for key in &write.touched {
                 cache.forget(key);
             }
+            for (key, id) in write.items {
+                items.entry(key).or_default().insert(id);
+            }
         }
+        items
     }
 
     /// Drop the mirror's open transaction and apply the store's committed writes again: the
@@ -963,16 +1071,11 @@ impl Store for TiloStore {
             (edit, None, None)
         } else {
             let length = match m {
-                Mutation::CollInsert { field, .. } => {
-                    match inner
-                        .cache
-                        .borrow_mut()
-                        .read(&inner.mirror, (&app, &ty), at, field)?
-                    {
-                        FieldValue::Items(items) => items.len(),
-                        _ => 0,
-                    }
-                }
+                Mutation::CollInsert { field, .. } => inner
+                    .cache
+                    .borrow_mut()
+                    .listing(&inner.mirror, (&app, &ty), at, field)?
+                    .len(),
                 _ => 0,
             };
             let new_id = inner.fresh("i");
@@ -984,8 +1087,21 @@ impl Store for TiloStore {
             (edit, item, Some(field_of(m)))
         };
         let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
+        // A collection's items are moved in its listing; any other field is forgotten.
+        let moved = match m {
+            Mutation::CollInsert { field, .. } => item.clone().map(|id| (field, id)),
+            Mutation::CollRemove { field, item } | Mutation::CollMove { field, item, .. } => {
+                Some((field, item.clone()))
+            }
+            _ => None,
+        };
+        let items: Vec<(FieldKey, String)> = moved
+            .iter()
+            .map(|(field, id)| (FieldKey::new(at, (*field).clone()), id.clone()))
+            .collect();
         let mut touched: Vec<FieldKey> = field
             .iter()
+            .filter(|_| items.is_empty())
             .map(|field| FieldKey::new(at, field.clone()))
             .collect();
         if let Mutation::CollRemove { field, item } = m {
@@ -995,7 +1111,7 @@ impl Store for TiloStore {
                 ANY_FIELD,
             ));
         }
-        inner.write(&app, dyn_edit.clone(), seed, touched)?;
+        let listings = inner.write(&app, dyn_edit.clone(), seed, touched, items)?;
         let kind = lookup(&ty).map(|schema| format!("tl.{app}.{}", schema.name));
         let state = inner
             .txns
@@ -1009,6 +1125,9 @@ impl Store for TiloStore {
             state.kind = kind;
         }
         state.edits.push(dyn_edit);
+        for change in listings.into_values().flatten() {
+            record_splices(&mut state.listings, &change.key, change.splices);
+        }
         let touched = state.touched.entry(at.doc.clone()).or_default();
         if let Some(field) = field {
             touched.insert(FieldKey::new(at, field));
@@ -1041,6 +1160,7 @@ impl Store for TiloStore {
             edits: state.edits,
         };
         inner.enqueue(action);
+        let mut listings = state.listings;
         for (doc, fields) in state.touched {
             inner
                 .notes
@@ -1051,9 +1171,14 @@ impl Store for TiloStore {
             if fields.is_empty() {
                 continue;
             }
+            let (own, rest): (Vec<ListingChange>, Vec<ListingChange>) = listings
+                .into_iter()
+                .partition(|change| change.key.doc() == doc);
+            listings = rest;
             inner.notify(&ChangeSummary {
                 doc,
                 fields: fields.into_iter().collect(),
+                listings: own,
             });
         }
         Ok(())
@@ -1062,8 +1187,9 @@ impl Store for TiloStore {
     fn rollback(&mut self, txn: Txn) {
         let mut inner = self.mutate();
         if let Some(state) = inner.txns.remove(&txn.0) {
-            inner.drop_local_from(state.start);
+            let items = inner.drop_local_from(state.start);
             inner.reapply();
+            inner.reconcile(&items);
         }
     }
 
@@ -1077,6 +1203,18 @@ impl Store for TiloStore {
             .cache
             .borrow_mut()
             .read(&inner.mirror, (app, ty), at, &field.id)
+    }
+
+    fn listing(&self, at: &ResourceRef, field: &FieldSpec) -> Result<Rc<Listing>, StoreError> {
+        let inner = self.inner.borrow();
+        let (app, ty) = inner
+            .index
+            .get(&at.doc)
+            .ok_or_else(|| not_found(format!("resource {}", at.doc)))?;
+        inner
+            .cache
+            .borrow_mut()
+            .listing(&inner.mirror, (app, ty), at, &field.id)
     }
 
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError> {
@@ -1134,7 +1272,7 @@ impl Store for TiloStore {
             outcome: "done".to_owned(),
         };
         let seed = format!("settle:{}:{}", entry.doc, entry.id).into_bytes();
-        inner.write(&app, edit.clone(), seed, Vec::new())?;
+        inner.write(&app, edit.clone(), seed, Vec::new(), Vec::new())?;
         let kind =
             lookup(&ty).map_or_else(String::new, |schema| format!("tl.{app}.{}", schema.name));
         inner.enqueue(DynAction {

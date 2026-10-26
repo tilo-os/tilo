@@ -15,6 +15,7 @@ pub mod abi;
 pub mod amstore;
 pub mod authority;
 pub mod catalogue;
+mod colls;
 mod core;
 mod embed;
 pub mod engine;
@@ -58,8 +59,11 @@ pub use render::ViewTarget;
 pub use runtime::{BlockOutput, MemorySink, Runtime, SettleReport};
 pub use settle::{AgentBlock, InvocationRecord};
 pub use space::Space;
-pub use store::{ANY_FIELD, ChangeNote, ChangeSummary, FieldKey, Store, StoreError};
-pub use value::{ActionRef, EnumValue, RefValue, ResourceRef, Value};
+pub use store::{
+    ANY_FIELD, ChangeNote, ChangeSummary, FieldKey, Listing, ListingChange, Splice, Store,
+    StoreError,
+};
+pub use value::{ActionRef, CollRef, EnumValue, RefValue, ResourceRef, Value};
 pub use view::{BindTarget, Binding, Patch, UiNode};
 pub use view_instance::{EditOutcome, ViewEvent, ViewInstance};
 pub use view_state::{StateKey, StateLayer};

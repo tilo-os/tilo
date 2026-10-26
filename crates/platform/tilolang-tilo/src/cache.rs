@@ -16,8 +16,16 @@
 //! A change forgets exactly what it touched (the store's own writes by the field they wrote,
 //! the record's changes by the [`FieldKey`]s [`crate::reads::changed_by`] names), and a change
 //! the store cannot place forgets everything. What is forgotten is read again when next asked.
+//!
+//! A collection's listing is not forgotten when items are added to it, removed from it or moved
+//! in it: the change names the items it touched, and [`ReadCache::reconcile`] reads each of them
+//! (its order key, or that it is gone) and moves it in the listing, which keeps every item's
+//! order key for that. A message added to a conversation of 10,000 costs one entry read and a
+//! binary search, not a listing of the 10,000, and the steps it took ([`Splice`]) are what the
+//! store tells its readers.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 
 /// A map keyed by resource ids or field names, read per field a view reads: hashed fast.
 type Map<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
@@ -28,7 +36,7 @@ use tilo_resource::collection::{
 };
 use tilo_resource::model::MapSlot;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
-use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, StoreError};
+use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, Listing, Splice, StoreError};
 use tilolang_runtime::value::ResourceRef;
 
 use crate::reads::{default_value, field_of_slot, resource_obj};
@@ -51,9 +59,18 @@ pub struct ReadCache {
 
 /// What the store read of one document: per resource (the document's root, or an item, keyed
 /// by [`ResourceRef::id_string`]).
+///
+/// What is kept beside a resource's fields is kept beside the resources, for the few that have
+/// it, so that the many items of a collection cost no more than their fields.
 #[derive(Default)]
 struct DocCache {
     resources: Map<String, Cached>,
+    /// Per resource kept, its collections listed so far.
+    lists: Map<String, Map<&'static str, Listed>>,
+    /// Per resource kept, the items within it kept that were found one by one, by key, rather
+    /// than listed with their collection: forgotten with it, as its listed items are, without a
+    /// look at the other resources.
+    inside: Map<String, Vec<String>>,
 }
 
 /// One resource: where it is and the fields read so far, keyed by the field ids its schema
@@ -65,8 +82,89 @@ struct Cached {
     fields: Map<&'static str, FieldValue>,
 }
 
-/// An item of a collection as one thread of a collection read found it.
+impl Cached {
+    fn new(obj: Option<ObjId>, schema: &'static TypeSchema) -> Self {
+        Self {
+            obj,
+            schema,
+            fields: Map::default(),
+        }
+    }
+}
+
+impl DocCache {
+    /// Keep `cached` as the resource `key`, an item within the resource `parent`.
+    fn keep_within(&mut self, parent: &str, key: String, cached: Cached) {
+        if self.resources.contains_key(parent) {
+            self.inside
+                .entry(parent.to_owned())
+                .or_default()
+                .push(key.clone());
+        }
+        self.resources.insert(key, cached);
+    }
+
+    /// Forget the resource `key` and the items kept within it.
+    fn drop_resource(&mut self, key: &str) {
+        let mut gone = vec![key.to_owned()];
+        while let Some(key) = gone.pop() {
+            if self.resources.remove(&key).is_none() {
+                continue;
+            }
+            for (field, listed) in self.lists.remove(&key).unwrap_or_default() {
+                gone.extend(listed.member_keys(&key, field));
+            }
+            gone.extend(self.inside.remove(&key).unwrap_or_default());
+        }
+    }
+
+    /// Forget the listing of the collection `field` of the resource `key`, and the items kept
+    /// with it: they are listed, and kept, again when next read.
+    fn drop_listing(&mut self, key: &str, field: &str) {
+        let Some(listed) = self
+            .lists
+            .get_mut(key)
+            .and_then(|lists| lists.remove(field))
+        else {
+            return;
+        };
+        for member in listed.member_keys(key, field) {
+            self.drop_resource(&member);
+        }
+    }
+}
+
+/// A collection's items in order, and each item's order key: where an item goes, found by
+/// binary search over (order key, id), the stored order.
 struct Listed {
+    listing: Rc<Listing>,
+    keys: Map<Rc<str>, String>,
+}
+
+impl Listed {
+    /// The keys of its items, as resources within the resource `key`'s collection `field`.
+    fn member_keys<'a>(
+        &'a self,
+        key: &'a str,
+        field: &'a str,
+    ) -> impl Iterator<Item = String> + 'a {
+        self.listing
+            .items
+            .iter()
+            .map(move |id| format!("{key}/{field}:{id}"))
+    }
+
+    /// Where the item `id` with the order key `key` is, or would go.
+    fn position(&self, key: &str, id: &str) -> usize {
+        self.listing.items.partition_point(|other| {
+            let other_key = self.keys.get(other).map_or("", String::as_str);
+            (other_key, &**other) < (key, id)
+        })
+    }
+}
+
+/// An item of a collection as one thread of a collection read found it.
+struct Found {
     stored: Stored,
     obj: Option<ObjId>,
     fields: Vec<(&'static str, FieldValue)>,
@@ -111,9 +209,13 @@ impl ReadCache {
         let spec = schema
             .field(field)
             .ok_or_else(|| not_found(format!("field {field}")))?;
+        if spec.kind == MergeKind::Collection {
+            return Ok(FieldValue::Items(
+                self.listing(doc, (app, ty), at, field)?.ids(),
+            ));
+        }
         let value = match obj.as_ref() {
             None => default_value(spec),
-            Some(obj) if spec.kind == MergeKind::Collection => self.list(doc, obj, &key, spec)?,
             Some(obj) => {
                 let slot = doc
                     .get(obj, spec.id.as_str())
@@ -130,6 +232,152 @@ impl ReadCache {
             cached.fields.insert(spec.id.as_str(), value.clone());
         }
         Ok(value)
+    }
+
+    /// The items of the collection `field` of the resource `at`, in order, shared: listed once
+    /// and kept, and kept up to date by [`Self::reconcile`] as items come and go.
+    ///
+    /// # Errors
+    /// `NotFound` for a resource or field that is not there, or a field that is not a
+    /// collection; `Backend` for a stored value of the wrong shape.
+    pub fn listing(
+        &mut self,
+        doc: &Doc,
+        (app, ty): (&AppId, &TypeId),
+        at: &ResourceRef,
+        field: &str,
+    ) -> Result<Rc<Listing>, StoreError> {
+        let key = at.id_string();
+        if let Some(listed) = self
+            .docs
+            .get(&at.doc)
+            .and_then(|d| d.lists.get(&key))
+            .and_then(|lists| lists.get(field))
+        {
+            return Ok(Rc::clone(&listed.listing));
+        }
+        let (obj, schema) = self.locate(doc, (app, ty), at, &key)?;
+        let spec = schema
+            .field(field)
+            .filter(|f| f.kind == MergeKind::Collection)
+            .ok_or_else(|| not_found(format!("collection {field}")))?;
+        let listed = match obj.as_ref() {
+            None => Listed {
+                listing: Rc::default(),
+                keys: Map::default(),
+            },
+            Some(obj) => self.list(doc, obj, &key, spec)?,
+        };
+        let listing = Rc::clone(&listed.listing);
+        if let Some(d) = self.docs.get_mut(&at.doc)
+            && d.resources.contains_key(&key)
+        {
+            d.lists
+                .entry(key)
+                .or_default()
+                .insert(spec.id.as_str(), listed);
+        }
+        Ok(listing)
+    }
+
+    /// Where the item `id` is in the collection `field` of `at`, if it is there and the
+    /// collection was listed: found by its order key, not by walking the listing.
+    pub fn position(&self, at: &str, field: &str, id: &str) -> Option<usize> {
+        let listed = self
+            .docs
+            .get(tilolang_runtime::store::doc_of(at))?
+            .lists
+            .get(at)?
+            .get(field)?;
+        let key = listed.keys.get(id)?;
+        let at = listed.position(key, id);
+        (listed.listing.get(at).map(|found| &**found) == Some(id)).then_some(at)
+    }
+
+    /// Bring the listing of the collection `coll` in line with the items `items` as `doc` holds
+    /// them now: each that is gone leaves the listing, each that is new or has a new order key
+    /// goes where its key puts it. Returns the steps taken, in order; `None` when the collection
+    /// was not listed (there is nothing to bring in line: it is listed when next read).
+    pub fn reconcile(
+        &mut self,
+        doc: &Doc,
+        coll: &FieldKey,
+        items: &BTreeSet<String>,
+    ) -> Option<Vec<Splice>> {
+        let cache = self.docs.get_mut(coll.doc())?;
+        let map = cache
+            .resources
+            .get(&coll.resource)?
+            .obj
+            .as_ref()
+            .and_then(|obj| doc.get(obj, coll.field.as_str()).ok().flatten())
+            .and_then(|(value, id)| map_of(&Some((value.into_owned(), id))));
+        let listed = cache
+            .lists
+            .get_mut(&coll.resource)?
+            .get_mut(coll.field.as_str())?;
+        // Which items left, and which arrived or moved: an item whose key is the one listed
+        // stays where it is.
+        let mut leaving: Vec<(usize, String)> = Vec::new();
+        let mut arriving: Vec<(String, String)> = Vec::new();
+        for id in items {
+            let now = map
+                .as_ref()
+                .and_then(|map| tilo_resource::stored_entry(doc, map, id))
+                .map(|stored| stored.key);
+            let before = listed.keys.get(id.as_str());
+            if before == now.as_ref() {
+                continue;
+            }
+            if let Some(key) = before {
+                let at = listed.position(key, id);
+                if listed.listing.get(at).map(|found| &**found) == Some(id.as_str()) {
+                    leaving.push((at, id.clone()));
+                }
+            }
+            if let Some(key) = now {
+                arriving.push((key, id.clone()));
+            }
+        }
+        let mut splices = Vec::with_capacity(leaving.len().saturating_add(arriving.len()));
+        if leaving.is_empty() && arriving.is_empty() {
+            return Some(splices);
+        }
+        // Removed from the end first, so each index is the one the steps before it left.
+        leaving.sort_unstable_by_key(|(at, _)| std::cmp::Reverse(*at));
+        let items = &mut Rc::make_mut(&mut listed.listing).items;
+        for (at, id) in leaving {
+            if at < items.len() {
+                items.remove(at);
+            }
+            listed.keys.remove(id.as_str());
+            splices.push(Splice::Remove { at, item: id });
+        }
+        // Inserted in stored order, so each lands after the ones before it.
+        arriving.sort_unstable();
+        for (key, id) in arriving {
+            let at = listed.position(&key, &id);
+            let shared: Rc<str> = Rc::from(id.as_str());
+            let items = &mut Rc::make_mut(&mut listed.listing).items;
+            items.insert(at.min(items.len()), Rc::clone(&shared));
+            listed.keys.insert(shared, key);
+            splices.push(Splice::Insert { at, item: id });
+        }
+        // An item that left and came back to the same place (its key changed, its neighbours did
+        // not) did not move.
+        if let [
+            Splice::Remove {
+                at: from,
+                item: gone,
+            },
+            Splice::Insert { at: to, item: back },
+        ] = splices.as_slice()
+            && from == to
+            && gone == back
+        {
+            splices.clear();
+        }
+        Some(splices)
     }
 
     /// Where the resource `at` (written `key`) is, and its schema: from what was read before,
@@ -152,14 +400,9 @@ impl ReadCache {
             let schema = lookup(ty).ok_or_else(|| not_found(format!("type {ty}")))?;
             let obj = resource_obj(doc, app, &at.doc)
                 .ok_or_else(|| not_found(format!("resource {}", at.doc)))?;
-            cache.resources.insert(
-                key.to_owned(),
-                Cached {
-                    obj: Some(obj.clone()),
-                    schema,
-                    fields: Map::default(),
-                },
-            );
+            cache
+                .resources
+                .insert(key.to_owned(), Cached::new(Some(obj.clone()), schema));
             return Ok((Some(obj), schema));
         };
         let parent = ResourceRef {
@@ -185,36 +428,33 @@ impl ReadCache {
             .ok_or_else(|| not_found(format!("item `{}`", last.item)))?;
         let obj = tilo_resource::stored_item(doc, &coll, &last.item)
             .ok_or_else(|| not_found(format!("item `{}`", last.item)))?;
-        self.docs
-            .entry(at.doc.clone())
-            .or_default()
-            .resources
-            .insert(
-                key.to_owned(),
-                Cached {
-                    obj: obj.clone(),
-                    schema,
-                    fields: Map::default(),
-                },
-            );
+        self.docs.entry(at.doc.clone()).or_default().keep_within(
+            &parent.id_string(),
+            key.to_owned(),
+            Cached::new(obj.clone(), schema),
+        );
         Ok((obj, schema))
     }
 
     /// The items of the collection `field` of the resource map `obj` (written `key`), in
-    /// order; each item that was not read before is kept with its scalar fields.
+    /// order, with their order keys; each item that was not read before is kept with its
+    /// scalar fields.
     fn list(
         &mut self,
         doc: &Doc,
         obj: &ObjId,
         key: &str,
         field: &FieldSchema,
-    ) -> Result<FieldValue, StoreError> {
+    ) -> Result<Listed, StoreError> {
         let coll = doc
             .get(obj, field.id.as_str())
             .map_err(|e| StoreError::Backend(e.to_string()))?
             .and_then(|(value, id)| map_of(&Some((value.into_owned(), id))));
         let Some(coll) = coll else {
-            return Ok(FieldValue::Items(Vec::new()));
+            return Ok(Listed {
+                listing: Rc::default(),
+                keys: Map::default(),
+            });
         };
         let item_schema = field.record.as_deref().and_then(lookup);
         let doc_id = tilolang_runtime::store::doc_of(key).to_owned();
@@ -235,24 +475,32 @@ impl ReadCache {
         for item in listed {
             let id = format!("{prefix}{}", item.stored.id.as_str());
             if let Some(schema) = item_schema {
-                let cached = cache.resources.entry(id).or_insert_with(|| Cached {
-                    obj: item.obj.clone(),
-                    schema,
-                    fields: Map::default(),
-                });
+                let cached = cache
+                    .resources
+                    .entry(id)
+                    .or_insert_with(|| Cached::new(item.obj.clone(), schema));
                 for (name, value) in item.fields {
                     cached.fields.entry(name).or_insert(value);
                 }
             }
             stored.push(item.stored);
         }
+
         in_stored_order(&mut stored);
-        Ok(FieldValue::Items(
-            stored
-                .into_iter()
-                .map(|s| s.id.as_str().to_owned())
-                .collect(),
-        ))
+        let mut keys = Map::default();
+        keys.reserve(stored.len());
+        let items = stored
+            .into_iter()
+            .map(|s| {
+                let id: Rc<str> = Rc::from(s.id.as_str());
+                keys.insert(Rc::clone(&id), s.key);
+                id
+            })
+            .collect();
+        Ok(Listed {
+            listing: Rc::new(Listing { items }),
+            keys,
+        })
     }
 
     /// The first non-empty text of the resource `at`, and the path of the resource holding
@@ -295,12 +543,11 @@ impl ReadCache {
                     else {
                         continue;
                     };
-                    let Ok(FieldValue::Items(ids)) = self.read(doc, (app, ty), at, &field.id)
-                    else {
+                    let Ok(listing) = self.listing(doc, (app, ty), at, &field.id) else {
                         continue;
                     };
-                    for id in ids {
-                        let item = at.item(&field.id, &id, item_ty);
+                    for id in &listing.items {
+                        let item = at.item(&field.id, id, item_ty);
                         if let Some(found) = self.first_text(doc, (app, ty), &item) {
                             return Some(found);
                         }
@@ -319,12 +566,12 @@ impl ReadCache {
             return;
         };
         if key.field == ANY_FIELD {
-            let inside = format!("{}/", key.resource);
-            cache
-                .resources
-                .retain(|r, _| r != &key.resource && !r.starts_with(&inside));
-        } else if let Some(cached) = cache.resources.get_mut(&key.resource) {
-            cached.fields.remove(key.field.as_str());
+            cache.drop_resource(&key.resource);
+        } else {
+            if let Some(cached) = cache.resources.get_mut(&key.resource) {
+                cached.fields.remove(key.field.as_str());
+            }
+            cache.drop_listing(&key.resource, &key.field);
         }
     }
 
@@ -345,7 +592,7 @@ fn read_listing(
     doc: &Doc,
     entries: Vec<(StoredEntry, bool)>,
     item: Option<&'static TypeSchema>,
-) -> Vec<Listed> {
+) -> Vec<Found> {
     let threads = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
         .min(MAX_THREADS);
@@ -404,7 +651,7 @@ fn read_items(
     doc: &Doc,
     entries: Vec<(StoredEntry, bool)>,
     item: Option<&'static TypeSchema>,
-) -> Vec<Listed> {
+) -> Vec<Found> {
     let wanted: Vec<&'static FieldSchema> = item.map_or_else(Vec::new, |schema| {
         schema
             .fields
@@ -430,7 +677,7 @@ fn read_items(
                     .collect(),
                 None => Vec::new(),
             };
-            Listed {
+            Found {
                 stored,
                 obj,
                 fields,

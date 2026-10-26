@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use crate::colls::{CollSeen, merge_seen};
 use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::handles::{FrameKind, Retained, ViewState};
@@ -50,6 +51,8 @@ pub struct ViewTarget {
 pub struct Rendered {
     pub root: UiNode,
     pub reads: Vec<(String, String)>,
+    /// What it saw of the collections it read item by item.
+    pub(crate) colls: Vec<CollSeen>,
     pub space_reads: Vec<(String, f64)>,
     pub retained: Vec<Retained>,
     /// The view state slots read, with their generations.
@@ -60,6 +63,7 @@ pub struct Rendered {
 
 pub(crate) struct Acc {
     pub reads: Vec<(String, String)>,
+    pub colls: Vec<CollSeen>,
     pub space_reads: Vec<(String, f64)>,
     pub retained: Vec<Retained>,
     pub state_reads: Vec<(StateKey, u64)>,
@@ -120,6 +124,9 @@ pub(crate) trait Boundaries {
     /// The children of the `fragment` that stands for the call: the callee's tree, or nothing
     /// for a row that is not shown yet, or for a boundary whose tree the caller keeps.
     fn boundary(&mut self, stub: Stub<'_>) -> Result<Vec<UiNode>, RuntimeError>;
+
+    /// Take the rows of a loop over a collection to keep: their boundaries are met next.
+    fn rows(&mut self, rows: LoopRows);
 }
 
 /// How a boundary is rendered: under which key, and who renders its view calls.
@@ -148,6 +155,7 @@ impl Acc {
     /// Take on what a nested boundary read and retained, and hand back its tree.
     pub fn absorb(&mut self, nested: Rendered) -> UiNode {
         self.reads.extend(nested.reads);
+        merge_seen(&mut self.colls, nested.colls);
         self.space_reads.extend(nested.space_reads);
         self.retained.extend(nested.retained);
         self.state_reads.extend(nested.state_reads);
@@ -233,6 +241,7 @@ impl Core {
         };
         let mut acc = Acc {
             reads: state.reads,
+            colls: state.colls,
             space_reads: state.space_reads,
             retained: Vec::new(),
             state_reads: state.state_reads,
@@ -256,6 +265,7 @@ impl Core {
         Ok(Rendered {
             root: tree,
             reads: acc.reads,
+            colls: acc.colls,
             space_reads: acc.space_reads,
             retained: acc.retained,
             state_reads: acc.state_reads,
@@ -330,7 +340,7 @@ impl Core {
                 _ => None,
             },
         };
-        let (children, rows_total) = self.build_children(cx, n, below, acc, hook)?;
+        let (children, rows_total) = self.build_children(cx, (n, &key), below, acc, hook)?;
         let mut props = n.props.clone();
         if below.preview.is_some() {
             props.insert(
@@ -360,7 +370,7 @@ impl Core {
     fn build_children<'h>(
         &self,
         cx: &Build<'_>,
-        n: &NodeBuild,
+        (n, key): (&NodeBuild, &str),
         below: Walk<'_>,
         acc: &mut Acc,
         mut hook: Option<&mut (dyn Boundaries + 'h)>,
@@ -371,8 +381,10 @@ impl Core {
         for c in &n.children {
             let rows = match cx.nodes.get(*c) {
                 Some(loop_node) if loop_node.kind.starts_with(FOR_EACH) => {
+                    // Rows alone among their parent's children can follow their collection.
+                    let parent = (n.children.len() == 1).then_some(key);
                     let (rows, total) =
-                        self.build_rows(cx, loop_node, below, acc, hook.as_deref_mut())?;
+                        self.build_rows(cx, (loop_node, parent), below, acc, hook.as_deref_mut())?;
                     rows_total = rows_total.saturating_add(total);
                     rows
                 }
@@ -399,10 +411,14 @@ impl Core {
     /// `boundaries` each row is a boundary of its own (rendered when shown, for a row of a
     /// `list`); without, each is rendered here and its reads join this view's. In a preview
     /// only the rows it shows are built. Returns them and how many items the loop has.
+    ///
+    /// A loop over a collection that is the only child of `parent` hands its rows to the
+    /// boundaries ([`Boundaries::rows`]): they follow the collection's inserts and removals
+    /// from then on, and the view holding the loop does not depend on which items it has.
     fn build_rows<'h>(
         &self,
         cx: &Build<'_>,
-        n: &NodeBuild,
+        (n, parent): (&NodeBuild, Option<&str>),
         walk: Walk<'_>,
         acc: &mut Acc,
         mut hook: Option<&mut (dyn Boundaries + 'h)>,
@@ -412,18 +428,24 @@ impl Core {
             Some(prefix) => format!("{prefix}~{}", n.key),
             None => n.key.clone(),
         };
-        let Some(Value::List(items)) = n.props.get(ITEMS) else {
-            return Err(RuntimeError::Package(format!(
-                "the loop `{}` has no list of items",
-                n.key
-            )));
+        let items = match n.props.get(ITEMS) {
+            Some(Value::List(items)) => Items::List(items),
+            Some(Value::Coll(coll)) => Items::Coll(
+                coll,
+                self.coll_listing(coll).map_err(RuntimeError::Package)?,
+            ),
+            _ => {
+                return Err(RuntimeError::Package(format!(
+                    "the loop `{}` has no list of items",
+                    n.key
+                )));
+            }
         };
         let suffix = match n.props.get(SUFFIX) {
-            Some(Value::Text(suffix)) => suffix.as_str(),
-            _ => "",
+            Some(Value::Text(suffix)) => suffix.clone(),
+            _ => String::new(),
         };
-        let (vt, args_of) = self.rows_call(target, &n.props)?;
-        let vt = Rc::new(vt);
+        let (vt, args) = self.rows_call(target, &n.props)?;
         // The sizing and placement the compiler took out of a one-node body: each row's.
         let layout: std::collections::BTreeMap<String, Value> = n
             .props
@@ -433,44 +455,49 @@ impl Core {
             })
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
-        let shown = walk
-            .preview
-            .map_or(items.len(), |rows| rows.min(items.len()));
-        let mut rows = Vec::with_capacity(shown);
-        for (i, item) in items.iter().enumerate().take(shown) {
-            let item_key = item_key(item, i);
-            let row_key = format!("{key}/{item_key}");
-            let args: Vec<Value> = args_of
-                .iter()
-                .map(|arg| match arg {
-                    RowArg::Item => item.clone(),
-                    RowArg::Key => Value::Text(format!("{suffix}/{item_key}")),
-                    RowArg::Value(value) => value.clone(),
-                })
-                .collect();
-            let children = if let Some(boundaries) = hook.as_deref_mut() {
-                boundaries.boundary(Stub {
-                    key: &row_key,
-                    target: Rc::clone(&vt),
-                    args,
-                    lazy: walk.in_list,
-                    depth: cx.offer.depth.saturating_add(1),
-                })?
+        let template = RowsOf {
+            key,
+            suffix,
+            target: Rc::new(vt),
+            args,
+            layout,
+            lazy: walk.in_list,
+            depth: cx.offer.depth.saturating_add(1),
+        };
+        let total = items.len();
+        let shown = walk.preview.map_or(total, |rows| rows.min(total));
+        // The rows depend on the collection's items: in a preview, on its length and the items
+        // it shows; for rows the boundaries keep, on nothing here; else on all of them.
+        if let Items::Coll(coll, listing) = &items {
+            if walk.preview.is_some() {
+                acc.colls.push(CollSeen::shown(coll, listing, shown));
+            } else if let (Some(parent), Some(boundaries)) = (parent, hook.as_deref_mut()) {
+                boundaries.rows(LoopRows {
+                    coll: Rc::clone(coll),
+                    resource: coll.target.id_string(),
+                    parent: parent.to_owned(),
+                    rows: template.clone(),
+                });
             } else {
-                let nested = self.render_at(&vt, &args, cx.offer.deeper(), None)?;
+                acc.reads
+                    .push((coll.target.id_string(), coll.field.clone()));
+            }
+        }
+        let mut rows = Vec::with_capacity(shown);
+        for i in 0..shown {
+            let Some(item) = items.get(i) else {
+                break;
+            };
+            let (row_key, args) = template.row(&item, i);
+            let children = if let Some(boundaries) = hook.as_deref_mut() {
+                boundaries.boundary(template.stub(&row_key, args))?
+            } else {
+                let nested = self.render_at(&template.target, &args, cx.offer.deeper(), None)?;
                 vec![scope(&row_key, acc.absorb(nested))]
             };
-            rows.push(UiNode {
-                kind: "fragment".to_owned(),
-                key: row_key,
-                props: layout.clone(),
-                binding: None,
-                events: std::collections::BTreeMap::new(),
-                anchor: None,
-                children,
-            });
+            rows.push(template.fragment(row_key, children));
         }
-        Ok((rows, items.len()))
+        Ok((rows, total))
     }
 
     /// The view a loop's node calls per row and what it passes each parameter: the item to
@@ -623,6 +650,32 @@ impl Core {
     }
 }
 
+/// The items a loop's node holds: a list of values, or a collection read item by item.
+enum Items<'a> {
+    List(&'a [Value]),
+    Coll(
+        &'a std::rc::Rc<crate::value::CollRef>,
+        std::rc::Rc<crate::store::Listing>,
+    ),
+}
+
+impl Items<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::List(items) => items.len(),
+            Self::Coll(_, listing) => listing.len(),
+        }
+    }
+
+    /// The `index`th item, as a value.
+    fn get(&self, index: usize) -> Option<Value> {
+        match self {
+            Self::List(items) => items.get(index).cloned(),
+            Self::Coll(coll, listing) => listing.get(index).map(|id| coll.item_ref(id)),
+        }
+    }
+}
+
 /// What keys the row of `item`, the `index`th of its loop: a resource by its id, any other
 /// value by its place.
 fn item_key(item: &Value, index: usize) -> String {
@@ -632,7 +685,84 @@ fn item_key(item: &Value, index: usize) -> String {
     }
 }
 
+/// How a loop makes its rows: the row view, what each of its parameters takes, and the key
+/// and layout of each row's `fragment`.
+#[derive(Clone)]
+pub(crate) struct RowsOf {
+    /// The loop's key: each row's is `<key>/<item key>`.
+    key: String,
+    /// The key suffix of the rows around the loop.
+    suffix: String,
+    target: Rc<ViewTarget>,
+    args: Vec<RowArg>,
+    layout: std::collections::BTreeMap<String, Value>,
+    /// Rows of a `list`: rendered when the host shows them.
+    pub lazy: bool,
+    pub depth: usize,
+}
+
+impl RowsOf {
+    /// The key of the row of `item`, the `index`th, and the row view's arguments.
+    pub fn row(&self, item: &Value, index: usize) -> (String, Vec<Value>) {
+        let item_key = item_key(item, index);
+        let row_key = format!("{}/{item_key}", self.key);
+        let args = self
+            .args
+            .iter()
+            .map(|arg| match arg {
+                RowArg::Item => item.clone(),
+                RowArg::Key => Value::Text(format!("{}/{item_key}", self.suffix)),
+                RowArg::Value(value) => value.clone(),
+            })
+            .collect();
+        (row_key, args)
+    }
+
+    /// The boundary of the row keyed `key`, called with `args`.
+    pub fn stub<'k>(&self, key: &'k str, args: Vec<Value>) -> Stub<'k> {
+        Stub {
+            key,
+            target: Rc::clone(&self.target),
+            args,
+            lazy: self.lazy,
+            depth: self.depth,
+        }
+    }
+
+    /// The `fragment` that stands for the row keyed `key` in the tree.
+    pub fn fragment(&self, key: String, children: Vec<UiNode>) -> UiNode {
+        UiNode {
+            kind: "fragment".to_owned(),
+            key,
+            props: self.layout.clone(),
+            binding: None,
+            events: std::collections::BTreeMap::new(),
+            anchor: None,
+            children,
+        }
+    }
+}
+
+/// The rows of a loop over a collection, alone among the children of the node keyed
+/// `parent`: kept by the boundaries, which apply the collection's inserts and removals to
+/// them.
+pub(crate) struct LoopRows {
+    pub coll: Rc<crate::value::CollRef>,
+    /// The collection's resource, as [`crate::value::ResourceRef::id_string`] writes it.
+    pub resource: String,
+    pub parent: String,
+    pub rows: RowsOf,
+}
+
+impl LoopRows {
+    /// The key of the row of the item `id` and the row view's arguments.
+    pub fn row(&self, id: &str) -> (String, Vec<Value>) {
+        self.rows.row(&self.coll.item_ref(id), 0)
+    }
+}
+
 /// What a row view's parameter takes.
+#[derive(Clone)]
 enum RowArg {
     Item,
     /// The row's key suffix.

@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tilolang_runtime::ids::DocId;
 use tilolang_runtime::meta::{FieldKind, Meta};
-use tilolang_runtime::store::{ANY_FIELD, FieldSpec, FieldValue, Store as _};
+use tilolang_runtime::store::{ANY_FIELD, FieldSpec, FieldValue, Splice, Store as _};
 use tilolang_runtime::value::ResourceRef;
 
 use crate::background::{Pending, Poll, Waker};
@@ -245,7 +245,17 @@ impl SearchIndex {
                 match field.kind {
                     MergeKind::Text => self.retext(store, meta, at, &key.resource, &mut delta),
                     MergeKind::Collection => {
-                        self.membership(store, meta, at, &key.resource, &field.id, &mut delta);
+                        let spliced = changes.listing(key).is_some_and(|splices| {
+                            self.splice_membership(
+                                (store, meta, at),
+                                (&key.resource, &field.id),
+                                splices,
+                                &mut delta,
+                            )
+                        });
+                        if !spliced {
+                            self.membership(store, meta, at, &key.resource, &field.id, &mut delta);
+                        }
                     }
                     _ => {}
                 }
@@ -450,6 +460,89 @@ impl SearchIndex {
             );
         }
         self.items.insert(collection, now);
+    }
+}
+
+impl SearchIndex {
+    /// Apply the steps of the listing of the collection `field` of the resource at `path` to
+    /// the items it is known to hold: index the items that arrived, forget those that left, and
+    /// leave one moved as it is. False, with nothing changed, when the steps do not fit what
+    /// it holds or would leave it with another count than the listing's: its items are then
+    /// read again.
+    fn splice_membership(
+        &mut self,
+        (store, meta, schema): (&TiloStore, &Meta, &TypeSchema),
+        (path, field): (&str, &str),
+        splices: &[Splice],
+        delta: &mut Delta,
+    ) -> bool {
+        let Some(item_schema) = schema
+            .field(field)
+            .and_then(|f| f.record.as_deref())
+            .and_then(lookup)
+        else {
+            return false;
+        };
+        let Some(at) = ResourceRef::parse_id(path, schema.id.clone()) else {
+            return false;
+        };
+        let Ok(listing) = store.listing(&at, &spec(field, FieldKind::Collection)) else {
+            return false;
+        };
+        let collection = format!("{path}/{field}");
+        let Some(held) = self.items.get_mut(&collection) else {
+            return false;
+        };
+        // Whether each item the steps name is held once they are taken.
+        let mut after: BTreeMap<&str, bool> = BTreeMap::new();
+        for splice in splices {
+            let (item, arrives) = match splice {
+                Splice::Insert { item, .. } => (item.as_str(), true),
+                Splice::Remove { item, .. } => (item.as_str(), false),
+            };
+            let held_now = after
+                .get(item)
+                .copied()
+                .unwrap_or_else(|| held.contains(item));
+            if held_now == arrives {
+                return false;
+            }
+            after.insert(item, arrives);
+        }
+        let arrived: Vec<String> = after
+            .iter()
+            .filter(|(item, arrives)| **arrives && !held.contains(**item))
+            .map(|(item, _)| (*item).to_owned())
+            .collect();
+        let left: Vec<String> = after
+            .iter()
+            .filter(|(item, arrives)| !**arrives && held.contains(**item))
+            .map(|(item, _)| (*item).to_owned())
+            .collect();
+        let count = held
+            .len()
+            .saturating_add(arrived.len())
+            .saturating_sub(left.len());
+        if count != listing.len() {
+            return false;
+        }
+        for item in &left {
+            held.remove(item);
+        }
+        held.extend(arrived.iter().cloned());
+        for item in left {
+            self.forget(&format!("{collection}:{item}"), delta);
+        }
+        for item in arrived {
+            self.index(
+                store,
+                meta,
+                item_schema,
+                &format!("{collection}:{item}"),
+                delta,
+            );
+        }
+        true
     }
 }
 

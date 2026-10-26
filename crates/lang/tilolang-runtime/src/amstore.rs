@@ -36,8 +36,8 @@ use crate::flow::Journal;
 use crate::ids::{DocId, FieldId, RunId, TypeId};
 use crate::meta::FieldKind;
 use crate::store::{
-    Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Mutation, NewRecord,
-    OutboxEntry, Scalar, Store, StoreError, SubId, Txn,
+    Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, ListingChange, Mutation,
+    NewRecord, OutboxEntry, Scalar, Splice, Store, StoreError, SubId, Txn,
 };
 use crate::textdiff;
 use crate::value::ResourceRef;
@@ -66,6 +66,8 @@ struct Subscription {
 #[derive(Default)]
 struct TxnState {
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
+    /// How the listings of the collections it changed moved, step by step.
+    listings: BTreeMap<FieldKey, Vec<Splice>>,
 }
 
 struct Inner {
@@ -136,16 +138,10 @@ impl AmStore {
             let (before_a, before_b) = (a.get_heads(), b.get_heads());
             sync_pair(a, b)?;
             if a.get_heads() != before_a {
-                mine.notify(&ChangeSummary {
-                    doc: id.clone(),
-                    fields: Vec::new(),
-                });
+                mine.notify(&ChangeSummary::whole(id.clone()));
             }
             if theirs.docs.get_mut(&id).map(AutoCommit::get_heads).as_ref() != Some(&before_b) {
-                theirs.notify(&ChangeSummary {
-                    doc: id,
-                    fields: Vec::new(),
-                });
+                theirs.notify(&ChangeSummary::whole(id));
             }
         }
         Ok(())
@@ -466,6 +462,18 @@ fn delete_key(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Result<(), Sto
     Ok(())
 }
 
+/// The collection a mutation changes, and the item it moves or removes (none for an insert,
+/// whose item is new).
+fn coll_item_of(m: &Mutation) -> Option<(&FieldId, Option<&str>)> {
+    match m {
+        Mutation::CollInsert { field, .. } => Some((field, None)),
+        Mutation::CollRemove { field, item } | Mutation::CollMove { field, item, .. } => {
+            Some((field, Some(item.as_str())))
+        }
+        _ => None,
+    }
+}
+
 fn field_of(m: &Mutation) -> Option<&FieldId> {
     match m {
         Mutation::SetRegister { field, .. }
@@ -483,6 +491,17 @@ fn field_of(m: &Mutation) -> Option<&FieldId> {
 }
 
 impl Inner {
+    /// Where `item` is in the collection `field` of `at`, as its listing has it.
+    fn index_of(&self, at: &ResourceRef, field: &str, item: &str) -> Option<usize> {
+        let doc = self.docs.get(&at.doc)?;
+        let obj = locate(doc, at).ok()?;
+        let t = coll_target(doc, &obj, field).ok()?;
+        visible_order(doc, &t.coll, &t.order)
+            .ok()?
+            .iter()
+            .position(|(_, id)| id == item)
+    }
+
     fn apply_mutation(&mut self, at: &ResourceRef, m: &Mutation) -> Result<Applied, StoreError> {
         let new_item = match m {
             Mutation::CollInsert { .. } => Some(self.fresh("i")),
@@ -629,7 +648,37 @@ impl Store for AmStore {
         if let (Some(set), Some(field)) = (fields, field_of(m)) {
             set.insert(FieldKey::new(at, field.clone()));
         }
-        inner.apply_mutation(at, m)
+        let Some((field, moved)) = coll_item_of(m) else {
+            return inner.apply_mutation(at, m);
+        };
+        // A collection's steps: where its item was, and where it is now.
+        let was = moved.and_then(|item| inner.index_of(at, field, item));
+        let applied = inner.apply_mutation(at, m)?;
+        let item = match &applied {
+            Applied::Item(id) => Some(id.as_str()),
+            Applied::Done => moved,
+        };
+        let now = item.and_then(|item| inner.index_of(at, field, item));
+        let mut steps = Vec::new();
+        if let (Some(at), Some(item)) = (was, item) {
+            steps.push(Splice::Remove {
+                at,
+                item: item.into(),
+            });
+        }
+        if let (Some(at), Some(item)) = (now, item) {
+            steps.push(Splice::Insert {
+                at,
+                item: item.into(),
+            });
+        }
+        if let Some(t) = inner.txns.get_mut(&txn.0) {
+            t.listings
+                .entry(FieldKey::new(at, field.clone()))
+                .or_default()
+                .extend(steps);
+        }
+        Ok(applied)
     }
 
     fn commit(&mut self, txn: Txn, note: &ChangeNote) -> Result<(), StoreError> {
@@ -638,13 +687,24 @@ impl Store for AmStore {
             .txns
             .remove(&txn.0)
             .ok_or_else(|| StoreError::Invalid("the transaction is closed".into()))?;
+        let mut listings = state.listings;
         for (id, fields) in state.touched {
             if let Some(doc) = inner.docs.get_mut(&id) {
                 commit_with_note(doc, note)?;
             }
+            let listings = fields
+                .iter()
+                .filter_map(|key| {
+                    listings.remove(key).map(|splices| ListingChange {
+                        key: key.clone(),
+                        splices,
+                    })
+                })
+                .collect();
             inner.notify(&ChangeSummary {
                 doc: id,
                 fields: fields.into_iter().collect(),
+                listings,
             });
         }
         Ok(())

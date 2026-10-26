@@ -62,6 +62,10 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
         }),
         Value::Principal(p) => json!({ "principal": p.0 }),
         Value::Error(msg) => json!({ "error": msg }),
+        Value::Coll(c) => match core.coll_items(c) {
+            Ok(items) => project(core, &Value::List(items), opts),
+            Err(error) => json!({ "error": error }),
+        },
         Value::Node(_) | Value::Rec(_) => json!({ "kind": v.kind_name() }),
     }
 }

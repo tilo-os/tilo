@@ -593,7 +593,11 @@ impl Publications {
             else {
                 continue;
             };
-            at.republish(tree, fields, self.named_by.entry(doc.clone()).or_default());
+            at.republish(
+                tree,
+                (fields, &changes),
+                self.named_by.entry(doc.clone()).or_default(),
+            );
             touched.push(doc.clone());
         }
         if !whole_docs.is_empty() {
@@ -745,12 +749,25 @@ impl Published<'_> {
     fn republish(
         &self,
         tree: &mut Resource,
-        fields: &std::collections::BTreeSet<tilolang_runtime::store::FieldKey>,
+        (fields, changes): (
+            &std::collections::BTreeSet<tilolang_runtime::store::FieldKey>,
+            &crate::store::Changes,
+        ),
         named_by: &mut Option<String>,
     ) {
         let mut rework = self.rework(fields, named_by.as_deref());
         for (path, field) in &rework.collections {
-            if !within(path, &rework.nodes) {
+            if within(path, &rework.nodes) {
+                continue;
+            }
+            let key = tilolang_runtime::store::FieldKey {
+                resource: path.clone(),
+                field: field.clone(),
+            };
+            let spliced = changes.listing(&key).is_some_and(|splices| {
+                self.splice_members(tree, (path, field), &mut rework.nodes, splices)
+            });
+            if !spliced {
                 self.membership(tree, path, field, &mut rework.nodes);
             }
         }
@@ -799,7 +816,7 @@ impl Published<'_> {
         let (Some(at), Some(schema), Some(node)) = (
             self.at(path),
             self.schema_at(path),
-            find_node_mut(tree, self.doc, app, path),
+            self.node_mut(tree, path),
         ) else {
             return;
         };
@@ -865,14 +882,11 @@ impl Published<'_> {
             if within(parent, paths) {
                 continue;
             }
-            let Some(holder) = find_node_mut(tree, self.doc, app, parent) else {
+            let Some(holder) = self.node_mut(tree, parent) else {
                 continue;
             };
             let published = resource_id(app, path);
-            let at = holder
-                .children
-                .iter()
-                .position(|child| child.id.as_str() == published);
+            let at = self.child_index(holder, path, &published);
             match (at, self.item(path)) {
                 (Some(i), Some(child)) => {
                     if let Some(slot) = holder.children.get_mut(i) {
@@ -895,7 +909,7 @@ impl Published<'_> {
             let (Some(at), Some(schema)) = (self.at(path), self.schema_at(path)) else {
                 continue;
             };
-            let Some(node) = find_node_mut(tree, self.doc, &self.types.meta().app, path) else {
+            let Some(node) = self.node_mut(tree, path) else {
                 continue;
             };
             node.label = self
@@ -903,6 +917,121 @@ impl Published<'_> {
                 .first_text(&at)
                 .map_or_else(|| schema.name.clone(), |(text, _)| text);
         }
+    }
+
+    /// Apply the steps of the listing of the collection `field` of the resource at `path` to
+    /// its published children: an item inserted is built (and taken out of `nodes`), one removed
+    /// dropped, one moved kept. False when the steps do not fit the children, or the children
+    /// are then not as many as the items: they are brought in line with the listing instead.
+    fn splice_members(
+        &self,
+        tree: &mut Resource,
+        (path, field): (&str, &str),
+        nodes: &mut std::collections::BTreeSet<String>,
+        splices: &[tilolang_runtime::store::Splice],
+    ) -> bool {
+        use tilolang_runtime::store::Splice;
+
+        let app = &self.types.meta().app;
+        let (Some(at), Some(schema)) = (self.at(path), self.schema_at(path)) else {
+            return false;
+        };
+        let Some((before, len, after)) = self.members(&at, schema, field) else {
+            return false;
+        };
+        let Some(node) = self.node_mut(tree, path) else {
+            return false;
+        };
+        let mut moving: Option<Resource> = None;
+        for splice in splices {
+            match splice {
+                Splice::Remove { at: index, item } => {
+                    let id = resource_id(app, &format!("{path}/{field}:{item}"));
+                    let index = before.saturating_add(*index);
+                    if node.children.get(index).is_none_or(|c| c.id.as_str() != id) {
+                        return false;
+                    }
+                    moving = Some(node.children.remove(index));
+                }
+                Splice::Insert { at: index, item } => {
+                    let item = format!("{path}/{field}:{item}");
+                    let index = before.saturating_add(*index);
+                    if index > node.children.len() {
+                        return false;
+                    }
+                    let id = resource_id(app, &item);
+                    let kept = moving
+                        .take()
+                        .filter(|child| child.id.as_str() == id && !nodes.contains(&item));
+                    nodes.remove(&item);
+                    let Some(child) = kept.or_else(|| self.item(&item)) else {
+                        return false;
+                    };
+                    node.children.insert(index, child);
+                }
+            }
+        }
+        node.children.len() == before.saturating_add(len).saturating_add(after)
+    }
+
+    /// How many published children of `at` the collections before `field` hold, `field`
+    /// holds, and those after it hold, as the store lists them now.
+    fn members(
+        &self,
+        at: &tilolang_runtime::value::ResourceRef,
+        schema: &crate::schema::TypeSchema,
+        field: &str,
+    ) -> Option<(usize, usize, usize)> {
+        use tilolang_runtime::store::Store as _;
+
+        let (mut before, mut len, mut after) = (0usize, None, 0usize);
+        for f in &schema.fields {
+            if f.kind != crate::schema::MergeKind::Collection {
+                continue;
+            }
+            let spec = tilolang_runtime::store::FieldSpec {
+                id: f.id.clone(),
+                kind: tilolang_runtime::meta::FieldKind::Collection,
+            };
+            let items = self.store.listing(at, &spec).ok()?.len();
+            match len {
+                _ if f.id == field => len = Some(items),
+                None => before = before.saturating_add(items),
+                Some(_) => after = after.saturating_add(items),
+            }
+        }
+        Some((before, len?, after))
+    }
+
+    /// The index among `holder`'s children of the item at `path`, published as `id`: where
+    /// its listing puts it, checked, else looked for.
+    fn child_index(&self, holder: &Resource, path: &str, id: &str) -> Option<usize> {
+        let placed = path.rsplit_once('/').and_then(|(parent, part)| {
+            let (field, item) = part.split_once(':')?;
+            let at = self.at(parent)?;
+            let (before, _, _) = self.members(&at, self.schema_at(parent)?, field)?;
+            before.checked_add(self.store.position(&at, field, item)?)
+        });
+        placed
+            .filter(|i| holder.children.get(*i).is_some_and(|c| c.id.as_str() == id))
+            .or_else(|| holder.children.iter().position(|c| c.id.as_str() == id))
+    }
+
+    /// The published resource at `path` in `tree`, the record's: each item found where its
+    /// listing puts it.
+    fn node_mut<'t>(&self, tree: &'t mut Resource, path: &str) -> Option<&'t mut Resource> {
+        let app = &self.types.meta().app;
+        let rest = path.strip_prefix(self.doc)?;
+        let mut node = tree;
+        let mut at = self.doc.to_owned();
+        for part in rest.split('/').skip(1) {
+            at.push('/');
+            at.push_str(part);
+            let id = resource_id(app, &at);
+            let index = self.child_index(node, &at, &id)?;
+            node = node.children.get_mut(index)?;
+        }
+        Some(node)
     }
 
     /// The item at `path`, read from the store and published.
@@ -925,25 +1054,6 @@ fn within(path: &str, paths: &std::collections::BTreeSet<String>) -> bool {
             None => return false,
         }
     }
-}
-
-/// The published resource at `path` in the tree of the record `doc`.
-fn find_node_mut<'t>(
-    tree: &'t mut Resource,
-    doc: &str,
-    app: &str,
-    path: &str,
-) -> Option<&'t mut Resource> {
-    let rest = path.strip_prefix(doc)?;
-    let mut node = tree;
-    let mut at = doc.to_owned();
-    for part in rest.split('/').skip(1) {
-        at.push('/');
-        at.push_str(part);
-        let id = resource_id(app, &at);
-        node = node.children.iter_mut().find(|c| c.id.as_str() == id)?;
-    }
-    Some(node)
 }
 
 /// The top-level item an item path is in: `doc/field:item`.

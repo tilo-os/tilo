@@ -1,7 +1,7 @@
 //! Calls: functions, actions, flows, record construction, built-ins and methods.
 
 use super::expr::dotted;
-use super::{Checker, Ctx, Ex, conv, load_op, store_op};
+use super::{Checker, Ctx, Ex, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind};
 use crate::diag::Span;
@@ -928,7 +928,7 @@ impl Checker<'_> {
             }
             (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "first" | "last") if args.is_empty() => {
                 let elem = (**t).clone();
-                self.end_item(r, &elem, m == "last")
+                Self::end_item(r, &elem, m == "last")
             }
             (Ty::List(t) | Ty::Set(t) | Ty::Collection(t), "sort_by") => {
                 let elem = (**t).clone();
@@ -1039,48 +1039,12 @@ impl Checker<'_> {
         )
     }
 
-    /// `first()` or `last()`: the item at that end, or none when there are no items.
-    fn end_item(&mut self, list: Ex, elem: &Ty, last: bool) -> Ex {
+    /// `first()` or `last()`: the host reads the end of the list (`list_end`), so a view over a
+    /// collection depends on that item alone, not on its length or the items before it.
+    fn end_item(list: Ex, elem: &Ty, last: bool) -> Ex {
         let out = Ty::Option(Box::new(elem.clone()));
-        let items = self.fresh(Ty::Text);
-        let len = self.fresh(Ty::Int);
-        let at = if last {
-            Ex::new(
-                Ek::Bin(
-                    ir::BinOp::Sub,
-                    Box::new(Ex::local(len, Ty::Int)),
-                    Box::new(Ex::int(1)),
-                ),
-                Ty::Int,
-            )
-        } else {
-            Ex::int(0)
-        };
-        let (get, c) = load_op(elem, Imp::ListGetI, Imp::ListGetF, Imp::ListGetH);
-        let raw_ty = if c.is_some() { Ty::Int } else { elem.clone() };
-        let raw = Ex::host(get, vec![Ex::local(items, Ty::Text), at], raw_ty);
-        let some = Self::some(conv(c, raw, elem.clone()), &out);
-        let none = Ex::host(Imp::NoneV, Vec::new(), out.clone());
-        let any = Ex::new(
-            Ek::Bin(
-                ir::BinOp::Gt,
-                Box::new(Ex::local(len, Ty::Int)),
-                Box::new(Ex::int(0)),
-            ),
-            Ty::Bool,
-        );
-        let stmts = vec![
-            Stmt::Set(items, list),
-            Stmt::Set(
-                len,
-                Ex::host(Imp::ListLen, vec![Ex::local(items, Ty::Text)], Ty::Int),
-            ),
-        ];
-        let pick = Ex::new(
-            Ek::If(Box::new(any), Box::new(some), Box::new(none)),
-            out.clone(),
-        );
-        Ex::new(Ek::Seq(stmts, Box::new(pick)), out)
+        let which = Ex::new(Ek::I32(i32::from(last)), Ty::Bool);
+        Ex::host(Imp::ListEnd, vec![list, which], out)
     }
 
     /// `sort_by(x -> key)`: collects the keys in a parallel list, then asks the host for the
