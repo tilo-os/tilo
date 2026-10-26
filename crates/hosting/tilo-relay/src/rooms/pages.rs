@@ -293,11 +293,18 @@ impl Rooms {
                 let access = access
                     .parse()
                     .map_err(|_| CollaborationError::new("a share gives `view` or `edit`"))?;
-                self.share_resource(&room, device, &share, &node, access)
-                    .await?
+                let grants = self
+                    .share_resource(&room, device, &share, &node, access)
+                    .await?;
+                // Who may do what changed in the room: its operators read
+                // that here, as they read who was admitted.
+                tracing::info!(%room, %share, %node, access = access.as_str(), grants, "a share grants the room");
+                grants
             }
             RoomsRequest::Unshare { room, share } => {
-                self.unshare_resource(&room, device, &share).await?
+                let revoked = self.unshare_resource(&room, device, &share).await?;
+                tracing::info!(%room, %share, revoked, "a share ended");
+                revoked
             }
             _ => return Err(CollaborationError::new("not a share")),
         }))
