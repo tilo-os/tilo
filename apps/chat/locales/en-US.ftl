@@ -30,12 +30,11 @@ chat-call-camera-off = Stop camera
 chat-call-share-screen = Share screen
 chat-call-stop-sharing = Stop sharing
 
-# Emoji picker: the add-reaction button, the search field's name, the
-# composer's emoji button and a group tab without a name of its own.
+# Emoji picker: the add-reaction button, the search field's name and a group
+# tab without a name of its own.
 chat-emoji-add-reaction = Add reaction
 chat-emoji-search = Search emoji
 chat-emoji-add = Add emoji
-chat-emoji-insert = Insert emoji
 chat-emoji-group = Emoji group
 # A picker cell; the name is the emoji's name in the desktop's language.
 chat-emoji-choose = Choose { $name }

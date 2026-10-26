@@ -77,7 +77,6 @@ pub(crate) enum Hit {
     JumpToLatest,
     ThreadScroll(bool),
     AgentReasoning(String),
-    ComposerEmoji(Rect),
     /// Open the workspace file picker to share an attachment.
     Attach,
     /// One rung of an attachment's ladder: open it at full size, save a copy,
@@ -167,7 +166,6 @@ impl Hit {
             Self::JumpToLatest => "chat.jump-to-latest".into(),
             Self::ThreadScroll(end) => format!("chat.thread-scroll-{end}"),
             Self::AgentReasoning(id) => format!("chat.reasoning.{id}"),
-            Self::ComposerEmoji(_) => "chat.composer-emoji".into(),
             Self::Attach => "chat.attach".into(),
             Self::Attachment { msg, action } => {
                 format!("chat.attachment:{msg}:{}", action.key())
@@ -397,11 +395,6 @@ impl ChatApp {
                         } else {
                             "chat-agent-show-reasoning"
                         }),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::ComposerEmoji(_) => (
-                        copy(&crate::i18n::t("chat-emoji-insert")),
                         Role::Button,
                         false,
                     ),
@@ -732,7 +725,6 @@ impl ChatApp {
                         | Hit::CallDeafen
                         | Hit::Attach
                         | Hit::Send
-                        | Hit::ComposerEmoji(_)
                         | Hit::AddReaction { .. }
                         | Hit::MessageBar { .. }
                         | Hit::MessageMore { .. }
