@@ -383,7 +383,7 @@ pub fn close_tab(st: &mut ChromeState, tab_id: TabId) -> Result<(), TabActionErr
     let closed = crate::shell::closed_tabs::capture_tab(&st.tree(), tab_id);
     close_tab_unrecorded(st, tab_id)?;
     if let Some(entry) = closed {
-        st.remember_closed_tab_after_removal(entry);
+        let _ = st.remember_closed_tab_after_removal(entry);
     }
     Ok(())
 }
@@ -627,7 +627,14 @@ pub fn close_group(st: &mut ChromeState, group_id: GroupId) -> Result<(), TabAct
         close_tab_unrecorded(st, tab)?;
     }
     if let Some(entry) = closed {
-        st.remember_closed_tab_after_removal(entry);
+        let title = entry.title().to_string();
+        let count = entry.tabs.len();
+        if let Some(serial) = st.remember_closed_tab_after_removal(entry) {
+            // The close is undoable, so say so: a whole window disappearing
+            // with no undo read as work lost, even though Reopen could
+            // bring it back.
+            st.push_group_undo_toast(serial, &title, count);
+        }
     }
     Ok(())
 }
@@ -1394,5 +1401,56 @@ mod tests {
         crate::shell::launcher::set_test_execution_program(None);
         crate::shell::launcher::set_wayland_socket_path(None);
         crate::shell::host_apps::invalidate_cache();
+    }
+    fn group_tab_count(st: &ChromeState, group: GroupId) -> Option<usize> {
+        let tree = st.tree();
+        let count = tree
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .find(|candidate| candidate.id == group)
+            .map(|candidate| candidate.tabs.len());
+        drop(tree);
+        count
+    }
+
+    #[test]
+    fn closing_a_whole_window_offers_undo_that_restores_every_tab() {
+        let chrome = chrome_with_default_tree();
+        let mut st = chrome.borrow_mut();
+        let group = focused_group(&st).expect("a focused group");
+        let tabs = group_tab_count(&st, group).expect("the focused group");
+        assert!(tabs > 1, "the fixture window holds several tabs");
+
+        close_group(&mut st, group).expect("the window closes");
+        assert_eq!(group_tab_count(&st, group), None, "the window is gone");
+        let toast = st
+            .notifications()
+            .iter()
+            .find(|notice| notice.dismiss_after == crate::shell::closed_tabs::UNDO_WINDOW)
+            .cloned()
+            .expect("closing a window offers Undo");
+        assert_eq!(
+            toast.actions,
+            [(
+                "default".to_string(),
+                crate::shell::i18n::t("tab-closed-undo"),
+            )]
+        );
+
+        assert!(st.activate_notification(toast.id), "Undo is actionable");
+        assert_eq!(
+            group_tab_count(&st, group),
+            Some(tabs),
+            "Undo brings the whole window and every tab back"
+        );
+        assert!(
+            st.notifications()
+                .iter()
+                .all(|notice| notice.id != toast.id),
+            "the used Undo leaves no banner behind"
+        );
     }
 }
