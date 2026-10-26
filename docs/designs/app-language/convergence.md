@@ -30,15 +30,59 @@ invariants inherited through containment, and with authority and attribution on 
 2. **An action records its arguments; its body replays.** Every replica runs the workspace's
    actions in one order, and each action runs against the state at its position.
    - Whether a write means an outcome or a delta follows from what the action takes.
-     `set_done(t, checked)` records the outcome. `toggle(t)` and `like(p)` record intent, which
-     replays as a delta.
-   - The compiler warns where a computed outcome is probably meant as one, such as `x = not x`
-     on a register.
+     `check(t, done)` records the outcome. `like(p)` records intent, which replays as a delta.
+   - See §1.1 for how an author says which one they mean.
 3. **`commutes`.** An action declared `commutes` is checked by the compiler and tests to commute
    with others of its kind, and is never reordered. Text splices, counter adds and set adds are
    `commutes` in `std`, so ordinary editing never replays.
 4. **Versions.** An action records the package version it was invoked under, and replays with
    that version. Migrations apply to the action log as well as to state.
+
+### 1.1 Outcomes and deltas
+
+A field's type defines its writes and how each one merges:
+
+| Write | On | Merges as |
+|---|---|---|
+| `=` | a register (`Bool`, `Text merge register`, enums, references) | outcome: the value at the action's position is the value written |
+| `+=`, `-=` | a counter | commuting delta |
+| `add`, `remove` | `Set<T>` | commuting |
+| splices | `Text` | commuting |
+| `insert`, `remove`, `move` | `Collection<T>`, `List<T>` | the collection's own rules |
+
+An action body replays at its position, so a register written with a value computed from that
+same register means "recompute when applied". For `item.done = not item.done`, two people ticking
+the same item at once cancel each other out, which is never what the tick meant.
+
+**What the person saw is an argument.** An action parameter may have a default, written in
+terms of the other arguments. The default is evaluated **when the action is invoked**, on the
+invoker's view, and recorded as the argument like any other. Replay never re-evaluates it.
+
+```
+/// Checks or unchecks an item.
+action check(item: Todo, done: Bool = not item.done)
+    (label: if done { "Check" } else { "Uncheck" }, icon: .check, on: item.done) {
+    item.done = done
+}
+```
+
+- The checkbox, the header's ✓, the context menu, a keyboard shortcut and an agent all call the
+  same action. People get the default, the value they saw flipped. An agent may pass `done:`
+  explicitly.
+- Two people checking the same item at once both record `done: true`. Checking and unchecking at
+  once is decided by the order, and the loser sees the result.
+- The same mechanism covers every "the value I saw": a position dropped at, the next status after
+  the one shown, a title as typed. No toggle, cycle or move concept exists in the language.
+- History shows the recorded arguments: "Checked", not "Toggled".
+
+**The compiler rejects the ambiguous forms.** It reports an error for a register write whose
+value is `not` of that register, or that register plus or minus an amount. The error names the two
+fixes:
+- an outcome: a parameter with an invocation-time default;
+- a delta: make the field a counter.
+
+Other computations from the same register, such as `title = trim(title)`, are legitimate replays
+and are not reported.
 
 ## 2. Order: the host commits it
 
@@ -143,7 +187,7 @@ sees it as a modal; others see the pending action with the same view.
 
 | Case | The developer writes | Outcome |
 |---|---|---|
-| Tick a todo | `set_done(t, checked)` | Converges, offline, never rejected |
+| Tick a todo | `check(t, done: Bool = not t.done)` | Converges, offline, never rejected |
 | Like a post | `likes.add(1)` | All count |
 | Chat message | `messages.append(..)` | Never rejected; delivery shown |
 | Move a folder | `n.parent = into` on a `Tree` | A cycle is rejected with its reason |
