@@ -931,6 +931,51 @@ specific to this; it is the same model a Tilo workspace runs:
   each participant only their own part (a hand of cards) hides it, but it is
   not a secret from them.
 
+#### A new version in a running room
+
+`tilo-app push` runs your build of an app, or a new program of your bot, in
+a room that is running now (a Lounge, a team's room), for everyone in it,
+without restarting the room's host:
+
+```bash
+tilo-app package                                   # dist/<pkg>.tapp, signed with your key
+tilo-app push --room tilo-room:<relay>/<workspace>/<room> --identity ~/.tilo-dev
+tilo-app push --room … --identity … \
+  --bot bot/program.json --entry dev.you.greeter --version 0.2.0-dev.3
+```
+
+- The room records the version it runs: the app, its version, the hash of
+  its `surface.toml`, the package's `tapp:` hash and the key that signed it,
+  who installed it and when. It is part of the room's governance, so every
+  member reads it, and anyone can see which version runs and whose build it
+  is. A build that is not a registry release is recorded as a dev build
+  (`--published` says otherwise).
+- A change made with another version of the app than the room runs is held,
+  never merged and never refused: once its author runs the room's version,
+  the same changes go out naming that version's surface and are decided
+  against it. Mixed versions cannot write each other's data unseen.
+- A bot's program goes to the room's host with the room's request for that
+  bot. The host runs it at once, as the same bot: its installation, and
+  what its runs had read up to, are kept, and the room's row for it takes
+  the new program and its grants. You must hold every grant the program
+  asks for yourself.
+- Only people the room lets install apps (the `install-app` governance
+  action; the owner holds it, and gives it to a developer as a grant) or
+  bots (`install-bot`) may push.
+- `--identity` is a Tilo identity directory of this machine, enrolled as
+  one of your devices (`tilo-enroll certify`), so the room knows it is you.
+  The room's link names its host's relay endpoint, the workspace that
+  carries the room there, and the room; `@<ip:port>` after the endpoint
+  reaches a relay on this machine or network directly.
+
+Iteration time is the build plus a round trip to the room's host. A native
+build of one app is that app alone. The web desktop is one module today:
+every web app is linked into it and split out of it afterwards, so a web
+build relinks the whole desktop, and a running page cannot load a newer
+module for one app. Desktops do not yet fetch and switch to the room's
+version on their own: until they do, a member on another version keeps
+reading the room, and their changes to that app wait until they run it.
+
 ### Android
 
 The same app builds as a standalone Android app, with nothing Android-specific

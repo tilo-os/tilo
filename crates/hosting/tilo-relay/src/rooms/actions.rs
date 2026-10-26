@@ -98,6 +98,9 @@ pub(crate) const REQUEST_BOT: &str = "request-bot";
 /// Taking back the room's request for a bot: its host stops and
 /// uninstalls it.
 pub(crate) const WITHDRAW_BOT_REQUEST: &str = "withdraw-bot-request";
+/// No longer choosing which version of an app the room runs
+/// (`install-app`, the governance action of that name, chooses one).
+pub(crate) const UNINSTALL_APP: &str = "uninstall-app";
 /// Adding an agent to the room, with its preset's grants.
 pub(crate) const ADD_AGENT: &str = "add-agent";
 /// Removing an agent from the room, and every grant it held there.
@@ -145,7 +148,7 @@ struct Verb {
 }
 
 /// What the rooms serve, in catalogue order.
-const VERBS: [Verb; 21] = [
+const VERBS: [Verb; 23] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -293,6 +296,20 @@ const VERBS: [Verb; 21] = [
         kind: ActionKind::Outside,
         params: connector_secret_params,
     },
+    Verb {
+        id: governance::INSTALL_APP,
+        label: "Run a version of an app",
+        gate: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: app_release_params,
+    },
+    Verb {
+        id: UNINSTALL_APP,
+        label: "Let everyone run their own version of an app",
+        gate: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: app_params,
+    },
 ];
 
 /// Destructive governance this provider names but does not run until the
@@ -439,7 +456,47 @@ fn bot_request_params() -> Vec<ActionParam> {
             ParamType::Object,
             "The bot's settings, by name, such as a bridge's guild and server; never a secret.",
         ),
+        ActionParam::optional(
+            "program",
+            ParamType::Text,
+            "A developer's own program for the entry, run instead of the listed one; `version` names the build.",
+        ),
     ]
+}
+
+fn app_param() -> ActionParam {
+    ActionParam::required("app", ParamType::Text, "The app, such as so.tilo.notes.")
+}
+
+fn app_release_params() -> Vec<ActionParam> {
+    vec![
+        app_param(),
+        ActionParam::required("version", ParamType::Text, "The version its package names."),
+        ActionParam::required(
+            "surface",
+            ParamType::Text,
+            "The BLAKE3 hash of the package's surface.toml, 64 hex characters.",
+        ),
+        ActionParam::required(
+            "package",
+            ParamType::Text,
+            "The package's tapp: hash, 64 hex characters.",
+        ),
+        ActionParam::required(
+            "publisher",
+            ParamType::Text,
+            "The publisher key that signed the package, 64 hex characters.",
+        ),
+        ActionParam::optional(
+            "dev",
+            ParamType::Boolean,
+            "A developer's own build, never reviewed by a registry.",
+        ),
+    ]
+}
+
+fn app_params() -> Vec<ActionParam> {
+    vec![app_param()]
 }
 
 fn connector_secret_params() -> Vec<ActionParam> {
@@ -1029,6 +1086,7 @@ impl Rooms {
             | DECLINE => self.governance_invitations(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
+            governance::INSTALL_APP | UNINSTALL_APP => self.governance_apps(action, call).await,
             SET_CONNECTOR_SECRET => connector_secret(call.args),
             _ => self.governance_members(action, call).await,
         }
@@ -1102,6 +1160,7 @@ impl Rooms {
                 entry,
                 version: args.required_text("version")?.to_owned(),
                 inputs: args.text_map("inputs")?,
+                program: args.text("program")?.map(str::to_owned),
             })
         } else {
             WorkspaceMembershipCommand::WithdrawBotRequest { entry }
@@ -1112,6 +1171,47 @@ impl Rooms {
             .await
             .map_err(|error| refused(&error))?;
         Ok(json!({ "generation": done.generation }))
+    }
+
+    /// The version of an app the room runs: choosing one, and taking the
+    /// choice back. Answers what the room runs now.
+    async fn governance_apps(
+        &self,
+        action: &str,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionHostError> {
+        use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
+        let GovernanceCall {
+            room,
+            device,
+            request_id,
+            args,
+        } = call;
+        let app = args.required_text("app")?.to_owned();
+        let command = if action == governance::INSTALL_APP {
+            WorkspaceMembershipCommand::InstallApp(AppRelease {
+                app: app.clone(),
+                version: args.required_text("version")?.to_owned(),
+                surface: args.required_text("surface")?.to_owned(),
+                package: args.required_text("package")?.to_owned(),
+                publisher: args.required_text("publisher")?.to_owned(),
+                dev: args.flag("dev")?,
+            })
+        } else {
+            WorkspaceMembershipCommand::UninstallApp { app: app.clone() }
+        };
+        command.validate().map_err(invalid)?;
+        let done = self
+            .govern_app(room, device, request_id, command)
+            .await
+            .map_err(|error| refused(&error))?;
+        let running = self
+            .app_versions(room)
+            .await
+            .map_err(|error| refused(&error))?
+            .into_iter()
+            .find(|installed| installed.release.app == app);
+        Ok(json!({ "generation": done.generation, "running": running }))
     }
 
     /// Inviting, and what inviting covers: the invitations and join

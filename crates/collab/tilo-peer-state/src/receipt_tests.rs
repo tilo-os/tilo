@@ -661,3 +661,129 @@ fn a_bot_allowed_personas_may_show_another_name_and_no_other_bot_may() {
         receive(&mut peer, &device, plain).expect("a bot writes under its own name");
     }
 }
+
+/// The room runs one version of an app: a change made with another is held,
+/// not merged, until its author runs the room's version and sends the same
+/// changes naming that version's surface, with the record upgraded to it.
+#[test]
+fn a_change_made_with_another_version_than_the_room_runs_waits_for_its_author_to_update() {
+    use crate::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
+    const NEWER: [u8; 32] = [8; 32];
+    let (mut peer, key, guest) = room_with(MemberRole::Editor);
+    let owner_key = SigningKey::from_bytes(&[2; 32]);
+    let owner = certificate(&SigningKey::from_bytes(&[1; 32]), &owner_key, "owner");
+    let release = AppRelease {
+        app: APP.into(),
+        version: "2.0.0-dev.1".into(),
+        surface: hex::encode(NEWER),
+        package: hex::encode([9; 32]),
+        publisher: hex::encode([10; 32]),
+        dev: true,
+    };
+    let install = WorkspaceMembershipCommand::InstallApp(release.clone());
+    let refused = peer
+        .clone()
+        .workspace_mut()
+        .apply_workspace_membership_command(&guest, &install, &owner_key, now())
+        .unwrap_err();
+    assert!(
+        refused.contains("Not allowed"),
+        "an editor installs no app: {refused}"
+    );
+    assert!(
+        peer.workspace_mut()
+            .apply_workspace_membership_command(&owner, &install, &owner_key, now())
+            .unwrap()
+    );
+    let installed = peer
+        .governance()
+        .app_version(APP)
+        .expect("the room runs v2");
+    assert_eq!(installed.release, release);
+    assert_eq!(installed.installed_by, hex::encode(owner.user_public_key));
+
+    // The guest still runs v1: its edit names v1's surface.
+    let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = doc.get_heads();
+    doc.put(ROOT, "value", "x").unwrap();
+    step(&mut doc, edit_value(), None);
+    let old = signed_write(&mut doc, &heads, &key);
+    let held = peer
+        .receive_from(
+            TransportOrigin::RelayDelta(guest.device_public_key),
+            old,
+            now(),
+        )
+        .unwrap();
+    assert!(held.deferred, "held, not refused");
+    assert_eq!(value(&peer), "\"seed\"", "nothing merged");
+
+    // Its desktop switches to v2: the record names v2's surface, and the
+    // same edit goes out again under it.
+    let upgraded = upgraded_write(&mut doc, &heads, &key, NEWER);
+    receive(&mut peer, &guest, upgraded).expect("the updated guest's edit is decided against v2");
+    assert_eq!(value(&peer), "\"x\"", "the guest's edit is kept");
+
+    // Taking the choice back lets every version write again.
+    assert!(
+        peer.workspace_mut()
+            .apply_workspace_membership_command(
+                &owner,
+                &WorkspaceMembershipCommand::UninstallApp { app: APP.into() },
+                &owner_key,
+                now(),
+            )
+            .unwrap()
+    );
+    assert!(peer.governance().app_versions().is_empty());
+}
+
+/// The record's `value` as the peer holds it.
+fn value(peer: &StatePeer) -> String {
+    AutoCommit::load(&peer.document(APP, RECORD).unwrap())
+        .unwrap()
+        .get(ROOT, "value")
+        .unwrap()
+        .unwrap()
+        .0
+        .to_string()
+}
+
+/// The changes since `heads`, sent again after the record is upgraded to the
+/// version whose surface hashes to `surface`, naming that surface.
+fn upgraded_write(
+    doc: &mut AutoCommit,
+    heads: &[automerge::ChangeHash],
+    key: &SigningKey,
+    surface: [u8; 32],
+) -> NeighbourMsg {
+    let meta = doc.get(ROOT, "tilo:record").unwrap().unwrap().1;
+    doc.put(&meta, "surface", hex::encode(surface)).unwrap();
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
+    );
+    let mutation = collab_types::DocumentMutation::Incremental(doc.save_after(heads));
+    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        mutation.encode().unwrap(),
+        collab_types::document_artifact_id(APP, ROOM, RECORD),
+        author,
+        collab_types::document_attestation_id(APP, ROOM, RECORD),
+        collab_types::OpKind::Change,
+        now(),
+        2,
+    )
+    .with_surface(Some(surface));
+    collab_types::sign_op(&mut envelope, key).unwrap();
+    NeighbourMsg::AppDocument {
+        peer: crate::peer_handle(author.as_bytes()),
+        app_id: APP.into(),
+        cluster_id: ROOM.into(),
+        record_id: RECORD.into(),
+        envelope: Box::new(envelope),
+    }
+}
