@@ -1,4 +1,6 @@
-//! Byte custody for immutable native reads. Reservations precede capture work.
+//! Byte custody for immutable native reads. Reservations precede capture work:
+//! each capture reserves the most a native save may produce before it runs,
+//! and keeps only what the save produced for as long as the capture lives.
 use runtime_collab::committed_document::{
     CHANGES_FIRST_BYTES, CHUNK_BYTES, MAX_CHANGES_BASE, MAX_DOCUMENT_BYTES,
 };
@@ -15,6 +17,7 @@ pub trait DocumentBytes: Send + Sync {
 pub(crate) struct Budget(AtomicUsize);
 pub(in crate::collab_broker_capnp) struct Reservation {
     budget: Arc<Budget>,
+    bytes: usize,
 }
 impl Budget {
     pub(in crate::collab_broker_capnp) fn reserve(self: &Arc<Self>) -> Result<Reservation, String> {
@@ -26,14 +29,25 @@ impl Budget {
             .map_err(|_| "committed document capture capacity exhausted".to_string())?;
         Ok(Reservation {
             budget: self.clone(),
+            bytes: MAX_DOCUMENT_BYTES,
         })
+    }
+}
+impl Reservation {
+    /// Keep only `bytes` of this reservation, once the capture it was made
+    /// for holds that many: a capture waiting to be read holds its body, not
+    /// the most any body could be. Two captures of a few kilobytes each
+    /// reading slowly would otherwise hold the whole budget, and every other
+    /// app's read would be refused until one finished.
+    fn keep(&mut self, bytes: usize) {
+        let released = self.bytes.saturating_sub(bytes);
+        self.budget.0.fetch_sub(released, Ordering::AcqRel);
+        self.bytes = self.bytes.saturating_sub(released);
     }
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
-        self.budget
-            .0
-            .fetch_sub(MAX_DOCUMENT_BYTES, Ordering::AcqRel);
+        self.budget.0.fetch_sub(self.bytes, Ordering::AcqRel);
     }
 }
 pub(super) struct Capture {
@@ -56,7 +70,7 @@ pub(super) struct Capture {
 impl Capture {
     pub(super) fn new(
         body: Box<dyn DocumentBytes>,
-        reservation: Reservation,
+        mut reservation: Reservation,
         id: u64,
         revision: [u8; 32],
     ) -> Result<Self, String> {
@@ -64,6 +78,7 @@ impl Capture {
         if len == 0 || len > MAX_DOCUMENT_BYTES || id == 0 {
             return Err("invalid native document capture".into());
         }
+        reservation.keep(len);
         let now = std::time::Instant::now();
         Ok(Self {
             body,
@@ -323,13 +338,50 @@ mod tests {
             capture.chunk(CHUNK_BYTES as u32, token).is_err(),
             "current token cannot revive an expired capture"
         );
-        assert!(
-            budget.reserve().is_err(),
+        assert_eq!(
+            budget.0.load(Ordering::Acquire),
+            MAX_DOCUMENT_BYTES + CHUNK_BYTES + 1,
             "expiry cannot free bytes while an unread response owner remains"
         );
         drop(capture);
-        assert!(budget.reserve().is_ok());
+        assert_eq!(budget.0.load(Ordering::Acquire), MAX_DOCUMENT_BYTES);
         drop(second);
+    }
+    #[test]
+    fn a_capture_waiting_to_be_read_holds_its_body_not_the_largest_body() {
+        let budget = Arc::new(Budget::default());
+        // Every app of a session starting at once: each read's capture waits
+        // for its reader, and none keeps the next from being captured.
+        let waiting: Vec<Capture> = (1..=16)
+            .map(|id| {
+                Capture::new(
+                    Box::new(Bytes(vec![1; 4096])),
+                    budget.reserve().expect("room for another small capture"),
+                    id,
+                    [1; 32],
+                )
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(budget.0.load(Ordering::Acquire), 16 * 4096);
+        drop(waiting);
+        assert_eq!(budget.0.load(Ordering::Acquire), 0);
+        // What is held is still bounded: bodies as large as a capture may be
+        // fill the budget.
+        let large: Vec<Capture> = (1..=2)
+            .map(|id| {
+                Capture::new(
+                    Box::new(Bytes(vec![1; MAX_DOCUMENT_BYTES])),
+                    budget.reserve().unwrap(),
+                    id,
+                    [1; 32],
+                )
+                .unwrap()
+            })
+            .collect();
+        assert!(budget.reserve().is_err());
+        drop(large);
+        assert_eq!(budget.0.load(Ordering::Acquire), 0);
     }
     #[test]
     fn changes_start_with_a_bounded_changes_piece_and_continue_in_chunks() {
