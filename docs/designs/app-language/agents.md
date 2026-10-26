@@ -102,8 +102,8 @@ parents, its children by kind with counts, its actions, and who else is on it.
 - **Pages** default to 10 rows. `more` continues the last result, and `find … | count` answers
   without rows.
 - **Tokens:**
-  - each type's own shorthands, such as `@ycombinator.com` for a mail domain, and paths through
-    references such as `from.contact.org:~"YC"` (`search.md` §2.2.1);
+  - identifiers as URIs with `*` (`*@ycombinator.com`, `discord:janedoe`, `tel:+49*`), and
+    paths through references such as `from.contact.org:~"YC"` (`search.md` §2.2.1);
   - `me`;
   - `is:unread`;
   - `-7d` and `today`;
@@ -164,6 +164,15 @@ app mail "Mail" · types: Mailbox Thread Message Draft Label · start: look mail
 - **`describe` works on anything:** an app, a type, an action, a field, or a ref, which
   describes that resource's type with this resource's values.
 - **Permission is shown before acting,** per action, for this task.
+- **`describe … json`** gives the same as structured data:
+  - fields with types, roles, docs and optionality;
+  - filters;
+  - actions with parameters, defaults, return type, this task's permission and undoability;
+  - views;
+  - **an example value taken from the app's own scenarios,** so the example is realistic and
+    never invented.
+- **`types ~"ideas"`** lists every installed type whose doc comment matches, one line each. That
+  is how an agent finds where something can go without knowing the apps.
 - **Doc comments are the documentation.** The compiler requires one on every public type and
   action, and they are written for the people and agents who will call it.
 

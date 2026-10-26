@@ -79,7 +79,8 @@ type Message {
   | enum | chips with the variants' icons; several may be picked | `status:open` | `status: [.open]` |
   | `Time`, `Date` | presets (today, this week, last 30 days, a month) plus a range picker; also a sort | `received:>2026-10-01` | `received: 2026-10-01..` |
   | `Int`, `Number` | range | `size:>10` | `size: 10..` |
-  | a value type with its own `search` (`MailAddress`, `PhoneNumber`, `Url`, `Money`, a service's account type) | what that type declares: its own filters and shorthands | `from:@ycombinator.com` (`MailAddress` declares `@domain`), `amount:>100EUR` | `from: "@ycombinator.com"` |
+  | an identifier (`std.Identifier`: mail, phone, Discord, Matrix, Tilo, GitHub, …) | picker of the identifiers that occur, with linked records shown only where links exist | `from:*@ycombinator.com`, `from:tel:+49*`, `author:discord:janedoe` | `from: "*@ycombinator.com"` |
+  | a value with a literal (`Money`, `Duration`, `Url`, `MediaType`) | range or pattern on the literal | `amount:>500EUR`, `url:https://github.com/tilo/*` | `amount: 500EUR..` |
   | a reference or `Set` of references to another type | picker of that type, using its row view; its filters are reachable by path (§2.2.1) | `label:legal`, `author.contact.org:~"YC"` | `labels: [label:9c]` |
   | `Set<Text>` | tag chips with counts | `tag:urgent` | `tags: ["urgent"]` |
 
@@ -100,23 +101,21 @@ Search has no knowledge of any domain. Mail addresses, phone numbers, Discord ac
 identities, contacts, files, calendar rooms and payments are all just types. Everything a query
 can do comes from three general rules.
 
-1. **A type owns its search.** Value types declare filters and shorthands like any type:
+1. **Values have one literal syntax, and patterns work the same on all of them.**
+   - **Identifiers** of every service implement `std.Identifier` (`scheme`, `value`) and are
+     written as URIs: `mailto:jane@ycombinator.com`, `tel:+4930123456`, `discord:janedoe`,
+     `matrix:@jane:matrix.org`, `tilo:jane`, `github:ada`.
+   - **Bare forms** are accepted where they're unambiguous: `jane@ycombinator.com` means a
+     `mailto:`, and `+4930…` a `tel:`.
+   - **`*` is the one pattern:** `*@ycombinator.com`, `tel:+49*`, `discord:*`.
+   - **An identifier alone** means anything involving it, in any field of any type that holds
+     an identifier. `*@ycombinator.com` finds mail from or to the domain, invitees, contacts and
+     documents that hold such an address. A field name narrows it: `from:*@ycombinator.com`.
+   - **Other values** have literals in the same spirit: `500EUR`, `5m`, `2026-08`, `-7d`,
+     `https://github.com/tilo/*`. Comparisons (`>`, `<`, `..`) and `*` apply to every type with
+     a literal.
 
-   ```
-   /// An address mail is delivered to.
-   type MailAddress {
-       local: Text
-       domain: Text
-       search {
-           filter domain
-           shorthand "@{domain}"        // `@ycombinator.com` means domain = ycombinator.com
-       }
-   }
-   ```
-
-   `PhoneNumber` declares its country, `Url` its host, `Money` its currency and amount, and a
-   Discord account its server. A new service brings its types, and they are filterable
-   everywhere with no change to search.
+   A new service adds a scheme and its types. Search, the palette and agents need no change.
 2. **Links are ordinary references, and absent ones are absent.**
    - A Discord message's author is a `DiscordUser`. Whether that account is linked to a Tilo
      identity is another reference, held by whatever records the link, and it is there or it is
@@ -138,8 +137,8 @@ can do comes from three general rules.
    path through a link that some results lack says so in the reply: "matched 4; 9 senders have
    no contact".
 
-**Cross-type queries are by type, not by field name.** `@ycombinator.com` alone searches every
-`MailAddress` field of every type: mail senders and recipients, calendar invitees, contacts, and
+**Cross-type queries are by type, not by field name.** `*@ycombinator.com` alone searches every
+identifier field of every type: mail senders and recipients, calendar invitees, contacts, and
 addresses in documents. A query of the form `<field>:<value>` uses that field where it exists.
 
 **Without a `search` block, the defaults are:**
@@ -330,18 +329,18 @@ with no domain knowledge in search. Each becomes a test over sample packages.
 
 | Domain | Query a person or agent writes | What makes it work |
 |---|---|---|
-| Mail | `@ycombinator.com is:unread received:-30d` | `MailAddress` shorthand; `Bool` and `Time` filters |
+| Mail | `*@ycombinator.com is:unread received:-30d` | identifier pattern; `Bool` and `Time` filters |
 | Chat across services | `Message author.identity.member:false in:c4` | Discord, Matrix and Tilo messages share a `Message` type with a service-specific `author`; the identity link is an optional path |
-| Files across stores | `File type:pdf modified:-7d store:drive` | `MediaType` shorthand (`pdf`); `store` is a reference to the account it came from |
-| Calendar | `Event attendees:@acme.com starts:next week room.floor:3` | `MailAddress` on attendees; a path through the room reference |
+| Files across stores | `File type:pdf modified:-7d store:drive` | `MediaType` literal (`pdf`); `store` is a reference to the account it came from |
+| Calendar | `Event attendees:*@acme.com starts:next week room.floor:3` | `MailAddress` on attendees; a path through the room reference |
 | Code and issues | `Issue state:open assignee:me label:bug repo.org:tilo` | enum, reference to `me`, and paths |
-| Payments | `Payment amount:>500EUR paid:-90d invoice:none` | `Money` shorthand; an absent reference as a filter (`none`) |
+| Payments | `Payment amount:>500EUR paid:-90d invoice:none` | `Money` literal; an absent reference as a filter (`none`) |
 | Invoices | `Invoice due:<today paid_by:none client.country:DE` | an absent link is a fact you can filter on |
-| Photos | `Photo taken:2026-08 place.city:Lisbon people:@jane` | `Place` path; a set of references whose type declares a shorthand |
-| Media | `Track artist:~"Nils" duration:>5m played:none` | `Duration` shorthand; an absent "played" record |
+| Photos | `Photo taken:2026-08 place.city:Lisbon people:tilo:jane` | `Place` path; a set of identifiers |
+| Media | `Track artist:~"Nils" duration:>5m played:none` | `Duration` literal; an absent "played" record |
 | Notes | `Note ~"83(b)" edited_by:me tag:legal` | text, a person reference, tags |
-| Web history and bookmarks | `Visit url:github.com/tilo visited:-1d` | `Url` shorthand by host and path |
-| Contacts | `Contact phone:+49 email:none` | `PhoneNumber` country shorthand; absent values |
+| Web history and bookmarks | `Visit url:github.com/tilo visited:-1d` | `Url` pattern |
+| Contacts | `Contact phone:tel:+49* email:none` | identifier pattern; absent values |
 
 `none` and `any` are general: every optional field and every set accepts them.
 
