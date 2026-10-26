@@ -102,6 +102,10 @@ pub(crate) struct Timeline {
     threads: HashMap<String, u64>,
     groups: Vec<model::MessageGroup>,
     measure_look: Option<MeasureLook>,
+    /// The frame, column width and theme [`Self::measure_look`] was last checked
+    /// for: nothing it holds changes within a frame, so each row of that
+    /// frame need not build and compare it again.
+    measure_checked: Option<(u64, u32, usize)>,
     paint_look: Option<PaintLook>,
     rows: HashMap<String, KeptRow>,
     frame: u64,
@@ -214,18 +218,26 @@ impl ChatApp {
             self.timeline.borrow_mut().counts.measured += 1;
             return self.measure_row(tr, theme, m, show_header, text_w);
         }
-        let look = MeasureLook {
-            theme: theme.clone(),
-            text_width: text_w.to_bits(),
-            participate: self.can_participate(),
-            i18n: ui::i18n::I18nManager::revision(),
-        };
         let key = {
             let mut timeline = self.timeline.borrow_mut();
             timeline.refresh(self.messages_revision, &self.messages);
-            if timeline.measure_look.as_ref() != Some(&look) {
-                timeline.measure_look = Some(look);
-                timeline.rows.clear();
+            let checked = (
+                timeline.frame,
+                text_w.to_bits(),
+                std::ptr::from_ref(theme).addr(),
+            );
+            if timeline.measure_checked != Some(checked) {
+                timeline.measure_checked = Some(checked);
+                let look = MeasureLook {
+                    theme: theme.clone(),
+                    text_width: text_w.to_bits(),
+                    participate: self.can_participate(),
+                    i18n: ui::i18n::I18nManager::revision(),
+                };
+                if timeline.measure_look.as_ref() != Some(&look) {
+                    timeline.measure_look = Some(look);
+                    timeline.rows.clear();
+                }
             }
             let mut hasher = std::hash::DefaultHasher::new();
             timeline.fingerprint(&m.id).hash(&mut hasher);

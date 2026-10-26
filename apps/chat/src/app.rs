@@ -3166,7 +3166,9 @@ impl ChatApp {
 
     pub(crate) fn reload(&mut self, doc: &AutoCommit) {
         self.read_kept_messages(doc);
-        let chat = crate::projection::read(doc);
+        let chat = ui::tilo_resource::profiling::measure("chat.reload.read", || {
+            crate::projection::read(doc)
+        });
         #[cfg(test)]
         {
             *self.last_read.borrow_mut() = std::rc::Rc::new(chat.clone());
@@ -4798,7 +4800,7 @@ impl Widget for ChatApp {
                     });
             if !unchanged {
                 self.canonical_dirty = true;
-                self.reload(doc);
+                ui::tilo_resource::profiling::measure("chat.sync.reload", || self.reload(doc));
                 self.synced = Some((heads, pending));
             }
         }
@@ -4964,6 +4966,7 @@ impl Widget for ChatApp {
         presence: &PresenceCtx,
     ) {
         // The attachments painted below say when they step on next.
+        let _draw_phase = ui::tilo_resource::profiling::Phase::start("chat.draw");
         self.arriving_wake.set(None);
         // Adopt this theme's chrome and advance the drawers for this frame.
         self.layout_text_scale = theme.text_scale;
@@ -4987,7 +4990,9 @@ impl Widget for ChatApp {
         if !self.thread_is_page() {
             self.draw_conversation(&mut parts, scene, tf, tr, theme, presence, &mut hits);
         }
+        let drawers_phase = ui::tilo_resource::profiling::Phase::start("chat.draw.drawers");
         self.draw_drawers(&mut parts, scene, tf, tr, theme, presence, &mut hits);
+        drawers_phase.end();
         self.declare_window_toolbar();
 
         // Call layers. The host tile is a real VideoPlayer, painted only once
@@ -5109,6 +5114,7 @@ impl Widget for ChatApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let _phase = ui::tilo_resource::profiling::Phase::start("chat.handle_event");
         // What is typed belongs to the control that has the keyboard. A
         // desktop where no window holds it offers each key to every window
         // in turn, and Chat must not write into its composer what was not

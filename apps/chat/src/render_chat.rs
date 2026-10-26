@@ -117,6 +117,7 @@ impl ChatApp {
         // column above the composer; the composer and the notes under it
         // below that, to the window's foot.
         let column = Rect::new(self.center_left(), area.y0, self.center_right(), area.y1);
+        let messages_phase = ui::tilo_resource::profiling::Phase::start("chat.draw.messages");
         parts.draw(scene, "chat-messages", column, |scene| {
             if area.width() > 0.0 && area.height() >= self.chrome.body_line {
                 push_clip(scene, tf, area);
@@ -145,6 +146,8 @@ impl ChatApp {
                 );
             }
         });
+        messages_phase.end();
+        let _composer_phase = ui::tilo_resource::profiling::Phase::start("chat.draw.composer");
         let composer = Rect::new(column.x0, column.y1, column.x1, self.rect.y1);
         parts.draw(scene, "chat-composer", composer, |scene| {
             self.draw_composer(scene, tf, tr, theme, presence, hits);
