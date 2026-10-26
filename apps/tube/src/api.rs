@@ -198,6 +198,13 @@ pub enum Update {
         /// as a bot check), for the page to pass on.
         said: Option<String>,
     },
+    /// The top videos `YouTube` answers for what the platform search is
+    /// asked while the person types ([`crate::suggest`]); empty when no
+    /// source answered.
+    Suggestions {
+        query: String,
+        videos: Vec<Video>,
+    },
     /// Non-fatal note surfaced in the status log.
     Note(String),
 }
@@ -660,6 +667,9 @@ async fn branding(client: tilo_net::Client, id: String, up_tx: Updates) {
 pub struct Worker {
     tx: SyncSender<Request>,
     rx: Receiver<Update>,
+    /// Where the platform search's live answers are asked from; `None` for
+    /// a scripted worker, whose answers the test sends.
+    suggest: Option<(crate::suggest::Suggesting, Updates)>,
 }
 
 impl Worker {
@@ -673,6 +683,7 @@ impl Worker {
         let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
         let (up_tx, up_rx) = std::sync::mpsc::sync_channel::<Update>(UPDATE_QUEUE_CAPACITY);
         let up_tx = Updates { tx: up_tx, wake };
+        let suggest = Some((crate::suggest::Suggesting::default(), up_tx.clone()));
         // Without threads (a browser page) the extractors cannot run; the
         // public Invidious API answers instead, as tasks on the app runtime.
         if matches!(
@@ -685,6 +696,7 @@ impl Worker {
             return Self {
                 tx: req_tx,
                 rx: up_rx,
+                suggest,
             };
         }
         // If the OS can't give us a thread (resource exhaustion), degrade to a
@@ -992,6 +1004,7 @@ impl Worker {
         Self {
             tx: req_tx,
             rx: up_rx,
+            suggest,
         }
     }
 
@@ -1006,6 +1019,40 @@ impl Worker {
         self.tx.try_send(req)
     }
 
+    /// Ask `YouTube` for the top videos of `query`, what the platform
+    /// search is asked, answered as [`Update::Suggestions`]. Asks on the app
+    /// runtime, apart from the request queue, so a slow extractor never
+    /// holds it up; one request at a time, for the latest query once the
+    /// typing pauses ([`crate::suggest`]). False when nothing will answer
+    /// (no runtime to ask on), so the search does not wait for it.
+    pub fn suggest(&self, query: &str) -> bool {
+        let Some((suggesting, updates)) = &self.suggest else {
+            // Scripted: the test sends the answers.
+            return true;
+        };
+        if !suggesting.want(query) {
+            return true;
+        }
+        let Ok(runtime) = ui::rt::try_app() else {
+            suggesting.give_up();
+            return false;
+        };
+        let (suggesting, updates) = (suggesting.clone(), updates.clone());
+        drop(runtime.spawn(async move {
+            let client = client();
+            let youtube = client.clone().map(crate::innertube::InnerTube::new);
+            let fetch = |query: String| {
+                let (client, youtube) = (client.clone(), youtube.as_ref());
+                async move { suggested_videos(client.as_ref(), youtube, &query).await }
+            };
+            crate::suggest::ask_youtube(suggesting, fetch, |update| {
+                let _ = updates.try_send(update);
+            })
+            .await;
+        }));
+        true
+    }
+
     /// Non-blocking drain of any results ready this frame.
     pub fn poll(&self) -> Vec<Update> {
         self.rx.try_iter().take(MAX_UPDATES_PER_POLL).collect()
@@ -1018,7 +1065,14 @@ impl Worker {
     pub fn scripted(wake: ui::WakeHandle) -> (Self, Updates) {
         let (tx, _requests) = std::sync::mpsc::sync_channel::<Request>(REQUEST_QUEUE_CAPACITY);
         let (results, rx) = std::sync::mpsc::sync_channel::<Update>(UPDATE_QUEUE_CAPACITY);
-        (Self { tx, rx }, Updates { tx: results, wake })
+        (
+            Self {
+                tx,
+                rx,
+                suggest: None,
+            },
+            Updates { tx: results, wake },
+        )
     }
 }
 
@@ -1409,6 +1463,32 @@ async fn task_worker(requests: Receiver<Request>, updates: Updates) {
         };
         answer(&client, &youtube, request, &updates).await;
     }
+}
+
+/// The videos `YouTube` finds for `query`, as Tube's own search asks it:
+/// its web API first, Invidious second; empty when neither answers.
+async fn suggested_videos(
+    client: Option<&tilo_net::Client>,
+    youtube: Option<&crate::innertube::InnerTube>,
+    query: &str,
+) -> Vec<Video> {
+    if let Some(youtube) = youtube
+        && let Ok(found) = youtube.search(query).await
+        && !found.videos.is_empty()
+    {
+        return found.videos;
+    }
+    let Some(client) = client else {
+        return Vec::new();
+    };
+    invidious_videos(
+        client,
+        "/api/v1/search",
+        &[("q", query), ("type", "video")],
+        "Search",
+    )
+    .await
+    .unwrap_or_default()
 }
 
 /// Answer one request in the page worker: `YouTube` first, then Invidious.
@@ -1912,7 +1992,11 @@ mod tests {
         {
             let (tx, _hold_queue) = std::sync::mpsc::sync_channel(1);
             let (_unused_tx, rx) = std::sync::mpsc::sync_channel(1);
-            let worker = Worker { tx, rx };
+            let worker = Worker {
+                tx,
+                rx,
+                suggest: None,
+            };
             assert!(worker.request(Request::Feed).is_ok());
             let error = worker
                 .request(Request::Search {
