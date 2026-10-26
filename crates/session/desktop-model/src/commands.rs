@@ -22,7 +22,7 @@ use crate::workspace::Workspace;
 mod admission;
 mod placement;
 pub mod policy;
-pub use admission::{check_owned, namespace_counter, resolve_open_app};
+pub use admission::{admit, check_owned, namespace_counter, resolve_open_app};
 pub use placement::{GroupSpan, OpenContext, OpenIntent, Seam, StripViewport, open_app_placement};
 pub use policy::{Refusal, Standing, may_command, may_create_workspace};
 
