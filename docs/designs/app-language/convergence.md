@@ -315,23 +315,86 @@ same view.
 | Like a video | YouTube | `like(v)` | At once; final when YouTube accepts |
 | Book and pay | three homes | a `flow` | Each step runs once the one before is final |
 
-## 9. Consequences for Tilo
+## 9. Storage and sync: intent, effect, and validated reads
 
-- **An action log becomes the source of truth** for workspace-homed resources. It sits above
-  Automerge, which keeps storing the commuting kinds (text, counters, sets). Widgets that write
-  the CRDT directly become actions: every widget event is already an action reference or a
-  binding in `components.md`.
-- **The host's commit role** reuses the governance owner's ordered admission.
+**The log is the truth for workspace-homed resources.** Each entry holds the intent and the
+effect, and the home validates what the action read: optimistic concurrency, as in FoundationDB's
+resolver, applied to app actions.
+
+```
+id, author, signature
+intent:  check(item 7f3, done: true), app version, recorded inputs (time, web, random)
+reads:   { item7f3.done @ v41 }                 # field versions the body read
+writes:  { item7f3.done = true }                 # its effect; text, counter and set edits as CRDT ops
+```
+
+1. **The author executes.** The device runs the action against its current state. The runtime
+   records reads and writes (it already tracks every field a body reads), shows the result at
+   once, and sends the entry.
+2. **The home validates and orders.** It commits the entry if everything it read is still at the
+   version read and its writes are within the author's grants, and gives it a position.
+   Validation needs field keys and versions, never values, so it works in end-to-end encrypted
+   rooms.
+3. **Everyone else applies the effect.** Receivers apply the writes and run no app code. There is
+   no cross-version determinism problem, and old app versions are not kept for replay.
+4. **Stale reads are the author's to settle.** If something read has changed, the home answers
+   "stale". The author re-executes with the same recorded arguments and inputs against the new
+   state, and resubmits. People see nothing, unless the re-execution now breaks an invariant:
+   that is the rejection with its reason. Invariants are serializable without the host running
+   code.
+5. **Commuting kinds skip validation.** Text splices, counter adds and set adds are CRDT
+   operations with no read set, so ordinary editing never conflicts or waits. Text follows an
+   event-graph design (Eg-walker): the log of text operations is the truth, the state is plain
+   text, and CRDT structure exists only while merging concurrent edits.
+
+**State is a materialized store, not a document:**
+- **Storage.** Current field values sit in paged on-disk columns, together with the indexes
+  `search.md` §4 describes. They are the same store.
+- **Opening.** Opening reads the pages it shows.
+- **A new device** loads the home's signed checkpoint and the log after it.
+- **Compaction.** Entries before a checkpoint are compacted to their intents, which History keeps.
+
+**What follows from it:**
+- **History** is the log of intents.
+- **Undo** is a new action whose writes restore the previous values. Its reads ensure nobody
+  changed them since.
+- **Permissions** are checked once per entry, against its write set.
+- **`hosted`** means: don't show the effect until it is committed.
+- **Services** use the same mechanism. A conditional write is "my reads are still current", with
+  the service's version tag as the version.
+- **Sync** is "entries after position N", per home: ordered, resumable, with no growing actor sets.
+
+**Hard parts:**
+- **Read granularity.** `attendees.count <= seats` reads the membership of a set, not one field.
+  Reads need ranges and predicates, like FoundationDB's conflict ranges. Too coarse conflicts
+  needlessly; too fine costs validation time.
+- **What the host learns.** In encrypted rooms it sees which fields change and when, never
+  their values. That metadata is stated, not hidden.
+- **Without a host,** peers have only a provisional, deterministic order. Commuting edits are
+  unaffected. Anything with an invariant waits for a home, which is `hosted` again.
+- **Structured rich text** (blocks, marks, moves) in the event-graph style is real work. It is
+  where Automerge is more mature today.
+
+## 9.1 Consequences for Tilo
+
+- **Today the Automerge change is the truth.** It is signed with claims (which action, which
+  storage units). tilolang records the invocation beside it for History. Moving to §9 replaces
+  Automerge on the hot path with the log and the materialized store. The claims already carry
+  half of an entry (action and write set).
+- **Widgets that write the CRDT directly become actions.** Every widget event is already an
+  action reference or a binding in `components.md`.
+- **The host's validation** extends the governance owner's ordered admission and the existing
+  claim checks.
 - **Flows and outcome unknown** reuse the outbox and the native owner's existing unknown-outcome
   state.
-- **Sources** reuse account custody for credentials. The filesystem is the workspace's own
-  source for files; Drive and others are sources for theirs. Codecs turn formats into
-  resources (`format "text/markdown" <-> Document`).
+- **Services** reuse account custody for credentials. The filesystem is the workspace's own home
+  for files. Codecs turn formats into resources (`format "text/markdown" <-> Document`).
 
 ## 10. Open
 
 - The design of the three exceptional UX states, per app.
-- **Checkpoint cadence and retention of old app versions** for replay.
+- **Checkpoint cadence.** Old app versions are no longer needed for replay (§9): receivers apply
+  effects, and only an author re-executes its own uncommitted actions.
 - **Services without conditional writes.** IMAP can't edit a draft in place: a client uploads a
   new copy and deletes the old one, with no check for an edit made elsewhere meanwhile. For such
   services: either the last write wins and the person is told, or both copies are kept as
