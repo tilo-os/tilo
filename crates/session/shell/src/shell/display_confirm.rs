@@ -34,7 +34,8 @@ use ui::theme::Theme;
 
 use crate::shell::i18n::{t, t_args};
 use crate::shell::overlay_host::layers::{
-    LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
+    Anchor, LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Material, Modality, Role,
+    Routed, ShellLayer, Surface,
 };
 use ui::TextRole;
 use ui::widget::ButtonRole;
@@ -689,6 +690,19 @@ impl DisplayConfirmPrompt {
 impl ShellLayer for DisplayConfirmPrompt {
     fn id(&self) -> LayerId {
         LayerId::DisplayConfirmation
+    }
+
+    /// The question that is the grant: a tool changed the display and the
+    /// change is reverted unless a person answers it. System-modal on every
+    /// display at once, because the whole session waits on the answer.
+    fn surface(&self) -> Option<Surface> {
+        Some(Surface::shell(
+            Role::Consent,
+            Anchor::Fill,
+            Modality::SystemModal,
+            Material::Floating,
+            self.visible(),
+        ))
     }
 
     fn is_open(&self) -> bool {
