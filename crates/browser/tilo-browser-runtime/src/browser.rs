@@ -2943,18 +2943,19 @@ impl Mount {
             let semantics = self.frame.inspection();
             self.metric_end("inspection", stage);
             self.tree_entries.set(self.entries);
-            self.tree_root_rect.set(semantics.root.rect);
+            let root_rect = semantics.root.rect;
+            self.tree_root_rect.set(root_rect);
             // The semantics tree is the bulk of every status; the host keeps
-            // the last tree it received, so an unchanged tree is left out and
-            // content-only changes while typing are throttled.
+            // the last tree it received, so an unchanged tree is left out,
+            // a changed one goes as a patch to it and content-only changes
+            // while typing are throttled.
             let stage = self.metric_start();
-            let decision = self.semantics.borrow_mut().decide(
-                &semantics,
-                ime_window.as_ref(),
-                ui::time::now(),
-            );
+            let decision =
+                self.semantics
+                    .borrow_mut()
+                    .decide(semantics, ime_window.as_ref(), ui::time::now());
             self.metric_end("semantics_decide", stage);
-            (Some(decision), semantics.root.rect)
+            (Some(decision), root_rect)
         };
         let applied = self.viewport.applied();
         let value = serde_json::json!({
@@ -2999,13 +3000,16 @@ impl Mount {
         }
         let mut text = value.to_string();
         if let Some(crate::semantics_status::SemanticsDecision::Deliver { .. }) = decision {
-            // Splice the already serialized tree into the status object
-            // instead of parsing it back into a value and serializing twice.
+            // Splice the already serialized tree or patch into the status
+            // object instead of parsing it back into a value and
+            // serializing twice.
             let gate = self.semantics.borrow();
-            text.pop();
-            text.push_str(",\"semantics\":");
-            text.push_str(std::str::from_utf8(gate.text()).unwrap_or("null"));
-            text.push('}');
+            if let Ok(members) = std::str::from_utf8(gate.text()) {
+                text.pop();
+                text.push(',');
+                text.push_str(members);
+                text.push('}');
+            }
         }
         emit_text(&self.status, &text);
     }

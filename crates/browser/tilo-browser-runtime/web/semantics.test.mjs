@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {semanticBridge} from './semantics.mjs';
+import {semanticBridge,applySemanticsPatch} from './semantics.mjs';
 import {createKeyboardForwarder,modifierSnapshot,semanticKeyboardRoute} from './host-core.mjs';
 class Element {
   constructor(tag){this.localName=tag;this.dataset={};this.attributes=new Map();this.children=[];this.tabIndex=-1;this.value='';this.selectionStart=0;this.selectionEnd=0;this.selectionDirection='none';this.scrollTop=0;this.scrollLeft=0;this.listeners=new Map();this.style={cssText:''};}
@@ -753,4 +753,58 @@ test('an open combobox keeps focus and names its highlighted option as its activ
   assert.equal(box.getAttribute('aria-activedescendant'),option(2).id,'moving the highlight moves the active descendant');
   bridge.update(combobox(false,2));
   assert.equal(box.getAttribute('aria-activedescendant'),null,'closing the list clears it');
+});
+// A chat-like tree as the runtime sends it whole: a shell widget holding an
+// app widget whose semantics are a composer and a list of messages.
+const chatTree=(draft,messages)=>({viewport:[100,100],keyboard_focus_owner:'App[0]',root:{path:'Shell[0]',widget:'Shell',rect:[0,0,100,100],semantics:null,children:[
+  {path:'App[0]',widget:'App',rect:[0,0,100,100],semantics:{role:'Group',name:'Chat',children:[
+    {role:'TextInput',name:'Message',value:draft,action_target:'composer',state:{focusable:true,focused:true},bounds:{x0:0,y0:90,x1:100,y1:100},children:[]},
+    {role:'List',name:'Messages',children:messages.map(key=>({role:'ListItem',name:`Message ${key}`,key,bounds:{x0:0,y0:key,x1:100,y1:key+1},children:[]}))},
+  ]},children:[]},
+]}});
+test('a semantics patch changes what it names and keeps every other node as it was',()=>{
+  const tree=chatTree('hi',[1,2,3]);
+  const typed=applySemanticsPatch(tree,4,{base:4,seq:5,viewport:[100,100],keyboard_focus_owner:'App[0]',ops:[
+    {p:['root',0,'s',0],own:{role:'TextInput',name:'Message',value:'hi!',action_target:'composer',state:{focusable:true,focused:true},bounds:{x0:0,y0:90,x1:100,y1:100},children:[]}},
+  ]});
+  const composer=typed.root.children[0].semantics.children[0];
+  assert.equal(composer.value,'hi!');
+  assert.equal(tree.root.children[0].semantics.children[0].value,'hi','the held tree is not changed in place');
+  assert.equal(typed.root.children[0].semantics.children[1],tree.root.children[0].semantics.children[1],'the untouched list is the same object');
+  // A message arrives in the middle, one goes, and the widget itself moves.
+  const moved=applySemanticsPatch(typed,5,{base:5,seq:6,viewport:[100,100],keyboard_focus_owner:'App[0]',ops:[
+    {p:['root',0],own:{path:'App[0]',widget:'App',rect:[0,10,100,90],semantics:null,children:[]}},
+    {p:['root',0,'s',1],splice:[1,0,[{role:'ListItem',name:'Message 9',key:9,children:[]}]]},
+    {p:['root',0,'s',1],splice:[3,1,[]]},
+  ]});
+  const app=moved.root.children[0];
+  assert.deepEqual(app.rect,[0,10,100,90]);
+  assert.equal(app.semantics.children[0],composer,'a widget own fields leave its semantics alone');
+  assert.deepEqual(app.semantics.children[1].children.map(item=>item.key),[1,9,2]);
+  assert.equal(app.semantics.children[1].children[0],tree.root.children[0].semantics.children[1].children[0]);
+  // Semantics appearing or going are sent whole.
+  const gone=applySemanticsPatch(moved,6,{base:6,seq:7,viewport:[100,100],keyboard_focus_owner:null,ops:[{p:['root',0,'s'],full:null}]});
+  assert.equal(gone.root.children[0].semantics,null);
+  assert.equal(gone.keyboard_focus_owner,null);
+  // A patch made for another tree is refused: the page asks for the whole one.
+  assert.equal(applySemanticsPatch(moved,6,{base:5,seq:6,ops:[]}),undefined);
+  assert.equal(applySemanticsPatch(undefined,undefined,{base:0,seq:1,ops:[]}),undefined);
+});
+test('the mirror rewrites only the elements of nodes a patch changed',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{});
+  const tree=chatTree('hi',[1,2,3,4,5]);
+  bridge.update(tree);
+  const written=new Map();
+  const watch=element=>{const set=element.setAttribute.bind(element),remove=element.removeAttribute.bind(element);element.setAttribute=(name,value)=>{written.set(element,(written.get(element)??0)+1);set(name,value);};element.removeAttribute=name=>{written.set(element,(written.get(element)??0)+1);remove(name);};for(const child of element.children)watch(child);};
+  watch(root);
+  const typed=applySemanticsPatch(tree,1,{base:1,seq:2,viewport:[100,100],keyboard_focus_owner:'App[0]',ops:[
+    {p:['root',0,'s',1,2],own:{role:'ListItem',name:'Message 3 (edited)',key:3,bounds:{x0:0,y0:3,x1:100,y1:4},children:[]}},
+  ]});
+  bridge.update(typed);
+  const edited=[...written.keys()];
+  assert.ok(edited.every(element=>['Chat','Messages','Message 3 (edited)'].includes(element.getAttribute('aria-label'))),`rewrote ${edited.map(element=>element.getAttribute('aria-label'))}`);
+  assert.ok(edited.some(element=>element.getAttribute('aria-label')==='Message 3 (edited)'));
+  assert.equal(root.dataset.nodeCount,'8');
+  const find=(element,label)=>element.getAttribute?.('aria-label')===label?element:element.children.map(child=>find(child,label)).find(Boolean);
+  assert.equal(find(root,'Message').dataset.tiloFocused,'true','focus stays on the composer');
 });
