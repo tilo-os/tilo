@@ -37,10 +37,50 @@ pub enum Scalar {
 }
 
 /// A field of a record type: its id and how it merges.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FieldSpec {
     pub id: FieldId,
     pub kind: FieldKind,
+}
+
+/// A predicate over the items of a collection, which [`Store::listing_where`] answers (see
+/// [`tilolang::pred`]).
+pub type Pred = tilolang::pred::Pred<FieldRead>;
+
+pub use tilolang::pred::Lit;
+
+/// A field a [`Pred`] reads: a register, a counter or a text of the item, and what it holds
+/// when nobody wrote it (the declared default).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FieldRead {
+    pub spec: FieldSpec,
+    pub absent: Lit,
+}
+
+impl FieldRead {
+    /// What the field holds, `value` being what the store holds of it.
+    ///
+    /// # Errors
+    ///
+    /// `Invalid` for a stored value a predicate does not compare.
+    pub fn lit(&self, value: FieldValue) -> Result<Lit, StoreError> {
+        match value {
+            FieldValue::Absent => Ok(self.absent.clone()),
+            FieldValue::Scalar(Scalar::Bool(b)) => Ok(Lit::Bool(b)),
+            FieldValue::Scalar(Scalar::Int(i)) | FieldValue::Counter(i) => Ok(Lit::Int(i)),
+            FieldValue::Scalar(Scalar::Text(t)) | FieldValue::Text(t) => Ok(Lit::Text(t)),
+            other => Err(StoreError::Invalid(format!(
+                "field {} holds {other:?}, which a filter does not compare",
+                self.spec.id
+            ))),
+        }
+    }
+}
+
+impl From<String> for StoreError {
+    fn from(message: String) -> Self {
+        Self::Invalid(message)
+    }
 }
 
 /// What a new document or item needs to start out with: every structural field exists
@@ -355,6 +395,33 @@ pub trait Store {
                 field.id
             ))),
         }
+    }
+
+    /// The items of the collection `field` of `at` (whose items are of the type `item`) that
+    /// `pred` holds of, in order, shared. A store that keeps what it read keeps this too, and
+    /// brings it up to date as the items change rather than evaluating every item again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::listing`], and as reading a field `pred` reads.
+    fn listing_where(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        item: &TypeId,
+        pred: &Pred,
+    ) -> Result<Rc<Listing>, StoreError> {
+        let all = self.listing(at, field)?;
+        let mut items = Vec::new();
+        for id in &all.items {
+            let target = at.item(&field.id, id, item.clone());
+            let holds =
+                pred.eval(&mut |read: &FieldRead| read.lit(self.read(&target, &read.spec)?))?;
+            if holds {
+                items.push(Rc::clone(id));
+            }
+        }
+        Ok(Rc::new(Listing { items }))
     }
 
     /// The notes of a document's changes, oldest first.

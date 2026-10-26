@@ -49,6 +49,18 @@ action check(item: Item) {
     item.done = true
 }
 
+action uncheck(item: Item) {
+    item.done = false
+}
+
+action open_count(bag: Bag) -> Int {
+    return bag.items.count(item -> not item.done)
+}
+
+action open_titles(bag: Bag) -> List<Text> {
+    return bag.items.filter(item -> not item.done).map(item -> item.title)
+}
+
 enum Which {
     all
     open
@@ -121,6 +133,15 @@ view newest(bag: Bag) {
 view done_count(bag: Bag) {
     section(bag.name) {
         text("{bag.items.count(item -> not item.done)} open")
+    }
+}
+
+view open_card(bag: Bag) {
+    section(bag.name) {
+        text("{bag.items.count(item -> not item.done and item.title != "skip")} open")
+        list(bag.items.filter(item -> not item.done)) { item ->
+            row(item.title)
+        }
     }
 }
 
@@ -680,5 +701,98 @@ view count(bag: Bag) {
         );
         view.poll_patches().unwrap();
         assert_eq!(texts(view.tree()), ["300 open"]);
+    }
+
+    /// A count and a list of the items a lambda over their fields holds of are answered by the
+    /// store: opening builds no reference per item, and a change to an item's field moves it
+    /// in or out.
+    #[test]
+    fn a_filter_over_item_fields_is_answered_by_the_store() {
+        let rows = Rows::new(300);
+        for i in [1, 3] {
+            rows.call("check", vec![Value::resource(&rows.items[i])]);
+        }
+        rows.retitle(0, "skip");
+        let built = rows.rt.items_built();
+        let mut view = rows.view("open_card");
+        assert_eq!(texts(view.tree()), ["297 open"]);
+        assert_eq!(
+            rows.rt.items_built() - built,
+            0,
+            "the count and the list's length build no reference"
+        );
+        let list = list_key(&view);
+        let preview = |view: &mut ViewInstance| -> Vec<String> {
+            (0..3)
+                .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
+                .collect()
+        };
+        assert_eq!(preview(&mut view), ["skip", "item 2", "item 4"]);
+
+        // Checked: out of the count and the preview.
+        rows.call("check", vec![Value::resource(&rows.items[2])]);
+        view.poll_patches().unwrap();
+        assert_eq!(texts(view.tree()), ["296 open"]);
+        assert_eq!(preview(&mut view), ["skip", "item 4", "item 5"]);
+
+        // Unchecked: back in, where it was.
+        rows.call("uncheck", vec![Value::resource(&rows.items[1])]);
+        view.poll_patches().unwrap();
+        assert_eq!(texts(view.tree()), ["297 open"]);
+        assert_eq!(preview(&mut view), ["skip", "item 1", "item 4"]);
+
+        // Retitled out of what the count holds of, and a new open item.
+        rows.retitle(4, "skip");
+        rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+        view.poll_patches().unwrap();
+        assert_eq!(texts(view.tree()), ["297 open"]);
+
+        // An action runs the same lambdas as loops, and finds the same.
+        let InvokeOutcome::Done(Value::Int(open)) =
+            rows.call("open_count", vec![Value::resource(&rows.bag)])
+        else {
+            panic!("a count");
+        };
+        assert_eq!(open, 299);
+        let InvokeOutcome::Done(Value::List(open)) =
+            rows.call("open_titles", vec![Value::resource(&rows.bag)])
+        else {
+            panic!("a list");
+        };
+        assert_eq!(open.len(), 299);
+        assert_eq!(open[..2], [Value::text("skip"), Value::text("item 1")]);
+    }
+
+    /// The rows of a list of a filtered collection follow its items in and out of the filter.
+    #[test]
+    fn a_virtual_list_of_a_filtered_collection_follows_its_items() {
+        let rows = Rows::new(30);
+        let mut view = rows.view("chosen");
+        let list = list_key(&view);
+        view.fire(&list, "filter.open").unwrap();
+        let mut held = row_keys(&view, &list);
+        let chosen = view.poll_patches().unwrap();
+        follow(&view, &list, &mut held, &chosen);
+        assert_eq!(held.len(), 30);
+        for i in 0..10 {
+            view.row(&list, i).unwrap();
+        }
+        rows.call("check", vec![Value::resource(&rows.items[2])]);
+        rows.call("check", vec![Value::resource(&rows.items[20])]);
+        let checked = view.poll_patches().unwrap();
+        follow(&view, &list, &mut held, &checked);
+        assert_eq!(held, row_keys(&view, &list));
+        assert_eq!(held.len(), 28, "{checked:?}");
+        built_in_order(&view, &list, &held);
+        rows.call("uncheck", vec![Value::resource(&rows.items[2])]);
+        let unchecked = view.poll_patches().unwrap();
+        follow(&view, &list, &mut held, &unchecked);
+        assert_eq!(held, row_keys(&view, &list));
+        assert_eq!(held.len(), 29);
+        built_in_order(&view, &list, &held);
+        let titles_now: Vec<String> = (0..3)
+            .map(|i| titles(view.row(&list, i).unwrap().unwrap()).concat())
+            .collect();
+        assert_eq!(titles_now, ["item 0", "item 1", "item 2"]);
     }
 }

@@ -529,6 +529,10 @@ impl Core {
                     parent: parent.to_owned(),
                     rows: template.clone(),
                 });
+            } else if coll.filter.is_some() {
+                // Which items a filtered collection has is no field of it: the rows depend on
+                // each of them.
+                acc.colls.push(CollSeen::shown(coll, listing, total));
             } else {
                 acc.reads
                     .push((coll.target.id_string(), coll.field.clone()));

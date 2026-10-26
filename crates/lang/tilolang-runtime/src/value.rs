@@ -149,11 +149,32 @@ mod shared {
     }
 }
 
+/// Serde for a collection's filter: as the predicate itself.
+mod shared_filter {
+    use std::rc::Rc;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::store::Pred;
+
+    #[expect(
+        clippy::ref_option,
+        reason = "serde's `with` hands the field by reference"
+    )]
+    pub fn serialize<S: Serializer>(pred: &Option<Rc<Pred>>, s: S) -> Result<S::Ok, S::Error> {
+        pred.as_deref().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Rc<Pred>>, D::Error> {
+        Option::<Pred>::deserialize(d).map(|p| p.map(Rc::new))
+    }
+}
+
 /// A collection field read in a view: the field, not its items. A view reads what it uses of it
 /// (its length, an item, its first or last) through the store's listing, item by item, and its
 /// boundary depends on exactly that; nothing builds a reference per item. Two compare equal when
-/// they are the same field of the same resource, whatever it holds: what a view read of it is
-/// tracked as the view's own reads.
+/// they are the same field of the same resource with the same filter, whatever it holds: what a
+/// view read of it is tracked as the view's own reads.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CollRef {
     #[serde(with = "shared")]
@@ -163,9 +184,30 @@ pub struct CollRef {
     pub item: TypeId,
     /// The module whose code read it: the author of the references to its items.
     pub author: Option<ModuleHash>,
+    /// Only the items this holds of (`items.filter(x -> ...)`, answered by the store); all of
+    /// them when `None`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "shared_filter"
+    )]
+    pub filter: Option<Rc<crate::store::Pred>>,
 }
 
 impl CollRef {
+    /// The same collection, only the items `pred` holds of (and the ones it held of before).
+    #[must_use]
+    pub fn filtered(&self, pred: crate::store::Pred) -> Self {
+        let pred = match self.filter.as_deref() {
+            Some(before) => crate::store::Pred::And(vec![before.clone(), pred]),
+            None => pred,
+        };
+        Self {
+            filter: Some(Rc::new(pred)),
+            ..self.clone()
+        }
+    }
+
     /// A reference to the item `id` of the collection.
     pub fn item_ref(&self, id: &str) -> Value {
         Value::Ref(RefValue {
