@@ -120,6 +120,50 @@ impl Arranged<PageLayout> {
     }
 }
 
+/// The space a list of page rows ([`Page::row`]) leaves above its first row and below its last
+/// ([`crate::widget::VirtualList::with_edges`]): the page's gutter, less the half sibling a row
+/// has there, so the first row's content stands where a page's first child does, under the
+/// page's top spacing.
+#[derive(Debug, Default)]
+pub struct PageRowEdges {
+    resolved: Option<Resolved>,
+    /// The width class of the rows, with the history a page keeps.
+    class: Option<WidthClass>,
+}
+
+impl PageRowEdges {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            resolved: None,
+            class: None,
+        }
+    }
+}
+
+impl crate::widget::virtual_list::ListEdges for PageRowEdges {
+    fn theme(&mut self, theme: &crate::theme::Theme) {
+        self.resolved = Some(Resolved::of(theme));
+    }
+
+    fn edges(&mut self, width: f64) -> (f64, f64) {
+        let Some(resolved) = self.resolved else {
+            return (0.0, 0.0);
+        };
+        let width = crate::num::f32_of_f64(width);
+        let class = WidthClass::with_history(width / resolved.rem, self.class);
+        self.class = Some(class);
+        let layout = PageLayout {
+            measure: None,
+            class: Some(class),
+            row: true,
+        };
+        let edge = (layout.gutter(&resolved) - resolved.gap(crate::tokens::Rhythm::Sibling) / 2.0)
+            .max(0.0);
+        (f64::from(edge), f64::from(edge))
+    }
+}
+
 impl Default for Arranged<PageLayout> {
     fn default() -> Self {
         Self::new()

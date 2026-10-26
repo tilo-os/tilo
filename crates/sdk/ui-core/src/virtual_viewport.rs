@@ -879,6 +879,10 @@ pub struct SparseVirtualViewport<K> {
     measured_indices: Vec<usize>,
     prefix_deltas: Vec<f64>,
     height_by_index: HashMap<usize, f64>,
+    /// The space above the first item and below the last, part of the
+    /// content: it scrolls with the items ([`Self::set_edges`]).
+    lead: f64,
+    trail: f64,
 }
 
 impl<K> SparseVirtualViewport<K>
@@ -899,7 +903,34 @@ where
             measured_indices: Vec::new(),
             prefix_deltas: vec![0.0],
             height_by_index: HashMap::new(),
+            lead: 0.0,
+            trail: 0.0,
         }
+    }
+
+    /// Leave `lead` above the first item and `trail` below the last, as a
+    /// page's padding is: the content's, scrolled with the items, and hitting
+    /// none. A view showing the lead (at its top) stays at its top; one
+    /// scrolled past it keeps the items in view where they are. Whether they
+    /// changed.
+    pub fn set_edges(&mut self, lead: f64, trail: f64) -> bool {
+        let (lead, trail) = (finite_non_negative(lead), finite_non_negative(trail));
+        if lead.to_bits() == self.lead.to_bits() && trail.to_bits() == self.trail.to_bits() {
+            return false;
+        }
+        let anchor = (self.offset > self.lead)
+            .then(|| self.capture_numeric_anchor())
+            .flatten();
+        self.lead = lead;
+        self.trail = trail;
+        self.restore_numeric_anchor(anchor);
+        true
+    }
+
+    /// The space above the first item and below the last.
+    #[must_use]
+    pub const fn edges(&self) -> (f64, f64) {
+        (self.lead, self.trail)
     }
 
     #[must_use]
@@ -989,8 +1020,10 @@ where
 
     #[must_use]
     pub fn content_extent(&self) -> f64 {
-        f64_of_usize(self.count) * self.effective_estimated_height()
+        self.lead
+            + f64_of_usize(self.count) * self.effective_estimated_height()
             + self.prefix_deltas.last().copied().unwrap_or(0.0)
+            + self.trail
     }
 
     #[must_use]
@@ -1007,10 +1040,11 @@ where
             .index_at_content_offset(self.offset)
             .or_else(|| self.count.checked_sub(1))?;
         let key = key_at(index)?;
+        // Above the first item, in the lead, `within` is negative.
         Some(SparseAnchor {
             key,
             index,
-            within: (self.offset - self.item_top(index)?).max(0.0),
+            within: self.offset - self.item_top(index)?,
         })
     }
 
@@ -1106,7 +1140,9 @@ where
     #[must_use]
     pub fn item_top(&self, index: usize) -> Option<f64> {
         (index < self.count).then(|| {
-            f64_of_usize(index) * self.effective_estimated_height() + self.delta_before(index)
+            self.lead
+                + f64_of_usize(index) * self.effective_estimated_height()
+                + self.delta_before(index)
         })
     }
 
@@ -1140,7 +1176,10 @@ where
         if viewport_y < 0.0 || (self.viewport > 0.0 && viewport_y >= self.viewport) {
             return None;
         }
-        self.index_at_content_offset(self.offset + viewport_y)
+        let at = self.offset + viewport_y;
+        // The lead above the first item is no item's.
+        self.index_at_content_offset(at)
+            .filter(|index| self.item_top(*index).is_some_and(|top| top <= at))
     }
 
     pub fn scroll_to_index(&mut self, index: usize, alignment: ScrollAlignment) -> bool {
@@ -1232,7 +1271,8 @@ where
         let index = self
             .index_at_content_offset(self.offset)
             .or_else(|| self.count.checked_sub(1))?;
-        Some((index, (self.offset - self.item_top(index)?).max(0.0)))
+        // Above the first item, in the lead, the offset within it is negative.
+        Some((index, self.offset - self.item_top(index)?))
     }
 
     fn restore_numeric_anchor(&mut self, anchor: Option<(usize, f64)>) {
@@ -1652,6 +1692,34 @@ mod tests {
             assert_eq!(view.hit_test(0.0), Some(1));
             assert_eq!(view.hit_test(24.9), Some(1));
             assert_eq!(view.hit_test(25.0), Some(2));
+        }
+
+        // Case `sparse_edges_are_content_that_no_item_hits`.
+        {
+            let mut view = SparseVirtualViewport::<usize>::new(20.0);
+            view.reconcile(10, |_| None, None);
+            view.set_viewport(50.0);
+            assert!(view.set_edges(12.0, 8.0));
+            assert!(!view.set_edges(12.0, 8.0));
+            assert_eq!(view.item_top(0), Some(12.0));
+            assert_eq!(view.content_extent(), 12.0 + 200.0 + 8.0);
+            assert_eq!(view.hit_test(5.0), None, "the lead is no item's");
+            assert_eq!(view.hit_test(12.0), Some(0));
+            view.set_offset(view.max_offset());
+            assert_eq!(view.item_view_top(9), Some(50.0 - 8.0 - 20.0));
+            assert_eq!(view.hit_test(45.0), None, "nor is the trail");
+
+            // Past the lead, the items in view stay where they are as it changes.
+            view.set_offset(100.0);
+            let before = view.item_view_top(5);
+            assert!(view.set_edges(20.0, 8.0));
+            assert_eq!(view.item_view_top(5), before);
+
+            // At the top, the view stays at the top and shows the new lead.
+            view.set_offset(0.0);
+            assert!(view.set_edges(30.0, 8.0));
+            assert_eq!(view.offset(), 0.0);
+            assert_eq!(view.item_view_top(0), Some(30.0));
         }
 
         // Case `sparse_minimum_height_is_reversible_for_estimates_and_measurements`.
