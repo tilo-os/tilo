@@ -282,6 +282,29 @@ impl ShellNetwork {
         }
         owner
     }
+    /// Run `future` on this network's runtime and wait for its output: the
+    /// one way synchronous shell code calls into the network or this
+    /// device's host. The caller's thread never enters the runtime, so any
+    /// thread that may block may call it; a thread that drives async tasks
+    /// (a network or session worker) is refused, never deadlocked, and
+    /// awaits the future instead ([`tilo_rt::wait_on`]).
+    ///
+    /// # Errors
+    ///
+    /// The network runs no runtime, the caller may not block, or the task
+    /// ended without an answer.
+    #[track_caller]
+    pub(crate) fn wait_on<F>(&self, future: F) -> Result<F::Output, String>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or("this device's network runtime is unavailable")?;
+        wait_on_runtime(runtime.handle(), future)
+    }
     pub(crate) fn runtime_handle(&self) -> Result<tokio::runtime::Handle, String> {
         self.runtime
             .as_ref()
@@ -390,13 +413,12 @@ impl ShellNetwork {
             .host_identity
             .clone()
             .ok_or("native device custody unavailable")?;
-        let runtime = self.runtime_handle()?;
         // A certificate due for renewal is renewed before the host sees it.
         if let Err(error) = crate::firstboot::renew_due_device_certificates() {
             tracing::warn!(%error, "could not renew this device's certificate before enrolling");
         }
-        let result = runtime
-            .block_on(tilo_joined_room::enroll::prepare_and_complete(
+        let result = self
+            .wait_on(tilo_joined_room::enroll::prepare_and_complete(
                 client,
                 identity,
                 topic,
@@ -404,6 +426,7 @@ impl ShellNetwork {
                 token.to_owned(),
                 owner.clone(),
             ))
+            .and_then(std::convert::identity)
             .and_then(|enrollment| self.install_enrollment(&owner, topic, &enrollment));
         self.placement_enrollment_ended(room, result.as_ref().map(|_| ()));
         self.enrollment_ended(
@@ -554,4 +577,28 @@ impl ShellNetwork {
             "Enrollment cancellation requested".into(),
         ))
     }
+}
+
+/// [`ShellNetwork::wait_on`] for a holder of the network runtime's handle.
+///
+/// # Errors
+///
+/// As [`ShellNetwork::wait_on`].
+#[track_caller]
+pub(super) fn wait_on_runtime<F>(
+    runtime: &tokio::runtime::Handle,
+    future: F,
+) -> Result<F::Output, String>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let caller = std::panic::Location::caller();
+    tilo_rt::wait_on(runtime, future).map_err(|error| {
+        debug_assert!(
+            !matches!(error, tilo_rt::Error::InsideRuntime),
+            "a network call at {caller} waited from inside a runtime; await it instead"
+        );
+        error.to_string()
+    })
 }
