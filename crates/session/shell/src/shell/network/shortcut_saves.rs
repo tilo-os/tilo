@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use super::relay_rooms::receipt_value;
 use super::{NetCmd, ShellNetwork, room_topic_id};
+use crate::network::actor::room_governance::trace;
 use crate::shell::state::RoomId;
 use tilo_relay_session::rooms::SAVE_SHORTCUT;
 
@@ -49,7 +50,9 @@ impl ShellNetwork {
         room: RoomId,
         change: tilo_automation::ShortcutChange,
     ) -> Option<Result<(), String>> {
-        let host = match self.host_governor(room) {
+        let governor = self.host_governor(room);
+        trace::note(|| format!("shortcut save in {room}: host governor {governor:?}"));
+        let host = match governor {
             Ok(None) => return None,
             Ok(Some(host)) => host,
             Err(error) => return Some(Err(error)),
@@ -76,10 +79,13 @@ impl ShellNetwork {
             })
             .and_then(|answer| answer)
             .and_then(receipt_value);
+        trace::note(|| format!("shortcut save in {room}: the host answered {committed:?}"));
         if let Err(error) = committed {
             return Some(Err(error));
         }
-        Some(self.shortcut_change_arrives(room, &change).await)
+        let arrived = self.shortcut_change_arrives(room, &change).await;
+        trace::note(|| format!("shortcut save in {room}: arrived {arrived:?}"));
+        Some(arrived)
     }
 
     /// Wait until the room as this device holds it carries `change`, which
