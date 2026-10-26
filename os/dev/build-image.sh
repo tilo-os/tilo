@@ -366,8 +366,14 @@ else
     || die "the Tilo kernel $KERNEL_RPMS_REF is not authenticated for this build"
 fi
 fi # Production provenance; development inputs have independent pinned receipts.
-bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
-  || die "the frozen RPM snapshot does not match the current Containerfiles"
+if [ -n "${TILO_LAYER_TARGET:-}" ] && ! grep -Fq 'FROM ${RPMS_REF}' "${TILO_CONTAINERFILE:-}"; then
+  # One layer action whose piece installs nothing from the snapshot doesn't load it to compare
+  # its package set; the layers that install from it do (os/image/build-layer.sh).
+  :
+else
+  bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
+    || die "the frozen RPM snapshot does not match the current Containerfiles"
+fi
 # The two static pre-flights below read the whole tree: every Containerfile, every
 # COPY source and the app store's manifests. One layer action (TILO_LAYER_TARGET) is
 # cached by what its own piece reads, not by that tree, so a result it kept would
