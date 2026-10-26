@@ -4017,7 +4017,9 @@ impl ChatApp {
                             )],
                         )),
                         Role::Button,
-                        false,
+                        // The highlighted emoji, as the footer names it: a
+                        // workspace emoji just added is the one selected.
+                        self.emoji_picker.selected() == Some(emoji.as_str()),
                     ),
                     Hit::EmojiGroup(group) => (
                         // A group's label is the emoji catalogue's own fixed
@@ -5053,7 +5055,10 @@ impl Widget for ChatApp {
                         |target| target == index,
                     );
                 let mut state = AccessState::new().focusable(true).focused(focused);
-                if matches!(role, Role::Tab | Role::ListItem) {
+                // Of the buttons, the picker's emoji say which is the
+                // highlighted one.
+                if matches!(role, Role::Tab | Role::ListItem) || matches!(hit, Hit::EmojiChoice(_))
+                {
                     state = state.selected(selected);
                 }
                 if matches!(role, Role::ToggleButton) {
