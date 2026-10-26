@@ -666,6 +666,10 @@ widget-mention-shortcut = Shortcut
 widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = People to mention
+mention-notice-title = { $name } mentioned you in ‘{ $place }’
+mention-notice-channel = { $name } mentioned you in { $channel }
+mention-notice = { $name } mentioned you
+mention-notice-someone = Someone
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks
