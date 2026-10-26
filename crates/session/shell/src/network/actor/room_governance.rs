@@ -105,13 +105,15 @@ pub(crate) mod trace {
             let mut said = SAID
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if said.len() < 400 {
-                said.push(format!(
-                    "{:>8.3}s {}",
-                    started.elapsed().as_secs_f64(),
-                    line()
-                ));
+            // The latest lines say where a wait stopped.
+            if said.len() >= 400 {
+                said.remove(0);
             }
+            said.push(format!(
+                "{:>8.3}s {}",
+                started.elapsed().as_secs_f64(),
+                line()
+            ));
         }
     }
 
@@ -119,7 +121,8 @@ pub(crate) mod trace {
     static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
     /// Keep every warning logged in this process from now on with what is
-    /// noted, from the network's threads and the hosts' as well.
+    /// noted, from the network's threads and the hosts' as well, and what
+    /// the hosts say of their work.
     #[cfg(test)]
     pub(crate) fn capture_warnings() {
         static INSTALLED: std::sync::Once = std::sync::Once::new();
@@ -136,7 +139,9 @@ pub(crate) mod trace {
         }
         INSTALLED.call_once(|| {
             let subscriber = tracing_subscriber::fmt()
-                .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
+                .with_env_filter(tracing_subscriber::EnvFilter::new(
+                    "warn,tilo_room_host=info",
+                ))
                 .with_writer(|| Lines)
                 .with_ansi(false)
                 .without_time()
