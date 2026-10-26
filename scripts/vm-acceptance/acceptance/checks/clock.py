@@ -9,6 +9,11 @@ workspace and the session starts its network and broker without anyone acting.
 
 It moves the VM's clock and restarts the session, so it runs after the checks that judge what
 the run opened, and puts the clock and chronyd back however it ends.
+
+fs.service serves the device's own identity (/var/lib/tilo/device/cert.bin) and does not
+start without it (its ConditionPathExists). A tilo-vm slot's session keeps a test identity
+of its own under TILO_IDENTITY_ROOT instead, so on such a VM there is no fs to wait: the
+check says so in its numbers and judges the desktop's half alone.
 """
 
 from __future__ import annotations
@@ -21,12 +26,18 @@ from ..vm import wait_until
 AREA = "basics"
 YEAR_S = 366 * 24 * 3600
 FS_UNIT = "fs.service"
+DEVICE_CERT = "/var/lib/tilo/device/cert.bin"
 
 
 def _fs(ctx) -> dict:
     out = ctx.vm.root_exec(f"systemctl show {FS_UNIT} -p ActiveState -p SubState -p NRestarts "
                            f"-p ExecMainStartTimestampMonotonic", timeout=60)
     return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+
+def _fs_serves_this_device(ctx) -> bool:
+    """Whether fs.service has the device identity it serves (see the module's doc)."""
+    return ctx.vm.root_exec(f"test -s {DEVICE_CERT} && echo yes || echo no", timeout=60).split()[-1:] == ["yes"]
 
 
 def _fs_said(ctx, since: str, text: str) -> bool:
@@ -62,15 +73,20 @@ def clock_behind_the_certificate(ctx, res):
                "the desktop does not say that it waits for the clock")
 
         # fs waits: up, not restarting every few seconds.
+        with_fs = _fs_serves_this_device(ctx)
+        if not with_fs:
+            res.metrics["fs"] = (f"not started: no device certificate at {DEVICE_CERT}, whose absence "
+                                 "fs.service's condition skips it for; this slot's identity is its own")
         first = _fs(ctx)
-        ctx.settle(12)
-        waiting = _fs(ctx)
-        res.metrics["fs_while_behind"] = waiting
-        expect(waiting.get("ActiveState") == "active",
-               f"fs is {waiting.get('ActiveState')}/{waiting.get('SubState')} while the clock is behind")
-        expect(waiting.get("NRestarts") == first.get("NRestarts"),
-               "fs restarts in a loop while the clock is behind")
-        expect(_fs_said(ctx, marker, "waiting for the clock"), "fs does not say it waits for the clock")
+        if with_fs:
+            ctx.settle(12)
+            waiting = _fs(ctx)
+            res.metrics["fs_while_behind"] = waiting
+            expect(waiting.get("ActiveState") == "active",
+                   f"fs is {waiting.get('ActiveState')}/{waiting.get('SubState')} while the clock is behind")
+            expect(waiting.get("NRestarts") == first.get("NRestarts"),
+                   "fs restarts in a loop while the clock is behind")
+            expect(_fs_said(ctx, marker, "waiting for the clock"), "fs does not say it waits for the clock")
 
         # The clock steps to the real time, as network time steps it; nobody touches
         # the desktop.
@@ -82,6 +98,8 @@ def clock_behind_the_certificate(ctx, res):
             90, "the session's network and broker after the clock stepped")["chrome"]
         res.metrics["identity_after_step"] = stepped.get("identity")
         expect(not stepped["input_capture"]["onboarding"], "setup appeared after the clock stepped")
+        if not with_fs:
+            return
         if not wait_until(lambda: _fs_said(ctx, f"@{stepped_to}", "Enforcing"), 60, interval=2):
             raise CheckFailed("fs did not start serving after the clock stepped")
         after = _fs(ctx)
