@@ -285,6 +285,13 @@ pub trait WorkspaceMemberships: Send + Sync {
         false
     }
 
+    /// Whether `room`'s host is this device's own, so the authorship an app
+    /// opening there needs is recorded here rather than asked of another
+    /// device.
+    fn hosted_here(&self, _room: &str) -> bool {
+        false
+    }
+
     /// Confirm that the canonical owner's durable store is still usable.
     fn health(&self) -> Result<(), String> {
         Err("workspace membership owner continuity is unavailable".into())

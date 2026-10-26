@@ -738,6 +738,12 @@ impl ShellNetwork {
         )
     }
 
+    /// Whether the host governing `room` for `caller` is this device's own:
+    /// the room is served here, or its host is this device's endpoint.
+    fn local_host_governs(&self, room: RoomId, caller: &tilo_user_identity::DeviceCert) -> bool {
+        self.hosted_here(room) || caller.device_public_key == *self.local_peer_id.as_bytes()
+    }
+
     /// Have the host governing `room` let `app` author the room's records,
     /// as `caller`, this device: what opening an app there for the first time
     /// asks, the host's own operation on the room's session. `None` when no
@@ -757,9 +763,11 @@ impl ShellNetwork {
         let mut arguments = serde_json::Map::new();
         arguments.insert("room".into(), room.to_string().into());
         arguments.insert("app".into(), app.into());
-        // A room this device's own host holds is asked there in process: a
-        // local room never waits on the network.
-        if self.hosted_here(room) {
+        // A room this device's own host holds is asked there in process,
+        // whichever route this device's view of it came by: a room served
+        // here never waits on the network, and answers even after the
+        // in-process session with it ended.
+        if self.local_host_governs(room, caller) {
             return Some(
                 self.local_host_action_awaited(
                     room_topic_id(room),

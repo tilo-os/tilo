@@ -350,7 +350,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         let Some(room) = super::state::RoomId::parse(room) else {
             return false;
         };
-        if certificate.capabilities.can_act_as_host || !self.tree.read().holds_room(room) {
+        if !self.tree.read().holds_room(room) {
             return false;
         }
         self.opened_owner("native membership owner unavailable")
@@ -358,6 +358,16 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 super::launcher::native_app_open_access(&owner, room, certificate, app)
             })
             .is_ok_and(|access| access == super::launcher::NativeAppOpenAccess::Delegate)
+    }
+
+    /// A room this device's own host serves: what an app opening there needs
+    /// is for this device's owner to record.
+    fn hosted_here(&self, room: &str) -> bool {
+        super::state::RoomId::parse(room).is_some_and(|room| {
+            self.network
+                .as_ref()
+                .is_some_and(|net| net.hosted_here(room))
+        })
     }
 
     /// A room its node stewards: this owner forwards an opening app's
@@ -2944,3 +2954,7 @@ mod tests {
 #[cfg(test)]
 #[path = "broker_services/native_owner_tests.rs"]
 mod native_owner_tests;
+
+#[cfg(test)]
+#[path = "broker_services/host_admission_tests.rs"]
+mod host_admission_tests;

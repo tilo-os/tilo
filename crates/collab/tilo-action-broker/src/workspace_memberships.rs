@@ -88,10 +88,13 @@ impl CapnpBrokerState {
 
     /// Let the app `route` names author its room before it opens there as
     /// `certificate`'s person, when the room does not let it yet and that
-    /// person may grant it
+    /// person may let it there
     /// ([`super::services::WorkspaceMemberships::app_opens_by_granting`]):
     /// the same membership invocation a launch asks, waited for until the
     /// grant is in this device's view of the room. Nothing to do otherwise.
+    ///
+    /// A room this device's own host serves decides through this device's
+    /// owner: what an app opening there needs is for the owner to record.
     ///
     /// # Errors
     /// The invocation was refused or ended without an answer.
@@ -106,7 +109,12 @@ impl CapnpBrokerState {
         let Some(memberships) = self.services.workspace_memberships.as_ref() else {
             return Ok(());
         };
-        if !memberships.app_opens_by_granting(&route.cluster_id, &route.app_id, certificate) {
+        // This device hosts the room, or its own owner decides the same
+        // question a member's owner does: either way the app opens here.
+        let decided_here = certificate.capabilities.can_act_as_host
+            || memberships.hosted_here(&route.cluster_id)
+            || memberships.app_opens_by_granting(&route.cluster_id, &route.app_id, certificate);
+        if !decided_here {
             return Ok(());
         }
         let job = self.invoke_workspace_membership(
