@@ -1075,7 +1075,6 @@ export async function startEntryPage({mode}) {
     if (entered || embed) tell(error instanceof HostAdmissionError && error.code === 'full' ? 'full' : 'unavailable');
     // Stopped after the host let the person in: opening the desktop failed.
     const inside = stoppedInside(admitted, root.arrival);
-    arrive('stopped');
     // Plain words and a way to try again (index.html); the cause, thrown
     // on, reaches the console and the host's error report.
     // The room's name as its people last set it, where the room's desktop
@@ -1085,7 +1084,10 @@ export async function startEntryPage({mode}) {
     const said = failureMessage(error, {workspace: named, loaded: Boolean(runtime), admitted: inside, messages});
     // A refusal is the host's answer, which trying again does not change.
     // Marked together with its words: a page that says it was refused
-    // while still reading "Loading Tilo…" tells a reader nothing.
+    // while still reading "Loading Tilo…" tells a reader nothing. Stopped
+    // only then too: stopped with no answer yet reads as a failure, which
+    // shows Try again and gives it the keyboard before a refusal hides it.
+    arrive('stopped');
     document.documentElement.dataset.entry = error instanceof AdmissionError || refusedByHost(error) ? 'refused' : 'failed';
     status.textContent = said;
     // Turned away for coming without an invitation: a place to open the
