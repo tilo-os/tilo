@@ -1462,8 +1462,7 @@ impl Room {
             }
             // The requests are the change: the person's own entries stay as
             // they are, and the owners apply what they were asked.
-            self.local_value = Some(value);
-            self.publish_desktop();
+            self.publish_desktop(value);
             return;
         }
         // The layout this page joined with is not something the person did.
@@ -1487,13 +1486,14 @@ impl Room {
             self.local_value = Some(value);
             return;
         }
-        self.local_value = Some(value);
-        self.publish_desktop();
+        self.publish_desktop(value);
     }
 
     /// Send whatever the room's layout document holds and the room has not
-    /// acknowledged.
-    fn publish_desktop(&mut self) {
+    /// acknowledged. `value` is the layout as this page wrote it: only a
+    /// send the room took is remembered as published, so a change a
+    /// disconnected session could not send is sent when it next can.
+    fn publish_desktop(&mut self, value: serde_json::Value) {
         let mutation = if self.desktop_snapshotted {
             let (delta, heads) = self.desktop.pending_outbound_delta();
             if delta.is_empty() {
@@ -1509,6 +1509,7 @@ impl Room {
             self.desktop.advance_outbound(mutation.1);
             self.desktop_snapshotted = true;
             self.desktop_value = desktop_value(self.desktop.document());
+            self.local_value = Some(value);
         }
     }
 }
