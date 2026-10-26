@@ -1020,6 +1020,24 @@ impl PendingInvitation {
     }
 }
 
+/// The invitation role the shell shows for a canonical member role. The
+/// invitation composer offers the three member roles; a moderator invitation
+/// issued elsewhere still reads its access as an editor's.
+fn canonical_invite_role(
+    role: tilo_peer_state::join::MemberRole,
+) -> crate::network::invite::InviteRole {
+    match role {
+        tilo_peer_state::join::MemberRole::Viewer => crate::network::invite::InviteRole::Viewer,
+        tilo_peer_state::join::MemberRole::Commenter => {
+            crate::network::invite::InviteRole::Commenter
+        }
+        tilo_peer_state::join::MemberRole::Editor
+        | tilo_peer_state::join::MemberRole::Moderator => {
+            crate::network::invite::InviteRole::Editor
+        }
+    }
+}
+
 /// Nanoseconds since the Unix epoch, failing closed to `u64::MAX` (every
 /// certificate expired) when the clock precedes the epoch.
 fn now_unix_nanos() -> u64 {
@@ -4907,11 +4925,16 @@ impl ShellNetwork {
         answer.blocking_recv().ok()
     }
 
-    /// Invitations this authority can still resend or cancel. Expired
-    /// credentials are removed from both memory and the private on-disk
-    /// inventory before rows are returned to the UI.
+    /// Invitations this authority can still resend or cancel. A room this
+    /// device governs lists the canonical workspace-join invitations its
+    /// native owner issued; a relay-governed room lists the inventory the
+    /// relay's answer left here. Expired credentials are removed from both
+    /// memory and the private on-disk inventory before rows are returned.
     #[must_use]
     pub fn pending_invitations(&self, room: RoomId) -> Vec<PendingInvitation> {
+        if let Some(rows) = self.governed_pending_invitations(room) {
+            return rows;
+        }
         let Ok(mut pending) = self.pending_identity_admissions.lock() else {
             return Vec::new();
         };
@@ -4932,6 +4955,82 @@ impl ShellNetwork {
         rows
     }
 
+    /// The room this device governs whose native ledger still holds the
+    /// redeemable invitation `id`.
+    fn governed_invitation_room(&self, id: [u8; 32]) -> Option<RoomId> {
+        let owner = self.opened_native_owner()?;
+        let identity = self.host_identity.as_ref()?;
+        let tree = self.replica.lock().ok()?.tree.clone();
+        let rooms = tree.read().rooms();
+        rooms.into_iter().find(|room| {
+            owner
+                .with_current(*room, |view| Ok(view.governed_here()))
+                .unwrap_or(false)
+                && owner
+                    .issued_invitation(*room, id, &identity.device_signing_key, SystemTime::now())
+                    .is_ok_and(|bytes| bytes.is_some())
+        })
+    }
+
+    /// Cancel `id` in the canonical ledger of `room`, which this device
+    /// governs, so the signed bearer no longer redeems.
+    fn cancel_governed_invitation(&self, room: RoomId, id: [u8; 32]) -> bool {
+        let Some(owner) = self.opened_native_owner() else {
+            return false;
+        };
+        let Some(identity) = self.host_identity.as_ref() else {
+            return false;
+        };
+        let mut request_id = [0; 32];
+        if getrandom::fill(&mut request_id).is_err() {
+            return false;
+        }
+        owner
+            .cancel_invitation(
+                room,
+                &tilo_peer_state::join::invitations::CancelInvitationRequest {
+                    request_id,
+                    invite_id: id,
+                },
+                &identity.device_signing_key,
+            )
+            .is_ok()
+    }
+
+    /// The canonical invitations `room`'s native owner still holds, when
+    /// this device governs that room and the owner is open. `None` leaves the
+    /// caller on the relay inventory.
+    fn governed_pending_invitations(&self, room: RoomId) -> Option<Vec<PendingInvitation>> {
+        let owner = self.opened_native_owner()?;
+        let identity = self.host_identity.as_ref()?;
+        let governed = owner
+            .with_current(room, |view| Ok(view.governed_here()))
+            .unwrap_or(false);
+        if !governed {
+            return None;
+        }
+        let issued = owner
+            .pending_issued_invitations(room, &identity.device_signing_key, SystemTime::now())
+            .ok()?;
+        let mut rows = issued
+            .into_iter()
+            .map(|(invitation, bytes)| PendingInvitation {
+                id: invitation.invite_id,
+                room,
+                name: invitation
+                    .invitee_name
+                    .clone()
+                    .unwrap_or_else(|| "Member".to_string()),
+                role: canonical_invite_role(invitation.role),
+                token: tilo_peer_state::join::encode_invitation_text(&bytes),
+                recipient_user_public_key: invitation.recipient_user_public_key,
+                expiry_unix_seconds: invitation.expires_at_ns / 1_000_000_000,
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|invite| (invite.expiry_unix_seconds, invite.id));
+        Some(rows)
+    }
+
     /// Return the original signed token without extending its lifetime or
     /// minting a second grant.
     ///
@@ -4940,6 +5039,9 @@ impl ShellNetwork {
     /// Returns an error when the inventory is unavailable, expired, canceled,
     /// or does not contain `id`.
     pub fn resend_invitation(&self, id: &[u8; 32]) -> Result<String, String> {
+        if let Some(token) = self.governed_issued_invitation(*id) {
+            return Ok(token);
+        }
         self.pending_identity_admissions
             .lock()
             .map_err(|_| "invite admission state is unavailable".to_string())?
@@ -4949,11 +5051,45 @@ impl ShellNetwork {
             .ok_or_else(|| "invitation is no longer pending".to_string())
     }
 
+    /// The canonical bearer `id` names in any room this device governs now,
+    /// read from the native owner's ledger rather than a local inventory.
+    fn governed_issued_invitation(&self, id: [u8; 32]) -> Option<String> {
+        let owner = self.opened_native_owner()?;
+        let identity = self.host_identity.as_ref()?;
+        let tree = self.replica.lock().ok()?.tree.clone();
+        let rooms = tree.read().rooms();
+        for room in rooms {
+            let governed = owner
+                .with_current(room, |view| Ok(view.governed_here()))
+                .unwrap_or(false);
+            if !governed {
+                continue;
+            }
+            if let Ok(Some(bytes)) =
+                owner.issued_invitation(room, id, &identity.device_signing_key, SystemTime::now())
+            {
+                return Some(tilo_peer_state::join::encode_invitation_text(&bytes));
+            }
+        }
+        None
+    }
+
     /// Cancel one exact bearer credential. A later redemption carrying its
     /// hash has no pending authority grant and is refused. Existing members
     /// are unaffected; removing them is a separate governance action. An
     /// invitation a relay issued stays pending until that relay cancels it.
     pub fn cancel_invitation(&self, id: &[u8; 32]) -> bool {
+        let governed_room = self.governed_invitation_room(*id);
+        if let Some(room) = governed_room
+            && self.cancel_governed_invitation(room, *id)
+        {
+            // The canonical ledger no longer hands the bearer out, whether
+            // or not an older inventory row for it ever existed.
+            if let Ok(mut pending) = self.pending_identity_admissions.lock() {
+                pending.remove(id);
+            }
+            return true;
+        }
         let room = match self.pending_identity_admissions.lock() {
             Ok(pending) => match pending.get(id) {
                 Some(invite) => invite.room,

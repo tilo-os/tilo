@@ -248,6 +248,158 @@ mod direct_join_tests {
         }
     }
 
+    /// A direct invitation is listed from the governor's own ledger, keeps
+    /// its exact bearer across a restart, and once cancelled is no longer
+    /// redeemable: the list, the resend and the cancel all read the room,
+    /// never a second inventory.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_direct_invitation_is_listed_cancelled_and_no_longer_redeems() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.persist_path = Some(directory.path().join("state.json"));
+        let workspace = tree.desktop.active;
+        let room = tree.room_of(workspace).unwrap();
+        let tree = tree.shared();
+        let owner = crate::shell::native_workspace_owner::open(tree.clone()).unwrap();
+        let governor_key = SigningKey::from_bytes(&[91; 32]);
+        let governor = tilo_joined_room::testing::certificate(
+            &SigningKey::from_bytes(&[92; 32]),
+            &governor_key,
+            "Desktop",
+        );
+        let seed = tilo_peer_state::workspace_seed(
+            &room.to_string(),
+            &governor,
+            std::slice::from_ref(&governor),
+            "Garden",
+            1,
+        )
+        .unwrap();
+        let now = std::time::SystemTime::now();
+        owner
+            .create_governed(room, workspace.raw(), &governor, &governor_key, seed, now)
+            .unwrap();
+
+        let guest_key = SigningKey::from_bytes(&[93; 32]);
+        let guest = tilo_joined_room::testing::certificate(
+            &SigningKey::from_bytes(&[94; 32]),
+            &guest_key,
+            "Laptop",
+        );
+        let endpoint = local_endpoint(&governor_key).await;
+        let port = endpoint.bound_sockets().first().unwrap().port();
+        let addr = iroh::EndpointAddr::new(endpoint.id()).with_ip_addr(std::net::SocketAddr::from(
+            (std::net::Ipv4Addr::LOCALHOST, port),
+        ));
+        let workspace_id = tilo_peer_state::join::room_workspace_id(&room.to_string()).unwrap();
+        let hint = IrohWorkspaceHostHintV1 {
+            version: 1,
+            mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+            room: room.to_string(),
+            workspace_id,
+            governing_authority: governor.clone(),
+            endpoint_addr: addr.clone(),
+            host_user_public_key: governor.user_public_key,
+            host_device_certificate: governor.clone(),
+            packet_relay_url: "iroh:direct".into(),
+        }
+        .transport_hint(&governor_key)
+        .unwrap();
+        let now_ns = tilo_joined_room::testing::ns(now).unwrap();
+        let issued = owner
+            .issue_invitation(
+                room,
+                IssueInvitationRequest {
+                    request_id: [1; 32],
+                    role: MemberRole::Editor,
+                    recipient_user_public_key: Some(guest.user_public_key),
+                    invitee_name: Some("Laptop".into()),
+                    expires_at_ns: now_ns + 60_000_000_000,
+                    inviter_name: Some("Desktop".into()),
+                },
+                hint,
+                &governor_key,
+                tilo_joined_room::Nonces::fresh().unwrap(),
+                now,
+            )
+            .unwrap();
+        let (_commands, actor) = Actor::spawn_governing(
+            endpoint,
+            iroh::address_lookup::memory::MemoryLookup::new(),
+            None,
+            Arc::new(Mutex::new(Vec::new())),
+            crate::network::Reachability::default(),
+            Some(GoverningRooms::new(tree.clone(), governor_key.clone())),
+        );
+
+        let listed = owner
+            .pending_issued_invitations(room, &governor_key, now)
+            .unwrap();
+        assert_eq!(listed.len(), 1, "the ledger is the list");
+        assert_eq!(listed[0].0.invite_id, issued.invite_id);
+        assert_eq!(listed[0].1, issued.signed_invitation, "the exact bearer");
+
+        // A restart reopens the room's record: the same invitation, with the
+        // same bytes, is still listed and still resends unchanged.
+        drop(owner);
+        let reopened = crate::shell::native_workspace_owner::open(tree).unwrap();
+        let listed = reopened
+            .pending_issued_invitations(room, &governor_key, now)
+            .unwrap();
+        assert_eq!(listed.len(), 1, "a restart keeps the invitation");
+        assert_eq!(
+            reopened
+                .issued_invitation(room, issued.invite_id, &governor_key, now)
+                .unwrap()
+                .as_deref(),
+            Some(issued.signed_invitation.as_slice()),
+            "a resend hands back the original bearer, not a second grant"
+        );
+
+        reopened
+            .cancel_invitation(
+                room,
+                &tilo_peer_state::join::invitations::CancelInvitationRequest {
+                    request_id: [2; 32],
+                    invite_id: issued.invite_id,
+                },
+                &governor_key,
+            )
+            .unwrap();
+        assert!(
+            reopened
+                .pending_issued_invitations(room, &governor_key, now)
+                .unwrap()
+                .is_empty(),
+            "a cancelled invitation is no longer listed"
+        );
+        assert!(
+            reopened
+                .issued_invitation(room, issued.invite_id, &governor_key, now)
+                .unwrap()
+                .is_none(),
+            "and cannot be handed out again"
+        );
+
+        let client = local_endpoint(&SigningKey::from_bytes(&[95; 32])).await;
+        let invitation = tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation);
+        let response = WorkspaceJoinClient::new(client.clone())
+            .request(
+                addr,
+                JoinTransportRequest::Inspect {
+                    signed_invitation: invitation.into_bytes().into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            !matches!(response, JoinTransportResponse::Inspection(_)),
+            "a cancelled direct invitation does not redeem: {response:?}"
+        );
+        actor.abort();
+        client.close().await;
+    }
+
     /// A device that governs a room answers the canonical workspace-join
     /// exchange on its own endpoint, and another device redeems a direct
     /// invitation through it: the same signed exchange a relay host answers.

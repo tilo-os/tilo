@@ -172,6 +172,46 @@ impl NativeWorkspaceOwner {
             .pending(now))
     }
 
+    /// The invitations to `room` still redeemable at `now`, each with its
+    /// exact signed bearer: what the room's list shows and what a resend
+    /// hands back unchanged.
+    ///
+    /// # Errors
+    /// The room is not governed here.
+    pub fn pending_issued_invitations(
+        &self,
+        room: RoomId,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Vec<(PendingInvitation, Vec<u8>)>, JoinError> {
+        let now = now_ns(now)?;
+        Ok(self
+            .governed_candidate(room, key)?
+            .record
+            .join_ledger
+            .pending_issued(now))
+    }
+
+    /// The signed bearer this room issued under `invite_id`, while it is
+    /// still redeemable.
+    ///
+    /// # Errors
+    /// The room is not governed here or the clock precedes the epoch.
+    pub fn issued_invitation(
+        &self,
+        room: RoomId,
+        invite_id: [u8; 32],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Option<Vec<u8>>, JoinError> {
+        let now = now_ns(now)?;
+        Ok(self
+            .governed_candidate(room, key)?
+            .record
+            .join_ledger
+            .issued_invitation(invite_id, now))
+    }
+
     /// Answer one workspace-join request from the device at
     /// `remote_endpoint`, its authenticated transport key, for a room this
     /// device governs with `key`: the exchange every governor answers.
