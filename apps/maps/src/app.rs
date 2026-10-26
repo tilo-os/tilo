@@ -52,7 +52,7 @@ use crate::map_controls::{ColumnMetrics, MapControlAction, MapControls};
 use crate::map_info_sheet::{MapInfo, MapInfoSheet};
 use crate::model::{LatLon, MapModel, Panel, Place, TransitMode, TransitTimeMode, TravelMode};
 use crate::net::{self, NetMsg};
-use crate::offline_panel::{OFFLINE_AREAS_REFUSED, OfflineAction, OfflineFrame, OfflinePanel};
+use crate::offline_panel::{OfflineAction, OfflineFrame, OfflinePanel, areas_refused};
 use crate::place_search::PlaceSearch;
 use crate::sample::{self, Basemap};
 use crate::tiles::{GeoBounds, TileFault, TileId, TileLayer, TileStyle};
@@ -2393,7 +2393,7 @@ impl MapsApp {
             OfflineAction::Close => self.offline_panel.close(),
             OfflineAction::ZoomDelta(delta) => self.offline_panel.adjust_zoom(delta),
             OfflineAction::Download if !self.tiles.allows_prefetch() => {
-                self.model.status = OFFLINE_AREAS_REFUSED.to_string();
+                self.model.status = areas_refused();
             }
             OfflineAction::Download => {
                 let request = self.offline_panel.download_request(

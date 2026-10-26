@@ -56,3 +56,30 @@ maps-no-transit = No transit options found
 maps-offline-downloading = Downloading { $count } tiles for offline use…
 maps-offline-downloading-named = Downloading { $count } tiles for { $name }…
 maps-offline-stopped = Stopped the download; the tiles already saved stay available.
+
+## Offline maps: the sheet that saves a piece of the map for later
+
+maps-offline-title = Offline maps
+maps-offline-area = Area to download
+maps-offline-close = Close offline maps
+maps-offline-search-placeholder = Search for a city or a place
+maps-offline-zoom-levels = Zoom levels
+maps-offline-fewer-zoom-levels = Fewer zoom levels
+maps-offline-more-zoom-levels = More zoom levels
+maps-offline-download-view = Download this view
+maps-offline-download-named = Download { $name }
+maps-offline-download-area = Download selected area
+maps-offline-stop = Stop downloading
+maps-offline-delete-area = Delete downloaded area
+maps-offline-clear = Clear offline map cache
+maps-offline-clear-short = Clear offline maps
+maps-offline-downloaded-areas = Downloaded areas
+maps-offline-area = Area
+maps-offline-empty = Search for a place, or download what the map shows now.
+maps-offline-progress = Downloading { $done } of { $total } tiles…
+maps-offline-stopped-count = Stopped after { $total } tiles; they stay available offline
+maps-offline-done-failed = Downloaded { $total } tiles, { $failed } failed
+maps-offline-done = Downloaded { $total } tiles
+maps-offline-estimate = About { $size } to download
+maps-offline-stored = { $size } on this device
+maps-offline-refused = Places you've looked at stay on this device, so they still show offline.
