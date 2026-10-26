@@ -217,10 +217,10 @@ What is still doubled:
    here. None of them writes a room this session governs natively once the
    pass is done, and no new invitation is minted in the old format.
    Removing the rest is the remaining work of migration step 1; this page
-   does not claim it is done. A joined old-shape room is read as an empty
-   room neither by the native owner nor by a resumed session: it keeps its
-   workspace and its last projection, and is fetched again by joining its
-   host. There is no automatic migration for it.
+   does not claim it is done. A joined old-shape room is not read as an
+   empty room by the native owner: it keeps its workspace and its last
+   projection on the older engine, and re-joining its host fetches it
+   again. There is no automatic migration for it.
 2. **Three layout schemas.** The room document's `contents` (native), the
    `so.tilo.browser-desktop/desktop` shared record (`shared_record.rs`,
    browser, relay, agent participant) and the device's whole-desktop
