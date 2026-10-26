@@ -423,6 +423,10 @@ required-features = ["native"]
 name = "hosted-platform"
 path = "tests/hosted_platform.rs"
 
+[[test]]
+name = "resource-effects"
+path = "tests/resource_effects.rs"
+
 # Its own binary: it installs a counting global allocator.
 [[test]]
 name = "held-memory"

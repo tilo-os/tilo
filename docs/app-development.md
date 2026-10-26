@@ -1816,21 +1816,23 @@ For a small widget root with one launchable resource,
 operation dispatch and failure conversion; the app supplies only its resource
 contract and operation closure. An app on the framework declares its effects
 with `#[derive(Effect)]` instead, and runs long work as a job through the
-`EffectCx` its handler receives.
+`EffectCx` its handler receives. A session surface that runs before any
+compositor exists — the sign-in screen, the installer — keeps its own retained
+state and publishes the same resources: it implements
+`ui::widget::resource_effects::TypedEffects`, names one `EffectVocabulary`,
+answers each effect in one exhaustive match, and launches through
+`ui::widget::resource_effects::host(root)`. That host owns the toolkit's raw
+operation protocol, so no door in the app's own sources encodes or decodes
+one, and the console surface, palette, assistive activation, agents and
+scripts all end in the same typed handler.
 
-Register document action decoders in `App::action_registry_mut`. Handle every
-effect and view type in `ResourceOperations::start_operation`, the single entry: return
-`Completed` with the promised `ActionOutput` for synchronous work or `Accepted`
-for a job `poll_resource_operation` finishes, and declare the locally handled
-type in `ResourceOperations::local_resource_operation_handlers`. Read the request through
-`op.unscoped()`, which hides a hosted invocation that carries its original
-caller's custody; a handler that honours that custody reads it through
-`op.with_custody()` instead and routes every effect and document write through
-the scope. Offer unhandled types to children with
-`ui::widget::start_in_children`.
-Publication refuses duplicate addresses, unsafe confirmation declarations,
-unregistered document actions, empty availability reasons, incoherent job
-contracts, and other contract violations.
+Register document action decoders in `App::action_registry_mut`. The raw
+operation protocol between a host and the toolkit's widgets —
+`ResourceOperations`, `start_operation`, `start_in_children` — belongs to the
+toolkit: the app framework and the typed effect host own it, and an app or
+session surface never names it. Publication refuses duplicate addresses,
+unsafe confirmation declarations, unregistered document actions, empty
+availability reasons, incoherent job contracts, and other contract violations.
 
 Non-mutating retained controls are projected into that catalogue automatically
 from the semantic tree, so focus and safe navigation remain driveable while an

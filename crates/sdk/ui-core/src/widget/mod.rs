@@ -3526,6 +3526,7 @@ pub use collab_types::ArtifactKind;
 
 pub mod qr;
 pub mod resource_actions;
+pub mod resource_effects;
 pub use qr::QrWidget;
 
 #[cfg(test)]

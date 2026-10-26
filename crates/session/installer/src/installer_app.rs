@@ -48,7 +48,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use serde_json::Value;
 use taffy::style_helpers::{length, percent};
 use taffy::{
@@ -4201,11 +4201,6 @@ impl InstallerApp {
 }
 
 impl Widget for InstallerApp {
-    ui::provides!(
-        dyn ui::resources::PublishesResources,
-        dyn ui::host_operation::ResourceOperations
-    );
-
     /// Reads nothing from and writes nothing to the document: the presses an
     /// assistive activation queued since the last event run here, then the
     /// view state is noticed and the composed controls sync.
@@ -4428,38 +4423,19 @@ impl Widget for InstallerApp {
     }
 }
 
-impl ui::host_operation::ResourceOperations for InstallerApp {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        op::HANDLERS
-    }
+impl ui::widget::resource_effects::TypedEffects for InstallerApp {
+    type Effect = crate::operation::InstallerEffect;
 
-    /// The host door (Ctrl+K palette, broker) admits an installer operation
-    /// here, after its own resolution, permission and confirmation checks.
-    fn start_operation(
-        &mut self,
-        op: &ui::host_operation::ResourceOperation<'_>,
-        doc: &mut ui::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped().filter(|r| op::HANDLERS.contains(&r.type_id)) else {
-            return ui::host_operation::start_in_children(self, op, doc, path);
-        };
-        // The operation changes wizard state only; the document is untouched.
-        let encoded = tilo_actions::EncodedAction {
-            type_id: request.type_id.to_owned(),
-            payload: request.payload.to_vec(),
-        };
-        self.apply_encoded(&encoded).map(|output| {
-            Some(ui::host_operation::ResourceOperationStart::Completed(
-                output,
-            ))
-        })
-    }
-}
-
-impl ui::resources::PublishesResources for InstallerApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn published_resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         self.publish()
+    }
+
+    /// The toolbar, the Ctrl+K palette, an agent, the console and the
+    /// unattended driver all end here, after their own resolution,
+    /// permission and confirmation checks. The operation changes wizard
+    /// state only; no document is written.
+    fn answer(&mut self, effect: Self::Effect) -> Result<tilo_actions::ActionOutput, String> {
+        InstallerApp::answer(self, effect)
     }
 }
 
@@ -4654,44 +4630,34 @@ mod tests {
         node_map
     }
 
-    fn invoke_provider(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str) {
-        let payload = serde_json::to_vec(id).unwrap();
-        let completed = ui::host_operation::ResourceOperation::local(
-            tilo_actions::InvocationId::new(),
-            tilo_actions::OperationKind::View,
-            "tilo.ui.control.invoke",
-            &payload,
-        )
-        .start(app, &mut ui::widget::Edits::lend(doc), &automerge::ROOT)
-        .unwrap()
-        .and_then(ui::host_operation::ResourceOperationStart::completed);
-        assert!(
-            completed.is_some(),
-            "provider control must execute its view action"
-        );
-        app.sync(doc, &automerge::ROOT);
-        assert_eq!(doc.length(automerge::ROOT), 0);
-    }
-
     #[test]
     fn accounts_provider_buttons_rebuild_server_field() {
         let mut app = InstallerApp::with_disks(Vec::new());
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         app.step = Step::Accounts;
         app.accounts_initialized = true;
         app.dirty_structure = true;
         app.sync(&doc, &automerge::ROOT);
         let _ = build(&mut app);
         assert!(!has_test_id(&app, "installer.online.server"));
+        assert!(has_test_id(&app, "installer-online-nextcloud"));
         app.take_structure_dirty();
 
-        invoke_provider(&mut app, &mut doc, "installer-online-nextcloud");
+        // The provider buttons' view handler sets this binding; the wizard
+        // must rebuild the server field from it.
+        app.accounts_form
+            .provider
+            .set(crate::online_accounts::view::Provider::Nextcloud);
+        app.sync(&doc, &automerge::ROOT);
         assert!(app.dirty_structure, "provider change must request layout");
         app.take_structure_dirty();
         let _ = build(&mut app);
         assert!(has_test_id(&app, "installer.online.server"));
 
-        invoke_provider(&mut app, &mut doc, "installer-online-google");
+        app.accounts_form
+            .provider
+            .set(crate::online_accounts::view::Provider::Google);
+        app.sync(&doc, &automerge::ROOT);
         assert!(app.dirty_structure, "provider change must request layout");
         app.take_structure_dirty();
         let _ = build(&mut app);

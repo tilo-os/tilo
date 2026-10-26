@@ -5771,6 +5771,7 @@ dependencies = [
  "console-control",
  "greetd-client",
  "rustix 1.1.4",
+ "serde",
  "serde_json",
  "settings-store",
  "taffy",

@@ -69,7 +69,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut frame = ui::headless::FrameHarness::new_with_theme(
             ui::State::new(),
-            Box::new(widget),
+            Box::new(ui::widget::resource_effects::host(widget)),
             viewport,
             ui::launch::shot_theme(&args),
         );
@@ -103,8 +103,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_console(console.clone())
         .with_displays(displays.clone());
     let state = ui::State::new();
-    let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
-        .without_native_document_chrome();
+    let mut app = ui::App::from_scoped_parts(
+        wake_scope,
+        state,
+        Box::new(ui::widget::resource_effects::host(widget)),
+    )
+    .without_native_document_chrome();
     tilo_startup_metrics::mark("greeter-app-ready");
     // On a personal machine with one unambiguous interactive account, the
     // greeter hides the redundant username field and this lands on Passcode.

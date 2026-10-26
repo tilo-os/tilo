@@ -30,6 +30,7 @@ zeroize.workspace = true
 bounded-command = { path = "../../system/bounded-command" }
 greetd-client = { path = "../greetd-client" }
 console-control = { path = "../console-control" }
+serde.workspace = true
 serde_json.workspace = true
 settings-store = { path = "../../system/settings-store" }
 wayland-client.workspace = true

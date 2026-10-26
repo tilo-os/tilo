@@ -21,11 +21,31 @@ pub const PROVIDER: &str = "installer";
 /// The single protocol type every installer operation is encoded under.
 pub const OPERATION_TYPE: &str = "installer.operation";
 
-/// Handler table for the host's publication check.
-pub const HANDLERS: &[&str] = &[OPERATION_TYPE, ONLINE_ACCOUNT_OPERATION_TYPE];
-
 /// Fixed online-account controls; private form fields never enter this payload.
 pub const ONLINE_ACCOUNT_OPERATION_TYPE: &str = "installer.online-accounts-control";
+
+/// Every operation type the typed [`InstallerEffect`] vocabulary decodes.
+pub const OPERATION_TYPES: &[&str] = &[OPERATION_TYPE, ONLINE_ACCOUNT_OPERATION_TYPE];
+
+/// The fixed online-account controls, as the accounts surface publishes them.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnlineControl {
+    Add,
+    Retry,
+    Cancel,
+    SkipOffline,
+}
+
+/// Everything a door can ask the installer for: one typed vocabulary over the
+/// wizard's operations and the accounts surface's fixed controls.
+///
+/// Not `Debug`: the operation variants carry secrets.
+#[derive(Clone)]
+pub enum InstallerEffect {
+    Install(Operation),
+    Online(OnlineControl),
+}
 
 /// Resource ids. They name wizard concerns, not screen positions, so an
 /// address stays valid across layouts, themes and text scales.
@@ -210,6 +230,20 @@ impl Operation {
             };
             format!("not an installer operation: {category}")
         })
+    }
+}
+
+impl ui::widget::resource_effects::EffectVocabulary for InstallerEffect {
+    const OPERATION_TYPES: &'static [&'static str] = OPERATION_TYPES;
+
+    fn decode(type_id: &str, payload: &[u8]) -> Result<Self, String> {
+        match type_id {
+            OPERATION_TYPE => Ok(Self::Install(Operation::decode(payload)?)),
+            ONLINE_ACCOUNT_OPERATION_TYPE => serde_json::from_slice(payload)
+                .map(Self::Online)
+                .map_err(|_| "Invalid online account control".to_string()),
+            other => Err(format!("not an installer operation: {other}")),
+        }
     }
 }
 

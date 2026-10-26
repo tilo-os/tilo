@@ -31,7 +31,6 @@ use std::sync::{Arc, Mutex};
 
 use installer::InstallerApp;
 use installer::installer_app::{ProxySlot, Step};
-use ui::widget::Widget;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -52,12 +51,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = ui::launch::LaunchArgs::from_env(&[])?;
     if let Some(out) = &args.shots {
         let name = args.scenario.as_deref().unwrap_or("disk");
-        let widget = build_shot(name).ok_or_else(|| format!("unknown --scenario {name:?}"))?;
+        let app = build_shot(name).ok_or_else(|| format!("unknown --scenario {name:?}"))?;
         ui::clock::freeze_for_capture();
         let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let mut frame = ui::headless::FrameHarness::new_with_theme(
             ui::State::new(),
-            widget,
+            Box::new(ui::widget::resource_effects::host(app)),
             viewport,
             ui::launch::shot_theme(&args),
         );
@@ -77,7 +76,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_proxy(proxy_slot.clone())
         .with_console(console.clone());
     let state = ui::State::new();
-    let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget));
+    let mut app = ui::App::from_scoped_parts(
+        wake_scope,
+        state,
+        Box::new(ui::widget::resource_effects::host(widget)),
+    );
     // Hand the keyboard to the first field/row at startup so the wizard
     // is usable without a click...
     app.autofocus_first = true;
@@ -112,28 +115,28 @@ fn serve_console(
 /// Build the widget for a `--shots --scenario <name>` render. The shot app
 /// carries sample account details so input fields show representative text.
 /// Returns `None` for an unrecognised name.
-fn build_shot(name: &str) -> Option<Box<dyn Widget>> {
+fn build_shot(name: &str) -> Option<InstallerApp> {
     if name == "disk-alongside" {
         let mut app = InstallerApp::for_shot(Step::Disk);
         app.shot_alongside();
-        return Some(Box::new(app));
+        return Some(app);
     }
     if name == "review-alongside" {
         let mut app = InstallerApp::for_shot(Step::Review);
         app.shot_alongside_review();
-        return Some(Box::new(app));
+        return Some(app);
     }
     // `options-open` renders the Options step with the time-zone dropdown
     // popped open, capturing the overlay popup state.
     if name == "options-open" {
         let mut app = InstallerApp::for_shot(Step::Options);
         app.shot_open_timezone();
-        return Some(Box::new(app));
+        return Some(app);
     }
     if name == "profile-locale-repair" {
         let mut app = InstallerApp::for_shot(Step::Options);
         app.shot_locale_repair();
-        return Some(Box::new(app));
+        return Some(app);
     }
 
     // `keyboard` seeds a non-default layout so the visual preview clearly
@@ -141,29 +144,29 @@ fn build_shot(name: &str) -> Option<Box<dyn Widget>> {
     if name == "keyboard" {
         let mut app = InstallerApp::for_shot(Step::Keyboard);
         app.shot_keymap("German (QWERTZ)");
-        return Some(Box::new(app));
+        return Some(app);
     }
 
     if name == "media-chosen" {
         let mut app = InstallerApp::for_shot(Step::Media);
         app.shot_codecs_chosen();
-        return Some(Box::new(app));
+        return Some(app);
     }
 
     if name == "finish-recovery" {
         let mut app = InstallerApp::for_shot(Step::Install);
         app.shot_finished_with_recovery();
-        return Some(Box::new(app));
+        return Some(app);
     }
     if name == "finish-recovery-saved" {
         let mut app = InstallerApp::for_shot(Step::Install);
         app.shot_finished_with_saved_recovery();
-        return Some(Box::new(app));
+        return Some(app);
     }
     if name == "failed-recovery" {
         let mut app = InstallerApp::for_shot(Step::Install);
         app.shot_failed_with_recovery();
-        return Some(Box::new(app));
+        return Some(app);
     }
 
     let (step, terminal): (Step, Option<bool>) = match name {
@@ -185,7 +188,7 @@ fn build_shot(name: &str) -> Option<Box<dyn Widget>> {
         Some(false) => app.shot_failed(),
         None => {}
     }
-    Some(Box::new(app))
+    Some(app)
 }
 
 #[cfg(test)]

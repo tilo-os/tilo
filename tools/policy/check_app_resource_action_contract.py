@@ -30,6 +30,18 @@ ROOT = Path(__file__).resolve().parents[2]
 # a certification exception requiring architectural review. A file whose debt
 # is gone is deleted.
 BASELINE = Path("tools/policy/app_resource_action_baseline")
+# Session surfaces run before any compositor and own no resource document, so
+# the whole app contract above does not describe them. The toolkit-private
+# operation protocol and its handler hook do: they answer the same published
+# resources through a typed effect vocabulary. Their sources are held to that
+# rule here, with no ratchet ceiling.
+SESSION_APPS = ("crates/session/greeter", "crates/session/installer")
+RAW_OPERATION_REASON = (
+    "the host's raw operation protocol is the toolkit's, not an app's: "
+    "answer a typed effect vocabulary (ResourceSurface::effect for an app's "
+    "resource, the toolkit's effect host for a session surface), and in a "
+    "test drive a published action"
+)
 
 RESOURCE_PROVIDER = re.compile(r"\bfn\s+resources\s*\(")
 RESOURCE_VALUE = re.compile(r"\bResource\s*::\s*new\s*\(")
@@ -523,6 +535,12 @@ def load_ratchet_baseline(
             for relative, limit in entries.items():
                 if not (isinstance(relative, str) and isinstance(limit, int) and limit >= 0):
                     continue
+                if violations is not None and any(
+                    relative == app or relative.startswith(f"{app}/") for app in SESSION_APPS
+                ):
+                    violations.append(
+                        Violation(path, 1, f"session app `{relative}` has no ratchet baseline")
+                    )
                 if violations is not None and rule in CLOSED_RATCHETS:
                     violations.append(
                         Violation(path, 1, f"{rule} is closed: no ceiling for `{relative}`")
@@ -1494,6 +1512,35 @@ def headless_action_service(app_dir: Path, code: str) -> bool:
     )
 
 
+def audit_session_apps(root: Path, violations: list[Violation]) -> None:
+    """Hold each pre-compositor session app to the toolkit-private protocol rule.
+
+    `audit_ratchets` covers the app-model rules; a session surface owns no
+    resource document, so only the raw-operation rule applies. Its sources are
+    scanned with no baseline, so no ceiling can suppress a finding.
+    """
+    for app in SESSION_APPS:
+        directory = root / app
+        if not directory.is_dir():
+            continue
+        for sub in ("src", "tests"):
+            sources = sorted((directory / sub).rglob("*.rs")) if (directory / sub).is_dir() else []
+            for source in sources:
+                raw = source.read_text(encoding="utf-8")
+                relative = source.relative_to(root).as_posix()
+                code = code_only(raw)
+                shipped = "" if is_test_source(relative) else code
+                for pattern, reason in WORKSPACE_RATCHETS.values():
+                    for match in pattern.finditer(shipped):
+                        violations.append(
+                            Violation(source, line_number(raw, match.start()), reason)
+                        )
+                for match in RAW_OPERATION_PROTOCOL.finditer(code):
+                    violations.append(
+                        Violation(source, line_number(raw, match.start()), RAW_OPERATION_REASON)
+                    )
+
+
 def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
     violations: list[Violation] = []
     # This is a Tilo framework invariant, not a requirement on the isolated
@@ -1728,13 +1775,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             raw = source.read_text(encoding="utf-8")
             for match in RAW_OPERATION_PROTOCOL.finditer(code_only(raw)):
                 violations.append(
-                    Violation(
-                        source,
-                        line_number(raw, match.start()),
-                        "the host's raw operation protocol is the toolkit's, not an app's: "
-                        "answer a typed effect vocabulary, and in a test deliver an "
-                        "operation through ui::framework::HostDelivery",
-                    )
+                    Violation(source, line_number(raw, match.start()), RAW_OPERATION_REASON)
                 )
 
         for source, text in sources:
@@ -1750,6 +1791,8 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
         for manifest_path in sorted((root / "examples" / "apps").glob("*/Cargo.toml")):
             audit_legacy_apis(legacy_api_sources(manifest_path.parent, ("src", "tests")), violations)
         violations.extend(audit_public_surfaces(root))
+
+    audit_session_apps(root, violations)
 
     return violations, len(manifests)
 

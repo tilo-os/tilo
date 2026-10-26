@@ -279,8 +279,8 @@ pub mod close_admission;
 /// The raw operation protocol between a host and the toolkit's widgets: the
 /// operation the host admits, how a widget starts it, and the routing to a
 /// widget's children. For the toolkit's hosts (the app framework, the shell,
-/// the browser runtime, the installer); an app answers operations as a typed
-/// effect vocabulary and never names these
+/// the browser runtime); a session app before any compositor exists hosts its
+/// typed effects through `widget::resource_effects` and never names these
 /// (`tools/policy/check_app_resource_action_contract.py`).
 pub mod host_operation {
     pub use crate::widget::resource_operation::{

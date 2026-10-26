@@ -1473,5 +1473,55 @@ class PublicSurfaceTests(unittest.TestCase):
         self.assertEqual(self.reported(root), [])
 
 
+class SessionAppContractTests(unittest.TestCase):
+    """The pre-compositor session apps answer the typed effect path only."""
+
+    def session(self, source: str, app: str = "greeter") -> Path:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        directory = root / "crates" / "session" / app / "src"
+        directory.mkdir(parents=True)
+        (directory / "lib.rs").write_text(source, encoding="utf-8")
+        return root
+
+    def reasons(self, root: Path) -> str:
+        violations, _ = contract.audit(root)
+        return "\n".join(item.reason for item in violations)
+
+    def test_a_typed_effect_host_passes(self):
+        root = self.session(
+            "impl ui::widget::resource_effects::TypedEffects for GreeterApp {\n"
+            "    type Effect = Operation;\n"
+            "    fn answer(&mut self, effect: Operation) -> Result<ActionOutput, String> { todo!() }\n"
+            "}\n"
+        )
+        self.assertEqual(self.reasons(root), "")
+
+    def test_the_raw_operation_hook_and_protocol_are_refused(self):
+        root = self.session(
+            "impl ui::host_operation::ResourceOperations for GreeterApp {\n"
+            "    fn start_operation(&mut self, op: &ui::host_operation::ResourceOperation<'_>) {\n"
+            "        let _ = ui::host_operation::start_in_children(self, op, doc, path);\n"
+            "    }\n"
+            "}\n"
+        )
+        reasons = self.reasons(root)
+        self.assertIn("the toolkit's effect host for a session surface", reasons)
+        self.assertIn("raw resource-operation hook", reasons)
+
+    def test_a_ratchet_ceiling_cannot_suppress_a_session_finding(self):
+        source = "fn start_operation(&mut self, op: &ResourceOperation<'_>) {}\n"
+        root = self.session(source)
+        baseline = root / contract.BASELINE / "workspace.toml"
+        baseline.parent.mkdir(parents=True)
+        baseline.write_text(
+            '[ratchets.raw_operation_handler]\n'
+            '"crates/session/greeter/src/lib.rs" = 5\n',
+            encoding="utf-8",
+        )
+        self.assertIn("session app `crates/session/greeter/src/lib.rs` has no ratchet baseline", self.reasons(root))
+
+
 if __name__ == "__main__":
     unittest.main()
