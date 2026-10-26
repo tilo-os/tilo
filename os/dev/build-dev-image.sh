@@ -50,7 +50,7 @@
 #                     the OS builder image, with the build directory and sccache kept
 #                     under os/output so a rebuild compiles only what changed
 #   TILO_DEV_ENV_RUNTIME  a sealed env-runtime directory (install-env-runtime.sh's
-#                     layout; t's env-runtime-preview): what the dev image ships when
+#                     layout; `env-runtime.sh dev` in os-image.sh): what the dev image ships when
 #                     its base ships no published runtime. A dev image with neither
 #                     fails to build (os/scripts/ensure-dev-env-runtime.sh)
 #   TILO_DEV_RUST_LTO thin (default here) or off, for that compile
