@@ -39,6 +39,11 @@ fn sample_with<T>(
     )
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "macOS and Linux both answer, so the Option is never empty here; \
+              the arm for a host this build cannot time is why it is one"
+)]
 fn host_seconds() -> Option<f64> {
     #[cfg(target_os = "macos")]
     {

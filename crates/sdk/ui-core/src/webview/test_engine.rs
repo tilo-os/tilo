@@ -40,6 +40,9 @@ struct Inner {
     /// What a paint capture answers with; `None` until a test sets one.
     paint_snapshot: Option<String>,
     paint_resources: std::collections::HashMap<String, Vec<u8>>,
+    /// What a capture answers with; a test page's own pixels until one sets
+    /// others.
+    page_capture: Option<Vec<u8>>,
     /// Whether it says it measures its document, as a ready host does.
     measures_document: bool,
     /// What the page has selected, as [`WebViewCommand::CopySelection`]
@@ -242,6 +245,12 @@ impl TestEngine {
         self.lock_inner().events.push(event);
     }
 
+    /// Answer every later page capture with these pixels (a PNG), as a real
+    /// engine paints the page it shows.
+    pub fn set_page_capture(&self, image: impl Into<Vec<u8>>) {
+        self.lock_inner().page_capture = Some(image.into());
+    }
+
     /// Queue the answer to the next page request. Without one, an outline
     /// is a single document line and every other request succeeds.
     pub fn push_page_reply(&self, reply: Result<PageReply, PageFailure>) {
@@ -272,6 +281,14 @@ impl TestEngine {
                 }
                 PageRequest::Settle { .. } => {
                     Some(serde_json::json!({"settled": true, "waited_ms": 0}))
+                }
+                _ => None,
+            },
+            // A capture answers with the picture it painted, and nothing else:
+            // the engine paints pixels, it does not read anything back.
+            image: match request {
+                PageRequest::Capture { .. } => {
+                    Some(inner.page_capture.clone().unwrap_or_else(test_png))
                 }
                 _ => None,
             },
@@ -778,6 +795,19 @@ impl WebViewEngine for TestEngine {
     fn drain_events(&self) -> Vec<WebViewEvent> {
         std::mem::take(&mut self.lock_inner().events)
     }
+}
+
+/// One pixel, in the page's own colour, as a real PNG.
+const TEST_PNG_BASE64: &str =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNQcEgAAAFEAMELjZZCAAAAAElFTkSuQmCC";
+
+/// The picture a test page paints when a test sets none: one pixel, in the
+/// page's own colour, so an answer is a real PNG and nothing else.
+fn test_png() -> Vec<u8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(TEST_PNG_BASE64)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

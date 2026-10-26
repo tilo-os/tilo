@@ -1466,6 +1466,7 @@ dependencies = [
  "tilo-browser-import-engine",
  "tilo-browser-sessions",
  "tilo-clock",
+ "tilo-content",
  "tilo-files",
  "tilo-net",
  "tilo-paths",
