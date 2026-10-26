@@ -225,6 +225,49 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
     );
 }
 #[test]
+fn idle_chat_asks_no_frame_to_solve_its_layout() {
+    // Chat paints inside the box its window gives it: a frame that something
+    // else on the desktop asked for (an animation, another window opening, a
+    // peer's pointer) re-solves nothing in Chat.
+    let mut doc = AutoCommit::new();
+    let me = LocalIdentity::demo();
+    crate::testing::starter(&mut doc, &me.id, &me.name, &me.initials);
+    doc.commit();
+    let mut app = projection(&doc, me);
+    let _ = app.update(&doc, &ROOT);
+    app.mark_drawn();
+    assert!(
+        !app.layout_needs_measure(),
+        "idle Chat asks for no layout solve"
+    );
+    remote_change(&mut doc, "remote-change", "newer");
+    doc.commit();
+    app.sync(&doc, &ROOT);
+    assert!(
+        !app.layout_needs_measure(),
+        "a new message is painted inside Chat's box, which keeps its size"
+    );
+    app.call.expanded = true;
+    assert!(
+        app.layout_needs_measure(),
+        "the expanded call's tile follows the participant grid"
+    );
+}
+
+#[test]
+fn a_mounted_chat_at_rest_is_no_frames_layout_requester() {
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-layout-at-rest");
+    for _ in 0..6 {
+        let _ = frame.poll_frame().unwrap();
+    }
+    let requesters = frame.layout_measure_requesters();
+    assert!(
+        !requesters.iter().any(|path| path.contains("ChatApp")),
+        "Chat at rest asks the next frame to solve its layout: {requesters:?}"
+    );
+}
+
+#[test]
 fn canonical_composer_exports_ime_content_through_app_root() {
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();
