@@ -4738,17 +4738,6 @@ impl Widget for ChatApp {
         root
     }
 
-    /// Chat's box is the one its window gives it, and Chat paints what it
-    /// shows inside it itself; under it only the call's video tile is laid
-    /// out, at a fraction of that box. So nothing Chat shows asks for its
-    /// sizes to be solved again: a frame elsewhere on the desktop (another
-    /// window opening, an animation, a peer's pointer) re-solves nothing
-    /// here. The expanded call is the exception: its tile follows the
-    /// participant grid, worked out from Chat's last box.
-    fn is_layout_dirty(&self) -> bool {
-        self.call.expanded
-    }
-
     /// The host call tile has a node of its own; Chat routes and paints it.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         visitor(&self.video);
