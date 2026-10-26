@@ -206,10 +206,10 @@ impl ShellNetwork {
     /// since the last look ([`Self::outbox_state`]), it is one read of the
     /// tree and a compare, with no scan and no allocation. Never waits for
     /// the tree: a tick that finds another thread writing it looks again on
-    /// a later tick, as the placements step does.
+    /// the tick that writer's release wakes.
     pub(super) fn send_outbox_off_loop(&self) {
         let entries: Vec<_> = {
-            let Some(tree) = self.tree.try_read() else {
+            let Some(tree) = self.tree.try_read_or_wake(self.release_wake()) else {
                 return;
             };
             let Some(state) = Self::outbox_state(&tree) else {

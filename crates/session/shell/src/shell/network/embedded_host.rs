@@ -377,23 +377,26 @@ impl ShellNetwork {
     fn placements_pending(&self) -> bool {
         self.places_workspaces()
             && !self.embedded_host.queued.load(Ordering::Acquire)
-            && self.tree.try_read().is_some_and(|tree| {
-                let placing = self
-                    .embedded_host
-                    .placing
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                tree.pending_placements
-                    .iter()
-                    .any(|room| !placing.contains(room))
-                    && self
+            && self
+                .tree
+                .try_read_or_wake(self.release_wake())
+                .is_some_and(|tree| {
+                    let placing = self
                         .embedded_host
-                        .failed
+                        .placing
                         .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .as_ref()
-                        != Some(&self.placing_now(&tree))
-            })
+                        .unwrap_or_else(PoisonError::into_inner);
+                    tree.pending_placements
+                        .iter()
+                        .any(|room| !placing.contains(room))
+                        && self
+                            .embedded_host
+                            .failed
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .as_ref()
+                            != Some(&self.placing_now(&tree))
+                })
     }
 
     /// What a placement pass would depend on now.

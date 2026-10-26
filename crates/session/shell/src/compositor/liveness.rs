@@ -99,6 +99,13 @@ const MAX_BUDGET: Duration = Duration::from_secs(60);
 /// How long a thread dump waits for the threads' answers.
 const DUMP_WAIT: Duration = Duration::from_secs(2);
 
+/// How long the file audit may keep one of the main thread's calls waiting
+/// for its backtrace, the wait for any thread dump in progress included:
+/// well inside half the [`DEFAULT_BUDGET`], so the audit's own hold on the
+/// call never reads as a stalled main loop. A held thread answers within
+/// microseconds when it answers at all.
+const HELD_CAPTURE_WAIT: Duration = Duration::from_millis(100);
+
 /// Where the liveness socket of the control socket at `control` is bound.
 #[must_use]
 pub fn socket_path(control: &Path) -> PathBuf {
@@ -920,6 +927,35 @@ fn capture_thread(tid: i32) -> Option<String> {
         .unwrap_or_else(Instant::now);
     ask.wait(&[tid], deadline);
     ask.frames(tid)
+}
+
+/// The backtrace of thread `tid` of this process while a seccomp listener
+/// holds its system call, or why there is none. Bounded by
+/// [`HELD_CAPTURE_WAIT`] in all: the caller holds the call, and a thread
+/// dump that started meanwhile (the liveness stall report, which leaves a
+/// thread in a seccomp wait alone) would otherwise keep it held for that
+/// dump's whole wait and then this capture's.
+pub(super) fn capture_held_thread(tid: i32) -> Result<String, String> {
+    let deadline = Instant::now()
+        .checked_add(HELD_CAPTURE_WAIT)
+        .unwrap_or_else(Instant::now);
+    let Some(_one) = ONE_DUMP_AT_A_TIME.try_lock_until(deadline) else {
+        return Err(format!(
+            "no backtrace: a thread dump was in progress for {} ms",
+            HELD_CAPTURE_WAIT.as_millis()
+        ));
+    };
+    let ask = capture::Ask::new(&[tid]);
+    if !signal_capture(&ask, tid) {
+        return Err("no backtrace: the main thread could not be signalled".into());
+    }
+    ask.wait(&[tid], deadline);
+    ask.frames(tid).ok_or_else(|| {
+        format!(
+            "no backtrace: the main thread did not answer the capture signal within {} ms",
+            HELD_CAPTURE_WAIT.as_millis()
+        )
+    })
 }
 
 /// The main thread's state and, where it may be interrupted
