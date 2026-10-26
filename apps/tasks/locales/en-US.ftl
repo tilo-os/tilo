@@ -1,13 +1,22 @@
 tasks-title = Tasks
-tasks-places = Task views
+tasks-filters = Filters
+tasks-views = View
 tasks-place-list = Issues
 tasks-place-board = Board
-tasks-back = Back
+tasks-location-filtered = { $place }, { $filter }
+
+## What the sidebar narrows the list and the board to
+tasks-filter-all = All issues
+tasks-filter-mine = Mine
+tasks-filter-unassigned = Nobody's
+tasks-filter-agent = An agent's
 tasks-new-issue = New issue
 tasks-new-issue-placeholder = What needs doing
 tasks-new-sub-issue-placeholder = A sub-issue of this one
 tasks-empty-title = No issues yet
 tasks-empty-message = Write down what needs doing above; sub-issues go under an issue on its page.
+tasks-empty-filter-title = Nothing here yet
+tasks-empty-filter-message = Choose another filter in the sidebar to see the rest.
 
 tasks-status-backlog = Backlog
 tasks-status-todo = Todo

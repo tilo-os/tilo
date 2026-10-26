@@ -131,7 +131,7 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
         edit.start,
         Some(day.and_hms_opt(2, 30, 0).unwrap()),
         "status={:?}, selection={:?}, dispatched={:?}",
-        h.app.status.as_deref(),
+        h.app.status.text(),
         h.app.selection,
         h.app.last_dispatched()
     );
@@ -157,7 +157,7 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
         edit.start,
         Some(day.and_hms_opt(4, 30, 0).unwrap()),
         "status={:?}, selection={:?}, dispatched={:?}, spans={:?}",
-        h.app.status.as_deref(),
+        h.app.status.text(),
         h.app.selection,
         h.app.last_dispatched(),
         h.app.timeline_spans(&[day])
@@ -896,6 +896,12 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         assert_eq!(
             dispatched.arguments.get("event"),
             Some(&serde_json::json!(id.to_string()))
+        );
+        // Nothing was written in the draft, so nothing was taken away: a
+        // status would announce an act there is nothing to undo.
+        assert!(
+            !app.status.is_shown(),
+            "a draft with nothing in it goes without a word"
         );
     }
     // Case `dismissing_an_edited_new_event_keeps_its_autosaved_changes`.
@@ -2170,7 +2176,7 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         let mut state = demo_document(&app);
         app.start_sync(&mut Edits::lend(&mut state));
         assert!(!app.syncing, "nothing to sync → no background work");
-        assert!(app.status.as_deref().unwrap_or("").contains("account"));
+        assert!(app.status.text().unwrap_or("").contains("account"));
     }
     // Case `poll_sync_drains_a_finished_worker_into_the_model`.
     {
@@ -2271,7 +2277,10 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         app.poll_sync(&mut Edits::lend(&mut state));
         assert!(!app.syncing, "the in-flight flag is cleared");
         assert!(app.sync_rx.is_none(), "the dead channel is dropped");
-        assert_eq!(app.status.as_deref(), Some("Sync failed"));
+        assert_eq!(
+            app.status.text(),
+            Some(crate::resource::t("calendar-sync-failed").as_str())
+        );
     }
 }
 
@@ -2420,7 +2429,7 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         assert_eq!(app.calendar_filter.as_deref(), Some("icloud/holidays"));
         assert!(
             app.status
-                .as_deref()
+                .text()
                 .is_some_and(|status| status.contains("is hidden")),
             "the collection view must explain its intentionally empty result"
         );
@@ -2439,7 +2448,10 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         );
         app.show_all_calendars();
         assert!(app.calendar_filter.is_none());
-        assert_eq!(app.status.as_deref(), Some("Showing all calendars"));
+        assert_eq!(
+            app.status.text(),
+            Some(crate::resource::t("calendar-showing-all").as_str())
+        );
     }
     // Case `collapsing_an_account_folds_its_calendars_in_the_sidebar`.
     {
@@ -3449,7 +3461,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 }],
                 ..caldav::SyncResult::default()
             },
-            SyncOutcome::Synced {
+            &SyncOutcome::Synced {
                 calendars: 1,
                 events: 1,
             },
@@ -3474,7 +3486,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 }],
                 ..caldav::SyncResult::default()
             },
-            SyncOutcome::Synced {
+            &SyncOutcome::Synced {
                 calendars: 1,
                 events: 1,
             },
@@ -3496,7 +3508,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 }],
                 ..caldav::SyncResult::default()
             },
-            SyncOutcome::Synced {
+            &SyncOutcome::Synced {
                 calendars: 1,
                 events: 0,
             },
@@ -3551,7 +3563,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                         }],
                         ..caldav::SyncResult::default()
                     },
-                    SyncOutcome::Synced {
+                    &SyncOutcome::Synced {
                         calendars: 1,
                         events: 0,
                     },

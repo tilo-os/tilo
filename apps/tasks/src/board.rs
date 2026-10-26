@@ -1,4 +1,5 @@
-//! The board: a lane per status, each issue a card in its lane.
+//! The board: a lane per status, each issue the sidebar's filter shows a
+//! card in its lane.
 //!
 //! Dragging a card is one `place` action: its status and its place in the
 //! lane, one undo step. A card opens its issue; its status changes there
@@ -8,19 +9,27 @@ use crate::model::{Issue, Status, Tracker, tracker};
 use ui::prelude::*;
 use ui::widget::{Badge, Board, BoardDrop, Card, ChipStyle, Tone};
 
-use crate::{Nav, reference, tr};
+use crate::{Filter, Nav, reference, tr};
 
 pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
-    let tracker = cx.value(Tracker::clone);
+    let chosen = nav.filter.clone();
+    let me = cx.me().map(str::to_owned);
     let nav = nav.clone();
-    let board = cx.switch(&tracker, move |cx, tracker| lanes(cx, tracker, &nav));
+    let board = cx.switch(&chosen, move |cx, chosen| {
+        let filter = chosen.as_deref().and_then(Filter::of).unwrap_or_default();
+        let tracker = cx.value(Tracker::clone);
+        let nav = nav.clone();
+        let me = me.clone();
+        cx.switch(&tracker, move |cx, tracker| {
+            lanes(cx, tracker, &nav, &filter, me.as_deref())
+        })
+    });
+    // The board's name is the window's location: the bar says where the
+    // window is, so nothing here titles it a second time.
     Box::new(
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Group)
             .with_fill_remaining_height()
-            .push(Box::new(
-                Text::new("tasks-place-board").with_role(TextRole::Title),
-            ))
             .push(crate::new_issue(cx, None, "tasks-board-new"))
             .push(Box::new(
                 Scrollable::new_horizontal()
@@ -37,14 +46,20 @@ fn status_of(lane: &str) -> Option<Status> {
         .find(|status| status.label_key() == lane)
 }
 
-fn lanes(cx: &ViewCx<Tracker>, tracker: &Tracker, nav: &Nav) -> Element {
+fn lanes(
+    cx: &ViewCx<Tracker>,
+    tracker: &Tracker,
+    nav: &Nav,
+    filter: &Filter,
+    me: Option<&str>,
+) -> Element {
     let people = cx.people();
     let mut board = Board::new().with_id("tasks-board");
     for status in Status::ALL {
         let cards: Vec<(String, Element)> = tracker
             .issues
             .iter()
-            .filter(|(_, issue)| issue.status == status)
+            .filter(|(_, issue)| issue.status == status && filter.matches(issue, me))
             .map(|(id, issue)| (id.to_string(), card(tracker, id, issue, &people, nav)))
             .collect();
         let header = Text::new(&ui::i18n::I18nManager::format(

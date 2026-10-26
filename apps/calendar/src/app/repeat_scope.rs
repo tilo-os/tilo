@@ -198,7 +198,7 @@ impl CalendarApp {
         )) {
             Ok(insert) => insert,
             Err(error) => {
-                self.status.show(failed(&error));
+                self.status.failed(failed(&error));
                 return;
             }
         };
@@ -210,7 +210,7 @@ impl CalendarApp {
             .collect();
         members.push(insert);
         if let Err(error) = self.try_submit(doc, ui::tilo_resource::Invoke::group(members)) {
-            self.status.show(failed(&error.to_string()));
+            self.status.failed(failed(&error.to_string()));
             return;
         }
         if let Some(event) = self.model.event_mut(id) {

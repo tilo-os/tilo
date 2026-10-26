@@ -34,34 +34,43 @@ use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 fn installer_pick_request() -> PickRequest {
-    PickRequest::open("Add a Windows application", "Install")
-        .thread_name("tilo-windows-installer-picker")
-        .filter(
-            FileFilter::new("Windows applications")
-                .glob("*.exe")
-                .glob("*.msi")
-                .mimetype("application/vnd.microsoft.portable-executable")
-                .mimetype("application/x-msi"),
-        )
-        .all_files()
+    PickRequest::open(
+        &strings::t("windows-pick-app-title"),
+        &strings::t("windows-pick-app-confirm"),
+    )
+    .thread_name("tilo-windows-installer-picker")
+    .filter(
+        FileFilter::new(&strings::t("windows-pick-app-filter"))
+            .glob("*.exe")
+            .glob("*.msi")
+            .mimetype("application/vnd.microsoft.portable-executable")
+            .mimetype("application/x-msi"),
+    )
+    .all_files()
 }
 
 fn windows_iso_pick_request() -> PickRequest {
-    PickRequest::open("Choose Windows installation media", "Use this ISO")
-        .thread_name("tilo-windows-iso-picker")
-        .filter(
-            FileFilter::new("Windows installation media")
-                .glob("*.iso")
-                .mimetype("application/x-cd-image")
-                .mimetype("application/x-iso9660-image"),
-        )
-        .all_files()
+    PickRequest::open(
+        &strings::t("windows-pick-iso-title"),
+        &strings::t("windows-pick-iso-confirm"),
+    )
+    .thread_name("tilo-windows-iso-picker")
+    .filter(
+        FileFilter::new(&strings::t("windows-pick-iso-filter"))
+            .glob("*.iso")
+            .mimetype("application/x-cd-image")
+            .mimetype("application/x-iso9660-image"),
+    )
+    .all_files()
 }
 
 fn windows_document_pick_request() -> PickRequest {
-    PickRequest::open("Open a file in Windows", "Open read-only")
-        .thread_name("tilo-windows-document-picker")
-        .all_files()
+    PickRequest::open(
+        &strings::t("windows-pick-file-title"),
+        &strings::t("windows-pick-file-confirm"),
+    )
+    .thread_name("tilo-windows-document-picker")
+    .all_files()
 }
 
 /// What the content column shows.
@@ -214,7 +223,7 @@ fn appliance_summary(status: &ApplianceStatus, checked: bool) -> String {
     if !checked {
         strings::t("windows-appliance-checking-short")
     } else if status.is_provisioned() {
-        status.summary_label().to_owned()
+        status.summary_label()
     } else {
         strings::t("windows-appliance-not-set-up")
     }
@@ -667,7 +676,10 @@ impl WindowsApp {
     }
     fn picker_failed(&mut self, error: &str, what: &str) {
         self.finish_resource_operation(Err(error.to_owned()));
-        self.notice = Some(Notice::error(format!("Could not open the {what}: {error}")));
+        self.notice = Some(Notice::error(strings::format_all(
+            "windows-error-open",
+            &[("what", what.to_owned()), ("error", error.to_owned())],
+        )));
     }
     fn picker_disconnected(&mut self) {
         self.finish_resource_operation(Err(strings::t("windows-picker-disconnected")));
@@ -1149,7 +1161,7 @@ impl WindowsApp {
                     .find(|app| app.capsule == id)
                     .cloned()
             })
-            .ok_or_else(|| "Windows application is no longer available".to_string())?;
+            .ok_or_else(|| strings::t("windows-error-app-gone"))?;
         match type_id {
             "windows.launch" if app.launch_available => {
                 if app.route == Route::Vm {
@@ -1185,7 +1197,7 @@ impl WindowsApp {
             "windows.delete-data" if app.can_delete_data => {
                 self.provider.borrow_mut().delete_data(&app.capsule)?;
             }
-            _ => return Err("Windows operation is no longer available".into()),
+            _ => return Err(strings::t("windows-error-operation-gone")),
         }
         self.notice = Some(Notice::info(strings::t("windows-operation-requested")));
         Ok(true)
@@ -1322,8 +1334,8 @@ impl WindowsApp {
                 .enumerate()
                 .map(|(index, app)| -> Element {
                     let mut row = ListRow::new(format!("windows-app-{}", app.id), &app.name)
-                        .secondary(app.status.label())
-                        .badge(app.route.label())
+                        .secondary(strings::t(app.status.label_key()))
+                        .badge(strings::t(app.route.button_key()))
                         .selected(self.page == Page::App && index == self.selected)
                         .on_view(self.intents.sender(Intent::SelectApp(index)));
                     // Every app row carries a status dot, so the route
@@ -1581,7 +1593,7 @@ impl WindowsApp {
             }
             open_with.push(Box::new(row(choice)));
         } else {
-            open_with.push(Box::new(body(app.route.label())));
+            open_with.push(Box::new(body(&strings::t(app.route.button_key()))));
             if let Some(reason) = &app.route_override_unavailable_reason {
                 open_with.push(Box::new(caption(reason)));
             }
@@ -1624,7 +1636,7 @@ impl WindowsApp {
             access.push(Box::new(PropertyList::new(reach).shared_column(&facts)));
         }
         let boundary = if app.fallback_detail.trim().is_empty() {
-            app.route.security_summary()
+            &strings::t(app.route.security_key())
         } else {
             app.fallback_detail.as_str()
         };
@@ -1636,13 +1648,16 @@ impl WindowsApp {
         if !recovering {
             about.push(Property::new(
                 strings::t("windows-status"),
-                app.status.label(),
+                strings::t(app.status.label_key()),
             ));
         }
         about.extend([
             Property::new(strings::t("windows-publisher"), &app.publisher),
             Property::new(strings::t("windows-source"), &app.catalogue_source),
-            Property::new(strings::t("windows-compatibility"), app.confidence.label()),
+            Property::new(
+                strings::t("windows-compatibility"),
+                strings::t(app.confidence.label_key()),
+            ),
             Property::new(strings::t("windows-runner"), &app.runner),
         ]);
         if let Some(detail) = app.installation_detail.as_ref().filter(|_| !recovering) {
@@ -1808,7 +1823,7 @@ impl WindowsApp {
             return;
         }
 
-        page.head.push(Box::new(body(status.status_statement())));
+        page.head.push(Box::new(body(&status.status_statement())));
         page.head.push(Box::new(PropertyList::new(vec![
             Property::new(
                 strings::t("windows-activation-status"),
@@ -1821,7 +1836,7 @@ impl WindowsApp {
             .with_kind(TextKind::Numeric),
         ])));
         if let Some(detail) = status.license_detail() {
-            page.head.push(Box::new(caption(detail)));
+            page.head.push(Box::new(caption(&detail)));
         }
 
         let power: Vec<Element> = [

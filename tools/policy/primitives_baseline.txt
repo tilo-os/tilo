@@ -14,7 +14,6 @@ glyph-join 1 apps/agent/src/session/agent_loop.rs
 glyph-join 1 apps/agent/src/surface.rs
 glyph-join 1 apps/browser-parts/src/blocker.rs
 glyph-join 1 apps/browser/src/browser_widget/library.rs
-glyph-join 2 apps/calendar/src/app.rs
 glyph-join 1 apps/calendar/src/model.rs
 glyph-join 1 apps/calendar/src/reminders.rs
 glyph-join 1 apps/canvas/src/actions.rs
