@@ -704,6 +704,9 @@ impl ListPane {
             )
         })
         .filling()
+        // The list is the column's body: its rows' text starts where the column's header
+        // starts its title (HIG's one content edge).
+        .in_column()
         .selection_follows_focus()
         // A click or a tap on a row opens its item: a narrow window pushes it in front, as
         // selecting an entry of an overview does (HIG §1b). Moving through the list with the
