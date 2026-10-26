@@ -137,7 +137,10 @@ async fn a_relay_launched_legacy_app_streams_from_a_kvm_guest() {
         .prefix("lw")
         .tempdir_in("/var/tmp")
         .unwrap();
-    let relay = Relay::start(
+    // No public relay servers, like the worker's and member's endpoints
+    // (`client_endpoint`): the step that runs this has no internet, and a
+    // relay probing servers it cannot reach only adds noise to its paths.
+    let relay = Relay::start_with_relay_mode(
         RelayConfig {
             state_root: state.path().to_path_buf(),
             trust_policy: TrustPolicy::AllowAny,
@@ -157,6 +160,7 @@ async fn a_relay_launched_legacy_app_streams_from_a_kvm_guest() {
             device_cert: relay_device.cert.clone(),
             revocations: RevocationList::new(),
         },
+        iroh::RelayMode::Disabled,
     )
     .await
     .unwrap();
