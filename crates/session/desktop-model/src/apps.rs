@@ -30,14 +30,14 @@ pub fn canonical_app_id(tile: &TileContent) -> Option<AppId> {
 /// Every tab in a room document that names the record it shows, as the
 /// raw record id string. Parsing it is the reader's business. Concurrently
 /// created containers are joined, as [`crate::projection::contents_of`] does.
-pub fn record_routes(doc: &AutoCommit) -> BTreeMap<TabId, String> {
+pub fn record_routes(doc: &impl automerge::ReadDoc) -> BTreeMap<TabId, String> {
     record_routes_at(doc, None)
 }
 
 /// [`record_routes`] as the document stood at `heads` (`None`: now): a host
 /// showing a room's history reads which record each window showed then.
 pub fn record_routes_at(
-    doc: &AutoCommit,
+    doc: &impl automerge::ReadDoc,
     heads: Option<&[automerge::ChangeHash]>,
 ) -> BTreeMap<TabId, String> {
     let mut routes = BTreeMap::new();

@@ -1,12 +1,23 @@
+use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand, TabLocation};
+use tilo_desktop_model::compose_id;
+use tilo_desktop_model::ids::namespace_of_device;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
-use tilo_desktop_model::ownership::{Act, Authors};
-use tilo_desktop_model::{DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId};
+use tilo_desktop_model::ownership::{SharedDesktop, Touched};
+use tilo_desktop_model::projection::LayoutRequest;
+use tilo_desktop_model::{
+    DesktopTree, RoomId, StripId, TabId, WindowWidth, Workspace, WorkspaceId, room_layout,
+};
 
 use super::*;
 
-const ADA: &str = "ada";
-const BEN: &str = "ben";
-const MOD: &str = "moderator";
+const ADA: &str = "ada-device";
+const BEN: &str = "ben-device";
+const MOD: &str = "moderator-device";
+const ROOM: &str = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+
+fn room_id() -> RoomId {
+    RoomId::parse(ROOM).unwrap()
+}
 
 fn tab(id: u64) -> Tab {
     Tab {
@@ -21,164 +32,264 @@ fn tab(id: u64) -> Tab {
     }
 }
 
-/// A desktop of one strip (10, nobody's) holding a window per
-/// `(tab, group, who)`.
-fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
-    let mut workspace = Workspace::new(WorkspaceId(1), "Lounge");
-    let mut strip = Strip::new(StripId(10), "Lounge");
-    for (id, group, _) in windows {
-        match strip.window_groups.iter_mut().find(|g| g.id == *group) {
-            Some(existing) => existing.tabs.push(tab(*id)),
-            None => strip.window_groups.push(WindowGroup {
-                id: *group,
-                tabs: vec![tab(*id)],
-                active_tab: *id,
-                width: WindowWidth::Normal,
-                maximized: false,
-                focus_history: Vec::new(),
-            }),
-        }
+/// One strip of `device`'s: strip `n`, one group, one window.
+fn strip_of(device: &str, n: u64) -> Strip {
+    let id = |base: u64| compose_id(namespace_of_device(device), base);
+    Strip {
+        id: StripId(id(n)),
+        name: format!("{device} {n}"),
+        window_groups: vec![WindowGroup {
+            id: id(n + 10),
+            tabs: vec![tab(id(n + 20))],
+            active_tab: id(n + 20),
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
     }
-    workspace.strips.push(strip);
-    let authors: Authors = windows
-        .iter()
-        .map(|(id, _, who)| (*id, (*who).to_owned()))
-        .collect();
+}
+
+fn empty_layout() -> SharedDesktop {
+    let workspace = Workspace::in_room(WorkspaceId::of_room(room_id()), room_id(), "Room");
     SharedDesktop {
         tree: DesktopTree {
             active: workspace.id,
             workspaces: vec![workspace],
             ..DesktopTree::default()
         },
-        authors,
         records: Vec::new(),
+        authors: Default::default(),
     }
 }
 
-/// The windows on the room's desktop, in order.
-fn windows(guard: &DesktopGuard) -> Vec<u64> {
-    let desktop = shared_record::read(&guard.doc, None).unwrap();
-    desktop.tree.workspaces[0].strips[0]
-        .window_groups
-        .iter()
-        .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
+/// A room whose layout holds Ada's and Ben's windows, as their devices
+/// published them.
+fn room() -> LayoutGuard {
+    let mut doc = AutoCommit::new();
+    let mut layout = empty_layout();
+    for (device, n) in [(ADA, 1), (BEN, 1)] {
+        layout.tree.workspaces[0].strips.push(strip_of(device, n));
+        room_layout::write(&mut doc, &layout, namespace_of_device(device), Some(device)).unwrap();
+    }
+    doc.commit();
+    LayoutGuard::new(doc)
+}
+
+/// A device's copy of the room's layout, and a change to publish from it.
+struct Page {
+    doc: AutoCommit,
+}
+
+impl Page {
+    fn of(guard: &LayoutGuard) -> Self {
+        Self {
+            doc: AutoCommit::load(&guard.doc.save()).unwrap(),
+        }
+    }
+
+    /// Publish `change`'s layout as `device`'s, as one incremental write.
+    fn publish(
+        &mut self,
+        device: &str,
+        change: impl FnOnce(&mut SharedDesktop),
+    ) -> DocumentMutation {
+        let heads = self.doc.get_heads();
+        let mut layout = room_layout::read(&self.doc, None).unwrap();
+        change(&mut layout);
+        room_layout::write(
+            &mut self.doc,
+            &layout,
+            namespace_of_device(device),
+            Some(device),
+        )
+        .unwrap();
+        DocumentMutation::Incremental(self.doc.save_after(&heads))
+    }
+}
+
+/// Windows on the room's layout, in order.
+fn windows(guard: &LayoutGuard) -> Vec<u64> {
+    room_layout::read(&guard.doc, None)
+        .unwrap()
+        .tree
+        .workspaces
+        .into_iter()
+        .flat_map(|workspace| workspace.strips)
+        .flat_map(|strip| strip.window_groups)
+        .flat_map(|group| group.tabs)
+        .map(|tab| tab.id)
         .collect()
 }
 
-/// A member's copy of the room's desktop record, as it was when made.
-struct Page(AutoCommit);
-
-impl Page {
-    fn of(guard: &DesktopGuard, actor: u8) -> Self {
-        Self(
-            guard
-                .doc
-                .clone()
-                .with_actor(automerge::ActorId::from(vec![actor; 16])),
-        )
-    }
-
-    /// Write `desktop` as one change: what the room gets, incrementally.
-    fn write(&mut self, desktop: &SharedDesktop) -> DocumentMutation {
-        let heads = self.0.get_heads();
-        shared_record::write(&mut self.0, desktop).unwrap();
-        self.0.commit();
-        DocumentMutation::Incremental(self.0.save_after(&heads))
-    }
+fn tab_of(device: &str, n: u64) -> TabId {
+    compose_id(namespace_of_device(device), n + 20)
 }
 
-/// A room whose desktop holds Ada's window 1 and Ben's window 2.
-fn room() -> DesktopGuard {
-    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(vec![0; 16]));
-    shared_record::write(&mut doc, &desktop(&[(1, 100, ADA), (2, 200, BEN)])).unwrap();
-    doc.commit();
-    DesktopGuard::new(doc)
-}
-
-/// Only the room's moderator may act on what someone else made.
+/// Only what `writer` may moderate is allowed.
 fn moderates(writer: &'static str) -> impl Fn(&Touched) -> bool {
     move |_| writer == MOD
 }
 
+fn close_request(device: &str, tab: TabId) -> LayoutRequest {
+    let strip = StripId(compose_id(namespace_of_device(device), 1));
+    let group = compose_id(namespace_of_device(device), 11);
+    let command = BoundCommand {
+        source: CommandSource {
+            room: ROOM.into(),
+            heads: Vec::new(),
+        },
+        command: DesktopCommand::CloseTab {
+            location: TabLocation {
+                strip: strip.raw(),
+                group,
+                tab,
+            },
+        },
+    };
+    let command = serde_json::to_vec(&command).unwrap();
+    LayoutRequest {
+        id: LayoutRequest::id("ada", namespace_of_device(device), 10, &command),
+        from: "ada".into(),
+        to_salt: namespace_of_device(device),
+        at: 10,
+        command,
+    }
+}
+
+/// A device writes the window it opened: admitted, and only that entry
+/// changes.
 #[test]
-fn a_guest_closes_their_own_window_but_not_someone_elses() {
+fn a_device_writes_its_own_window() {
     let mut guard = room();
-    let closes_bens = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA)]));
-    let refused = guard
-        .decide(&closes_bens, ADA, None, &moderates(ADA))
-        .unwrap_err();
-    assert!(matches!(
-        &refused,
-        DesktopRefusal::NotTheirs { act, .. }
-            if act.id == 2 && act.act == Act::Close && act.owner.as_deref() == Some(BEN)
-    ));
+    let mut page = Page::of(&guard);
+    let write = page.publish(ADA, |layout| {
+        layout.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title = "renamed".into();
+    });
+    guard.decide(&write, ADA, "ada", &moderates(ADA)).unwrap();
+    let read = room_layout::read(&guard.doc, None).unwrap();
+    assert!(
+        read.authors.contains_key(&tab_of(BEN, 1)),
+        "Ben's window is untouched"
+    );
     assert_eq!(
-        windows(&guard),
-        vec![1, 2],
-        "refused, the desktop is as it was"
-    );
-
-    let closes_hers = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN)]));
-    guard
-        .decide(&closes_hers, ADA, None, &moderates(ADA))
-        .unwrap();
-    assert_eq!(windows(&guard), vec![2]);
-}
-
-#[test]
-fn the_owner_closes_their_window_and_a_moderator_closes_anyones() {
-    let mut guard = room();
-    let closes_his = Page::of(&guard, 2).write(&desktop(&[(1, 100, ADA)]));
-    guard
-        .decide(&closes_his, BEN, None, &moderates(BEN))
-        .unwrap();
-    let closes_adas = Page::of(&guard, 3).write(&desktop(&[]));
-    guard
-        .decide(&closes_adas, MOD, None, &moderates(MOD))
-        .unwrap();
-    assert!(windows(&guard).is_empty());
-}
-
-#[test]
-fn moving_someone_elses_window_is_refused() {
-    let mut guard = room();
-    // Ben's window put in front of Ada's: his order among others' is the
-    // same, so this reads as Ada moving hers, and is admitted.
-    let swapped = Page::of(&guard, 1).write(&desktop(&[(2, 200, BEN), (1, 100, ADA)]));
-    guard.decide(&swapped, ADA, None, &moderates(ADA)).unwrap();
-    // Ben's window into Ada's group is a move.
-    let moved = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 100, BEN)]));
-    let refused = guard
-        .decide(&moved, ADA, None, &moderates(ADA))
-        .unwrap_err();
-    assert!(
-        matches!(&refused, DesktopRefusal::NotTheirs { act, .. } if act.id == 2 && act.act == Act::Move)
+        room_layout::read(&guard.doc, None).unwrap().tree.workspaces[0].strips[0].window_groups[0]
+            .tabs[0]
+            .title,
+        "renamed"
     );
 }
 
+/// Nobody writes, moves or closes a window another device opened, however
+/// the room ranks them: that is what requests are for.
 #[test]
-fn a_page_writing_over_an_old_desktop_is_judged_by_what_it_changed() {
+fn a_device_may_not_write_anothers_window() {
     let mut guard = room();
-    let mut ada = Page::of(&guard, 1);
-    // Ben opens window 3 while Ada's page is behind.
-    let opens = Page::of(&guard, 2).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
-    guard.decide(&opens, BEN, None, &moderates(BEN)).unwrap();
-    // Ada, not having seen it, closes her own: admitted, and Ben's new
-    // window is untouched, since her change wrote only her entries.
-    let closes = ada.write(&desktop(&[(2, 200, BEN)]));
-    guard.decide(&closes, ADA, None, &moderates(ADA)).unwrap();
-    assert_eq!(windows(&guard), vec![2, 3]);
-}
-
-#[test]
-fn claiming_someone_elses_window_is_refused() {
-    let mut guard = room();
-    let claims = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, ADA)]));
-    let refused = guard
-        .decide(&claims, ADA, None, &moderates(ADA))
+    let mut closing = Page::of(&guard);
+    let write = closing.publish(ADA, |layout| {
+        // Ada's page drops Ben's window from its own copy.
+        layout.tree.workspaces[0]
+            .strips
+            .retain(|strip| strip.id != StripId(compose_id(namespace_of_device(BEN), 1)));
+    });
+    let refusal = guard
+        .decide(&write, ADA, "ada", &moderates(ADA))
         .unwrap_err();
     assert!(
-        matches!(&refused, DesktopRefusal::NotTheirs { act, .. } if act.id == 2 && act.act == Act::Attribute)
+        matches!(&refusal, LayoutRefusal::NotTheirs { entry, .. } if *entry == tab_of(BEN, 1)),
+        "refused on Ben's window: {refusal}"
+    );
+    assert!(
+        windows(&guard).contains(&tab_of(BEN, 1)),
+        "refused, the layout is as it was"
+    );
+
+    let mut moving = Page::of(&guard);
+    let write = moving.publish(MOD, |layout| {
+        layout.tree.workspaces[0].strips[0].window_groups[0].tabs[0].title = "moderated".into();
+    });
+    assert!(
+        guard.decide(&write, MOD, "mod", &moderates(MOD)).is_err(),
+        "even a moderator asks instead of writing"
+    );
+}
+
+/// A request is retained: one for a moderator's standing is taken in, one
+/// for a window its asker may not rearrange is refused, and one asked in
+/// someone else's name is refused too.
+#[test]
+fn a_request_is_judged_where_it_enters() {
+    let mut guard = room();
+    let ask = close_request(BEN, tab_of(BEN, 1));
+    let mut page = Page::of(&guard);
+    let heads = page.doc.get_heads();
+    room_layout::request(&mut page.doc, &ask).unwrap();
+    let write = DocumentMutation::Incremental(page.doc.save_after(&heads));
+    assert!(
+        matches!(
+            guard.decide(&write, ADA, "ada", &moderates(ADA)),
+            Err(LayoutRefusal::Request { .. })
+        ),
+        "an editor may not close someone else's window"
+    );
+
+    // The same request from a moderator, addressed to Ben's device, is kept.
+    let mut moderator = Page::of(&guard);
+    let heads = moderator.doc.get_heads();
+    let mut allowed = close_request(BEN, tab_of(BEN, 1));
+    allowed.from = "mod".into();
+    allowed.id = LayoutRequest::id("mod", allowed.to_salt, allowed.at, &allowed.command);
+    room_layout::request(&mut moderator.doc, &allowed).unwrap();
+    let write = DocumentMutation::Incremental(moderator.doc.save_after(&heads));
+    guard.decide(&write, MOD, "mod", &moderates(MOD)).unwrap();
+    assert_eq!(
+        room_layout::pending(&guard.doc, namespace_of_device(BEN)).len(),
+        1,
+        "kept for Ben's device to apply"
+    );
+
+    // Asked in Ada's name but written by Ben's device: refused.
+    let mut forged = Page::of(&guard);
+    let heads = forged.doc.get_heads();
+    room_layout::request(&mut forged.doc, &ask).unwrap();
+    let write = DocumentMutation::Incremental(forged.doc.save_after(&heads));
+    assert!(matches!(
+        guard.decide(&write, BEN, "ben", &moderates(BEN)),
+        Err(LayoutRefusal::Request { .. })
+    ));
+}
+
+/// An owner records the requests it applied in its own namespace; marking
+/// another device's request is refused.
+#[test]
+fn only_the_owner_records_what_it_applied() {
+    let mut guard = room();
+    let ask = close_request(BEN, tab_of(BEN, 1));
+    let mut ben = Page::of(&guard);
+    let heads = ben.doc.get_heads();
+    let mut applied = room_layout::read(&ben.doc, None).unwrap();
+    applied.tree.workspaces[0]
+        .strips
+        .retain(|strip| strip.id != StripId(compose_id(namespace_of_device(BEN), 1)));
+    room_layout::write(&mut ben.doc, &applied, namespace_of_device(BEN), Some(BEN)).unwrap();
+    room_layout::claim(&mut ben.doc, namespace_of_device(BEN), &ask).unwrap();
+    let write = DocumentMutation::Incremental(ben.doc.save_after(&heads));
+    guard.decide(&write, BEN, "ben", &moderates(BEN)).unwrap();
+    assert!(
+        room_layout::pending(&guard.doc, namespace_of_device(BEN)).is_empty(),
+        "the request is recorded as applied"
+    );
+
+    // Ada's device claims it too.
+    let mut ada = Page::of(&guard);
+    let heads = ada.doc.get_heads();
+    room_layout::claim(&mut ada.doc, namespace_of_device(BEN), &ask).unwrap();
+    let write = DocumentMutation::Incremental(ada.doc.save_after(&heads));
+    assert!(
+        matches!(
+            guard.decide(&write, ADA, "ada", &moderates(ADA)),
+            Err(LayoutRefusal::NotItsMark { .. })
+        ),
+        "a mark in another device's namespace is refused"
     );
 }
 
@@ -188,21 +299,8 @@ fn a_write_that_is_not_automerge_changes_nothing() {
     let _ = guard.decide(
         &DocumentMutation::Incremental(vec![1, 2, 3]),
         ADA,
-        None,
+        "ada",
         &moderates(ADA),
     );
-    assert_eq!(windows(&guard), vec![1, 2]);
-}
-
-/// Ben has left the room: his window holds nobody, and Ada, who writes
-/// there, may close it without moderating.
-#[test]
-fn a_window_of_someone_who_left_the_room_is_anyones_to_close() {
-    let mut guard = room();
-    let members: std::collections::BTreeSet<String> = [ADA.to_owned()].into();
-    let closes_bens = Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA)]));
-    guard
-        .decide(&closes_bens, ADA, Some(&members), &moderates(ADA))
-        .unwrap();
-    assert_eq!(windows(&guard), vec![1]);
+    assert_eq!(windows(&guard), vec![tab_of(ADA, 1), tab_of(BEN, 1)]);
 }

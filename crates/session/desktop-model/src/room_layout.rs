@@ -38,7 +38,7 @@ use crate::projection::{
 /// The workspace a room document describes: the room it declares, its name
 /// and its windows. `None` when the document describes no room.
 #[must_use]
-pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
+pub fn read(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Option<SharedDesktop> {
     let room = declared_room(doc, heads)?;
     let name = text(doc, heads, &ROOT, ROOM_NAME_KEY).unwrap_or_default();
     let workspace =
@@ -49,8 +49,6 @@ pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesk
         workspaces: vec![workspace],
         ..crate::tree::DesktopTree::default()
     };
-    // The fold every host uses: peers' entries are taken from the document,
-    // ours (there are none in a fresh tree) stay.
     if let Some(workspace) = workspace_tree.workspaces.first_mut() {
         workspace.strips = strips
             .into_iter()
@@ -71,7 +69,7 @@ pub fn read(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<SharedDesk
 /// when it names no room: a document of an older shape, which is refused and
 /// fetched again rather than read as an empty layout.
 #[must_use]
-pub fn declared_room(doc: &AutoCommit, heads: Option<&[ChangeHash]>) -> Option<RoomId> {
+pub fn declared_room(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Option<RoomId> {
     RoomId::parse(&text(doc, heads, &ROOT, ROOM_ID_KEY)?)
 }
 
@@ -196,7 +194,7 @@ pub fn request(
 
 /// Every request the room retains, in the order it accepted them.
 #[must_use]
-pub fn requests(doc: &AutoCommit) -> Vec<LayoutRequest> {
+pub fn requests(doc: &impl ReadDoc) -> Vec<LayoutRequest> {
     let Some((_, requests)) = doc.get(&ROOT, ROOM_LAYOUT_REQUESTS_KEY).ok().flatten() else {
         return Vec::new();
     };
@@ -218,7 +216,7 @@ pub fn requests(doc: &AutoCommit) -> Vec<LayoutRequest> {
 /// and not yet recorded as applied, whether a colleague or another of the
 /// owner's own devices asked.
 #[must_use]
-pub fn pending(doc: &AutoCommit, salt: u16) -> Vec<LayoutRequest> {
+pub fn pending(doc: &impl ReadDoc, salt: u16) -> Vec<LayoutRequest> {
     if salt == 0 {
         return Vec::new();
     }
@@ -231,16 +229,16 @@ pub fn pending(doc: &AutoCommit, salt: u16) -> Vec<LayoutRequest> {
 
 /// The requests `salt`'s owner recorded as applied, by id.
 #[must_use]
-pub fn applied(doc: &AutoCommit, salt: u16) -> BTreeSet<String> {
+pub fn applied(doc: &impl ReadDoc, salt: u16) -> BTreeSet<String> {
     let Some((_, marks)) = doc.get(&ROOT, ROOM_LAYOUT_APPLIED_KEY).ok().flatten() else {
         return BTreeSet::new();
     };
+    let prefix = format!("{salt:04x}/");
     let mut out = BTreeSet::new();
     for key in doc.keys(&marks) {
-        let Some(rest) = key.strip_prefix(&format!("{salt:04x}/")) else {
-            continue;
-        };
-        out.insert(rest.to_owned());
+        if let Some(id) = key.strip_prefix(prefix.as_str()) {
+            out.insert(id.to_owned());
+        }
     }
     out
 }

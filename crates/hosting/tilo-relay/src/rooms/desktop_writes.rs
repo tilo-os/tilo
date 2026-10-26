@@ -1,19 +1,20 @@
-//! Members' writes to a governed room's shared desktop, decided before the
+//! Members' writes to a governed room's layout document, decided before the
 //! relay keeps them.
 //!
-//! Whoever may edit the room may write its desktop. What a write does to a
-//! strip or window someone else made (closing, moving, renaming it) is
-//! moderation, decided on that item's `moderation` node with the writer's
-//! own grants ([`crate::desktop_guard`]). Every door a member's write enters
-//! by asks [`Rooms::decide_desktop_write`] first; a refused write is neither
-//! kept nor forwarded, like any change the room does not grant.
+//! Whoever may edit the room may write the layout entries minted in their
+//! own device's namespace. Rearranging a window another device opened is a
+//! request the room retains, judged on that item's `moderation` node with the
+//! asker's own grants ([`crate::desktop_guard`]); nobody writes into another
+//! device's entries. Every door a member's write enters by asks
+//! [`Rooms::decide_desktop_write`] first; a refused write is neither kept
+//! nor forwarded, like any change the room does not grant.
 
 use collab_types::DocumentMutation;
 use tilo_action_policy::ActionKind;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, act_node};
 
 use super::{GovernedRoom, Rooms, SystemTime};
-use crate::desktop_guard::DesktopGuard;
+use crate::desktop_guard::LayoutGuard;
 
 /// Whether `(app, record)` is a room's shared desktop.
 pub(crate) fn is_desktop(app: &str, record: &str) -> bool {
@@ -33,14 +34,14 @@ pub(crate) fn writes_desktop(body: &[u8]) -> bool {
 impl GovernedRoom {
     /// The shared desktop as the room's writes are decided against, started
     /// from the governor's copy the first time a write needs it.
-    async fn desktop_guard(&mut self) -> Result<&mut DesktopGuard, String> {
+    async fn desktop_guard(&mut self) -> Result<&mut LayoutGuard, String> {
         if self.desktop.is_none() {
             let held = self.held_desktop().await?;
             let doc = match held {
                 Some(bytes) => automerge::AutoCommit::load(&bytes).map_err(|e| e.to_string())?,
                 None => automerge::AutoCommit::new(),
             };
-            self.desktop = Some(DesktopGuard::new(doc));
+            self.desktop = Some(LayoutGuard::new(doc));
         }
         self.desktop
             .as_mut()
@@ -183,16 +184,13 @@ impl Rooms {
             }
         };
         let room_id = governed.room().to_owned();
-        let members = governed
-            .peer()
-            .admitted_room()
-            .and_then(tilo_desktop_model::projection::room_members);
         let allows = |act: &tilo_desktop_model::ownership::Touched| {
             member.allows(&act_node(&room_id, act), ActionKind::Undoable, now)
         };
+        let writer = hex::encode(author);
         let guard = governed.desktop_guard().await?;
         guard
-            .decide(&mutation, &member.person, members.as_ref(), &allows)
+            .decide(&mutation, &writer, &member.person, &allows)
             .map_err(|refusal| refusal.to_string())
     }
 }

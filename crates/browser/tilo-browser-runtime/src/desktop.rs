@@ -1477,19 +1477,12 @@ fn app_tab(id: TabId, app: &str, title: &str) -> Tab {
     }
 }
 
-/// This device's share of the desktop id space, so ids it mints never
-/// collide with another device's once trees merge, and never fall in the
-/// reserved namespace ([`tilo_desktop_model::ids::RESERVED_SALT`]) or in
-/// salt `0`, which has none.
+/// This device's share of the desktop id space, derived the way the relay and
+/// every other host derive the namespace a device's layout entries live in
+/// ([`tilo_desktop_model::ids::namespace_of_device`]): ids it mints never
+/// collide with another device's, and the room admits them as its own.
 fn peer_salt(device: &str) -> u16 {
-    // FNV-1a folded to 16 bits: stable across builds and platforms.
-    let mut hash: u32 = 0x811c_9dc5;
-    for byte in device.bytes() {
-        hash ^= u32::from(byte);
-        hash = hash.wrapping_mul(0x0100_0193);
-    }
-    let folded = (hash >> 16) ^ (hash & 0xffff);
-    tilo_desktop_model::ids::device_salt(u16::try_from(folded).unwrap_or(u16::MAX))
+    tilo_desktop_model::ids::namespace_of_device(device)
 }
 
 /// Where a room's desktop lives in the profile. Changing it orphans stored
@@ -1528,6 +1521,12 @@ pub(crate) struct Persistence {
     notifications_key: StorageKey,
     saved_notifications_revision: Cell<u64>,
     author: String,
+    /// The workspace this room's layout describes
+    /// ([`tilo_desktop_model::WorkspaceId::of_room`]): a page holds one
+    /// workspace per room, and this document carries only this one.
+    workspace: u64,
+    /// This device's layout namespace, which its entries are minted in.
+    salt: u16,
 }
 
 impl Persistence {
@@ -1573,15 +1572,26 @@ impl Persistence {
             &self.unbound.borrow(),
             &self.authors.borrow(),
         );
-        let value = serde_json::to_value(&stored).map_err(|error| error.to_string())?;
-        let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
+        let bytes = serde_json::to_vec(&stored).map_err(|error| error.to_string())?;
         self.store
             .write(&self.key, WriteOp::Replace(bytes), None)
             .map_err(|error| error.to_string())?;
+        let Some(value) = layout_value(
+            handle,
+            &self.records.borrow(),
+            &self.unbound.borrow(),
+            &self.authors.borrow(),
+            self.workspace,
+        ) else {
+            self.saved_revision.set(revision);
+            self.records_changed.set(false);
+            return Ok(());
+        };
         let mut history = self.history.borrow_mut();
         if tilo_desktop_surface::history_log::record(
             &mut history,
             &value,
+            self.salt,
             &self.author,
             ui::time::unix_now_i64(),
         ) {
@@ -1632,7 +1642,7 @@ fn stored_desktop(
             )
             .collect();
         records.compact_sort();
-        let authors = authors
+        let authors = held_authors
             .iter()
             .filter(|(id, _)| strips.contains(*id) || live.contains(*id))
             .map(|(id, author)| (*id, author.clone()))
@@ -1645,16 +1655,151 @@ fn stored_desktop(
     })
 }
 
-/// The desktop as peers share it: the tree and each tab's record.
-pub(crate) fn shared_value(handle: &DesktopHandle, shared: &Shared) -> serde_json::Value {
-    let mut desktop = stored_desktop(
+/// The layout of `workspace` alone as the room's document carries it: its
+/// strips, the records its windows show and who made them, as one
+/// [`StoredDesktop`] value. A page holds one workspace per room, so what it
+/// publishes into a room's document is that workspace and nothing of
+/// another room's windows.
+pub(crate) fn room_layout_value(
+    handle: &DesktopHandle,
+    shared: &Shared,
+    workspace: u64,
+) -> Option<serde_json::Value> {
+    layout_value(
         handle,
         &shared.records.borrow(),
         &shared.unbound.borrow(),
         &shared.authors.borrow(),
-    );
-    desktop.tree = handle.shared_tree();
-    serde_json::to_value(desktop).unwrap_or(serde_json::Value::Null)
+        workspace,
+    )
+}
+
+/// [`room_layout_value`] over the bindings a desktop keeps, whether it is
+/// mounted or being saved.
+fn layout_value(
+    handle: &DesktopHandle,
+    bindings: &HashMap<TabId, RecordCheckout>,
+    unbound: &HashMap<TabId, String>,
+    held_authors: &BTreeMap<u64, String>,
+    workspace: u64,
+) -> Option<serde_json::Value> {
+    let mut desktop = handle.read(|tree| {
+        let held = tree
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id.0 == workspace)?
+            .clone();
+        let mut live = std::collections::HashSet::new();
+        let mut strips = std::collections::HashSet::new();
+        for strip in &held.strips {
+            strips.insert(strip.id.0);
+            for group in &strip.window_groups {
+                live.extend(group.tabs.iter().map(|tab| tab.id));
+            }
+        }
+        let mut records: Vec<(TabId, String)> = bindings
+            .iter()
+            .filter(|(tab, _)| live.contains(tab))
+            .map(|(tab, checkout)| (*tab, checkout.id.as_str().to_owned()))
+            .chain(
+                unbound
+                    .iter()
+                    .filter(|(tab, _)| live.contains(tab) && !bindings.contains_key(tab))
+                    .map(|(tab, record)| (*tab, record.clone())),
+            )
+            .collect();
+        records.compact_sort();
+        let authors = held_authors
+            .iter()
+            .filter(|(id, _)| strips.contains(*id) || live.contains(*id))
+            .map(|(id, author)| (*id, author.clone()))
+            .collect();
+        Some(StoredDesktop {
+            tree: DesktopTree {
+                active: held.id,
+                workspaces: vec![held],
+                ..DesktopTree::default()
+            },
+            records,
+            authors,
+        })
+    })?;
+    // What only this device decides for itself never crosses.
+    desktop.tree = project_shared(desktop.tree);
+    serde_json::to_value(desktop).ok()
+}
+
+/// `tree` with this device's stream bindings and presentation dropped, as a
+/// room carries a layout.
+fn project_shared(mut tree: DesktopTree) -> DesktopTree {
+    let local: Vec<_> = tree
+        .workspaces
+        .iter()
+        .flat_map(|w| &w.strips)
+        .flat_map(|s| &s.window_groups)
+        .flat_map(|g| &g.tabs)
+        .filter(|tab| matches!(tab.tile, TileContent::PeerWindow { .. }))
+        .map(|tab| tab.id)
+        .collect();
+    for tab in local {
+        tree.remove_tab(tab);
+    }
+    tree.active_strip.clear();
+    tree.active_group.clear();
+    tree.outputs = tilo_desktop_model::OutputPartition::default();
+    for group in tree
+        .workspaces
+        .iter_mut()
+        .flat_map(|w| &mut w.strips)
+        .flat_map(|s| &mut s.window_groups)
+    {
+        group.active_tab = group.tabs.first().map_or(0, |t| t.id);
+        group.width = tilo_desktop_model::WindowWidth::Normal;
+        group.maximized = false;
+    }
+    tree
+}
+
+/// Apply the requests this device's own windows carry, once each: the room
+/// retained them while this device was away (another person asked, or
+/// another of this person's devices), and its owner applies them here as
+/// the same change that records it did.
+pub(crate) fn apply_requests(
+    handle: &DesktopHandle,
+    shared: &Shared,
+    doc: &mut AutoCommit,
+    salt: u16,
+    workspace: u64,
+) {
+    for request in tilo_desktop_model::room_layout::pending(doc, salt) {
+        let Ok(bound) =
+            serde_json::from_slice::<tilo_desktop_model::commands::BoundCommand>(&request.command)
+        else {
+            // A request this build cannot read is never applied, and never
+            // claimed either: another build of this device may read it.
+            continue;
+        };
+        // Applied best effort: a window somebody already closed by hand, or
+        // one this device no longer holds, leaves nothing to do, and the
+        // request is still recorded so it is never applied twice.
+        let mut tree = handle.read(Clone::clone);
+        if let Some(target) = tree
+            .workspaces
+            .iter_mut()
+            .find(|candidate| candidate.id.0 == workspace)
+            && tilo_desktop_model::commands::apply_command(
+                target,
+                &bound.command,
+                &mut || Err("a request opens nothing here".into()),
+                &mut |_, _| Err("a request opens nothing here".into()),
+            )
+            .is_ok()
+        {
+            handle.replace_tree(tree);
+        }
+        let _ = tilo_desktop_model::room_layout::claim(doc, salt, &request);
+    }
+    shared.wake();
 }
 
 /// Take a desktop a peer shared: bind its tabs' records, then hand the tree
@@ -1689,7 +1834,7 @@ pub(crate) fn apply_shared(
         }
     }
     let local_tabs: Vec<_> = shared.peer_windows.borrow().keys().copied().collect();
-    handle.replace_shared_tree(desktop.tree, &local_tabs);
+    handle.apply_room_layout(desktop.tree, &local_tabs);
     shared.wake();
     Ok(())
 }
@@ -1728,6 +1873,51 @@ pub(crate) fn return_to(
         }
     }
     apply_shared(handle, shared, value)
+}
+
+/// The workspace a room's layout describes: the room's own id, the same on
+/// every device ([`tilo_desktop_model::WorkspaceId::of_room`]).
+fn workspace_of(room: &str) -> u64 {
+    tilo_desktop_model::RoomId::parse(room)
+        .map_or(0, |room| tilo_desktop_model::WorkspaceId::of_room(room).0)
+}
+
+/// Make the desktop's workspace the joined room's: the workspace a room is
+/// ([`tilo_desktop_model::WorkspaceId::of_room`], its room id), so every
+/// device of a room names the one workspace alike and a peer's layout lands
+/// in it instead of beside it.
+///
+/// A desktop stored before kept a workspace of its own with its own room: its
+/// strips, windows and records move into the room's workspace, so nothing
+/// that was open is lost, and the desktop's focus follows when that was the
+/// workspace in front.
+fn bind_room_workspace(tree: &mut DesktopTree, room: &str) {
+    let Some(room_id) = tilo_desktop_model::RoomId::parse(room) else {
+        return;
+    };
+    if tree.workspaces.iter().any(|held| held.room() == room_id) {
+        return;
+    }
+    let wanted = tilo_desktop_model::WorkspaceId::of_room(room_id);
+    let active = tree.active;
+    let index = tree
+        .workspaces
+        .iter()
+        .position(|held| held.id == active)
+        .unwrap_or(0);
+    let Some(previous) = tree.workspaces.get_mut(index) else {
+        return;
+    };
+    let mut workspace =
+        tilo_desktop_model::Workspace::in_room(wanted, room_id, previous.name.clone());
+    workspace.strips = std::mem::take(&mut previous.strips);
+    workspace.shortcuts = std::mem::take(&mut previous.shortcuts);
+    workspace.presets = std::mem::take(&mut previous.presets);
+    let front = previous.id == active;
+    *previous = workspace;
+    if front {
+        tree.active = wanted;
+    }
 }
 
 fn load_stored(store: &dyn DurableStore, key: &StorageKey) -> Option<StoredDesktop> {
@@ -1815,6 +2005,7 @@ pub(crate) fn mount(
 ) -> Result<(DesktopSurface, DesktopHandle, Shared, Persistence), String> {
     let key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
+    let workspace_id = workspace_of(&inputs.room);
     let mut shared = Shared::default();
     shared.room_actions.peer = inputs.peer;
     if inputs.peer.is_some() {
@@ -1823,11 +2014,12 @@ pub(crate) fn mount(
     }
     shared.linked = linked_accounts(&shared, &notify);
     take_up_feedback(&shared, &mut inputs, &store, &notify);
-    let tree = if let Some(stored) = load_stored(store.as_ref(), &key) {
+    let tree = if let Some(mut stored) = load_stored(store.as_ref(), &key) {
         let (bound, unbound) = stored_records(&stored);
         *shared.records.borrow_mut() = bound;
         *shared.unbound.borrow_mut() = unbound;
         *shared.authors.borrow_mut() = stored.authors;
+        bind_room_workspace(&mut stored.tree, &inputs.room);
         stored.tree
     } else {
         let definitions: Vec<(&str, &'static str)> = match apps {
@@ -1852,7 +2044,9 @@ pub(crate) fn mount(
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .unwrap_or("Workspace");
-        tilo_desktop_surface::seed_tree(&mut minter, name, tabs)
+        let mut tree = tilo_desktop_surface::seed_tree(&mut minter, name, tabs);
+        bind_room_workspace(&mut tree, &inputs.room);
+        tree
     };
     let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "history");
     let history = store
@@ -1895,6 +2089,8 @@ pub(crate) fn mount(
         notifications_key,
         saved_notifications_revision,
         author: inputs.author.clone(),
+        workspace: workspace_id,
+        salt,
     };
     let tiles = Tiles {
         inputs,

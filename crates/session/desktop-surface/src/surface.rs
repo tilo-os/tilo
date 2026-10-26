@@ -391,6 +391,42 @@ impl DesktopHandle {
         self.note_arrivals(opened, ui::time::now());
     }
 
+    /// Apply one room's layout over the workspace it belongs to, leaving
+    /// every other workspace this desktop holds exactly as it is, and this
+    /// device's stream bindings and focus alone outside the room's
+    /// workspace. A page holds several rooms' workspaces at once; the room
+    /// it hears from may only change its own.
+    pub fn apply_room_layout(&self, incoming: DesktopTree, local_tabs: &[TabId]) {
+        let (tree, opened) = self.read(|local| {
+            let Some(room) = incoming.workspaces.first() else {
+                return (local.clone(), Vec::new());
+            };
+            let id = room.id;
+            let base = DesktopTree {
+                workspaces: local
+                    .workspaces
+                    .iter()
+                    .filter(|workspace| workspace.id == id)
+                    .cloned()
+                    .collect(),
+                active: id,
+                ..DesktopTree::default()
+            };
+            let merged = crate::shared_tree::receive(&base, incoming.clone(), local_tabs);
+            let mut out = local.clone();
+            if let Some(workspace) = merged.workspaces.into_iter().next() {
+                match out.workspaces.iter_mut().find(|held| held.id == id) {
+                    Some(held) => *held = workspace,
+                    None => out.workspaces.push(workspace),
+                }
+            }
+            let opened = arrivals::opened_elsewhere(local, &out, local_tabs);
+            (out, opened)
+        });
+        self.replace_tree(tree);
+        self.note_arrivals(opened, ui::time::now());
+    }
+
     /// Ask the [`TileSource`] for `tab`'s content again on a coming update
     /// pass, as when the tab was first shown: for a host whose first answer
     /// was a notice (its record had not arrived). The host schedules a frame.
