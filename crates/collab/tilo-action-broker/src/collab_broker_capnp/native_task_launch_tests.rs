@@ -130,6 +130,35 @@ fn permission(f: &Fixture, allow: bool) {
     );
 }
 
+/// Answer the issue's work for both reading and editing Writer: a run is
+/// answered for the person's decision to start it and by what the issue says
+/// it may do, so grants alone leave it unanswered.
+fn answer_issue_for_writer(f: &Fixture) {
+    answer_issue_kind(f, tilo_action_policy::ActionKind::Read, Answer::Allow);
+    answer_issue_kind(f, tilo_action_policy::ActionKind::Undoable, Answer::Allow);
+}
+
+/// Answer the issue's work for one kind of action. The issue's answer
+/// decides for a run beside the agent's own grants, so a run holds the lesser
+/// of the two.
+fn answer_issue_kind(
+    f: &Fixture,
+    kind: tilo_action_policy::ActionKind,
+    answer: tilo_action_policy::Answer,
+) {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    put_grant(
+        f,
+        agent_answers::answer_grant(
+            &room().to_string(),
+            Subject::Task(f.task.clone()),
+            (&AnswerScope::app(WRITER), kind),
+            answer,
+            Subject::person(hex::encode(f.native.certificate.user_public_key)),
+        ),
+    );
+}
+
 fn once_permission(f: &Fixture) {
     put_grant(
         f,
@@ -194,6 +223,29 @@ async fn invoke_provider_id(
     ))
 }
 
+/// The action a running application publishes for being opened, as the
+/// broker describes it when it offers an installed app.
+fn open_descriptor() -> tilo_actions::ActionDescriptor {
+    tilo_actions::ActionDescriptor {
+        address: tilo_actions::ActionAddress::new(format!("app.{WRITER}"), "open"),
+        semantic_identity: None,
+        resource_kind: "applications.app".into(),
+        resource_label: "Writer".into(),
+        action_label: "Open Writer".into(),
+        description: None,
+        locus: tilo_actions::ExecutionLocus::default(),
+        kind: tilo_actions::OperationKind::Effect,
+        contract: tilo_actions::ActionContract {
+            execution: tilo_actions::ExecutionMode::Background { cancellable: false },
+            result: tilo_actions::ResultSpec::Job,
+            ..tilo_actions::ActionContract::default()
+        },
+        input: tilo_actions::InputSpec::None,
+        params: Vec::new(),
+        view: None,
+    }
+}
+
 struct Writer {
     app: HeadlessApp<WordProcessorApp>,
     channel: channel_handle::Client,
@@ -203,7 +255,10 @@ struct Writer {
 impl Writer {
     async fn mount(f: &Fixture, changed: bool) -> Self {
         let mut app = HeadlessApp::<WordProcessorApp>::new().unwrap();
-        let descriptors = app.actions().unwrap();
+        let mut descriptors = app.actions().unwrap();
+        // A live application also offers the activation that opened it, so a
+        // waiting activation finds the instance it asked for.
+        descriptors.push(open_descriptor());
         let peer = 210;
         let channel = f.app_channel(peer, WRITER, false);
         let mut publish = channel.publish_actions_request();
@@ -301,6 +356,7 @@ async fn native_task_activation_refuses_missing_host_signer_before_launching() {
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
+            answer_issue_for_writer(&f);
             let paths =
                 tilo_user_identity::IdentityPaths::under(f.directory.path().join("identity"));
             std::fs::remove_file(paths.device_privkey).unwrap();
@@ -335,6 +391,7 @@ async fn a_cold_package_activates_before_fresh_resource_actions_move_the_writer_
         f.approve();
         let agent = f.channel(100, true);
         let run = delivered(&agent).await;
+        answer_issue_for_writer(&f);
         let workspace_provider = tilo_actions::remote::workspace_provider(&room().to_string());
         let app_resource = format!("app.{WRITER}");
         let open = invoke_provider(&agent, &run, &workspace_provider,
@@ -482,6 +539,7 @@ async fn retained_actions_activate_the_host_but_changed_fresh_contracts_have_no_
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
+            answer_issue_for_writer(&f);
             let pending = invoke_provider(&agent, &run, &provider, Document::KIND, "append-paragraph",
                 serde_json::json!({"text":"Retained request visible only under its fresh contract"}));
             tokio::pin!(pending);
@@ -514,6 +572,7 @@ async fn a_revoked_cold_scope_is_refused_before_any_host_activation() {
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
+            answer_issue_for_writer(&f);
             let projected = WorkspaceAuthority::snapshot(&*f.native).unwrap();
             *f.native.cached_projection.lock().unwrap() = Some(projected);
             permission(&f, false);
@@ -547,6 +606,7 @@ async fn stop_and_revocation_while_a_cold_app_is_waiting_deliver_no_action() {
                 f.approve();
                 let agent = f.channel(100, true);
                 let run = delivered(&agent).await;
+                answer_issue_for_writer(&f);
                 let provider = tilo_actions::remote::application_action_target(
                     &room().to_string(),
                     WRITER,
@@ -613,6 +673,7 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
+            answer_issue_for_writer(&f);
             let provider = tilo_actions::remote::workspace_provider(&room().to_string());
             let resource = format!("app.{WRITER}");
             let issue_run = f.native.runs.lock().unwrap()[0].clone();
@@ -685,6 +746,9 @@ async fn once_activation_is_spent_and_completed_retry_after_close_never_relaunch
                     )),
                 ),
             );
+            // The issue's answer stands before the one-use grant is given, so
+            // the grant is the only new authority this activation sees.
+            answer_issue_for_writer(&f);
             once_permission(&f);
             f.approve();
             let agent = f.channel(100, true);
@@ -707,19 +771,21 @@ async fn once_activation_is_spent_and_completed_retry_after_close_never_relaunch
                 answer = &mut open => panic!("activation answered before launch: {answer:?}"),
             }
             // A separate invocation cannot borrow the spent permission, even
-            // while the original activation is waiting for its publisher.
-            assert!(
-                invoke_provider(
-                    &agent,
-                    &run,
-                    &provider,
-                    &resource,
-                    "open",
-                    serde_json::json!({})
-                )
-                .await
-                .is_err()
-            );
+            // while the original activation is waiting for its publisher. The
+            // issue still lets the work edit Writer, so that grant is what
+            // stands between its own call and the person's one use.
+            permission(&f, false);
+            let refused = invoke_provider(
+                &agent,
+                &run,
+                &provider,
+                &resource,
+                "open",
+                serde_json::json!({}),
+            )
+            .await
+            .unwrap_err();
+            assert!(refused.to_string().contains("not allowed"));
             assert!(launches.try_recv().is_err());
             // Live authority is required even for a retained receipt. Restore it
             // without a one-use grant before observing the admitted invocation.
@@ -785,6 +851,7 @@ async fn a_terminal_activation_receipt_rechecks_the_authenticated_connection_cei
         f.approve();
         let agent = f.channel(100, true);
         let run = delivered(&agent).await;
+        answer_issue_for_writer(&f);
         let provider = tilo_actions::remote::workspace_provider(&room().to_string());
         let resource = format!("app.{WRITER}");
         let id = uuid::Uuid::new_v4();
@@ -842,6 +909,7 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
                 f.approve();
                 let agent = f.channel(100, true);
                 let run = delivered(&agent).await;
+                answer_issue_for_writer(&f);
                 let id = uuid::Uuid::new_v4();
                 let native = f.native.clone();
                 let state = f.state.clone();
@@ -965,6 +1033,7 @@ async fn activation_uses_the_current_workspace_after_custody() {
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
+            answer_issue_for_writer(&f);
             let id = uuid::Uuid::new_v4();
             let native = f.native.clone();
             super::super::super::native_task_launch::test_barrier::install(
@@ -1030,6 +1099,7 @@ async fn a_retained_action_that_asks_first_pauses_at_a_draft_before_launching() 
             f.approve();
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
+            answer_issue_for_writer(&f);
             let id = uuid::Uuid::new_v4();
             let arguments = serde_json::json!({"text":"Drafted while Writer was closed"});
             let waiting = invoke_provider_id(

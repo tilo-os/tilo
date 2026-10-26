@@ -1751,7 +1751,7 @@ impl CapnpBrokerState {
             }
             Ok(Reservation::Reserved) => {}
         }
-        let destination = match self.admit_launchable(caller, request) {
+        let mut destination = match self.admit_launchable(caller, request) {
             Ok(admitted) => admitted,
             Err(error) => {
                 if let Ok(mut ledger) = self.remote_invocations.lock() {
@@ -1784,7 +1784,7 @@ impl CapnpBrokerState {
                 .relaunch_and_deliver(
                     &completer,
                     &caller,
-                    &destination,
+                    &mut destination,
                     origin.as_ref(),
                     &request,
                     None,
@@ -1945,7 +1945,7 @@ impl CapnpBrokerState {
         self: &Arc<Self>,
         completer: &Completer<T>,
         caller: &Caller,
-        destination: &LaunchDestination,
+        destination: &mut LaunchDestination,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
         native: Option<&super::native_task_execution::NativeLaunch>,
@@ -1954,11 +1954,11 @@ impl CapnpBrokerState {
             reason: "the caller stopped waiting for admission".into(),
         };
         let room = destination.workspace.room().to_string();
-        let app_id = &destination.app_id;
         let address = &request.target.address;
+        let mut app_id = destination.app_id.clone();
         let timeout = self.launchable.delivery_timeout();
         let deadline = tokio::time::sleep(timeout);
-        let expired = || ActionHostError::Unavailable {
+        let expired = |app_id: &str| ActionHostError::Unavailable {
             reason: format!(
                 "{app_id} was launched but did not offer \"{}\" within {:.1} s",
                 address.action,
@@ -1980,26 +1980,37 @@ impl CapnpBrokerState {
                 return Err(stopped_waiting());
             }
             if tokio::time::Instant::now() >= deadline.deadline() {
-                return Err(expired());
+                return Err(expired(&app_id));
             }
-            let ready = match native {
-                Some(native) => native.ready(self),
-                None => self.ready_publisher(app_id, &room, destination.record.as_deref(), address),
-            };
-            if let Some(peer_id) = ready {
-                let mut delivered = request.clone();
-                delivered.target.provider = peer_id.to_string();
-                if let Some(native) = native {
+            // An activation is over once the application it started is live:
+            // its own answer to the operation arrives through the running
+            // instance, so waiting for that operation here would launch a
+            // second one beside the first.
+            if let Some(native) = native
+                && native.bootstrap
+            {
+                if let Some(peer_id) = native.ready(self) {
                     return native.deliver(self, peer_id).await.map_err(refusal);
                 }
+            } else if let Some(peer_id) =
+                self.ready_publisher(&app_id, &room, destination.record.as_deref(), address)
+            {
+                let mut delivered = request.clone();
+                delivered.target.provider = peer_id.to_string();
                 return self.start_job(caller, origin, &delivered, request).await;
             }
             if !launched {
+                if let Some(native) = native
+                    && let Ok(wanted) = native.destination(self)
+                {
+                    app_id = wanted.app_id.clone();
+                    *destination = wanted;
+                }
                 {
                     let mut permit = Some(tokio::select! {
                         biased;
                         () = &mut abandoned => return Err(stopped_waiting()),
-                        () = &mut deadline => return Err(expired()),
+                        () = &mut deadline => return Err(expired(&app_id)),
                         seen = changes.changed() => {
                             if seen.is_err() {
                                 return Err(ActionHostError::Unavailable { reason: "the broker stopped".into() });
@@ -2018,7 +2029,7 @@ impl CapnpBrokerState {
                         None => self.admit_launchable(caller, request)?,
                     };
                     if current.workspace.room() != destination.workspace.room()
-                        || current.app_id != *app_id
+                        || current.app_id != app_id
                         || current.record != destination.record
                     {
                         return Err(ActionHostError::NotPermitted);
@@ -2044,9 +2055,9 @@ impl CapnpBrokerState {
                         reason: "the broker stopped".into(),
                     });
                 },
-                () = &mut deadline => return Err(expired()),
+                () = &mut deadline => return Err(expired(&app_id)),
                 () = &mut abandoned => return Err(stopped_waiting()),
-                () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => {},
+                () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => {}
             }
         }
     }

@@ -54,7 +54,9 @@ pub(super) struct NativeLaunch {
     app: String,
     record: Option<String>,
     retained: Option<PublishedAction>,
-    bootstrap: bool,
+    /// Opening an installed application: the launch itself is the answer,
+    /// so it is complete once the instance publishes anything at all.
+    pub(super) bootstrap: bool,
     /// The person confirmed this retained action as asked first; `argument`
     /// is then what they confirmed.
     confirmed: bool,
@@ -652,7 +654,7 @@ impl CapnpBrokerState {
         }
         // A disclosure witness needs the actual live provider/publication, not
         // just a retained descriptor. Ask after launch in NativeLaunch::deliver.
-        let destination = native.destination(self)?;
+        let mut destination = native.destination(self)?;
         // The ordinary delivery loop uses this label only for actor-view placement.
         // Authority comes from the captured signed LocalCaller and native owner admission.
         let caller = Caller::local_agent(&native.run.agent_id).in_room(&native.run.cluster_id);
@@ -683,7 +685,7 @@ impl CapnpBrokerState {
                 .relaunch_and_deliver(
                     &completer,
                     &caller,
-                    &destination,
+                    &mut destination,
                     None,
                     &request,
                     Some(&native),

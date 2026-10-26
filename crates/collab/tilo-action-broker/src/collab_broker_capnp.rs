@@ -10342,6 +10342,9 @@ impl channel_handle::Server for CapnpChannelHandle {
             }
             let actions = validate_published_surface(rows)?;
             let offers = !actions.is_empty();
+            // The surface belongs to the record its channel named, so an
+            // activation waiting for that record finds this instance.
+            let route = self.route();
             let surface = PublishedSurface {
                 peer_id,
                 app_id,

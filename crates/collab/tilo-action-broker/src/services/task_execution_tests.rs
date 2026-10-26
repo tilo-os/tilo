@@ -112,7 +112,15 @@ fn a_change_the_run_can_take_back_just_happens() {
         )
     };
     peer.governance_mut()
-        .put_governed_grants(&[grant("starter-asks-notes", KindSet::ALL)], &key, now)
+        .put_governed_grants(
+            &[
+                grant("starter-asks-notes", KindSet::ALL),
+                answer_for_issue(room, requirement.need.kind, Answer::Allow),
+                answer_for_issue(room, tilo_action_policy::ActionKind::Outside, Answer::Ask),
+            ],
+            &key,
+            now,
+        )
         .unwrap();
     requirement.check_run(&peer, room, now).unwrap();
 
@@ -131,6 +139,7 @@ fn a_change_the_run_can_take_back_just_happens() {
         .put_governed_grants(
             &[
                 grant("starter-asks-notes", KindSet::ALL),
+                answer_for_issue(room, requirement.need.kind, Answer::Allow),
                 Grant::new(
                     "agent-asks-notes",
                     Subject::agent("scribe"),
@@ -254,6 +263,19 @@ fn answer_issue(
     peer.governance_mut()
         .put_governed_grants(&grants, key, now)
         .unwrap();
+}
+
+/// The issue's own answer for one kind of action, as a grant to hand to
+/// [`tilo_peer_state::governance`] beside the person's grants.
+fn answer_for_issue(room: &str, kind: tilo_action_policy::ActionKind, answer: Answer) -> Grant {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    agent_answers::answer_grant(
+        room,
+        Subject::task(ISSUE),
+        (&AnswerScope::app("so.tilo.notes"), kind),
+        answer,
+        Subject::person("governor"),
+    )
 }
 
 /// Answer [`answer_issue`] for one kind of action only, leaving the issue's
