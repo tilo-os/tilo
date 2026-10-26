@@ -5794,8 +5794,13 @@ impl Widget for TextInput {
         self.prepare_theme(theme);
         // The room's roster arrives with the frame; a field completes from
         // what this window last saw, plus any people its app supplied.
-        self.mention_roster =
-            crate::widget::mention_picker::merged_roster(presence, &self.mention_candidates);
+        // Fields that are not collecting a mention read no roster at all.
+        if self.is_focused && self.completion().mentions() {
+            self.mention_roster =
+                crate::widget::mention_picker::merged_roster(presence, &self.mention_candidates);
+        } else {
+            self.mention_roster.clear();
+        }
         self.refresh_completion();
         if self.holds_secret() && (!self.text.is_empty() || self.core.has_preedit()) {
             crate::secret_paint::note_secret_painted();
