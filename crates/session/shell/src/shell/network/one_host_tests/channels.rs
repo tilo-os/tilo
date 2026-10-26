@@ -3,58 +3,33 @@
 //! device admits to the channel reads what is written in it, and the host
 //! keeps only ciphertext.
 
-use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime};
+use std::sync::Arc;
+use std::time::SystemTime;
 
 use collab_types::{
     ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, OpKind, SignedOp,
-    document_artifact_id, document_attestation_id, document_channel_id,
+    document_artifact_id, document_attestation_id,
 };
 use tilo_user_identity::DeviceCapabilities;
 
 use super::home_relay::holds;
 use super::{Device, NOTES, Person, Wakes, hosted_workspace, scratch, until};
-use crate::shell::channel_encryption::{ChannelAccess, ChannelEncryption, ChannelEncryptionConfig};
-use crate::shell::channel_policy::WorkspaceChannelDirectory;
-use crate::shell::collab_core::BrokerChannels;
+use crate::shell::channel_encryption::ChannelAccess;
 use crate::shell::state::RoomId;
 
 /// Text only the room's members may read.
 const SECRET: &str = "the quarterly figures, for members only";
 const RECORD: &str = "figures";
 
-fn channels_of(device: &Device, dir: &std::path::Path) -> ChannelEncryption {
-    ChannelEncryption::open(
-        ChannelEncryptionConfig {
-            root: dir.join("channels"),
-            vault: channel_crypto::VaultKey::new([9; 32]),
-            device_key: device.key(),
-        },
-        Box::new(WorkspaceChannelDirectory::new(
-            device.tree.clone(),
-            Box::new(|_| Vec::new()),
-        )),
-        Arc::new(Mutex::new(BrokerChannels::default())),
-    )
-    .unwrap()
-}
-
-/// The channel's keys on `device` once its steward admitted it.
+/// The record's channel keys on `device`, once the room's steward admitted
+/// it: what the identity service answers the notes app there.
 fn keys_on(
     devices: &[&Device],
     device: &Device,
-    channels: &mut ChannelEncryption,
-    others: &mut [(&Device, &mut ChannelEncryption)],
     room: RoomId,
 ) -> channel_crypto::ChannelContentKeys {
-    let channel = document_channel_id(NOTES, &room.to_string(), RECORD);
     until(devices, "the channel's keys", || {
-        let now = tilo_clock::try_unix_now().unwrap();
-        for (other, other_channels) in others.iter_mut() {
-            other_channels.pump(&**other.net(), Instant::now(), now);
-        }
-        channels.pump(&**device.net(), Instant::now(), now);
-        match channels.access(room, channel, Instant::now()) {
+        match device.record_access(room, RECORD) {
             ChannelAccess::Ready(keys) => Some(keys),
             ChannelAccess::Waiting => None,
             other => panic!("{} is not admitted to the channel: {other:?}", device.label),
@@ -91,11 +66,9 @@ fn a_sealed_channel_is_read_by_members_through_a_device_host_that_keeps_only_cip
     until(&[&p, &q], "Grace to hold the workspace", || {
         q.holds(room).then_some(())
     });
-    let mut p_channels = channels_of(&p, &dir.path().join("ada-channels"));
-    let mut q_channels = channels_of(&q, &dir.path().join("grace-channels"));
 
     // Ada's device writes into the sealed channel.
-    let p_keys = keys_on(&[&p, &q], &p, &mut p_channels, &mut [], room);
+    let p_keys = keys_on(&[&p, &q], &p, room);
     let workspace = room.to_string();
     let artifact = document_artifact_id(NOTES, &workspace, RECORD);
     let plan = {
@@ -126,13 +99,7 @@ fn a_sealed_channel_is_read_by_members_through_a_device_host_that_keeps_only_cip
         .publish_document(NOTES.into(), workspace, RECORD, op);
 
     // Grace's device is admitted to the channel and reads it.
-    let q_keys = keys_on(
-        &[&p, &q],
-        &q,
-        &mut q_channels,
-        &mut [(&p, &mut p_channels)],
-        room,
-    );
+    let q_keys = keys_on(&[&p, &q], &q, room);
     let inbound = q.net().inbound_documents_handle();
     let read = until(&[&p, &q], "the sealed record to reach Grace", || {
         let mut inbound = inbound.lock().unwrap();
