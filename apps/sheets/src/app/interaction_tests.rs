@@ -446,10 +446,16 @@ fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
     use crate::grid::GridCmd;
     use ui::widget::{FindOptions, Findable};
     let (mut app, mut doc, _tr, _theme) = painted();
+    // A cell of the sheet's first row, and one far below it.
+    let first = (1, 0);
     let needle = (1, 40);
     app.apply_cmds(
         &mut Edits::lend(&mut doc),
         vec![
+            GridCmd::SetCell {
+                addr: first,
+                raw: "first".into(),
+            },
             GridCmd::SetCell {
                 addr: needle,
                 raw: "needle".into(),
@@ -474,7 +480,17 @@ fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
         "the match stands just below what the search covers: {cell:?} under {cover:?}"
     );
 
-    // The options close: the same match goes to the top of the body.
+    // A cell of the first row comes down under the options rather than
+    // staying hidden behind them.
+    app.grid.select_only(first);
+    app.grid.ensure_active_visible();
+    let cell = app.grid.cell_screen_rect(first.0, first.1);
+    assert!(
+        (cell.y0 - cover.y1).abs() < 0.5,
+        "the first row scrolls up behind the options: {cell:?} under {cover:?}"
+    );
+
+    // The options close: the same match goes back to the top of the body.
     app.set_find_cover(None);
     app.grid.select_only((1, 120));
     app.reveal(0);
