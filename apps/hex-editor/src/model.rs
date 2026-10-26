@@ -700,6 +700,46 @@ impl HexModel {
         self.pending_nibble = None;
     }
 
+    /// Paste `bytes` at the selection, or at the cursor. In Insert mode the
+    /// buffer grows; in Overwrite mode the pasted bytes replace the ones under
+    /// the cursor and a paste past the end is refused rather than growing the
+    /// file. The edits are recorded as one run, which the view submits as one
+    /// undo step.
+    ///
+    /// # Errors
+    /// [`ChangesLength`] in overwrite mode when the paste reaches past the
+    /// buffer's end.
+    pub fn paste_bytes(&mut self, bytes: &[u8]) -> Result<usize, ChangesLength> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        if let Some((lo, hi)) = self.selection() {
+            return self.replace_spans(&[(lo, hi + 1)], bytes);
+        }
+        let at = self.cursor.min(self.bytes.len());
+        match self.mode {
+            EditMode::Insert => {
+                self.insert_range(at, bytes);
+                self.anchor = None;
+                self.cursor = at.saturating_add(bytes.len());
+                self.pending_nibble = None;
+                self.clamp_cursor();
+                Ok(bytes.len())
+            }
+            EditMode::Overwrite => {
+                if at.saturating_add(bytes.len()) > self.bytes.len() {
+                    return Err(ChangesLength);
+                }
+                self.overwrite_range(at, bytes);
+                self.anchor = None;
+                self.cursor = at;
+                self.pending_nibble = None;
+                self.clamp_cursor();
+                Ok(bytes.len())
+            }
+        }
+    }
+
     /// Replace each of `spans` (byte ranges in ascending order, as find
     /// returns them) with `with`, recording the edits it made. A span that
     /// overlaps the one before it is left as it is. Overwrite mode keeps the
@@ -1020,5 +1060,43 @@ mod tests {
             replayed, b"bbbbbb",
             "the recorded edits make the same bytes"
         );
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+
+    #[test]
+    fn paste_inserts_at_the_cursor_or_replaces_the_selection_as_one_run() {
+        let mut model = HexModel::new(vec![0xaa, 0xbb, 0xcc, 0xdd]);
+        model.move_to(1, false);
+        model.toggle_mode(); // Insert
+        assert_eq!(model.paste_bytes(&[0x01, 0x02]), Ok(2));
+        assert_eq!(model.bytes(), &[0xaa, 0x01, 0x02, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(model.cursor(), 3);
+
+        model.move_to(0, false);
+        model.move_to(2, true);
+        let edits = model.take_edits();
+        assert!(!edits.is_empty(), "the insert made a recorded run");
+        assert_eq!(model.selection_len(), 3);
+        assert_eq!(model.paste_bytes(&[0x0f]), Ok(1));
+        assert_eq!(model.bytes(), &[0x0f, 0xbb, 0xcc, 0xdd]);
+        assert_eq!(model.selection(), None, "a paste clears the selection");
+    }
+
+    #[test]
+    fn overwrite_paste_refuses_to_grow_the_file() {
+        let mut model = HexModel::new(vec![0xaa, 0xbb]);
+        model.move_to(1, false);
+        assert_eq!(model.paste_bytes(&[0x01, 0x02]), Err(ChangesLength));
+        assert_eq!(
+            model.bytes(),
+            &[0xaa, 0xbb],
+            "a refused paste changes nothing"
+        );
+        assert_eq!(model.paste_bytes(&[0x01]), Ok(1));
+        assert_eq!(model.bytes(), &[0xaa, 0x01]);
     }
 }

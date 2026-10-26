@@ -70,7 +70,7 @@ use ui::framework::{
 use ui::tilo_resource::ActionDecl;
 
 use crate::actions::{HexEffect, HexPanel};
-use crate::model::{BufferEdit, Column, Endian, HexModel};
+use crate::model::{BufferEdit, ChangesLength, Column, Endian, HexModel};
 use crate::resource::HexEditor;
 use layout::{CellMetrics, ENDIAN_LABELS, Geo};
 use ui::widget::toggle_group::Segment;
@@ -985,7 +985,7 @@ impl Widget for HexView {
         if self.has_file {
             children.push(
                 AccessNode::new(Role::StaticText).with_name(
-                    "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F find, Ctrl+H replace, Ctrl+G go to offset, Ctrl+I show or hide the inspector, Ctrl+Z undo, Ctrl+Shift+Z redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
+                    "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F find, Ctrl+H replace, Ctrl+G go to offset, Ctrl+I show or hide the inspector, Ctrl+C copy, Ctrl+X cut, Ctrl+V paste, Ctrl+Z undo, Ctrl+Shift+Z redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
                 ).with_hashed_key("hex.keyboard-help"),
             );
             if self.geo.inspector_visible {
@@ -1208,7 +1208,7 @@ impl HexView {
             return;
         }
 
-        if self.handle_global_chord(key, ctrl, handled) {
+        if self.handle_global_chord(key, ctrl, doc, handled) {
             return;
         }
 
@@ -1239,6 +1239,81 @@ impl HexView {
         }
     }
 
+    /// The bytes under the selection, or the byte under the cursor when there
+    /// is no selection.
+    fn selected_bytes(&self) -> Option<(usize, usize)> {
+        if let Some(span) = self.model.selection() {
+            return Some(span);
+        }
+        let at = self.model.cursor();
+        (at < self.model.len()).then_some((at, at))
+    }
+
+    /// Copy the selection in the column that has focus: hexadecimal bytes in
+    /// the hex column, the bytes as text in the ASCII column. With no
+    /// selection the byte under the cursor is copied.
+    fn copy_selection(&mut self) {
+        let Some((lo, hi)) = self.selected_bytes() else {
+            return;
+        };
+        let bytes = self.model.bytes().get(lo..=hi).unwrap_or_default();
+        if bytes.is_empty() {
+            return;
+        }
+        let text = match self.model.column() {
+            Column::Hex => bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            Column::Ascii => String::from_utf8_lossy(bytes).into_owned(),
+        };
+        ui::text_selection::clipboard_copy(&text);
+        self.notice(&format!(
+            "Copied {} byte{}",
+            bytes.len(),
+            if bytes.len() == 1 { "" } else { "s" }
+        ));
+    }
+
+    /// Paste the clipboard at the selection or cursor, in the column that has
+    /// focus: hexadecimal bytes in the hex column, UTF-8 text in the ASCII
+    /// column. One paste is one undo step.
+    fn paste_clipboard(&mut self) {
+        let Some(text) = ui::text_selection::clipboard_paste() else {
+            return;
+        };
+        let bytes = match self.model.column() {
+            Column::Hex => match crate::actions::parse_bytes(&text) {
+                Ok(bytes) => bytes,
+                Err(reason) => {
+                    self.problem("Couldn't paste", reason);
+                    return;
+                }
+            },
+            Column::Ascii => text.into_bytes(),
+        };
+        match self.model.paste_bytes(&bytes) {
+            Ok(0) => {}
+            Ok(_) => self.submit_replacement(),
+            Err(ChangesLength) => self.problem(
+                "Couldn't paste in Overwrite mode",
+                "The paste reaches past the end of the file. Switch to Insert to change the file's length.",
+            ),
+        }
+    }
+
+    /// Cut the selection, or the byte under the cursor: the same bytes copy
+    /// puts on the clipboard, removed as one undo step.
+    fn cut_selection(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        if self.selected_bytes().is_none() {
+            return;
+        }
+        self.copy_selection();
+        self.model.delete_at_cursor();
+        self.commit_edits(doc);
+    }
+
     /// Open the window's search or the go-to form.
     fn open_panel(&mut self, panel: HexPanel) {
         match panel {
@@ -1250,7 +1325,13 @@ impl HexView {
     /// Ctrl+letter global chords. Returns `true` if one matched (the caller
     /// should stop dispatching this key further). Part of
     /// [`Self::handle_key_event`].
-    fn handle_global_chord(&mut self, key: &Key, ctrl: bool, handled: &mut bool) -> bool {
+    fn handle_global_chord(
+        &mut self,
+        key: &Key,
+        ctrl: bool,
+        doc: &mut ui::widget::Edits<'_>,
+        handled: &mut bool,
+    ) -> bool {
         let Key::Character(c) = key else {
             return false;
         };
@@ -1264,6 +1345,9 @@ impl HexView {
             "h" | "H" => Self::open_find(SearchOpening::Replace),
             "g" | "G" => self.open_panel(HexPanel::GotoOffset),
             "i" | "I" => self.toggle_inspector(),
+            "c" | "C" => self.copy_selection(),
+            "x" | "X" => self.cut_selection(doc),
+            "v" | "V" => self.paste_clipboard(),
             "a" | "A" => {
                 self.model.select_all();
                 self.moved();

@@ -166,7 +166,7 @@ impl HexView {
 
     /// Submit the edits a replacement made as one action: a step of its own,
     /// never joined to typing before or after it.
-    fn submit_replacement(&mut self) {
+    pub(super) fn submit_replacement(&mut self) {
         let edits = self.model.take_edits();
         self.content_changed();
         let (row, _) = self.model.cursor_cell();
