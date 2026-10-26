@@ -15047,6 +15047,7 @@ dependencies = [
  "tilo-media",
  "tilo-messaging",
  "tilo-messaging-protocol",
+ "tilo-model-client",
  "tilo-moq",
  "tilo-net",
  "tilo-net-answers",
