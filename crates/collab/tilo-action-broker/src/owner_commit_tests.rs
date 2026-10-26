@@ -2164,20 +2164,19 @@ mod owner_commit_tests {
                 agent: Some("mcp-7".into()),
             }
         );
-        // The same person and device, but the invocation admitted for another
-        // agent: its owner is another agent's, so this caller's recheck of
-        // itself still matches only its own delegation.
+        // The same person and device, admitted for another agent.
         let elsewhere = delegated_owner_caller(&f, "mcp-8");
         assert_ne!(elsewhere.owner(), caller.owner());
-        assert_eq!(
-            caller.reverified_owner(&elsewhere),
-            Some(caller.owner()),
-            "a re-verification only proves the person and device"
-        );
+        // Re-verification re-establishes only the person and device. The
+        // delegation re-applied is the caller's own, never whatever the
+        // re-verified identity happened to admit, so this caller cannot
+        // drift onto the other agent's owner.
+        assert_eq!(caller.reverified_owner(&elsewhere), Some(caller.owner()));
         // Another person's broker verifies another root: never this caller.
         let other_root = canonical_tempdir();
         let other = owner_fixture(other_root.path());
-        assert_eq!(caller.reverified_owner(&effect_owner_caller(&other)), None);
+        let stranger = effect_owner_caller(&other);
+        assert_eq!(caller.reverified_owner(&stranger), None);
     }
 
     fn prepare_owner_effect(
