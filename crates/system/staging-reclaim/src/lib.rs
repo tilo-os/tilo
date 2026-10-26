@@ -29,7 +29,7 @@ pub mod record;
 use std::fmt;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use advisory_lock::FileLock;
 use serde_json::Value;
@@ -42,6 +42,13 @@ pub const ESP_TYPE: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 /// The Tilo staging root type; only the live installer UKI resolves it.
 pub const STAGING_ROOT_TYPE: &str = "d4c4daf6-f72c-43ee-b8e3-5ba32550311d";
 pub const TILO_ROOT_TYPE: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
+/// How long one partitioning or encryption tool may take before it is
+/// treated as wedged. Resizing the Tilo root is the long one; it is minutes,
+/// not an open-ended wait.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(300);
+/// The most one of those tools may write on either stream: a partition table
+/// and a session list are small, and a tool that floods is not answering.
+const TOOL_OUTPUT_LIMIT: usize = 1024 * 1024;
 
 /// How a run stopped, by what the original raised.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,35 +125,30 @@ pub trait Host {
             .map_err(|e| Error::os(&e, Path::new(disk)))
     }
 
-    /// Runs a tool found on `PATH`, with `input` on stdin (or none).
+    /// Runs a tool found on `PATH`, with `input` on stdin (or none). Every
+    /// tool here answers a request — `loginctl`, `sfdisk`, `partx`,
+    /// `cryptsetup` — so one that outlives its deadline is wedged, and it and
+    /// the processes it started are ended together; whichever step it was
+    /// leaves the disk as it is, for the next run to resume from.
     ///
     /// # Errors
-    /// The tool could not be started, or it wrote output that is not UTF-8.
+    /// The tool could not be started, outlived its deadline, wrote more than
+    /// a tool's output, or wrote output that is not UTF-8.
     fn run(&self, argv: &[&str], input: Option<&str>) -> Result<Outcome, Error> {
         let (program, rest) = argv
             .split_first()
             .ok_or_else(|| Error::Crash("no command".to_owned()))?;
-        let mut command = Command::new(program);
-        command
-            .args(rest)
-            .stdin(if input.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command
-            .spawn()
-            .map_err(|e| Error::os(&e, Path::new(program)))?;
-        if let (Some(text), Some(mut stdin)) = (input, child.stdin.take()) {
-            stdin
-                .write_all(text.as_bytes())
-                .map_err(|e| Error::os(&e, Path::new(program)))?;
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|e| Error::os(&e, Path::new(program)))?;
+        let output = bounded_command::run_os(
+            program,
+            rest,
+            input.map(str::as_bytes),
+            TOOL_OUTPUT_LIMIT,
+            TOOL_TIMEOUT,
+        )
+        .map_err(|error| match error {
+            bounded_command::Error::Process(error) => Error::os(&error, Path::new(program)),
+            other => Error::Incomplete(format!("{}: {other}", argv.join(" "))),
+        })?;
         let decode =
             |bytes: Vec<u8>| String::from_utf8(bytes).map_err(|e| Error::Incomplete(e.to_string()));
         Ok(Outcome {
@@ -817,5 +819,52 @@ pub fn main(host: &dyn Host) -> i32 {
             eprintln!("tilo-staging-reclaim: unexpected failure: {error}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, Host, System};
+
+    /// The production runner, as the record's steps read a tool: its output,
+    /// its standard input and the exit status Python reported.
+    #[test]
+    fn a_tool_reads_its_script_and_leaves_its_output_and_status() {
+        let outcome = System
+            .run(
+                &[
+                    "sh",
+                    "-c",
+                    "read line; printf '%s' \"$line\"; printf e >&2; exit 2",
+                ],
+                Some("start=2048, size=4096\n"),
+            )
+            .expect("sh runs");
+        assert_eq!(outcome.code, 2);
+        assert_eq!(outcome.stdout, "start=2048, size=4096");
+        assert_eq!(outcome.stderr, "e");
+    }
+
+    /// A tool ended by a signal reports Python's negative return code.
+    #[test]
+    fn a_signalled_tool_reports_a_negative_code() {
+        let outcome = System
+            .run(&["sh", "-c", "kill -TERM $$"], None)
+            .expect("the shell kills itself and is reaped");
+        assert_eq!(outcome.code, -15, "SIGTERM as `returncode` reports it");
+    }
+
+    /// A tool that is not there is the operating-system error the original
+    /// raised, naming the program.
+    #[test]
+    fn a_missing_tool_is_an_os_error_naming_it() {
+        let error = System
+            .run(&["tilo-no-such-tool"], None)
+            .expect_err("a missing tool cannot run");
+        assert!(matches!(error, Error::Incomplete(_)));
+        assert!(
+            error.to_string().contains("'tilo-no-such-tool'"),
+            "the message names the program: {error}"
+        );
     }
 }

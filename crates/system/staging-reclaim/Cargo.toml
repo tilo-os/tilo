@@ -26,6 +26,8 @@ path = "examples/staging-reclaim-fixture.rs"
 rustix = { workspace = true, features = ["fs", "std"] }
 # The disk's exclusive lock, as the partitioning tools take it.
 tilo-advisory-lock = { path = "../advisory-lock" }
+# Every tool it runs answers a request, within a deadline and bounded output.
+bounded-command = { path = "../bounded-command" }
 serde_json.workspace = true
 workspace-hack = { version = "0.1" }
 

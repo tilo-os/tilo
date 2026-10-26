@@ -15,6 +15,9 @@ name = "tilo-extension"
 path = "src/main.rs"
 
 [dependencies]
+# Every tool it runs answers a request, within a deadline, bounded output and
+# its own process tree.
+bounded-command = { path = "../bounded-command" }
 hex.workspace = true
 # The composefs image's fs-verity digest (FS_IOC_MEASURE_VERITY).
 libc.workspace = true

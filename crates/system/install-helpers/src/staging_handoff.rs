@@ -55,6 +55,11 @@ mod retained_commands;
 mod user_commands;
 
 const HANDOFF_MAX_BYTES: usize = 64 * 1024;
+/// How long one tool the handoff asks may take: `efibootmgr`, `lsblk`,
+/// `findmnt`, `sfdisk` and `partx` each answer a question about the firmware
+/// or one disk, in seconds; minutes on a slow medium. Nothing here waits for
+/// a person, so nothing waits forever.
+const TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 const HANDOFF_RELATIVE: &str = "EFI/tilo-staging/handoff.json";
 const EFI_GLOBAL: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
 const LOADER_VENDOR: &str = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
@@ -166,12 +171,15 @@ pub trait Host {
         "efibootmgr".into()
     }
 
-    /// Runs a tool to completion, capturing its output.
+    /// Runs a tool to completion, capturing its output, within
+    /// [`TOOL_TIMEOUT`]: a wedged tool is ended with the processes it started
+    /// rather than pinning the installer's handoff.
     ///
     /// # Errors
-    /// The tool missing.
+    /// The tool missing, failing to finish, or writing more than a tool's
+    /// output.
     fn run(&self, argv: &[&str]) -> Result<Ran> {
-        let output = crate::process::run(argv, None, Duration::MAX)?;
+        let output = crate::process::run(argv, None, TOOL_TIMEOUT)?;
         Ok(Ran {
             code: output.code,
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
