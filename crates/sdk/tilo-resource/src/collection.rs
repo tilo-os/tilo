@@ -1168,6 +1168,28 @@ pub fn stored_ids(doc: &Doc, map: &ObjId) -> Vec<Id> {
         .collect()
 }
 
+/// The stored entry of the item `id` of the collection map `map`, with its order key: `None`
+/// when there is no such item or it has no readable order key. One item is read without
+/// listing the others: what a reader that keeps a collection's order applies a change by.
+#[must_use]
+pub fn stored_entry(doc: &Doc, map: &ObjId, id: &str) -> Option<Stored> {
+    let slot = match doc.get(map, id).ok()?? {
+        (Value::Scalar(scalar), _) => match scalar.as_ref() {
+            ScalarValue::Str(order) => EntrySlot::Order(order.to_string()),
+            _ => return None,
+        },
+        (Value::Object(ObjType::Map), entry) => EntrySlot::Map(entry),
+        (Value::Object(_), _) => return None,
+    };
+    read_entry(
+        doc,
+        StoredEntry {
+            id: Id(id.to_owned()),
+            slot,
+        },
+    )
+}
+
 /// The value map of the item `id` of the collection map `map`: `None` when there is no such
 /// item, `Some(None)` for an item stored as its order key alone (it reads as its type's
 /// default), so one item is reached without reading the others.
@@ -2274,6 +2296,24 @@ mod tests {
         }
         entries.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
         entries
+    }
+
+    #[test]
+    fn one_entry_reads_as_the_listing_has_it() {
+        let mut doc = Doc::new();
+        let mut list: Collection<u32> = Collection::new();
+        for n in 0..20_u32 {
+            list.push(Id::from_raw(format!("i{n:02}")), n);
+        }
+        write_key(&mut doc, &ROOT, "items", &list).unwrap();
+        let Some((_, map)) = doc.get(&ROOT, "items").unwrap() else {
+            panic!("the collection is stored");
+        };
+        for listed in stored_entries(&doc, &map) {
+            let one = stored_entry(&doc, &map, listed.id.as_str()).expect("the entry");
+            assert_eq!((one.id, one.key), (listed.id, listed.key));
+        }
+        assert!(stored_entry(&doc, &map, "nobody").is_none());
     }
 
     #[test]

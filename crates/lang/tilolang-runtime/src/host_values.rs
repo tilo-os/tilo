@@ -70,13 +70,13 @@ impl Core {
             Imp::ListPushI => self.list_push(a.h(0)?, Value::Int(a.long(1)?)),
             Imp::ListPushF => self.list_push(a.h(0)?, Value::Float(a.float(1)?)),
             Imp::ListPushH => {
-                let v = self.val(a.h(1)?)?;
+                let v = self.val_whole(a.h(1)?)?;
                 self.list_push(a.h(0)?, v)
             }
-            Imp::ListLen => self.with_val(a.h(0)?, |v| match v {
-                Value::List(items) => ret_i64(len_to_i64(items.len())),
-                other => trap(format!("expected a list, got {}", other.kind_name())),
-            }),
+            Imp::ListLen => match self.list_or_coll(a.h(0)?)? {
+                ListOrColl::Len(len) => ret_i64(len_to_i64(len)),
+                ListOrColl::Coll(coll) => ret_i64(len_to_i64(self.coll_len(&coll)?)),
+            },
             Imp::ListGetI | Imp::ListGetF | Imp::ListGetH => {
                 let at = index(a.long(1)?, "list")?;
                 let item = self.with_val(a.h(0)?, |v| match v {
@@ -89,9 +89,29 @@ impl Core {
                         },
                         Ok,
                     ),
+                    Value::Coll(coll) => Ok(Value::Coll(std::rc::Rc::clone(coll))),
                     other => trap(format!("expected a list, got {}", other.kind_name())),
                 })?;
+                let item = match item {
+                    Value::Coll(coll) => self.coll_get(&coll, at)?,
+                    item => item,
+                };
                 self.element(imp, item)
+            }
+            Imp::ListEnd => {
+                let last = a.h(1)? != 0;
+                let end = self.with_val(a.h(0)?, |v| match v {
+                    Value::List(items) => Ok(Ok(if last { items.last() } else { items.first() }
+                        .cloned()
+                        .map_or_else(Value::none, Value::some))),
+                    Value::Coll(coll) => Ok(Err(std::rc::Rc::clone(coll))),
+                    other => trap(format!("expected a list, got {}", other.kind_name())),
+                })?;
+                let end = match end {
+                    Ok(end) => end,
+                    Err(coll) => self.coll_end(&coll, last)?,
+                };
+                self.ret_h(end)
             }
             Imp::ListSortByKey => {
                 let items = self.list_items(a.h(0)?)?;
@@ -105,7 +125,7 @@ impl Core {
             Imp::TupleSetI => self.tuple_set(a.h(0)?, a.h(1)?, Value::Int(a.long(2)?)),
             Imp::TupleSetF => self.tuple_set(a.h(0)?, a.h(1)?, Value::Float(a.float(2)?)),
             Imp::TupleSetH => {
-                let v = self.val(a.h(2)?)?;
+                let v = self.val_whole(a.h(2)?)?;
                 self.tuple_set(a.h(0)?, a.h(1)?, v)
             }
             Imp::TupleGetI | Imp::TupleGetF | Imp::TupleGetH => {
@@ -125,7 +145,7 @@ impl Core {
                 self.element(imp, item)
             }
             Imp::SomeH => {
-                let v = self.val(a.h(0)?)?;
+                let v = self.val_whole(a.h(0)?)?;
                 self.ret_h(Value::some(v))
             }
             Imp::SomeI => self.ret_h(Value::some(Value::Int(a.long(0)?))),
@@ -161,7 +181,7 @@ impl Core {
             Imp::EnumSetI => self.enum_set(a.h(0)?, a.h(1)?, Value::Int(a.long(2)?)),
             Imp::EnumSetF => self.enum_set(a.h(0)?, a.h(1)?, Value::Float(a.float(2)?)),
             Imp::EnumSetH => {
-                let v = self.val(a.h(2)?)?;
+                let v = self.val_whole(a.h(2)?)?;
                 self.enum_set(a.h(0)?, a.h(1)?, v)
             }
             Imp::EnumIs => {
@@ -183,7 +203,7 @@ impl Core {
                 self.element(imp, item)
             }
             Imp::ValueEq => {
-                let (x, y) = (self.val(a.h(0)?)?, self.val(a.h(1)?)?);
+                let (x, y) = (self.val_whole(a.h(0)?)?, self.val_whole(a.h(1)?)?);
                 ret_i32(i32::from(same_value(&x, &y)))
             }
             _ => trap("not an enum import"),
@@ -203,8 +223,17 @@ impl Core {
     }
 
     fn list_items(&self, h: i32) -> HResult<Vec<Value>> {
+        match self.val_whole(h)? {
+            Value::List(items) => Ok(items),
+            other => trap(format!("expected a list, got {}", other.kind_name())),
+        }
+    }
+
+    /// The length of the list behind `h`, or the collection to read it from.
+    fn list_or_coll(&self, h: i32) -> HResult<ListOrColl> {
         self.with_val(h, |v| match v {
-            Value::List(items) => Ok(items.clone()),
+            Value::List(items) => Ok(ListOrColl::Len(items.len())),
+            Value::Coll(coll) => Ok(ListOrColl::Coll(std::rc::Rc::clone(coll))),
             other => trap(format!("expected a list, got {}", other.kind_name())),
         })
     }
@@ -224,6 +253,11 @@ impl Core {
     }
 
     fn list_push(&self, list: i32, item: Value) -> HResult<Option<Wasm>> {
+        // A collection pushed onto is a list of its items from then on.
+        if self.with_val(list, |v| Ok(matches!(v, Value::Coll(_))))? {
+            let whole = self.val_whole(list)?;
+            *self.frames.borrow_mut().get_mut(list)? = whole;
+        }
         let mut frames = self.frames.borrow_mut();
         match frames.get_mut(list)? {
             Value::List(items) => items.push(item),
@@ -244,6 +278,12 @@ impl Core {
         }
         ret_void()
     }
+}
+
+/// A list's length, or the collection whose length a read records.
+enum ListOrColl {
+    Len(usize),
+    Coll(std::rc::Rc<crate::value::CollRef>),
 }
 
 /// The items ordered by their parallel keys, ascending and stable. Keys of one list must be

@@ -354,8 +354,8 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   keystroke 0.44, peer 0.24, scroll p50 0.21. todo: open 68 ms, keystroke 0.44, peer 0.29,
   scroll p50 0.08. board (notes, todo and chat of 10k each): open 126 ms, keystroke 0.90, peer
   0.53. One conversation of 10k messages in its window: open 52 ms (p50 25), a keystroke in the
-  draft 1.6 ms (582 ms before publication followed changes to their depth), scroll p50 0.33 ms,
-  a peer's message 83 ms. Memory at 1k: notes 21 MiB, chat 19, todo 17, board 39. counter: open 0.28 ms, press
+  draft 0.4 ms (582 ms before publication followed changes to their depth), scroll p50 0.33 ms,
+  a peer's message 1.4 ms (below). Memory at 1k: notes 21 MiB, chat 19, todo 17, board 39. counter: open 0.28 ms, press
   0.12, peer 0.07. Open was 280, 50, 497 and 1265 ms before the store kept what it read and a
   card showed its preview. The board's open is where the time is: three listings of 10k items
   (30 ms on eight threads), 40k field reads from the store's cache (20 ms, mostly the memory
@@ -364,15 +364,55 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   more under load: the board meets the budget with little to spare off the laptop. The first
   change of a window costs 5 to 7 ms: automerge renumbers its columns for the new actor (about
   2 ms per document at 400k ops), inherent to its sorted actor table.
-- **Not met yet.** A peer's message in a conversation of 10k: 83 ms, against the peer budget
-  of 2 ms. Its share: the store lists the 10k messages again after the insert forgets the
-  listing (9 ms, each time), publication brings the conversation's 10k children in line (9 ms),
-  the thread view runs again because it reads the collection (20 ms for the evaluation, which
-  builds a reference per message, 8 ms for diffing 10k row keys), and the conversation's row in
-  the chat list runs again for `messages.last()`, which builds the same 10k references
-  (22 ms). A collection read as a value is a list of every item's reference; reading the end of
-  one, or a listing kept across an insert, needs collections that the runtime reads lazily and
-  a cache that applies an insert to what it listed.
+- **A change costs the change, not the collection.** One insert, remove or move in a
+  collection of N items is work in the items it touched, at every layer:
+  - *Store.* `TiloStore` keeps a collection's listing (`Store::listing`: its item ids in order,
+    shared as an `Rc<Listing>`) with each item's order key, and brings it in line with the items
+    a change touched (their entries put, deleted or given a new key) by binary search over
+    (order key, id), instead of forgetting it and listing again. Each change says how its
+    listings moved: `ChangeSummary::listings`, steps `Splice::Insert{at, item}` and
+    `Splice::Remove{at, item}` (a move is both) in order; a collection named in `fields` without
+    steps changed in a way the store could not say. `AmStore` tells the steps of its own
+    mutations. A reader checks the steps as it goes (a removal names its item, an insertion
+    must not find its item there) and its count against the listing at the end, and rebuilds
+    from the listing when they do not fit. The read cache keeps the items cached within a
+    resource beside it, so a resource created or removed forgets its own items, not by a look
+    at every resource of the document.
+  - *Views read collections lazily.* In a view a collection field is a `Value::Coll` (the
+    field), not a list of its items: `len()`, an index, `first()` and `last()` (`list_end`, so
+    `first()` does not depend on the length) read the store's listing, and each read is
+    recorded as what it saw (`CollSeen`: the length, the ends, the item at each index read). A
+    change to the collection re-runs a boundary only if something it saw is no longer so, which
+    is checked against the listing by value: a conversation's row showing its last message runs
+    again for a new message, not for a move among the older ones, and builds one reference, not
+    10k. A loop that reads every item from the first to the last depends on the whole
+    collection (a read of its field). Wherever the items are needed as values (stored, sorted,
+    compared, put into a list, a tuple or a record, given to an action) the collection is read
+    whole into a list first, and the view depends on all of it. No author opts in.
+  - *Rows follow their collection.* A loop over a collection that is alone among its parent's
+    children (a `list`'s rows, a section's) hands its rows to the live tree (`LoopRows`): the
+    boundary holding it no longer depends on which items there are. A change's steps insert,
+    remove or move rows in place, one `Insert`, `Remove` or `Move` patch each, rendering only an
+    inserted row that is not waiting to be shown; the paths of the rendered rows after them move
+    along (for a `list`, only the shown ones). Steps that do not fit, or rows then not as many as
+    the items, rebuild through the holding boundary as before. The native host keeps where each
+    row key was last found and looks around there, instead of indexing every key again after a
+    change, and tells the list widget a single change without copying its keys.
+  - *Publication and search take the steps.* An inserted item is built, a removed one dropped,
+    a moved one kept, in the published children and in the indexed items, checked the same way,
+    with the whole membership read as before when the steps do not fit. A published item is
+    found where its listing puts it (its order key), not by walking its siblings.
+
+  A peer's message in a conversation of 10k messages, in its window, went from 88 ms to 1.4 ms
+  (p95; p50 85 to 1.1 ms): the store's sync 0.4 ms (automerge applying the change and naming
+  what it wrote, the same at 1k), the views 0.2 (the row of the conversation in the chat list
+  and the new row), publication 0.2, search 0.1. The draft keystroke in that window went from
+  1.2 to 0.4 ms. Open, keystroke, peer edit and scroll of notes, chat, todo and the board at 10k
+  are where they were, within the run-to-run spread (board open p95 135 ms against 188 in the
+  run before; on the shared arm t worker it measures 140 to 168 ms with or without this work,
+  around the budget's 150). Memory at 10k is 4 to 6 MiB more for notes, chat and todo and 6 to
+  13 MiB for the board (the listings keep each item's order key), 3 to 5%; at 1k, within
+  a MiB either way (board 24.3 MiB against 23.5).
 - **An action is a type bound to a target.** `tilo-actions` splits what an action is
   (`ActionType`: id, label, description, params, contract, kind, operation type, builder,
   classifiers) from what it acts on (`Target`). An `ActionSpec` is an `Arc<ActionType>` and a

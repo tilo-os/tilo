@@ -75,6 +75,13 @@ pub struct ViewState {
     /// Every `(resource, field)` read (the resource as `ResourceRef::id_string`), the view's
     /// dependencies.
     pub reads: Vec<(String, String)>,
+    /// What the view saw of the collections it read item by item.
+    pub(crate) colls: Vec<crate::colls::CollSeen>,
+    /// The listings of those collections, read once per run.
+    pub(crate) listings: Vec<(
+        std::rc::Rc<crate::value::CollRef>,
+        std::rc::Rc<crate::store::Listing>,
+    )>,
     pub nodes: Vec<NodeBuild>,
 }
 

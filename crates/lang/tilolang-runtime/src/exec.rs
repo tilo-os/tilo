@@ -78,6 +78,7 @@ impl Core {
             }
             (Ty::Text | Ty::Date | Ty::Time, Value::Text(_))
             | (Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_), Value::List(_))
+            | (Ty::List(_) | Ty::Collection(_), Value::Coll(_))
             | (Ty::Option(_), Value::Opt(_))
             | (Ty::Enum(_) | Ty::Result(..), Value::Enum(_))
             | (Ty::Tuple(_), Value::Tuple(_))
@@ -659,7 +660,7 @@ impl Core {
         let Some(Wasm::I32(raw)) = self.flow_invoke(h)? else {
             return trap("invoke returned no handle");
         };
-        let outcome = unboxed(self.val(raw)?);
+        let outcome = unboxed(self.val_whole(raw)?);
         let mut fields = std::collections::BTreeMap::new();
         let variant = match outcome {
             Value::Error(reason) => {
@@ -702,7 +703,7 @@ impl Core {
     }
 
     fn model_call(&self, kind_h: i32, input_h: i32) -> HResult<Option<Wasm>> {
-        let (kind, input) = (self.text(kind_h)?, unboxed(self.val(input_h)?));
+        let (kind, input) = (self.text(kind_h)?, unboxed(self.val_whole(input_h)?));
         {
             let mut frames = self.frames.borrow_mut();
             let FrameKind::Flow(fs) = &mut frames.top_mut()?.kind else {
@@ -738,7 +739,7 @@ impl Core {
 
     fn outside(&self, cap_h: i32, payload_h: i32) -> HResult<Option<Wasm>> {
         let capability = self.text(cap_h)?;
-        let payload = outside_json(&unboxed(self.val(payload_h)?))?;
+        let payload = outside_json(&unboxed(self.val_whole(payload_h)?))?;
         if capability != "post" {
             return trap(format!("unknown outside capability `{capability}`"));
         }

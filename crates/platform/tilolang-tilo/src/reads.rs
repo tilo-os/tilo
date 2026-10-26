@@ -245,6 +245,9 @@ pub struct Changed {
     /// Whether the record's layout above the resources changed (not just one resource):
     /// anything read of any resource may be stale.
     pub layout: bool,
+    /// Per collection, the items added, removed or moved (their entries put, deleted or given a
+    /// new order key): what a listing of the collection is brought in line by.
+    pub items: crate::store::ItemTouches,
 }
 
 /// Name the (resource, field) pairs `changes` wrote, once `doc` holds them. `index` gives each
@@ -308,6 +311,7 @@ struct ChangedBuilder {
     structure: bool,
     unplaced: bool,
     layout: bool,
+    items: crate::store::ItemTouches,
 }
 
 fn key_of(prop: &Prop) -> Option<&str> {
@@ -375,10 +379,16 @@ impl ChangedBuilder {
                 // of the item.
                 (MergeKind::Collection, [Some(item), Some("v")] | [Some(item)], _) => {
                     self.field(doc, &resource, field);
+                    self.item(&resource, field, item);
                     self.any(doc, &format!("{resource}/{field}:{item}"));
                     return;
                 }
-                // Membership or order.
+                // Membership or order: an item's entry, its order key.
+                (MergeKind::Collection, [Some(item), ..], _) => {
+                    self.field(doc, &resource, field);
+                    self.item(&resource, field, item);
+                    return;
+                }
                 _ => {
                     self.field(doc, &resource, field);
                     return;
@@ -406,6 +416,17 @@ impl ChangedBuilder {
         self.field(doc, resource, ANY_FIELD);
     }
 
+    /// The item `item` of the collection `field` of `resource` was added, removed or moved.
+    fn item(&mut self, resource: &str, field: &str, item: &str) {
+        self.items
+            .entry(FieldKey {
+                resource: resource.to_owned(),
+                field: field.to_owned(),
+            })
+            .or_default()
+            .insert(item.to_owned());
+    }
+
     fn finish(self) -> Changed {
         let mut docs = self.docs;
         for fields in docs.values_mut() {
@@ -417,6 +438,7 @@ impl ChangedBuilder {
             structure: self.structure,
             unplaced: self.unplaced,
             layout: self.layout,
+            items: self.items,
         }
     }
 }

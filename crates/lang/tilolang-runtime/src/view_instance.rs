@@ -130,7 +130,7 @@ impl ViewInstance {
     fn absorb(&mut self) {
         let heard = std::mem::take(&mut *self.changes.borrow_mut());
         for change in &heard {
-            self.live.absorb(change);
+            self.live.absorb(&self.core, change);
         }
         self.live.check_states(&self.core);
         if self.refresh_all.take() {
@@ -172,7 +172,11 @@ impl ViewInstance {
     pub fn is_stale(&self) -> bool {
         self.refresh_all.get()
             || self.live.is_dirty()
-            || self.changes.borrow().iter().any(|c| self.live.reaches(c))
+            || self
+                .changes
+                .borrow()
+                .iter()
+                .any(|c| self.live.reaches(&self.core, c))
             || self.live.states_moved(&self.core)
     }
 
