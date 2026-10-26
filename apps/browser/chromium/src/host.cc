@@ -11,6 +11,7 @@
 #include "navigation_history.h"
 #include "include/cef_drag_handler.h"
 #include "page_automation.h"
+#include "geolocation.h"
 #include "agent_log.h"
 #include "paint_snapshot.h"
 #include "document_size.h"
@@ -729,6 +730,21 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);},
         [this](CefRefPtr<CefDictionaryValue> event){PagePointer(event);});
     page_automation_->Attach();
+    // A page's geolocation call reaches the person as its other permission
+    // requests do: the engine has no location of Chromium's own to grant.
+    geolocation_=new tilo::Geolocation(browser,[this](const std::string& origin,int request) {
+      capabilities_->AskEngine(origin,"location",[this,origin,request](bool allow) {
+        if(!geolocation_) return;
+        if(!allow) {geolocation_->Answer(origin,request,std::nullopt);return;}
+        // A test or development session names one position; otherwise the
+        // machine answers with the person's own, or with nothing.
+        if(auto fixed=tilo::FixedPosition()) {geolocation_->Answer(origin,request,fixed);return;}
+        tilo::SystemPosition([this,origin,request](std::optional<tilo::Position> position) {
+          if(geolocation_) geolocation_->Answer(origin,request,position);
+        });
+      });
+    });
+    geolocation_->Attach();
     agent_log_=new tilo::AgentLog(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     agent_log_->Attach();
     inspector_=new tilo::TabInspector(browser);
@@ -762,6 +778,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     capabilities_->Close();
     if(navigation_history_)navigation_history_->Detach();
     navigation_history_=nullptr;
+    if(geolocation_)geolocation_->Detach();
+    geolocation_=nullptr;
     if(page_automation_)page_automation_->Detach();
     page_automation_=nullptr;
     if(agent_log_)agent_log_->Detach();
@@ -1953,6 +1971,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   std::optional<std::string> failed_main_navigation_;
   CefRefPtr<tilo::NavigationHistory> navigation_history_;
   CefRefPtr<tilo::PageAutomation> page_automation_;
+  CefRefPtr<tilo::Geolocation> geolocation_;
   CefRefPtr<tilo::AgentLog> agent_log_;
   CefRefPtr<tilo::PaintSnapshot> paint_snapshot_;
   CefRefPtr<tilo::DocumentSize> document_size_;

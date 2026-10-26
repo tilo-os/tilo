@@ -416,6 +416,9 @@ pub struct BrowserWidget {
     /// What answering the page's question did, written when it is answered
     /// so the action's answer says what happened next.
     page_dialog_answer: Option<String>,
+    /// What answering a site's permission request did, written when it is
+    /// answered so the action's answer says what happened next.
+    permission_answer: Option<String>,
     credentials: crate::credentials::Credentials,
     /// The popover open next to the toolbar control it belongs to: the site
     /// or autofill panel, a permission or download question, or the no-video
@@ -1307,6 +1310,7 @@ impl BrowserWidget {
             page_dialogs: crate::page_dialogs::PageDialogs::default(),
             page_dialog_node: None,
             page_dialog_answer: None,
+            permission_answer: None,
             credentials: crate::credentials::Credentials::new(browsing_mode.is_private()),
             anchored_panel: None,
             side_panel_edge: None,
@@ -1838,6 +1842,22 @@ impl BrowserWidget {
                 );
                 self.page_dialog_answer = Some(answer);
             }
+            BrowserOperation::AnswerPermission { request, allow } => {
+                let asked = self
+                    .capabilities
+                    .pending()
+                    .filter(|(id, _, _)| *id == request)
+                    .map(|(_, origin, rights)| (origin.to_owned(), rights.to_owned()));
+                self.capabilities.answer(&self.engine, request, allow)?;
+                self.structure_dirty = true;
+                self.permission_answer = Some(match asked {
+                    Some((origin, rights)) => format!(
+                        "The site {origin} {} {rights}.",
+                        if allow { "may now use" } else { "may not use" }
+                    ),
+                    None => "Answered the site's permission request.".to_string(),
+                });
+            }
             BrowserOperation::Zoom { step } => {
                 self.daily.zoom_by(step, &self.engine)?;
                 self.structure_dirty = true;
@@ -2164,6 +2184,41 @@ impl BrowserWidget {
         value.insert("navigation".into(), reply.navigation.as_str().into());
         if let Some(outline) = &reply.outline {
             value.insert("outline".into(), outline.as_str().into());
+        }
+        // The site's own question is part of the page it waits on: it goes in
+        // the outline beside the elements, and as the request the page's
+        // answer actions name, so an agent answers it as the person does.
+        if let Some((request, origin, rights)) = self.capabilities.pending() {
+            let ask = format!("{origin} asks to use your {rights}");
+            // The line names the answers where a reader finds the page's other
+            // buttons, so the question is answered without looking further.
+            let line = format!(
+                "- permission \"{ask}\" [request={request}, resource={}; answer it with the \
+                 page's answer-permission actions]\n",
+                crate::capabilities::RESOURCE
+            );
+            let outline = value
+                .get("outline")
+                .and_then(|outline| outline.as_str())
+                .unwrap_or_default();
+            let joined = if outline.is_empty() {
+                line
+            } else {
+                format!("{}\n{line}", outline.trim_end_matches('\n'))
+            };
+            value.insert("outline".into(), joined.into());
+            value.insert(
+                "permission".into(),
+                serde_json::json!({
+                    "request": request,
+                    "origin": origin,
+                    "rights": rights,
+                    "resource": crate::capabilities::RESOURCE,
+                }),
+            );
+            if let Some(serde_json::Value::String(message)) = value.get_mut("message") {
+                message.push_str("; the site asks for permission");
+            }
         }
         if let Some(data) = &reply.data {
             value.insert("data".into(), data.clone());
@@ -5442,6 +5497,10 @@ impl BrowserWidget {
             reader.unavailable("no_web_page", "Open a web page first")
         });
         page.actions.extend(self.daily.zoom_actions());
+        // A page waiting on a permission asks in the page's own actions too:
+        // whoever reads the page answers it there, next to the page's other
+        // buttons, and never has to find the prompt in the chrome.
+        page.actions.extend(self.capabilities.permission_answers());
         let element = String::new();
         for (spec, asking) in [
             (E::ReadPage { frame: None }, &["frame"][..]),
@@ -5731,6 +5790,7 @@ impl BrowserWidget {
         ];
         browser.children.extend(bookmark_rows);
         browser.children.extend(self.page_dialogs.resource());
+        browser.children.extend(self.capabilities.resource());
         for selection in &self.service_selections {
             browser.children.push(selection.resource());
         }
@@ -6105,11 +6165,16 @@ impl BrowserWidget {
                 _ => ui::tilo_actions::ActionOutput::default(),
             };
             let answers_a_dialog = matches!(operation, BrowserOperation::AnswerPageDialog { .. });
+            let answers_permission = matches!(operation, BrowserOperation::AnswerPermission { .. });
             self.perform_browser_operation(operation)?;
             let output = if answers_a_dialog {
                 // Written when the question is answered, so the answer says
                 // what it did and what to do next.
                 self.page_dialog_answer
+                    .take()
+                    .map_or_else(ui::tilo_actions::ActionOutput::default, local_output)
+            } else if answers_permission {
+                self.permission_answer
                     .take()
                     .map_or_else(ui::tilo_actions::ActionOutput::default, local_output)
             } else if is_history_pause_toggle {
@@ -6506,6 +6571,65 @@ mod tests {
             release_handled = at.send(widget, &event).handled;
         }
         release_handled
+    }
+
+    #[test]
+    fn a_page_waiting_on_permission_names_the_request_in_what_it_reads() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.current_uri = "https://site.test/form".into();
+        widget
+            .capabilities
+            .apply(WebViewEvent::PermissionRequested {
+                id: 3,
+                origin: "https://site.test".into(),
+                permissions: "location".into(),
+            });
+        let reply = PageReply {
+            url: widget.current_uri.clone(),
+            message: "Read 2 lines".into(),
+            outline: Some("- heading \"Where are you?\"\n".into()),
+            data: None,
+            navigation: ui::webview::page::PageNavigation::None,
+            loading: false,
+        };
+        let update = widget.page_success(ui::tilo_actions::InvocationId::new(), &reply, None);
+        let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+            panic!("a page request that worked succeeds");
+        };
+        let value = output.value.as_ref().unwrap();
+        let outline = value["outline"].as_str().unwrap();
+        // The site's own question is part of the page it waits on, and names
+        // the request the page's answers belong to.
+        assert!(
+            outline.contains("- heading \"Where are you?\""),
+            "{outline}"
+        );
+        assert!(
+            outline.contains("asks to use your location") && outline.contains("request=3"),
+            "{outline}"
+        );
+        assert_eq!(value["permission"]["request"], 3);
+        assert_eq!(value["permission"]["rights"], "location");
+        assert!(
+            value["message"]
+                .as_str()
+                .unwrap()
+                .ends_with("the site asks for permission"),
+            "{}",
+            value["message"]
+        );
+        // Nothing waits once the request is answered: the page reads plainly.
+        widget
+            .capabilities
+            .apply(WebViewEvent::PermissionClosed { id: 3 });
+        let update = widget.page_success(ui::tilo_actions::InvocationId::new(), &reply, None);
+        let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+            panic!("a page request that worked succeeds");
+        };
+        assert!(
+            output.value.as_ref().unwrap().get("permission").is_none(),
+            "an answered request is not published again"
+        );
     }
 
     #[test]
