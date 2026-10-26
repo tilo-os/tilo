@@ -189,6 +189,9 @@ too: they go to the window of `r`.
 - `xs.first()` and `xs.last()` give an `Option` of the item.
 - A row view may have `let`s before its `row`. `row(r)` with a resource shows that resource's
   row. `card(r, count: n)` shows a count.
+- A card is a summary of its resource: a `list` inside a `card` shows its first five rows (the
+  list node's `preview` property), the count says how many there are, and the card opens the
+  resource for the whole list.
 
 ## Commands
 

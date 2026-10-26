@@ -7,6 +7,9 @@ license.workspace = true
 description = "Wasm host for tilolang apps: handle table, host ABI, action transactions, flow journal, view trees and an Automerge reference store."
 
 [dependencies]
+# A seeded hasher several times faster than SipHash, for the read cache and index keyed by
+# resource ids.
+foldhash = { version = "0.1", default-features = false, features = ["std"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true

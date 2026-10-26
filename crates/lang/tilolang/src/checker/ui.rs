@@ -309,7 +309,7 @@ impl Checker<'_> {
                     self.err("E060", span, format!("`{name}` is a variable of type {}; only a View variable can be placed in a view", self.show(&ty)));
                     return self.dead_node();
                 }
-                if self.st.ui_parent == "facts" {
+                if self.st.ui.parent == "facts" {
                     self.err("E098", span, "`facts { }` holds facts, one `\"Label\": value` per line; put other content outside it");
                     return self.dead_node();
                 }
@@ -434,11 +434,12 @@ impl Checker<'_> {
 
     /// The statements of a primitive's block, as children of `n`.
     pub(super) fn child_block(&mut self, prim: &'static str, block: &[UiStmt], n: LocalId) {
-        let saved = (self.st.ui_parent, self.st.list_row_ok);
-        self.st.ui_parent = prim;
-        self.st.list_row_ok = false;
+        let saved = self.st.ui;
+        self.st.ui.parent = prim;
+        self.st.ui.list_row_ok = false;
+        self.st.ui.in_card |= prim == "card";
         self.ui_stmts(block, n);
-        (self.st.ui_parent, self.st.list_row_ok) = saved;
+        self.st.ui = saved;
     }
 
     /// `embed` renders a block with its author as the code author, so both are required.

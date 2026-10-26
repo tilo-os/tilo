@@ -143,8 +143,8 @@ impl Checker<'_> {
                         )));
                     }
                     _ => {
-                        this.st.ui_parent = "item";
-                        this.st.list_row_ok = true;
+                        this.st.ui.parent = "item";
+                        this.st.ui.list_row_ok = true;
                         this.ui_stmts(block, it);
                     }
                 }

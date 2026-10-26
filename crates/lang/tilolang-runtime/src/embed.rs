@@ -191,7 +191,7 @@ impl Core {
         };
         let invocation = match node.props.get("invocation") {
             Some(Value::Opt(Some(inner))) => match &**inner {
-                Value::Ref(r) => Some(r.target.clone()),
+                Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
                 _ => None,
             },
             _ => None,

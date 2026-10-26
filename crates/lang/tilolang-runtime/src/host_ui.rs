@@ -1,6 +1,7 @@
 //! Imports that build a view's UI tree. Views only.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_f64, ret_i64, ret_void, trap};
@@ -198,7 +199,7 @@ impl Core {
                 let (_, f) = self.lookup_field(&r.target, &field)?;
                 let binding = Binding {
                     target: BindTarget::Field {
-                        target: r.target,
+                        target: Rc::unwrap_or_clone(r.target),
                         field: f.id,
                     },
                     author: self.module_of_frame()?,

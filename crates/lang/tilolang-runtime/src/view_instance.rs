@@ -309,7 +309,7 @@ impl ViewInstance {
         };
         let view = view.as_text().filter(|v| !v.is_empty()).map(str::to_owned);
         self.events.borrow_mut().push(ViewEvent::Open {
-            target: r.target.clone(),
+            target: ResourceRef::clone(&r.target),
             view,
         });
         Ok(InvokeOutcome::Done(Value::Unit))
