@@ -584,6 +584,13 @@ impl Host {
         self.inner.store.sync_from(record)
     }
 
+    /// Whether the runtime reads exactly what the room record `record` holds; see
+    /// [`TiloStore::is_at`].
+    #[must_use]
+    pub fn is_at(&self, record: &tilo_resource::Doc) -> bool {
+        self.inner.store.is_at(record)
+    }
+
     /// The actions the runtime committed under a ticket of `first` or later.
     #[must_use]
     pub fn take_committed_from(&self, first: u64) -> Vec<Committed> {
@@ -696,14 +703,39 @@ impl Host {
             .any(|package| &package.id == module)
     }
 
-    /// The resource kind and label of a published record.
+    /// The label of a published record; see [`Self::label_at`].
     #[must_use]
     pub fn label_of(&self, doc: &str) -> String {
-        let store = &self.inner.store;
-        let ty = store.resource_type(doc).unwrap_or_default();
-        store
-            .first_text(&ResourceRef::root(doc, ty))
-            .map_or_else(|| doc.to_owned(), |(text, _)| text)
+        let ty = self.inner.store.resource_type(doc).unwrap_or_default();
+        self.label_at(&ResourceRef::root(doc, ty))
+    }
+
+    /// The label of the resource `at`, as it is published: its first text, and while it has
+    /// none, what its package calls one of its type (see [`crate::publish::untitled`]); never its
+    /// id.
+    #[must_use]
+    pub fn label_at(&self, at: &ResourceRef) -> String {
+        if let Some((text, _)) = self.inner.store.first_text(at) {
+            return text;
+        }
+        let package = self
+            .inner
+            .packages
+            .borrow()
+            .iter()
+            .find(|package| {
+                package
+                    .meta
+                    .types
+                    .iter()
+                    .any(|declared| declared.id == at.ty)
+            })
+            .cloned();
+        match (package, lookup(&at.ty)) {
+            (Some(package), Some(schema)) => crate::publish::untitled(&package.meta, schema),
+            (None, Some(schema)) => schema.spoken_name(),
+            (_, None) => at.ty.clone(),
+        }
     }
 
     /// Whether the type `ty` is registered (a package of it was loaded here).

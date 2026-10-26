@@ -87,6 +87,17 @@ pub fn resource_id(app: &str, id: &str) -> String {
     format!("tl:{app}:{id}")
 }
 
+/// What a resource of `schema` in the package `meta` is called while none of its own text names
+/// it: a package's root by the app's title ("Notes"), anything else by its type ("Todo list").
+#[must_use]
+pub fn untitled(meta: &Meta, schema: &crate::schema::TypeSchema) -> String {
+    if meta.roots.contains(&schema.id) {
+        meta.title.clone()
+    } else {
+        schema.spoken_name()
+    }
+}
+
 /// The id of a package's own resource, for its record-less actions.
 #[must_use]
 pub fn package_resource_id(app: &str) -> String {
@@ -221,6 +232,12 @@ struct TypeActions {
 }
 
 impl ActionTypes {
+    /// What a record of the type `schema` is called when no text in it names it: a package's
+    /// root (one per room) by the package's title, another by its type. Never by its id.
+    fn untitled(&self, schema: &crate::schema::TypeSchema) -> String {
+        untitled(&self.meta, schema)
+    }
+
     /// The action types of the package `meta`, whose actions `planner` runs.
     #[must_use]
     pub fn new(meta: &Meta, planner: &Arc<dyn Planner>) -> Self {
@@ -391,9 +408,15 @@ impl Whole {
     fn build(&self, snapshot: &crate::store::Snapshot) -> Built {
         let root = tilolang_runtime::value::ResourceRef::root(&self.doc, self.type_id.clone());
         let named = snapshot.first_text(&root);
-        let label = named
-            .as_ref()
-            .map_or_else(|| self.doc.clone(), |(text, _)| text.clone());
+        let label = named.as_ref().map_or_else(
+            || {
+                crate::schema::lookup(&self.type_id).map_or_else(
+                    || self.type_name.clone(),
+                    |schema| self.types.untitled(schema),
+                )
+            },
+            |(text, _)| text.clone(),
+        );
         let tree = match snapshot.record(&self.doc) {
             Ok(record) => publish_tree(&self.types, &record, &self.type_name, &self.doc, &label),
             Err(_) => publish_record(&self.types, &self.type_name, &self.doc, &label),
@@ -666,9 +689,10 @@ impl Published<'_> {
     /// The text that names the record, and the resource that holds it.
     fn label(&self) -> (String, Option<String>) {
         let named = self.store.first_text(&self.root());
-        let label = named
-            .as_ref()
-            .map_or_else(|| self.doc.to_owned(), |(text, _)| text.clone());
+        let label = named.as_ref().map_or_else(
+            || self.types.untitled(self.schema),
+            |(text, _)| text.clone(),
+        );
         (label, named.map(|(_, at)| at))
     }
 

@@ -17,6 +17,11 @@ app gets on a real system:
   actions    each app publishes its actions; a "New ..." action changes the
              app's record (its history gains the change)
   snapshot   a PNG of the nested session per app, in OUT
+  native     native Notes (so.tilo.notes), installed beside them, launches and
+             presents a frame (native-notes.png)
+  activation "Show this window" answers for tilolang Notes as for native Notes
+  read       the door's `read` of tilolang Notes lists the room's records, and
+             the notebook's read lists its notes by the ids a read takes
   idle       context switches of each app's threads over 10 s, untouched
   routes     the broker's route access, as the attested launch of an app: the
              collaboration probe (crates/dev/collab-probe) is installed as
@@ -54,6 +59,8 @@ REPO = Path(__file__).resolve().parents[2]
 SESSION = REPO / "dist/dev/nested-session.sh"
 BIN = REPO / "target/nested-session/bin"
 APPS = ["notes", "chat", "todo", "board"]
+# The native app installed beside them, to hold the tilolang apps to what it does.
+NATIVE = "so.tilo.notes"
 PROBE_RUNTIME = "0.1.0+probe"
 # The routes the probe tries as each app: Board declares that it reads Notes'
 # kinds; Todo declares no read.
@@ -323,6 +330,75 @@ def check_actions(session: Session) -> dict:
     return out
 
 
+def value_of(answer: dict):
+    try:
+        return answer["receipt"]["update"]["output"]["value"]
+    except (KeyError, TypeError):
+        raise Failed(f"an answer without a value: {json.dumps(answer)[:2000]}") from None
+
+
+def app_action(session: Session, app: str, title: str):
+    """The first action called `title` that the window of `app` publishes. Its application is
+    `app` exactly: so.tilo.notes never matches so.tilo.lang.notes. (An app out of focus lists
+    its actions under directory ids, which do not start with the app's id.)"""
+    for action in session.actions(title):
+        if action.get("application") == app and action.get("title") == title:
+            return action
+    return None
+
+
+def check_native(session: Session, out: Path) -> dict:
+    """Native Notes launches beside the tilolang apps and presents a frame."""
+    session.invoke("applications", NATIVE)
+    windows = until(f"{NATIVE}'s window",
+                    lambda: {w.get("app_id"): w for w in session.windows() if w.get("app_id") == NATIVE})
+    def presented():
+        frames = session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
+        return any(f["app_id"] == NATIVE and f["presented"] and f["pixels_ready"] for f in frames)
+    until(f"a presented frame of {NATIVE}", presented, 30)
+    # Connected: its window publishes its actions.
+    until(f"{NATIVE}'s actions", lambda: app_action(session, NATIVE, "Show this window"), 60)
+    w = windows[NATIVE]
+    session.invoke("desktop-windows", f"tab.focus:{w['group']}:{w['tab']}")
+    time.sleep(0.5)
+    path = out / "native-notes.png"
+    session.control_cmd("snapshot", str(path))
+    return {"group": w["group"], "tab": w["tab"], "snapshot": str(path)}
+
+
+def check_activation(session: Session) -> dict:
+    """"Show this window" answers for a tilolang app as it does for the native app."""
+    out = {}
+    for app in (NATIVE, app_id("notes")):
+        action = until(f"{app}'s 'Show this window'", lambda: app_action(session, app, "Show this window"))
+        out[app] = value_of(session.invoke("app-actions", action["id"]))
+    if out[app_id("notes")] != out[NATIVE]:
+        raise Failed(f"'Show this window' answers differently from native Notes: {out}")
+    return out
+
+
+def check_read(session: Session) -> dict:
+    """An agent or a script reads what a tilolang app holds through the door's `read`, as it
+    reads a native app's content: the room's records, then one of them by its id."""
+    action = until("tilolang Notes' 'Read the content'",
+                   lambda: app_action(session, app_id("notes"), "Read the content"))
+    room = value_of(session.invoke("app-actions", action["id"]))
+    kind = f"tl.{app_id('notes')}.Notebook"
+    notebook = next((r for r in room.get("records", []) if r.get("kind") == kind), None)
+    if notebook is None:
+        raise Failed(f"the room's read lists no notebook: {json.dumps(room)[:2000]}")
+    read = value_of(session.invoke("app-actions", action["id"], {"item": notebook["item"]}))
+    notes = read.get("fields", {}).get("notes", {})
+    if read.get("kind") != kind or not notes.get("items"):
+        raise Failed(f"the notebook's read holds no notes: {json.dumps(read)[:2000]}")
+    native = until("native Notes' 'Read the content'", lambda: app_action(session, NATIVE, "Read the content"))
+    return {
+        "records": len(room["records"]),
+        "notebook": {"label": read.get("label"), "notes": notes.get("count")},
+        "native": sorted(value_of(session.invoke("app-actions", native["id"]))),
+    }
+
+
 def snapshots(session: Session, windows: dict, out: Path) -> dict:
     shots = {}
     for name in APPS:
@@ -407,9 +483,9 @@ def check_routes(session: Session) -> dict:
     return result
 
 
-def start_session(state: Path, out: Path, tapps: list[Path], tag: str):
+def start_session(state: Path, out: Path, tapps: list[Path], tag: str, native: str = ""):
     ready = out / f"ready-{tag}.json"
-    argv = [SESSION, "--no-build", "--headless", "--software", "--fresh-desktop", "--apps", "",
+    argv = [SESSION, "--no-build", "--headless", "--software", "--fresh-desktop", "--apps", native,
             "--state", state, "--ready", ready]
     for tapp in tapps:
         argv += ["--install-tapp", tapp]
@@ -460,7 +536,7 @@ def main() -> int:
 
     build = [] if not args.no_build else ["--no-build"]
     print("==> preparing the session", file=sys.stderr)
-    run([SESSION, *build, "--prepare-only", "--apps", "", "--state", state])
+    run([SESSION, *build, "--prepare-only", "--apps", "notes", "--state", state])
     if not args.no_build:
         print("==> building the tilolang tool and the probe", file=sys.stderr)
         run(["cargo", "build", "-p", "tilolang-cli", "--bin", "tilolang",
@@ -474,7 +550,8 @@ def main() -> int:
     proc = None
     try:
         # The apps as they are.
-        proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps")
+        proc, session = start_session(state, out, [out / "build" / f"{n}.tapp" for n in APPS], "apps",
+                                      native="notes")
         pid = proc.pid
         ok = run_checks(summary, [
             ("registry", lambda: check_registry(session)),
@@ -482,6 +559,9 @@ def main() -> int:
             ("processes", lambda: check_processes(session, pid)),
             ("actions", lambda: check_actions(session)),
             ("snapshots", lambda: snapshots(session, summary["checks"]["launch"], out)),
+            ("native", lambda: check_native(session, out)),
+            ("activation", lambda: check_activation(session)),
+            ("read", lambda: check_read(session)),
             ("idle", lambda: check_idle(summary["checks"]["processes"])),
         ])
         stop_session(proc)

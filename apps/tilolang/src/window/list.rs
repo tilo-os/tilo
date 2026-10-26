@@ -12,7 +12,7 @@
 //! they are: a row inserted, removed or moved is that change of the model, and a row the view
 //! changed is read again and rebuilt alone.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -104,6 +104,12 @@ pub trait RowRead {
 
     /// What a row is called, for the list's type-ahead and accessibility.
     fn label(data: &Self::Data) -> Option<String>;
+
+    /// The row's avatar, when its view gives it one.
+    fn avatar(data: &Self::Data) -> Option<&RowAvatar> {
+        let _ = data;
+        None
+    }
 }
 
 impl RowRead for RowSource {
@@ -115,6 +121,10 @@ impl RowRead for RowSource {
 
     fn list(&self) -> &str {
         &self.list
+    }
+
+    fn avatar(data: &RowData) -> Option<&RowAvatar> {
+        data.avatar.as_ref()
     }
 
     fn label(data: &RowData) -> Option<String> {
@@ -147,7 +157,15 @@ impl RowRead for RowSource {
                 Some(Value::Principal(who)) => {
                     Some(RowAvatar::Of(self.names.label(&who.0), who.0.clone()))
                 }
-                Some(Value::Opt(None)) => Some(RowAvatar::Space),
+                // No participant this time: the row's own icon stands in for them as the item's
+                // avatar (a conversation's group), else the row keeps the room an avatar takes.
+                Some(Value::Opt(None)) => {
+                    Some(icon(node, "icon").map_or(RowAvatar::Space, |glyph| {
+                        let name = text(node, "title")
+                            .unwrap_or_else(|| super::describe::title_of(&self.host, &target));
+                        RowAvatar::Glyph(name, glyph)
+                    }))
+                }
                 _ => None,
             });
         Some(RowData {
@@ -168,9 +186,20 @@ impl RowRead for RowSource {
 pub enum RowAvatar {
     /// A participant: what they are called, and their identity.
     Of(String, String),
-    /// None this time (`.none`): the row keeps the room one takes, so its text lines up with
-    /// that of the rows beside it that have one.
+    /// No participant this time (`.none`), and the row names an icon: the item itself, as a
+    /// neutral avatar with that glyph (a group conversation's), called by the item's title.
+    Glyph(String, Icon),
+    /// None this time (`.none`) and no icon: the row keeps the room one takes when other rows
+    /// of its list show an avatar, so its text lines up with theirs, and takes none otherwise.
     Space,
+}
+
+impl RowAvatar {
+    /// Whether the row shows an avatar rather than the room for one.
+    #[must_use]
+    pub fn shown(&self) -> bool {
+        !matches!(self, Self::Space)
+    }
 }
 
 /// The first node of `kind` at or under `node`.
@@ -194,6 +223,11 @@ pub struct Rows<S: RowRead = RowSource> {
     index: RefCell<Option<HashMap<Rc<str>, usize>>>,
     /// The rows shown, by key.
     shown: RefCell<HashMap<String, S::Data>>,
+    /// Whether a row the list showed has an avatar: the rows without one then keep its room.
+    /// Once on it stays on, so rows do not shift as others scroll in and out.
+    avatars: Cell<bool>,
+    /// The shown rows to build again because the avatar column came in after they were built.
+    restyled: RefCell<Vec<String>>,
 }
 
 impl<S: RowRead> Default for Rows<S> {
@@ -203,6 +237,8 @@ impl<S: RowRead> Default for Rows<S> {
             keys: Vec::new(),
             index: RefCell::new(None),
             shown: RefCell::default(),
+            avatars: Cell::new(false),
+            restyled: RefCell::default(),
         }
     }
 }
@@ -222,9 +258,34 @@ impl<S: RowRead> Rows<S> {
         Self {
             source: Some(source),
             keys,
-            index: RefCell::new(None),
-            shown: RefCell::default(),
+            ..Self::default()
         }
+    }
+
+    /// Whether the rows without an avatar keep the room one takes: some row the list showed
+    /// has one. A list where none has one reserves nothing.
+    #[must_use]
+    pub fn shows_avatars(&self) -> bool {
+        self.avatars.get()
+    }
+
+    /// Turn the avatar column on when a row of `shown` has an avatar, and queue the rows
+    /// already built without its room to be built again.
+    fn note_avatars(&self, shown: &HashMap<String, S::Data>) {
+        if self.avatars.get()
+            || !shown
+                .values()
+                .any(|data| S::avatar(data).is_some_and(RowAvatar::shown))
+        {
+            return;
+        }
+        self.avatars.set(true);
+        self.restyled.borrow_mut().extend(
+            shown
+                .iter()
+                .filter(|(_, data)| S::avatar(data).is_some_and(|avatar| !avatar.shown()))
+                .map(|(key, _)| key.clone()),
+        );
     }
 
     /// Whether these are the rows of `source`'s list.
@@ -344,7 +405,8 @@ impl<S: RowRead> Rows<S> {
             return Vec::new();
         };
         let mut shown = self.shown.borrow_mut();
-        keys.into_iter()
+        let mut changed: Vec<String> = keys
+            .into_iter()
             .filter(|key| {
                 let Some(old) = shown.get(key) else {
                     return false;
@@ -358,7 +420,10 @@ impl<S: RowRead> Rows<S> {
                 }
                 changed
             })
-            .collect()
+            .collect();
+        self.note_avatars(&shown);
+        changed.append(&mut self.restyled.borrow_mut());
+        changed
     }
 
     /// Read every shown row again: what is bound to its checkbox, who is at its item, what the
@@ -378,7 +443,12 @@ impl Rows<RowSource> {
             source: None,
             keys: rows.iter().map(|row| Rc::from(row.key.as_str())).collect(),
             index: RefCell::new(None),
+            avatars: Cell::new(
+                rows.iter()
+                    .any(|row| row.avatar.as_ref().is_some_and(RowAvatar::shown)),
+            ),
             shown: RefCell::new(rows.into_iter().map(|row| (row.key.clone(), row)).collect()),
+            restyled: RefCell::default(),
         }
     }
 
@@ -477,6 +547,20 @@ impl<S: RowRead> ListModel for Rows<S> {
                 shown.insert(key.to_string(), data);
             }
         }
+        self.note_avatars(&shown);
+    }
+
+    /// The rows built before the avatar column came in, built again with its room.
+    fn poll_changes(&mut self) -> Vec<ListModelChange<String>> {
+        let keys = std::mem::take(&mut *self.restyled.borrow_mut());
+        if keys.is_empty() {
+            return Vec::new();
+        }
+        vec![ListModelChange::RowsChanged { keys }]
+    }
+
+    fn needs_poll(&self) -> bool {
+        !self.restyled.borrow().is_empty()
     }
 
     fn label(&self, index: usize) -> Option<String> {
@@ -507,7 +591,6 @@ fn icon(node: &UiNode, name: &str) -> Option<Icon> {
     }
 }
 
-/// The row of one item.
 /// Whether the selection being made comes from a click or a tap the person just made, rather
 /// than the keyboard or an assistive technology.
 fn by_hand() -> bool {
@@ -517,7 +600,8 @@ fn by_hand() -> bool {
     )
 }
 
-fn row(data: &RowData, requests: &Requests, sink: &EventSink) -> Element {
+/// The row of one item. `avatars`: rows of its list show avatars, so one without keeps the room.
+fn row(data: &RowData, avatars: bool, requests: &Requests, sink: &EventSink) -> Element {
     let title = data
         .row
         .as_ref()
@@ -554,8 +638,13 @@ fn row(data: &RowData, requests: &Requests, sink: &EventSink) -> Element {
     }
     match &data.avatar {
         Some(RowAvatar::Of(name, identity)) => row = row.avatar(name.clone(), identity.clone()),
-        Some(RowAvatar::Space) => row = row.avatar_space(),
-        None => {}
+        Some(RowAvatar::Glyph(name, glyph)) => {
+            row = row
+                .avatar(name.clone(), data.item.id_string())
+                .avatar_glyph(*glyph);
+        }
+        Some(RowAvatar::Space) if avatars => row = row.avatar_space(),
+        Some(RowAvatar::Space) | None => {}
     }
     if let Some(identity) = &data.presence {
         row = row.presence(identity.clone());
@@ -692,10 +781,13 @@ impl ListPane {
         let list = VirtualList::with_selection_delegate(rows, 56.0, move |rows, _, key, _, _| {
             rows.find(key).map_or_else(
                 || Box::new(ListRow::new(key.clone(), "")) as Element,
-                |data| row(&data, &requests, &sink),
+                |data| row(&data, rows.shows_avatars(), &requests, &sink),
             )
         })
         .filling()
+        // The list is the column's body: its rows' text starts where the column's header
+        // starts its title (HIG's one content edge).
+        .in_column()
         .selection_follows_focus()
         // A click or a tap on a row opens its item: a narrow window pushes it in front, as
         // selecting an entry of an overview does (HIG §1b). Moving through the list with the
@@ -1116,7 +1208,7 @@ mod tests {
                 ..data(key, &key.to_uppercase())
             })
             .collect();
-        let element = row(&rows[0], &requests, &sink);
+        let element = row(&rows[0], false, &requests, &sink);
         assert!(
             element
                 .as_any()
@@ -1181,5 +1273,58 @@ mod tests {
         );
         assert!(matches!(pane.body, Body::List(_)));
         assert_eq!(pane.len(), 1);
+    }
+
+    fn with_avatar(key: &str, avatar: RowAvatar) -> RowData {
+        RowData {
+            avatar: Some(avatar),
+            ..data(key, &key.to_uppercase())
+        }
+    }
+
+    #[test]
+    fn a_list_where_no_row_has_an_avatar_keeps_no_room_for_one() {
+        let rows = Rows::new(vec![
+            with_avatar("a", RowAvatar::Space),
+            with_avatar("b", RowAvatar::Space),
+        ]);
+        assert!(!rows.shows_avatars(), "no row shows an avatar");
+        let mixed = Rows::new(vec![
+            with_avatar("a", RowAvatar::Space),
+            with_avatar("b", RowAvatar::Of("Ada".to_owned(), "ada".to_owned())),
+        ]);
+        assert!(
+            mixed.shows_avatars(),
+            "beside one that does, a row keeps the room"
+        );
+        let group = Rows::new(vec![with_avatar(
+            "a",
+            RowAvatar::Glyph("Weekend".to_owned(), Icon::Users),
+        )]);
+        assert!(group.shows_avatars(), "a group's avatar is an avatar");
+    }
+
+    #[test]
+    fn rows_built_before_an_avatar_came_in_are_built_again_with_its_room() {
+        let mut rows = Rows::new(vec![with_avatar("a", RowAvatar::Space)]);
+        assert!(!rows.shows_avatars());
+        assert!(rows.poll_changes().is_empty());
+        // A row with an avatar scrolls in.
+        let mut shown = rows.shown.borrow().clone();
+        shown.insert(
+            "b".to_owned(),
+            with_avatar("b", RowAvatar::Of("Ada".to_owned(), "ada".to_owned())),
+        );
+        rows.note_avatars(&shown);
+        assert!(rows.shows_avatars());
+        assert!(rows.needs_poll());
+        assert_eq!(
+            rows.poll_changes(),
+            vec![ListModelChange::RowsChanged {
+                keys: vec!["a".to_owned()]
+            }],
+            "the row without one is built again, with the room"
+        );
+        assert!(!rows.needs_poll());
     }
 }

@@ -24,7 +24,8 @@ and its runtime directory at the end. `--keep` leaves it running.
 ## What it checks
 
 `tilolang build apps/tl/board --search apps/tl` builds Notes, Chat, Todo and
-Board. The session installs them (`--install-tapp`), then:
+Board. The session installs them (`--install-tapp`) beside native Notes
+(`--apps notes`), then:
 
 - **registry**: each package is an application under its own id, name and
   category (`actions list`, provider `applications`).
@@ -37,6 +38,17 @@ Board. The session installs them (`--install-tapp`), then:
 - **actions**: each app publishes its actions. Invoking "New note", "New
   chat" and "New item" each adds an entry to that app's history.
 - **snapshots**: one PNG of the session per app, with that app in front.
+- **native**: native Notes (`so.tilo.notes`) opens beside them, presents a
+  frame and publishes its actions. Both apps are called Notes; they are told
+  apart by id. In this session native Notes shows "Connecting to Shared
+  browser workspace…" in place of its notebook: the shell dials a host for the
+  session's workspace and the room never completes a first sync with it. Its
+  actions answer meanwhile.
+- **activation**: "Show this window" answers for tilolang Notes exactly as it
+  does for native Notes.
+- **read**: the door's `read` of tilolang Notes (what `tilo_read` calls) lists
+  the room's records with their ids and kinds; a read of the notebook lists the
+  note "New note" made, by the id a read takes.
 - **idle**: context switches of each app's threads over 10 s, untouched.
   Expected: zero.
 - **routes**: a second start of the same session installs the collaboration
@@ -50,8 +62,9 @@ Everything goes to `target/tilolang-e2e` (`--out DIR` changes it):
 
 - `summary.json` holds every check's result and the list of failed checks. The
   exit status is non-zero when a check fails.
-- `notes.png`, `chat.png`, `todo.png` and `board.png` are the snapshots. Look
-  at them: each should show only native window chrome around the app.
+- `notes.png`, `chat.png`, `todo.png` and `board.png` are the snapshots, and
+  `native-notes.png` native Notes. Look at them: each should show only native
+  window chrome around the app.
 - `session-apps.log` and `session-routes.log` are the session script's own
   output.
 - `shell-apps.log` is the shell's log from the first start, with each app's

@@ -426,6 +426,9 @@ impl<'a> Reader<'a> {
         if let Some(sentence) = self.app_message(what, scope, &args) {
             return sentence;
         }
+        if verb.action.action == tilo_actions::CREATE_ACTION {
+            return self.named_or_not("history-verb-create", scope, &args);
+        }
         let action = self
             .labels
             .and_then(|labels| labels.action(&verb.action))

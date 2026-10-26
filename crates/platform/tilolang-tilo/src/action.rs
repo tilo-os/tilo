@@ -15,7 +15,7 @@ use tilo_actions::{
     Action, ActionError, ActionFacet, ActionKey, ActionRegistry, Described, Did, Doc,
     EncodedAction, Scalar,
 };
-use tilo_resource::{ActionCx, Edit, Fields, Model, ModelError, Slot};
+use tilo_resource::{ActionCx, Edit, Fields, Model, ModelError, Segment, Slot};
 
 use crate::record::DynRecord;
 
@@ -36,7 +36,8 @@ pub const EDIT_FLAG_ACTION: &str = "edit-flag";
 
 /// The action id of a resource the host creates on its own, outside any action: a package's
 /// per-room root, the first time it is wanted ([`crate::store::TiloStore::create_with_id`]).
-pub const CREATE_ACTION: &str = "$create";
+/// History reads it as the platform's creation of the resource.
+pub const CREATE_ACTION: &str = tilo_actions::CREATE_ACTION;
 
 /// Who is behind the code that planned an action.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,7 +325,7 @@ impl Action for DynAction {
         apply_edits(doc, &self.app, &self.edits, &payload)
     }
 
-    fn describe(&self, _doc: &Doc) -> Option<Described> {
+    fn describe(&self, doc: &Doc) -> Option<Described> {
         let args = self
             .args
             .as_object()
@@ -337,11 +338,91 @@ impl Action for DynAction {
             self.action_id.as_str(),
         );
         let described = Described::new(Did::verb(key, args));
-        Some(match self.resources().first() {
-            Some(id) => described.on(*id, *id),
-            None => described,
-        })
+        // History names the resource as it reads, by its title and never by its id: the item
+        // the action wrote (a note of the notebook), else the record; one without a title yet
+        // by its type ("Created Notebook", "Pin: Note").
+        let Some((at, schema, title)) = self.subject(doc) else {
+            return Some(described);
+        };
+        Some(described.on(at, title.unwrap_or_else(|| schema.spoken_name())))
     }
+}
+
+impl DynAction {
+    /// The resource this action writes first, as the record reads before it applies: its
+    /// published id (an item of a record by its path), its type, and its title, the first text
+    /// among its own fields. A resource the action creates is read from the record it creates.
+    fn subject(
+        &self,
+        doc: &Doc,
+    ) -> Option<(String, &'static crate::schema::TypeSchema, Option<String>)> {
+        let mut edit = self.edits.first()?;
+        while let DynEdit::In { edit: inner, .. } = edit {
+            edit = inner;
+        }
+        let (id, path) = match edit {
+            DynEdit::Create { id, record } => {
+                let schema = record
+                    .get(crate::schema::TYPE_KEY)
+                    .and_then(Json::as_str)
+                    .and_then(crate::schema::lookup)?;
+                let title = own_text(schema, |field| {
+                    record.get(field).and_then(Json::as_str).map(str::to_owned)
+                });
+                return Some((id.clone(), schema, title));
+            }
+            DynEdit::Edit { id, edit } => (id, edit.path()),
+            DynEdit::Remove { id }
+            | DynEdit::OutboxPush { id, .. }
+            | DynEdit::OutboxSettle { id, .. } => (id, &[][..]),
+            DynEdit::In { .. } => return None,
+        };
+        // The items the edit goes down to: each collection field and the item of it.
+        let steps: Vec<tilolang_runtime::value::Step> = path
+            .windows(2)
+            .filter_map(|pair| match pair {
+                [Segment::Field(field), Segment::Item(item)] => {
+                    Some(tilolang_runtime::value::Step {
+                        field: field.clone(),
+                        item: item.as_str().to_owned(),
+                    })
+                }
+                _ => None,
+            })
+            .collect();
+        let root = crate::reads::resource_obj(doc, &self.app, id)?;
+        let root_ty = crate::reads::type_at(doc, &root)?;
+        let located = crate::reads::locate(doc, root, &root_ty, &steps).ok()?;
+        let at = tilolang_runtime::value::ResourceRef {
+            doc: id.clone(),
+            path: steps,
+            ty: located.schema.id.clone(),
+        };
+        let title = located.obj.and_then(|obj| {
+            own_text(located.schema, |field| {
+                tilo_resource::read_key::<String>(doc, &obj, field).ok()
+            })
+        });
+        Some((at.id_string(), located.schema, title))
+    }
+}
+
+/// The first non-empty text among the `Text` fields of `schema`, by field id, each read by
+/// `read`.
+fn own_text(
+    schema: &crate::schema::TypeSchema,
+    read: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let mut fields: Vec<_> = schema
+        .fields
+        .iter()
+        .filter(|field| field.kind == crate::schema::MergeKind::Text)
+        .collect();
+    fields.sort_by(|a, b| a.id.cmp(&b.id));
+    fields
+        .into_iter()
+        .filter_map(|field| read(&field.id))
+        .find(|text| !text.trim().is_empty())
 }
 
 /// Register the decoder of [`DynAction`], so a replaying peer reconstructs it with no wasm.
