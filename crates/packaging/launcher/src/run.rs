@@ -2899,6 +2899,8 @@ struct ChildSetup {
         Option<std::thread::JoinHandle<()>>,
     ),
     latency_sensitive: bool,
+    /// A development session's launch of a module payload: followed from the spawn on.
+    live_module: Option<crate::live_module::LiveModule>,
 }
 
 /// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap`
@@ -2927,6 +2929,7 @@ fn spawn_and_wait(
         services: resolved,
         identity_broker,
         latency_sensitive,
+        live_module,
     } = child_setup;
     let (observer, debug_output) = match observer {
         Some((observer, debug_output)) => (Some(observer), debug_output),
@@ -3180,6 +3183,12 @@ fn spawn_and_wait(
     }
     // 5. Spawn + wait.
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;
+    // Until the app exits; the watch stops and its directory goes when this drops.
+    let _following = live_module.and_then(|live| {
+        live.follow()
+            .inspect_err(|error| tracing::warn!(%error, "live module: not following reinstalls"))
+            .ok()
+    });
     if let Some((_, file)) = debug_output {
         let sink = Arc::new(std::sync::Mutex::new(file));
         let budget = Arc::new(AtomicUsize::new(DEBUG_OUTPUT_LIMIT));
@@ -3931,6 +3940,15 @@ pub(crate) fn run_with_context(
         resolved_runtime.is_some(),
         &optional_runtimes,
     )?;
+    // A development session's launch of a module payload follows its package's reinstalls.
+    let live_module = if enrolled.is_none() && native_owner.is_none() {
+        crate::live_module::LiveModule::prepare(manifest, opts)?
+    } else {
+        None
+    };
+    if let Some(live) = &live_module {
+        live.splice(&mut argv, &mut ro_paths)?;
+    }
     if native_owner
         .and_then(crate::managed::EnrolledProcessObserver::capture_projection)
         .is_some()
@@ -4050,6 +4068,7 @@ pub(crate) fn run_with_context(
                 identity_broker_thread,
             ),
             latency_sensitive,
+            live_module,
         },
         &egress,
         net_gate.as_ref(),
@@ -5802,6 +5821,7 @@ mod managed_spawn_policy_tests {
                     services: vec![],
                     identity_broker: (None, None, None),
                     latency_sensitive: false,
+                    live_module: None,
                 },
                 &crate::netgate::EgressDecision::Blocked,
                 None,
@@ -5878,6 +5898,7 @@ mod managed_spawn_policy_tests {
                     services: vec![],
                     identity_broker: (None, None, None),
                     latency_sensitive: false,
+                    live_module: None,
                 },
                 &crate::netgate::EgressDecision::Blocked,
                 None,
@@ -5917,6 +5938,7 @@ mod managed_spawn_policy_tests {
                     services: vec![],
                     identity_broker: (None, None, None),
                     latency_sensitive: false,
+                    live_module: None,
                 },
                 &crate::netgate::EgressDecision::Blocked,
                 None,
