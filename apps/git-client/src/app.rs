@@ -1161,6 +1161,18 @@ impl GitClientApp {
     /// Give keyboard focus to one embedded text field (or none), keeping the
     /// toolkit inputs' focus flags mutually exclusive.
     fn set_focus(&mut self, field: Option<Field>) {
+        // The message is written in the list column, which a narrow window
+        // keeps in the drawer: focusing the field opens it, so the person is
+        // never typing into something they cannot see.
+        if field == Some(Field::Commit) && self.drawer.is_overlay() && !self.drawer.is_open() {
+            // A window someone uses slides the column in; a capture puts it
+            // where it stands, so the frame does not depend on the clock.
+            if self.mode.is_live() {
+                self.drawer.open();
+            } else {
+                self.drawer.snap(true);
+            }
+        }
         self.focus = field;
         self.commit_input.set_focus(field == Some(Field::Commit));
         self.branch_input.set_focus(field == Some(Field::Branch));
