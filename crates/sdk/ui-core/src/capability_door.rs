@@ -270,29 +270,41 @@ mod tests {
 
     #[test]
     fn each_resolution_draws_its_own_face() {
+        // Each face is drawn with `String`s: the three closures answer one
+        // `T`, so a borrowed face would tie its closures' lifetimes together.
         let granted = Door::granted(Capability::FIREWALL);
         assert_eq!(granted.control(|| "apply"), Some("apply"));
         assert_eq!(
-            granted.face(|| "control", |_| "grant", |_, _| "none"),
+            granted.face(
+                || "control".to_owned(),
+                str::to_owned,
+                |_, _| "none".to_owned()
+            ),
             "control"
         );
 
         let grantable = Door::grantable(Capability::FIREWALL, "allow changing firewall rules");
         assert_eq!(grantable.control(|| "apply"), None);
         assert_eq!(
-            grantable.face(|| "control", |words| words, |_, _| "none"),
+            grantable.face(
+                || "control".to_owned(),
+                str::to_owned,
+                |_, _| "none".to_owned()
+            ),
             "allow changing firewall rules"
         );
 
         let unavailable = Door::unavailable(Capability::FIREWALL, "firewalld isn't running").face(
-            || "control",
-            |_| "grant",
-            |reason, remedy| (reason, remedy),
+            || "control".to_owned(),
+            str::to_owned,
+            |reason, remedy| match remedy {
+                Some(remedy) => format!("{reason}; {remedy}"),
+                None => reason.to_owned(),
+            },
         );
         assert_eq!(
-            unavailable,
-            ("firewalld isn't running", None),
-            "unavailable draws no control"
+            unavailable, "firewalld isn't running",
+            "unavailable draws no control, and says why with what would help"
         );
     }
 
