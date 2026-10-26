@@ -115,9 +115,35 @@ pub enum NativeDocumentRead {
         body: Box<dyn DocumentBytes>,
     },
 }
+/// Who answers an app's read of one record ([`NativeDocumentReads::record_read`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordRead {
+    /// The app's own channel: a room this owner keeps no records of, or a
+    /// record a sealed room does not hold yet, which is new and which the
+    /// app creates on its own sealed channel. Answered [`Reply::Legacy`].
+    Own,
+    /// Every record of a room this owner commits
+    /// ([`NativeDocumentReads::requires_room`]): read under the launcher's or
+    /// a host worker's custody.
+    Committed,
+    /// A record a sealed room this device holds already holds, read through
+    /// the channel's keys. Its authority is the one the app's own sealed
+    /// channel reads under: the channel's live admission and the room's read
+    /// policy, plus the launcher's custody whenever the app has one.
+    Sealed,
+}
 pub trait NativeDocumentReads: Send + Sync {
     /// Durable native installation obligation, independent of runtime health.
     fn requires_room(&self, room: &str) -> bool;
+    /// Who answers an app's read of `app`'s `record` in `room`.
+    fn record_read(&self, room: &str, app: &str, record: &str) -> RecordRead {
+        let _ = (app, record);
+        if self.requires_room(room) {
+            RecordRead::Committed
+        } else {
+            RecordRead::Own
+        }
+    }
     /// Prepare only a missing record for a live, original-package-attested
     /// person launch. This is not a read/capture fallback or a wire capability.
     fn prepare_application(
@@ -423,6 +449,30 @@ impl CapnpChannelHandle {
         });
     }
     pub(super) fn document_read_context(&self) -> Result<NativeDocumentReadContext, String> {
+        self.read_context(false)
+    }
+    /// Who answers this channel's read of its own record.
+    fn record_read(&self) -> RecordRead {
+        let route = self.route();
+        self.state
+            .services
+            .committed_documents
+            .as_ref()
+            .map_or(RecordRead::Own, |service| {
+                service.record_read(&route.cluster_id, &route.app_id, &route.record_id)
+            })
+    }
+    /// The context this channel reads its own record with, as
+    /// [`Self::record_read`] decides.
+    fn own_record_context(&self) -> Result<NativeDocumentReadContext, String> {
+        self.read_context(self.record_read() == RecordRead::Sealed)
+    }
+    /// The read context under this channel's custody. A `sealed` read of the
+    /// channel's own record needs no launcher custody when the app has
+    /// none: an app the person opened directly (an SDK app the runtime
+    /// starts) reads its sealed record under its channel's admission, as its
+    /// own sealed channel does. An agent never reads that way.
+    fn read_context(&self, sealed: bool) -> Result<NativeDocumentReadContext, String> {
         let route = self.route();
         let admitted = self.verified_identity.clone();
         let certificate = admitted
@@ -449,10 +499,7 @@ impl CapnpChannelHandle {
                 if !state.is_current_host_worker(peer, &checked_route, &scope.certificate)? {
                     return Err("committed read worker ended".into());
                 }
-            } else {
-                let local = local
-                    .as_ref()
-                    .ok_or("committed read requires launcher custody")?;
+            } else if let Some(local) = local.as_ref() {
                 if !local.current()
                     || local.app_id != checked_route.app_id
                     || local.workspace_id != checked_route.cluster_id
@@ -460,6 +507,8 @@ impl CapnpChannelHandle {
                 {
                     return Err("committed read launcher custody ended".into());
                 }
+            } else if !sealed || admitted.agent_id.is_some() {
+                return Err("committed read requires launcher custody".into());
             }
             state
                 .revalidate_admission(&checked_route, &admitted)
@@ -588,13 +637,7 @@ impl CapnpChannelHandle {
             }
             return Ok(Reply::ConnectionSnapshot(snapshot));
         }
-        let required = self
-            .state
-            .services
-            .committed_documents
-            .as_ref()
-            .is_some_and(|service| service.requires_room(&self.route().cluster_id));
-        if !required {
+        if self.record_read() == RecordRead::Own {
             return Ok(Reply::Legacy);
         }
         let mut slot = self.committed_read.borrow_mut();
@@ -652,7 +695,7 @@ impl CapnpChannelHandle {
             return Ok(Reply::Unavailable);
         };
         let reading = Reading {
-            context: self.document_read_context()?,
+            context: self.own_record_context()?,
             service,
             budget: &self.state.committed_read_budget,
             ids: &self.state.committed_read_id,
@@ -758,12 +801,12 @@ fn open_read(
 /// anything else, refusals included; otherwise the checked context.
 fn read_unchanged(
     service: &dyn NativeDocumentReads,
+    read: RecordRead,
     context: impl FnOnce() -> Result<NativeDocumentReadContext, String>,
     budget: &Arc<Budget>,
-    room: &str,
     known_revision: Option<[u8; 32]>,
 ) -> Option<NativeDocumentReadContext> {
-    if !service.requires_room(room) {
+    if read == RecordRead::Own {
         return None;
     }
     let context = context().ok()?;
@@ -941,9 +984,9 @@ impl CapnpChannelHandle {
         let service = self.state.services.committed_documents.clone()?;
         let context = read_unchanged(
             service.as_ref(),
-            || self.document_read_context(),
+            self.record_read(),
+            || self.own_record_context(),
             &self.state.committed_read_budget,
-            &self.route().cluster_id,
             known_revision,
         )?;
         Some(self.register_read_expiry(&context, service.as_ref()))
