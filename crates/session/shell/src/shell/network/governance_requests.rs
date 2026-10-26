@@ -204,22 +204,26 @@ impl ShellNetwork {
     ///
     /// For the frame tick: with the outbox empty, or with nothing changed
     /// since the last look ([`Self::outbox_state`]), it is one read of the
-    /// tree and a compare, with no scan and no allocation.
+    /// tree and a compare, with no scan and no allocation. Never waits for
+    /// the tree: a tick that finds another thread writing it looks again on
+    /// a later tick, as the placements step does.
     pub(super) fn send_outbox_off_loop(&self) {
-        let Some(state) = Self::outbox_state(&self.tree.read()) else {
-            return;
-        };
-        let Ok(mut gate) = self.outbox_waiting.lock() else {
-            return;
-        };
-        if *gate == Some(state) {
-            return;
-        }
-        // Nothing more to ask until a room, the outbox or a host changes.
-        *gate = Some(state);
-        drop(gate);
         let entries: Vec<_> = {
-            let tree = self.tree.read();
+            let Some(tree) = self.tree.try_read() else {
+                return;
+            };
+            let Some(state) = Self::outbox_state(&tree) else {
+                return;
+            };
+            let Ok(mut gate) = self.outbox_waiting.lock() else {
+                return;
+            };
+            if *gate == Some(state) {
+                return;
+            }
+            // Nothing more to ask until a room, the outbox or a host changes.
+            *gate = Some(state);
+            drop(gate);
             let Ok(mut asked) = self.outbox_asked.lock() else {
                 return;
             };

@@ -26,11 +26,18 @@ fn laptop(seed: u8) -> (Arc<ShellNetwork>, tokio::sync::mpsc::Receiver<NetCmd>) 
         panic!("a root names a person");
     };
     let mut tree = WorkspaceTree::default();
-    let mut workspace = Workspace::in_room(WorkspaceId::new(), RoomId::new(), "Research");
+    let held = RoomId::new();
+    let mut workspace = Workspace::in_room(WorkspaceId::new(), held, "Research");
     workspace.set_owner(person);
     tree.desktop.active = workspace.id;
     tree.desktop.workspaces.push(workspace);
-    let (net, commands) = personal_workspaces_network_for_test(&root, &device, tree);
+    let (mut net, commands) = personal_workspaces_network_for_test(&root, &device, tree);
+    // The person lists the rooms they hold: this one, hosted on this device.
+    net.held_personal_rooms_override =
+        Some(crate::shell::personal_workspaces::HeldRooms::from([(
+            held,
+            *device.public().as_bytes(),
+        )]));
     let net = Arc::new(net);
     net.start_peer_sync_worker();
     (net, commands)
