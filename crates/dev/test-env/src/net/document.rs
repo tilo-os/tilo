@@ -195,7 +195,7 @@ impl FakeDocumentNet {
                     continue;
                 }
                 if !self.missing(document, author).is_empty() {
-                    disagreements.push(format!("{peer} has not taken in what {author} published",));
+                    disagreements.push(format!("{peer} has not taken in what {author} published"));
                 }
             }
         }
@@ -342,7 +342,7 @@ mod tests {
         a.put(automerge::ROOT, "title", "First").unwrap();
         net.publish(&alice, &mut a);
         net.publish(&alice, &mut a);
-        assert_eq!(net.net().log().len(), 1, "the same change is offered once",);
+        assert_eq!(net.net().log().len(), 1, "the same change is offered once");
         a.put(automerge::ROOT, "body", "Second").unwrap();
         net.publish(&alice, &mut a);
         assert_eq!(net.net().log().len(), 2, "a new change is offered");
