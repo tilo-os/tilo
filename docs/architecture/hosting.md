@@ -251,10 +251,38 @@ page's state lives in its scripts:
   session used from several devices at once.
 - **Each mode 1 page costs the host an engine.** That's a Chromium renderer
   per open shared page (Chromium because shared pages are arbitrary
-  sites, and compatibility decides), typically 100–300 MB. A person's own host device
-  bears its own pages. tilo.coffee bears the Lounge's and, later, those of
-  the workspaces it hosts, so it needs a limit per workspace and pages
-  nobody is viewing suspended.
+  sites, and compatibility decides), typically 100–300 MB. Suspension (below)
+  keeps that bounded.
+
+### Suspending pages
+
+One rule decides when a page stops using memory, wherever it runs: on a
+workspace's host, on tilo.coffee, or as a person's own tab on their device.
+It is part of the first version, because it is what keeps a host's memory
+bounded.
+
+- **Only pages nobody is viewing are suspended, and only when memory is
+  needed.** What counts as needed is the one thing that differs between
+  hosts:
+  - **A shared host** (tilo.coffee, and any host serving several people's
+    workspaces) has a budget per workspace. Going over it is a need, so
+    pages nobody views are suspended early.
+  - **A person's own device** treats only real memory pressure as a need.
+    Sixteen tabs on an 8 GB machine stay loaded until memory actually runs
+    short.
+- **Freeze first.** A frozen page's scripts and timers stop, and its memory
+  is kept, so viewing it again resumes it at once, exactly as it was.
+- **Unload only if the need persists.** An unloaded page gives back its
+  memory. Viewing it again loads it at its address, with its scroll
+  position, form contents and the shared text of every field restored. The
+  shared texts live in the room, so nobody's typing is lost.
+- **Never unloaded, only frozen:** a page with something unsaved (one that
+  registered a leave-page warning, or with fields someone edited since it
+  loaded), a page playing audio or video, and a page holding a call or a
+  live connection someone is using. Unloading only ever happens where
+  nothing is lost.
+- **Least recently viewed goes first.** On a shared host the order is kept
+  per workspace, so one workspace's many tabs never unload another's.
 
 ### Cases
 
