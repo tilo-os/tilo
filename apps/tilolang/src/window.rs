@@ -1089,8 +1089,13 @@ impl Window {
         let shown = self.run_scenario(host, &self.app.clone(), &name, &scenario.action);
         self.commit_planned();
         // A scenario that returns a resource shows it, as a primary action shows what it made.
+        // The scene is staged at rest: nobody pushed it, so a narrow window shows the resource
+        // in front rather than sliding in, however soon after staging the frame is taken.
         if let Some(shown) = shown {
             self.open_detail(&shown, None, true);
+            if let Some(shell) = self.shell() {
+                shell.snap();
+            }
         }
     }
 
