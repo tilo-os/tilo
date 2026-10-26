@@ -861,8 +861,11 @@ def typing(ctx, res):
     res.metrics["seconds_to_shell"] = ready
     if ready is None:
         ctx.write("W17-ush.txt", core.ush_diagnostics(ctx))
+        said = core.ush_environment_refusal(ctx) or core.ush_journal_tail(ctx)
         raise CheckFailed(f"no shell ran in the new Terminal within {core.TERMINAL_SHELL_S} s, "
-                          "so nothing could read the keys (W17-ush.txt shows the shell runtime)")
+                          "so nothing could read the keys "
+                          + (f"(the shell runtime last said: {said})" if said else
+                             "(W17-ush.txt shows the shell runtime)"))
     ctx.settle(1.0)
     probe = f"acc-kbd-{int(time.time())}"
     ctx.vm.input("type", f"echo ok > ~/{probe}")
