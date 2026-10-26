@@ -250,53 +250,6 @@ impl Small {
     }
 }
 
-/// A picture made one a workspace emoji keeps ([`make_small`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Small {
-    /// A PNG at most [`IMAGE_SIDE`] a side and [`MAX_IMAGE_BYTES`] long.
-    Ready(Vec<u8>),
-    /// The image tools are still to come (a browser fetches them on first
-    /// use): ask again once they are in.
-    Pending,
-    /// It is no picture this can read (PNG, JPEG or WebP).
-    NotAPicture,
-    /// Even made smaller than [`IMAGE_SIDE`] it stays too large.
-    TooLarge,
-}
-
-/// `image` (PNG, JPEG or WebP of any size) made a picture a workspace
-/// emoji keeps: fitted within [`IMAGE_SIDE`], aspect kept, as a PNG; a
-/// picture too detailed to fit [`MAX_IMAGE_BYTES`] at that side is made
-/// smaller still, down to half of it.
-#[must_use]
-pub fn make_small(image: &[u8]) -> Small {
-    let mut side = IMAGE_SIDE;
-    while side >= IMAGE_SIDE / 2 {
-        match crate::image_store::small_png(image, side) {
-            crate::image_store::SmallPicture::Ready(png) if png.len() <= MAX_IMAGE_BYTES => {
-                return Small::Ready(png);
-            }
-            crate::image_store::SmallPicture::Ready(_) => side = side.saturating_sub(8),
-            crate::image_store::SmallPicture::Pending => return Small::Pending,
-            crate::image_store::SmallPicture::Broken => return Small::NotAPicture,
-        }
-    }
-    Small::TooLarge
-}
-
-impl Small {
-    /// Why it was not made small, for the person; `None` when it was.
-    #[must_use]
-    pub fn refusal(&self) -> Option<String> {
-        match self {
-            Self::Ready(_) => None,
-            Self::Pending => Some("the picture tools are still loading; try again".into()),
-            Self::NotAPicture => Some("that is not a PNG, JPEG or WebP picture".into()),
-            Self::TooLarge => Some("that picture is too detailed for an emoji".into()),
-        }
-    }
-}
-
 thread_local! {
     static SOURCES: RefCell<Vec<(WakeHandle, Rc<dyn EmojiSource>)>> =
         const { RefCell::new(Vec::new()) };
