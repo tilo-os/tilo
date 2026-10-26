@@ -15,6 +15,7 @@
 
 use ui::tilo_resource::Invoke;
 use ui::widget::{FindMatch, FindOptions, Findable};
+use vello::kurbo::Rect;
 
 use super::{FoundCell, SheetsApp};
 use crate::model::Addr;
@@ -276,6 +277,11 @@ impl Findable for SheetsApp {
     fn mark_current(&mut self, index: usize) {
         self.find_current = Some(index);
         self.status = self.find_status(index);
+        self.pending.redraw = true;
+    }
+
+    fn set_find_cover(&mut self, cover: Option<Rect>) {
+        self.grid.set_find_cover(cover);
         self.pending.redraw = true;
     }
 

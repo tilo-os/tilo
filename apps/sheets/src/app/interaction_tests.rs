@@ -437,3 +437,50 @@ fn find_navigates_to_a_match_on_another_sheet() {
         app.status
     );
 }
+
+/// While the window bar's search options cover the top of the grid, a match
+/// revealed stands below them; once they close, the same match goes back to
+/// the top of the body.
+#[test]
+fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
+    use crate::grid::GridCmd;
+    use ui::widget::{FindOptions, Findable};
+    let (mut app, mut doc, _tr, _theme) = painted();
+    let needle = (1, 40);
+    app.apply_cmds(
+        &mut Edits::lend(&mut doc),
+        vec![
+            GridCmd::SetCell {
+                addr: needle,
+                raw: "needle".into(),
+            },
+            GridCmd::Commit,
+        ],
+    );
+    app.sync(&doc, &automerge::ROOT);
+    let found = app.find("needle", FindOptions::default());
+    assert_eq!(found.len(), 1, "one cell says it");
+
+    let body = app.grid.body_rect();
+    let cover = Rect::new(body.x0, app.grid_rect.y0, body.x1, body.y0 + 120.0);
+    // Scroll well past the match, so revealing it would put it at the
+    // body's top.
+    app.grid.select_only((1, 120));
+    app.set_find_cover(Some(cover));
+    app.reveal(0);
+    let cell = app.grid.cell_screen_rect(needle.0, needle.1);
+    assert!(
+        (cell.y0 - cover.y1).abs() < 0.5,
+        "the match stands just below what the search covers: {cell:?} under {cover:?}"
+    );
+
+    // The options close: the same match goes to the top of the body.
+    app.set_find_cover(None);
+    app.grid.select_only((1, 120));
+    app.reveal(0);
+    let cell = app.grid.cell_screen_rect(needle.0, needle.1);
+    assert!(
+        (cell.y0 - body.y0).abs() < 0.5,
+        "with nothing covering it, the match stands at the body's top: {cell:?}"
+    );
+}
