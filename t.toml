@@ -7627,12 +7627,26 @@ timeout_secs = 7200
 default = false
 
 [[check]]
+name = "os-chromium-x86_64"
+image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
+run = "bash os/image/compile.sh --chromium /target/os/x86_64/chromium"
+inputs = ["os/image/compile.sh", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "apps/browser/chromium/**", "crates/browser/chromium-blocker/**", "crates/workspace-hack/**", "vendor/**", "Cargo.lock", "**/Cargo.toml", ".cargo/**", "rust-toolchain.toml", "os/external-assets/github-assets.tsv"]
+needs = ["os-assets"]
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+outputs = ["/target/os/x86_64/chromium/**"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 10800
+default = false
+
+[[check]]
 name = "os-compile-x86_64"
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh /target/os/x86_64/compiled"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-assets", "test-assets"]
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["os-assets", "test-assets", "os-chromium-x86_64"]
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/x86_64/compiled/**"]
 requires = ["arch=x86_64"]
 cost = "heavy"
@@ -7645,8 +7659,8 @@ name = "os-compile-release-x86_64"
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh /target/os/x86_64/compiled-release"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-assets", "test-assets"]
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["os-assets", "test-assets", "os-chromium-x86_64"]
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/x86_64/compiled-release/**"]
 requires = ["arch=x86_64"]
 cost = "heavy"
@@ -7876,12 +7890,26 @@ timeout_secs = 7200
 default = false
 
 [[check]]
+name = "os-chromium-aarch64"
+image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
+run = "bash os/image/compile.sh --chromium /target/os/aarch64/chromium"
+inputs = ["os/image/compile.sh", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "apps/browser/chromium/**", "crates/browser/chromium-blocker/**", "crates/workspace-hack/**", "vendor/**", "Cargo.lock", "**/Cargo.toml", ".cargo/**", "rust-toolchain.toml", "os/external-assets/github-assets.tsv"]
+needs = ["os-assets"]
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+outputs = ["/target/os/aarch64/chromium/**"]
+requires = ["arch=arm64"]
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 10800
+default = false
+
+[[check]]
 name = "os-compile-aarch64"
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh /target/os/aarch64/compiled"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-assets", "test-assets"]
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["os-assets", "test-assets", "os-chromium-aarch64"]
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/aarch64/compiled/**"]
 requires = ["arch=arm64"]
 cost = "heavy"
@@ -7894,8 +7922,8 @@ name = "os-compile-release-aarch64"
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh /target/os/aarch64/compiled-release"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-assets", "test-assets"]
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["os-assets", "test-assets", "os-chromium-aarch64"]
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/aarch64/compiled-release/**"]
 requires = ["arch=arm64"]
 cost = "heavy"
