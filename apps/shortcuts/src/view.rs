@@ -28,8 +28,8 @@ use ui::prelude::*;
 use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::Path;
 use ui::widget::{
-    Actions as ActionGroup, ArrivingView, ButtonRole, ControlSize, ListRow, ModalDialog,
-    NumberInput, Section, SectionHeader, SkeletonShape, labeled_field,
+    Actions as ActionGroup, ArrivingView, ButtonRole, ControlSize, Filterable, Filtered, ListRow,
+    ModalDialog, NumberInput, Section, SectionHeader, SkeletonShape, labeled_field,
 };
 use ui::{LocalState, RemoteActions, TextKind};
 
@@ -246,6 +246,38 @@ impl Ui {
     fn open(&self, item: String) {
         self.selected.set(Some(item));
         self.pane.set(NavPane::Content);
+    }
+}
+
+/// The action picker's own view, narrowed by the shared filter field.
+struct PickerChoices {
+    query: LocalState<String>,
+    view: ModelView<String>,
+}
+
+impl Filterable for PickerChoices {
+    fn set_filter(&mut self, query: &str) {
+        if self.query.with(|shown| shown != query) {
+            self.query.set(query.to_owned());
+        }
+    }
+}
+
+impl ui::widget::Decorator for PickerChoices {
+    type Inner = ModelView<String>;
+
+    fn inner(&self) -> &ModelView<String> {
+        &self.view
+    }
+
+    fn inner_mut(&mut self) -> &mut ModelView<String> {
+        &mut self.view
+    }
+
+    ui::provides!(dyn Filterable; inner = view);
+
+    fn name(&self) -> &'static str {
+        "PickerChoices"
     }
 }
 
@@ -1531,8 +1563,40 @@ fn block_offers() -> Vec<BlockOffer> {
     ]
 }
 
-/// The live catalogue, grouped by app, each action with what it takes.
+/// Whether `query` names `fields`: empty matches everything.
+fn matches_query(query: &str, fields: &[&str]) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || fields
+            .iter()
+            .any(|field| field.to_lowercase().contains(&query))
+}
+
+/// The live catalogue, grouped by app, each action with what it takes, in a
+/// filter field that narrows it by action, app or resource.
 fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> Element {
+    let query = LocalState::new(String::new());
+    let view = {
+        let ui = ui.clone();
+        let input = input.clone();
+        let draft_id = draft_id.clone();
+        let address = address.to_owned();
+        ModelView::from_state(&query, move |query: &String| {
+            action_picker_body(&ui, &input, &draft_id, &address, query)
+        })
+    };
+    Box::new(
+        Filtered::new(Box::new(PickerChoices { query, view })).with_placeholder("Filter actions"),
+    )
+}
+
+fn action_picker_body(
+    ui: &Ui,
+    input: &EditorInput,
+    draft_id: &Id,
+    address: &str,
+    query: &str,
+) -> Element {
     let close = {
         let picker = ui.picker.clone();
         Button::new(
@@ -1548,6 +1612,7 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
     let mut groups: Vec<Element> = Vec::new();
     let blocks: Vec<Element> = block_offers()
         .into_iter()
+        .filter(|offer| matches_query(query, &[offer.label, offer.detail]))
         .map(|offer| {
             let mut row =
                 ListRow::new(format!("offer-{}", offer.id), offer.label).secondary(offer.detail);
@@ -1561,13 +1626,27 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
             Box::new(row) as Element
         })
         .collect();
-    groups.push(Box::new(
-        Section::new(blocks).with_header(SectionHeader::group(ui::i18n!("shortcuts-blocks"))),
-    ));
+    if !blocks.is_empty() {
+        groups.push(Box::new(
+            Section::new(blocks).with_header(SectionHeader::group(ui::i18n!("shortcuts-blocks"))),
+        ));
+    }
     for group in editor::picker(&input.catalog) {
         let mut rows: Vec<Element> = Vec::new();
         for kind in group.kinds {
             for offer in kind.offers {
+                if !matches_query(
+                    query,
+                    &[
+                        &offer.label,
+                        &group.label,
+                        &offer.resource_label,
+                        &offer.resource,
+                        &offer.action,
+                    ],
+                ) {
+                    continue;
+                }
                 let step = serde_json::to_value(offer.step()).unwrap_or(Value::Null);
                 let secondary = if offer.needs.is_empty() {
                     offer.resource_label.clone()
@@ -1593,14 +1672,17 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
                 rows.push(Box::new(row));
             }
         }
-        groups.push(Box::new(
-            Section::new(rows).with_header(SectionHeader::group(group.label)),
-        ));
+        if !rows.is_empty() {
+            groups.push(Box::new(
+                Section::new(rows).with_header(SectionHeader::group(group.label)),
+            ));
+        }
     }
     if groups.is_empty() {
         groups.push(Box::new(caption(match input.catalogue {
             Arrival::Pending { .. } => "shortcuts-catalogue-loading",
             Arrival::Failed(_) => "shortcuts-catalogue-unavailable",
+            Arrival::Ready(()) if !query.trim().is_empty() => "shortcuts-no-matching-actions",
             Arrival::Ready(()) => "shortcuts-catalogue-empty",
         })));
     }
@@ -2157,4 +2239,30 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
         }
     }
     (body, nested)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matches_query;
+
+    #[test]
+    fn the_action_filter_matches_labels_apps_and_resources() {
+        assert!(matches_query("", &["Create note", "Notes", "Notes note"]));
+        assert!(matches_query(
+            "note",
+            &["Create note", "Notes", "Notes note"]
+        ));
+        assert!(matches_query(
+            "  NOTES ",
+            &["Create note", "Notes", "Notes note"]
+        ));
+        assert!(matches_query(
+            "folder",
+            &["Create note", "Notes", "Favorite folder"]
+        ));
+        assert!(!matches_query(
+            "calendar",
+            &["Create note", "Notes", "Notes note"]
+        ));
+    }
 }
