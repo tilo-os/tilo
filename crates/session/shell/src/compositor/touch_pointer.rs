@@ -107,13 +107,17 @@ fn touch_route(
     y: f64,
 ) -> TouchRoute {
     let point = vello::kurbo::Point::new(x, y);
-    if taken || fb.claims_raw_touch_at(point) {
+    let route = if taken || fb.claims_raw_touch_at(point) {
         TouchRoute::Raw
     } else if fb.host().touch_works_as_held_pointer() {
         TouchRoute::Drag
     } else {
         TouchRoute::for_cursor(fb.chrome_cursor_at(point))
-    }
+    };
+    // A finger's route decides whether chrome under it ever sees a click;
+    // rare enough to say every time.
+    tracing::info!(x, y, taken, ?route, "touch contact routed");
+    route
 }
 
 /// Per-session translation of raw touch into pointer input.
