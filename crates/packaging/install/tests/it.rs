@@ -15,6 +15,8 @@ mod image_apps;
 mod language_pack;
 #[path = "lifecycle.rs"]
 mod lifecycle;
+#[path = "registry_update.rs"]
+mod registry_update;
 #[path = "runtime_cli.rs"]
 mod runtime_cli;
 #[path = "runtime_package.rs"]

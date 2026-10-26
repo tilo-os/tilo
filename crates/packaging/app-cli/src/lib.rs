@@ -450,12 +450,23 @@ pub fn version_offers(package_id: &str, registry_name: &str) -> Result<Vec<Catal
         .ok_or_else(|| format!("no enabled repository is named '{registry_name}'"))?;
     let verified =
         client::fetch_all_versions(registry, package_id).map_err(|error| error.to_string())?;
-    let mut versions: Vec<_> = installable_versions(&verified.entry, registry.channel).collect();
+    Ok(offers_for_entry(&verified, registry_name, registry.channel))
+}
+
+/// Every version of `verified` this machine can run on `channel`, newest
+/// first. The one selection the catalogue, the Store and the installer use,
+/// so an update is the build they all call newest.
+pub fn offers_for_entry(
+    verified: &VerifiedEntry,
+    registry_name: &str,
+    channel: tilo_app_package::version::ReleaseChannel,
+) -> Vec<CatalogueApp> {
+    let mut versions: Vec<_> = installable_versions(&verified.entry, channel).collect();
     versions.sort_by(|a, b| tilo_app_package::version::compare(&b.version, &a.version));
-    Ok(versions
+    versions
         .into_iter()
-        .filter_map(|version| app_for_version(&verified, version, registry_name))
-        .collect())
+        .filter_map(|version| app_for_version(verified, version, registry_name))
+        .collect()
 }
 
 fn target_supported(tapp: &registry_types::TappArtifact) -> bool {

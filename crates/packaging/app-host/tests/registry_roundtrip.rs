@@ -1,24 +1,81 @@
-//! End-to-end registry protocol coverage:
-//! author a `.tapp`, publish it to a self-hosted `file://` registry
-//! served by a live iroh node, then resolve → download → verify →
-//! install it on a fresh client — plus the fail-closed negatives.
+//! The catalogue a Store request resolves through: an owner-signed snapshot,
+//! the publisher-signed entry, the exact package bytes, and the fail-closed
+//! refusals a wrong owner key, a rewritten entry or tampered bytes produce.
+//!
+//! The fixture is an HTTP registry because that is the production transport;
+//! the client is the same `app_cli` catalogue and download `app update` uses,
+//! and the install is the app host's.
 
 #![allow(
     clippy::unwrap_used,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
 use app_host::install::install_tapp;
 use app_host::{PackageStore, Pinning};
-
-use app_registry::config::{RegistriesConfig, RegistryRef, RegistryTrust};
-use app_registry::index::HostProfile;
-use app_registry::resolve::fetch_tapp;
-use app_registry::transport::BlobNode;
-use app_registry::{publish_to_dir, registry_dir};
-
+use ed25519_dalek::SigningKey;
+use registry_types::{
+    PublisherAuthorization, RegistryEntry, RegistryTarget, RegistryVersion, SignedRegistrySnapshot,
+    TappArtifact, VersionArtifact, sign_entry, sign_snapshot,
+};
+use test_http::{Reply, Responder};
 use tilo_app_package::pack::{SigningIdentity, pack};
-use tilo_app_package::{Manifest, PackageId};
+use tilo_app_package::{DiscardBlobs, Manifest, PackageId};
+
+/// What the fake registry serves. The snapshot is filled once the responder
+/// has a port, because its package URL names that port.
+#[derive(Default)]
+struct Served {
+    snapshot: Option<Vec<u8>>,
+    package: Vec<u8>,
+    blobs: BTreeMap<String, Vec<u8>>,
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the handler answers every route from one consistent view of the served state"
+)]
+fn served_registry() -> (Responder, Arc<Mutex<Served>>) {
+    let state = Arc::new(Mutex::new(Served::default()));
+    let answers = Arc::clone(&state);
+    let responder = Responder::handle(move |request| {
+        let state = answers.lock().unwrap();
+        let path = request.target.split('?').next().unwrap_or("");
+        if path.starts_with("/entries") {
+            return state
+                .snapshot
+                .as_ref()
+                .map(|snapshot| Reply::status(200).body(snapshot.clone()));
+        }
+        let extension = std::path::Path::new(path)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str);
+        if extension.is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("zst") || extension.eq_ignore_ascii_case("chunks")
+        }) {
+            return Some(Reply::status(404));
+        }
+        if path == "/package.tapp" {
+            return Some(
+                Reply::status(200)
+                    .header("content-type", "application/octet-stream")
+                    .body(state.package.clone()),
+            );
+        }
+        if let Some(name) = path.strip_prefix("/blobs/") {
+            return state.blobs.get(name).map(|bytes| {
+                Reply::status(200)
+                    .header("content-type", "application/octet-stream")
+                    .body(bytes.clone())
+            });
+        }
+        Some(Reply::status(404))
+    });
+    (responder, state)
+}
 
 /// Author a tiny signed `.tapp` for `so.tilo.editor@1.0.0`.
 fn author_tapp(identity: &SigningIdentity) -> (Vec<u8>, PackageId) {
@@ -34,6 +91,7 @@ fn author_tapp(identity: &SigningIdentity) -> (Vec<u8>, PackageId) {
 id = "so.tilo.editor"
 version = "1.0.0"
 kind = "app"
+name = "Editor"
 
 [package.isa]
 {arch} = "baseline"
@@ -61,75 +119,162 @@ type = "gui"
     (bytes, packed.id())
 }
 
-fn file_url(dir: &std::path::Path) -> String {
-    format!("file://{}", dir.display())
+/// The thin form and the payload blobs a registry keeps for a full package.
+fn split_package(full: &[u8]) -> (Vec<u8>, BTreeMap<String, Vec<u8>>) {
+    let mut payload = BTreeMap::new();
+    let decoded = tilo_app_package::tapp::read(full, &mut payload).unwrap();
+    let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None).unwrap();
+    (
+        thin,
+        payload
+            .into_iter()
+            .map(|(hash, bytes)| (hash.to_hex(), bytes))
+            .collect(),
+    )
 }
 
-#[tokio::test(flavor = "multi_thread")]
+fn native_isa() -> &'static str {
+    #[cfg(target_arch = "x86_64")]
+    {
+        "x86_64"
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        "aarch64"
+    }
+}
+
+/// The publisher-signed entry a registry serves for `thin`.
+fn entry_for(
+    package_id: &PackageId,
+    thin: &[u8],
+    publisher: &SigningKey,
+    url: &str,
+) -> RegistryEntry {
+    let decoded = tilo_app_package::tapp::read(thin, &mut DiscardBlobs).unwrap();
+    let manifest = &decoded.meta.manifest;
+    let mut entry = RegistryEntry {
+        package_id: manifest.package.id.clone(),
+        kind: registry_types::EntryKind::App,
+        name: "Editor".into(),
+        description: "CRDT-native editor".into(),
+        tagline: "An editor".into(),
+        images: registry_types::LocalizedImages::default(),
+        supported_languages: vec!["en".into()],
+        categories: vec!["Office".into()],
+        source_url: None,
+        homepage: None,
+        publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
+        versions: vec![RegistryVersion {
+            version: manifest.package.version.clone(),
+            released_at_unix: 1,
+            artifact: VersionArtifact::Tapp(TappArtifact {
+                tapp_url: url.into(),
+                tapp_root_hash_hex: package_id.to_hex(),
+                tapp_size_bytes: thin.len() as u64,
+                tapp_blake3_hex: blake3::hash(thin).to_hex().to_string(),
+                target: RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: std::env::consts::ARCH.into(),
+                    isa: native_isa().into(),
+                    runtime: None,
+                    interfaces: Vec::new(),
+                },
+            }),
+        }],
+        updated_at_unix: 2,
+        signature_hex: String::new(),
+    };
+    sign_entry(&mut entry, publisher);
+    entry
+}
+
+fn signed_snapshot(entry: RegistryEntry, owner: &SigningKey) -> SignedRegistrySnapshot {
+    let now = tilo_clock::unix_now();
+    let mut snapshot = SignedRegistrySnapshot {
+        protocol: registry_types::PACKAGE_FORMAT_VERSION,
+        sequence: 1,
+        issued_at_unix: now,
+        expires_at_unix: now.saturating_add(3600),
+        previous_snapshot_hash_hex: String::new(),
+        moderation_head_hex: String::new(),
+        publishers: vec![PublisherAuthorization {
+            pubkey_hex: entry.publisher_pubkey_hex.clone(),
+            can_add_new: true,
+        }],
+        entries: vec![entry],
+        owner_signature_hex: String::new(),
+        channel_authorization: None,
+    };
+    sign_snapshot(&mut snapshot, owner).unwrap();
+    snapshot
+}
+
+/// A scratch Store config naming `url` and pinning `owner`.
+fn store_config(owner: &SigningKey, url: &str) -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("registries.toml"),
+        toml::to_string_pretty(&app_cli::config::RegistriesFile {
+            registries: vec![app_cli::config::RegistryConfig {
+                name: "test".into(),
+                base_url: url.to_owned(),
+                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+                enabled: true,
+                channel: tilo_app_package::version::ReleaseChannel::Stable,
+            }],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_STORE_CONFIG_DIR", dir.path());
+    (dir, env)
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "each phase keeps one former test's body verbatim"
 )]
-async fn registry_packages_publish_resolve_and_install_only_when_trusted_and_intact() {
+fn registry_packages_resolve_and_install_only_when_trusted_and_intact() {
     // Phase `publish_resolve_fetch_and_install`.
-    // The happy path, on the production resolve/verify/install code.
+    // The happy path, on the production catalogue/download/install code.
     {
-        let publisher = SigningIdentity::generate();
-        let (tapp_bytes, pkg_id) = author_tapp(&publisher);
+        let publisher_key = SigningKey::from_bytes(&[7; 32]);
+        let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
+        let (full, pkg_id) = author_tapp(&publisher);
+        let (thin, blobs) = split_package(&full);
+        assert!(thin.len() < full.len(), "the registry serves the thin form");
 
-        let tmp = tempfile::tempdir().unwrap();
-        let regdir = tmp.path().join("registry");
-
-        let node = BlobNode::persistent(registry_dir::blobs_dir(&regdir))
-            .await
-            .unwrap();
-        let registry_key = SigningIdentity::generate();
-        let receipt = publish_to_dir(
-            &regdir,
-            &node,
-            &tapp_bytes,
-            &publisher,
-            &registry_key,
-            "test.reg",
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(receipt.app_id, "so.tilo.editor");
-        assert_eq!(receipt.version, "1.0.0");
-
-        let config = RegistriesConfig::from_registries(vec![RegistryRef {
-            name: "test".into(),
-            base_url: file_url(&regdir),
-            trust: RegistryTrust::Key(registry_key.public_key_bytes()),
-            priority: 0,
-        }]);
-        let host = HostProfile::detect();
-
-        let outcome = fetch_tapp(&config, "so.tilo.editor", None, &host)
-            .await
-            .expect("fetch + verify");
-        assert_eq!(outcome.package_id, pkg_id);
-        assert!(
-            outcome.bytes.len() < 16 * 1024 && outcome.bytes.len() < tapp_bytes.len(),
-            "the registry serves the thin package: {} bytes against {} full",
-            outcome.bytes.len(),
-            tapp_bytes.len()
+        let (responder, state) = served_registry();
+        let entry = entry_for(
+            &pkg_id,
+            &thin,
+            &publisher_key,
+            &format!("{}/package.tapp", responder.url()),
         );
+        let snapshot = signed_snapshot(entry, &SigningKey::from_bytes(&[12; 32]));
+        {
+            let mut served = state.lock().unwrap();
+            served.package = thin;
+            served.blobs = blobs;
+            served.snapshot = Some(serde_json::to_vec(&snapshot).unwrap());
+        }
+        let (_config, _env) = store_config(&SigningKey::from_bytes(&[12; 32]), &responder.url());
 
-        // Without a source for the payload, a thin package cannot install.
-        let store = PackageStore::at(tmp.path().join("store"));
-        assert!(install_tapp(&store, &outcome.bytes, Pinning::Tried, None).is_err());
+        let offers = app_cli::version_offers("so.tilo.editor", "test").unwrap();
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].version, "1.0.0");
+        let bytes = app_cli::install::verified_bytes(&offers[0], &mut |_| {}).unwrap();
 
-        // Install on the production path, fetching the payload from the
-        // registry's node, and confirm the payload landed.
-        let installed = install_tapp(
-            &store,
-            &outcome.bytes,
-            Pinning::Tried,
-            Some(&outcome.payload),
-        )
-        .unwrap();
+        let source = app_registry::HttpBlobs::new(responder.url());
+        let store = PackageStore::at(tempfile::tempdir().unwrap().path().join("store"));
+        assert!(
+            install_tapp(&store, &bytes, Pinning::Tried, None).is_err(),
+            "a thin package without its payload cannot install"
+        );
+        let installed = install_tapp(&store, &bytes, Pinning::Tried, Some(&source)).unwrap();
         assert_eq!(installed.package_id(), Some(pkg_id));
         assert!(
             installed.payload_root.join("bin/app").exists(),
@@ -137,93 +282,92 @@ async fn registry_packages_publish_resolve_and_install_only_when_trusted_and_int
         );
     }
     // Phase `untrusted_registry_key_is_skipped`.
-    // A registry whose operator key the client does NOT trust is skipped:
-    // the index signature fails to verify, so nothing is served.
+    // A registry whose owner key the client does NOT pin is not trusted: the
+    // snapshot signature fails against the pin, so nothing is offered.
     {
-        let publisher = SigningIdentity::generate();
-        let (tapp_bytes, _pkg_id) = author_tapp(&publisher);
-
-        let tmp = tempfile::tempdir().unwrap();
-        let regdir = tmp.path().join("registry");
-        let node = BlobNode::persistent(registry_dir::blobs_dir(&regdir))
-            .await
-            .unwrap();
-        let registry_key = SigningIdentity::generate();
-        publish_to_dir(
-            &regdir,
-            &node,
-            &tapp_bytes,
-            &publisher,
-            &registry_key,
-            "test.reg",
-            None,
-        )
-        .await
-        .unwrap();
-
-        // Pin a DIFFERENT operator key → index signature will not verify.
-        let wrong_key = SigningIdentity::generate().public_key_bytes();
-        let config = RegistriesConfig::from_registries(vec![RegistryRef {
-            name: "test".into(),
-            base_url: file_url(&regdir),
-            trust: RegistryTrust::Key(wrong_key),
-            priority: 0,
-        }]);
-        let host = HostProfile::detect();
-
+        let publisher_key = SigningKey::from_bytes(&[7; 32]);
+        let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
+        let (full, pkg_id) = author_tapp(&publisher);
+        let (thin, blobs) = split_package(&full);
+        let (responder, state) = served_registry();
+        let entry = entry_for(
+            &pkg_id,
+            &thin,
+            &publisher_key,
+            &format!("{}/package.tapp", responder.url()),
+        );
+        let snapshot = signed_snapshot(entry, &SigningKey::from_bytes(&[12; 32]));
+        {
+            let mut served = state.lock().unwrap();
+            served.package = thin;
+            served.blobs = blobs;
+            served.snapshot = Some(serde_json::to_vec(&snapshot).unwrap());
+        }
+        let (_config, _env) = store_config(&SigningKey::from_bytes(&[13; 32]), &responder.url());
         assert!(
-            fetch_tapp(&config, "so.tilo.editor", None, &host)
-                .await
-                .is_err(),
-            "an untrusted registry must serve nothing"
+            app_cli::version_offers("so.tilo.editor", "test").is_err(),
+            "an untrusted registry must offer nothing"
         );
     }
-    // Phase `tampered_entry_is_rejected_after_index_resign`.
-    // Even a registry operator (who can re-sign the index) cannot forge an
-    // entry's binding: tampering the advertised tapp-hash invalidates the
-    // publisher's per-entry signature, so the entry is rejected.
+    // Phase `tampered_entry_is_rejected_after_snapshot_resign`.
+    // Even the registry owner cannot forge an entry's binding: changing the
+    // advertised artifact leaves the publisher's signature stale.
     {
-        let publisher = SigningIdentity::generate();
-        let (tapp_bytes, _pkg_id) = author_tapp(&publisher);
-
-        let tmp = tempfile::tempdir().unwrap();
-        let regdir = tmp.path().join("registry");
-        let node = BlobNode::persistent(registry_dir::blobs_dir(&regdir))
-            .await
-            .unwrap();
-        let registry_key = SigningIdentity::generate();
-        publish_to_dir(
-            &regdir,
-            &node,
-            &tapp_bytes,
-            &publisher,
-            &registry_key,
-            "test.reg",
-            None,
-        )
-        .await
-        .unwrap();
-
-        let mut index = registry_dir::read_index(&regdir).unwrap();
-        index.packages[0].tapp_hash = hex::encode([0x22u8; 32]);
-        index.sign(&registry_key).unwrap();
-        registry_dir::write_index(&regdir, &index).unwrap();
-
-        // Client trusts the (valid) index signature — but the entry's own
-        // publisher signature is now stale, so it must be rejected.
-        let config = RegistriesConfig::from_registries(vec![RegistryRef {
-            name: "test".into(),
-            base_url: file_url(&regdir),
-            trust: RegistryTrust::Key(registry_key.public_key_bytes()),
-            priority: 0,
-        }]);
-        let host = HostProfile::detect();
-
+        let publisher_key = SigningKey::from_bytes(&[7; 32]);
+        let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
+        let (full, pkg_id) = author_tapp(&publisher);
+        let (thin, blobs) = split_package(&full);
+        let (responder, state) = served_registry();
+        let owner = SigningKey::from_bytes(&[12; 32]);
+        let mut entry = entry_for(
+            &pkg_id,
+            &thin,
+            &publisher_key,
+            &format!("{}/package.tapp", responder.url()),
+        );
+        if let Some(tapp) = entry.versions[0].tapp_mut() {
+            tapp.tapp_blake3_hex = hex::encode([0x22; 32]);
+        }
+        let snapshot = signed_snapshot(entry, &owner);
+        {
+            let mut served = state.lock().unwrap();
+            served.package = thin;
+            served.blobs = blobs;
+            served.snapshot = Some(serde_json::to_vec(&snapshot).unwrap());
+        }
+        let (_config, _env) = store_config(&owner, &responder.url());
         assert!(
-            fetch_tapp(&config, "so.tilo.editor", None, &host)
-                .await
-                .is_err(),
-            "a publisher-unsigned entry must not install"
+            app_cli::version_offers("so.tilo.editor", "test").is_err(),
+            "a publisher-unsigned entry must not be offered"
+        );
+    }
+    // Phase `tampered_bytes_never_install`.
+    // The entry is authentic, but the server answers with different bytes.
+    {
+        let publisher_key = SigningKey::from_bytes(&[7; 32]);
+        let publisher = SigningIdentity::from_signing_key(publisher_key.clone());
+        let (full, pkg_id) = author_tapp(&publisher);
+        let (thin, blobs) = split_package(&full);
+        let (responder, state) = served_registry();
+        let owner = SigningKey::from_bytes(&[12; 32]);
+        let entry = entry_for(
+            &pkg_id,
+            &thin,
+            &publisher_key,
+            &format!("{}/package.tapp", responder.url()),
+        );
+        let snapshot = signed_snapshot(entry, &owner);
+        {
+            let mut served = state.lock().unwrap();
+            served.package = full;
+            served.blobs = blobs;
+            served.snapshot = Some(serde_json::to_vec(&snapshot).unwrap());
+        }
+        let (_config, _env) = store_config(&owner, &responder.url());
+        let offers = app_cli::version_offers("so.tilo.editor", "test").unwrap();
+        assert!(
+            app_cli::install::verified_bytes(&offers[0], &mut |_| {}).is_err(),
+            "downloads that do not match the signed entry never reach an installer"
         );
     }
 }

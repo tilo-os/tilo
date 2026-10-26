@@ -28,6 +28,9 @@ tilo-files = { path = "../../platform/tilo-files" }
 bounded-command = { path = "../../system/bounded-command" }
 # The registry wire format + the per-entry publisher signature check.
 registry-types = { path = "../registry-types" }
+# The registry client: signed snapshot verification and the local directory
+# layout `tilo-app-package publish` writes.
+registry-client = { path = "../registry-client" }
 # Read side of the `tilo-install` registry — the same list the desktop
 # enumerates installed apps from, so "available" is exactly "not in
 # there".

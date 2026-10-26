@@ -1,6 +1,9 @@
 //! The registries this machine pulls app entries from.
 //!
 //! One file, `registries.toml`, under `$XDG_CONFIG_HOME/tilo-store/`.
+//! A registry is reached over HTTPS, loopback HTTP while developing, or read
+//! straight from a directory on this machine (`file:///srv/apps`) that
+//! `tilo-app-package publish --registry` wrote.
 //! The store app and desktop read this same list so they agree about
 //! which software is available.
 //!
@@ -27,7 +30,9 @@ pub enum ConfigError {
     NotFound(String),
     #[error("'{0}' is the last repository; disable it instead (`app repo disable '{0}'`)")]
     LastRegistry(String),
-    #[error("the registry URL must be credential-free HTTPS (or loopback HTTP for development)")]
+    #[error(
+        "the registry URL must be credential-free HTTPS, loopback HTTP for development, or a file:// directory"
+    )]
     InvalidUrl,
     #[error("a non-placeholder owner key of 64 hexadecimal characters is required")]
     InvalidOwnerKey,
@@ -83,6 +88,15 @@ pub fn placeholder_owner_pubkey() -> String {
     "00".repeat(32)
 }
 
+/// Where a configured registry's bytes and catalogue live.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RegistrySource {
+    /// A registry reached over HTTPS (or loopback HTTP for development).
+    Http(String),
+    /// A registry directory on this machine.
+    Directory(PathBuf),
+}
+
 /// A single configured registry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryConfig {
@@ -105,6 +119,50 @@ pub struct RegistryConfig {
 
 fn default_enabled() -> bool {
     true
+}
+
+impl RegistryConfig {
+    /// Where this registry is read from, rejecting an address that is
+    /// neither credential-free HTTPS, loopback HTTP, nor a local directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::InvalidUrl`] for any other scheme, credentials,
+    /// a query or fragment, or a `file://` URL naming no absolute directory.
+    pub fn source(&self) -> Result<RegistrySource, ConfigError> {
+        let url = reqwest::Url::parse(&self.base_url).map_err(|_| ConfigError::InvalidUrl)?;
+        if url.scheme() == "file" {
+            if !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+                || url
+                    .host_str()
+                    .is_some_and(|host| !host.is_empty() && host != "localhost")
+            {
+                return Err(ConfigError::InvalidUrl);
+            }
+            let path = url.to_file_path().map_err(|()| ConfigError::InvalidUrl)?;
+            if !path.is_absolute() {
+                return Err(ConfigError::InvalidUrl);
+            }
+            return Ok(RegistrySource::Directory(path));
+        }
+        let loopback_http = url.scheme() == "http"
+            && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+        if (url.scheme() != "https" && !loopback_http)
+            || url.host().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(ConfigError::InvalidUrl);
+        }
+        Ok(RegistrySource::Http(
+            self.base_url.trim_end_matches('/').to_string(),
+        ))
+    }
 }
 
 /// Top-level shape of `registries.toml`. TOML's array-of-tables serde
@@ -277,10 +335,16 @@ pub fn add_registry(
         return Err(ConfigError::DuplicateName(name.to_string()));
     }
     let url = reqwest::Url::parse(base_url).map_err(|_| ConfigError::InvalidUrl)?;
+    let file = url.scheme() == "file";
     let loopback_http =
         url.scheme() == "http" && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
-    if (url.scheme() != "https" && !loopback_http)
-        || url.host().is_none()
+    if (!file && url.scheme() != "https" && !loopback_http)
+        || (file
+            && (url
+                .host_str()
+                .is_some_and(|host| !host.is_empty() && host != "localhost")
+                || url.to_file_path().map_or(true, |path| !path.is_absolute())))
+        || (!file && url.host().is_none())
         || !url.username().is_empty()
         || url.password().is_some()
         || url.query().is_some()
@@ -296,7 +360,11 @@ pub fn add_registry(
     }
     registries.registries.push(RegistryConfig {
         name: name.to_string(),
-        base_url: base_url.trim_end_matches('/').to_string(),
+        base_url: if file {
+            url.to_string()
+        } else {
+            base_url.trim_end_matches('/').to_string()
+        },
         owner_pubkey_hex: owner_pubkey_hex.to_ascii_lowercase(),
         enabled: true,
         channel: tilo_app_package::version::ReleaseChannel::Stable,
@@ -590,8 +658,14 @@ mod tests {
                 add_registry(&mut regs, "", "https://example.test", ""),
                 Err(ConfigError::EmptyName)
             ));
+            add_registry(&mut regs, "local", "file:///tmp/apps", &"ab".repeat(32)).unwrap();
+            assert_eq!(regs.registries[0].base_url, "file:///tmp/apps");
+            assert_eq!(
+                regs.registries[0].source().unwrap(),
+                RegistrySource::Directory(std::path::PathBuf::from("/tmp/apps"))
+            );
             assert!(matches!(
-                add_registry(&mut regs, "x", "file:///tmp/apps", ""),
+                add_registry(&mut regs, "x", "file://host/apps", &"ab".repeat(32)),
                 Err(ConfigError::InvalidUrl)
             ));
             assert!(matches!(

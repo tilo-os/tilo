@@ -30,7 +30,6 @@ path = "src/main.rs"
 [dependencies]
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-app-package = { path = "../tilo-app-package" }
-app-registry = { path = "../app-registry" }
 # Signed `/entries` rows for `tilo-app-package entry`; `rand` for `keygen`.
 registry-types = { path = "../registry-types" }
 registry-client = { path = "../registry-client" }
@@ -47,13 +46,12 @@ serde.workspace = true
 serde_json.workspace = true
 # Async runtime for the `publish` path (iroh-blobs upload + HTTP emit).
 # The other subcommands stay synchronous; publish drives a runtime inline.
-tokio = { workspace = true, features = ["macros", "signal"] }
-tilo-rt.workspace = true
 # `pack-desktop` stages the executable as a payload directory.
 tempfile.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+blake3.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]

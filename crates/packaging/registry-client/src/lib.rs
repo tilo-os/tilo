@@ -1,13 +1,17 @@
-//! A publisher's side of the Tilo registry: keys, signed entries, and the
-//! registry's HTTP API for uploads, entries and publisher applications.
+//! The Tilo registry from a client's side: keys, signed entries, the HTTP API
+//! for uploads, entries and publisher applications, and a registry directory
+//! on this machine.
 //!
 //! `tilo-app publish`, `tilo-app apply` and the App Publisher app use this;
-//! so can any CI that would rather not shell out.
+//! so can any CI that would rather not shell out. `tilo-app-package publish`
+//! writes a directory registry with [`local::publish_to_dir`], and the `app`
+//! catalogue reads one through the same snapshot verifier it uses for HTTPS.
 
 pub mod bot;
 pub mod client;
 pub mod entry;
 pub mod key;
+pub mod local;
 pub mod publish;
 pub mod runtime_history;
 

@@ -31,14 +31,14 @@ serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 semver.workspace = true
-# `update` resolves a newer version through the signed registry index
-# and downloads it over iroh-blobs. Same crate the app-host daemon
-# uses, so there is one implementation of "fetch and verify a tapp".
+# `update` resolves a newer version through the same signed catalogue the
+# Store and `app update` use, and downloads its payload blobs from the
+# registry that served it.
+app-cli = { path = "../app-cli" }
 app-registry = { path = "../app-registry" }
 # The sidecar contract the PATH shim reads; its library half has no
 # dependencies beyond serde.
 cli-shim = { path = "../cli-shim" }
-tilo-rt.workspace = true
 workspace-hack = { version = "0.1" }
 
 # Registers the runtime's GNOME Shell and KRunner search providers.
@@ -48,6 +48,10 @@ tilo-os-search = { path = "../../runtime/os-search" }
 [dev-dependencies]
 getrandom.workspace = true
 ed25519-dalek.workspace = true
+registry-types = { path = "../registry-types" }
+registry-client = { path = "../registry-client" }
+blake3.workspace = true
+test-http = { path = "../../dev/test-http" }
 tempfile.workspace = true
 # A sealed runtime needs a filesystem with fs-verity; the test says so where
 # there is none.

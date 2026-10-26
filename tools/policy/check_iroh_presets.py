@@ -18,8 +18,8 @@ a device's identity:
   used and dropped, and never outlives the test that binds it. Nothing to
   list: the test attribute is what exempts it.
 * A process that is not a desktop. ``EXEMPT`` names each file and why:
-  ``tilo-relay``'s diagnostic subcommands and its daemon, the app-registry
-  transport, the initrd's sibling unlock, a headless runtime. Each lives as
+  ``tilo-relay``'s diagnostic subcommands and its daemon, the initrd's
+  sibling unlock, a headless runtime. Each lives as
   long as the command that started it, dials an address it was handed, or is
   the relay devices are meant to find. They are listed so that a device
   endpoint added beside one has to be argued for rather than absorbed.
@@ -45,8 +45,6 @@ DECISION = "crates/system/endpoint-reachability/src/directory.rs"
 # one-line process or a transport that only dials with the address it was
 # handed; the session's and the filesystem's endpoints are not here.
 EXEMPT = {
-    # The registry transport dials the registry with an address it was given.
-    "crates/packaging/app-registry/src/transport.rs": "dials the registry at a given address",
     # The relay's own diagnostic probes.
     "crates/hosting/tilo-relay/src/relay_offers.rs": "relay diagnostic probe",
     "crates/hosting/tilo-relay/src/files_probe.rs": "relay diagnostic probe",

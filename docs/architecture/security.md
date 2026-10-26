@@ -627,9 +627,8 @@ without anyone asking each time:
   nobody to talk to signs nothing in to n0's directory. fs endpoints
   (`bind_endpoint_with_key`, and so `fs serve`) never publish at all: the
   devices that mount a filesystem already hold its address, so a record would
-  be a sign-in nobody looks up. The initrd's sibling unlock, the app-registry
-  transport and `tilo-relay` still bind iroh's `presets::N0`, which publishes
-  from the start. Resolving stays open everywhere: it asks n0 for a
+  be a sign-in nobody looks up. The initrd's sibling unlock and `tilo-relay`
+  still bind iroh's `presets::N0`, which publishes from the start. Resolving stays open everywhere: it asks n0 for a
   *collaborator's* key, which is the same disclosure that device already
   made.
   Three tests in that module pin this: a resting desktop's gate stays shut
