@@ -160,7 +160,6 @@ raw-colour 5 apps/word-processor/src/widget.rs
 raw-colour 1 apps/word-processor/src/widget/pagination.rs
 raw-colour 3 apps/word-processor/src/widget/paint.rs
 raw-colour 1 apps/word-processor/src/widget/panels.rs
-raw-colour 1 crates/session/desktop-surface/src/surface/search.rs
 raw-colour 2 crates/session/desktop/src/backdrop.rs
 raw-colour 1 crates/session/desktop/src/collaborators.rs
 raw-colour 6 crates/session/desktop/src/topbar.rs
