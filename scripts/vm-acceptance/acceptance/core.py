@@ -740,6 +740,26 @@ def region_stats(img, rect) -> dict:
     return {"mean": round(st.mean[0] / 255, 3), "stddev": round(st.stddev[0] / 255, 3)}
 
 
+def region_ink(img, rect, inset: int = 2, spread: float = 0.08) -> int:
+    """Pixels of `rect` (x, y, w, h), `inset` px in from its edges, whose luminance is more
+    than `spread` (0-1) away from the region's most common one: what a client drew on its
+    background. A flat fill has none; a terminal's one-line prompt has a few hundred."""
+    x, y, w, h = (int(round(v)) for v in rect)
+    box = (max(0, x + inset), max(0, y + inset),
+           min(img.width, x + w - inset), min(img.height, y + h - inset))
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return 0
+    return histogram_ink(img.crop(box).convert("L").histogram(), spread)
+
+
+def histogram_ink(hist, spread: float = 0.08) -> int:
+    """Of a 256-bin luminance histogram, the pixels more than `spread` (0-1) away from
+    its most common value."""
+    mode = max(range(len(hist)), key=hist.__getitem__)
+    reach = spread * 255
+    return sum(count for value, count in enumerate(hist) if abs(value - mode) > reach)
+
+
 def region_diff(a, b, rect) -> float:
     """Mean absolute luminance difference (0-1) between two images inside `rect`."""
     from PIL import ImageChops, ImageStat  # type: ignore

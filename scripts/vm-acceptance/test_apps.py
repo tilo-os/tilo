@@ -478,6 +478,14 @@ class FirstTexturedTests(unittest.TestCase):
     def test_the_threshold_itself_is_still_flat(self):
         self.assertEqual(self.run_samples([FLAT_STDDEV], timeout=0.0)[:2], (FLAT_STDDEV, 1))
 
+    def test_a_terminal_filling_its_output_with_only_a_prompt_is_drawn(self):
+        # foot on a 1920x1080 output: its background, a prompt and a cursor.
+        stats, attempts = first_textured(lambda: {"stddev": 0.018, "ink": 425}, 5.0)
+        self.assertEqual((stats["ink"], attempts), (425, 1))
+
+    def test_a_cursor_on_a_blank_window_is_still_flat(self):
+        self.assertFalse(apps.textured({"stddev": 0.006, "ink": 91}))
+
 
 class FullscreenTests(unittest.TestCase):
     """Super+F on glxgears: its lone tile already spans 1856 of the output's 1920 px."""
@@ -530,6 +538,21 @@ class FullscreenTests(unittest.TestCase):
     def test_a_window_that_stays_full_screen_is_not_back_in_its_tile(self):
         with self.assertRaisesRegex(core.CheckFailed, "back in a tile"):
             self.run_fullscreen(self.FULL, self.FULL)
+
+
+class HistogramInkTests(unittest.TestCase):
+    def test_counts_what_stands_off_the_background(self):
+        hist = [0] * 256
+        hist[36] = 1_800_000  # foot's #242424
+        hist[40] = 500        # antialiasing next to it
+        hist[220] = 400       # the prompt's glyphs
+        self.assertEqual(core.histogram_ink(hist), 400)
+
+    def test_a_flat_fill_has_none(self):
+        hist = [0] * 256
+        hist[200] = 1000
+        self.assertEqual(core.histogram_ink(hist), 0)
+
 
 ROOMS = "/home/tds-a/.local/share/tilo-rooms/personal/so.tilo.file-explorer/.local/state"
 
