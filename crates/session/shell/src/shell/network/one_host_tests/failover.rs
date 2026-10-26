@@ -12,7 +12,7 @@ use tilo_desktop_model::commands::DesktopCommand;
 use tilo_user_identity::DeviceCapabilities;
 
 use super::home_relay::HomeRelay;
-use super::{Device, Person, Wakes, hosted_workspace, scratch, until};
+use super::{Device, Person, Wakes, hosted_workspace, scratch, until, until_caught_up};
 use crate::network::actor::{HEARTBEAT_INTERVAL, NetCmd};
 use crate::shell::state::{GovernanceRequest, RoomId};
 
@@ -156,7 +156,7 @@ fn a_member_learns_a_host_added_while_it_was_away_and_stays_in_step_through_it()
     // Back, the desktop catches up with what the laptop wrote meanwhile.
     first.come_back();
     second.reach(&first);
-    until(&[&first, &second], "the desktop to catch up", || {
+    until_caught_up(&[&first, &second], "the desktop to catch up", room, || {
         (first.note(room).as_deref() == Some("written while the desktop was off")).then_some(())
     });
     drop((first, second, relay));
@@ -232,7 +232,7 @@ fn a_governance_change_asked_while_the_governor_is_away_is_made_when_it_is_back(
     // rename is made.
     first.come_back();
     second.reach(&first);
-    until(&[&first, &second], "the desktop to catch up", || {
+    until_caught_up(&[&first, &second], "the desktop to catch up", room, || {
         (first.note(room).as_deref() == Some("written while the desktop was off")).then_some(())
     });
     until(&[&first, &second], "the rename on the desktop", || {
