@@ -591,6 +591,105 @@ fn chrome_field_activates_the_input_method_and_receives_its_commit() {
     assert!(!h.state.text_input_active());
 }
 
+/// The lock screen's credential field is a real text-input field: it asks
+/// the seat's input method for the hidden password layout, shows a
+/// composition, and receives the commit that becomes the typed credential.
+#[test]
+fn the_lock_field_asks_for_the_secret_layout_and_takes_its_commit() {
+    let mut h = Harness::new();
+    h.state
+        .set_input_method_owner(Some(TrustedInputMethod::OnScreenKeyboard));
+    let keyboard = h.connect(Some(TrustedInputMethod::OnScreenKeyboard));
+    let input_method = {
+        let client = &h.clients[keyboard];
+        let qh = client.queue.handle();
+        let seat = client.bind::<wl_seat::WlSeat>("wl_seat", 1).expect("seat");
+        client
+            .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(INPUT_METHOD_MANAGER, 1)
+            .expect("trusted keyboard may bind")
+            .get_input_method(&seat, &qh, ())
+    };
+    h.pump();
+    let mut proxy = shell::compositor::shell_text_input::ShellTextInput::connect(&mut h.state)
+        .expect("chrome stand-in");
+    // Exactly what the compositor offers while locked.
+    let outputs = [shell::compositor::lock_screen::LockOutput {
+        origin: (0.0, 0.0),
+        size: (1280.0, 800.0),
+        scale: 1.0,
+    }];
+    let field =
+        shell::compositor::lock_screen::ime_field(&outputs, &ui::theme::Theme::dark(), false)
+            .expect("the lock has a credential field");
+    let deadline = tilo_test_env::hang_deadline();
+    while h.clients[keyboard].peer.activated == 0 || !proxy.holds_focus(&h.state) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the lock field never activated the input method"
+        );
+        proxy.sync(&mut h.state, Some(field));
+        h.pump();
+    }
+    let (hint, purpose) = h.clients[keyboard]
+        .peer
+        .keyboard_events
+        .iter()
+        .find_map(|event| match event {
+            osk::imclient::ImEvent::ContentType { hint, purpose } => Some((*hint, *purpose)),
+            _ => None,
+        })
+        .expect("the input method learned the field's content type");
+    assert_eq!(purpose, 8, "content_purpose: password");
+    assert_eq!(
+        hint & (0x40 | 0x80),
+        0x40 | 0x80,
+        "content_hint: hidden and sensitive"
+    );
+
+    // The composition is visible to the lock as a preedit...
+    let serial = h.clients[keyboard].peer.im_done;
+    input_method.set_preedit_string("に".into(), 3, 3);
+    input_method.commit(serial);
+    let mut events = Vec::new();
+    while !events.iter().any(|event| {
+        matches!(event,
+            winit::event::WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) if text == "に"
+        )
+    }) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the lock preedit never arrived: {events:?}"
+        );
+        h.pump();
+        events.extend(proxy.sync(&mut h.state, Some(field)));
+    }
+
+    // ...and the commit replaces it with credential text.
+    let serial = h.clients[keyboard].peer.im_done;
+    input_method.set_preedit_string(String::new(), 0, 0);
+    input_method.commit_string("你".into());
+    input_method.commit(serial);
+    let mut committed = Vec::new();
+    while !committed.iter().any(|event| {
+        matches!(event,
+            winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) if text == "你"
+        )
+    }) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the lock commit never arrived: {committed:?}"
+        );
+        h.pump();
+        committed.extend(proxy.sync(&mut h.state, Some(field)));
+    }
+    assert!(
+        committed.iter().any(|event| matches!(event,
+            winit::event::WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) if text.is_empty()
+        )),
+        "a commit first clears the composition: {committed:?}"
+    );
+}
+
 /// The on-screen keyboard's terminal keys reach one of the shell's own
 /// fields as real keys: Ctrl+C arrives as the C key with Control held, and an
 /// arrow with nothing held.

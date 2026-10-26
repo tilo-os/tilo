@@ -3,7 +3,9 @@ use crate::shell::frame::FrameBuilder;
 use crate::shell::overlay_host::ShellOverlayHost;
 use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceTree};
 use vello::kurbo::{Point as KurboPoint, Rect};
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{
+    ElementState, Ime, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent,
+};
 use winit::keyboard::{Key, NamedKey};
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -2541,18 +2543,25 @@ pub fn lock_chord_matches(
     crate::shell::overlay_host::shortcut_chord_matches(&event.logical_key, modifiers, chord)
 }
 
-/// Map a live winit key event to the lock screen's normalised [`LockKey`]
-/// while locked. Non-press/unhandled keys become [`LockKey::Ignored`] —
-/// still swallowed (never routed to apps behind the overlay), but inert on
-/// the password buffer. The test-control path produces the same `LockKey`s so both drive one routing.
+/// Map a live winit event to the lock screen's normalised [`LockKey`] while
+/// locked. An input method's commit is text and its preedit is shown on the
+/// field as part of the mask; every other non-press/unhandled event becomes
+/// [`LockKey::Ignored`] — still swallowed (never routed to apps behind the
+/// overlay), but inert on the password buffer. The test-control path produces
+/// the same `LockKey`s so both drive one routing.
 pub fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return LockKey::Ignored;
+    let key = match event {
+        WindowEvent::Ime(Ime::Commit(text)) => return LockKey::Text(text.to_string()),
+        // A cleared preedit is how the input method ends a composition, so
+        // it must reach the field as an empty composition, not be dropped.
+        WindowEvent::Ime(Ime::Preedit(text, _)) => return LockKey::Preedit(text.to_string()),
+        WindowEvent::KeyboardInput { event, .. } => event,
+        _ => return LockKey::Ignored,
     };
-    if event.state != ElementState::Pressed {
+    if key.state != ElementState::Pressed {
         return LockKey::Ignored;
     }
-    match &event.logical_key {
+    match &key.logical_key {
         Key::Named(NamedKey::Enter) => LockKey::Submit,
         Key::Named(NamedKey::Escape) => LockKey::Cancel,
         Key::Named(NamedKey::Backspace) => LockKey::Backspace,
@@ -2560,7 +2569,7 @@ pub fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
         Key::Character(s) => LockKey::Text(s.to_string()),
         _ => {
             // Some layouts deliver typed text on otherwise-Named keys.
-            match &event.text {
+            match &key.text {
                 Some(t) if !t.is_empty() && !t.chars().all(char::is_control) => {
                     LockKey::Text(t.to_string())
                 }

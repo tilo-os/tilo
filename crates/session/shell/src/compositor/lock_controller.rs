@@ -63,6 +63,9 @@ pub enum LockKey {
     Submit,
     /// Clear the current input without attempting (Escape).
     Cancel,
+    /// An input method's composition in progress. Shown as part of the
+    /// field's mask, never as text; a later [`LockKey::Text`] commits it.
+    Preedit(String),
     /// Consumed but with no effect on the buffer (e.g. an arrow key). Still
     /// swallowed — never routed to apps while locked.
     Ignored,
@@ -83,6 +86,10 @@ pub struct LockController {
     verifier: Arc<dyn PasswordVerifier>,
     username: String,
     buffer: String,
+    /// The input method's composition in progress. Never part of the
+    /// credential and never rendered as text, so a composing password is
+    /// exactly as unreadable as a typed one.
+    preedit: String,
     error: Option<String>,
     /// `Some` while a verify runs on a worker thread; `None` when idle.
     pending: Option<PendingVerify>,
@@ -95,6 +102,7 @@ impl LockController {
             verifier,
             username: username.into(),
             buffer: String::new(),
+            preedit: String::new(),
             error: None,
             pending: None,
         }
@@ -106,6 +114,7 @@ impl LockController {
     /// left over from a prior lock episode.
     pub fn reset(&mut self) {
         self.buffer.zeroize();
+        self.preedit.zeroize();
         self.error = None;
         self.pending = None;
     }
@@ -133,6 +142,8 @@ impl LockController {
         if self.buffer.chars().count() >= MAX_PASSWORD_LEN {
             return;
         }
+        // Text that commits ends the composition it came from.
+        self.preedit.zeroize();
         self.error = None;
         self.buffer.push(c);
     }
@@ -140,6 +151,7 @@ impl LockController {
     /// Remove the last user-perceived character. Clears any shown error.
     pub fn backspace(&mut self) {
         self.error = None;
+        self.preedit.zeroize();
         let boundary = prev_char_boundary(&self.buffer, self.buffer.len());
         self.buffer.truncate(boundary);
     }
@@ -147,7 +159,38 @@ impl LockController {
     /// Clear the buffer (Escape). Also clears any shown error.
     pub fn clear_input(&mut self) {
         self.buffer.zeroize();
+        self.preedit.zeroize();
         self.error = None;
+    }
+
+    /// Show the input method's composition in progress. It is bounded and
+    /// contains no control characters, and it is ignored while a verify is
+    /// in flight because the field is frozen then.
+    pub fn set_preedit(&mut self, text: &str) {
+        if self.is_verifying() {
+            return;
+        }
+        self.preedit.zeroize();
+        self.preedit.extend(
+            text.chars()
+                .filter(|c| !c.is_control())
+                .take(MAX_PASSWORD_LEN),
+        );
+    }
+
+    /// The composition in progress, if any. Never the credential itself.
+    pub fn preedit(&self) -> &str {
+        &self.preedit
+    }
+
+    /// How many mask marks the field shows: committed characters plus the
+    /// composition, bounded like the committed mask.
+    pub fn mask_len(&self) -> usize {
+        self.buffer
+            .chars()
+            .count()
+            .saturating_add(self.preedit.chars().count())
+            .min(MAX_PASSWORD_LEN)
     }
 
     /// Submit a private semantic credential to the ordinary verification worker.
@@ -166,6 +209,7 @@ impl LockController {
             return Err("The password is empty or exceeds the supported input limits");
         }
         self.buffer.zeroize();
+        self.preedit.zeroize();
         self.buffer = std::mem::take(&mut *password);
         self.submit();
         if self.is_verifying() {
@@ -194,6 +238,7 @@ impl LockController {
         // verify returns.
         let verifier = Arc::clone(&self.verifier);
         let username = self.username.clone();
+        self.preedit.zeroize();
         let password = Zeroizing::new(std::mem::take(&mut self.buffer));
         let (tx, rx) = mpsc::channel();
         match std::thread::Builder::new()
@@ -276,6 +321,10 @@ impl LockController {
             }
             LockKey::Backspace => {
                 self.backspace();
+                UnlockOutcome::StillLocked
+            }
+            LockKey::Preedit(text) => {
+                self.set_preedit(&text);
                 UnlockOutcome::StillLocked
             }
             LockKey::Cancel => {

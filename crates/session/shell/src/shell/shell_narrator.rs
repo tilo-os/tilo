@@ -184,6 +184,7 @@ mod tests {
     fn view(password_len: usize, error: Option<&str>) -> LockView<'_> {
         LockView {
             password_len,
+            preedit: "",
             error,
             clock: "09:41",
             date: "Friday, 11 July",

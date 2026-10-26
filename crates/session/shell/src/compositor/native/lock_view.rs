@@ -40,6 +40,7 @@ impl LockClock {
             alert,
             keyboard,
             password_len: lock.buffer_len(),
+            preedit: lock.preedit(),
             error: lock.error(),
             clock: &self.clock,
             date: &self.date,

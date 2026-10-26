@@ -325,6 +325,7 @@ fn the_lock_screen_is_never_captured() {
     }];
     let view = LockView {
         password_len: 6,
+        preedit: "",
         error: Some("Incorrect password"),
         clock: "13:37",
         date: "Friday, 11 July",

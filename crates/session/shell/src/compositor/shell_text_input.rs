@@ -50,6 +50,57 @@ pub enum NativeFieldId {
     /// A shell password prompt: the compositor's sheet or Quick Settings'
     /// Wi-Fi prompt.
     Prompt,
+    /// The session lock screen's credential field. While the session is
+    /// locked this is the only field an input method may reach.
+    Lock,
+}
+
+/// Which field the seat's input method serves this tick, and under which
+/// native identity.
+///
+/// The lock is the one state where the rule changes. While locked **only**
+/// the lock screen's credential field may be served — never a client's text
+/// input, never a chrome field (not the palette, not a password prompt), and
+/// nothing at all while a client still holds the keyboard. Unlocking returns
+/// to the ordinary rule: no field while a client holds the keyboard unless a
+/// shell password prompt is up over it; the palette and prompt own the
+/// input method over the focused widget; a field that takes only deferred
+/// receipts is served only when dictation needs its original field.
+#[must_use]
+pub fn field_owner(
+    locked: bool,
+    client_holds_keyboard: bool,
+    lock_field: Option<FieldRequest>,
+    shell_prompt_up: bool,
+    receipts_only: bool,
+    speech_field_needed: bool,
+    focused_field: Option<FieldRequest>,
+    focus: Option<u64>,
+    palette_visible: bool,
+) -> Option<(FieldRequest, NativeFieldId)> {
+    if locked {
+        // A client that still holds the keyboard wins nothing while locked:
+        // serving it would be a leak, so fail closed instead.
+        return (!client_holds_keyboard)
+            .then_some(lock_field)
+            .flatten()
+            .map(|field| (field, NativeFieldId::Lock));
+    }
+    if client_holds_keyboard && !shell_prompt_up {
+        return None;
+    }
+    if receipts_only && !speech_field_needed {
+        return None;
+    }
+    if palette_visible {
+        return focused_field.map(|field| (field, NativeFieldId::Palette));
+    }
+    if shell_prompt_up {
+        return focused_field.map(|field| (field, NativeFieldId::Prompt));
+    }
+    focused_field
+        .zip(focus)
+        .map(|(field, node)| (field, NativeFieldId::Widget(node)))
 }
 
 /// Private opaque edit metadata, never surrounding text or a persisted hash.

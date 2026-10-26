@@ -12788,15 +12788,44 @@ pub fn run() {
             .host_mut()
             .dictation_surface_mut()
             .needs_original_field();
-        // A shell password prompt takes the keyboard over any window: its
-        // field takes the input method even while an application keeps
-        // focus beneath.
-        let shell_field = (!session.is_locked()
-            && (state.client_input.keyboard_focus().is_none()
-                || frame_builder.host().shell_prompt_up())
-            && (!receipts_only || speech_field_needed))
-            .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
+        // While locked, the only field an input method may serve is the lock
+        // screen's credential field: never a client's text input, never a
+        // chrome field, and nothing at all while a client still holds the
+        // keyboard. `field_owner` is that invariant, written and tested on
+        // its own.
+        let session_locked = session.is_locked();
+        let lock_field = session_locked
+            .then(|| {
+                let outputs = lock_outputs(
+                    backend.outputs(),
+                    frame_builder.scene_size(),
+                    focused_display_id(&frame_builder),
+                );
+                lock_screen::ime_field(
+                    &outputs,
+                    frame_builder.theme(),
+                    lock_keyboard.shown().is_some(),
+                )
+            })
             .flatten();
+        let owner = crate::compositor::shell_text_input::field_owner(
+            session_locked,
+            state.client_input.keyboard_focus().is_some(),
+            lock_field,
+            frame_builder.host().shell_prompt_up(),
+            receipts_only,
+            speech_field_needed,
+            frame_builder.focused_ime_field(test_control_ctx.focus),
+            test_control_ctx.focus.map(u64::from),
+            frame_builder.host().palette_visible(),
+        );
+        let shell_field = owner.map(|(field, _)| field);
+        let identity = owner.map(|(_, identity)| identity);
+        if session_locked && shell_field.is_none() {
+            // No served field means no composition: a frozen field or a
+            // keyboard that briefly moved away must not leave stale marks.
+            lock.set_preedit("");
+        }
         if shell_field.is_some() && shell_text_input.is_none() {
             match crate::compositor::shell_text_input::ShellTextInput::connect(&mut state) {
                 Ok(proxy) => shell_text_input = Some(proxy),
@@ -12806,16 +12835,13 @@ pub fn run() {
             }
         }
         if let Some(proxy) = shell_text_input.as_mut() {
-            let identity = if frame_builder.host().palette_visible() {
-                Some(crate::compositor::shell_text_input::NativeFieldId::Palette)
-            } else if frame_builder.host().shell_prompt_up() {
-                Some(crate::compositor::shell_text_input::NativeFieldId::Prompt)
-            } else {
-                test_control_ctx.focus.map(|node| {
-                    crate::compositor::shell_text_input::NativeFieldId::Widget(u64::from(node))
-                })
-            };
             let typed = proxy.sync_for_field(&mut state, shell_field, identity);
+            if session_locked && !state.shell_field_active {
+                // The seat's text-input focus left (a frozen field, or an
+                // input method that went away): any composition it had is
+                // no longer on screen and must not survive.
+                lock.set_preedit("");
+            }
             let keys = state.take_shell_field_keys();
             // Text carries the keyboard's modifiers; a virtual keyboard's key
             // carries the ones it held for it, so its Ctrl+C is a chord.
@@ -12825,16 +12851,32 @@ pub fn run() {
                 .chain(keys.iter().map(|(event, modifiers)| (event, *modifiers)))
                 .collect::<Vec<_>>();
             for (event, modifiers) in &delivered {
-                frame_builder.dispatch_event(
-                    event,
-                    modifiers,
-                    &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
-                    &test_control_ctx.root_obj,
-                    &mut test_control_ctx.focus,
-                );
+                if session_locked {
+                    // The lock owns every text event while it is up. Input
+                    // method commits reach its credential buffer; editing
+                    // keys from the on-screen keyboard take the same
+                    // `LockKey` route as a physical key. Nothing here is
+                    // dispatched to a client or to chrome.
+                    if let WindowEvent::KeyboardInput { event: key, .. } = event {
+                        client_input::apply_modifier_key(&mut test_control_ctx.modifiers, key);
+                        client_input::consume_keyboard_while_captured(&mut state, event);
+                    }
+                    lock.handle_key(winit_event_to_lock_key(event));
+                } else {
+                    frame_builder.dispatch_event(
+                        event,
+                        modifiers,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
+                        &test_control_ctx.root_obj,
+                        &mut test_control_ctx.focus,
+                    );
+                }
             }
             if !delivered.is_empty() {
                 injected_redraw_pending = true;
+                if session_locked {
+                    session_changed = true;
+                }
             }
             if state.has_dictation_target() && shell_field.is_some() {
                 let stamp = frame_builder

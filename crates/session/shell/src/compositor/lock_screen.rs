@@ -86,6 +86,10 @@ pub struct LockView<'a> {
     /// Number of password characters typed so far — rendered as masked
     /// dots. The plaintext never reaches this layer.
     pub password_len: usize,
+    /// The input method's composition in progress, if any. It is secret
+    /// content even before it is committed, so it joins the same mask rather
+    /// than being painted as text.
+    pub preedit: &'a str,
     /// Authentication error to show under the field (e.g. "Incorrect
     /// username or password"), or `None`. Rendered in the danger colour.
     pub error: Option<&'a str>,
@@ -467,8 +471,7 @@ pub fn transport_at(
 }
 
 /// When the lock screen draws its keyboard for unlocking by touch, and what
-/// its keys type. No input method runs while the session is locked; the
-/// passcode never leaves the lock screen.
+/// its keys type. The passcode never leaves the lock screen.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LockTouchKeyboard {
     keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
@@ -592,6 +595,22 @@ pub fn lock_surfaces(outputs: &[LockOutput], theme: &Theme, keyboard: bool) -> V
 /// Backend output ordering is the compositor's primary-output policy.
 fn primary_output(outputs: &[LockOutput]) -> Option<LockOutput> {
     outputs.first().copied()
+}
+
+/// The lock's credential field as the seat's input method sees it: the
+/// password purpose, with the primary display's field rect as the caret
+/// rectangle. `None` only when there is no output to carry it.
+#[must_use]
+pub fn ime_field(
+    outputs: &[LockOutput],
+    theme: &Theme,
+    keyboard: bool,
+) -> Option<ui::ime::ImeWindowState> {
+    let layout = LockLayout::for_output_with_keyboard(primary_output(outputs)?, theme, keyboard);
+    Some(ui::ime::ImeWindowState::from_rect(
+        ui::ime::InputContent::PASSWORD,
+        layout.password,
+    ))
 }
 
 /// What the lock screen's clock reads as: the lock state, then the time and
@@ -1502,7 +1521,7 @@ fn draw_password_contents(
             .info
             .with_alpha(status.shown_alpha);
         draw_field_dots(scene, layout, 3, 18.0, 3.0, ink);
-    } else if view.password_len == 0 {
+    } else if view.password_len == 0 && view.preedit.is_empty() {
         draw_centered_text(
             scene,
             text,
@@ -1516,10 +1535,15 @@ fn draw_password_contents(
             layout.password,
         );
     } else {
+        // The composition is secret before it commits: it is shown as part
+        // of the same mask, so the field never reveals what is being typed,
+        // and the mask still moves as the person composes.
         draw_field_dots(
             scene,
             layout,
-            view.password_len.min(18),
+            view.password_len
+                .saturating_add(view.preedit.chars().count())
+                .min(18),
             14.0,
             4.0,
             theme.text_primary,
