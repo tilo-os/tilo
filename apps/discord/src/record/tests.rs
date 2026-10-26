@@ -525,7 +525,7 @@ fn answers_go_out_through_the_outbox() {
     bot.apply(Guild::ANSWER_INTERACTION.with(guild::AnswerInteraction {
         op: AnswerInteractionOp {
             interaction: "i_1".into(),
-            content: "Linked to Ada ✓".into(),
+            content: "Linked to Ada.".into(),
         },
     }))
     .unwrap();
