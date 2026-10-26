@@ -84,11 +84,26 @@ fun set_dialog_opacity(opacity)
       dialog.bullet[index].SetOpacity(opacity);
   }
 
+# What the volume's prompt asks for, once tilo-boot-signin has read the
+# header (`tilo-unlock-ask:<kind>`): the password where the installer set the
+# account password as the disk's, a disk passphrase otherwise, and the
+# recovery key only where the volume has one.
+fun unlock_help_image()
+  {
+    if (global.unlock_ask != "")
+      {
+        local.image = Image("unlock-help-" + global.unlock_ask + ".png");
+        if (image)
+          return image;
+      }
+    return Image("unlock-help.png");
+  }
+
 fun setup_dialog()
   {
     global.dialog.heading_image = Image("unlock-heading.png");
     global.dialog.heading = Sprite(dialog.heading_image);
-    global.dialog.help_image = Image("unlock-help.png");
+    global.dialog.help_image = unlock_help_image();
     global.dialog.help = Sprite(dialog.help_image);
     global.dialog.retry_image = Image("unlock-retry.png");
     global.dialog.retry = Sprite(dialog.retry_image);
@@ -703,6 +718,18 @@ fun display_message(text)
           set_dialog_opacity(1);
         return;
       }
+    if (text.SubString(0, 16) == "tilo-unlock-ask:")
+      {
+        global.unlock_ask = text.SubString(16, text.Length());
+        if (dialog.ready)
+          {
+            global.dialog.help_image = unlock_help_image();
+            dialog.help.SetImage(dialog.help_image);
+            if (global.mode == "password" && !signin.active)
+              place_dialog();
+          }
+        return;
+      }
     if (text.SubString(0, 12) == "tilo-signin-")
       {
         signin_message(text.SubString(12, text.Length()));
@@ -726,6 +753,7 @@ fun display_message(text)
 
 mode = "normal";
 other_ways = 0;
+unlock_ask = "";
 place_brand(0);
 show_normal_status();
 Plymouth.SetRefreshFunction(refresh);

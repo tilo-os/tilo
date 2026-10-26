@@ -148,6 +148,12 @@ if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
     done
   }
 
+  # The boot screen says what the volume's own prompt takes: the password,
+  # a disk passphrase, the recovery key, as this volume's header has them.
+  if [ -x "$signin_bin" ]; then
+    "$signin_bin" unlock-prompt --device "$root" \
+      || note "the volume's prompt keeps its general wording"
+  fi
   while :; do
     # A root that people sign in to (tilo-signin tokens) asks for a person's
     # own PIN or password first, and that sign-in carries on into their

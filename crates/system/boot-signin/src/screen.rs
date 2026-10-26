@@ -222,7 +222,7 @@ impl Plymouth {
         Some(Zeroizing::new(text.to_owned()))
     }
 
-    pub(crate) fn message(&self, text: &str) {
+    pub fn message(&self, text: &str) {
         self.command(&["display-message", &format!("--text={text}")]);
     }
 

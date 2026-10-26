@@ -7,7 +7,7 @@
 #   tilo-disk-encrypt prepare  <disk> [--filesystem btrfs|ext4|xfs] [--mnt DIR]
 #   tilo-disk-encrypt prepare-partition <root-part> --efi <esp> [...]
 #   tilo-disk-encrypt enrol    <luks-part> [--key-file F] [--pin-file F] [--fido2] [--passphrase]
-#                              [--store-part P --store-key-file F]
+#                              [--pin-is-account-password] [--store-part P --store-key-file F]
 #   tilo-disk-encrypt enrol    <luks-part> --reseal   # currently fails closed
 #   tilo-disk-encrypt enrol    <luks-part> --sibling [--key-file F] [--network NAME]...
 #                              [--session-uid UID]
@@ -408,7 +408,7 @@ EOF
 
 cmd_enrol() {
   local dev="" key="" pin_file="" want_fido2=0 reseal=0 predictions="" generation="" rollback_state=""
-  local require_tpm_prediction=0 store_part="" store_key="" sibling=0
+  local require_tpm_prediction=0 store_part="" store_key="" sibling=0 account_password=0
   local sibling_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -416,6 +416,7 @@ cmd_enrol() {
       --store-part) store_part="${2:-}"; shift 2 ;;
       --store-key-file) store_key="${2:-}"; shift 2 ;;
       --pin-file) pin_file="${2:-}"; shift 2 ;;
+      --pin-is-account-password) account_password=1; shift ;;
       --predictions) predictions="${2:-}"; shift 2 ;;
       --generation) generation="${2:-}"; shift 2 ;;
       --rollback-state) rollback_state="${2:-}"; shift 2 ;;
@@ -564,6 +565,8 @@ cmd_enrol() {
     # so normalise to the bytes the user will actually enter.
     ( umask 0077; printf '%s' "$(cat "$pin_file")" > "$scratch/pin" )
     [ -s "$scratch/pin" ] || die "enrol: the pin file $pin_file is empty"
+    local slots_before
+    slots_before="$(keyslot_ids "$dev")"
     if [ -n "$predictions" ] && [ -n "$generation" ] \
        && compgen -G "$predictions/generation-$generation*.json" >/dev/null \
        && { [ -c /dev/tpmrm0 ] || [ -c /dev/tpm0 ]; }; then
@@ -576,6 +579,7 @@ cmd_enrol() {
         --pin-file "$scratch/pin" \
         || die "signed measured-boot TPM enrollment failed; the recovery key remains valid"
       log "  TPM2 + PIN enrolled and verified."
+      [ "$account_password" -eq 0 ] || mark_account_password "$dev" "$slots_before"
       return 0
     fi
     [ "$require_tpm_prediction" -eq 0 ] \
@@ -592,9 +596,41 @@ cmd_enrol() {
     cryptsetup open --test-passphrase --key-file "$scratch/pin" "$dev" 2>/dev/null \
       || die "the passphrase was added but does not open $dev — refusing to call this enrolled"
     log "  passphrase enrolled and verified to open the volume."
+    [ "$account_password" -eq 0 ] || mark_account_password "$dev" "$slots_before"
   else
     log "  no passphrase was supplied, so the RECOVERY KEY above is the boot"
     log "  passphrase. Keep it; there is no other way in."
+  fi
+}
+
+# The volume's populated key slot numbers, one per line.
+keyslot_ids() {
+  cryptsetup luksDump "$1" | awk '
+    /^Keyslots:/ { slots = 1; next }
+    /^[^ \t]/ { slots = 0 }
+    slots && $2 == "luks2" { sub(":", "", $1); print $1 }'
+}
+
+# The wizard's one secret: the startup secret is the account password, and a
+# `tilo-startup-secret` token names the slot it went into, so the boot screen
+# asks for the password rather than a disk passphrase (tilo-boot-signin
+# unlock-prompt). The token holds no secret, only which slot it is. Without
+# it the prompt says "disk passphrase", so a failure is reported, not fatal.
+mark_account_password() {
+  local dev="$1" before="$2" slot new=()
+  for slot in $(keyslot_ids "$dev"); do
+    grep -qx "$slot" <<<"$before" || new+=("\"$slot\"")
+  done
+  if [ "${#new[@]}" -eq 0 ]; then
+    log "  warning: the startup secret's key slot was not found; the boot prompt will say disk passphrase"
+    return 0
+  fi
+  local IFS=,
+  if printf '{"type":"tilo-startup-secret","keyslots":[%s]}' "${new[*]}" \
+      | cryptsetup token import "$dev"; then
+    log "  the boot prompt will ask for the account password."
+  else
+    log "  warning: could not mark the account password's slot; the boot prompt will say disk passphrase"
   fi
 }
 
