@@ -14,6 +14,7 @@ use crate::model::{
     AppStatus, ApplianceState, Catalogue, Confidence, Grant, Route, VmInstallConfirmation,
     WindowsApp,
 };
+use crate::strings::{self, format_all};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -1011,7 +1012,6 @@ fn catalogue_from_managed(
         .iter()
         .copied()
         .map(shared_session_grant_label)
-        .map(str::to_string)
         .collect::<Vec<_>>();
     let shared_session_contributors = vm_availability
         .shared_session
@@ -1119,7 +1119,7 @@ fn app_from_managed(
             // The service names the presentation it uses; the person needs
             // to know only that files can't reach this window yet.
             if application.presentation == Some(compat_service::VmPresentation::AppFocusedSpice) {
-                Some(FILES_CANT_REACH_WINDOW.to_owned())
+                Some(files_cannot_reach_window())
             } else {
                 application.portal_file_open_unavailable_reason.clone()
             }
@@ -1273,15 +1273,19 @@ fn can_escalate_install_to_vm(installation: &ManagedInstallation) -> bool {
         )
 }
 
-fn shared_session_grant_label(grant: compat_service::VmSharedSessionGrantKind) -> &'static str {
-    match grant {
-        compat_service::VmSharedSessionGrantKind::AudioPlayback => "Audio playback",
-        compat_service::VmSharedSessionGrantKind::Clipboard => "Clipboard",
-        compat_service::VmSharedSessionGrantKind::Microphone => "Microphone",
-        compat_service::VmSharedSessionGrantKind::NetworkEgress => "Network",
-        compat_service::VmSharedSessionGrantKind::PortalFilesReadOnly => "Read-only files",
-        compat_service::VmSharedSessionGrantKind::PortalFilesReadWrite => "Writable files",
-    }
+fn shared_session_grant_label(grant: compat_service::VmSharedSessionGrantKind) -> String {
+    strings::t(match grant {
+        compat_service::VmSharedSessionGrantKind::AudioPlayback => "windows-grant-audio-playback",
+        compat_service::VmSharedSessionGrantKind::Clipboard => "windows-grant-clipboard",
+        compat_service::VmSharedSessionGrantKind::Microphone => "windows-grant-microphone",
+        compat_service::VmSharedSessionGrantKind::NetworkEgress => "windows-grant-network",
+        compat_service::VmSharedSessionGrantKind::PortalFilesReadOnly => {
+            "windows-grant-read-only-files"
+        }
+        compat_service::VmSharedSessionGrantKind::PortalFilesReadWrite => {
+            "windows-grant-writable-files"
+        }
+    })
 }
 
 fn route_from_kind(route: RouteKind) -> Route {
@@ -1292,35 +1296,36 @@ fn route_from_kind(route: RouteKind) -> Route {
     }
 }
 
-const FILES_CANT_REACH_WINDOW: &str =
-    "This app's window can't receive files from this computer yet.";
+fn files_cannot_reach_window() -> String {
+    strings::t("windows-files-cannot-reach")
+}
 
 fn on_off(on: bool) -> String {
-    if on { "On" } else { "Off" }.into()
+    strings::t(if on { "windows-on" } else { "windows-off" })
 }
 
 /// How many places an app was given, in words.
 fn locations(count: usize) -> String {
     match count {
-        0 => "Off".into(),
-        1 => "1 location".into(),
-        n => format!("{n} locations"),
+        0 => strings::t("windows-off"),
+        1 => strings::t("windows-location-one"),
+        n => format_all("windows-locations", &[("count", n.to_string())]),
     }
 }
 
 /// The service's network shape in words: off, open, or the sites allowed.
 fn network_label(network: &str) -> String {
     match network {
-        "none" => "Off".into(),
-        "unrestricted" => "On".into(),
+        "none" => strings::t("windows-off"),
+        "unrestricted" => strings::t("windows-on"),
         other => other
             .strip_suffix(" approved host(s)")
             .and_then(|count| count.parse::<usize>().ok())
             .map_or_else(
                 || other.to_owned(),
                 |count| match count {
-                    1 => "1 approved site".into(),
-                    n => format!("{n} approved sites"),
+                    1 => strings::t("windows-approved-site-one"),
+                    n => format_all("windows-approved-sites", &[("count", n.to_string())]),
                 },
             ),
     }
@@ -1408,7 +1413,7 @@ mod tests {
             assert!(!app.portal_file_open_available);
             assert_eq!(
                 app.portal_file_open_unavailable_reason.as_deref(),
-                Some(FILES_CANT_REACH_WINDOW),
+                Some(files_cannot_reach_window().as_str()),
                 "the person reads why files can't arrive, not the presentation's name"
             );
             assert!(

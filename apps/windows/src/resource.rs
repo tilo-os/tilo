@@ -252,10 +252,14 @@ impl ResourceSurface<Windows, WindowsEffect> for WindowsApp {
             .map(|app| {
                 ui::tilo_resource::SearchEntry::new(
                     app.name.clone(),
-                    format!("{} {}", app.publisher, app.route.label()),
+                    format!(
+                        "{} {}",
+                        app.publisher,
+                        crate::strings::t(app.route.button_key())
+                    ),
                 )
                 .subtitled(app.publisher.clone())
-                .grouped("Windows apps")
+                .grouped(&crate::strings::t("windows-search-group"))
                 .anchored(crate::search::app_resource_id(&app.id))
             })
             .collect()
