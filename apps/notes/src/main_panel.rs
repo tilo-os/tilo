@@ -467,6 +467,10 @@ pub struct MainPanel {
     /// as boxed Elements — wrapping in Scrollable would require
     /// significant ownership churn for what amounts to "clip + shift".
     scroll_y: f64,
+    /// Where each note was left off. Switching notes puts the one opened
+    /// back at the place it was read, clamped to its own extent on the next
+    /// layout; a note not seen before opens at its top.
+    scroll_by_page: HashMap<PageId, f64>,
     /// The glide a lifted touchpad or touchscreen gesture leaves the body
     /// in, as every Tilo scroll surface has; a wheel's notches move it at
     /// once and never glide.
@@ -564,6 +568,7 @@ impl MainPanel {
             title_overhang: None,
             drawn_title_overhang: None,
             scroll_y: 0.0,
+            scroll_by_page: HashMap::new(),
             glide: ui::ScrollMomentum::new(),
             scroll_to: ui::motion::ScrollTo::new(),
             device_scale: 1.0,
@@ -636,6 +641,9 @@ impl MainPanel {
     /// grammar that `BlockEditor::from_markdown` does not handle.
     pub fn load_page(&mut self, id: PageId, title: &str, body: impl AsRef<str>) {
         let body = body.as_ref();
+        if let Some(old) = self.page_id {
+            self.scroll_by_page.insert(old, self.scroll_y);
+        }
         self.content_generation = self.content_generation.wrapping_add(1);
         self.page_id = Some(id);
         self.dates = self.date_index.get(id);
@@ -659,9 +667,9 @@ impl MainPanel {
             .editor_mut()
             .focus_block(0, ui::widget::CursorPlacement::Start);
         self.take_body_snapshot();
-        // Brand-new page → reset scroll to top (the previous page's
-        // scroll position is meaningless for the new content).
-        self.scroll_y = 0.0;
+        // A note opens where it was left off, or at its top the first time.
+        self.scroll_y = self.scroll_by_page.get(&id).copied().unwrap_or(0.0);
+        self.scroll_layout_dirty = self.scroll_y.abs() > f64::EPSILON;
         self.glide.stop();
         self.dirty = true;
     }
@@ -679,6 +687,11 @@ impl MainPanel {
         title: &str,
     ) -> Result<(), String> {
         let body = crate::notebook::body_object(doc, page).ok_or("the page has no body")?;
+        if let Some(old) = self.page_id
+            && old != page
+        {
+            self.scroll_by_page.insert(old, self.scroll_y);
+        }
         // Binding the page already open again (its record re-read, a reveal)
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
@@ -719,13 +732,15 @@ impl MainPanel {
         self.empty_action_focused = false;
         self.set_title_value(title);
         self.body.clear();
-        // Another page starts at its top; the same page, bound again after an
-        // edit (a paste, an import), stays where the person is reading, and
-        // layout clamps the offset to the new extent.
+        // The same page, bound again after an edit (a paste, an import),
+        // stays where the person is reading. Another page returns to where
+        // it was left, or its top the first time; layout clamps either to
+        // the new extent.
         if same_page {
             self.scroll_layout_dirty = true;
         } else {
-            self.scroll_y = 0.0;
+            self.scroll_y = self.scroll_by_page.get(&page).copied().unwrap_or(0.0);
+            self.scroll_layout_dirty = self.scroll_y.abs() > f64::EPSILON;
             self.glide.stop();
         }
         self.dirty = true;
