@@ -30,7 +30,7 @@ export const PAIR_WAIT_MS = 30_000;
 export function liveMembers(layer, seen) {
   if (!layer?.available) return null;
   return layer.members().map(publisher => {
-    const {participant, focus, place, wave} = seen.get(publisher) ?? {};
+    const {participant, focus, place, wave, layout, following} = seen.get(publisher) ?? {};
     return {
       publisher,
       kind: participant?.kind === 'agent' ? 'agent' : 'person',
@@ -44,6 +44,10 @@ export function liveMembers(layer, seen) {
       place: participant?.kind === 'agent' ? null : place ?? null,
       // A person's latest wave; the one it is for shows it, once.
       wave: participant?.kind === 'agent' ? null : wave ?? null,
+      // Where a person's windows are, for a mini view of their screen.
+      layout: participant?.kind === 'agent' ? null : layout ?? null,
+      // Whose view a person follows: who follows whom, on every roster.
+      following: participant?.kind === 'agent' ? null : following ?? null,
     };
   });
 }
@@ -57,11 +61,12 @@ export function liveMembers(layer, seen) {
  * @param options.layer        the room's live layer, or undefined
  * @param options.peer         the certified peer: `here(window, actions)`, `participant`
  * @param options.presenceUrl  the room service's spectator count, if any
+ * @param options.photos       follows people's profile pictures (`profile-photos.mjs` `followPhotos`), if any
  */
-export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
+export function createHere({runtime, mountId, active, layer, peer, presenceUrl, photos = null,
   fetch = globalThis.fetch, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout,
   visible = () => globalThis.document?.visibilityState !== 'hidden', onError = () => {}}) {
-  const seen = new Map(); // publisher -> {participant, focus, place, wave}
+  const seen = new Map(); // publisher -> {participant, focus, place, wave, layout, following}
   let stopped = false;
   let timer;
   let peopleKey;
@@ -69,6 +74,7 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
   let postedAt = -Infinity;
   let posting = false;
   let watchedAt = -Infinity;
+  let saidStatus = null; // the own words last put on the person's presence
   let lines = [];
   let again = false; // asked to check while busy: check once it is done
   const arrivedAt = new Map(); // publisher -> when it joined, while unpaired
@@ -88,7 +94,7 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
   }
   function remember({publisher, frame}) {
     const previous = seen.get(publisher);
-    seen.set(publisher, {participant: frame.participant ?? previous?.participant ?? null, focus: frame.focus ?? null, place: frame.place ?? null, wave: frame.wave ?? null});
+    seen.set(publisher, {participant: frame.participant ?? previous?.participant ?? null, focus: frame.focus ?? null, place: frame.place ?? null, wave: frame.wave ?? null, layout: frame.layout ?? null, following: frame.following ?? null});
     pushPeople();
   }
   const live = layer();
@@ -122,7 +128,10 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
     try {
       const answer = await peer.here(state.window, state.actions);
       lines = Array.isArray(answer) ? answer : [];
-      if (!stopped && active()) runtime.desktop_set_here(mountId(), JSON.stringify(answer));
+      if (!stopped && active()) {
+        runtime.desktop_set_here(mountId(), JSON.stringify(answer));
+        photos?.seen(lines);
+      }
     } catch (error) {
       // Not posted: try again on the next tick, not at the next refresh.
       postedKey = undefined;
@@ -147,6 +156,13 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl,
       if (active() && visible()) {
         const at = now();
         const state = JSON.parse(runtime.desktop_here_tick(mountId(), at - RECENT_MS));
+        // What they say they are doing, in their own words, travels on
+        // their presence: everyone here reads it at once.
+        const status = typeof state.status === 'string' && state.status ? state.status : null;
+        if (status !== saidStatus && typeof peer?.setStatus === 'function') {
+          saidStatus = status;
+          peer.setStatus(status);
+        }
         const key = JSON.stringify([state.window, state.actions.map(action => action.id)]);
         if (typeof peer?.here === 'function' && !posting && (key !== postedKey || at - postedAt >= POST_EVERY_MS || awaitingPerson(at))) {
           postedKey = key;

@@ -38,7 +38,7 @@ impl ShellOverlayHost {
                 dictation: layers.dictation.is_animating(now),
                 emoji_picker: layers.emoji_picker.is_animating(now),
                 display_confirm: layers.display_confirm.is_animating(now),
-                follow: self.follow_transition.is_moving(now),
+                follow: self.follow_banner.is_moving(now),
                 projection: self.projection_overlay.needs_animation_frame(now)
                     || self.display_identify.needs_frame(now),
                 content: self.content.needs_animation_frame(),
@@ -58,8 +58,9 @@ impl ShellOverlayHost {
                 }),
                 desk: self.desk_animating(now),
                 cursor_chat: self.cursor_chat_animating(now),
-                collaborators: self.overlay_flags().collaborators
-                    && self.collaborators_overlay.needs_animation_frame(),
+                collaborators: (self.overlay_flags().collaborators
+                    && self.collaborators_overlay.needs_animation_frame())
+                    || self.people_overlay.needs_animation_frame(),
                 osd: self
                     .chrome
                     .as_ref()
@@ -71,6 +72,8 @@ impl ShellOverlayHost {
                 window_previews: self.window_previews.changed(),
                 peer_sync: self.peer_sync_overlay.needs_animation_frame(),
                 directory_sheet: self.directory_sheet.needs_animation_frame(),
+                feedback_picker: self.feedback_picker.needs_animation_frame(now),
+                control_hints: self.control_hints_animating(now),
             },
         )
     }
@@ -154,10 +157,12 @@ impl ShellOverlayHost {
             );
             return sections;
         }
+        let drawing_since = ui::time::now();
         // The root needs the active text scale before any of its popover
         // geometry is resolved below; otherwise a first frame at large type
         // has a default-height card and clips its two-line controls.
         self.refresh_active_tab_presence();
+        self.refresh_live_layout();
         self.hand_flying_windows_to_the_overview(ui::time::now());
         self.qs_root.set_layout_text_scale(theme.text_scale);
         self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
@@ -291,6 +296,7 @@ impl ShellOverlayHost {
         );
         self.prepare_quick_settings_transition(theme, flags);
         self.prepare_strip_indicators(Instant::now());
+        self.prepare_control_hints(Instant::now());
         self.sync_top_bar_presence(Instant::now());
         let quick_settings_transition_visible = self.qs_motion.is_visible(ui::time::now());
         phase_at = scene_phase("scene/sections/overlays", phase_at);
@@ -357,6 +363,15 @@ impl ShellOverlayHost {
                     presence,
                     flags,
                 );
+                None
+            },
+        );
+        overlay_part(
+            above_quick_settings,
+            "shell.people-overlay",
+            desktop,
+            |scene| {
+                self.draw_people_overlay(scene, transform, text_renderer, theme, presence);
                 None
             },
         );
@@ -456,6 +471,15 @@ impl ShellOverlayHost {
                 None
             },
         );
+        overlay_part(
+            above_quick_settings,
+            "shell.control-hints",
+            desktop,
+            |scene| {
+                self.draw_control_hints(scene, transform, text_renderer, theme);
+                None
+            },
+        );
         overlay_part(above_quick_settings, "shell.tour", desktop, |scene| {
             if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
                 onboarding.draw(scene, transform, text_renderer, theme, presence);
@@ -468,6 +492,15 @@ impl ShellOverlayHost {
                 .draw(scene, transform, text_renderer, theme, presence);
             None
         });
+        overlay_part(
+            above_quick_settings,
+            "shell.feedback-picker",
+            desktop,
+            |scene| {
+                self.draw_feedback_picker(scene, transform, text_renderer, theme);
+                None
+            },
+        );
         overlay_part(
             above_quick_settings,
             "shell.capture-studio",
@@ -484,6 +517,7 @@ impl ShellOverlayHost {
         );
         sections.topbar_bounds = topbar_bounds;
         sections.quick_settings_bounds = quick_settings_bounds;
+        self.feedback_frame_built(drawing_since);
         sections
     }
 
@@ -605,6 +639,23 @@ impl ShellOverlayHost {
         self.workspace_switch_owed
     }
 
+    /// Whether the desktop is being rearranged right now: a workspace switch
+    /// owes its frame, or the overview's windows or a workspace slide are in
+    /// flight, or setup has the screen instead of the desktop. A pointer
+    /// action read meanwhile names a rectangle the caller was not shown.
+    pub fn desktop_is_moving(&self) -> bool {
+        let now = ui::time::now();
+        self.onboarding_is_open()
+            || self.workspace_switch_owed()
+            || self.overview_zoom_moving(now)
+            || self.workspace_slide_moving(now)
+    }
+
+    /// Whether setup stands in front of the desktop.
+    pub fn onboarding_is_open(&self) -> bool {
+        self.onboarding.is_some()
+    }
+
     /// A key opened or closed the overview: the windows fly at `fast`, as
     /// spatial context, and input acts on the new state at once.
     pub(super) fn latch_keyboard_overview(&mut self) {
@@ -680,10 +731,26 @@ impl ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
+    /// When who is here next needs a frame: the open roster, and the
+    /// pinned overlay's peek opening or closing.
+    fn people_wake_deadline(&self) -> Option<Instant> {
+        let roster = self.chrome.as_ref().and_then(|chrome| {
+            if chrome.borrow().overlays.collaborators {
+                self.collaborators_overlay.next_wake_deadline()
+            } else {
+                None
+            }
+        });
+        roster
+            .into_iter()
+            .chain(self.people_overlay.next_wake_deadline())
+            .min()
+    }
+
     pub(super) fn wake_deadline_sources(
         &self,
         now: Instant,
-    ) -> [(&'static str, Option<Instant>); 21] {
+    ) -> [(&'static str, Option<Instant>); 22] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -704,16 +771,7 @@ impl ShellOverlayHost {
                     .as_ref()
                     .and_then(Widget::next_wake_deadline),
             ),
-            (
-                "people",
-                self.chrome.as_ref().and_then(|chrome| {
-                    if chrome.borrow().overlays.collaborators {
-                        self.collaborators_overlay.next_wake_deadline()
-                    } else {
-                        None
-                    }
-                }),
-            ),
+            ("people", self.people_wake_deadline()),
             ("content", self.content.next_wake_deadline()),
             ("strip-switcher", self.strip_switcher_wake_deadline(now)),
             (
@@ -787,6 +845,7 @@ impl ShellOverlayHost {
                 "display-identify",
                 self.display_identify.next_wake_deadline(now),
             ),
+            ("control-hints", self.control_hints_wake_deadline(now)),
         ]
     }
 
@@ -833,6 +892,27 @@ impl ShellOverlayHost {
 /// the next part starts now.
 fn scene_phase(name: &'static str, since: std::time::Instant) -> std::time::Instant {
     let now = std::time::Instant::now();
-    crate::compositor::metrics::profile::record_phase(name, now.duration_since(since), None);
+    let took = now.duration_since(since);
+    crate::compositor::metrics::profile::record_phase(name, took, None);
+    SECTION_SPANS.with(|spans| {
+        let mut spans = spans.borrow_mut();
+        // Bounded: a paint whose scene is not reported never drains them.
+        if spans.len() < 32 {
+            spans.push((name, took));
+        }
+    });
     now
+}
+
+std::thread_local! {
+    /// The sections of the scene being drawn on this thread and what each
+    /// took, for the frame producer's `SLOW-SCENE` line.
+    static SECTION_SPANS: std::cell::RefCell<Vec<(&'static str, std::time::Duration)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What each section of the scenes drawn on this thread since the last call
+/// took, and forget them.
+pub(crate) fn take_section_spans() -> Vec<(&'static str, std::time::Duration)> {
+    SECTION_SPANS.with(|spans| std::mem::take(&mut *spans.borrow_mut()))
 }

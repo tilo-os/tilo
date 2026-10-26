@@ -281,7 +281,12 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let (reply,())=tokio::join!(read,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         assert!(reply.unwrap()["result"]["contents"][0]["text"].as_str().unwrap().contains("directory-r1"));
         let other=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),"different-room".into(),"outsider".into());
-        assert_eq!(other.handle(request("resources/list",&json!({}))).await.unwrap()["result"]["resources"],json!([]));
+        // A room this device does not hold is not an empty one: the agent is
+        // refused with the reason, and is told nothing of any other room.
+        let listed=other.handle(request("resources/list",&json!({}))).await.unwrap();
+        assert!(listed.get("error").is_some(), "{listed}");
+        assert!(listed.get("result").is_none(), "{listed}");
+        assert!(!listed.to_string().contains("tilo://apps/71"), "{listed}");
         assert!(other.handle(request("resources/read",&json!({"uri":"tilo://apps/71"}))).await.unwrap().get("error").is_some());
         let denied=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room,"outsider".into());
         let read=denied.handle(request("resources/read",&json!({"uri":"tilo://apps/71"})));
@@ -599,8 +604,8 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         assert!(
             timeout["result"]["content"][0]["text"]
                 .as_str()
-                .unwrap()
-                .starts_with("TimedOut")
+                .is_some_and(|text| text.starts_with("the desktop's actions did not answer within")),
+            "{timeout}"
         );
     }
     // Phase `the_person_confirms_on_their_device_and_terminal_content_survives_the_broker`.

@@ -8,6 +8,7 @@ description = "A scriptable stand-in for Discord's REST API, CDN and gateway on 
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+base64.workspace = true
 bytes.workspace = true
 futures-util = { workspace = true, features = ["sink"] }
 http-body-util = "0.1.3"

@@ -119,9 +119,16 @@ pub mod action_palette;
 pub mod agent_identity;
 pub mod animation;
 pub mod arriving;
+/// What wants a person: the waiting stack, and the ledger an outcome goes to
+/// when it does not. Replaces the transient notice as a category.
+pub mod attention;
 pub mod author;
 pub mod capability_door;
 pub mod content_zoom;
+pub mod control_hints;
+/// What is running: one cancellable job with a body, which the whole system
+/// can see and which outlives the window that started it.
+pub mod jobs;
 pub mod motion;
 #[cfg(test)]
 extern crate self as tilo_ui;
@@ -198,6 +205,7 @@ pub(crate) mod pipeline_cache;
 pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]
 pub use native::host_notifications;
+pub mod emoji_catalogue;
 pub mod held_images;
 #[cfg(not(all(windows, feature = "native")))]
 #[path = "host_notifications_unsupported.rs"]
@@ -226,8 +234,12 @@ pub mod paint;
 pub mod paragraph;
 pub mod passcode_keyboard;
 pub mod pen;
+pub mod people_photos;
 pub mod permissions;
 pub mod persist;
+pub mod person_card;
+pub mod pick;
+pub mod pick_wire;
 pub mod platform;
 pub mod pointer_replay;
 pub mod portable_storage;
@@ -245,6 +257,12 @@ pub mod storage;
 /// resolves a key press through, the native shell and a browser page alike.
 pub mod shortcut_table {
     pub use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+}
+/// The desk widgets and the screen edges things kept at the screen's edges
+/// wait at, as the settings document keeps them: what every desktop host
+/// places them by, the native shell and a browser page alike.
+pub mod desk_widgets {
+    pub use settings_store::desk_widgets::{DockEdge, WidgetId};
 }
 #[cfg(any(test, feature = "ux-bench"))]
 pub mod ux_bench;
@@ -271,7 +289,13 @@ pub mod host_operation {
         resource_operation_handlers, start_in_children, start_operation,
     };
 }
+#[cfg_attr(
+    not(any(feature = "native", test)),
+    expect(dead_code, reason = "only a native host's frame culls its draw")
+)]
+pub(crate) mod draw_cull;
 pub mod host_palette;
+pub mod mentions;
 pub mod published;
 pub mod reader_hud;
 pub mod record;
@@ -319,6 +343,8 @@ pub mod uri;
 pub mod view;
 pub mod virtual_viewport;
 pub mod window_door;
+pub mod window_pictures;
+pub mod window_share;
 pub mod window_slots;
 pub mod window_toolbar;
 pub mod workspace_emoji;

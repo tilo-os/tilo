@@ -20,6 +20,57 @@ use ui::widget::Element;
 use crate::actions::LETTER_LAYOUTS;
 use crate::surface::OskSurface;
 
+/// A keyboard height, independent of the desktop's density.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeyboardSize {
+    /// Compact keys for a phone held in one hand.
+    Compact,
+    /// The standard key height, the same as before this preference.
+    #[default]
+    Standard,
+    /// Larger keys for a tablet or a person who wants more room.
+    Large,
+}
+
+impl KeyboardSize {
+    /// Every size, compact first.
+    pub const ALL: [Self; 3] = [Self::Compact, Self::Standard, Self::Large];
+    /// The names a preference and an effect may take.
+    pub const NAMES: [&'static str; 3] = ["compact", "standard", "large"];
+
+    /// The size `name` names, if any.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "compact" => Some(Self::Compact),
+            "standard" => Some(Self::Standard),
+            "large" => Some(Self::Large),
+            _ => None,
+        }
+    }
+
+    /// The size's name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Standard => "standard",
+            Self::Large => "large",
+        }
+    }
+
+    /// What it multiplies the theme's key-row height by.
+    #[must_use]
+    pub const fn scale(self) -> f32 {
+        match self {
+            Self::Compact => 0.85,
+            Self::Standard => 1.0,
+            Self::Large => 1.25,
+        }
+    }
+}
+
 /// This person's keyboard preferences.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -29,8 +80,18 @@ pub struct OskPreferences {
     /// Configured letter layouts, in their user-selected switching order.
     /// An absent list preserves the historic bundled letter layouts.
     pub layouts: Vec<String>,
+    /// How tall the key rows are, independent of the desktop's density.
+    pub size: KeyboardSize,
     /// Whether the suggestion bar offers words.
     pub suggestions: bool,
+    /// Whether a finished word may be rewritten to a likely correction.
+    /// Separate from [`Self::suggestions`]: correcting changes what was
+    /// typed, suggesting only offers what might come next.
+    pub autocorrect: bool,
+    /// The language the dictionary, predictor and autocorrection use, by
+    /// code; `None` follows the letter layout. A QWERTY keyboard can type
+    /// French, and an AZERTY one English.
+    pub typing_language: Option<String>,
     /// Whether the keyboard adapts to what this person types.
     pub personalization: bool,
     /// Recently picked emoji, most recent first.
@@ -42,7 +103,10 @@ impl Default for OskPreferences {
         Self {
             layout: LETTER_LAYOUTS[0].0.to_owned(),
             layouts: Vec::new(),
+            size: KeyboardSize::Standard,
             suggestions: true,
+            autocorrect: true,
+            typing_language: None,
             personalization: true,
             emoji_recents: Vec::new(),
         }
@@ -199,6 +263,9 @@ mod tests {
         let published = app.agent_surface().to_string();
         for address in [
             "osk.keyboard.layout",
+            "osk.keyboard.size",
+            "osk.keyboard.language",
+            "osk.keyboard.autocorrect",
             "osk.keyboard.suggestions",
             "osk.keyboard.emoji",
             "clear-personal",
@@ -257,6 +324,58 @@ mod tests {
         assert_eq!(prefs(&app).layout, "azerty");
         assert!(!prefs(&app).suggestions);
         assert!(prefs(&app).personalization);
+    }
+
+    #[test]
+    fn size_autocorrect_and_typing_language_are_separate_and_survive_a_relaunch() {
+        let mut app = keyboard();
+        app.effect(&OskEffect::SetSize {
+            value: "large".into(),
+        })
+        .unwrap();
+        app.effect(&OskEffect::SetAutocorrect { value: false })
+            .unwrap();
+        app.effect(&OskEffect::SetSuggestions { value: true })
+            .unwrap();
+        app.effect(&OskEffect::SetTypingLanguage { value: "fr".into() })
+            .unwrap();
+        app.settle();
+        let preferences = prefs(&app);
+        assert_eq!(preferences.size, crate::resource::KeyboardSize::Large);
+        assert!(!preferences.autocorrect);
+        assert!(preferences.suggestions, "suggestions kept their own switch");
+        assert_eq!(preferences.typing_language.as_deref(), Some("fr"));
+        app.with_surface::<OskSurface, _>(|surface| {
+            assert_eq!(
+                surface.keyboard().key_size(),
+                crate::resource::KeyboardSize::Large
+            );
+            assert!(!surface.keyboard().autocorrect_enabled());
+            assert!(surface.keyboard().suggestions_enabled());
+            assert_eq!(
+                surface.keyboard().typing_language(),
+                crate::dict::Language::French
+            );
+        })
+        .unwrap();
+
+        app.call_on("osk.keyboard.layout", "azerty", serde_json::json!({}))
+            .unwrap();
+        assert_eq!(
+            prefs(&app).typing_language.as_deref(),
+            Some("fr"),
+            "changing the key layout leaves the chosen typing language alone"
+        );
+        let mut app = app.reopen().unwrap();
+        let preferences = prefs(&app);
+        assert_eq!(preferences.size, crate::resource::KeyboardSize::Large);
+        assert!(!preferences.autocorrect);
+        assert_eq!(preferences.typing_language.as_deref(), Some("fr"));
+        assert!(
+            app.call("set-size", serde_json::json!({ "value": "huge" }))
+                .is_err(),
+            "only a size the keyboard carries"
+        );
     }
 
     #[test]

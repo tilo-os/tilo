@@ -367,9 +367,12 @@ pub struct TextInput {
     /// Typed process-local model mirrored in both directions during the
     /// ordinary widget sync/event lifecycle.
     local_state: Option<crate::local_state::LocalBinding<String>>,
-    /// A programmatic/model change can alter multiline measurement without
-    /// pretending to be a user edit through `take_dirty`.
-    model_layout_dirty: bool,
+    /// The text or its shaping changed since the last `measure`, by the
+    /// person's edit or a model write, in a way measuring reads (multiline or
+    /// attributed text). Separate from [`Self::dirty`], which says the edit
+    /// is not yet published: an edit the owner publishes later is measured
+    /// once, not on every frame until it is taken.
+    layout_dirty: bool,
     /// Optional local-only mirror for secrets and other values that must not
     /// enter an Automerge history. The owner controls its lifetime and can
     /// zero/clear it immediately after use.
@@ -765,7 +768,7 @@ impl TextInput {
             action: None,
             last_notified_text: String::new(),
             local_state: None,
-            model_layout_dirty: false,
+            layout_dirty: false,
             external_buffer: None,
             text_role: TextRole::Body,
             themed_role_size: None,
@@ -855,6 +858,7 @@ impl TextInput {
             self.align = align;
             self.drop_shaped_layouts();
             self.dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -916,7 +920,7 @@ impl TextInput {
     fn adopt_model_text(&mut self, text: String) {
         if self.text != text {
             self.text = text;
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
     }
 
@@ -924,7 +928,7 @@ impl TextInput {
     pub(super) fn capture_layout_text_scale(&mut self, text_scale: f32) {
         if self.layout_text_scale != Some(text_scale) {
             self.layout_text_scale = Some(text_scale);
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
     }
 
@@ -944,7 +948,7 @@ impl TextInput {
     /// Change the field's text role; see [`Self::with_text_role`].
     pub fn set_text_role(&mut self, role: TextRole) {
         if self.text_role != role || self.font_size_override.is_some() {
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.text_role = role;
             self.font_size_override = None;
             self.content_sized = false;
@@ -961,7 +965,7 @@ impl TextInput {
     /// sets its own 1× base size; chrome fields take a role.
     pub(crate) fn set_base_size(&mut self, size: f32) {
         if self.font_size_override != Some(size) {
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.font_size_override = Some(size);
         }
     }
@@ -979,7 +983,7 @@ impl TextInput {
 
     pub fn set_mono(&mut self, mono: bool) {
         if self.mono != mono {
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
         self.mono = mono;
         if mono {
@@ -1225,7 +1229,7 @@ impl TextInput {
 
     pub fn set_font_family(&mut self, family: Option<FontChoice>) {
         if self.family != family {
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.family = family;
         }
     }
@@ -1285,6 +1289,7 @@ impl TextInput {
             span.background.hash(&mut hash);
             span.baseline.hash(&mut hash);
             span.kind.hash(&mut hash);
+            span.workspace_emoji.hash(&mut hash);
         }
         hash.finish()
     }
@@ -1293,7 +1298,7 @@ impl TextInput {
         if self.rich_spans != spans {
             self.rich_spans = spans;
             self.shaped_preparation = None;
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -1429,7 +1434,7 @@ impl TextInput {
         {
             self.single_attributes = Some(attributes);
             self.drop_shaped_layouts();
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -1550,7 +1555,7 @@ impl TextInput {
         self.clamp_to_text();
         self.scroll_x = 0.0;
         self.dirty = false;
-        self.model_layout_dirty = self.multiline || self.single_attributes.is_some();
+        self.layout_dirty = self.multiline || self.single_attributes.is_some();
         self.typing.close();
         self.last_notified_text.clone_from(&self.text);
         if self.action.is_none() {
@@ -1683,7 +1688,7 @@ impl TextInput {
     /// This does not insert text or write a document/history entry.
     pub fn restore_private_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
         self.core.set_preedit(text, cursor);
-        self.model_layout_dirty = true;
+        self.layout_dirty = true;
     }
 
     /// `len()` is `text.len() + 1`; empty until the first draw lands.
@@ -2683,54 +2688,6 @@ impl TextInput {
         gutter
     }
 
-    fn draw_gutter_line_numbers(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        style: &TextStyle,
-        caret_byte: usize,
-        (gutter_width, visible): (f64, Rect),
-    ) {
-        if gutter_width <= 0.0 {
-            return;
-        }
-        let Some(layout) = &self.single_layout else {
-            return;
-        };
-        let current_line = layout.logical_line_index(caret_byte);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "on-screen offsets in logical pixels are far inside f32"
-        )]
-        let (top, bottom) = (
-            (visible.y0 - self.single_origin.y) as f32,
-            (visible.y1 - self.single_origin.y) as f32,
-        );
-        for (line, top, _height) in layout.logical_line_origins_within(top, bottom) {
-            let number = line.saturating_add(1).to_string();
-            let (width, _) = tr.measure_style(&number, None, style);
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine transform composition over f64 screen coordinates"
-            )]
-            let origin = transform
-                * Affine::translate((
-                    self.rect.x0 + gutter_width
-                        - GUTTER_PAD_R * self.gutter_text_scale
-                        - f64::from(width),
-                    self.single_origin.y + f64::from(top),
-                ));
-            let color = if line == current_line {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            };
-            tr.draw_style(scene, &number, color, origin, None, style);
-        }
-    }
-
     pub(crate) fn suppress_caret_paint(&mut self, suppressed: bool) {
         self.caret_paint_suppressed = suppressed;
     }
@@ -2900,12 +2857,15 @@ impl TextInput {
         self.draw_code_gutter_background(scene, transform, theme, gutter_width);
         self.draw_current_line_band(scene, transform, theme, caret_byte, gutter_width);
 
-        if let Some((start, end)) = self.selection_range() {
-            let color = theme.tokens.colors.intent.selection_tint;
-            for rect in self.selection_rects(theme, start, end) {
-                scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
-            }
-        }
+        // What a copy keeps on screen is not encoded again (`draw_cull`).
+        let _kept = crate::draw_cull::keep_scope(scene, self.field_keep(transform, theme));
+        let leave_out = self.paint_selection_keeping_lines(
+            (scene, transform),
+            tr,
+            theme,
+            &style,
+            (visible, gutter_width, caret_byte),
+        );
 
         // `Affine * Affine` composes two geometric transforms over f64
         // coordinates; it has no integer overflow/wrap semantics.
@@ -2937,15 +2897,16 @@ impl TextInput {
             let paint = |byte: usize| self.highlight_color_at(byte, syntax);
             #[cfg(test)]
             let _probe = crate::profiling::frame_probe::span("text.rows");
-            tr.draw_rich_in_clip_painted(
+            tr.draw_rich_in_clip_painted_leaving_out(
                 scene,
                 layout,
                 text_transform,
                 color,
-                transform.transform_rect_bbox(visible),
+                (transform.transform_rect_bbox(visible), &leave_out),
                 self.paints_highlight()
                     .then_some(&paint as &dyn Fn(usize) -> Option<vello::peniko::Color>),
             );
+            self.tint_selected_emoji(scene, text_transform, theme, layout);
         }
 
         #[cfg(test)]
@@ -2957,7 +2918,7 @@ impl TextInput {
             theme,
             &style,
             caret_byte,
-            (gutter_width, visible),
+            (gutter_width, visible, &leave_out),
         );
         #[cfg(test)]
         drop(probe);
@@ -3324,10 +3285,8 @@ impl TextInput {
     /// `Some(text)` if a user-initiated edit landed since the last call.
     pub fn take_dirty(&mut self) -> Option<String> {
         if self.dirty {
-            // Publishing the edit to the document does not mean the host has
-            // measured its new intrinsic height yet. Keep those lifecycles
-            // separate so CRDT projection cannot swallow layout invalidation.
-            self.model_layout_dirty |= self.multiline;
+            // The edit marked the layout itself; publishing it changes
+            // nothing measuring reads.
             self.dirty = false;
             Some(self.text.clone())
         } else {
@@ -3336,7 +3295,7 @@ impl TextInput {
     }
 
     pub(super) fn acknowledge_layout_measure(&mut self) {
-        self.model_layout_dirty = false;
+        self.layout_dirty = false;
     }
 
     /// Places the input without a layout tree — only safe on local-mode
@@ -3522,7 +3481,7 @@ impl TextInput {
     pub(super) fn set_compact_multiline(&mut self, compact: bool) {
         if self.compact_multiline != compact {
             self.compact_multiline = compact;
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -3751,7 +3710,7 @@ impl TextInput {
     pub fn set_control_size(&mut self, size: ControlSize) {
         if self.control_size != size {
             self.control_size = size;
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -3761,7 +3720,7 @@ impl TextInput {
     pub fn with_min_lines(mut self, lines: usize) -> Self {
         self.multiline = true;
         self.min_lines = lines;
-        self.model_layout_dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -3836,7 +3795,7 @@ impl TextInput {
         if self.font_size_override != px || self.content_sized != sized {
             self.font_size_override = px;
             self.content_sized = sized;
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -3883,7 +3842,7 @@ impl TextInput {
             self.read_only = read_only;
             self.pending_paste = None;
             self.drop_shaped_layouts();
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -3937,7 +3896,7 @@ impl TextInput {
         if self.links != links {
             self.links = links;
             self.drop_shaped_layouts();
-            self.model_layout_dirty = true;
+            self.layout_dirty = true;
         }
     }
 
@@ -4222,14 +4181,14 @@ impl TextInput {
         );
         if self.themed_role_size != Some(role_size) {
             self.themed_role_size = Some(role_size);
-            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
         let pad = f64::from(theme.padding_standard);
         let band = self.band_in(theme);
         if (pad - self.field_pad_x).abs() > f64::EPSILON || (band - self.band_height).abs() > 0.01 {
             self.field_pad_x = pad;
             self.band_height = band;
-            self.model_layout_dirty |= self.multiline;
+            self.layout_dirty |= self.multiline;
         }
     }
 
@@ -4327,6 +4286,24 @@ impl TextInput {
             .map(|range| (range.start, range.end))
     }
 
+    /// The selection over the pictures of the workspace emoji it covers,
+    /// which hide the band painted under the text. A composition shifts
+    /// the layout's bytes; it is typed with nothing selected.
+    fn tint_selected_emoji(
+        &self,
+        scene: &mut Scene,
+        text_transform: Affine,
+        theme: &Theme,
+        layout: &RichTextLayout,
+    ) {
+        if let Some((start, end)) = self.selection_range()
+            && !self.core.has_preedit()
+        {
+            let tint = theme.tokens.colors.intent.selection_tint;
+            layout.tint_selected_emoji(scene, text_transform, start..end, tint);
+        }
+    }
+
     fn has_selection(&self) -> bool {
         self.core.has_selection()
     }
@@ -4364,6 +4341,7 @@ impl TextInput {
         self.goal_x = None;
         self.typing.touch();
         self.dirty = true;
+        self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         true
     }
 
@@ -5518,8 +5496,7 @@ impl Widget for TextInput {
             value.push_str(&self.text);
             // This edit has been published. Replaying it on every sync can
             // resurrect a secret after its owner clears an acknowledged save.
-            // Keep measurement invalidation separate from publication.
-            self.model_layout_dirty = true;
+            // The edit marked its own measurement when it landed.
             self.dirty = false;
         }
         if self.bound_text.is_some() {
@@ -5561,6 +5538,9 @@ impl Widget for TextInput {
                 width: Dimension::percent(1.0),
                 height,
             },
+            // A single-line field is its band tall, never squashed to
+            // nothing when what is above or below it outgrows a column.
+            flex_shrink: if self.multiline { 1.0 } else { 0.0 },
             ..Default::default()
         };
         self.refresh_reveal_control();
@@ -5606,7 +5586,7 @@ impl Widget for TextInput {
                     scale,
                 );
             }
-            self.model_layout_dirty = false;
+            self.layout_dirty = false;
             return taffy::Size::ZERO;
         }
         let width = known.width.unwrap_or(match available.width {
@@ -5670,7 +5650,7 @@ impl Widget for TextInput {
                 || f64::from(style.line_height_px()),
                 |layout| f64::from(layout.height()),
             ) + ML_PAD_Y * 2.0;
-            self.model_layout_dirty = false;
+            self.layout_dirty = false;
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "content height is a bounded on-screen size for taffy layout, never near f32's range"
@@ -5693,7 +5673,7 @@ impl Widget for TextInput {
             .content_height()
             .max(self.multiline_floor(self.layout_text_scale.unwrap_or(1.0)))
             as f32;
-        self.model_layout_dirty = false;
+        self.layout_dirty = false;
         taffy::Size { width, height }
     }
 
@@ -5749,7 +5729,7 @@ impl Widget for TextInput {
             self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
             #[cfg(test)]
             let _probe = crate::profiling::frame_probe::span("text.note");
-            self.note_shown(transform, theme);
+            self.note_shown(transform, theme, text_renderer);
             return;
         }
         self.multiline_shaped = false;
@@ -6022,16 +6002,17 @@ impl Widget for TextInput {
     /// so it only needs re-measure before its first layout or right after a
     /// user edit — never blocking the scroll fast path while idle.
     fn layout_needs_measure(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
+        self.is_layout_dirty()
     }
 
     /// Same inputs as [`Self::layout_needs_measure`]: an input's size follows
-    /// its content only through a user edit (`dirty`, drained by the owner's
-    /// `take_dirty`) or a model change that reshapes multiline or attributed
-    /// text (`model_layout_dirty`, cleared by `measure`). Idle inputs would
-    /// otherwise be re-measured on every retained frame.
+    /// its content only through an edit or a model change that reshapes
+    /// multiline or attributed text (`layout_dirty`, cleared by `measure`).
+    /// Whether the owner has taken the edit yet (`dirty`) is not one of
+    /// them, so an edit is measured in one frame however long its owner
+    /// waits to publish it, and idle inputs are never re-measured.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty || self.model_layout_dirty
+        self.rect == Rect::ZERO || self.layout_dirty
     }
 
     /// A disabled input claims no cursor and defers to the host default.

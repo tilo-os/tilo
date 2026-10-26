@@ -129,6 +129,9 @@ enum NativeProfileAction {
     /// Say something beside the pointer to the people in the window under
     /// it (cursor chat), whatever has the keyboard.
     SaySomething,
+    /// Point at what is wrong to report it, where reports have a
+    /// destination.
+    ReportProblem,
     /// Their identities on this device and how each is protected.
     Identities,
     /// An encrypted backup of their identity, to recover it elsewhere.
@@ -138,8 +141,9 @@ enum NativeProfileAction {
 }
 
 impl NativeProfileAction {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::SaySomething,
+        Self::ReportProblem,
         Self::Identities,
         Self::Backup,
         Self::PairDevice,
@@ -148,6 +152,7 @@ impl NativeProfileAction {
     fn id(self) -> &'static str {
         match self {
             Self::SaySomething => "say-something",
+            Self::ReportProblem => "report-problem",
             Self::Identities => "identities",
             Self::Backup => "identity-backup",
             Self::PairDevice => "pair-device",
@@ -163,36 +168,42 @@ impl NativeProfileAction {
         match self {
             Self::Identities => Some("settings://users"),
             Self::Backup => Some("settings://about"),
-            Self::PairDevice | Self::SaySomething => None,
+            Self::PairDevice | Self::SaySomething | Self::ReportProblem => None,
         }
     }
 
     fn profile_action(self) -> ProfileAction {
         let (title, group, icon) = match self {
             Self::SaySomething => (
-                "profile-action-say-something",
+                t("profile-action-say-something"),
                 ProfileGroup::Together,
                 ui::icons::Icon::MessageCircle,
             ),
+            // The desktop's own copy, the entry the browser offers too.
+            Self::ReportProblem => (
+                tilo_desktop::i18n::t("feedback-report-problem"),
+                ProfileGroup::Together,
+                ui::icons::Icon::Flag,
+            ),
             Self::Identities => (
-                "profile-action-identities",
+                t("profile-action-identities"),
                 ProfileGroup::Identity,
                 ui::icons::Icon::Fingerprint,
             ),
             Self::Backup => (
-                "profile-action-backup",
+                t("profile-action-backup"),
                 ProfileGroup::Identity,
                 ui::icons::Icon::Download,
             ),
             Self::PairDevice => (
-                "profile-action-pair-device",
+                t("profile-action-pair-device"),
                 ProfileGroup::Devices,
                 ui::icons::Icon::MonitorSmartphone,
             ),
         };
         ProfileAction {
             id: self.id().to_owned(),
-            title: t(title),
+            title,
             group,
             icon,
         }
@@ -325,6 +336,10 @@ impl ShellOverlayHost {
             // accounts yet; none hides the section rather than showing a
             // service the person cannot link from here.
             linked: Vec::new(),
+            // The native bar shows no account key yet, and this is your own
+            // card, not someone else's.
+            key: None,
+            other: None,
 
             // The name is the identity's own; no rename of it is reachable
             // from the shell, so the card shows it and Settings' identities
@@ -335,6 +350,9 @@ impl ShellOverlayHost {
             ask_name: !crate::shell::network::own_name_is_chosen(),
             actions: NativeProfileAction::ALL
                 .into_iter()
+                .filter(|action| {
+                    *action != NativeProfileAction::ReportProblem || self.feedback_configured()
+                })
                 .map(NativeProfileAction::profile_action)
                 .collect(),
             offers_presence: true,
@@ -365,6 +383,7 @@ impl ShellOverlayHost {
             }),
             // A native desktop is always its person's own, never a spectator's.
             seen: tilo_desktop::profile_card::Seen::Here,
+            control_hints: Some(self.control_hints_enabled()),
         }
     }
 
@@ -509,7 +528,17 @@ impl ShellOverlayHost {
                 self.set_own_name(name);
                 return;
             }
-            ProfileChoice::Link(_) | ProfileChoice::Unlink(_) => {
+            ProfileChoice::ControlHints(on) => {
+                self.set_control_hints_enabled(*on);
+                return;
+            }
+            // Someone else's card is not opened from the native bar yet.
+            ProfileChoice::Link(_)
+            | ProfileChoice::Unlink(_)
+            | ProfileChoice::Accept(_)
+            | ProfileChoice::Decline(_)
+            | ProfileChoice::Follow(_)
+            | ProfileChoice::Message(_) => {
                 return;
             }
         };
@@ -518,6 +547,10 @@ impl ShellOverlayHost {
         };
         if action == NativeProfileAction::SaySomething {
             self.open_cursor_chat_on_request();
+            return;
+        }
+        if action == NativeProfileAction::ReportProblem {
+            self.open_feedback_picker();
             return;
         }
         let Some(link) = action.settings_link() else {

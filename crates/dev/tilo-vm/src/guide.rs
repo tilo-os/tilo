@@ -209,7 +209,8 @@ mod tests {
             let images = topic("images").unwrap();
             assert!(images.contains("## Pick the fastest loop"));
             assert!(images.contains("--from sha:<commit>"));
-            assert!(images.contains("registry.tilo.so/tilo/tilo-ci:<ref>-<sha7>-<arch>"));
+            assert!(images.contains("ref-<branch>-<sha7>-<target>"));
+            assert!(images.contains("--ref <branch>"));
         }
 
         // Phase: guides_use_the_current_command_shapes.
@@ -248,7 +249,7 @@ mod tests {
                 "tilo-vm seat claim",
                 "ends whoever is logged in",
                 "tilo-vm shot",
-                "tilo-vm:<ref>-<sha7>-<board>",
+                "tilo-vm-ref:ref-<branch>-<sha7>-<board>",
                 "credentials never reach the device",
                 "passphrase",
             ] {

@@ -30,7 +30,9 @@
 //! (`overlay_host::desk`).
 
 pub mod calendar;
-pub mod layout;
+/// Where the widgets wait: the edge layout they share with the people
+/// overlay.
+pub use tilo_desktop::desk_edges as layout;
 pub mod system_monitor;
 pub mod team;
 
@@ -84,18 +86,7 @@ pub enum Form {
 }
 
 /// One widget as laid out this frame, in desktop coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Slot {
-    pub id: WidgetId,
-    pub glance: Rect,
-    /// Where its open card sits.
-    pub open: Rect,
-    /// Where a pointer reaching for it comes to rest: the glance form and
-    /// the strip of edge behind it.
-    pub reach: Rect,
-    /// Whether it has anything to show (a player, someone else here).
-    pub has_content: bool,
-}
+pub type Slot = layout::Slot<WidgetId>;
 
 /// Everything besides the board's own history that decides the forms.
 #[derive(Clone, Copy, Debug)]

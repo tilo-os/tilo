@@ -98,6 +98,10 @@ fn shell_scenes_match_vello_gpu() {
         scale: 1.0,
     }];
     let mut text = TextRenderer::new();
+    let typed = shell::compositor::lock_controller::LockPrompt::new();
+    if let Some(field) = typed.borrow_mut().field_mut(ui::widget::FieldRole::Secret) {
+        field.set_text("password");
+    }
     for (name, view) in [
         (
             "lock",
@@ -112,7 +116,7 @@ fn shell_scenes_match_vello_gpu() {
             LockView {
                 clock: "21:47",
                 date: "Saturday, September 5",
-                password_len: 8,
+                prompt: Some(&typed),
                 notification_count: 3,
                 ..LockView::default()
             },

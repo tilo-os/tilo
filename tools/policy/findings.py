@@ -3,172 +3,120 @@
 
   findings.py COMMAND [ARG...]
 
-The step's output is passed through as it is. When the step reports problems (exit 1, no
-traceback), each line it printed is also reported as a failed test, `test <finding> ... FAILED`,
-with the line under `---- <finding> stdout ----`: t compares a check's failed tests with the
-same check's on main (docs/t.md), so a change passes a step that main fails only when every
-finding it has, main has too, and a change that adds one is refused even while main is red.
+A step prints its findings on stdout and nothing else there, one per line, each
+`path:line: message`, or `path: message` when no line applies. The path is the tree's file the
+finding is about, relative to the top of the tree; a finding about something that is not a file
+(a crate, a package) names the file that declares it, such as the `Cargo.toml` or `Cargo.lock`.
+Everything else a step says, a heading, a count, a hint, a progress or OK line, goes to stderr,
+so it is never counted, whatever its words.
 
-A finding is named by the file it is about, never by the words a step used to say it: a line
-that names a file of the tree is about the last one it names, so `apps/b.rs: 3019 lines, over its
-ceiling of 3000; split it` and `apps/b.rs: 3412 lines, over its ceiling of 3500; split its
-cohesive` are the same finding when a ceiling moves, and a second finding about a file is
-`apps/b.rs (2)`, so one more of what main has is a finding main doesn't have. A line naming no
-file of the tree keeps the step's own words with the numbers in them blanked. A summary line
-that says how many a step found (`source file size: 3 problem(s); …`) is not a finding of its
-own: it counts the ones above it, and makes every step that grows a problem look new.
+Both streams are passed through to stdout, each chunk as it comes. When the step reports
+problems (exit 1, no traceback), each finding is also reported as a failed test,
+`test <finding> ... FAILED`, with its line under `---- <finding> stdout ----`: t compares a
+check's failed tests with the same check's on main (docs/t.md), so a change passes a step that
+main fails only when every finding it has, main has too, and a change that adds one is refused
+even while main is red.
 
-That is what keeps a step already red on main honest: a file added past its ceiling is the
-branch's finding even while main is red for other files, and main's findings for those files
-stay main's. A line about a file that is no longer there is a finding no step of the branch
-reports, which costs a push that removes one nothing: t compares what fails, not what passes.
+A finding is named by its path alone, never by its line or message, so a finding whose line
+moved or whose count changed (`apps/b.rs: 3019 lines, over its ceiling of 3000` and later
+`apps/b.rs: 3412 lines, over its ceiling of 3500`) is the same finding. A second finding about
+one file is `apps/b.rs (2)`, so one more of what main has about a file is a finding main
+doesn't have. A line on stdout that is not in the format is a finding all the same, named by its
+words, so a misprinted one is never lost.
 
-A step that crashed or was stopped found nothing: it fails as a whole, compared with main as a
-whole.
+A step that crashed, was stopped, or failed without printing a finding found nothing: it fails
+as a whole, compared with main as a whole.
 """
 from __future__ import annotations
 
+import os
 import re
+import selectors
 import subprocess
 import sys
 
-# A run of digits that is a number of its own (a count, a line number, `3019/3000`), not part
-# of a name (`v2`, `x86_64`, `sha256`).
-NUMBER = re.compile(r"(?<![A-Za-z_\d])\d+(?![A-Za-z_\d])")
-# A temporary directory's random name.
-TEMPORARY = re.compile(r"/tmp/[^\s/:'\"]+")
-# What t reads as a test's result line or as the header of its output: never part of a
-# finding's name.
+# `path:line: message` or `path: message`: a path is one word with no colon in it.
+FINDING = re.compile(r"^(?P<path>[^\s:]+)(?::(?P<line>\d+))?: (?P<message>\S.*)$")
+# What t reads as a test's result line or as the header of its output: never part of a name.
 RESERVED = (" ... ", "---- ", " stdout ----")
-LONGEST = 240
-# `<file> more: <what the second finding about it says>`, the name of a finding whose step
-# reports two about one file: a file first, then what the line says after it.
-REPEAT = re.compile(r"^(?P<file>[^\s\[]+) that finding: (?P<more>.*)$")
-# A path of the tree a finding names: the file it is about. Paths with dots in them are files
-# (`os/Containerfile.env-runtime`, `Cargo.toml`, `apps/a.rs`), and so are the extensionless
-# names at the tree's top (`Containerfile`, `Makefile`, `Dockerfile`).
-PATH = re.compile(r"(?<![\w./-])(?:(?:apps|crates|dist|docs|examples|experiments|fuzz|keys|os|scripts|tools)"
-                  r"(?:/[\w.-]+)+|(?:[\w-]+/)*[\w-]+\.[A-Za-z0-9]+|(?:Makefile|Dockerfile|Containerfile))"
-                  r"(?![\w./-])")
-# A line that counts what it found instead of naming it: `<rule>: N problem(s)[; …]`, or the
-# count alone (`N image builder input problem(s)`).
-SUMMARY = re.compile(r"^(?:[A-Za-z][\w .'-]*?: )?\d+ (?:[a-z]+ )*(?:problem|finding|error|violation|warning)s?\b")
 
 
-def spaced(line: str) -> str:
-    """A line with its runs of spaces squeezed, so that a step that indents a finding and one
-    that does not are read alike."""
-    return " ".join(line.split())
-
-
-def more(said: str, about: str) -> str:
-    """The name of a finding when its step reports two or more about one file: the file, and what
-    the line says after it. The first line is the file's finding, which the file names already,
-    so the second line's own file name does not decide what it is about."""
-    where = said.find(" " + about) + len(about)
-    after = said[where:].lstrip(": ") if where > len(about) - 1 else ""
-    return f"{about} that finding: {after[:LONGEST - len(about) - 17]}"
-
-
-def summary(text: str) -> re.Match[str] | None:
-    """A line that counts what a step found (`source file size: 2 problem(s); ...`) rather than
-    naming what it is about: the findings above it say what it counts, and a problem too few
-    keeps it out of what look like findings when one goes away."""
-    return SUMMARY.match(text)
-
-
-def worded(line: str) -> str:
-    """The finding a line of a step's output reports in the step's own words, or "" for a blank
-    one; its numbers blanked (see the module)."""
+def about(line: str) -> str:
+    """What a finding is about: its path, or a malformed line's own words."""
+    if match := FINDING.match(line):
+        return match["path"]
     text = " ".join(line.split())
-    # The temporary name goes before the numbers: a random one carries digits, and blanking the
-    # numbers first would leave them half blanked (`/tmp/NN`), so two runs of one step would
-    # report different findings.
-    text = NUMBER.sub("N", TEMPORARY.sub("/tmp/…", text))
     for reserved in RESERVED:
         text = text.replace(reserved, " ")
-    text = spaced(text)
-    return text if len(text) <= LONGEST else text[:LONGEST - 1] + "…"
+    return " ".join(text.split())
 
 
-def finding(line: str) -> str:
-    """The finding a line of a step's output reports, or "" for a blank one: the file and the rule
-    it is about when it names a file of the tree, its own words otherwise (see the module)."""
-    text = spaced(line)
-    paths = [] if summary(text) else PATH.findall(text)
-    if not paths:
-        return worded(line)
-    first, last = text.find(paths[0]), text.rfind(paths[-1])
-    rule = (spaced(f"{text[:first]} {text[last + len(paths[-1]):]}") if first > 0 and last > first else "")
-    if not rule:
-        return paths[-1]
-    return f"{paths[-1]} [{rule}]" if len(rule) <= LONGEST else f"{paths[-1]} [{rule[:LONGEST - 1]}…]"
-
-
-def findings(output: str) -> list[tuple[str, str, str]]:
-    """Each finding of `output` with its own words and the line it came from, keyed for t: about a
-    file when the step named one, else as the step words it; a summary line only when the step
-    named no file, since it counts findings that are already reported."""
-    about: dict[str, list[str]] = {}
-    summaries: list[tuple[str, str]] = []
-    for line in output.splitlines():
-        name = worded(line)
-        if not name:
-            continue
-        if summary(line):
-            summaries.append((name, line.rstrip()))
-            continue
-        about.setdefault(finding(line), []).append(line.rstrip())
-    if not about:
-        return [(name, line, name) for name, line in summaries]
+def findings(output: str) -> list[tuple[str, str]]:
+    """Each finding of a step's stdout, named for t, with the line it came from."""
+    seen: dict[str, int] = {}
     found = []
-    for key, lines in about.items():
-        repeats = len(lines) > 1
-        for index, line in enumerate(lines):
-            name = f"{key} ({index + 1})" if repeats and index else key
-            if repeats and (match := REPEAT.match(key)):
-                name = f"{more(worded(line), match['file'])} ({match['more']})"
-            found.append((name, line, key))
+    for line in output.splitlines():
+        line = line.rstrip()
+        if not line.strip():
+            continue
+        key = about(line)
+        seen[key] = seen.get(key, 0) + 1
+        found.append((f"{key} ({seen[key]})" if seen[key] > 1 else key, line))
     return found
 
 
-def found_nothing(status: int, output: str) -> bool:
+def found_nothing(status: int, said: str) -> bool:
     """Whether the step failed without reporting problems: it crashed, was stopped, or was used
     wrongly (exit 2). Only exit 1 with no traceback is the step saying what it found."""
-    return status != 1 or "Traceback (most recent call last)" in output
+    return status != 1 or "Traceback (most recent call last)" in said
 
 
-def report(found: list[tuple[str, str, str]]) -> str:
+def report(found: list[tuple[str, str]]) -> str:
     """As libtest reports: each test's line, then each one's output, which ends at the next
     header or at the result line."""
-    lines = ["", *(f"test {name} ... FAILED" for name, _, _ in found), "", "failures:", ""]
-    for name, line, _ in found:
+    lines = ["", *(f"test {name} ... FAILED" for name, _ in found), "", "failures:", ""]
+    for name, line in found:
         lines += [f"---- {name} stdout ----", line, ""]
     lines += [f"test result: FAILED. 0 passed; {len(found)} failed", ""]
     return "\n".join(lines)
 
 
-def quiet(found: list[tuple[str, str, str]]) -> str:
-    """Each finding and the rule it is about, for a step whose own words do not say it."""
-    lines = [f"  {name}: {rule}" for name, _, rule in found if rule != name]
-    return "\n".join(lines)
+def run(argv: list[str]) -> tuple[int, str, str]:
+    """Run the step, passing both its streams through to stdout as they come, and return its
+    status, its stdout and its stderr. Python steps write unbuffered here, so a heading on stderr
+    reads above the findings on stdout it introduces."""
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               stdin=subprocess.DEVNULL, env=env)
+    streams = {process.stdout: bytearray(), process.stderr: bytearray()}
+    with selectors.DefaultSelector() as selector:
+        for stream in streams:
+            selector.register(stream, selectors.EVENT_READ)
+        while selector.get_map():
+            for key, _ in selector.select():
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                streams[key.fileobj] += chunk
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+    status = process.wait()
+    out, err = (bytes(streams[stream]).decode("utf-8", errors="replace")
+                for stream in (process.stdout, process.stderr))
+    return status, out, err
 
 
 def main(argv: list[str]) -> int:
     if not argv:
         print(__doc__, file=sys.stderr)
         return 2
-    run = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-    output = run.stdout.decode("utf-8", errors="replace")
-    sys.stdout.write(output)
-    if run.returncode != 0 and not found_nothing(run.returncode, output):
-        found = findings(output)
-        if found:
-            described = quiet(found)
-            sys.stdout.write(f"\n{described}\n" if described else "")
+    status, out, err = run(argv)
+    if status != 0 and not found_nothing(status, out + err):
+        if found := findings(out):
             sys.stdout.write(report(found))
     sys.stdout.flush()
-    return run.returncode if run.returncode >= 0 else 128 - run.returncode
+    return status if status >= 0 else 128 - status
 
 
 if __name__ == "__main__":

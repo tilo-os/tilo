@@ -211,6 +211,7 @@ impl NativeChrome {
             own: OwnChip {
                 name: own_shown_name(state),
                 rgb: own_rgb(state),
+                identity: String::new(),
             },
         };
         *self.people.borrow_mut() = Some(people.clone());

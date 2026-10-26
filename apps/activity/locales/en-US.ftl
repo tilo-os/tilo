@@ -16,6 +16,7 @@ activity-resume-heading = Where you left off
 activity-resume-context = { $app }, { $when }
 activity-resume-button = Resume
 activity-brief-open-explorer = Open this work session in History
+activity-brief-no-changes = No content differences in this work session
 activity-morning-heading = Morning sources
 activity-morning-refresh = Refresh source
 activity-morning-remove = Remove morning source
@@ -72,3 +73,15 @@ activity-replay-empty-window = Empty window
 activity-replay-one-tab = One tab
 activity-replay-window = { $window }, { $share }% of the width
 activity-presence-trail = Present
+
+# History's find, and how much of it the words leave.
+activity-find-placeholder = Find in the history
+activity-find-count = { $found } of { $all }
+# What the system did, beside the workspace's changes.
+activity-ledger-heading = What this device did
+# How a changed field reads: its name, and what it was before.
+activity-was = Was { $before }
+
+# The fields a run changed, with what each holds now and what it held before.
+activity-changed-fields = What changed, before and after
+activity-removed = Nothing now

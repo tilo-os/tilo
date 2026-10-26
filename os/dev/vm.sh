@@ -392,7 +392,7 @@ cmd_shot() {
   fi
   sleep 0.4
   inenv "test -f '$out.ppm'" || { warn "no framebuffer produced"; return 1; }
-  inenv "magick '$out.ppm' '$out.png' 2>/dev/null || convert '$out.ppm' '$out.png'; rm -f '$out.ppm'"
+  python3 "$TILO_OS_DIR/dev/greeter-acceptance.py" --convert "$out.ppm" --png "$out.png"
   echo "$out.png"
 }
 
@@ -534,6 +534,7 @@ GUEST_TESTS=(
   "apps/file-explorer/tests/atspi_smoke.sh files-atspi-smoke.sh"
   "os/tests/collaborative-files-image-contract.sh collaborative-files-image-contract.sh"
   "os/tests/boot_performance_gate.sh boot-performance-gate.sh"
+  "os/tests/h264-boot-check.py h264-boot-check.py"
   "os/tests/input-hotplug-check.sh input-hotplug-check.sh"
   "os/tests/installed-admin-actions.sh installed-admin-actions.sh"
   "os/tests/projection-boot-check.sh projection-boot-check.sh"

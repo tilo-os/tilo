@@ -119,6 +119,13 @@ impl DesktopSurface {
         self.push_motion_source(source);
     }
 
+    /// What started the change being laid out ([`Self::begin_transition`]),
+    /// until the layout that shows it has run.
+    #[must_use]
+    pub fn transition_source(&self) -> Option<MotionSource> {
+        self.navigation.transition
+    }
+
     fn push_motion_source(&mut self, source: MotionSource) {
         for strip in self.strip_ids() {
             if let Some(row) = self.row_mut(strip) {
@@ -304,9 +311,14 @@ impl DesktopSurface {
             }
             if let Some(row) = self.row_mut(strip) {
                 if let Some(opened) = beside {
-                    row.scroll_groups_into_view_animated(group, opened, ui::time::now(), source);
+                    row.scroll_groups_into_view_animated(
+                        group,
+                        opened,
+                        ui::motion::frame_now(),
+                        source,
+                    );
                 } else {
-                    row.scroll_group_into_view_animated(group, ui::time::now(), source);
+                    row.scroll_group_into_view_animated(group, ui::motion::frame_now(), source);
                 }
             }
             if opened.is_some() {

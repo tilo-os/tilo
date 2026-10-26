@@ -304,6 +304,42 @@ fn a_host_cancelled_edge_job_does_not_leave_the_finder_busy() {
 }
 
 #[test]
+fn a_running_edge_job_refuses_a_second_one_until_it_is_cancelled() {
+    let mut app = TestApp::<App>::new().unwrap();
+    open_disc(&mut app);
+    call(&mut app, "select", json!({"ellipse": [34, 34, 132, 132]}));
+    let before = app.state();
+    let effect = canvas::resource::ViewOp::FindArea {
+        area: canvas::resource::FindArea {
+            refine: Some(8.0),
+            ..Default::default()
+        },
+    };
+    let first = app.start_effect(&effect).unwrap();
+    // A finder that is genuinely running still protects itself: the refusal
+    // is the in-flight guard, not a latched flag, and it edits nothing.
+    let busy = app
+        .start_effect(&effect)
+        .expect_err("a second finder must not start over the first");
+    assert!(busy.to_string().contains("already being found"), "{busy}");
+    assert!(
+        !app.harness()
+            .job_updates(first)
+            .iter()
+            .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+    );
+    assert_eq!(app.state(), before);
+    // Cancelling the one that runs is what releases the guard.
+    assert!(matches!(
+        app.cancel_effect(first),
+        Some(ui::tilo_actions::InvocationUpdate::Cancelled { .. })
+    ));
+    app.settle();
+    app.start_effect(&effect)
+        .expect("cancellation released the finder for the next operation");
+}
+
+#[test]
 fn an_edge_job_refuses_to_overwrite_an_edit_made_while_it_runs() {
     let mut app = TestApp::<App>::new().unwrap();
     open_disc(&mut app);

@@ -29,7 +29,7 @@ topbar-bell-silenced = { $unread ->
     [one] Notifications silenced, 1 unread
    *[other] Notifications silenced, { $unread } unread
 }
-topbar-show-collaborators = Show collaborators
+topbar-show-collaborators = Everyone here
 topbar-viewer-can-control = can control { $targets }
 topbar-viewer-view-only = view only { $targets }
 topbar-viewer-entry = { $name } ({ $kind ->
@@ -76,6 +76,16 @@ workspace-menu-rename = Rename workspace
 workspace-menu-overview = Overview
 workspace-menu-new-strip = New strip
 profile-card = Your profile
+profile-card-of = { $name }’s profile
+profile-id = ID
+profile-copy-id = Copy ID
+profile-status-own-words = In their own words
+profile-status-automatic = Written automatically from what they do
+profile-message = Message
+profile-follow = Follow
+profile-stop-following = Stop following
+profile-photo-change = Change picture
+profile-photo-remove = Remove picture
 profile-name = Your name
 profile-name-placeholder = Your name
 profile-name-hint = How everyone here sees you
@@ -84,9 +94,16 @@ profile-add-your-name = Add your name
 profile-section-identity = Your identity
 profile-section-devices = Devices
 profile-section-linked = Linked accounts
-profile-link = Link { $service } account
+profile-link = Connect { $service }
 profile-unlink = Unlink
-profile-copy = Copy
+profile-linked-as = Linked as { $account }
+profile-linked-to = Linked to { $handle } on { $service }
+profile-link-offer = Link { $service } { $account } to { $name }?
+profile-link-offer-why = What you write in { $service } will show as you here, and as you there.
+profile-link-accept = Link
+profile-link-decline = Cancel
+profile-connecting = Opening { $service }…
+profile-looking = Checking your { $service } link…
 profile-sharing = Share what you're doing
 profile-sharing-auto = Automatically
 profile-sharing-manual = My words
@@ -105,6 +122,11 @@ profile-visibility-nothing = Nothing
 profile-visibility-where-detail = Your face, the window you're in and your pointer
 profile-visibility-here-detail = Your face, never which window or your pointer
 profile-visibility-nothing-detail = You don't appear, and you don't see others' pointers
+profile-control-hints = Show control hints
+control-hint-open = Open anything
+control-hint-move = Drag to move
+control-hint-resize = Drag to resize
+control-hint-pan = Drag empty space
 
 # Workspace activity
 a11y-shell-workspace-activity = Workspace activity
@@ -313,6 +335,9 @@ activity-affected-records = Affected records
 activity-undo-task-needs-open = Open every affected document to undo this task together.
 activity-undo-task-needs-documents = Nothing changed. Open every affected document first.
 activity-undo-task-partial = Task partly undone; later collaborator edits were kept.
+activity-undo-task-partial-records = Task undone, except for records listed below.
+activity-undo-task-record-left = { $record } in { $app } was not undone.
+activity-detail-undo-step = Undo this step
 activity-undo-task-done = Whole task undone as a new history entry.
 activity-undo-task-gone = The task's effects were already gone.
 activity-undo-task-refused = Couldn't undo the task. { $detail }
@@ -566,6 +591,29 @@ workspace-settings-tab-privacy-security = Privacy & Security
 workspace-settings-tab-privacy = Privacy
 workspace-settings-tab-apps-files = Apps & Files
 workspace-settings-tab-apps = Apps
+workspace-settings-tab-emoji = Emoji
+workspace-settings-emoji-count = { $count ->
+    [0] This workspace's own emoji
+    [one] 1 emoji of this workspace
+   *[other] { $count } emoji of this workspace
+}
+workspace-settings-emoji-help = Write :name: in any app of this workspace, or pick one from a reaction's emoji.
+workspace-settings-emoji-add = Add emoji
+workspace-settings-emoji-empty-title = This workspace has no emoji of its own yet
+workspace-settings-emoji-empty-detail = Choose Add emoji and pick a picture: its file name becomes the emoji's name.
+workspace-settings-emoji-empty-detail-viewer = Anyone who may edit this workspace can add them.
+workspace-settings-emoji-unavailable = This workspace's emoji are not available on this device.
+workspace-settings-emoji-editors-add = Only people who may edit this workspace can add emoji.
+workspace-settings-emoji-added-by = Added by { $name }
+workspace-settings-emoji-added-by-you = Added by you
+workspace-settings-emoji-remove = Remove :{ $name }:
+workspace-settings-emoji-not-chosen = No picture was chosen
+workspace-settings-emoji-not-added = { $file } was not added as an emoji
+workspace-settings-emoji-not-removed = :{ $name }: was not removed
+workspace-settings-emoji-tools-loading = The picture tools are still loading. Try again in a moment.
+workspace-settings-emoji-not-a-picture = Only PNG, JPEG and WebP pictures can become emoji.
+workspace-settings-emoji-too-detailed = The picture is too detailed to stay sharp at emoji size. Try a simpler one.
+workspace-settings-emoji-no-name = Its file name has no letters or digits to name an emoji by.
 workspace-settings-role-owner = Owner
 workspace-settings-role-moderator = Moderator
 workspace-settings-role-editor = Editor
@@ -827,9 +875,8 @@ workspace-settings-current-workspace = Current workspace
 workspace-settings-identity-title = Workspace identity
 workspace-settings-identity-description = This name appears in the top bar, invites, and shared activity.
 workspace-settings-rename-admin-only = Only a workspace administrator can rename this workspace.
-workspace-settings-invite-hint = Choose a person and a role. The invite is signed and lasts one hour.
-workspace-settings-invite-admin-only = Only a governing administrator can create workspace invites.
-workspace-settings-invite-create = Create
+workspace-settings-invite-admin-only = Only an administrator of this workspace can invite people.
+workspace-settings-invite-create = Create invite
 workspace-settings-devices-title = Your devices
 workspace-settings-devices-local = Your window layout and controls stay on each device.
 workspace-settings-device-here = { $device } (this device)
@@ -838,6 +885,8 @@ workspace-settings-device-hidden = Kept off
 workspace-settings-move-earlier = Move up
 workspace-settings-move-later = Move down
 workspace-settings-delete = Delete workspace
+workspace-settings-delete-description = Removes it from this device and your other devices.
+workspace-settings-delete-action = Delete
 workspace-settings-archived-title = Archived workspaces
 workspace-settings-archived-restore = Restore
 workspace-settings-archived-delete = Delete
@@ -850,7 +899,7 @@ workspace-settings-public-switch-off = Private
 workspace-settings-public-role = People who join: { $role }
 workspace-settings-public-describe = Description…
 workspace-settings-invite-title = Invite people
-workspace-settings-invite-description = Invites bind the workspace, recipient role, expiry and this device's identity.
+workspace-settings-invite-description = Choose a person and what they can do here. Each invite works for one hour.
 workspace-settings-glance-title = At a glance
 workspace-settings-stat-members = { $count ->
     [one] member
@@ -956,6 +1005,32 @@ a11y-shell-people-changes-description = Open History at their changes
 a11y-shell-people-change-description = Open History at this change
 people-panel-follow = Follow
 people-panel-stop-following = Stop
+
+# The people overlay: the roster pinned out of the bar, floating over windows
+people-panel-pin = Keep on screen
+a11y-people-pin = Keep who is here on screen
+a11y-people-overlay = Who is here
+people-overlay-title = { $count ->
+    [0] Just you
+    [one] 1 here
+   *[other] { $count } here
+}
+people-overlay-unpin = Put back in the bar
+people-overlay-follow-name = Follow { $name }
+people-overlay-doing-nothing = Here
+people-overlay-screen-private = { $name } keeps where they are to themselves
+people-overlay-empty-desk = Nothing open on { $name }’s screen
+people-overlay-message-placeholder = Message { $name }
+people-overlay-message-you = You
+people-overlay-send = Send
+people-overlay-own-status = What you're doing
+people-overlay-own-status-placeholder = What are you working on?
+people-overlay-own-status-clear = Clear what you're doing
+people-overlay-no-messages = Say hello to { $name }
+people-overlay-messages-unavailable = Direct messages with this person are not available right now
+people-overlay-message-failed = The message to { $name } did not go: { $reason }
+a11y-people-follow = Follow { $name }
+a11y-people-stop-following = Stop following { $name }
 launchpad-subtitle = Pick a way to start. Everyone in this workspace sees what you make here.
 launchpad-subtitle-private = Pick a way to start. Only you see what you make here until you invite someone.
 launchpad-subtitle-public = Pick a way to start. This workspace is public: anyone who joins sees what you make here.
@@ -1100,3 +1175,63 @@ strip-switcher-refused = Couldn't change the strip
 strip-switcher-remove-named = Remove { $name }
 strip-switcher-rename = Rename
 strip-switcher-remove = Remove
+
+## Reporting a problem by pointing at it
+feedback-report-problem = Report a problem…
+feedback-picker-hint = Click what isn’t working. Shift-click or drag to pick more, scroll to widen, Esc to leave.
+feedback-picker-picked = { $count ->
+    [one] 1 part picked. Shift-click or drag to pick more.
+   *[other] { $count } parts picked. Shift-click or drag to pick more.
+}
+feedback-picker-continue = Continue
+feedback-picker-cancel = Cancel
+# What a picked part is called while picking and in the review: what it is,
+# then in which app ("Message in Chat", "The “Send message” button in Chat").
+feedback-part-in = { $what } in { $app }
+# A part the app names with its own words, by its role.
+feedback-part-named = The “{ $name }” { $role ->
+    [Button] button
+    [ToggleButton] button
+    [Link] link
+    [Tab] tab
+    [MenuItem] menu item
+    [Checkbox] checkbox
+    [Switch] switch
+    [TextInput] field
+    [MultilineTextInput] field
+    [Heading] heading
+   *[other] { $role }
+}
+# A part known only by its role, as assistive technology names it.
+feedback-part-role = { $role ->
+    [ListItem] A list item
+    [Row] A row
+    [Cell] A cell
+    [Button] A button
+    [ToggleButton] A button
+    [Link] A link
+    [Image] A picture
+    [TextInput] A field
+    [MultilineTextInput] A field
+    [StaticText] A text
+    [Paragraph] A paragraph
+    [Heading] A heading
+    [List] A list
+    [Group] A group
+    [Window] A window
+    [Toolbar] A toolbar
+    [Menu] A menu
+    [MenuItem] A menu item
+    [Tab] A tab
+   *[other] A part
+}
+
+# Following someone's view
+follow-label = Following { $person }
+follow-stopped = Stopped following
+follow-stop = Stop
+
+people-follows = Following { $person }
+people-follows-you = Following you
+people-follows-where = { $place }, following { $person }
+people-follows-you-where = { $place }, following you

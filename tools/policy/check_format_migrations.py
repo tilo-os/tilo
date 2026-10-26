@@ -138,9 +138,14 @@ def main(argv: list[str] | None = None) -> int:
     base = sub.add_parser("against")
     base.add_argument("base")
     args = parser.parse_args(argv)
-    problems = check() if args.command == "check" else against(args.base)
-    for problem in problems:
-        print(f"::error::{problem}", file=sys.stderr)
+    if args.command == "check":
+        problems = check()
+        for problem in problems:
+            print(problem)
+    else:
+        problems = against(args.base)
+        for problem in problems:
+            print(f"::error::{problem}", file=sys.stderr)
     return 1 if problems else 0
 
 

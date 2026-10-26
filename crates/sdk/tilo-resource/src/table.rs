@@ -167,6 +167,34 @@ impl ModelTable {
             _ => None,
         }
     }
+
+    /// Whether a value of this table's type holds a value of `target`'s:
+    /// it is one, or a field of it is, an option's value, or an item of a
+    /// collection of it, at any depth a record nests.
+    pub(crate) fn holds(&'static self, target: &'static Self) -> bool {
+        fn within(table: &'static ModelTable, target: &'static ModelTable, depth: u8) -> bool {
+            if std::ptr::eq(table, target) {
+                return true;
+            }
+            // Records nest a handful deep; a type that holds itself (a tree
+            // of boxed nodes) is not walked without end.
+            if depth >= 16 {
+                return false;
+            }
+            if let Some(option) = table.option() {
+                return within(option.inner, target, depth.saturating_add(1));
+            }
+            table.record().is_some_and(|record| {
+                record.fields.iter().any(|field| {
+                    within(field.table, target, depth.saturating_add(1))
+                        || field.items.is_some_and(|items| {
+                            within(items.item_table, target, depth.saturating_add(1))
+                        })
+                })
+            })
+        }
+        within(self, target, 0)
+    }
 }
 
 /// A collection type's [`ItemSource`] functions, its type erased.

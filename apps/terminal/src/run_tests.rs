@@ -28,10 +28,16 @@ fn prompt() -> String {
 }
 
 /// What the session's shell prints for one command: its marks around
-/// `output`.
+/// `output`, numbered as the shell's first command is.
 fn ran(command: &str, output: &str, status: i32) -> Vec<u8> {
+    numbered(1, command, output, status)
+}
+
+/// [`ran`] with the command's own place in the shell's history.
+fn numbered(number: u64, command: &str, output: &str, status: i32) -> Vec<u8> {
     format!(
-        "{command}\r\n\x1b]133;C;k={KEY};cmd={};cwd={}\x07{output}\x1b]133;D;{status};k={KEY}\x07{}",
+        "{command}\r\n\x1b]133;C;k={KEY};cmd={};cwd={};t={number}\x07{output}\
+         \x1b]133;D;{status};k={KEY};t={number}\x07{}",
         b64(command),
         b64("/src/demo"),
         prompt()
@@ -71,7 +77,8 @@ impl std::io::Write for Typed {
 }
 
 /// A shell that marks its runs: each line typed into it runs, printing
-/// `output` for it with status 0, and the lines are kept in `lines`.
+/// `output` for it with status 0, and the lines are kept in `lines`. Its
+/// numbers count the lines typed into it, its history being its own.
 fn shell(
     typed: Receiver<Vec<u8>>,
     print: Sender<Vec<u8>>,
@@ -80,6 +87,7 @@ fn shell(
 ) {
     std::thread::spawn(move || {
         let mut line = Vec::new();
+        let mut number = 0_u64;
         while let Ok(bytes) = typed.recv() {
             for byte in bytes {
                 match byte {
@@ -87,7 +95,19 @@ fn shell(
                     b'\r' => {
                         let command = String::from_utf8_lossy(&line).into_owned();
                         line.clear();
-                        let _ = print.send(ran(&command, output, 0));
+                        // Only a line with something in it runs, and only it
+                        // takes a place in the shell's history.
+                        if command.trim().is_empty() {
+                            let _ = print.send(prompt().into_bytes());
+                            continue;
+                        }
+                        // The shell counts a line before it runs it, as
+                        // its history does. The two count the same lines
+                        // (this one receives every line the terminal types,
+                        // and the person types none), so a line asked for is
+                        // at the place the terminal counted for it.
+                        number = number.saturating_add(1);
+                        let _ = print.send(numbered(number, &command, output, 0));
                         let _ = lines.send(command);
                     }
                     byte => line.push(byte),

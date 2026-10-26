@@ -72,12 +72,19 @@ impl WindowGroup {
 
     /// Show or hide a fullscreen window's bar over it (the host reads the
     /// top edge for it, `top_edge_reveal`); nothing while not fullscreen.
-    pub fn set_fullscreen_bar_revealed(&mut self, revealed: bool) {
+    /// `source` is what showed or hid it: the pointer's reach fades it, a
+    /// key or an action (entering fullscreen by Super+F, Super alone) lands
+    /// it at once.
+    pub fn set_fullscreen_bar_revealed(
+        &mut self,
+        revealed: bool,
+        source: crate::tokens::MotionSource,
+    ) {
         if self.fullscreen_bar.revealed != revealed {
             self.fullscreen_bar.revealed = revealed;
             self.style_dirty = true;
             // It fades in place, so nothing under it moves; reduced motion
-            // cuts, as for a maximized window's bar (`TopEdgeReveal::opacity`).
+            // cuts.
             if self.chrome_motion.reduced() {
                 self.fullscreen_bar.fade.snap(revealed);
             } else {
@@ -85,7 +92,7 @@ impl WindowGroup {
                     revealed,
                     crate::motion::CROSS_FADE,
                     self.chrome_motion,
-                    crate::tokens::MotionSource::Pointer,
+                    source,
                     crate::time::now(),
                 );
             }

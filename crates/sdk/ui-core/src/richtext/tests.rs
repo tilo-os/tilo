@@ -116,7 +116,14 @@ fn offscreen_visual_lines_are_culled_only_by_vertical_extent() {
     let runs: Vec<_> = layout.buffer.layout_runs().collect();
     assert!(runs.len() > 10);
     let clip = Rect::new(0.0, 0.0, 100.0, 40.0);
-    let outside = crate::text_render::rich_run_outside_clip;
+    // Ink reaching two rows past each band, whichever way.
+    let reach = InkReach {
+        above: 2.0 * runs[0].line_height,
+        below: 2.0 * runs[0].line_height,
+    };
+    let outside = |run: &cosmic_text::LayoutRun<'_>, transform: Affine, clip: Rect| {
+        crate::text_render::rich_run_outside_clip(run, transform, clip, reach)
+    };
     assert!(!outside(&runs[0], Affine::IDENTITY, clip));
     let last = runs.last().unwrap();
     assert!(outside(last, Affine::IDENTITY, clip));

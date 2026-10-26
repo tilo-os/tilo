@@ -130,10 +130,11 @@ impl Chrome {
             inspector: SidebarDrawer::new()
                 .right()
                 .docked_width(inspector_width)
-                // It docks wherever the timeline beside it keeps a readable
-                // width (the shell's sidebar is outside this window's
-                // content); narrower, it floats.
-                .content_min_width(f64::from(base.content_min_width))
+                // It docks while the timeline beside it keeps a readable
+                // column, shrunk toward its own minimum first (the shell's
+                // sidebar is outside this window's content); narrower, it
+                // floats.
+                .content_is_column(f64::from(base.content_min_width))
                 .sheet_when_narrow()
                 .closed(),
             title: String::new(),

@@ -59,6 +59,8 @@ pub const UNDO: &str = "undo";
 pub const RESTORE: &str = "restore";
 /// Undo the agent's task run a [`Range`] belongs to.
 pub const UNDO_RUN: &str = "undo-run";
+/// Undo one record's share of that run ([`RecordQuery`]).
+pub const UNDO_RECORD: &str = "undo-record";
 /// Open a [`Target`] in its app.
 pub const OPEN: &str = "open";
 /// Choose, or stop choosing, the resource a [`Range`] changed as a morning
@@ -478,6 +480,7 @@ pub enum DetailAction {
     Split,
     Merge,
     ChooseSource,
+    UndoRecord,
 }
 
 impl DetailAction {
@@ -491,6 +494,7 @@ impl DetailAction {
             Self::Restore => RESTORE,
             Self::Undo => UNDO,
             Self::UndoRun => UNDO_RUN,
+            Self::UndoRecord => UNDO_RECORD,
             Self::Split => SPLIT,
             Self::Merge => MERGE,
             Self::ChooseSource => CHOOSE_SOURCE,
@@ -524,6 +528,10 @@ pub struct Run {
     /// How its undo went, while one runs or once it ended.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub undo_status: Option<String>,
+    /// The records its undo did not reach, one sentence each: reported,
+    /// never left out of what the person is told happened.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unreverted: Vec<String>,
 }
 
 /// A record an agent's run changed.
@@ -534,8 +542,27 @@ pub struct RunRecord {
     pub record: String,
     /// The app it belongs to.
     pub app: String,
+    /// The record's own id, which [`RecordQuery`] names to undo just it.
+    pub id: String,
+    /// The app's id, which [`RecordQuery`] names to undo just it.
+    pub app_id: String,
     /// What the run did to it, as a sentence.
     pub change: String,
+    /// The action that undoes this record's share of the run, when the
+    /// document is open here; absent when it cannot be undone on its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undo: Option<Offer>,
+}
+
+/// One record of an agent's run, as [`UNDO_RECORD`] names it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RecordQuery {
+    /// The run, by its range in the history.
+    pub range: Range,
+    /// The record inside that run.
+    pub app_id: String,
+    pub id: String,
 }
 
 /// What comparing the room before and after a run found.
@@ -546,6 +573,22 @@ pub enum Comparison {
     Changes { lines: Vec<String> },
     /// The room's state either side could not be read.
     Unavailable,
+}
+
+/// One field a run of changes changed, with what it held either side of it.
+///
+/// [`Comparison::Changes`] says a field changed; this says what it changed
+/// from and to, which is the question "compare before and after" is asked
+/// for.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FieldChange {
+    /// The field's name as the person reads it ("Title").
+    pub field: String,
+    /// What it held before; empty when it was not there.
+    pub before: String,
+    /// What it holds after; empty when it was removed.
+    pub after: String,
 }
 
 /// What a run of changes did.
@@ -566,6 +609,9 @@ pub struct Detail {
     pub run: Option<Run>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comparison: Option<Comparison>,
+    /// The fields the run changed, with what they held either side: empty
+    /// when the host could not read both states.
+    pub changes: Vec<FieldChange>,
     /// The run is no longer in the history (an undo or a filter moved it).
     pub gone: bool,
 }

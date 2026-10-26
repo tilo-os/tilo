@@ -42,5 +42,27 @@ class ResolvedConfigTests(unittest.TestCase):
                 config.settings('CONFIG_TEST=y\n# CONFIG_TEST is not set')
 
 
+
+class LenovoInputBusTests(unittest.TestCase):
+    """The 83ED's built-in keyboard and touchpad are I2C HID, and the unlock
+    prompt runs before a module could be loaded, so the whole path is built
+    in. A modular driver there is reachable only after the root is open."""
+
+    FRAGMENT = Path(__file__).parents[1] / 'kernel/config-fragments/aarch64.config'
+    DRIVERS = ('CONFIG_I2C', 'CONFIG_I2C_QCOM_GENI', 'CONFIG_I2C_HID_OF',
+               'CONFIG_INPUT_EVDEV', 'CONFIG_INPUT_KEYBOARD')
+
+    def test_the_input_path_is_built_in(self):
+        values = config.settings(self.FRAGMENT.read_text(encoding='utf-8'))
+        for driver in self.DRIVERS:
+            with self.subTest(driver=driver):
+                self.assertEqual(config.mismatches(values, {driver: 'y'}), [])
+
+    def test_the_drivers_ride_on_fedoras_hid_core(self):
+        values = config.settings(self.FRAGMENT.read_text(encoding='utf-8'))
+        # The fragment turns nothing off: HID core stays as Fedora builds it.
+        self.assertFalse(config.mismatches(values, {'CONFIG_HID': 'n'}))
+
+
 if __name__ == '__main__':
     unittest.main()

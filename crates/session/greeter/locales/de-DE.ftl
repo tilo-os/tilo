@@ -2,9 +2,7 @@
 
 greeter-title = Bei Tilo anmelden
 greeter-username = Benutzername
-greeter-username-placeholder = Benutzername
 greeter-passcode = Passwort
-greeter-passcode-placeholder = Passwort
 greeter-sign-in = Anmelden
 greeter-signing-in = Anmeldung läuft…
 greeter-starting = Deine Sitzung wird gestartet…

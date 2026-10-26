@@ -92,7 +92,6 @@ pub(super) fn contract(reads: bool, setting: &str) -> ActionContract {
         risk: RiskLevel::Low,
         confirmation: ConfirmationPolicy::None,
         retry: RetryPolicy::Idempotent,
-        reversible: true,
         tags,
         ..ActionContract::default()
     }

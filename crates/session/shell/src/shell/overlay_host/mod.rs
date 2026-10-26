@@ -18,7 +18,9 @@ mod app_chooser;
 mod ask_agent;
 mod axis_navigation;
 mod bar_popovers;
+mod control_hints;
 mod cursor_chat;
+mod feedback_pick;
 mod feedback_point;
 pub(crate) use cursor_chat::ChatOut;
 mod arrival;
@@ -62,6 +64,7 @@ mod displays;
 mod emoji_layer;
 mod history;
 pub(crate) mod layers;
+mod live_shares;
 mod now_playing;
 mod overview_grid;
 mod palette_flow;
@@ -248,6 +251,7 @@ mod paint_top;
 mod palette_routing;
 mod palette_run;
 mod palette_search;
+mod people_overlay;
 use palette_search::LaunchpadMark;
 mod nested_shortcuts;
 mod peer_sync;
@@ -268,6 +272,7 @@ mod qs_wifi_radio_tests;
 mod queries;
 mod room_activity;
 mod scene;
+pub(crate) use scene::take_section_spans;
 mod services;
 mod setup;
 mod shell_clicks;
@@ -282,6 +287,7 @@ mod tree_harvest;
 mod wifi_password;
 mod window_focus;
 mod workspace_content;
+mod ws_emoji;
 mod ws_settings;
 
 use capture::{instant_screen_capture, instant_window_capture, magnifier_step};
@@ -307,10 +313,6 @@ use room_activity::{
 };
 use shortcut_config::{DesktopControlsSource, SHORTCUT_GUIDE_ROWS, ShortcutGuideFocus};
 
-/// How long the follow bar says "Stopped following" after the person's own
-/// input ended it.
-const FOLLOW_STOPPED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
 type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<PeerSyncResponse, String>>;
@@ -319,6 +321,7 @@ type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<Strin
 /// relationship. Kept separate from [`FollowBridge`]: the latter is private
 /// local app control, while this one only paints a room-scoped cue remotely.
 type FollowPresenceBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
+pub use people_overlay::LiveLayoutBridge;
 type StatusPresenceBridge =
     std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<ui::LiveStatus>)>;
 type ActiveTabPresenceBridge =
@@ -513,6 +516,10 @@ pub struct ShellOverlayHost {
     /// The strip ribbon (grown into the strip switcher on intent) and the
     /// strip rail; see [`strip_switcher`].
     strip_navigator: tilo_desktop::strip_navigator::StripNavigator,
+    /// The desktop's control hints, and what the last frame showed them;
+    /// see [`control_hints`].
+    control_hints: tilo_desktop::control_hints::ControlHints,
+    control_hints_frame: tilo_desktop::control_hints::HintFrame,
     /// Chrome revision the switcher's model was built from.
     strip_switcher_revision: Option<u64>,
     /// Displays the compositor is painting across, pushed by `FrameBuilder`
@@ -751,6 +758,9 @@ pub struct ShellOverlayHost {
     /// Workspace-settings transition, geometry, painting chrome, and typed
     /// hit targets. Policy outcomes are applied by this host.
     workspace_settings_overlay: WorkspaceSettingsOverlay,
+    /// The active workspace's emoji as workspace settings' Emoji tab holds
+    /// them, opened on first use.
+    ws_emoji: Option<ws_emoji::WsEmoji>,
     /// A rename submit owns its held Enter repeats and release after the draft closes.
     workspace_rename_submit_held: bool,
     palette_was_visible: bool,
@@ -804,7 +814,7 @@ pub struct ShellOverlayHost {
     /// The app the latched prompt asks for, so it opens over that app's
     /// window ([`Self::permission_prompt_surface`]).
     permission_prompt_app: Option<String>,
-    /// The portal's prompt queue, when the compositor serves portals.
+    /// The portal's capability queue, when the compositor serves portals.
     /// `drain_portal_prompts` empties it onto `chrome.pending_grants`.
     portal_prompts: Option<crate::portal::PromptQueueHandle>,
     /// Terminal tabs waiting for the person's answer about the device's own
@@ -981,6 +991,17 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// The roster pinned out of the dropdown, floating over the windows at
+    /// an edge as a desk widget does.
+    people_overlay: tilo_desktop::people_overlay::PeopleOverlay,
+    /// Where each person's windows are, as the room's live presence says,
+    /// and where this person's are (`ShellNetwork`'s layouts).
+    live_layout_bridge: Option<LiveLayoutBridge>,
+    /// The layout last said, per room, so it goes out only on a change.
+    published_layout: Option<(
+        crate::shell::state::RoomId,
+        Option<tilo_relay_protocol::live::LiveLayout>,
+    )>,
     /// Who is here arriving from the bar and leaving (`motion::Appear`).
     collaborators_appearing: ui::motion::Appearing,
     /// The roster as it was last painted at rest, and its panel: what is
@@ -1002,19 +1023,13 @@ pub struct ShellOverlayHost {
     /// from the live workspace prevents a later workspace switch from
     /// releasing the wrong set of local app views.
     followed_room: Option<crate::shell::state::RoomId>,
-    /// Keeps the local follow dock and its tether visible long enough to
-    /// arrive and release gracefully instead of snapping between states.
-    follow_transition: ui::motion::Presence,
-    /// Last resolved identity, retained only for the short exit animation.
-    follow_visual: Option<RosterRow>,
-    /// Persistent follow-mode banner painted while following.
-    follow_chip_rect: Rect,
-    /// When following stopped because the person did something of their
-    /// own: the bar says "Stopped following" for [`FOLLOW_STOPPED_FOR`].
-    follow_stopped: Option<Instant>,
-    /// Explicit stop target within [`Self::follow_chip_rect`]. The rest of
-    /// the banner is informative, not a surprising destructive target.
-    follow_stop_rect: Rect,
+    /// The "Following Ada" banner the browser paints too: it arrives and
+    /// leaves gracefully instead of snapping between states, and only its
+    /// Stop is a target.
+    follow_banner: tilo_desktop::follow_banner::FollowBanner,
+    /// The next end of following is the person's own input taking their
+    /// view back: the banner says "Stopped following" a moment.
+    follow_ended_by_own_input: bool,
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
@@ -1058,8 +1073,13 @@ pub struct ShellOverlayHost {
     /// A click that picked what a feedback report is about, waiting for the
     /// app under it to name the control there.
     feedback_point: crate::shell::feedback_entry::FeedbackPoint,
+    /// Pointing at what is wrong, to report it ("Report a problem…").
+    feedback_picker: crate::shell::feedback_pick::NativePicker,
     /// The slots Tilo apps declared for their windows' bars.
     window_toolbars: window_toolbars::WindowToolbars,
+    /// Windows shared live into a conversation: the menus offering it, the
+    /// sharing app's connections and the views windows embed.
+    live_shares: live_shares::NativeLiveShares,
     /// The tree revision the windows lent to apps the shell mounts were
     /// last matched against the tabs at ([`Self::sync_hosted_windows`]).
     hosted_windows_revision: Option<u64>,
@@ -1802,6 +1822,13 @@ mod capture_tool_tests;
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 mod people_motion_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+mod people_overlay_tests;
 
 #[cfg(test)]
 #[allow(

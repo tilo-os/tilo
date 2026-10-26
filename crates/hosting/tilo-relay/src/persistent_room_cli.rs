@@ -32,7 +32,10 @@ use tilo_relay_protocol::rooms::{JoinReply, JoinStep, PreAdmission, RoomRole, jo
 use tilo_relay_session::rooms::SetMemberRoleRequest;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
-use crate::web_cli::{RoomArgs, enrol, operator_lines, start_relay, web_config};
+use crate::web_cli::{RoomArgs, enrol, operator_lines, start_relay_lending, web_config};
+
+mod bots;
+use bots::{hand_to_discord, offer_sign_in, start_bots};
 
 /// The secret store this host keeps room roots in.
 pub(crate) const SECRET_APP: &str = "so.tilo.relay";
@@ -72,6 +75,16 @@ pub struct PersistentArgs {
         value_parser = crate::room_chat::channel_name
     )]
     pub chat_channels: Vec<String>,
+    /// The channel, by name, the room's members report problems to: kept
+    /// in the room's Chat on every start, after its other channels, since
+    /// the site's pages send reports to it by its id (`c_<name>`).
+    #[arg(
+        long = "feedback-channel",
+        value_name = "NAME",
+        requires = "persistent",
+        value_parser = crate::room_chat::channel_name
+    )]
+    pub feedback_channel: Option<String>,
     /// A strip, by name, the room's shared desktop has in its first
     /// workspace; repeatable, in order. Added at start where missing; the
     /// strips people made are kept.
@@ -82,6 +95,17 @@ pub struct PersistentArgs {
         value_parser = crate::room_strips::strip_name
     )]
     pub strips: Vec<String>,
+    /// A text published outside the room, announced so its readers find a
+    /// discussion thread to arrive in: `<address>=<title>`, the address of
+    /// the text and the title its thread is named; repeatable. A text whose
+    /// thread the room keeps is left as it is.
+    #[arg(
+        long = "discussion",
+        value_name = "ADDRESS=TITLE",
+        requires = "persistent",
+        value_parser = crate::room_discussions::parse
+    )]
+    pub discussions: Vec<crate::room_discussions::Published>,
     /// The room's owner root: a file of 64 hex characters (the Ed25519
     /// seed), mounted from the operator's encrypted secrets.
     #[arg(long = "root-file", value_name = "PATH")]
@@ -121,6 +145,16 @@ pub struct PersistentArgs {
         requires = "members_only"
     )]
     pub wait_list_max: usize,
+    /// Whoever runs the room sends mail from the web entry DOOR (a URL
+    /// ending in `/`): members may ask it to mail an invitation on that
+    /// door to a confirmed address on the wait list, which it hears as an
+    /// `invite_mail` event.
+    #[arg(
+        long = "wait-list-mail",
+        value_name = "DOOR",
+        requires = "wait_list_max"
+    )]
+    pub wait_list_mail: Option<String>,
     /// A file of more owners and moderators, `{"owners": [hex],
     /// "moderators": [hex]}`, read again whenever it changes, so a role is
     /// granted or taken back while the room runs.
@@ -152,15 +186,28 @@ pub struct PersistentArgs {
     /// nobody; who is here now is the room's presence, not its membership.
     #[arg(long = "inactive-after-days", default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3650))]
     pub inactive_after_days: u64,
-    /// A bot directory entry and its inputs (`<entry> key=value …`) to
-    /// install at the room's first start, approved by the room's root;
-    /// repeatable.
+    /// What to install at the room's first start, approved by the room's
+    /// root, with its inputs (`<source> key=value …`); repeatable. The source
+    /// is a bot directory entry, or a program file on this host, which the
+    /// room runs under the program's own name.
     #[arg(long = "bot", value_name = "SPEC")]
     pub bot_specs: Vec<String>,
     /// The Discord bot token, mounted from the operator's encrypted
     /// secrets; kept where the Discord connector's worker asks for it.
     #[arg(long = "discord-token-file", value_name = "PATH")]
     pub discord_token_file: Option<PathBuf>,
+    /// The Discord application members sign in with to link their
+    /// account (OAuth 2, `identify`); with the redirect and consent page
+    /// below, the room offers "Connect Discord". The room's host keeps the
+    /// client secret and trades the code itself.
+    #[arg(long = "discord-client-id", value_name = "ID", requires_all = ["discord_redirect_url", "discord_authorize_url"])]
+    pub discord_client_id: Option<String>,
+    /// Where Discord sends the browser back: the room host's callback.
+    #[arg(long = "discord-redirect-url", value_name = "URL")]
+    pub discord_redirect_url: Option<String>,
+    /// Discord's consent page.
+    #[arg(long = "discord-authorize-url", value_name = "URL")]
+    pub discord_authorize_url: Option<String>,
     /// The worker binary of a connector (`APP=PATH`), where it is not
     /// `<name>-worker` beside this binary; repeatable.
     #[arg(long = "connector-worker", value_name = "APP=PATH")]
@@ -168,7 +215,9 @@ pub struct PersistentArgs {
     /// The model API key the room's moderation agent asks with, mounted
     /// from the operator's encrypted secrets; kept in this host's secret
     /// store. Without it the room has no moderation agent and reports wait
-    /// for its human Moderators.
+    /// for its human Moderators. The same model looks over the reports its
+    /// members write in the feedback channel before they send them, asked
+    /// through the room, so their pages never hold the key.
     #[arg(long = "moderation-key-file", value_name = "PATH")]
     pub moderation_key_file: Option<PathBuf>,
     /// The model the moderation agent asks.
@@ -211,6 +260,9 @@ pub(crate) struct PersistentRoom {
     pub spectator: SigningKey,
     pub host_cert: DeviceCert,
     pub web: WebHandle,
+    /// The Discord connector a bridge runs on, which a sign-in with Discord
+    /// that came back to the service is handed to.
+    pub discord: Option<Arc<tilo_connector::ConnectorProcess>>,
 }
 
 /// The workspace name people see for the persistent room `name` (a lowercase
@@ -418,6 +470,7 @@ pub(crate) fn idle_guests(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BotSpec {
+    /// The directory entry it is installed from, or the program file.
     pub entry: String,
     pub inputs: BTreeMap<String, String>,
 }
@@ -426,7 +479,7 @@ pub(crate) fn parse_bot_spec(text: &str) -> anyhow::Result<BotSpec> {
     let mut words = text.split_whitespace();
     let entry = words
         .next()
-        .context("a bot spec names a directory entry")?
+        .context("a bot spec names a directory entry or a program file")?
         .to_owned();
     let mut inputs = BTreeMap::new();
     for word in words {
@@ -831,14 +884,29 @@ async fn answer_pre_admit(
     }
 }
 
+/// What an [`OperatorCommand::WaitList`] carries.
+struct WaitListAsk {
+    request: String,
+    contact: String,
+    removal_sha256: String,
+    confirm_sha256: Option<String>,
+    language: String,
+}
+
 /// Keep the request someone left at the door without an invitation, while
 /// the room takes people by invitation and keeps a wait list.
 async fn answer_wait_list(
     context: &PersistentRoom,
     governance: &Governance,
-    request: String,
-    contact: &str,
+    ask: WaitListAsk,
 ) -> RoomEvent {
+    let WaitListAsk {
+        request,
+        contact,
+        removal_sha256,
+        confirm_sha256,
+        language,
+    } = ask;
     let refused = |reason: String, full: bool| RoomEvent::WaitListRefused {
         request: request.clone(),
         reason,
@@ -847,21 +915,203 @@ async fn answer_wait_list(
     if !governance.members_only || governance.wait_list_max == 0 {
         return refused("the room keeps no wait list".into(), false);
     }
+    let Some(removal) = hex32(&removal_sha256) else {
+        return refused("the removal digest must be 64 hex characters".into(), false);
+    };
+    let confirm = match confirm_sha256.as_deref().map(hex32) {
+        None => None,
+        Some(Some(confirm)) => Some(confirm),
+        Some(None) => {
+            return refused(
+                "the confirmation digest must be 64 hex characters".into(),
+                false,
+            );
+        }
+    };
+    let secrets = tilo_relay::rooms::WaitListSecrets { removal, confirm };
     match context
         .rooms
-        .wait(&context.room, contact, governance.wait_list_max)
+        .wait(
+            &context.room,
+            &contact,
+            secrets,
+            &language,
+            governance.wait_list_max,
+        )
         .await
     {
-        Ok(WaitListed::Added) => RoomEvent::WaitListed {
+        Ok(WaitListed::Added { mail }) => RoomEvent::WaitListed {
             request,
             added: true,
+            mail,
         },
-        Ok(WaitListed::Already) => RoomEvent::WaitListed {
+        Ok(WaitListed::Already { mail }) => RoomEvent::WaitListed {
             request,
             added: false,
+            mail,
         },
         Ok(WaitListed::Full) => refused("the wait list is full".into(), true),
         Err(error) => refused(error.to_string(), false),
+    }
+}
+
+fn mailbox(mailbox: tilo_relay::rooms::Mailbox) -> room_operator::WaitListMailbox {
+    room_operator::WaitListMailbox {
+        contact: mailbox.contact,
+        language: mailbox.language,
+    }
+}
+
+/// Take off the wait list the entry whose removal secret hashes to
+/// `removal_sha256`, for whoever left it: answered alike whether or not
+/// one did.
+async fn answer_unlist(
+    context: &PersistentRoom,
+    request: String,
+    removal_sha256: &str,
+) -> RoomEvent {
+    let Some(removal) = hex32(removal_sha256) else {
+        return RoomEvent::WaitListFailed {
+            request,
+            reason: "the removal digest must be 64 hex characters".into(),
+        };
+    };
+    match context
+        .rooms
+        .leave_wait_list_for_operator(&context.room, removal)
+        .await
+    {
+        Ok((told, contact)) => RoomEvent::Unlisted {
+            request,
+            told: told.map(mailbox),
+            contact_sha256: contact.map(hex::encode),
+        },
+        Err(error) => RoomEvent::WaitListFailed {
+            request,
+            reason: error.to_string(),
+        },
+    }
+}
+
+/// Confirm the entry whose confirmation secret hashes to `confirm_sha256`.
+async fn answer_confirm(
+    context: &PersistentRoom,
+    request: String,
+    confirm_sha256: &str,
+) -> RoomEvent {
+    let Some(confirm) = hex32(confirm_sha256) else {
+        return RoomEvent::WaitListFailed {
+            request,
+            reason: "the confirmation digest must be 64 hex characters".into(),
+        };
+    };
+    match context
+        .rooms
+        .confirm_wait_list(&context.room, confirm)
+        .await
+    {
+        Ok(confirmed) => RoomEvent::Confirmed { request, confirmed },
+        Err(error) => RoomEvent::WaitListFailed {
+            request,
+            reason: error.to_string(),
+        },
+    }
+}
+
+/// Where the entry whose removal secret hashes to `removal_sha256` stands.
+async fn answer_standing(
+    context: &PersistentRoom,
+    request: String,
+    removal_sha256: &str,
+) -> RoomEvent {
+    let Some(removal) = hex32(removal_sha256) else {
+        return RoomEvent::WaitListFailed {
+            request,
+            reason: "the removal digest must be 64 hex characters".into(),
+        };
+    };
+    match context
+        .rooms
+        .wait_list_standing(&context.room, removal)
+        .await
+    {
+        Ok(standing) => RoomEvent::Standing { request, standing },
+        Err(error) => RoomEvent::WaitListFailed {
+            request,
+            reason: error.to_string(),
+        },
+    }
+}
+
+/// The answer to a command about the wait list.
+async fn answer_wait_list_command(
+    context: &PersistentRoom,
+    governance: &Governance,
+    command: OperatorCommand,
+) -> RoomEvent {
+    match command {
+        OperatorCommand::WaitList {
+            request,
+            contact,
+            removal_sha256,
+            confirm_sha256,
+            language,
+        } => {
+            let ask = WaitListAsk {
+                request,
+                contact,
+                removal_sha256,
+                confirm_sha256,
+                language,
+            };
+            answer_wait_list(context, governance, ask).await
+        }
+        OperatorCommand::Unlist {
+            request,
+            removal_sha256,
+        } => answer_unlist(context, request, &removal_sha256).await,
+        OperatorCommand::Confirm {
+            request,
+            confirm_sha256,
+        } => answer_confirm(context, request, &confirm_sha256).await,
+        OperatorCommand::Standing {
+            request,
+            removal_sha256,
+        } => answer_standing(context, request, &removal_sha256).await,
+        _ => RoomEvent::WaitListFailed {
+            request: String::new(),
+            reason: "not a wait-list command".into(),
+        },
+    }
+}
+
+/// The event that has the operator mail an invitation a member asked for.
+fn invite_mail(
+    mail: tilo_relay::rooms::WaitListMail,
+    request: String,
+) -> (RoomEvent, tokio::sync::oneshot::Sender<bool>) {
+    (
+        RoomEvent::InviteMail {
+            request,
+            to: mailbox(mail.to),
+            link: mail.link,
+            removal: hex::encode(mail.removal),
+        },
+        mail.queued,
+    )
+}
+
+type MailAcks = std::collections::BTreeMap<String, tokio::sync::oneshot::Sender<bool>>;
+
+fn publish_invite_mail(asked: tilo_relay::rooms::WaitListMail, mail_acks: &mut MailAcks) {
+    mail_acks.retain(|_, sender| !sender.is_closed());
+    if mail_acks.len() >= 512 {
+        let _ = asked.queued.send(false);
+    } else {
+        let request = hex::encode(rand::random::<[u8; 32]>());
+        let (event, queued) = invite_mail(asked, request.clone());
+        mail_acks.insert(request, queued);
+        println!("{}", event.to_line());
     }
 }
 
@@ -1074,7 +1324,9 @@ pub(crate) async fn settle_chat(
     cert: &DeviceCert,
     apps: &[String],
     channels: &[String],
+    feedback: Option<&str>,
     files: chat::record::RoomFiles,
+    discussions: &[crate::room_discussions::Published],
 ) -> anyhow::Result<()> {
     if !apps.iter().any(|app| app == crate::room_chat::CHAT_APP) {
         return Ok(());
@@ -1090,7 +1342,11 @@ pub(crate) async fn settle_chat(
             &record,
             |doc| {
                 crate::room_chat::settle_chat(doc, channels)?;
-                crate::room_chat::settle_files(doc, files)
+                if let Some(name) = feedback {
+                    crate::room_chat::settle_feedback_channel(doc, name)?;
+                }
+                crate::room_chat::settle_files(doc, files)?;
+                crate::room_discussions::settle_threads(doc, discussions).map(drop)
             },
         )
         .await
@@ -1261,6 +1517,21 @@ pub(crate) async fn run(
     if let Some(agent) = &moderation {
         tracing::info!(model = agent.model(), "moderation agent loaded");
     }
+    // The same model looks over the reports the room's members write
+    // before they send them, asked through the room on their behalf.
+    let feedback_reviewer = moderation
+        .is_some()
+        .then(|| {
+            crate::persistent_moderation::RoomReviewer::from_store(
+                &store,
+                persistent.moderation_model.as_deref(),
+            )
+        })
+        .transpose()?
+        .map(|reviewer| {
+            std::sync::Arc::new(reviewer)
+                as std::sync::Arc<dyn tilo_agent_participant::FeedbackReviewer>
+        });
     let host = host_key(&state)?;
     let host_cert = enrol(
         &root,
@@ -1274,7 +1545,7 @@ pub(crate) async fn run(
         member_limits: persistent.member_limits.then(Default::default),
         ..Default::default()
     };
-    let hosted = start_relay(
+    let hosted = start_relay_lending(
         config,
         RelayIdentity {
             user_public_key: root.verifying_key().to_bytes(),
@@ -1284,6 +1555,7 @@ pub(crate) async fn run(
         },
         &args.web,
         &state,
+        crate::web_cli::Lent { feedback_reviewer },
     )
     .await?;
     let rooms = hosted
@@ -1338,7 +1610,9 @@ pub(crate) async fn run(
         &host_cert,
         &persistent.seed_apps,
         &persistent.chat_channels,
+        persistent.feedback_channel.as_deref(),
         room_files(&persistent),
+        &persistent.discussions,
     )
     .await?;
     settle_strips(&rooms, &room, &host_cert, &shown, &persistent.strips).await?;
@@ -1396,9 +1670,13 @@ pub(crate) async fn run(
         workers,
         tilo_relay::room_bots::installed::FsBlobs::new(state.join("blobs"), public)
             .context("prepare the blob store")?,
-        persistent.public_avatars_url.clone(),
+        tilo_relay::room_bots::discord::Served {
+            avatars_url: persistent.public_avatars_url.clone(),
+            web_entry: args.web.web_entry.clone(),
+            origin: Some(web.origin.clone()),
+        },
     );
-    let runners = start_bots(
+    let (runners, discord) = start_bots(
         &rooms,
         &room,
         &host_cert,
@@ -1409,6 +1687,9 @@ pub(crate) async fn run(
         &state,
     )
     .await?;
+    if let Some(discord) = &discord {
+        offer_sign_in(discord, &persistent).await;
+    }
     // The files members post in the room's Chat, kept in the same store
     // as what the bots fetch, so they stay once their poster left.
     let attachments = attachment_limits(&persistent).map(|limits| {
@@ -1442,6 +1723,7 @@ pub(crate) async fn run(
         spectator,
         host_cert,
         web,
+        discord,
     };
     let governance = Governance {
         owners,
@@ -1451,6 +1733,7 @@ pub(crate) async fn run(
         state: state.clone(),
         members_only: persistent.members_only,
         wait_list_max: persistent.wait_list_max,
+        wait_list_mail: persistent.wait_list_mail.clone(),
     };
     let result = tokio::select! {
         result = serve_operator(&context, &governance, &mut operator) => result,
@@ -1469,186 +1752,6 @@ pub(crate) async fn run(
     result
 }
 
-/// Connect the room to the Discord server a bridge's inputs name
-/// ([`discord::link_bridge`](tilo_relay::room_bots::discord::link_bridge)).
-async fn link_discord(
-    rooms: &Rooms,
-    room: &str,
-    host_cert: &DeviceCert,
-    spec: &BotSpec,
-    bot: &mut tilo_relay::room_bots::installed::InstalledBot,
-    persistent: &PersistentArgs,
-) -> Result<Vec<(String, String)>, String> {
-    tilo_relay::room_bots::discord::link_bridge(
-        rooms,
-        room,
-        host_cert,
-        &spec.inputs,
-        bot,
-        persistent.public_avatars_url.as_deref(),
-    )
-    .await
-}
-
-/// Install the bots the operator named (once: a restart finds the same
-/// installations), start the connectors their programs listen to, and run
-/// each bot on this host. Each is kept a governed member of the room, its
-/// delegation renewed with the room's root as it runs out.
-async fn start_bots(
-    rooms: &Rooms,
-    room: &str,
-    host_cert: &DeviceCert,
-    root: &SigningKey,
-    bots: &[BotSpec],
-    connector_host: &tilo_relay::room_bots::installed::ConnectorHost,
-    persistent: &PersistentArgs,
-    state: &Path,
-) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
-    use tilo_relay::room_bots::discord;
-    use tilo_relay::room_bots::installed::{self, BotRunner, InstalledBot};
-    if let Some(path) = &persistent.discord_token_file {
-        let token = std::fs::read_to_string(path)
-            .with_context(|| format!("read the Discord token file {}", path.display()))?;
-        // Never logged: only kept where the connector's worker asks for it.
-        installed::put_connector_secret(
-            discord::APP,
-            discord::TOKEN_PURPOSE,
-            token.trim().as_bytes(),
-        )
-        .map_err(|error| anyhow::anyhow!("keep the Discord token: {error}"))?;
-    }
-    let mut installed_bots = Vec::new();
-    let mut connectors = BTreeSet::new();
-    let mut settings = BTreeMap::new();
-    for spec in bots {
-        let inputs = spec
-            .inputs
-            .iter()
-            .map(|(key, value)| (key.clone(), input_value(value)))
-            .collect();
-        let dir = state.join("bots").join(slug_of(&spec.entry));
-        let mut bot = installed::install(&dir, &spec.entry, inputs)
-            .await
-            .map_err(|error| anyhow::anyhow!("install {}: {error}", spec.entry))?;
-        let shortcut = bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?;
-        let wanted = InstalledBot::connectors(&shortcut);
-        if wanted.contains(discord::APP) {
-            match link_discord(rooms, room, host_cert, spec, &mut bot, persistent).await {
-                Ok(env) => {
-                    settings.insert(discord::APP.to_owned(), env);
-                }
-                Err(error) => {
-                    tracing::error!(entry = %spec.entry, %error, "not running the Discord bridge");
-                    continue;
-                }
-            }
-        }
-        connectors.extend(wanted);
-        tracing::info!(entry = %spec.entry, installation = %bot.installation, "bot installed");
-        installed_bots.push((dir, bot));
-    }
-    if installed_bots.is_empty() {
-        return Ok(Vec::new());
-    }
-    let blobs = connector_host.blobs(rooms);
-    // The room serves without its bots rather than not at all: a connector
-    // whose worker does not start (a missing binary, an unreachable service)
-    // leaves the bots that need it out, said in the log, as a bridge that
-    // does not link does.
-    let started = match installed::start_connectors(
-        &connectors,
-        state,
-        &connector_host.workers,
-        &settings,
-        &blobs,
-    )
-    .await
-    {
-        Ok(started) => started,
-        Err(error) => {
-            tracing::error!(%error, "not running the room's bots: a connector did not start");
-            return Ok(Vec::new());
-        }
-    };
-    let mut runners = Vec::new();
-    for (dir, bot) in installed_bots {
-        let wanted =
-            InstalledBot::connectors(&bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?);
-        let own = started
-            .iter()
-            .filter(|(app, _)| wanted.contains(*app))
-            .map(|(app, process)| (app.clone(), Arc::clone(process)))
-            .collect::<BTreeMap<_, _>>();
-        let certifier = tilo_relay::room_bots::membership::HostRootCertifier::new(root.clone());
-        if let Some(lane) = own.get(discord::APP).cloned() {
-            runners.extend(carry_calls(rooms, room, host_cert, &certifier, &bot, lane));
-        }
-        let runner = BotRunner::new(
-            rooms.clone(),
-            room.to_owned(),
-            host_cert.clone(),
-            certifier.device_key(&bot.installation),
-            bot.clone(),
-            own,
-            dir.join("progress.json"),
-        )
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-        runners.push(tokio::spawn(
-            tilo_relay::room_bots::membership::keep_renewed(
-                rooms.clone(),
-                room.to_owned(),
-                host_cert.clone(),
-                certifier,
-                bot.clone(),
-            ),
-        ));
-        runners.push(tokio::spawn(runner.run()));
-    }
-    Ok(runners)
-}
-
-/// Carry `room`'s calls to Discord and back as `bot`'s device, through the
-/// Discord connector's worker `lane` the bot's runner uses too.
-fn carry_calls(
-    rooms: &Rooms,
-    room: &str,
-    host_cert: &DeviceCert,
-    certifier: &tilo_relay::room_bots::membership::HostRootCertifier,
-    bot: &tilo_relay::room_bots::installed::InstalledBot,
-    lane: Arc<impl tilo_relay::room_bots::discord_voice::CallLane>,
-) -> Option<tokio::task::JoinHandle<()>> {
-    match certifier.device(room, bot, tilo_clock::unix_now_ns()) {
-        Ok(device) => Some(tokio::spawn(
-            tilo_relay::room_bots::discord_voice::VoiceBridge::new(
-                rooms.clone(),
-                room.to_owned(),
-                host_cert.clone(),
-                device.cert,
-                lane,
-            )
-            .run(),
-        )),
-        Err(error) => {
-            tracing::error!(entry = %bot.entry, %error, "not carrying the Discord bridge's calls");
-            None
-        }
-    }
-}
-
-/// A file name for directory entry or program path `entry`.
-fn slug_of(entry: &str) -> String {
-    entry
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 /// The operator's declarations the room is kept in line with.
 struct Governance {
     owners: BTreeSet<[u8; 32]>,
@@ -1661,6 +1764,8 @@ struct Governance {
     members_only: bool,
     /// Requests left at the door it keeps (`--wait-list-max`).
     wait_list_max: usize,
+    /// The door whoever runs it sends mail from (`--wait-list-mail`).
+    wait_list_mail: Option<String>,
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -1823,6 +1928,13 @@ async fn prune_idle(
             last_seen.remove(key);
         }
     }
+    // Addresses left at the door and not confirmed in time go too, also
+    // while nobody touches the wait list.
+    if governance.wait_list_max > 0
+        && let Err(error) = context.rooms.expire_wait_list(&context.room).await
+    {
+        tracing::warn!("the wait list kept unconfirmed addresses: {error}");
+    }
     governance.write_last_seen(last_seen)
 }
 
@@ -1941,8 +2053,19 @@ async fn serve_operator(
     let mut roles_seen = governance.roles_changed_at();
     let admitter = Admitter::of(context, removals.clone(), governance.members_only);
     let mut admitting = tokio::task::JoinSet::<RoomEvent>::new();
+    let mut mail_acks = MailAcks::new();
+    let mut mail = governance
+        .wait_list_mail
+        .as_ref()
+        .and_then(|door| context.rooms.mail_wait_list(door));
     loop {
         tokio::select! {
+            Some(asked) = async {
+                match mail.as_mut() {
+                    Some(mail) => mail.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => publish_invite_mail(asked, &mut mail_acks),
             Some(answered) = admitting.join_next(), if !admitting.is_empty() => match answered {
                 Ok(event) => println!("{}", event.to_line()),
                 // Its waiter hears nothing and gives up, as on any lost answer.
@@ -1980,8 +2103,19 @@ async fn serve_operator(
                 Some(Ok(OperatorCommand::Spectate { device_public_key })) => {
                     println!("{}", answer_spectate(context, device_public_key).to_line());
                 }
-                Some(Ok(OperatorCommand::WaitList { request, contact })) => {
-                    println!("{}", answer_wait_list(context, governance, request, &contact).await.to_line());
+                Some(Ok(command @ (OperatorCommand::WaitList { .. }
+                | OperatorCommand::Unlist { .. }
+                | OperatorCommand::Confirm { .. }
+                | OperatorCommand::Standing { .. }))) => {
+                    println!("{}", answer_wait_list_command(context, governance, command).await.to_line());
+                }
+                Some(Ok(OperatorCommand::InviteMailQueued { request, queued })) => {
+                    if let Some(sender) = mail_acks.remove(&request) {
+                        let _ = sender.send(queued);
+                    }
+                }
+                Some(Ok(OperatorCommand::DiscordAuthorized { user_id, user_name, display_name, avatar, state_sha256, link_check })) => {
+                    hand_to_discord(context, user_id, user_name, display_name, avatar, state_sha256, link_check).await;
                 }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent room admits guests by pre-admission only"),
                 Some(Ok(OperatorCommand::Shutdown {})) | None => {
@@ -2324,6 +2458,7 @@ mod tests {
                     role: RoomRole::Editor,
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3600 * NS_PER_SEC),
                     inviter_name: Some("Member".into()),
+                    wait_list_entry: None,
                 },
             )
             .await

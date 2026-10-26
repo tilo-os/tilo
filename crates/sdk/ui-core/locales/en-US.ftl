@@ -67,11 +67,15 @@ window-toolbar-more = More actions
 window-toolbar-views = View
 window-toolbar-suggestions = Suggestions
 window-toolbar-edited = Edited
+window-toolbar-view-only = View only
 segmented-choose = Choose
 window-toolbar-show-sidebar = Show sidebar
 window-toolbar-hide-sidebar = Hide sidebar
 window-toolbar-show-inspector = Show inspector
 window-toolbar-hide-inspector = Hide inspector
+# A window shared live into a conversation, from its own menu.
+window-share-to-channel = Share to channel…
+window-stop-sharing-in = Stop sharing in { $place }
 history-genesis = Created
 history-edited-field = { $more ->
     [0] Edited { $path }
@@ -220,7 +224,7 @@ history-filters-clear = Clear filters
 history-entries = History entries
 history-author-anyone = Anyone
 history-work-task = Task
-history-work-agent-run = Agent run
+history-work-agent-run = Run
 history-work-shortcut = Shortcut
 history-selection-clear = Clear
 history-sync-finish-edit = Finish the current edit before receiving remote changes
@@ -229,6 +233,8 @@ history-sync-owner-changed = Document connection or owner changed while remote u
 history-sync-offline = Working offline. Changes will sync when you're back.
 arriving-loading = Loading
 arriving-from = From { $source }
+arriving-received-of = { $received } of { $total }
+arriving-received = { $received } received
 arriving-failed = Couldn’t load this
 arriving-retry = Try again
 content-unavailable = None of the connected devices has it
@@ -660,6 +666,10 @@ widget-mention-shortcut = Shortcut
 widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = People to mention
+mention-notice-title = { $name } mentioned you in ‘{ $place }’
+mention-notice-channel = { $name } mentioned you in { $channel }
+mention-notice = { $name } mentioned you
+mention-notice-someone = Someone
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks
@@ -763,6 +773,8 @@ approved-check-reports-disabled = Phase reports unavailable
 
 author-bot-chip = Bot
 author-via-chip = via { $service }
+author-from-service = From { $service }
+author-from-service-as = From { $service } as { $handle }
 author-bot-details = { $bot } (bot, added by { $installer })
 author-bot-details-as = { $name }, via { $bot } (bot, added by { $installer })
 author-bot-linked = Linked to { $person } on Tilo
@@ -853,6 +865,7 @@ block-a11y-table-row = Row { $row }
 block-a11y-table = Table
 block-a11y-open-link = Open linked note
 block-a11y-open-external = Open web link
+block-a11y-open-resource = Open { $label }
 block-a11y-block = { $kind } block { $position }
 block-a11y-level = Level { $level }
 block-a11y-document = Drag a block's handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; Escape, then Tab, leaves the editor.
@@ -918,6 +931,57 @@ signal-meter-fair = Fair signal
 signal-meter-good = Good signal
 signal-meter-strong = Strong signal
 
+# Reactions: the pills under a message or on a page, one per emoji. $emoji is
+# the emoji itself, or a workspace emoji written as :name:.
+reaction-strip-add = Add reaction
+reaction-strip-react = Add { $emoji } reaction
+reaction-strip-unreact = Remove { $emoji } reaction
+reaction-strip-count = { $count ->
+    [one] One reaction
+   *[other] { $count } reactions
+}
+# Who reacted, in the tooltip of a pill; $emoji is the emoji's name.
+reaction-strip-you = You
+reaction-strip-reacted-one = { $first } reacted with { $emoji }
+reaction-strip-reacted-two = { $first } and { $second } reacted with { $emoji }
+reaction-strip-reacted-three = { $first }, { $second } and { $third } reacted with { $emoji }
+reaction-strip-reacted-more = { $first }, { $second } and { $others ->
+    [one] one other
+   *[other] { $others } others
+} reacted with { $emoji }
+
+# The emoji picker: the workspace's own emoji, the recently used ones and
+# Unicode's groups as tabs.
+emoji-chooser-title = Emoji
+emoji-chooser-search = Search emoji
+emoji-chooser-groups = Emoji categories
+emoji-chooser-workspace = Workspace
+emoji-chooser-recent = Recently used
+emoji-chooser-results = Matching emoji
+emoji-chooser-no-results = No emoji found
+emoji-chooser-arriving = More emoji are on their way
+emoji-chooser-add = Add emoji
+emoji-chooser-add-failed = Couldn't add that picture: { $reason }
+emoji-chooser-tones = Skin tones
+emoji-chooser-tone-hint = Pick a skin tone
+emoji-chooser-toned = { $name }, { $tone }
+emoji-chooser-tone-light = light skin tone
+emoji-chooser-tone-medium-light = medium-light skin tone
+emoji-chooser-tone-medium = medium skin tone
+emoji-chooser-tone-medium-dark = medium-dark skin tone
+emoji-chooser-tone-dark = dark skin tone
+
+## The workspace's own emoji
+workspace-emoji-choose-title = Add an emoji
+workspace-emoji-choose-accept = Add
+workspace-emoji-image-files = Pictures
+# Why a picture chosen in the emoji picker was not added, after
+# emoji-chooser-add-failed's colon: short, it shares the picker's last line.
+workspace-emoji-loading = the picture tools are still loading
+workspace-emoji-not-a-picture = it isn't a PNG, JPEG or WebP
+workspace-emoji-too-detailed = it's too detailed for an emoji
+workspace-emoji-unavailable = this workspace's emoji aren't available
+workspace-emoji-not-allowed = you may not add emoji here
 # The conversation substrate: the delivery vocabulary and the attachment
 # ladder, shared by every app that draws a conversation.
 conversation-delivery-queued = Queued
@@ -947,3 +1011,46 @@ conversation-draft = Draft
 conversation-draft-preview = Draft: {$text}
 conversation-unread = Unread message
 conversation-day-earlier = {$date}
+# Jobs: what is running. A job's row says what it is doing and how far.
+jobs-starting = Starting
+# $phase is what it is doing ("Downloading"), $done and $total are what it has
+# got through and how much there is, each in the job's own unit.
+jobs-phase-of = { $phase } { $done } of { $total }
+# $phase is what it is doing, $seen is how much it has seen where there is no
+# total to read.
+jobs-phase-seen = { $phase } { $seen }
+jobs-percent = { $percent }%
+jobs-bar-of = { $done } of { $total }
+jobs-failed = Couldn’t finish: { $reason }
+jobs-stopped = Stopped
+jobs-stop = Stop
+jobs-stopping = Stopping
+jobs-show-me = Show me
+jobs-read = Read
+# $count is how many jobs the band is not showing.
+jobs-more = { $count } more
+jobs-running-heading = In progress
+jobs-finished-heading = Finished
+jobs-none = Nothing is running
+jobs-none-message = Anything longer than a breath appears while it runs, and says how it ended.
+
+jobs-files-one = { $count } file
+jobs-files = { $count } files
+jobs-items-one = { $count } item
+jobs-items = { $count } items
+jobs-steps-one = { $count } step
+jobs-steps = { $count } steps
+
+# Needs you: what wants a person.
+attention-blocking = Now
+attention-waiting = Waiting
+attention-noted = Worth knowing
+attention-none = Nothing needs you
+attention-none-message = Anything that waits on your decision keeps waiting here.
+# $about is what it is about, $because is why it is waiting.
+attention-because = { $about }, { $because }
+attention-defer = Put aside for now
+attention-deferred-one = { $count } put aside
+attention-deferred = { $count } put aside
+attention-pill-one = { $count } waiting
+attention-pill = { $count } waiting

@@ -2072,6 +2072,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-document",
+ "tilo-emoji-catalogue",
  "tilo-emoji-engine",
  "tilo-files",
  "tilo-model-client",
@@ -3677,8 +3678,10 @@ dependencies = [
 name = "discord-worker"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "chat",
+ "collab-types",
  "davey",
  "discord",
  "discord-wire",
@@ -4371,6 +4374,7 @@ dependencies = [
 name = "fake-discord"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "davey",
  "futures-util",
@@ -10039,6 +10043,8 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-doc",
  "tilo-document",
+ "tilo-emoji-catalogue",
+ "tilo-emoji-engine",
  "tilo-files",
  "tilo-rich-text",
  "tilo-test-env",
@@ -16805,6 +16811,7 @@ dependencies = [
  "tilo-search",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-workspace-emoji",
  "tracing",
  "workspace-hack",
 ]
@@ -16839,14 +16846,17 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app-package",
+ "tilo-automation",
  "tilo-caps",
  "tilo-files",
  "tilo-headless-schema",
  "tilo-history",
  "tilo-lock",
  "tilo-paths",
+ "tilo-relay-session",
  "tilo-test-env",
  "tilo-ui-graph",
+ "tilo-user-identity",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "wasmparser 0.239.0",
@@ -17132,8 +17142,11 @@ dependencies = [
 name = "tilo-boot-signin"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.4.3",
+ "hmac 0.13.0",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "tilo-ask-password",
  "workspace-hack",
@@ -17276,6 +17289,8 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tokio",
+ "tracing",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -17670,6 +17685,7 @@ dependencies = [
  "tilo-copy-lint",
  "tilo-desktop-model",
  "tilo-desktop-surface",
+ "tilo-emoji-catalogue",
  "tilo-sort",
  "tilo-ui",
  "tilo-vello",
@@ -17927,6 +17943,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-emoji-catalogue"
+version = "0.1.0"
+dependencies = [
+ "emoji",
+ "tilo-ui",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-emoji-engine"
 version = "0.1.0"
 dependencies = [
@@ -17941,6 +17966,7 @@ version = "0.1.0"
 dependencies = [
  "iroh",
  "iroh-relay",
+ "n0-future",
  "tilo-lock",
  "tilo-test-env",
  "tokio",
@@ -18399,6 +18425,7 @@ dependencies = [
  "tilo-test-env",
  "tokio",
  "wire-frame",
+ "workspace-hack",
  "zeroize",
 ]
 
@@ -19491,6 +19518,7 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-ui",
  "tilo-user-identity",
+ "tilo-workspace-emoji",
  "tokio",
  "tokio-rustls",
  "toml 1.0.6+spec-1.1.0",
@@ -19570,6 +19598,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
@@ -20008,6 +20037,7 @@ dependencies = [
  "clap",
  "ed25519-dalek 3.0.0",
  "futures-util",
+ "getrandom 0.4.3",
  "hex",
  "libc",
  "postcard",
@@ -20859,6 +20889,19 @@ name = "tilo-winit-x11"
 version = "0.1.0"
 dependencies = [
  "tilo-winit",
+]
+
+[[package]]
+name = "tilo-workspace-emoji"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-resource",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -25726,6 +25769,7 @@ dependencies = [
  "tilo-document",
  "tilo-documents",
  "tilo-egress",
+ "tilo-emoji-catalogue",
  "tilo-endpoint-reachability",
  "tilo-engine-loader",
  "tilo-environment",
@@ -25738,6 +25782,7 @@ dependencies = [
  "tilo-firstboot-files",
  "tilo-font-catalog",
  "tilo-fs",
+ "tilo-fs-client",
  "tilo-governor",
  "tilo-handoff",
  "tilo-headless-schema",
@@ -25747,6 +25792,7 @@ dependencies = [
  "tilo-host",
  "tilo-host-search",
  "tilo-identity-ceremony",
+ "tilo-identity-client",
  "tilo-identity-host",
  "tilo-image-codec",
  "tilo-image-policy-check",
@@ -25767,6 +25813,7 @@ dependencies = [
  "tilo-messaging",
  "tilo-messaging-protocol",
  "tilo-mime",
+ "tilo-model-client",
  "tilo-model-gateway",
  "tilo-moderation",
  "tilo-moq",
@@ -25857,6 +25904,7 @@ dependencies = [
  "tilo-wet-media",
  "tilo-winit",
  "tilo-winit-x11",
+ "tilo-workspace-emoji",
  "tilo-workspace-join",
  "tilo-zone-globe",
  "time",

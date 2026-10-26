@@ -27,10 +27,12 @@ fn fill_part(room: &mut Room, part: u64) -> String {
 }
 
 fn react(message: &str, emoji: &str) -> ui::tilo_resource::Invoke<ChatPart> {
-    ChatPart::REACT.with(chat_part::React {
-        message: Id::from_raw(message),
-        emoji: emoji.into(),
-    })
+    ChatPart::paths()
+        .messages
+        .item(&Id::from_raw(message))
+        .reactions
+        .react(emoji)
+        .into()
 }
 
 fn edit(message: &str, text: &str) -> ui::tilo_resource::Invoke<ChatPart> {
@@ -164,7 +166,9 @@ fn the_window_chain_rolls_over_and_reads_across_its_parts() {
             .unwrap()
             .reactions
             .iter()
-            .any(|reaction| reaction.emoji == "👍" && reaction.users == [crate::model::ME])
+            .any(|reaction| reaction.emoji == "👍"
+                && reaction.includes(crate::model::ME)
+                && reaction.count() == 1)
     );
 }
 
@@ -411,4 +415,28 @@ fn read_messages_pages_through_a_channel_across_its_parts() {
     assert!(
         crate::effects::read_messages(&held, ("c_general", &str::to_owned), Some(0), None).is_err()
     );
+}
+
+/// A post's step says which channel it went to, as everyone sees it
+/// named: what the automatic status reads to say "Writing in #general".
+#[test]
+fn a_post_records_the_channel_it_went_to() {
+    let mut room = Room::demo().unwrap();
+    room.say("u_aria", "c_general", "where this went").unwrap();
+    let bytes = room.part_bytes(0).unwrap();
+    let mut doc = ui::automerge::AutoCommit::load(&bytes).unwrap();
+    let places: Vec<String> = ui::HistorySource::new()
+        .entries(&mut doc)
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .context
+                .as_ref()?
+                .facets
+                .iter()
+                .find(|facet| facet.key == tilo_actions::PLACE_FACET)
+                .map(|facet| facet.value.clone())
+        })
+        .collect();
+    assert!(places.iter().any(|place| place == "#general"), "{places:?}");
 }

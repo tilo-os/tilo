@@ -69,13 +69,18 @@ pub mod governance {
     pub const RESUME_BOT: &str = "resume-bot";
     /// Become a bot's installer, after reviewing its grant.
     pub const ADOPT_BOT: &str = "adopt-bot";
+    /// Choose the version of an app every member of the room runs: a
+    /// registry release, or a developer's own signed build. Every member's
+    /// desktop is to run it, and changes made with another version wait
+    /// until their author runs this one.
+    pub const INSTALL_APP: &str = "install-app";
     /// Start, end, restart or moderate one of the room's calls. A call is
     /// room governance (who may speak, who is denied), so no preset below
     /// the owner's holds it: the owner, and members the room grants it, run
     /// calls, and any member joins an active one.
     pub const CALL: &str = "call";
 
-    pub const ALL: [&str; 20] = [
+    pub const ALL: [&str; 21] = [
         INVITE,
         ADD_MEMBER,
         REMOVE_MEMBER,
@@ -95,6 +100,7 @@ pub mod governance {
         PAUSE_BOT,
         RESUME_BOT,
         ADOPT_BOT,
+        INSTALL_APP,
         CALL,
     ];
 
@@ -102,7 +108,13 @@ pub mod governance {
     /// person's own grants must allow them: an Ask there is no authority the
     /// person's confirmation could supply. Pausing is not among them, so a
     /// moderator can stop a misbehaving bot without being able to widen it.
-    pub const PRIVILEGED: [&str; 4] = [INSTALL_BOT, UNINSTALL_BOT, SET_BOT_APPEARANCE, ADOPT_BOT];
+    pub const PRIVILEGED: [&str; 5] = [
+        INSTALL_BOT,
+        UNINSTALL_BOT,
+        SET_BOT_APPEARANCE,
+        ADOPT_BOT,
+        INSTALL_APP,
+    ];
 
     #[must_use]
     pub fn is_privileged(action: &str) -> bool {
@@ -512,13 +524,123 @@ pub fn room_role_grants(room: &str, granted_by: &Subject) -> Vec<Grant> {
         .into_iter()
         .flat_map(|role| {
             role_preset(role, room).assign(
-                &format!("role:{}", role.name().to_ascii_lowercase()),
+                &role_grant_prefix(role),
                 &Subject::Role(role),
                 granted_by,
                 &Lifetime::UntilRevoked,
             )
         })
         .collect()
+}
+
+/// The id prefix of `role`'s built-in grants: `role:<role>`.
+fn role_grant_prefix(role: Role) -> String {
+    format!("role:{}", role.name().to_ascii_lowercase())
+}
+
+/// Whether `grant` is one of a built-in role's grants: given to the role
+/// itself under a `role:<role>:<index>` id. Those are the code's, from
+/// [`role_rules`]; a room's own adjustments to a role are grants under other
+/// ids and custom presets assign `preset:` ids, so neither is one.
+#[must_use]
+pub fn is_role_grant(grant: &Grant) -> bool {
+    let Subject::Role(role) = grant.subject else {
+        return false;
+    };
+    grant
+        .id
+        .as_str()
+        .strip_prefix(role_grant_prefix(role).as_str())
+        .and_then(|rest| rest.strip_prefix(':'))
+        .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// `grants` with each built-in role's grants as [`role_rules`] defines them
+/// now, so a role's rules have one definition and reach rooms written before
+/// they changed.
+///
+/// A role the room holds any built-in grant of gets exactly the role's
+/// current grants, on the room that grant names: a stored one the role still
+/// has is replaced by the current one in its place, keeping who gave it; one
+/// the role no longer has is dropped; one the role gained follows the role's
+/// last stored grant, given by whoever gave its first. A role the room holds
+/// none of stays absent. Every other grant stays as it is, in order. A room
+/// already current comes back unchanged.
+#[must_use]
+pub fn current_role_grants(grants: Vec<Grant>) -> Vec<Grant> {
+    struct Held {
+        role: Role,
+        current: Vec<Grant>,
+        placed: Vec<bool>,
+        last: usize,
+    }
+    let mut held: Vec<Held> = Vec::new();
+    let mut out: Vec<Option<Grant>> = Vec::with_capacity(grants.len());
+    for grant in grants {
+        if !is_role_grant(&grant) {
+            out.push(Some(grant));
+            continue;
+        }
+        let Subject::Role(role) = grant.subject else {
+            continue;
+        };
+        if !held.iter().any(|entry| entry.role == role) {
+            let Some(room) = grant.node.room_id() else {
+                out.push(Some(grant));
+                continue;
+            };
+            let current = role_preset(role, room).assign(
+                &role_grant_prefix(role),
+                &grant.subject,
+                &grant.granted_by,
+                &Lifetime::UntilRevoked,
+            );
+            held.push(Held {
+                role,
+                placed: vec![false; current.len()],
+                current,
+                last: 0,
+            });
+        }
+        let Some(entry) = held.iter_mut().find(|entry| entry.role == role) else {
+            continue;
+        };
+        entry.last = out.len();
+        let slot = entry
+            .current
+            .iter()
+            .zip(entry.placed.iter_mut())
+            .find(|(current, placed)| current.id == grant.id && !**placed);
+        match slot {
+            Some((current, placed)) => {
+                *placed = true;
+                out.push(Some(Grant {
+                    granted_by: grant.granted_by,
+                    ..current.clone()
+                }));
+            }
+            None => out.push(None),
+        }
+    }
+    let mut gained: Vec<(usize, Vec<Grant>)> = held
+        .into_iter()
+        .map(|entry| {
+            let missing = entry
+                .current
+                .into_iter()
+                .zip(entry.placed)
+                .filter(|(_, placed)| !placed)
+                .map(|(grant, _)| grant)
+                .collect();
+            (entry.last, missing)
+        })
+        .collect();
+    gained.sort_by_key(|(last, _)| std::cmp::Reverse(*last));
+    for (last, missing) in gained {
+        let at = last.saturating_add(1).min(out.len());
+        out.splice(at..at, missing.into_iter().map(Some));
+    }
+    out.into_iter().flatten().collect()
 }
 
 /// An agent's default delegation within the scope a person gives it: Read and

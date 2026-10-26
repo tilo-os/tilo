@@ -56,6 +56,10 @@ pub enum MenuItem {
         /// `Some` makes the row open a nested menu (with a chevron) instead
         /// of running `action`.
         submenu: Option<Vec<MenuItem>>,
+        /// The row's choice is confirmed before it runs, except that Shift
+        /// skips the question for what Undo takes back
+        /// ([`MenuItem::asking_first`]).
+        asks_first: bool,
     },
     Separator,
     /// A line of secondary text about the rows around it ("Hosted by
@@ -90,6 +94,7 @@ impl MenuItem {
             shortcut: None,
             detail: None,
             submenu: None,
+            asks_first: false,
         }
     }
 
@@ -171,6 +176,31 @@ impl MenuItem {
             *detail = Some(text.into());
         }
         self
+    }
+
+    /// Say that choosing this row asks before it goes ahead (Delete in a
+    /// message's menu), which Shift skips for what Undo takes back. The row
+    /// says so the way menus do: "Delete message…" while it will ask, and
+    /// "Delete message" while Shift is held and it will not.
+    #[must_use]
+    pub fn asking_first(mut self) -> Self {
+        if let MenuItem::Action { asks_first, .. } = &mut self {
+            *asks_first = true;
+        }
+        self
+    }
+
+    /// The row's label as it reads now: with the ellipsis of a choice that
+    /// asks first, unless Shift is held ([`shift_held`]).
+    pub fn shown_label(&self) -> Option<std::borrow::Cow<'_, str>> {
+        match self {
+            MenuItem::Action {
+                label,
+                asks_first: true,
+                ..
+            } if !shift_held() => Some(std::borrow::Cow::Owned(format!("{label}\u{2026}"))),
+            _ => self.label().map(std::borrow::Cow::Borrowed),
+        }
     }
 
     /// What the row shows at its trailing edge: its shortcut, else its
@@ -278,6 +308,29 @@ impl MenuItem {
 thread_local! {
     static CONTEXT_GESTURE: Cell<bool> = const { Cell::new(false) };
     static SHIFT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether the person holds Shift right now, as the window's last
+/// modifier change said. Shift is how a person skips a confirmation that
+/// Undo makes unnecessary: a menu row that asks first runs at once, and
+/// the host's question is not asked (see `action_palette`).
+#[must_use]
+pub fn shift_held() -> bool {
+    SHIFT.with(Cell::get)
+}
+
+/// The one rule of every confirmation a person is asked: Shift skips it,
+/// if and only if Undo takes the action back (`can_be_undone`, from the
+/// action's contract). What Undo cannot take back is asked, Shift or not.
+#[must_use]
+pub fn shift_skips_confirmation(can_be_undone: bool) -> bool {
+    can_be_undone && shift_held()
+}
+
+/// Say the person holds Shift, or not, as a window's modifier change does:
+/// for a host that learns it otherwise, and for tests.
+pub fn note_shift(held: bool) {
+    SHIFT.with(|shift| shift.set(held));
 }
 
 /// Observe `event` before its window dispatches it, so a menu it opens
@@ -599,6 +652,20 @@ impl ContextMenu {
         let mut trailing: f64 = 0.0;
         for item in &self.items {
             if let Some(label) = item.label() {
+                // Measured as it asks, the wider of its two forms.
+                let asking;
+                let label = if matches!(
+                    item,
+                    MenuItem::Action {
+                        asks_first: true,
+                        ..
+                    }
+                ) {
+                    asking = format!("{label}\u{2026}");
+                    asking.as_str()
+                } else {
+                    label
+                };
                 let (w, h) = text.measure_style(label, None, &style);
                 let check_width = if has_leading_gutter {
                     f64::from(theme.tokens.metrics.icon_sm + theme.tokens.spacing.s2)
@@ -1327,7 +1394,6 @@ impl ContextMenu {
             let row_height = self.item_height(idx);
             match item {
                 MenuItem::Action {
-                    label,
                     icon,
                     checked,
                     destructive,
@@ -1403,8 +1469,9 @@ impl ContextMenu {
                     } else {
                         label_x
                     };
+                    let shown = item.shown_label().unwrap_or_default();
                     let label = text_renderer.elide_to_width_style(
-                        label,
+                        &shown,
                         (self.rect.x1 - label_x - label_inset(theme) - self.trailing_width).max(1.0)
                             as f32,
                         &style,
@@ -1897,6 +1964,18 @@ impl Widget for ContextMenu {
                     });
                 if let Some(trailing) = item.trailing_text(self.platform) {
                     node.description = Some(trailing);
+                } else if matches!(
+                    item,
+                    MenuItem::Action {
+                        asks_first: true,
+                        ..
+                    }
+                ) {
+                    node.description = Some(if shift_held() {
+                        "Goes ahead at once; Undo takes it back".to_owned()
+                    } else {
+                        "Asks first; hold Shift to go ahead at once".to_owned()
+                    });
                 }
                 if let Some((_, menu)) = open_here
                     && let Some(nested) = Widget::accessibility(menu.as_ref())
@@ -1963,7 +2042,8 @@ pub struct MenuButton {
 impl crate::widget::Button {
     /// Make this button open `items` as a menu anchored to its own rect.
     #[must_use]
-    pub fn with_menu(self, items: Vec<MenuItem>) -> MenuButton {
+    pub fn with_menu(mut self, items: Vec<MenuItem>) -> MenuButton {
+        self.opens_menu = true;
         let request = std::rc::Rc::new(std::cell::Cell::new(false));
         let flag = std::rc::Rc::clone(&request);
         MenuButton {

@@ -45,6 +45,10 @@ use tilo_lock::MutexRecover as _;
 const IDLE: Duration = Duration::from_secs(30);
 /// The input a program declares to be told the room's members and roles.
 const ROOM_INPUT: &str = "room";
+/// The input a program declares to be told the workspace's own emoji: each
+/// name with its picture's content address, the picture kept in the
+/// content store its connectors read, so an op may attach it.
+const EMOJI_INPUT: &str = "emoji";
 /// How many dead letters an installation keeps, newest last.
 pub const DEAD_LETTERS_KEPT: usize = 200;
 
@@ -52,8 +56,11 @@ pub const DEAD_LETTERS_KEPT: usize = 200;
 pub struct InstalledBot {
     /// The installation's id; the bot acts as `bot:<installation>`.
     pub installation: String,
+    /// Where it was installed from: the directory entry it came from, or the
+    /// program file on this host when the room runs a program it ships.
     pub entry: String,
-    /// Its name, as the directory lists it.
+    /// Its name: the directory listing's, or the program's own when it is a
+    /// program file (a path names nobody).
     pub name: String,
     /// The program, canonical text.
     pub program: String,
@@ -61,6 +68,11 @@ pub struct InstalledBot {
     pub inputs: Map<String, Value>,
     /// When it was installed, ms since the epoch.
     pub installed_at_ms: i64,
+    /// The version it runs, as the room asked for it (empty for a program
+    /// file, whose text is what runs): a request for another one replaces
+    /// the program and keeps the installation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub release: String,
 }
 
 impl InstalledBot {
@@ -186,6 +198,8 @@ pub struct BotRunner {
     connectors: BTreeMap<String, Arc<ConnectorProcess>>,
     progress: Progress,
     state_file: PathBuf,
+    /// The emoji pictures already kept for the connectors, by address.
+    kept: Mutex<BTreeSet<String>>,
     /// How many more changes are published before the room is made to
     /// refuse one, for a test.
     #[cfg(test)]
@@ -275,6 +289,7 @@ impl BotRunner {
             connectors,
             progress,
             state_file,
+            kept: Mutex::new(BTreeSet::new()),
             #[cfg(test)]
             refuse_after: Mutex::new(None),
         })
@@ -447,8 +462,11 @@ impl BotRunner {
             // happens after it is installed, not the room's past. A new
             // part of a chain of an app the bot already follows (the next
             // part of a chat's messages) is what happened since: read whole.
+            // So is a record every app of the room opens (the workspace's
+            // emoji), which its first change creates.
             let part = ui::record::RecordId::parse(&record)
-                .is_some_and(|record| record.chain_part().is_some());
+                .is_some_and(|record| record.chain_part().is_some())
+                || collab_types::workspace_record(&app, &record).is_some();
             let since = match self.progress.records.get(&key).cloned() {
                 Some(since) => since,
                 None if part && self.follows_app(&app) => Vec::new(),
@@ -520,6 +538,20 @@ impl BotRunner {
         })
     }
 
+    /// The bot's own inputs, with each the host binds that its program
+    /// declares: the room's members, the workspace's emoji.
+    async fn host_inputs(&self) -> Result<Map<String, Value>, String> {
+        let declares = |name: &str| self.shortcut.inputs.iter().any(|input| input.name == name);
+        let mut inputs = self.bot.inputs.clone();
+        if declares(ROOM_INPUT) {
+            inputs.insert(ROOM_INPUT.to_owned(), self.room_input().await?);
+        }
+        if declares(EMOJI_INPUT) {
+            inputs.insert(EMOJI_INPUT.to_owned(), self.emoji_input().await?);
+        }
+        Ok(inputs)
+    }
+
     /// Run `firing` through the bot's door and publish what it changed.
     async fn fire(&self, firing: &Firing) -> Result<Fired, String> {
         // The replicas are brought up to the room's records first, so the
@@ -549,15 +581,7 @@ impl BotRunner {
                 }
             }
         }
-        let mut inputs = self.bot.inputs.clone();
-        if self
-            .shortcut
-            .inputs
-            .iter()
-            .any(|input| input.name == ROOM_INPUT)
-        {
-            inputs.insert(ROOM_INPUT.to_owned(), self.room_input().await?);
-        }
+        let mut inputs = self.host_inputs().await?;
         inputs.extend(firing.inputs.clone());
         let caller = Caller::bot(
             self.bot.installation.clone(),
@@ -666,6 +690,35 @@ impl BotRunner {
                 }),
         );
         Ok(serde_json::json!({ "members": members }))
+    }
+
+    /// The workspace's own emoji as the room holds them now: `{"emoji":
+    /// [{"name", "picture"}]}`, each picture its content address. The
+    /// pictures live in the emoji record itself, which a bot does not hold
+    /// (`HeldRecords`), so the host reads them and keeps each in the
+    /// content store of every connector the bot runs, where an op that
+    /// attaches it finds it.
+    pub(crate) async fn emoji_input(&self) -> Result<Value, String> {
+        use tilo_resource::Resource as _;
+        use tilo_workspace_emoji::{KIND, OWNER, WorkspaceEmoji};
+        let record = collab_types::workspace_record_id(KIND);
+        let Some(saved) = self.read(OWNER, &record).await? else {
+            return Ok(serde_json::json!({ "emoji": [] }));
+        };
+        let doc = AutoCommit::load(&saved).map_err(|error| error.to_string())?;
+        let emoji = WorkspaceEmoji::read(&doc).map_err(|error| error.to_string())?;
+        let mut listed = Vec::new();
+        for (name, emoji) in emoji.emoji.iter() {
+            let picture = blake3::hash(emoji.image.bytes()).to_hex().to_string();
+            if !self.kept.lock_recover().contains(&picture) {
+                for process in self.connectors.values() {
+                    process.keep(emoji.image.bytes())?;
+                }
+                self.kept.lock_recover().insert(picture.clone());
+            }
+            listed.push(serde_json::json!({ "name": name, "picture": picture }));
+        }
+        Ok(serde_json::json!({ "emoji": listed }))
     }
 
     /// The room's readable records of the apps the bot works with.
@@ -883,55 +936,72 @@ const ROOM_APP: &str = "so.tilo.desktop";
 /// `entry` is a program file on this host, or a directory entry fetched
 /// and verified from the first enabled registry at the `version` input.
 ///
+/// A kept installation from a program file runs the file as it is now: the
+/// host's image ships the program, and a fix to it (a grant the bot was
+/// missing) reaches a room installed by an older image. The installation,
+/// its name, its inputs and when it was installed stay; [`super::membership::keep_member`]
+/// then updates the room's row to the new program and its grants.
+///
 /// # Errors
 /// The program cannot be read, fetched, verified or parsed, or the
 /// installation cannot be kept.
 pub async fn install(
     dir: &Path,
     entry: &str,
+    inputs: Map<String, Value>,
+) -> Result<InstalledBot, String> {
+    install_release(dir, entry, inputs, None).await
+}
+
+/// [`install`], running `program` (a developer's own program for `entry`,
+/// at the `version` input) instead of the listed one when given. A kept
+/// installation asked for another version runs it from now on and stays
+/// the same bot: its installation, name, inputs and install time are kept,
+/// and [`super::membership::keep_member`] moves the room's row to the new
+/// program and its grants.
+///
+/// # Errors
+/// As [`install`].
+pub async fn install_release(
+    dir: &Path,
+    entry: &str,
     mut inputs: Map<String, Value>,
+    program: Option<&str>,
 ) -> Result<InstalledBot, String> {
     let kept = dir.join("bot.json");
+    let version = inputs.remove("version");
+    let release = version
+        .as_ref()
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    // A program given or shipped as a file on this host runs as it is now.
+    let local = match program {
+        Some(text) => Some(program_text(entry, text.as_bytes())),
+        None => Path::new(entry).is_file().then(|| program_file(entry)),
+    };
     if let Ok(bytes) = std::fs::read(&kept) {
-        let bot: InstalledBot = serde_json::from_slice(&bytes)
+        let mut bot: InstalledBot = serde_json::from_slice(&bytes)
             .map_err(|error| format!("{}: {error}", kept.display()))?;
         if bot.entry == entry {
+            // The name stays: the bot's device certificate carries it, and
+            // a renewal keeps the same certificate.
+            let program = match local {
+                Some(local) => local?.1,
+                None if bot.release == release => return Ok(bot),
+                None => fetch_listed(entry, &release).await?.1,
+            };
+            if bot.program != program || bot.release != release {
+                bot.program = program;
+                bot.release = release;
+                keep_installed(dir, &kept, &bot)?;
+            }
             return Ok(bot);
         }
     }
-    let version = inputs.remove("version");
-    let (name, program) = if Path::new(entry).is_file() {
-        let bytes = std::fs::read(entry).map_err(|error| format!("{entry}: {error}"))?;
-        let shortcut = tilo_automation::program::parse_program(&bytes)
-            .map_err(|error| format!("{entry}: {error}"))?;
-        let canonical = tilo_automation::program::canonical_bytes(&shortcut)
-            .map_err(|error| error.to_string())?;
-        let text = String::from_utf8(canonical).map_err(|error| error.to_string())?;
-        (shortcut.name, text)
-    } else {
-        let version = version
-            .as_ref()
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                format!("{entry}: a directory bot is installed at a version (version=…)")
-            })?
-            .to_owned();
-        let entry_id = entry.to_owned();
-        let listed = tokio::task::spawn_blocking(move || {
-            let registries = app_cli::config::load_registries();
-            let registry = registries
-                .enabled()
-                .next()
-                .ok_or_else(|| "no registry is enabled on this host".to_owned())?;
-            tilo_bot_directory::fetch_listed_bot(registry, &entry_id, &version)
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())??;
-        (
-            listed.entry.name.resolve("en").unwrap_or(entry).to_owned(),
-            listed.program_text,
-        )
+    let (name, program) = match local {
+        Some(local) => local?,
+        None => fetch_listed(entry, &release).await?,
     };
     let bot = InstalledBot {
         installation: uuid::Uuid::new_v4().to_string(),
@@ -940,11 +1010,59 @@ pub async fn install(
         program,
         inputs,
         installed_at_ms: tilo_clock::unix_now_ms_i64(),
+        release,
     };
-    std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-    let bytes = serde_json::to_vec_pretty(&bot).map_err(|error| error.to_string())?;
-    tilo_files::native::atomic::write(&kept, &bytes).map_err(|error| error.to_string())?;
+    keep_installed(dir, &kept, &bot)?;
     Ok(bot)
+}
+
+/// The name and program of directory entry `entry` at `version`, fetched
+/// and verified from the first enabled registry.
+async fn fetch_listed(entry: &str, version: &str) -> Result<(String, String), String> {
+    if version.is_empty() {
+        return Err(format!(
+            "{entry}: a directory bot is installed at a version (version=…)"
+        ));
+    }
+    let version = version.to_owned();
+    let entry_id = entry.to_owned();
+    let listed = tokio::task::spawn_blocking(move || {
+        let registries = app_cli::config::load_registries();
+        let registry = registries
+            .enabled()
+            .next()
+            .ok_or_else(|| "no registry is enabled on this host".to_owned())?;
+        tilo_bot_directory::fetch_listed_bot(registry, &entry_id, &version)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok((
+        listed.entry.name.resolve("en").unwrap_or(entry).to_owned(),
+        listed.program_text,
+    ))
+}
+
+/// The name and canonical program text of the program file `entry`.
+fn program_file(entry: &str) -> Result<(String, String), String> {
+    let bytes = std::fs::read(entry).map_err(|error| format!("{entry}: {error}"))?;
+    program_text(entry, &bytes)
+}
+
+/// The name and canonical text of the program `bytes` for `entry`.
+fn program_text(entry: &str, bytes: &[u8]) -> Result<(String, String), String> {
+    let shortcut = tilo_automation::program::parse_program(bytes)
+        .map_err(|error| format!("{entry}: {error}"))?;
+    let canonical =
+        tilo_automation::program::canonical_bytes(&shortcut).map_err(|error| error.to_string())?;
+    let text = String::from_utf8(canonical).map_err(|error| error.to_string())?;
+    Ok((shortcut.name, text))
+}
+
+fn keep_installed(dir: &Path, kept: &Path, bot: &InstalledBot) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    let bytes = serde_json::to_vec_pretty(bot).map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write(kept, &bytes).map_err(|error| error.to_string())
 }
 
 /// The worker binary of connector `app_id`: the one the operator named,
@@ -1016,14 +1134,15 @@ pub fn has_connector_secret(app_id: &str, purpose: &'static str) -> bool {
 
 /// What a host gives the connectors its bots listen to: where each worker
 /// program is, the blobs they fetch and publish (served to the room's
-/// members once the first connector runs), and where avatars of authors a
-/// bot bridged out are published.
+/// members once the first connector runs), and what the host serves
+/// publicly that a bridge's posts point at (avatars of authors it bridged
+/// out, links to the room's resources).
 #[derive(Clone)]
 pub struct ConnectorHost {
     /// Worker programs by connector, where the default place is not used.
     pub workers: BTreeMap<String, PathBuf>,
-    /// The public URL of the avatars a bridge publishes, if any.
-    pub avatars_url: Option<String>,
+    /// What the host serves publicly for a bridge's posts.
+    pub public: super::discord::Served,
     blobs: Arc<FsBlobs>,
     served: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -1033,11 +1152,11 @@ impl ConnectorHost {
     pub fn new(
         workers: BTreeMap<String, PathBuf>,
         blobs: FsBlobs,
-        avatars_url: Option<String>,
+        public: super::discord::Served,
     ) -> Self {
         Self {
             workers,
-            avatars_url,
+            public,
             blobs: Arc::new(blobs),
             served: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }

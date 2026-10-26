@@ -8,6 +8,11 @@
 # right word for a terminal session, not for the power menu).
 
 [[term]]
+reason = "Everything done on someone's behalf is done in a task, so a person or an app is named through the task it worked in; an agent is not a second actor beside it."
+en = { use = "task", avoid = ["agent", "agents"], keys = "^history-(?:actor|work)" }
+de = { use = "Aufgabe", avoid = ["Agent", "Agenten"], keys = "^history-(?:actor|work)" }
+
+[[term]]
 reason = "The secret that unlocks an account is the same on the greeter, the lock screen, Settings and onboarding."
 en = { use = "Password", avoid = ["Passcode", "Passcodes", "pass code"] }
 de = { use = "Passwort", avoid = ["Passcode", "Kenncode", "Zugangscode"] }

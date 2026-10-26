@@ -1,0 +1,5 @@
+Subject: You're off the {{workspace}} wait list
+
+{{email}} is off the wait list for {{workspace}}, and nothing of it is kept.
+
+Changed your mind? Put it back on at {{door}}

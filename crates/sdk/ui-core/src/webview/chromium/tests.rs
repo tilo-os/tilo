@@ -1386,6 +1386,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                 element: "d2e7".into(),
                 text: "ada@example.test".into(),
                 secret: false,
+                frame: None,
             },
         };
         assert!(command_within_limits(&command));
@@ -1398,12 +1399,13 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
         for invalid in [
             WebViewCommand::Page {
                 request_id: 0,
-                request: PageRequest::Outline,
+                request: PageRequest::Outline { frame: None },
             },
             WebViewCommand::Page {
                 request_id: 5,
                 request: PageRequest::Click {
                     element: "button[type=submit]".into(),
+                    frame: None,
                 },
             },
             WebViewCommand::Page {
@@ -1414,6 +1416,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                         key: "NotAKey".into(),
                         modifiers: crate::webview::KeyModifiers::default(),
                     },
+                    frame: None,
                 },
             },
         ] {
@@ -1447,7 +1450,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
         let unavailable = UnavailableEngine::new("missing runtime".into());
         unavailable.send(WebViewCommand::Page {
             request_id: 3,
-            request: PageRequest::Outline,
+            request: PageRequest::Outline { frame: None },
         });
         assert_eq!(
             unavailable.drain_events(),
@@ -1463,6 +1466,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
             request: PageRequest::Submit {
                 element: "not a ref".into(),
                 cross_origin: false,
+                frame: None,
             },
         });
         let answered = engine.drain_events().into_iter().any(|event| {

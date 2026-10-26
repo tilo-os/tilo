@@ -22,6 +22,7 @@ AREAS = {
     "basics": "Basics: hardware controls, keyboard, displays",
     "agent": "Agent door: the in-session MCP path",
     "input": "Input fidelity: real device descriptors, layouts, touchpad",
+    "secrets": "Security and identity: secret custody",
 }
 
 
@@ -430,6 +431,62 @@ def session_log_mark(ctx) -> int:
     return int(digits[0]) if digits else 0
 
 
+# The compositor warns with this line, its phase timings attached, whenever the work
+# it does before a paint holds input up.
+PUMP_STALL = "pre-paint pump"
+
+
+def parse_cpu_ticks(stat: str) -> tuple[int, int] | None:
+    """(total, steal) jiffies of all CPUs from `/proc/stat`'s first line."""
+    for line in stat.splitlines():
+        parts = line.split()
+        if parts and parts[0] == "cpu":
+            values = [int(v) for v in parts[1:9] if v.isdigit()]
+            if len(values) < 8:
+                return None
+            return sum(values), values[7]
+    return None
+
+
+def cpu_ticks(ctx) -> tuple[int, int] | None:
+    """The guest's (total, steal) CPU jiffies now; `steal_percent` compares two."""
+    return parse_cpu_ticks(ctx.vm.exec("head -n 1 /proc/stat", check=False) or "")
+
+
+def steal_percent(before: tuple[int, int] | None, after: tuple[int, int] | None) -> float | None:
+    """The share of the guest's CPU time the host took (steal) between two readings."""
+    if not before or not after:
+        return None
+    total = after[0] - before[0]
+    if total <= 0:
+        return None
+    return round(100.0 * (after[1] - before[1]) / total, 1)
+
+
+def pump_lines_after(ctx, mark: int) -> list[str]:
+    """The compositor's pre-paint pump stall lines since session-log line `mark`."""
+    out = ctx.vm.exec(f'tail -n +{mark + 1} "{SESSION_LOG}" 2>/dev/null '
+                      f'| grep -a "{PUMP_STALL}"; true', check=False) or ""
+    return [line.strip() for line in out.splitlines() if PUMP_STALL in line]
+
+
+def frame_pacing_evidence(ctx, check_id: str, log_mark: int, cpu_before) -> str:
+    """What a failed frame-pacing scenario leaves to tell its stalls apart: the
+    compositor's per-phase pump breakdown for every pump that held input up since
+    `log_mark` (all of them in `<check_id>-pump.log`) and the share of the guest's CPU
+    the host took meanwhile. A sentence fragment for the failure message."""
+    steal = steal_percent(cpu_before, cpu_ticks(ctx))
+    lines = pump_lines_after(ctx, log_mark)
+    ctx.write(f"{check_id}-pump.log", "\n".join(lines) + "\n")
+    steal_text = "unreadable" if steal is None else f"{steal}%"
+    if not lines:
+        pumps = "no pre-paint pump stall line in the session log"
+    else:
+        shown = "; ".join(line[-320:] for line in lines[-3:])
+        pumps = f"{len(lines)} pre-paint pump stall line(s), the last: {shown}"
+    return f" [guest CPU steal over the scenario {steal_text}; {pumps}; {check_id}-pump.log has them all]"
+
+
 def switch_lines_after(ctx, mark: int) -> list[dict]:
     return parse_switch_lines(ctx.vm.exec(
         f'tail -n +{mark + 1} "{SESSION_LOG}" 2>/dev/null | grep -a "WORKSPACE-SWITCH"; true', check=False))
@@ -543,6 +600,18 @@ def has_cpu(rows: list[dict]) -> bool:
     return any(isinstance(r.get("cpu_us"), int) for r in rows)
 
 
+def own_cpu_us(r: dict):
+    """The loop thread's CPU on tick `r` less what it spent answering this harness on
+    the test-control socket (`testctl_cpu_us`): a request lands in whichever tick runs
+    when it arrives, and a state dump is the harness's cost, not the session's. `None`
+    where the trace has no `cpu_us`."""
+    cpu = r.get("cpu_us")
+    if not isinstance(cpu, int):
+        return None
+    harness = r.get("testctl_cpu_us")
+    return max(0, cpu - harness) if isinstance(harness, int) else cpu
+
+
 def _tick_walls(rows: list[dict]):
     """(tick, wall time outside its park) for each tick with a successor: a row's
     `period_us` runs from the previous tick's start, so it holds the previous tick's
@@ -560,7 +629,7 @@ def frame_stats(rows: list[dict]) -> dict:
     descheduled or blocked."""
     painted = [r for r in rows if r.get("painted") == 1]
     work = [wall for r, wall in _tick_walls(rows) if r.get("painted") == 1]
-    cpu = [r["cpu_us"] for r in painted if isinstance(r.get("cpu_us"), int)]
+    cpu = [c for c in (own_cpu_us(r) for r in painted) if c is not None]
     periods = [r["period_us"] for r in painted if r["period_us"] > 0]
     latency = [r["input_latency_us"] for r in rows if isinstance(r.get("input_latency_us"), int)]
     blocked = [r for r in rows if r.get("backpressured") == 1]
@@ -601,9 +670,9 @@ def tick_phases(r):
     if r is None:
         return None
     phases = {k[:-3] + "_ms": _ms(r[k]) for k in ("input_us", "pump_us", "layout_us", "scene_us",
-                                                  "submit_us", "clients_us")
+                                                  "submit_us", "clients_us", "testctl_us")
               if isinstance(r.get(k), int)}
-    cpu = _ms(r["cpu_us"]) if isinstance(r.get("cpu_us"), int) else None
+    cpu = _ms(own_cpu_us(r))
     return {"seq": r.get("seq"), "cpu_ms": cpu, **phases, "input_step": r.get("input_step") or "",
             "paint_reasons": r.get("paint_reasons") or ""}
 
@@ -655,13 +724,13 @@ def transition_stats(rows: list[dict]) -> dict:
             if prev_submit is not None:
                 value = max(0, min(x["deadline_late_us"], submit - max(prev_submit, ready or 0)))
                 late.append(value)
-                if isinstance(x.get("cpu_us"), int):
-                    late_cpu.append(min(value, x["cpu_us"]))
+                if own_cpu_us(x) is not None:
+                    late_cpu.append(min(value, own_cpu_us(x)))
             prev_submit, ready = submit, None
         elif x.get("backpressured") == 1 and nxt is not None:
             ready = nxt["start_us"]
-    cpu = [r["cpu_us"] for r in rows if isinstance(r.get("cpu_us"), int)]
-    worst = max((r for r in rows if isinstance(r.get("cpu_us"), int)), key=lambda r: r["cpu_us"],
+    cpu = [c for c in (own_cpu_us(r) for r in rows) if c is not None]
+    worst = max((r for r in rows if own_cpu_us(r) is not None), key=own_cpu_us,
                 default=None)
     # The longest tick by wall time outside its park, and how much of that was CPU.
     longest = max(((wall, r) for r, wall in walls), key=lambda t: t[0], default=(None, {}))
@@ -696,7 +765,7 @@ def transition_stats(rows: list[dict]) -> dict:
         "cpu_ms_p95": _ms(percentile(cpu, 95)),
         "cpu_ms_max": _ms(max(cpu) if cpu else None),
         "longest_tick_ms": _ms(longest[0]),
-        "longest_tick_cpu_ms": _ms(longest[1].get("cpu_us") if isinstance(longest[1].get("cpu_us"), int) else None),
+        "longest_tick_cpu_ms": _ms(own_cpu_us(longest[1])),
         "input_to_first_frame_ms": input_ms,
         "input_to_first_frame_compositor_ms": input_compositor_ms,
         "present_interval_ms_p50": _ms(percentile(gaps, 50)),
@@ -726,6 +795,26 @@ def region_stats(img, rect) -> dict:
     crop = img.crop((x, y, min(img.width, x + max(1, w)), min(img.height, y + max(1, h)))).convert("L")
     st = ImageStat.Stat(crop)
     return {"mean": round(st.mean[0] / 255, 3), "stddev": round(st.stddev[0] / 255, 3)}
+
+
+def region_ink(img, rect, inset: int = 2, spread: float = 0.08) -> int:
+    """Pixels of `rect` (x, y, w, h), `inset` px in from its edges, whose luminance is more
+    than `spread` (0-1) away from the region's most common one: what a client drew on its
+    background. A flat fill has none; a terminal's one-line prompt has a few hundred."""
+    x, y, w, h = (int(round(v)) for v in rect)
+    box = (max(0, x + inset), max(0, y + inset),
+           min(img.width, x + w - inset), min(img.height, y + h - inset))
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return 0
+    return histogram_ink(img.crop(box).convert("L").histogram(), spread)
+
+
+def histogram_ink(hist, spread: float = 0.08) -> int:
+    """Of a 256-bin luminance histogram, the pixels more than `spread` (0-1) away from
+    its most common value."""
+    mode = max(range(len(hist)), key=hist.__getitem__)
+    reach = spread * 255
+    return sum(count for value, count in enumerate(hist) if abs(value - mode) > reach)
 
 
 def region_diff(a, b, rect) -> float:

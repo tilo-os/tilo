@@ -32,6 +32,7 @@ pub(crate) fn mapping(kind: MappedKind, tilo: &str, discord: &str) -> Mapping {
         origin: Origin::Tilo,
         persona: None,
         root: None,
+        picture: None,
     }
 }
 

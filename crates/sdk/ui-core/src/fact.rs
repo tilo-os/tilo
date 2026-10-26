@@ -26,7 +26,7 @@
 //! use tilo_ui::time::{SystemTime, UNIX_EPOCH};
 //!
 //! let at = UNIX_EPOCH + Duration::from_secs(120);
-//! let memory = Measured::measured(
+//! let memory = Measured::known(
 //!     Measure::new("Memory in use").unit("GiB"),
 //!     "8.6",
 //!     "this device",
@@ -104,7 +104,7 @@ impl Measured {
     /// `expected` is how long the reading is good for before it is stale;
     /// `None` means the app has no interval to judge it by.
     #[must_use]
-    pub fn measured(
+    pub fn known(
         measure: Measure,
         value: impl Into<String>,
         source: impl Into<String>,
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn a_measurement_keeps_its_measure_source_and_age() {
-        let fact = Measured::measured(
+        let fact = Measured::known(
             Measure::new("Memory in use").unit("GiB"),
             "8.6",
             "this device",
@@ -301,14 +301,14 @@ mod tests {
 
     #[test]
     fn two_measures_with_the_same_word_are_still_different_claims() {
-        let card = Measured::measured(
+        let card = Measured::known(
             Measure::new("Memory in use").unit("GiB"),
             "8.6",
             "system information service",
             at(100),
             None,
         );
-        let row = Measured::measured(
+        let row = Measured::known(
             Measure::new("Memory (with children)").unit("GiB"),
             "10.4",
             "process table",

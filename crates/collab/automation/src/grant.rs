@@ -38,6 +38,122 @@ pub fn step_node(
         .action(address.action.clone())
 }
 
+/// [`step_node`] of a field edit acting at `at` below its resource (as
+/// [`edit_reach`] reads it): the node the room decides the edit at.
+#[must_use]
+pub fn step_node_at(
+    room: Option<&str>,
+    app_id: &str,
+    resource_kind: &str,
+    address: &ActionAddress,
+    at: &TreePath,
+) -> TreePath {
+    let base = match room {
+        Some(room) => TreePath::room(room),
+        None => TreePath::root().any(Level::Room),
+    };
+    base.app(app_id)
+        .kind(resource_kind)
+        .resource(address.resource.clone())
+        .joined(at)
+        .action(address.action.clone())
+}
+
+/// The field edit every record publishes, and its parameter holding the
+/// edit (`{path, op, ...}`).
+pub const FIELD_EDIT: &str = "field-edit";
+pub const EDIT_PARAM: &str = "edit";
+
+/// One step of a field edit's path as its binding shows it: `field`,
+/// `item`, `key` or `cell`, and its name when the program names it.
+type EditStep = (String, Option<String>);
+
+fn named(binding: &Binding) -> Option<String> {
+    match binding {
+        Binding::Literal(serde_json::Value::String(name)) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// The steps of the path a field edit's `edit` argument shows: a literal
+/// edit, or an [`Object`](Binding::Object) whose `path` is a literal or a
+/// [`List`](Binding::List) of one-member steps. `None` when its shape is
+/// only known when it runs.
+fn edit_steps(edit: &Binding) -> Option<Vec<EditStep>> {
+    let step_of_value = |step: &serde_json::Value| -> Option<EditStep> {
+        let (kind, id) = step.as_object()?.iter().next()?;
+        let id = match id {
+            serde_json::Value::String(id) => Some(id.clone()),
+            // A cell names its row and column; both are ids, never fields.
+            _ => None,
+        };
+        Some((kind.clone(), id))
+    };
+    let path = match edit {
+        Binding::Literal(edit) => {
+            return edit
+                .get("path")?
+                .as_array()?
+                .iter()
+                .map(step_of_value)
+                .collect();
+        }
+        Binding::Object(members) => members.get("path")?,
+        _ => return None,
+    };
+    match path {
+        Binding::Literal(serde_json::Value::Array(steps)) => {
+            steps.iter().map(step_of_value).collect()
+        }
+        Binding::List(steps) => steps
+            .iter()
+            .map(|step| match step {
+                Binding::Literal(step) => step_of_value(step),
+                Binding::Object(members) if members.len() == 1 => {
+                    let (kind, id) = members.iter().next()?;
+                    Some((kind.clone(), named(id)))
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => None,
+    }
+}
+
+/// Where below its resource a field edit bound as `edit` acts, as the room
+/// decides it (`[item ›] field… `, the collection holding an item not a
+/// node of its own); an item or map key the program leaves to the run is
+/// any item or key. `None` when a field it changes is not named in the
+/// program: then only a grant over every field edit of the resource
+/// covers it.
+#[must_use]
+pub fn edit_reach(edit: &Binding) -> Option<TreePath> {
+    let steps = edit_steps(edit)?;
+    let mut tree = TreePath::root();
+    let mut item = false;
+    let mut steps = steps.iter().peekable();
+    while let Some((kind, id)) = steps.next() {
+        let next_is_item = matches!(steps.peek(), Some((next, _)) if next == "item");
+        tree = match (kind.as_str(), id) {
+            ("field", _) if !item && next_is_item => tree,
+            ("item", id) if !item => {
+                item = true;
+                match id {
+                    Some(id) => tree.item(id.clone()),
+                    None => tree.any(Level::Item),
+                }
+            }
+            ("field" | "key" | "item", Some(name)) => tree.push(Level::Field, name.clone()),
+            // An item or key chosen when the edit runs: any of them.
+            ("key" | "item", None) => tree.any(Level::Field),
+            ("cell", _) => tree.any(Level::Field).any(Level::Field),
+            // A field named only when it runs could be any field.
+            _ => return None,
+        };
+    }
+    Some(tree)
+}
+
 /// A rule naming one action on every room's matching resource, as a
 /// shortcut's grant usually does.
 #[must_use]
@@ -148,6 +264,12 @@ impl Permission {
     /// weaker ones. It reaches the action anywhere in the resource: a record
     /// holding the kind's resources as items (a chat's workspace) publishes
     /// it on the item, and every member decides the change there.
+    ///
+    /// A field edit is granted anywhere in the resource too, even where its
+    /// program names the field: a door publishes and admits a field edit at
+    /// the resource, before it reads the edit's path, so a rule reaching
+    /// only one field would never be offered. What the edit may change is
+    /// the record's to say: its read-only fields take no field edit.
     #[must_use]
     pub fn rule(&self) -> Rule {
         let kinds = ActionKind::ALL
@@ -161,14 +283,18 @@ impl Permission {
         )
     }
 
-    /// Anywhere in the resources it reaches, in any room.
-    fn reached(&self) -> TreePath {
+    /// The resources it reaches, in any room.
+    fn resources(&self) -> TreePath {
         let app = TreePath::root().any(Level::Room).app(self.app_id.clone());
         match &self.reach {
             Reach::Resource(resource) => app.any(Level::Kind).resource(resource.clone()),
             Reach::Kind(kind) => app.kind(kind.clone()).any(Level::Resource),
         }
-        .rest()
+    }
+
+    /// Anywhere in the resources it reaches, in any room.
+    fn reached(&self) -> TreePath {
+        self.resources().rest()
     }
 }
 
@@ -303,7 +429,7 @@ pub fn trigger_rules(triggers: &[crate::TriggerSpec]) -> Vec<Rule> {
 
 /// The action a bot settling an outbox entry takes: the entry's result is
 /// a field edit of the resource that queued it.
-pub const SETTLE_ACTION: &str = "field-edit";
+pub const SETTLE_ACTION: &str = FIELD_EDIT;
 
 /// The field a connector's records keep their outbox under.
 pub const OUTBOX_FIELD: &str = "outbox";
@@ -595,6 +721,7 @@ mod tests {
                     appearance: None,
                 },
             )],
+            step_timeout_secs: None,
             output: None,
             grant: vec![post, delete.clone()],
             triggers: vec![],
@@ -647,11 +774,91 @@ mod tests {
                     appearance: None,
                 },
             )],
+            step_timeout_secs: None,
             output: None,
             grant: settles,
             triggers: vec![],
             saved_by: None,
         };
         assert!(unused_rules(&shortcut).is_empty());
+    }
+
+    /// A field edit whose program names the field it changes is granted
+    /// that field of any item, and decided where the room decides it.
+    #[test]
+    fn a_field_edit_is_granted_where_the_doors_decide_it() {
+        use std::collections::BTreeMap;
+
+        let literal = Binding::Literal;
+        let one = |kind: &str, binding: Binding| {
+            Binding::Object(BTreeMap::from([(kind.to_owned(), binding)]))
+        };
+        let react = Binding::Object(BTreeMap::from([
+            (
+                "path".to_owned(),
+                Binding::List(vec![
+                    one("field", literal("messages".into())),
+                    one("item", Binding::Var("item/message".into())),
+                    one("field", literal("reactions".into())),
+                ]),
+            ),
+            ("op".to_owned(), literal("react".into())),
+            ("emoji".to_owned(), Binding::Var("item/emoji".into())),
+        ]));
+        let step = |edit: Binding| {
+            crate::Step::new(
+                "edit",
+                crate::StepKind::Invoke {
+                    action: ActionKey::new(NOTES, "notes.chat", FIELD_EDIT),
+                    resource: crate::Selector::FirstOfKind("notes.chat".into()),
+                    args: BTreeMap::from([(EDIT_PARAM.to_owned(), edit)]),
+                    appearance: None,
+                },
+            )
+        };
+        let catalog = ActionCatalog::new(Vec::new());
+        let grant = rules(&least_privilege(&[step(react)], &catalog));
+        assert_eq!(
+            grant
+                .iter()
+                .map(|rule| rule.node.to_string())
+                .collect::<Vec<_>>(),
+            ["room:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"]
+        );
+
+        // The room decides a run's edit at its concrete path.
+        let decided = |path: serde_json::Value| {
+            let at = edit_reach(&literal(serde_json::json!({"path": path, "op": "react"})))
+                .expect("a literal path names its fields");
+            let node = step_node_at(
+                Some("room"),
+                NOTES,
+                "notes.chat",
+                &ActionAddress::new("chat", FIELD_EDIT),
+                &at,
+            );
+            grant_answer(&grant, &node, ActionKind::Undoable).answer
+        };
+        assert_eq!(
+            decided(
+                serde_json::json!([{"field": "messages"}, {"item": "m1"}, {"field": "reactions"}])
+            ),
+            Answer::Allow
+        );
+        // An edit bound whole when it runs is granted the same.
+        let whole = rules(&least_privilege(
+            &[step(Binding::Var("item/edit".into()))],
+            &catalog,
+        ));
+        assert_eq!(
+            whole[0].node.to_string(),
+            "room:*/app:so.tilo.notes/kind:notes.chat/resource:*/**/action:field-edit"
+        );
+        // So does one whose field is chosen when it runs.
+        let bound_field = Binding::Object(BTreeMap::from([(
+            "path".to_owned(),
+            Binding::List(vec![one("field", Binding::Var("item/field".into()))]),
+        )]));
+        assert_eq!(edit_reach(&bound_field), None);
     }
 }

@@ -83,6 +83,8 @@ pub struct PanelsInput<'a> {
     /// The new branch name typed so far.
     pub worktree_fields: [&'a str; 3],
     pub branch_name: &'a str,
+    /// The local branch under the keyboard, if the keyboard is on this page.
+    pub selected: Option<usize>,
 }
 
 /// What one paint produced.
@@ -103,6 +105,8 @@ struct SectionRows<'a> {
     title: String,
     rows: Vec<RowSpec<'a>>,
     form: bool,
+    /// Rows the keyboard can choose (the local branches).
+    selectable: bool,
     /// Stands in the leading column of a two-column page.
     leading: bool,
     worktree_form: bool,
@@ -250,6 +254,7 @@ fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
             title: t("git-section-branches"),
             rows: local,
             form: can_create,
+            selectable: true,
             leading: true,
             worktree_form: false,
         },
@@ -257,6 +262,7 @@ fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
             title: t("git-section-remote-branches"),
             rows: remote,
             form: false,
+            selectable: false,
             leading: true,
             worktree_form: false,
         },
@@ -281,6 +287,7 @@ fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
                 }))
                 .collect(),
             form: can_create,
+            selectable: false,
             leading: false,
             worktree_form: true,
         },
@@ -288,6 +295,7 @@ fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
             title: t("git-section-tags"),
             rows: tags,
             form: false,
+            selectable: false,
             leading: false,
             worktree_form: false,
         },
@@ -295,6 +303,7 @@ fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
             title: t("git-section-stashes"),
             rows: stashes,
             form: false,
+            selectable: false,
             leading: false,
             worktree_form: false,
         },
@@ -302,6 +311,7 @@ fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
             title: t("git-section-remotes"),
             rows: remotes,
             form: false,
+            selectable: false,
             leading: false,
             worktree_form: false,
         },
@@ -466,6 +476,18 @@ fn paint_section(
             continue;
         }
         let hovered = pointer.is_some_and(|p| rect.contains(p));
+        let chosen = section.selectable && input.selected == Some(i);
+        if chosen {
+            ui::chrome::paint_row_selection(
+                ctx.scene,
+                ctx.transform,
+                rect,
+                ui::chrome::SelectionState::new(true, hovered, false),
+                theme.tokens.colors.surfaces.content,
+                theme,
+            );
+            face = face.selected(true);
+        }
         let interaction = Interaction {
             hovered,
             ..Interaction::default()
@@ -603,6 +625,7 @@ mod tests {
                 pointer: None,
                 can_create: true,
                 branch_name: "",
+                selected: None,
                 worktree_fields: ["", "", "HEAD"],
             },
         );

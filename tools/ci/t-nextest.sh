@@ -70,28 +70,6 @@ if tests tilo-pdf pdf-viewer tilo-thumbnail; then
     export TILO_REQUIRE_PDF_SANDBOX=$pdf_sandbox
 fi
 
-# The imager's native syscall tests need a cache on a qualified filesystem
-# (ext4, XFS or Btrfs), never an overlay or tmpfs: the build directory where it
-# is one, else the job's scratch TMPDIR, else /var/tmp, which t keeps on the
-# node's volume itself (it mounts the build directory and /tmp as overlays).
-# A build or a check of the imager runs no test: it needs no such cache.
-if tests imager && [[ ${2:-} == nextest || ${2:-} == test ]] \
-    && [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
-    qualified() { case $(stat -f -c %t "$1") in ef53|58465342|9123683e) return 0 ;; esac; return 1; }
-    for candidate in "${CARGO_TARGET_DIR:-$root/target}/ci/imager-test-fs" "${TMPDIR:-/tmp}/imager-test-fs" /var/tmp/imager-test-fs; do
-        mkdir -p "$candidate"
-        chmod 700 "$candidate"
-        if qualified "$candidate"; then
-            export TILO_IMAGER_TEST_CACHE_ROOT=$candidate
-            break
-        fi
-    done
-    if [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
-        echo "t-nextest.sh: none of the build directory, TMPDIR and /var/tmp is on ext4, XFS or Btrfs, which the imager's cache tests need" >&2
-        exit 1
-    fi
-fi
-
 # An agent's host answers video renders in the `tilo-video-render` helper, which no
 # package depends on; named explicitly, it is found also where t runs an archive of
 # test binaries away from the build directory.

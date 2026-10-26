@@ -74,6 +74,8 @@ pub mod publication_per_keystroke;
 #[cfg(feature = "test-support")]
 #[path = "reactivity.rs"]
 pub mod reactivity;
+#[path = "record_reactions.rs"]
+pub mod record_reactions;
 #[path = "references.rs"]
 pub mod references;
 #[path = "render_view.rs"]
@@ -100,3 +102,5 @@ pub mod unreadable;
 pub mod window_content;
 #[path = "window_view.rs"]
 pub mod window_view;
+#[path = "workspace_records.rs"]
+pub mod workspace_records;

@@ -113,8 +113,9 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
     fb.paint_settled()
 }
 
-/// Paint until the adopted client has latched as presented and its opening
-/// cross-fade is over, so samples measure the client and not the card.
+/// Paint until the adopted client has latched as presented and its first
+/// frame's cross-fade in is over, so samples measure the client and not the
+/// placeholder.
 fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
     let _ = frame(fb);
     let deadline = tilo_test_env::hang_deadline();
@@ -124,7 +125,7 @@ fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
             store().publish_rgba(surface_id, &solid(bw, bh, CLIENT), bw, bh);
             published = true;
         }
-        let _ = fb.any_tile_opening();
+        let _ = fb.any_tile_arriving();
         let _ = frame(fb);
         if published && store().is_presented(surface_id) {
             break;
@@ -323,8 +324,14 @@ fn the_lock_screen_is_never_captured() {
         size: (f64::from(W), f64::from(H)),
         scale: 1.0,
     }];
+    let prompt = shell::compositor::lock_controller::LockPrompt::new();
+    prompt
+        .borrow_mut()
+        .reject(shell::compositor::lock_controller::refusal_line(
+            "Incorrect password",
+        ));
     let view = LockView {
-        password_len: 6,
+        prompt: Some(&prompt),
         error: Some("Incorrect password"),
         clock: "13:37",
         date: "Friday, 11 July",

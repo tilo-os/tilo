@@ -187,6 +187,8 @@ impl LiveState {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
+            following: None,
             seq: 0,
             sent_at_ms: 0,
             focus: None,

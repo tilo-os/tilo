@@ -23,6 +23,7 @@ use chat::resource::ChatShell;
 use discord::resource::Discord;
 use discord::{APP_ID, Guild, KIND};
 use serde_json::{Value, json};
+use tilo_automation::grant::{EDIT_PARAM, FIELD_EDIT};
 use tilo_automation::{
     ActorFilter, Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec,
 };
@@ -110,6 +111,29 @@ fn message(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Ste
     )
 }
 
+/// The framework's `op` field edit (`react` or `unreact`) of the reactions
+/// of the loop item's message, with its emoji, as the Discord member it
+/// shows. The path is spelled out so every check decides the step where the
+/// room does, at the message's reactions.
+fn reaction(id: &str, op: &str) -> Step {
+    let step = |kind: &str, binding: Binding| {
+        Binding::Object(BTreeMap::from([(kind.to_owned(), binding)]))
+    };
+    let edit = Binding::Object(BTreeMap::from([
+        (
+            "path".to_owned(),
+            Binding::List(vec![
+                step("field", text("messages")),
+                step("item", item("message")),
+                step("field", text("reactions")),
+            ]),
+        ),
+        ("op".to_owned(), text(op)),
+        ("emoji".to_owned(), item("emoji")),
+    ]));
+    message(id, FIELD_EDIT, &[(EDIT_PARAM, edit)], true)
+}
+
 /// The id of the item step `step` created, as text.
 fn created(step: &str) -> Binding {
     Binding::Template(format!("{{{{step.{step}}}}}"))
@@ -190,6 +214,7 @@ fn pass() -> Vec<Step> {
                 ("chat", plan_step("read", "")),
                 ("context", input("context")),
                 ("room", input("room")),
+                ("emoji", input("emoji")),
             ],
         ),
         each(
@@ -201,6 +226,7 @@ fn pass() -> Vec<Step> {
                     ("bot_user", item("bot_user")),
                     ("channels", item("channels")),
                     ("roles", item("roles")),
+                    ("emojis", item("emojis")),
                 ],
             )],
         ),
@@ -313,6 +339,39 @@ fn pass() -> Vec<Step> {
             "overwrites",
             vec![guild("set-overwrite", "set-overwrite", &[("op", item(""))])],
         ),
+        // Deletes before uploads: a picture replaced under one name frees
+        // its slot first.
+        each(
+            "delete_emojis",
+            vec![
+                guild("delete-emoji", "delete-emoji", &[("op", item(""))]),
+                guild(
+                    "settle-deleted-emoji",
+                    "settle-emoji",
+                    &[
+                        ("tilo", item("tilo")),
+                        ("result", plan_step("delete-emoji", "")),
+                        ("deleted", Binding::Literal(json!(true))),
+                    ],
+                ),
+            ],
+        ),
+        each(
+            "apply_emojis",
+            vec![
+                guild("apply-emoji", "apply-emoji", &[("op", item("op"))]),
+                guild(
+                    "settle-emoji",
+                    "settle-emoji",
+                    &[
+                        ("tilo", item("op/tilo")),
+                        ("result", plan_step("apply-emoji", "")),
+                        ("picture", item("picture")),
+                        ("was", item("was")),
+                    ],
+                ),
+            ],
+        ),
         each(
             "member_roles",
             vec![guild(
@@ -388,24 +447,8 @@ fn pass() -> Vec<Step> {
                 ),
             ],
         ),
-        each(
-            "chat_reacts",
-            vec![message(
-                "chat-react",
-                "react",
-                &[("message", item("message")), ("emoji", item("emoji"))],
-                true,
-            )],
-        ),
-        each(
-            "chat_unreacts",
-            vec![message(
-                "chat-unreact",
-                "unreact",
-                &[("message", item("message")), ("emoji", item("emoji"))],
-                true,
-            )],
-        ),
+        each("chat_reacts", vec![reaction("chat-react", "react")]),
+        each("chat_unreacts", vec![reaction("chat-unreact", "unreact")]),
         each(
             "blocks",
             vec![guild(
@@ -415,17 +458,49 @@ fn pass() -> Vec<Step> {
             )],
         ),
         each(
-            "complete_links",
+            "offers",
             vec![guild(
-                "complete-link",
-                "complete-link",
+                "offer-link",
+                "offer-link",
                 &[
+                    ("check", item("check")),
                     ("discord_user", item("discord_user")),
-                    ("person", item("person")),
-                    ("code_sha256", item("code_sha256")),
                     ("user_name", item("user_name")),
                     ("display_name", item("display_name")),
+                    ("avatar", item("avatar")),
+                    ("interaction", item("interaction")),
                 ],
+            )],
+        ),
+        each(
+            "sign_in_offers",
+            vec![guild(
+                "offer-sign-in",
+                "offer-sign-in",
+                &[
+                    ("check", item("check")),
+                    ("discord_user", item("discord_user")),
+                    ("user_name", item("user_name")),
+                    ("display_name", item("display_name")),
+                    ("avatar", item("avatar")),
+                    ("state_sha256", item("state_sha256")),
+                ],
+            )],
+        ),
+        each(
+            "sign_ins",
+            vec![guild(
+                "set-sign-in",
+                "set-sign-in",
+                &[("page", item("page"))],
+            )],
+        ),
+        each(
+            "answers",
+            vec![guild(
+                "answer-interaction",
+                "answer-interaction",
+                &[("op", item(""))],
             )],
         ),
         each(
@@ -445,8 +520,24 @@ fn pass() -> Vec<Step> {
                     ("discord_user", item("discord_user")),
                     ("user_name", item("user_name")),
                     ("display_name", item("display_name")),
+                    ("avatar", item("avatar")),
                 ],
             )],
+        ),
+        each(
+            "photos",
+            vec![
+                guild("fetch-photo", "fetch-asset", &[("op", item("op"))]),
+                guild(
+                    "set-link-photo",
+                    "set-link-photo",
+                    &[
+                        ("discord_user", item("discord_user")),
+                        ("avatar", item("avatar")),
+                        ("photo", plan_step("fetch-photo", "/data_url")),
+                    ],
+                ),
+            ],
         ),
         each("import_categories", {
             let mut body = vec![chat(
@@ -569,9 +660,16 @@ fn triggers() -> Vec<TriggerSpec> {
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
+        // The workspace's emoji, which the bridge uploads to the server.
+        TriggerSpec::RecordChanged {
+            kind: discord::bridge::EMOJI_KIND.into(),
+            actions: Vec::new(),
+            fields: Vec::new(),
+            by: ActorFilter::Anyone,
+        },
         TriggerSpec::RecordChanged {
             kind: KIND.into(),
-            actions: vec!["block-persona".to_owned()],
+            actions: vec!["block-persona".to_owned(), "complete-link".to_owned()],
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
@@ -593,6 +691,7 @@ fn program() -> Shortcut {
         |name: &'static str, ty, about: &'static str| ActionParam::required(name, ty, about);
     Shortcut {
         id: "discord-bridge".into(),
+        step_timeout_secs: None,
         name: "Discord Bridge".into(),
         inputs: vec![
             param("event", ParamType::Object, "What fired"),
@@ -607,6 +706,13 @@ fn program() -> Shortcut {
                 "room",
                 ParamType::Object,
                 "The room's members with their roles: members [{person, role}]",
+            ),
+            // The host binds it on each firing from the room's workspace
+            // emoji, keeping each picture where the worker can upload it.
+            ActionParam::optional(
+                "emoji",
+                ParamType::Object,
+                "The workspace's emoji: emoji [{name, picture}]",
             ),
         ],
         steps: vec![
@@ -711,6 +817,41 @@ fn the_bridge_program_checks_against_chat_and_discord_and_is_current() {
     );
 }
 
+/// The bridge reacts for Discord people through the field edit of Chat's
+/// messages, and no other record of Chat's: the messages' other fields are
+/// read-only, so a reaction is all that field edit reaches.
+#[test]
+fn the_bridge_field_edits_only_chats_messages() {
+    let shortcut = program();
+    let grant = tilo_automation::grant::derived_rules(&shortcut, &catalog());
+    let field_edits: Vec<String> = grant
+        .iter()
+        .map(|rule| rule.node.to_string())
+        .filter(|node| node.contains("app:so.tilo.chat") && node.ends_with(FIELD_EDIT))
+        .collect();
+    assert_eq!(
+        field_edits,
+        ["room:*/app:so.tilo.chat/kind:chat.messages/resource:*/**/action:field-edit"]
+    );
+    // Where the bot's own door offers and admits the field edit (the
+    // resource), and where the room decides a reaction (its field).
+    let messages = ui::permissions::TreePath::room("room")
+        .app(CHAT_APP)
+        .kind(MESSAGES_KIND)
+        .resource("part-0");
+    let decided = |node: &ui::permissions::TreePath| {
+        tilo_automation::grant_answer(&grant, node, ui::permissions::ActionKind::Undoable).answer
+    };
+    assert_eq!(
+        decided(&messages.clone().action(FIELD_EDIT)),
+        ui::permissions::Answer::Allow
+    );
+    assert_eq!(
+        decided(&messages.item("m1").field("reactions").action(FIELD_EDIT)),
+        ui::permissions::Answer::Allow
+    );
+}
+
 #[test]
 fn the_program_names_only_the_discord_connector_and_chat() {
     let requirements = tilo_automation::requirements::requirements(&program());
@@ -788,6 +929,7 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
             chat: &json!({}),
             context: &discord::outbound::Context::default(),
             room: &Value::Null,
+            emoji: None,
         },
         &firing.inputs["event"],
     );

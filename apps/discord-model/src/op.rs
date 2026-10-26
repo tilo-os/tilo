@@ -50,6 +50,9 @@ pub enum DiscordOp {
     Unban(MemberOp),
     SetOverwrite(OverwriteOp),
     FetchAsset(FetchAssetOp),
+    AnswerInteraction(AnswerInteractionOp),
+    ApplyEmoji(EmojiSpec),
+    DeleteEmoji(DeleteEmojiOp),
 }
 
 impl<'de> Deserialize<'de> for DiscordOp {
@@ -84,6 +87,9 @@ impl<'de> Deserialize<'de> for DiscordOp {
             "unban" => Self::Unban(op(fields)?),
             "set-overwrite" => Self::SetOverwrite(op(fields)?),
             "fetch-asset" => Self::FetchAsset(op(fields)?),
+            "answer-interaction" => Self::AnswerInteraction(op(fields)?),
+            "apply-emoji" => Self::ApplyEmoji(op(fields)?),
+            "delete-emoji" => Self::DeleteEmoji(op(fields)?),
             other => {
                 return Err(D::Error::unknown_variant(
                     other,
@@ -105,6 +111,9 @@ impl<'de> Deserialize<'de> for DiscordOp {
                         "unban",
                         "set-overwrite",
                         "fetch-asset",
+                        "answer-interaction",
+                        "apply-emoji",
+                        "delete-emoji",
                     ],
                 ));
             }
@@ -139,7 +148,10 @@ impl DiscordOp {
             | Self::Kick(_)
             | Self::Ban(_)
             | Self::Unban(_)
-            | Self::FetchAsset(_) => None,
+            | Self::FetchAsset(_)
+            | Self::AnswerInteraction(_)
+            | Self::ApplyEmoji(_)
+            | Self::DeleteEmoji(_) => None,
         }
     }
 
@@ -158,6 +170,8 @@ impl DiscordOp {
                 | Self::Kick(_)
                 | Self::Ban(_)
                 | Self::Unban(_)
+                | Self::ApplyEmoji(_)
+                | Self::DeleteEmoji(_)
         )
     }
 }
@@ -226,7 +240,8 @@ pub struct DeleteOp {
 pub struct ReactOp {
     pub channel: String,
     pub message: String,
-    /// A unicode emoji.
+    /// A unicode emoji, or one of the guild's custom emoji as `name:id`,
+    /// as Discord's reaction routes name them.
     pub emoji: String,
 }
 
@@ -365,16 +380,60 @@ pub struct OverwriteOp {
     pub deny: String,
 }
 
-/// Copy a file from Discord's CDN into the room's content store.
+/// Edit the reply to a slash command to what came of it. The worker keeps
+/// the interaction's token (good for fifteen minutes) and never hands it
+/// out, so the op names only the interaction.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct AnswerInteractionOp {
+    pub interaction: String,
+    pub content: String,
+}
+
+/// Upload (`id: None`) or rename (`id: Some`) one of the server's custom
+/// emoji for a workspace emoji of Tilo's. Only emoji the bridge made itself
+/// are ever renamed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct EmojiSpec {
+    #[serde(default)]
+    pub id: Option<String>,
+    /// The name in Discord: 2 to 32 letters, digits and underscores.
+    pub name: String,
+    /// The picture's content-store blob, which the `apply-emoji` verb names
+    /// in `Queued::attach` so the host hands its bytes to the worker. A
+    /// rename carries it too: an emoji deleted in Discord meanwhile is
+    /// uploaded again.
+    #[serde(default)]
+    pub picture: Option<String>,
+    /// The workspace emoji's name in Tilo.
+    pub tilo: String,
+}
+
+/// Delete one of the custom emoji the bridge made.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct DeleteEmojiOp {
+    pub emoji: String,
+    /// The workspace emoji's name in Tilo it stood for.
+    pub tilo: String,
+}
+
+/// Copy a file from Discord's CDN into the room's content store, or answer
+/// a small picture inline.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct FetchAssetOp {
-    /// An `https://cdn.discordapp.com/…` or `https://media.discordapp.net/…` URL; anything else is refused.
+    /// An `https://cdn.discordapp.com/…` or `https://media.discordapp.net/…` URL, or a path on the worker's own CDN (`avatars/<user>/<hash>.png?size=64`); anything else is refused.
     pub url: String,
     pub max_bytes: u64,
     /// The Chat attachment this becomes, `blob` filled in by the result.
     #[serde(default)]
     pub attachment: Option<InAttachment>,
+    /// Answer the picture as a `data:` URL (the result's `data_url`)
+    /// instead of keeping it in the content store: one a record holds.
+    #[serde(default)]
+    pub inline: bool,
 }
 
 /// A Chat attachment as `chat.post` takes it (`AttachmentUpdate`).
@@ -395,7 +454,7 @@ pub struct InAttachment {
 
 /// What an op settled with. Pointers the bridge program uses:
 /// `/message_id`, `/thread_id`, `/webhook_id`, `/channel_id`, `/role_id`,
-/// `/blob`, `/attachment`, `/tilo`.
+/// `/emoji_id`, `/problem`, `/blob`, `/attachment`, `/tilo`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 #[serde(tag = "result", rename_all = "kebab-case")]
@@ -420,12 +479,26 @@ pub enum DiscordResult {
         role_id: String,
         tilo: String,
     },
+    /// An emoji op: the emoji's id once Discord holds it (empty when it
+    /// did not, or after a delete), or why the server would not take it
+    /// (the bot may not create emoji there, the server has no free emoji
+    /// slot), said so a person can do something about it.
+    Emoji {
+        #[serde(default)]
+        emoji_id: String,
+        tilo: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<String>,
+    },
     Asset {
         blob: String,
         size: u64,
         content_type: String,
         #[serde(default)]
         attachment: Option<InAttachment>,
+        /// The picture as a `data:` URL, for an inline fetch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_url: Option<String>,
     },
     #[default]
     Done,

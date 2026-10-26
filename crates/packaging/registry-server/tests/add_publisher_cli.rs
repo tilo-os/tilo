@@ -124,3 +124,107 @@ fn add_publisher_requires_namespace() {
         assert!(row.owns_package_id("so.tilo.store"));
     }
 }
+
+#[test]
+fn grant_adds_a_namespace_to_an_allowed_publisher() {
+    let temp = tempfile::tempdir().unwrap();
+    let storage = Storage::open(temp.path()).unwrap();
+    let release = PublisherRow {
+        pubkey_hex: pubkey_hex(81),
+        can_add_new: true,
+        note: "Tilo's release publisher".into(),
+        namespaces: vec!["so.tilo".into()],
+    };
+    storage
+        .save_allowlist(&PublisherAllowlist {
+            publishers: vec![release.clone()],
+        })
+        .unwrap();
+
+    // phase: grant_adds_to_the_row_it_already_owns
+    {
+        let output = add_publisher(
+            temp.path(),
+            &[
+                "--pubkey",
+                &release.pubkey_hex,
+                "--can-add-new",
+                "--note",
+                "Tilo's release publisher",
+                "--namespace",
+                "labs.tilo",
+                "--grant",
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let allow = storage.load_allowlist().unwrap();
+        assert_eq!(allow.publishers.len(), 1);
+        let row = &allow.publishers[0];
+        assert_eq!(row.namespaces, ["so.tilo", "labs.tilo"]);
+        assert!(row.owns_package_id("so.tilo.store"));
+        assert!(row.owns_package_id("labs.tilo.agent"));
+    }
+
+    // phase: granting_a_namespace_it_owns_already_leaves_the_row_alone
+    {
+        let output = add_publisher(
+            temp.path(),
+            &[
+                "--pubkey",
+                &release.pubkey_hex,
+                "--can-add-new",
+                "--note",
+                "Tilo's release publisher",
+                "--namespace",
+                "so.tilo",
+                "--first-party",
+                "--grant",
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let allow = storage.load_allowlist().unwrap();
+        assert_eq!(allow.publishers[0].namespaces, ["so.tilo", "labs.tilo"]);
+    }
+
+    // phase: a_grant_never_creates_the_publisher_it_extends
+    {
+        let stranger = pubkey_hex(82);
+        let output = add_publisher(
+            temp.path(),
+            &["--pubkey", &stranger, "--namespace", "labs.tilo", "--grant"],
+        );
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("not one"), "{stderr}");
+        assert_eq!(storage.load_allowlist().unwrap().publishers.len(), 1);
+    }
+
+    // phase: the_tilo_namespace_still_needs_first_party_when_granted
+    {
+        let output = add_publisher(
+            temp.path(),
+            &[
+                "--pubkey",
+                &release.pubkey_hex,
+                "--namespace",
+                "so.tilo.labs",
+                "--grant",
+            ],
+        );
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--first-party"), "{stderr}");
+        assert_eq!(
+            storage.load_allowlist().unwrap().publishers[0].namespaces,
+            ["so.tilo", "labs.tilo"]
+        );
+    }
+}

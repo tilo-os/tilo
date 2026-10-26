@@ -1,7 +1,8 @@
 //! The one way every app draws who did something, so no app can forget to
 //! say that a bot is a bot. A person gets their round avatar; an agent its
 //! identity mark; a bot a rounded-square tile and a chip that is never
-//! elided: `Bot`, or `via Discord` for a person a bridge speaks for. A bot
+//! elided: `Bot`, or for a person a bridge speaks for the mark of the service
+//! they write from (Discord's), saying where when hovered. A bot
 //! may show another name (an appearance): it is shown, the chip stays, and a
 //! name that looks like a room member's carries its service.
 
@@ -59,6 +60,9 @@ pub struct AuthorLine {
     /// The `BOT` chip, for a bot; the host opens the installation's page when
     /// it is clicked.
     pub chip: Option<Rect>,
+    /// The mark of the service a bridged person writes from (Discord's), in
+    /// place of a chip; hovering it says where they are ([`Author::service_tip`]).
+    pub badge: Option<Rect>,
 }
 
 /// Whether `a` and `b` would read as the same name: equal once reduced to a
@@ -157,6 +161,27 @@ pub fn service_label(service: &str) -> String {
     })
 }
 
+/// What a service mark says when hovered or read out: where the person is
+/// (`From Discord`), with their handle there when `account` is one rather
+/// than a bare numeric account id.
+#[must_use]
+pub fn service_tip(service: &str, account: &str) -> String {
+    let service = service_label(service);
+    let account = account.trim().trim_start_matches('@');
+    let numeric = account.bytes().all(|b| b.is_ascii_digit());
+    if account.is_empty() || numeric {
+        widget_format("author-from-service", &[("service", service.into())])
+    } else {
+        widget_format(
+            "author-from-service-as",
+            &[
+                ("service", service.into()),
+                ("handle", format!("@{account}").into()),
+            ],
+        )
+    }
+}
+
 impl<'a> Author<'a> {
     #[must_use]
     pub fn shown_name(&self) -> &'a str {
@@ -211,14 +236,43 @@ impl<'a> Author<'a> {
         )
     }
 
+    /// The persona a bot speaks as, where its appearance is a person on a
+    /// service.
+    fn persona(&self) -> Option<&'a tilo_actions::Persona> {
+        let Self::Bot { appearance, .. } = *self else {
+            return None;
+        };
+        appearance?.persona.as_ref()
+    }
+
+    /// The mark of the service a bridged person writes from, where the
+    /// toolkit has one: shown in place of the `via Discord` chip.
+    #[must_use]
+    pub fn service_mark(&self) -> Option<crate::icons::ServiceMark> {
+        crate::icons::service_mark(&self.persona()?.service)
+    }
+
+    /// What the service mark says when hovered or read out: where the
+    /// person is (`From Discord`), with their handle there when the persona
+    /// names one rather than a bare numeric account id.
+    #[must_use]
+    pub fn service_tip(&self) -> Option<String> {
+        let persona = self.persona()?;
+        Some(service_tip(&persona.service, &persona.account))
+    }
+
     /// What a bot's chip reads: where a person it speaks for is from
-    /// (`via Discord`) when its appearance is a persona on a service, else
-    /// that it is a bot. `None` for anyone else.
+    /// (`via Discord`) when its appearance is a persona on a service the
+    /// toolkit has no mark for, else that it is a bot. `None` for anyone
+    /// else, and for a persona whose service shows its mark instead.
     #[must_use]
     pub fn chip_label(&self) -> Option<String> {
         let Self::Bot { appearance, .. } = *self else {
             return None;
         };
+        if self.service_mark().is_some() {
+            return None;
+        }
         Some(
             match appearance.and_then(|appearance| appearance.persona.as_ref()) {
                 Some(persona) => widget_format(
@@ -297,7 +351,13 @@ impl<'a> Author<'a> {
         let chip_width = self
             .chip_label()
             .map(|label| ChipFace::intrinsic_width(&label, ChipLead::None, false, text, theme));
-        let reserved = side + gap + chip_width.map_or(0.0, |width| width + gap);
+        let badge_width = self
+            .service_mark()
+            .map(|_| f64::from(theme.tokens.metrics.icon_sm));
+        let reserved = side
+            + gap
+            + chip_width.map_or(0.0, |width| width + gap)
+            + badge_width.map_or(0.0, |width| width + gap);
         let room = (max_width - reserved).max(0.0);
         let shown = text.elide_to_width_style(&self.label(members), room as f32, &style);
         let (width, _) = text.measure_style(&shown, None, &style);
@@ -307,11 +367,17 @@ impl<'a> Author<'a> {
             let x = name.x1 + gap;
             Rect::new(x, origin.y, x + width, origin.y + side)
         });
+        let badge = badge_width.map(|width| {
+            let x = name.x1 + gap;
+            let y = origin.y + (side - width) / 2.0;
+            Rect::new(x, y, x + width, y + width)
+        });
         AuthorLine {
             mark,
             name,
             shown,
             chip,
+            badge,
         }
     }
 
@@ -369,6 +435,13 @@ impl<'a> Author<'a> {
         {
             ChipFace::new(chip, &label).paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
         }
+        if let Some(badge) = line.badge
+            && let Some(mark) = self.service_mark()
+        {
+            // Monochrome, in the line's quiet ink: it says where the person
+            // is without competing with their name.
+            mark.draw(ctx.scene, ctx.transform, badge, ctx.theme.text_dim);
+        }
     }
 }
 
@@ -404,7 +477,29 @@ mod tests {
     #[test]
     fn a_bridged_person_reads_via_their_service_and_a_bot_as_a_bot() {
         let alice = alice();
-        assert_eq!(bridge(Some(&alice)).chip_label().unwrap(), "via Discord");
+        // Discord shows its mark, which says where they are when hovered.
+        assert_eq!(bridge(Some(&alice)).chip_label(), None);
+        assert!(bridge(Some(&alice)).service_mark().is_some());
+        assert_eq!(bridge(Some(&alice)).service_tip().unwrap(), "From Discord");
+        let mut handled = alice.clone();
+        if let Some(persona) = handled.persona.as_mut() {
+            persona.account = "dana_k".into();
+        }
+        assert_eq!(
+            bridge(Some(&handled)).service_tip().unwrap(),
+            "From Discord as @dana_k"
+        );
+        let elsewhere = Appearance::new(
+            "alice",
+            None,
+            Some(Persona {
+                service: "matrix".into(),
+                account: "@alice:example.org".into(),
+                linked: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(bridge(Some(&elsewhere)).chip_label().unwrap(), "via Matrix");
         assert_eq!(bridge(None).chip_label().unwrap(), "Bot");
         let person = Author::Person {
             name: "Ada",

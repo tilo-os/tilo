@@ -29,9 +29,9 @@ use crate::actions::{self, GraphKind};
 use crate::engine;
 use crate::graph2d::{Graph2dScreen, Pointer};
 use crate::graph3d::Graph3dScreen;
-use crate::keypad::{CalcScreen, MEM_KEYS};
+use crate::keypad::{CalcScreen, DisplaySlot, MEM_KEYS};
 use crate::mathfield::MathField;
-use crate::model::{self, CalcModel, Mode, PlotFn};
+use crate::model::{self, CalcModel, KeypadPage, Mode, PlotFn};
 use crate::plot_panel::PlotPanel;
 use crate::resource::Calculator;
 
@@ -59,6 +59,9 @@ pub struct CalculatorApp {
     navigated: bool,
 
     mouse: Point,
+    /// A pointer has been over this window: until one is, no trace crosshair
+    /// is drawn. The origin is not where a pointer is.
+    pointer_seen: bool,
     dragging: bool,
     drag_last: Point,
     /// A drag-select is in progress inside a math field.
@@ -70,6 +73,8 @@ pub struct CalculatorApp {
     last_click: Option<ui::time::Instant>,
     last_click_pos: Point,
 
+    /// The last copy, watched until it settles: a refusal must be said.
+    copy: ui::CopyWatch,
     model_dirty: bool,
     /// Something visible changed since the last paint. Cleared by
     /// `mark_drawn`; without it the default (dirty every frame) repainted the
@@ -112,6 +117,7 @@ impl CalculatorApp {
     fn with_model(model: CalcModel) -> Self {
         Self {
             model,
+            copy: ui::CopyWatch::default(),
             calc: CalcScreen::default(),
             g2: Graph2dScreen::default(),
             g3: Graph3dScreen::default(),
@@ -119,6 +125,7 @@ impl CalculatorApp {
             environment: InteractionEnvironment::POINTER,
             navigated: false,
             mouse: Point::ZERO,
+            pointer_seen: false,
             dragging: false,
             drag_last: Point::ZERO,
             field_dragging: false,
@@ -183,7 +190,7 @@ impl CalculatorApp {
         self.model.ans = lived_in.ans;
         self.model.memory = lived_in.memory;
         match scenario {
-            Some("calculator" | "narrow") => {
+            Some("calculator" | "narrow" | "narrow-functions-page") => {
                 self.set_mode(Mode::Calc);
             }
             Some("error") => self.model.apply_error_demo(),
@@ -195,6 +202,10 @@ impl CalculatorApp {
         self.relayout();
         if scenario == Some("narrow-functions") {
             self.g2.panel.side_mut().snap(true);
+        }
+        if scenario == Some("narrow-functions-page") {
+            self.calc.toggle_page();
+            self.relayout();
         }
         if self.model.mode == Mode::Graph2d
             && let Some(field) = self.graph_field(GraphKind::Curve2d, self.model.active_fn)
@@ -387,11 +398,12 @@ impl CalculatorApp {
     /// What the plot under the pointer shows: the trace of Graph 2D, and the
     /// navigation hint until the person has navigated a plot.
     fn plot_pointer(&self) -> Pointer {
-        let over = self
-            .model
-            .mode
-            .graph()
-            .is_some_and(|kind| self.canvas_contains(kind, self.mouse));
+        let over = self.pointer_seen
+            && self
+                .model
+                .mode
+                .graph()
+                .is_some_and(|kind| self.canvas_contains(kind, self.mouse));
         Pointer {
             trace: (over && self.model.mode == Mode::Graph2d).then_some(self.mouse),
             hint: (over && !self.navigated).then_some(self.environment),
@@ -414,7 +426,9 @@ impl CalculatorApp {
 
         match self.model.mode.graph() {
             None => {
-                if self.calc.expression_rect().contains(p) && !self.drawer_blocks() {
+                if let Some(slot) = self.calc.copy_at(p) {
+                    self.copy_display(slot);
+                } else if self.calc.expression_rect().contains(p) && !self.drawer_blocks() {
                     self.calc.field.set_source(&self.model.expr);
                     self.calc.field.on_press_cached(p, double);
                     self.model.after_equals = false;
@@ -615,6 +629,26 @@ impl CalculatorApp {
         paste: impl FnOnce() -> Option<String>,
     ) {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        let shift = modifiers.state().shift_key();
+
+        // The display's values are copy targets. A selection in the
+        // expression keeps the editor's own copy first; with nothing
+        // selected, Ctrl+C takes the result and Ctrl+Shift+C the expression.
+        if ctrl
+            && self.model.mode == Mode::Calc
+            && let WKey::Character(s) = key
+            && s.eq_ignore_ascii_case("c")
+        {
+            if shift {
+                self.copy_display(DisplaySlot::Expression);
+                return;
+            }
+            self.calc.field.set_source(&self.model.expr);
+            if !self.calc.field.has_selection() {
+                self.copy_display(DisplaySlot::Result);
+                return;
+            }
+        }
 
         // Ctrl+digit always switches mode, from any screen.
         if ctrl && let WKey::Character(s) = key {
@@ -752,9 +786,50 @@ impl CalculatorApp {
         }
     }
 
+    /// What the display shows for `slot`, exactly as painted, so copying it
+    /// takes what the person read (not a re-formatted approximation).
+    fn display_text(&self, slot: DisplaySlot) -> Option<String> {
+        match slot {
+            DisplaySlot::Expression => {
+                let expr = self.model.expr.trim();
+                (!expr.is_empty()).then(|| expr.to_owned())
+            }
+            DisplaySlot::Result => {
+                if self.model.expr.trim().is_empty() {
+                    return None;
+                }
+                Some(
+                    match engine::evaluate(&self.model.expr, &self.model.ctx()) {
+                        Ok(value) => engine::format_number(value),
+                        Err(error) => format!("Error: {error}"),
+                    },
+                )
+            }
+            DisplaySlot::Answer => Some(engine::format_number(self.model.ans)),
+        }
+    }
+
+    /// Copy one display value to the system clipboard. The expression is
+    /// copied as typed, the result as shown, and the answer as Ans.
+    fn copy_display(&mut self, slot: DisplaySlot) {
+        let Some(text) = self.display_text(slot) else {
+            return;
+        };
+        // Watch the outcome: a clipboard that refuses is told, not confirmed.
+        let copied = self.copy.watch(ui::try_clipboard_copy(&text));
+        self.calc.say_copied(slot, copied);
+        self.model_dirty = true;
+    }
+
     /// Pointer and semantic keypad activation use the same editor as typing.
     fn apply_calc_key(&mut self, key: &model::Key) {
         use model::Key;
+        if matches!(key, Key::Page(_)) {
+            self.calc.toggle_page();
+            self.relayout();
+            self.model_dirty = true;
+            return;
+        }
         let text = match key {
             Key::Digit(c) => Some(c.to_string()),
             Key::Dot => Some(".".into()),
@@ -858,13 +933,12 @@ fn remote_carets(presence: &PresenceCtx) -> Vec<(Point, Color)> {
         .iter()
         .map(|rc| {
             let p = Point::new(f64::from(rc.position[0]), f64::from(rc.position[1]));
-            let to_u8 = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
-            let col = Color::from_rgba8(
-                to_u8(rc.color[0]),
-                to_u8(rc.color[1]),
-                to_u8(rc.color[2]),
-                to_u8(rc.color[3]),
-            );
+            let mut components = rc.color;
+            for component in &mut components {
+                *component = component.clamp(0.0, 1.0);
+            }
+            let col =
+                vello::peniko::color::AlphaColor::<vello::peniko::color::Srgb>::new(components);
             (p, col)
         })
         .collect()
@@ -917,6 +991,8 @@ fn key_accessible_name(key: &model::Key) -> String {
         Key::MemRecall => "Recall memory".into(),
         Key::MemClear => "Clear memory".into(),
         Key::Wrap(_, _) => "Square expression".into(),
+        Key::Page(KeypadPage::Functions) => "Function keys, second page".into(),
+        Key::Page(KeypadPage::Primary) => "Number keys, first page".into(),
         Key::Ins("sin(") => "Sine".into(),
         Key::Ins("cos(") => "Cosine".into(),
         Key::Ins("tan(") => "Tangent".into(),
@@ -1190,6 +1266,7 @@ impl Widget for CalculatorApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = ctx.logical(position);
                 self.mouse = p;
+                self.pointer_seen = true;
                 let hover_changed = self.track_pointer(p);
                 if self.field_dragging {
                     self.on_field_drag(p);
@@ -1323,6 +1400,21 @@ impl Widget for CalculatorApp {
                     ]);
                 }
                 children.push(display);
+                // Every value the display shows is a copy target of its own.
+                for (slot, name) in [
+                    (DisplaySlot::Expression, "Copy expression"),
+                    (DisplaySlot::Result, "Copy result"),
+                    (DisplaySlot::Answer, "Copy previous answer"),
+                ] {
+                    let mut node = AccessNode::new(Role::Button)
+                        .with_name(name)
+                        .with_action_target(format!("calculator.copy:{}", slot.name()))
+                        .with_state(AccessState::new().focusable(true));
+                    if self.calc.copy_rect(slot) != Rect::ZERO {
+                        node = node.with_bounds(self.calc.copy_rect(slot));
+                    }
+                    children.push(node);
+                }
 
                 for (index, key) in MEM_KEYS.iter().enumerate() {
                     let mut node = AccessNode::new(Role::Button)
@@ -1434,6 +1526,15 @@ impl Widget for CalculatorApp {
                 if matches!(action, Action::Activate) && self.model.mode == Mode::Calc =>
             {
                 self.commit_equals(state);
+            }
+            _ if target.starts_with("calculator.copy:") && matches!(action, Action::Activate) => {
+                let slot = match target.rsplit(':').next() {
+                    Some("expression") => DisplaySlot::Expression,
+                    Some("result") => DisplaySlot::Result,
+                    Some("previous answer") => DisplaySlot::Answer,
+                    _ => return false,
+                };
+                self.copy_display(slot);
             }
             _ if target.starts_with("calculator.key:") && matches!(action, Action::Activate) => {
                 let Some(index) = target

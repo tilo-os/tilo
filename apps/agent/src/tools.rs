@@ -78,8 +78,7 @@ pub use schema::argument_lines_compact;
 pub use summary::{
     MOST_LISTED_ALIKE, MOST_SUMMARISED, Naming, catalogue_summary, catalogue_summary_with,
 };
-use wait::read_wait;
-pub use wait::{MOST_WAIT_SECONDS, WAIT_FOR, Wait, typed_waiting_definitions};
+pub use wait::{MOST_WAIT_SECONDS, WAIT_FOR, Wait, read_wait, typed_waiting_definitions};
 
 pub const LIST_APPLICATIONS: &str = "list_applications";
 pub const LIST_OPERATIONS: &str = "list_operations";
@@ -443,6 +442,25 @@ pub struct Answer {
     pub serves: Vec<Option<usize>>,
     /// Obligations the model will not do, by number, each with why.
     pub set_aside: Vec<(usize, String)>,
+    /// Beside each of `obligations`, how a host that gives each item an
+    /// agent of its own runs it: the apps it needs, the items it follows
+    /// and what it waits for. Empty when no item says.
+    pub items: Vec<ItemPlan>,
+    /// Notes on items of the checklist, by number, each with its note: what
+    /// a coordinating host tells, or has done again, for news or a check.
+    pub adjust: Vec<(usize, String)>,
+}
+
+/// How one obligation is run by a host that gives each item an agent of
+/// its own ([`Answer::items`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ItemPlan {
+    /// The apps it needs, as the model named them.
+    pub apps: Vec<String>,
+    /// The items (numbered from 1) that must be done before it.
+    pub after: Vec<usize>,
+    /// What it waits for, when it only waits for something someone sends.
+    pub wait: Option<Wait>,
 }
 
 /// The `plan` tool's optional `reply` property, as the model is told it.
@@ -1390,8 +1408,14 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
     let _ = writeln!(
         s,
         "  contract: kind={:?}; risk={:?}; confirmation={:?}; retry={:?}; \
-         reversible={}; execution={:?}; result={:?}",
-        c.kind, c.risk, c.confirmation, c.retry, c.reversible, c.execution, c.result
+         undo_takes_it_back={}; execution={:?}; result={:?}",
+        c.kind,
+        c.risk,
+        c.confirmation,
+        c.retry,
+        c.can_be_undone(),
+        c.execution,
+        c.result
     );
     if let Some(note) = confirmation_note(offer) {
         let _ = writeln!(s, "  {note}: your step waits until the person answers it");

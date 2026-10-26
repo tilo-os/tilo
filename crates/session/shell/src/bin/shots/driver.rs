@@ -635,42 +635,58 @@ impl ShellDriver {
                 None,
             );
             let lock_player = now_playing_fixture::shots_player();
+            // The prompt as the lock controller leaves it in each state.
+            let prompt = shell::compositor::lock_controller::LockPrompt::new();
+            let typed = |prompt: &shell::compositor::lock_controller::LockPrompt| {
+                if let Some(field) = prompt.borrow_mut().field_mut(ui::widget::FieldRole::Secret) {
+                    field.set_text("password");
+                }
+            };
+            match state {
+                LockVisualState::Password => typed(&prompt),
+                LockVisualState::Verifying => {
+                    prompt
+                        .borrow_mut()
+                        .set_busy(Some(shell::shell::i18n::t("lock-screen-verifying")));
+                }
+                LockVisualState::Error => {
+                    prompt
+                        .borrow_mut()
+                        .reject(shell::compositor::lock_controller::refusal_line(
+                            shell::compositor::lock_auth::INCORRECT_MSG,
+                        ));
+                }
+                LockVisualState::Default
+                | LockVisualState::Notifications
+                | LockVisualState::NowPlaying => {}
+            }
+            let base = shell::compositor::lock_screen::LockView {
+                clock: "12:34",
+                date: "Monday, 7 September",
+                prompt: Some(&prompt),
+                // A phone-sized display is used by touch: the lock screen
+                // shows its keyboard and touch-sized controls.
+                keyboard: (self.fb.scene_size().0 < 600.0)
+                    .then(ui::passcode_keyboard::PasscodeKeyboard::default),
+                ..Default::default()
+            };
             let view = match state {
-                LockVisualState::Default => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
-                    ..Default::default()
-                },
-                LockVisualState::Password => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
-                    password_len: 8,
-                    ..Default::default()
-                },
+                LockVisualState::Default | LockVisualState::Password => base,
                 LockVisualState::Verifying => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
-                    password_len: 8,
                     verifying: true,
-                    ..Default::default()
+                    ..base
                 },
                 LockVisualState::Error => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
                     error: Some(shell::compositor::lock_auth::INCORRECT_MSG),
-                    ..Default::default()
+                    ..base
                 },
                 LockVisualState::Notifications => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
                     notification_count: 3,
-                    ..Default::default()
+                    ..base
                 },
                 LockVisualState::NowPlaying => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
                     now_playing: Some(&lock_player),
-                    ..Default::default()
+                    ..base
                 },
             };
             let theme = self.fb.theme().clone();
@@ -2047,6 +2063,8 @@ impl ShellDriver {
             "ws-settings-general" => self.scene_ws_settings_general(),
             "ws-settings-members" => self.scene_ws_settings_members(),
             "ws-settings-apps" => self.scene_ws_settings_apps(),
+            "ws-settings-emoji" => self.scene_ws_settings_emoji(true),
+            "ws-settings-emoji-empty" => self.scene_ws_settings_emoji(false),
             "ws-settings-agents" => self.scene_ws_settings_agents(),
             "ws-settings-agent-access" => self.scene_ws_settings_agent_access(),
             "ws-settings-agent-access-keyboard" => {
@@ -2865,6 +2883,30 @@ impl ShellDriver {
         self.fb.host_mut().force_ws_settings_settled();
     }
 
+    /// The Emoji tab, with a few of the workspace's own emoji or none.
+    fn scene_ws_settings_emoji(&mut self, seeded: bool) {
+        self.with_chrome(|st| {
+            st.overlays.ws_settings = true;
+            st.ws_settings_tab = WsTab::Emoji;
+        });
+        if seeded {
+            let pictures: Vec<(&str, Vec<u8>)> = [
+                ("ship_it", [46, 160, 67]),
+                ("party", [214, 92, 196]),
+                ("coffee", [140, 90, 50]),
+                ("lgtm", [52, 120, 246]),
+                ("on_fire", [240, 120, 32]),
+            ]
+            .into_iter()
+            .map(|(name, colour)| (name, emoji_picture(colour)))
+            .collect();
+            if let Err(error) = self.fb.host_mut().seed_workspace_emoji_for_shots(&pictures) {
+                eprintln!("shots: workspace emoji not seeded: {error}");
+            }
+        }
+        self.fb.host_mut().force_ws_settings_settled();
+    }
+
     fn scene_ws_settings_agents(&mut self) {
         self.seed_workspace_permissions();
         self.seed_agent_member_for_shots();
@@ -3633,6 +3675,7 @@ impl ShellDriver {
                 Some(host.ws_settings_tab_pill_rect(WsTab::Permissions))
             }
             "ws_settings_tab[apps]" => Some(host.ws_settings_tab_pill_rect(WsTab::Apps)),
+            "ws_settings_tab[emoji]" => Some(host.ws_settings_tab_pill_rect(WsTab::Emoji)),
             _ => None,
         };
         if let Some(r) = curated
@@ -4191,4 +4234,37 @@ enum SecretPromptNetwork {
     SignIn,
     SimPin,
     SimPuk,
+}
+
+/// A small round picture in `colour` with a lighter ring, as a workspace's
+/// own emoji might be: PNG bytes.
+fn emoji_picture(colour: [u8; 3]) -> Vec<u8> {
+    let side = 96_u32;
+    let centre = f64::from(side) / 2.0;
+    let picture = image::RgbaImage::from_fn(side, side, |x, y| {
+        let dx = f64::from(x) + 0.5 - centre;
+        let dy = f64::from(y) + 0.5 - centre;
+        let distance = (dx * dx + dy * dy).sqrt();
+        let lighten = |channel: u8| channel.saturating_add(70);
+        if distance > centre - 2.0 {
+            image::Rgba([0, 0, 0, 0])
+        } else if distance > centre * 0.62 || distance <= centre * 0.42 {
+            image::Rgba([colour[0], colour[1], colour[2], 255])
+        } else {
+            image::Rgba([
+                lighten(colour[0]),
+                lighten(colour[1]),
+                lighten(colour[2]),
+                255,
+            ])
+        }
+    });
+    let mut encoded = Vec::new();
+    if let Err(error) = image::DynamicImage::ImageRgba8(picture).write_to(
+        &mut std::io::Cursor::new(&mut encoded),
+        image::ImageFormat::Png,
+    ) {
+        eprintln!("shots: emoji picture not encoded: {error}");
+    }
+    encoded
 }

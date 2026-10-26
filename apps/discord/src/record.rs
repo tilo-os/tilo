@@ -4,11 +4,12 @@
 
 use std::collections::BTreeMap;
 
-use discord_wire::event::{ChannelInfo, OverwriteInfo, RoleInfo};
+use discord_wire::event::{ChannelInfo, EmojiInfo, OverwriteInfo, RoleInfo};
+use discord_wire::event::{LINK_TTL_MS, link_check};
 use discord_wire::op::{
-    ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelOp, DeleteOp, DeleteRoleOp, DiscordOp,
-    DiscordResult, EditOp, FetchAssetOp, MemberOp, MemberRolesOp, OverwriteKind, OverwriteOp,
-    Queued, ReactOp, RoleSpec, SendOp, StartThreadOp,
+    AnswerInteractionOp, ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelOp, DeleteEmojiOp,
+    DeleteOp, DeleteRoleOp, DiscordOp, DiscordResult, EditOp, EmojiSpec, FetchAssetOp, MemberOp,
+    MemberRolesOp, OverwriteKind, OverwriteOp, Queued, ReactOp, RoleSpec, SendOp, StartThreadOp,
 };
 use ui::tilo_resource::{
     self, ActionCx, Id, Identified, JsonSchema, Keyed, Model, Outbox, Refusal, Set, Settled,
@@ -47,12 +48,23 @@ pub struct Guild {
     /// Discord's channels as the bot last observed them.
     pub channels: Keyed<DChannel>,
     pub roles: Keyed<DRole>,
+    /// The server's custom emoji, name → id, as the bot last observed them:
+    /// a Tilo reaction with a workspace emoji of one of these names is
+    /// mirrored as it.
+    pub emojis: BTreeMap<String, String>,
     /// Tilo id ⇄ Discord id, keyed `kind:tilo`.
     pub map: Keyed<Mapping>,
     pub links: Keyed<Link>,
-    pub pending_links: Keyed<PendingLink>,
-    /// Failed `/link` attempts per Discord user in the current hour.
-    pub link_failures: Keyed<LinkFailure>,
+    /// Discord accounts offered for linking, each to whoever holds its
+    /// one-time token (§5), by the token's check.
+    pub link_offers: Keyed<LinkOffer>,
+    /// People who went to Discord's consent page to link their account,
+    /// by person: the OAuth 2 round trip's state, hashed.
+    pub connects: Keyed<Connect>,
+    /// Discord's consent page for signing in through the room's host,
+    /// without its state, when the host offers it: then members are
+    /// offered "Connect Discord".
+    pub sign_in_page: Option<String>,
     /// Discord avatar hash → content-store blob, so an avatar is fetched once.
     pub avatars: BTreeMap<String, String>,
     /// Discord users whose messages are not mirrored.
@@ -73,6 +85,10 @@ pub struct Guild {
     /// Why the bridge cannot carry a voice channel's call now, as Discord
     /// refused it (a permission the bot lacks there); none while it can.
     pub voice_problem: Option<String>,
+    /// Why the workspace's emoji do not reach the server now, as Discord
+    /// answered the last upload (the bot may not create emoji there, or
+    /// the server's emoji slots are full); none while they do.
+    pub emoji_problem: Option<String>,
 }
 
 #[derive(
@@ -123,6 +139,9 @@ pub enum MappedKind {
     Webhook,
     /// A Tilo role's Discord role (`tilo` is the role name).
     Role,
+    /// The custom emoji the bridge uploaded to the server for a workspace
+    /// emoji (`tilo` is the emoji's name).
+    Emoji,
 }
 
 impl MappedKind {
@@ -134,6 +153,7 @@ impl MappedKind {
             Self::Message => "message",
             Self::Webhook => "webhook",
             Self::Role => "role",
+            Self::Emoji => "emoji",
         }
     }
 }
@@ -206,6 +226,10 @@ pub struct Mapping {
     /// For a message posted as a reply in Tilo: its thread root, because Tilo
     /// threads are one level deep.
     pub root: Option<String>,
+    /// For an emoji the bridge uploaded: the content address of its
+    /// picture, so a workspace emoji renamed keeps its Discord emoji and one
+    /// given another picture is uploaded again.
+    pub picture: Option<String>,
 }
 
 impl Identified for Mapping {
@@ -224,6 +248,16 @@ pub struct Link {
     pub user_name: String,
     /// The name it shows when that is another (a nickname, a global name).
     pub display_name: Option<String>,
+    /// The account's Discord avatar hash, as the bridge last saw it.
+    pub avatar: Option<String>,
+    /// The `/link` whose reply says what came of it, when the link was
+    /// made from Discord.
+    pub interaction: Option<String>,
+    /// The avatar as a small picture (a `data:` URL), which the person's
+    /// Tilo profile shows until they upload their own.
+    pub photo: Option<String>,
+    /// The avatar hash `photo` is of.
+    pub photo_avatar: Option<String>,
 }
 
 impl Identified for Link {
@@ -232,32 +266,45 @@ impl Identified for Link {
     }
 }
 
+/// A Discord account offered for linking, to whoever holds the one-time
+/// token it was offered with: the button `/link` answered with, or the
+/// browser that came back from Discord's consent page. The record keeps
+/// only the token's check ([`discord_wire::event::link_check`]).
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct PendingLink {
-    /// One pending code per person: starting again replaces it.
+pub struct LinkOffer {
     #[model(readonly)]
-    pub person: String,
-    pub code_sha256: String,
+    pub check: String,
+    pub discord_user: String,
+    pub user_name: String,
+    pub display_name: Option<String>,
+    pub avatar: Option<String>,
+    /// The person who started it from Tilo: only they may take it.
+    pub person: Option<String>,
+    /// The `/link` it answers, whose reply the bridge edits.
+    pub interaction: Option<String>,
     pub expires_ms: i64,
 }
 
-impl Identified for PendingLink {
+impl Identified for LinkOffer {
     fn id(&self) -> Id {
-        Id::from_raw(self.person.clone())
+        Id::from_raw(self.check.clone())
     }
 }
 
+/// Someone on their way through Discord's consent page: the round trip's
+/// state, hashed, binds what comes back to them.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct LinkFailure {
+pub struct Connect {
+    /// One round trip per person: starting again replaces it.
     #[model(readonly)]
-    pub discord_user: String,
-    pub window_start_ms: i64,
-    pub count: u32,
+    pub person: String,
+    pub state_sha256: String,
+    pub expires_ms: i64,
 }
 
-impl Identified for LinkFailure {
+impl Identified for Connect {
     fn id(&self) -> Id {
-        Id::from_raw(self.discord_user.clone())
+        Id::from_raw(self.person.clone())
     }
 }
 
@@ -270,6 +317,29 @@ pub fn map_key(kind: MappedKind, tilo: &str) -> String {
 /// A display name as the bridge passes it, empty for none.
 fn shown(display_name: String) -> Option<String> {
     (!display_name.is_empty()).then_some(display_name)
+}
+
+/// The longest picture a link keeps: what a Tilo profile's photo holds.
+pub const MAX_PHOTO_CHARS: usize = 48 * 1024;
+
+/// A base64 `data:` URL of a PNG, JPEG or WebP, short enough for a profile.
+fn is_photo(photo: &str) -> bool {
+    let Some(data) = ["image/png", "image/jpeg", "image/webp"]
+        .iter()
+        .find_map(|kind| {
+            photo
+                .strip_prefix("data:")?
+                .strip_prefix(kind)?
+                .strip_prefix(";base64,")
+        })
+    else {
+        return false;
+    };
+    photo.len() <= MAX_PHOTO_CHARS
+        && !data.is_empty()
+        && data
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
 }
 
 /// Insert `item`, or replace the item with its id.
@@ -401,6 +471,22 @@ impl Guild {
             })
             .collect();
     }
+
+    /// The server's custom emoji as Discord reported them. Two of one name
+    /// (Discord allows it) are one: the first reported.
+    pub fn observe_emojis(&mut self, emojis: Vec<EmojiInfo>) {
+        let mut by_name = BTreeMap::new();
+        for emoji in emojis {
+            by_name.entry(emoji.name).or_insert(emoji.id);
+        }
+        self.emojis = by_name;
+    }
+
+    /// The id of the server's custom emoji `name`, when it has one.
+    #[must_use]
+    pub fn emoji(&self, name: &str) -> Option<&str> {
+        self.emojis.get(name).map(String::as_str)
+    }
 }
 
 impl Guild {
@@ -439,7 +525,10 @@ fn overwrite_for<'a>(
 /// the Chat workspace the server mirrored; Chat runs in its room and keeps
 /// no workspaces now, so the server mirrors the room's chat and the name is
 /// dropped. Up to version 2 a channel's kind and permission overwrites were
-/// each one JSON string; they are rewritten as the values they held.
+/// each one JSON string; they are rewritten as the values they held. Up
+/// to version 3 a link began with a code the person sent from Discord;
+/// those codes and the count of wrong ones are dropped, as linking starts
+/// from a one-time token now and a pending code could no longer be used.
 ///
 /// # Errors
 /// When `from` is not a version this record was, or a stored kind or
@@ -450,7 +539,7 @@ fn migrate(
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
     use ui::tilo_resource::evolution::{map_values, retype_json};
-    if !(1..=2).contains(&from) {
+    if !(1..=3).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Discord server migration from {from}"
         )));
@@ -458,9 +547,16 @@ fn migrate(
     if doc.get(ROOT, "workspace")?.is_some() {
         doc.delete(ROOT, "workspace")?;
     }
-    for (_, channel) in map_values(doc, &ROOT, "channels")? {
-        retype_json::<ChannelKind>(doc, &channel, "kind")?;
-        retype_json::<Vec<OverwriteInfo>>(doc, &channel, "overwrites")?;
+    if from <= 2 {
+        for (_, channel) in map_values(doc, &ROOT, "channels")? {
+            retype_json::<ChannelKind>(doc, &channel, "kind")?;
+            retype_json::<Vec<OverwriteInfo>>(doc, &channel, "overwrites")?;
+        }
+    }
+    for dropped in ["pending_links", "link_failures"] {
+        if doc.get(ROOT, dropped)?.is_some() {
+            doc.delete(ROOT, dropped)?;
+        }
     }
     Ok(())
 }
@@ -469,7 +565,7 @@ fn migrate(
     kind = "discord.guild",
     label = "Discord server",
     params = guild,
-    version = 3,
+    version = 4,
     migrate = migrate,
 )]
 impl Guild {
@@ -514,9 +610,11 @@ impl Guild {
         #[param("The bot user's id")] bot_user: String,
         #[param("Every channel")] channels: Vec<ChannelInfo>,
         #[param("Every role")] roles: Vec<RoleInfo>,
+        #[param("Every custom emoji")] emojis: Vec<EmojiInfo>,
     ) -> Result<(), Refusal> {
         guard::bot(cx)?;
         self.observe(bot_user, channels, roles);
+        self.observe_emojis(emojis);
         Ok(())
     }
 
@@ -553,6 +651,7 @@ impl Guild {
                 origin,
                 persona,
                 root,
+                picture: None,
             },
         );
         Ok(())
@@ -885,94 +984,235 @@ impl Guild {
         Ok(())
     }
 
-    /// Start linking your Discord account.
+    /// Start linking your Discord account from Tilo.
     ///
-    /// Records the hash of the code shown on your screen; run `/link CODE`
-    /// in Discord within ten minutes.
+    /// Records the hash of the state your trip through Discord's consent
+    /// page carries, so what comes back is linked to you alone. Good for
+    /// ten minutes.
     #[action(housekeeping)]
-    pub fn begin_link(
+    pub fn begin_connect(
         &mut self,
         cx: &mut ActionCx,
-        #[param("SHA-256 of the code")] code_sha256: String,
+        #[param("SHA-256 of the OAuth2 state")] state_sha256: String,
     ) -> Result<(), Refusal> {
         let person = guard::person(cx)?;
-        if code_sha256.len() != 64 || !code_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(Refusal::new("a code hash is 64 hex digits"));
+        if self.guild_id.is_empty() {
+            return Err(Refusal::new("this room is not bridged to a Discord server"));
         }
+        hex_digest(&state_sha256)?;
         upsert(
-            &mut self.pending_links,
-            PendingLink {
+            &mut self.connects,
+            Connect {
                 person,
-                code_sha256,
-                expires_ms: cx.now_ms().saturating_add(crate::link::CODE_TTL_MS),
+                state_sha256,
+                expires_ms: cx.now_ms().saturating_add(LINK_TTL_MS),
             },
         );
         Ok(())
     }
 
-    /// Confirm a link from a `/link` command.
+    /// Offer a Discord account for linking, from Discord.
+    ///
+    /// The account ran `/link`. Whoever holds the token whose check this
+    /// is links it to themselves with `complete-link` within ten minutes;
+    /// the reply to `interaction` then says what came of it.
     #[action]
+    pub fn offer_link(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The token's check")] check: String,
+        #[param("The Discord account")] discord_user: String,
+        #[param("Its Discord username")] user_name: String,
+        #[param("The name it shows when another; empty when none")] display_name: Option<String>,
+        #[param("Its Discord avatar hash; empty when none")] avatar: Option<String>,
+        #[param("The /link it answers")] interaction: Option<String>,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        self.offer(
+            cx.now_ms(),
+            LinkOffer {
+                check,
+                discord_user,
+                user_name,
+                display_name: display_name.and_then(shown),
+                avatar: avatar.and_then(shown),
+                person: None,
+                interaction: interaction.and_then(shown),
+                expires_ms: 0,
+            },
+        )
+    }
+
+    /// Offer a Discord account for linking, from a sign-in in Tilo.
+    ///
+    /// The account signed in on Discord's consent page in the round trip
+    /// whose state hashes to `state_sha256`: only the person who started
+    /// it (`begin-connect`) may take the offer, with `complete-link`
+    /// within ten minutes.
+    #[action]
+    pub fn offer_sign_in(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The token's check")] check: String,
+        #[param("The Discord account")] discord_user: String,
+        #[param("Its Discord username")] user_name: String,
+        #[param("The name it shows when another; empty when none")] display_name: Option<String>,
+        #[param("Its Discord avatar hash; empty when none")] avatar: Option<String>,
+        #[param("SHA-256 of the round trip's OAuth 2 state")] state_sha256: String,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        hex_digest(&check)?;
+        let now = cx.now_ms();
+        let person = self
+            .connects
+            .iter()
+            .find(|connect| connect.state_sha256 == state_sha256 && now <= connect.expires_ms)
+            .map(|connect| connect.person.clone())
+            .ok_or_else(|| {
+                Refusal::new("that sign-in with Discord was not started here, or took too long")
+            })?;
+        self.connects.take(&Id::from_raw(person.as_str()));
+        self.offer(
+            now,
+            LinkOffer {
+                check,
+                discord_user,
+                user_name,
+                display_name: display_name.and_then(shown),
+                avatar: avatar.and_then(shown),
+                person: Some(person),
+                interaction: None,
+                expires_ms: 0,
+            },
+        )
+    }
+
+    /// Keep `offer` for ten minutes from `now`, dropping those run out.
+    fn offer(&mut self, now: i64, offer: LinkOffer) -> Result<(), Refusal> {
+        hex_digest(&offer.check)?;
+        let expired: Vec<Id> = self
+            .link_offers
+            .iter()
+            .filter(|offer| offer.expires_ms < now)
+            .map(Identified::id)
+            .collect();
+        for id in expired {
+            self.link_offers.take(&id);
+        }
+        upsert(
+            &mut self.link_offers,
+            LinkOffer {
+                expires_ms: now.saturating_add(LINK_TTL_MS),
+                ..offer
+            },
+        );
+        Ok(())
+    }
+
+    /// Link the Discord account offered to you.
+    ///
+    /// `proof` is the SHA-256 of the one-time token you were given; the
+    /// offer it opens is used up. Your messages in Discord then show as
+    /// you, and a link you had before is replaced.
+    #[action(housekeeping)]
     pub fn complete_link(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The Discord user who ran /link")] discord_user: String,
-        #[param("The person the pending code belongs to")] person: String,
-        #[param("SHA-256 of the code they typed")] code_sha256: String,
-        #[param("Their Discord username")] user_name: Option<String>,
-        #[param("The name they show when another; empty when none")] display_name: Option<String>,
+        #[param("SHA-256 of the link token")] proof: String,
     ) -> Result<(), Refusal> {
-        guard::bot(cx)?;
-        let now = cx.now_ms();
-        let failures = self
-            .link_failures
-            .find(&Id::from_raw(discord_user.as_str()))
-            .filter(|f| now.saturating_sub(f.window_start_ms) <= crate::link::FAILURE_WINDOW_MS)
-            .map_or(0, |f| f.count);
-        if failures >= crate::link::MAX_FAILURES {
-            return Ok(());
+        let person = guard::person(cx)?;
+        let id = Id::from_raw(link_check(&proof));
+        let Some(offer) = self.link_offers.find(&id).cloned() else {
+            return Err(Refusal::new(
+                "this link was already used or has run out. Start again from Discord with /link, or with Connect Discord in Tilo",
+            ));
+        };
+        if cx.now_ms() > offer.expires_ms {
+            self.link_offers.take(&id);
+            return Err(Refusal::new(
+                "this link ran out after ten minutes. Start again from Discord with /link, or with Connect Discord in Tilo",
+            ));
         }
-        let matches = self
-            .pending_links
-            .find(&Id::from_raw(person.as_str()))
-            .is_some_and(|p| p.code_sha256 == code_sha256 && now <= p.expires_ms);
-        if !matches {
-            let window_start_ms = if failures == 0 {
-                now
-            } else {
-                self.link_failures
-                    .find(&Id::from_raw(discord_user.as_str()))
-                    .map_or(now, |f| f.window_start_ms)
-            };
-            upsert(
-                &mut self.link_failures,
-                LinkFailure {
-                    discord_user,
-                    window_start_ms,
-                    count: failures.saturating_add(1),
-                },
-            );
-            return Ok(());
+        if offer
+            .person
+            .as_deref()
+            .is_some_and(|starter| starter != person)
+        {
+            return Err(Refusal::new(
+                "this link was started by another Tilo account. Sign in as that account, or start again",
+            ));
         }
-        self.pending_links.take(&Id::from_raw(person.as_str()));
-        self.link_failures
-            .take(&Id::from_raw(discord_user.as_str()));
+        self.link_offers.take(&id);
+        let replaced: Vec<Id> = self
+            .links
+            .iter()
+            .filter(|link| link.person == person)
+            .map(Identified::id)
+            .collect();
+        for old in replaced {
+            self.links.take(&old);
+        }
         upsert(
             &mut self.links,
             Link {
-                discord_user,
+                discord_user: offer.discord_user,
                 person,
-                linked_at: now,
-                user_name: user_name.unwrap_or_default(),
-                display_name: display_name.and_then(shown),
+                linked_at: cx.now_ms(),
+                user_name: offer.user_name,
+                display_name: offer.display_name,
+                avatar: offer.avatar,
+                interaction: offer.interaction,
+                photo: None,
+                photo_avatar: None,
             },
         );
         Ok(())
     }
 
-    /// Take a linked account's newer names.
+    /// Offer signing in with Discord.
     ///
-    /// The bridge saw the account under another username or display name
-    /// than the link holds.
+    /// The room's host offers it, through this consent page (empty for
+    /// none): members are then offered "Connect Discord".
+    #[action]
+    pub fn set_sign_in(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("Discord's consent page without its state; empty for none")] page: String,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        let page = shown(page);
+        if let Some(page) = &page
+            && (!(page.starts_with("https://") || page.starts_with("http://"))
+                || !page.contains('?'))
+        {
+            return Err(Refusal::new(
+                "a consent page is an http(s) address with its query",
+            ));
+        }
+        self.sign_in_page = page;
+        Ok(())
+    }
+
+    /// Edit the reply to a slash command to what came of it.
+    #[action]
+    pub fn answer_interaction(
+        &mut self,
+        cx: &mut ActionCx,
+        outbox: &mut Outbox<Queued, DiscordResult>,
+        op: AnswerInteractionOp,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        if op.content.is_empty() || op.content.chars().count() > MAX_CONTENT_CHARS {
+            return Err(Refusal::new("a reply holds 1 to 2000 characters"));
+        }
+        queue(cx, outbox, self.admit(DiscordOp::AnswerInteraction(op))?);
+        Ok(())
+    }
+
+    /// Take a linked account's newer names and avatar.
+    ///
+    /// The bridge saw the account under another username, display name or
+    /// avatar than the link holds.
     #[action(housekeeping)]
     pub fn rename_link(
         &mut self,
@@ -980,11 +1220,49 @@ impl Guild {
         #[param("The Discord account")] discord_user: String,
         #[param("Its Discord username")] user_name: String,
         #[param("The name it shows when another; empty when none")] display_name: Option<String>,
+        #[param("Its newer avatar hash, empty for none; unchanged when absent")] avatar: Option<
+            String,
+        >,
     ) -> Result<(), Refusal> {
         guard::bot(cx)?;
         if let Some(link) = self.links.find_mut(&Id::from_raw(discord_user.as_str())) {
             link.user_name = user_name;
             link.display_name = display_name.and_then(shown);
+            if let Some(avatar) = avatar {
+                link.avatar = shown(avatar);
+                if link.avatar.is_none() {
+                    link.photo = None;
+                    link.photo_avatar = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Keep a linked account's avatar as its picture.
+    ///
+    /// The bridge fetched the avatar small; the person's Tilo profile shows
+    /// it until they upload their own.
+    #[action(housekeeping)]
+    pub fn set_link_photo(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The Discord account")] discord_user: String,
+        #[param("The avatar hash the picture is of")] avatar: String,
+        #[param("The picture, a data: URL of a PNG, JPEG or WebP")] photo: String,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        if !is_photo(&photo) {
+            return Err(Refusal::new(
+                "a picture is a base64 data: URL of a PNG, JPEG or WebP",
+            ));
+        }
+        // A picture of an avatar the account no longer has is dropped.
+        if let Some(link) = self.links.find_mut(&Id::from_raw(discord_user.as_str()))
+            && link.avatar.as_deref() == Some(avatar.as_str())
+        {
+            link.photo = Some(photo);
+            link.photo_avatar = Some(avatar);
         }
         Ok(())
     }
@@ -1077,6 +1355,117 @@ impl Guild {
         Ok(())
     }
 
+    /// Upload a workspace emoji to the server, or rename one the bridge
+    /// uploaded.
+    #[action]
+    pub fn apply_emoji(
+        &mut self,
+        cx: &mut ActionCx,
+        outbox: &mut Outbox<Queued, DiscordResult>,
+        op: EmojiSpec,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        if !crate::emoji::valid_discord_name(&op.name) {
+            return Err(Refusal::new(
+                "a Discord emoji's name is 2 to 32 letters, digits and underscores",
+            ));
+        }
+        if let Some(id) = &op.id {
+            self.uploaded_emoji(id)?;
+        }
+        // A rename carries the picture too: an emoji deleted in Discord
+        // meanwhile is uploaded again.
+        let attach = match &op.picture {
+            Some(picture) if is_content_address(picture) => vec![picture.clone()],
+            _ => {
+                return Err(Refusal::new(
+                    "an emoji op names its picture's content address",
+                ));
+            }
+        };
+        outbox.push(
+            cx.id(),
+            Queued {
+                op: self.admit(DiscordOp::ApplyEmoji(op))?,
+                publish: Vec::new(),
+                attach,
+            },
+        );
+        Ok(())
+    }
+
+    /// Delete an emoji the bridge uploaded.
+    #[action]
+    pub fn delete_emoji(
+        &mut self,
+        cx: &mut ActionCx,
+        outbox: &mut Outbox<Queued, DiscordResult>,
+        op: DeleteEmojiOp,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        self.uploaded_emoji(&op.emoji)?;
+        queue(cx, outbox, self.admit(DiscordOp::DeleteEmoji(op))?);
+        Ok(())
+    }
+
+    /// Record what became of an emoji upload, rename or delete.
+    ///
+    /// The emoji the server holds for a workspace emoji now, or why it
+    /// holds none, said on the bridge's page until an emoji reaches the
+    /// server again.
+    #[action]
+    pub fn settle_emoji(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The workspace emoji's name")] tilo: String,
+        #[param("What the emoji op settled with")] result: DiscordResult,
+        #[param("The picture's content address, for an upload or rename")] picture: Option<String>,
+        #[param("The workspace emoji's name before a rename")] was: Option<String>,
+        #[param("The op deleted the emoji")] deleted: Option<bool>,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        let DiscordResult::Emoji {
+            emoji_id, problem, ..
+        } = result
+        else {
+            return Err(Refusal::new("that is not what an emoji op settles with"));
+        };
+        if let Some(problem) = problem {
+            if problem.is_empty() || problem.chars().count() > MAX_PROBLEM_CHARS {
+                return Err(Refusal::new("an emoji problem is 1 to 300 characters"));
+            }
+            self.emoji_problem = Some(problem);
+            return Ok(());
+        }
+        self.emoji_problem = None;
+        if deleted == Some(true) {
+            self.map
+                .take(&Id::from_raw(map_key(MappedKind::Emoji, &tilo)));
+            return Ok(());
+        }
+        if emoji_id.is_empty() || !crate::emoji::valid_discord_name(&tilo) {
+            return Err(Refusal::new("an uploaded emoji has an id and a name"));
+        }
+        if let Some(was) = was.filter(|was| *was != tilo) {
+            self.map
+                .take(&Id::from_raw(map_key(MappedKind::Emoji, &was)));
+        }
+        upsert(
+            &mut self.map,
+            Mapping {
+                key: map_key(MappedKind::Emoji, &tilo),
+                kind: MappedKind::Emoji,
+                tilo,
+                discord: emoji_id,
+                origin: Origin::Tilo,
+                persona: None,
+                root: None,
+                picture: picture.filter(|picture| is_content_address(picture)),
+            },
+        );
+        Ok(())
+    }
+
     /// Say why the bridge cannot carry voice now, or that it can again.
     ///
     /// The room's host reports what Discord answered when the bridge
@@ -1119,6 +1508,15 @@ fn queue(cx: &mut ActionCx, outbox: &mut Outbox<Queued, DiscordResult>, op: Disc
             attach: Vec::new(),
         },
     );
+}
+
+/// `text` is a SHA-256 digest in hex.
+fn hex_digest(text: &str) -> Result<(), Refusal> {
+    if text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(Refusal::new("a digest is 64 hex digits"))
+    }
 }
 
 fn content_fits(content: &str, has_files: bool) -> Result<(), Refusal> {
@@ -1182,6 +1580,18 @@ impl Guild {
         }
     }
 
+    /// An emoji the bridge uploaded itself: the server's own are never
+    /// renamed or deleted.
+    fn uploaded_emoji(&self, discord: &str) -> Result<(), Refusal> {
+        if self.by_discord(MappedKind::Emoji, discord).is_some() {
+            Ok(())
+        } else {
+            Err(Refusal::new(
+                "the bridge changes only emoji it uploaded, never the server's own",
+            ))
+        }
+    }
+
     fn linked(&self, user: &str) -> Result<(), Refusal> {
         if self.links.find(&Id::from_raw(user)).is_some() {
             Ok(())
@@ -1191,6 +1601,11 @@ impl Guild {
             ))
         }
     }
+}
+
+/// A content-store blob's address: 64 hex digits.
+fn is_content_address(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn bot_or_person(cx: &ActionCx) -> Result<(), Refusal> {

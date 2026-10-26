@@ -693,6 +693,14 @@ impl App {
     }
 
     fn publish_action_surface_after_refresh(&mut self) {
+        let carried = self.publish_action_surface_on_route();
+        self.settle_held_own_invocations(carried);
+    }
+
+    /// Whether the route now carries this app's current offer: its surface
+    /// went out (or was already the host's copy) after the route's history
+    /// was applied, or the app withdrew an offer it may not make.
+    fn publish_action_surface_on_route(&mut self) -> bool {
         let _background = crate::local_document_action::suspend();
         #[cfg(test)]
         {
@@ -704,7 +712,7 @@ impl App {
         if !self.collaboration.manager.is_connected()
             || !self.published_action_history_ready_after_refresh()
         {
-            return;
+            return false;
         }
         if self.collaboration.manager.take_action_surface_failed() {
             // The broker did not install the last surface: nothing counts as
@@ -763,9 +771,9 @@ impl App {
                 .as_ref()
                 .is_some_and(|actions| !actions.is_empty())
             {
-                self.withdraw_action_surface(publication_app_id);
+                return self.withdraw_action_surface(publication_app_id);
             }
-            return;
+            return true;
         }
         let mut operation_handlers = crate::widget::resource_operation_handlers(&*self.root_widget);
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
@@ -813,15 +821,14 @@ impl App {
                 .as_ref()
                 .is_none_or(Vec::is_empty)
             {
-                return;
+                return true;
             }
-            self.withdraw_action_surface(crate::collaboration::local_app_id());
-            return;
+            return self.withdraw_action_surface(crate::collaboration::local_app_id());
         }
         let descriptors = tilo_actions::door::survey(&resources);
         self.capture_action_directory_snapshot(&resources, &descriptors);
         if self.actions.last_published_actions.as_ref() == Some(&descriptors) {
-            return;
+            return true;
         }
         // Only what changed since the broker's copy crosses: each distinct
         // catalogue entry once, and per resource action its own fields. With
@@ -846,12 +853,57 @@ impl App {
         {
             self.actions.last_published_actions = Some(descriptors);
             self.actions.published_surface = Some(state);
+            return true;
+        }
+        false
+    }
+
+    /// Send an invocation of this app's own action to the session action
+    /// host, on the route, after the surface that offers it. It waits here,
+    /// behind any invocation made before it, while the route cannot carry
+    /// that surface yet.
+    fn send_own_invocation(&mut self, request: tilo_actions::remote::InvokeRequest) {
+        self.actions.held_own_invocations.push_back(request);
+        self.publish_action_surface();
+    }
+
+    /// Release the held own invocations, in order, once the route carries
+    /// the current surface; refuse them with the connection's own reason
+    /// once it has gone. Otherwise they keep waiting: the publication the
+    /// route's readiness brings settles them.
+    fn settle_held_own_invocations(&mut self, carried: bool) {
+        use tilo_actions::remote::{ActionHostError, RemoteActionMessage};
+        if self.actions.held_own_invocations.is_empty() {
+            return;
+        }
+        let connected = self.collaboration.manager.is_connected();
+        if connected && !carried {
+            return;
+        }
+        while let Some(request) = self.actions.held_own_invocations.pop_front() {
+            let refusal = RemoteActionMessage::Invoke(request.clone());
+            if connected
+                && self
+                    .collaboration
+                    .manager
+                    .send(CollabRequest::RemoteAction {
+                        message: RemoteActionMessage::Invoke(request),
+                    })
+            {
+                continue;
+            }
+            let reason = self.collaboration.manager.state().reason().to_owned();
+            if let Some(answer) =
+                tilo_actions::remote::refuse(&refusal, ActionHostError::Unavailable { reason })
+            {
+                self.apply_remote_action_answer(answer);
+            }
         }
     }
 
     /// Withdraw everything this app published: a reset delta with nothing in it.
-    fn withdraw_action_surface(&mut self, app_id: String) {
-        if self
+    fn withdraw_action_surface(&mut self, app_id: String) -> bool {
+        let withdrawn = self
             .collaboration
             .manager
             .send(CollabRequest::PublishActionSurface {
@@ -860,12 +912,13 @@ impl App {
                     reset: true,
                     ..crate::collaboration::SurfaceDelta::default()
                 },
-            })
-        {
+            });
+        if withdrawn {
             self.actions.last_published_actions = Some(Vec::new());
             self.actions.published_surface =
                 Some(crate::collaboration::SurfacePublication::default());
         }
+        withdrawn
     }
 
     fn action_directory_revision(&mut self) -> String {
@@ -2162,7 +2215,6 @@ impl App {
             .alias(binding, resource.id.as_str())
             .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
         let address = tilo_actions::ActionAddress::new(alias, action);
-        self.publish_action_surface();
         self.invoke_via_broker(&address, Some(&serde_json::Map::new()), None, None)
     }
 
@@ -2180,22 +2232,23 @@ impl App {
         argument: Option<&str>,
         confirmation_evidence: Option<&serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let broker_requests = &mut self.actions.broker_requests;
-        let manager = &mut self.collaboration.manager;
-        Self::dispatch_broker_request(
+        let mut made = None;
+        let started = Self::dispatch_broker_request(
             &mut self.actions.next_broker_request_id,
-            manager.is_connected(),
+            self.collaboration.manager.is_connected(),
             address,
             typed_arguments,
             argument,
             confirmation_evidence,
-            |request_id, request| {
-                broker_requests.insert(BrokerReply::Receipt(request.invocation), request_id);
-                manager.send(CollabRequest::RemoteAction {
-                    message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
-                });
-            },
-        )
+            |request_id, request| made = Some((request_id, request)),
+        )?;
+        if let Some((request_id, request)) = made {
+            self.actions
+                .broker_requests
+                .insert(BrokerReply::Receipt(request.invocation), request_id);
+            self.send_own_invocation(request);
+        }
+        Ok(started)
     }
 
     /// The confirmation an app's legacy evidence object expresses.
@@ -2480,7 +2533,6 @@ impl App {
                 },
             );
         }
-        self.publish_action_surface();
         self.invoke_via_broker(&address, arguments, argument, evidence)
     }
 
@@ -3285,6 +3337,19 @@ impl App {
         on_behalf_of: Option<tilo_actions::InvocationId>,
         origin: crate::bound_dispatch::Origin,
     ) -> bool {
+        // A pick the app asks the person to confirm is asked before it
+        // reaches the door, through the same question the door's own
+        // confirmations get.
+        if origin == crate::bound_dispatch::Origin::PersonConfirming && on_behalf_of.is_none() {
+            return self.ask_person(
+                crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
+                    target.clone(),
+                ),
+                intent.address.clone(),
+                crate::bound_dispatch::ControlContinuationArguments::Json(intent.arguments.clone()),
+                true,
+            );
+        }
         let argument = format!(
             "{}{}",
             tilo_actions::ARGUMENTS_JSON_PREFIX,
@@ -3387,7 +3452,7 @@ impl App {
                 // Only what the person asked for is refused over the window;
                 // the app hears of its own invocation's refusal through the
                 // feedback above.
-                if acting.is_none() && origin == crate::bound_dispatch::Origin::Person {
+                if acting.is_none() && origin.is_persons() {
                     self.refuse_visibly(&error);
                 }
                 false
@@ -3751,8 +3816,7 @@ impl App {
         {
             // Only what the person asked for is refused over the window; the
             // app hears of its own invocation's refusal through the feedback.
-            let says_refusal =
-                on_behalf_of.is_none() && origin == crate::bound_dispatch::Origin::Person;
+            let says_refusal = on_behalf_of.is_none() && origin.is_persons();
             if on_behalf_of.is_none() && self.take_history_invocation(&intent, None) {
                 dispatched = dispatched.saturating_add(1);
                 continue;
@@ -3811,10 +3875,14 @@ impl App {
                 );
                 continue;
             }
-            if !matches!(
-                resolved.confirmation_for_json(&intent.arguments),
-                tilo_actions::ConfirmationPolicy::None
-            ) {
+            let confirming =
+                acting.is_none() && origin == crate::bound_dispatch::Origin::PersonConfirming;
+            if confirming
+                || !matches!(
+                    resolved.confirmation_for_json(&intent.arguments),
+                    tilo_actions::ConfirmationPolicy::None
+                )
+            {
                 // A bound control never manufactures confirmation. Hand the
                 // exact address to the standard palette flow, which owns the
                 // explicit confirm/phrase UI and only then enters the door.
@@ -3823,10 +3891,11 @@ impl App {
                     &intent.address,
                     &Err(tilo_actions::DoorError::ConfirmationRequired),
                 );
-                self.open_ordinary_confirmation(
+                self.ask_person(
                     crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer,
                     intent.address,
                     crate::bound_dispatch::ControlContinuationArguments::Json(intent.arguments),
+                    confirming,
                 );
                 dispatched = dispatched.saturating_add(1);
                 continue;
@@ -3995,11 +4064,7 @@ impl App {
         if let Some(continuation) = self.actions.acting_for.get_mut(&running) {
             continuation.outstanding.insert(request_id);
         }
-        self.collaboration
-            .manager
-            .send(CollabRequest::RemoteAction {
-                message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
-            });
+        self.send_own_invocation(request);
         Ok(crate::widget::ResourceOperationStart::Accepted)
     }
 
@@ -4573,6 +4638,19 @@ impl App {
         address: tilo_actions::ActionAddress,
         arguments: crate::bound_dispatch::ControlContinuationArguments,
     ) -> bool {
+        self.ask_person(target, address, arguments, false)
+    }
+
+    /// Ask the person before `address` goes ahead: as the door asked
+    /// ([`Self::open_ordinary_confirmation`]), or, `confirming`, as the app
+    /// asked for a pick of theirs ([`crate::bound_dispatch::Origin::PersonConfirming`]).
+    fn ask_person(
+        &mut self,
+        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        address: tilo_actions::ActionAddress,
+        arguments: crate::bound_dispatch::ControlContinuationArguments,
+        confirming: bool,
+    ) -> bool {
         let request = crate::bound_dispatch::OrdinaryConfirmation::prepare(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -4582,6 +4660,7 @@ impl App {
             arguments,
         );
         let request = match request {
+            Ok(request) if confirming => request.confirming(),
             Ok(request) => request.asking_first(),
             Err(error) => {
                 self.refuse_visibly(&error);
@@ -4602,6 +4681,14 @@ impl App {
         self.focused_node = None;
         if let Some(palette) = self.actions.action_palette.as_mut() {
             palette.activate_ordinary(request);
+        }
+        if self
+            .actions
+            .action_palette
+            .as_ref()
+            .is_some_and(crate::action_palette::ActionPalette::went_ahead)
+        {
+            return self.finish_action_palette_input(true);
         }
         self.rebuild_action_palette_admission();
         true

@@ -24,10 +24,48 @@ use tilo_actions::{ActionAddress, ActionDescriptor, ExecutionLocus, InputSpec};
 
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
-    BrokerActor, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES, InvocationInputs, LaunchScope,
-    PublishedAction, PublishedSurface, app_node, confirmation_satisfied,
+    AdmittedJoinIdentity, BrokerActor, CapnpBrokerState, DIRECTORY_MAX_PARAMS_BYTES,
+    InvocationInputs, LaunchScope, PublishedAction, PublishedSurface, app_node,
+    confirmation_satisfied,
 };
 use crate::automation;
+use crate::route::CrdtRoute;
+
+/// Whether the connection admitted as `current` on `route` may reach
+/// `target_app`'s published actions through one of the legacy invoke doors,
+/// whose target peer or binding the caller names itself, and be decided as
+/// the person who admitted the connection.
+///
+/// It applies the same ceiling `remote_action` does. An agent channel is its
+/// own principal and is decided for itself. Every other connection is an
+/// application, decided for the person who opened it, and reaches another
+/// application's action only when that application declared the reach in its
+/// manifest (`[actions] invoke`) — the same access `app_door` reads. Without
+/// it the call belongs on `remoteAction`, where the application door also
+/// applies the workspace's grant to that application and the person's
+/// consent.
+///
+/// A connection that named no application on its route is the shell's own
+/// device connection, not an application: it is admitted by the workspace and
+/// reaches what the person using that device reaches.
+pub(crate) fn legacy_door_may_act_as_person(
+    current: &AdmittedJoinIdentity,
+    route: &CrdtRoute,
+    target_app: &str,
+    invoke_access: bool,
+) -> bool {
+    current.agent_id.is_some()
+        || route.app_id.is_empty()
+        || route.app_id == target_app
+        || invoke_access
+}
+
+/// Refusal of a legacy invoke door aimed at another application's action.
+/// Worded so the door's `refusal()` maps it to `NotPermitted`, the answer the
+/// same request gets through `remoteAction`.
+pub(crate) const LEGACY_DOOR_FOREIGN_APP: &str =
+    "another application's action is not allowed through this door";
+
 use crate::services::LaunchPlace;
 use tilo_automation::SHORTCUTS_APP_ID;
 
@@ -41,6 +79,7 @@ mod governance_witness_tests;
 mod directory;
 mod launch_child;
 mod own_device;
+mod room_nodes;
 mod shortcut_run;
 use directory::bridge_error;
 
@@ -370,6 +409,21 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
     }
 }
 
+/// What launching an app for `request` needs of its person on the app:
+/// leave to read it when the request shows something that exists in it (a
+/// record, an item of one, such as a note shared with a Viewer), whose
+/// window is then read-only to a person who may only read; leave to change
+/// it for anything else, an app opened on nothing in particular included.
+fn launch_kind(request: &InvokeRequest) -> tilo_action_policy::ActionKind {
+    if request.target.address.action == APPLICATION_OPEN_ACTION
+        && application_provider(&request.target.provider).is_some()
+    {
+        tilo_action_policy::ActionKind::Read
+    } else {
+        tilo_action_policy::ActionKind::Undoable
+    }
+}
+
 /// Installed application `app` named to a caller that may not open it: its
 /// resource with no action, so the caller learns the app is there and that
 /// opening it is not theirs to do.
@@ -601,6 +655,16 @@ impl CapnpBrokerState {
                 tilo_actions::remote::own_device::Invocation::from_argument(&request.argument)
                     .is_ok_and(|invocation| invocation.app == app_id)
                     .then(|| person.clone())
+            }
+            // A node of the person's own workspace asked about, shared or
+            // unshared: what the person did in the app (a window shared to a
+            // channel), which the room bounds by what the person holds there.
+            // Never under the app's own identity, which the room knows not.
+            RemoteActionMessage::Invoke(request)
+                if room_nodes::node_ask(request)
+                    .is_some_and(|(room, _)| person.room() == Some(room)) =>
+            {
+                Some(person.clone())
             }
             RemoteActionMessage::Invoke(request) => {
                 if self.app_owns(person, app_id, request) || reference_request(request) {
@@ -1608,6 +1672,9 @@ impl CapnpBrokerState {
         {
             return self.invoke_launchable(caller, origin, request);
         }
+        if room_nodes::node_ask(request).is_some() {
+            return self.invoke_room_node(caller, origin, request);
+        }
         if let Some(root) = self.directory_target(caller, request) {
             return self.invoke_directory(caller, root, origin, request);
         }
@@ -1806,14 +1873,15 @@ impl CapnpBrokerState {
             .decide_for(caller, &room, |workspace, policy, now| {
                 // A live application target is a route to an existing action,
                 // not a request to launch another instance. Reads retain their
-                // read-only authority while actual launches still require write.
+                // read-only authority while actual launches still require
+                // write, unless they only show what exists (`launch_kind`).
                 if self
                     .ready_publisher(&app_id, &room, record.as_deref(), address)
                     .is_none()
                     && !policy.may_in(
                         workspace,
                         &app_node(workspace, &app_id),
-                        tilo_action_policy::ActionKind::Undoable,
+                        launch_kind(request),
                         now,
                     )
                 {
@@ -2164,17 +2232,27 @@ impl CapnpBrokerState {
         admitted: &super::host_action_admission::AdmittedHostAction,
         app_id: &str,
     ) -> Result<Workspace, ActionHostError> {
+        self.reauthorize_launch_effect_as(
+            custody,
+            admitted,
+            (app_id, tilo_action_policy::ActionKind::Undoable),
+        )
+    }
+
+    /// [`Self::reauthorize_launch_effect`] for a launch that needs `kind`
+    /// on the app ([`launch_kind`]).
+    fn reauthorize_launch_effect_as(
+        &self,
+        custody: (&Caller, Option<&super::InvocationCaller>, &str),
+        admitted: &super::host_action_admission::AdmittedHostAction,
+        (app_id, kind): (&str, tilo_action_policy::ActionKind),
+    ) -> Result<Workspace, ActionHostError> {
         let (caller, origin, room) = custody;
         let result = self
             .current_framework_authority(caller, origin, room)
             .and_then(|(workspace, policy, now)| {
                 policy
-                    .may_in(
-                        &workspace,
-                        &app_node(&workspace, app_id),
-                        tilo_action_policy::ActionKind::Undoable,
-                        now,
-                    )
+                    .may_in(&workspace, &app_node(&workspace, app_id), kind, now)
                     .then_some(workspace)
                     .ok_or(ActionHostError::NotPermitted)
             });

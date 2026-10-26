@@ -12,7 +12,7 @@ pub const SCHEMA_VERSION: u16 = 3;
 const MAX_GRANTS: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, from = "StoredProjection")]
 pub struct AppActionAuthorityProjection {
     pub schema_version: u16,
     pub room: String,
@@ -25,6 +25,44 @@ pub struct AppActionAuthorityProjection {
     /// not govern.
     #[serde(default)]
     pub foreign: bool,
+}
+
+/// An [`AppActionAuthorityProjection`] as written. Its policy loads with the
+/// built-in roles as the code defines them now, which gives a role back the
+/// grants the projection left out; [`From`] narrows those again.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredProjection {
+    schema_version: u16,
+    room: String,
+    app_id: String,
+    person: String,
+    policy: RoomPolicy,
+    #[serde(default)]
+    foreign: bool,
+}
+
+impl From<StoredProjection> for AppActionAuthorityProjection {
+    /// The built-in roles' grants are the code's, so they are narrowed to the
+    /// app here as [`AppActionAuthorityProjection::project`] narrowed them:
+    /// a projection reads back as the projection of the current policy.
+    /// Grants given in the room stay as written, for
+    /// [`AppActionAuthorityProjection::validate`] to judge.
+    fn from(stored: StoredProjection) -> Self {
+        let mut policy = stored.policy;
+        let app = policy.node().app(&stored.app_id);
+        policy
+            .grants
+            .retain(|grant| !roles::is_role_grant(grant) || grant.node.overlaps(&app));
+        Self {
+            schema_version: stored.schema_version,
+            room: stored.room,
+            app_id: stored.app_id,
+            person: stored.person,
+            policy,
+            foreign: stored.foreign,
+        }
+    }
 }
 
 impl AppActionAuthorityProjection {
@@ -138,6 +176,40 @@ mod tests {
             ));
             assert!(invalid.validate().is_err());
         }
+    }
+
+    /// What the launcher and the app read is what the host projected: the
+    /// built-in roles loading as the code defines them adds none of the
+    /// grants the projection left out.
+    #[test]
+    fn a_projection_reads_back_as_written() {
+        let original = policy();
+        assert!(
+            original.policy.grants.len() < RoomPolicy::new("room-a", "person-a").grants.len(),
+            "the room holds role grants that reach no action of the app"
+        );
+        let read: AppActionAuthorityProjection =
+            serde_json::from_slice(&serde_json::to_vec(&original).unwrap()).unwrap();
+        read.validate().unwrap();
+        assert_eq!(read, original);
+    }
+
+    /// A grant the room gave that reaches beyond the app is still refused
+    /// when read, not dropped.
+    #[test]
+    fn a_read_projection_keeps_room_grants_for_validation() {
+        let mut written = policy();
+        written.policy.grants.push(Grant::new(
+            "foreign",
+            Subject::person("person-b"),
+            TreePath::room("room-a").app("so.tilo.settings"),
+            KindSet::ALL,
+            Answer::Allow,
+            Subject::person("person-a"),
+        ));
+        let read: AppActionAuthorityProjection =
+            serde_json::from_slice(&serde_json::to_vec(&written).unwrap()).unwrap();
+        assert!(read.validate().is_err());
     }
 
     #[test]

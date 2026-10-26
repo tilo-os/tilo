@@ -11,8 +11,8 @@ use super::{
     ActivityDeepLink, ActivityTree, ActivityView, BoundaryDirection, DetailAction,
     GroupNameRequest, HistoryEntry, HistoryEntryId, LensSelection, Period, RecordId, RecordStore,
     RoomActivityOutcome, RoomActivityPane, RoomScope, SystemTime, WorkSessionBoundary,
-    WorkspaceHistoryId, comparison_change_labels, detail_provenance, handled_outcome,
-    humanize_app_id, local_resume_snapshot, t, t_args,
+    WorkspaceHistoryId, comparison_change_labels, comparison_field_changes, detail_provenance,
+    handled_outcome, humanize_app_id, local_resume_snapshot, t, t_args,
 };
 
 fn millis(at: SystemTime) -> i64 {
@@ -212,6 +212,7 @@ pub fn is_document_write(action: &str) -> bool {
         wire::UNDO,
         wire::RESTORE,
         wire::UNDO_RUN,
+        wire::UNDO_RECORD,
     ]
     .contains(&action)
 }
@@ -263,6 +264,7 @@ impl RoomActivityPane {
         self.replay_unavailable.hash(&mut hasher);
         self.agent_runs.len().hash(&mut hasher);
         self.agent_undo_notice.hash(&mut hasher);
+        self.unreverted.hash(&mut hasher);
         self.undo_pending.is_some().hash(&mut hasher);
         self.comparison
             .as_ref()
@@ -599,7 +601,13 @@ impl RoomActivityPane {
                         wire::RunRecord {
                             record,
                             app,
+                            id: step.record.clone(),
+                            app_id: step.app.clone(),
                             change: step.sentence(),
+                            undo: self.can_undo_agent_record(step).then(|| wire::Offer {
+                                action: wire::DetailAction::UndoRecord,
+                                label: t("activity-detail-undo-step"),
+                            }),
                         }
                     })
                     .collect(),
@@ -610,6 +618,15 @@ impl RoomActivityPane {
                     .as_ref()
                     .filter(|(id, _)| *id == run.id)
                     .map(|(_, notice)| notice.clone()),
+                unreverted: if self
+                    .agent_undo_notice
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == run.id)
+                {
+                    self.unreverted.clone()
+                } else {
+                    Vec::new()
+                },
             }
         });
         wire::Detail {
@@ -622,6 +639,10 @@ impl RoomActivityPane {
             offers: self.offers(&detail),
             run,
             comparison,
+            changes: self
+                .comparison
+                .as_ref()
+                .map_or_else(Vec::new, comparison_field_changes),
             gone: false,
         }
     }
@@ -847,6 +868,26 @@ impl RoomActivityPane {
             wire::UNDO => detail(self, &read(arguments)?, DetailAction::Undo, tree),
             wire::RESTORE => detail(self, &read(arguments)?, DetailAction::Restore, tree),
             wire::UNDO_RUN => detail(self, &read(arguments)?, DetailAction::UndoTask, tree),
+            wire::UNDO_RECORD => {
+                let query: wire::RecordQuery = read(arguments)?;
+                if !self.select_range(&query.range) {
+                    return Err(t("activity-history-gone"));
+                }
+                let Some(task) = self
+                    .selected_agent_run()
+                    .and_then(|indexed| indexed.run.task.clone())
+                else {
+                    return Err(t("activity-undo-task-unavailable"));
+                };
+                // Asked of the task, so undo names the run's group in the
+                // document: the same step a task-wide undo would take
+                // back, one record at a time.
+                Ok(if self.undo_task_record(&task, &query.app_id, &query.id) {
+                    handled_outcome()
+                } else {
+                    RoomActivityOutcome::default()
+                })
+            }
             wire::CHOOSE_SOURCE => {
                 detail(self, &read(arguments)?, DetailAction::MorningSource, tree)
             }

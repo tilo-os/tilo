@@ -59,7 +59,7 @@ impl TabBar {
         theme: &Theme,
     ) -> Option<(Rect, String)> {
         if !self.desktop_control.ids.contains(&self.active_id)
-            || self.active_toolbar().is_some()
+            || self.active_slots().is_some()
             || self.pending_drag.is_some()
             || self.tab_rects.len() != self.tabs.len()
         {
@@ -68,7 +68,7 @@ impl TabBar {
         let label = crate::i18n!("tab-controls-desktop");
         let tab_row = self.tab_row();
         let x0 = self.status_chips_start() + TOOLBAR_LEAD_GAP;
-        let limit = self.controls.content_limit(tab_row);
+        let limit = self.tab_row_limit(tab_row);
         let width =
             ChipFace::intrinsic_width(&label, ChipLead::Glyph(Icon::Monitor), true, tr, theme);
         let height = ChipFace::height(theme);

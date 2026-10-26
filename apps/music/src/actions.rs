@@ -1768,7 +1768,7 @@ mod tests {
                     "this device's audio is outside the document: {id}"
                 );
                 assert!(
-                    !action.contract.reversible,
+                    !action.contract.can_be_undone(),
                     "local device effects cannot claim an executable undo: {id}"
                 );
             }

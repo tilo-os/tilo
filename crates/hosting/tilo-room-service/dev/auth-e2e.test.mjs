@@ -3,7 +3,7 @@
 // the `Browser / authentication` workflow has.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {blake3, currentDevice, joinsTo, keptApart, keptNamespaces, membershipFor, parseArgs, parseBanner,
+import {blake3, currentDevice, fakeResend, joinsTo, keptApart, keptNamespaces, mailLink, membershipFor, parseArgs, parseBanner,
   AWAY_MS, REMOVE_MEMBER, revocationDigest, revocationEntry, SETTLED} from './auth-e2e.mjs';
 
 test('the arguments name every input, absolute', () => {
@@ -138,4 +138,25 @@ test("the page's device is the one its current namespace's certificate names", (
   assert.equal(currentDevice({rows, devices: {}}, 'p'), '01'.repeat(32));
   assert.equal(currentDevice({rows, devices: {p: 'tilo-browser-device:ab'}}, 'p'), '02'.repeat(32));
   assert.equal(currentDevice({rows, devices: {p: 'other'}}, 'p'), null);
+});
+
+test('the stand-in for Resend keeps what the right key sends, and the links in a mail are found', async () => {
+  const resend = await fakeResend();
+  try {
+    const send = (key, mail) => fetch(resend.url, {method: 'POST', headers: {authorization: `Bearer ${key}`, 'content-type': 'application/json'},
+      body: JSON.stringify(mail)});
+    const secret = 'ab'.repeat(32);
+    const mail = {from: 'Tilo <door@example.org>', to: ['ada@example.org'], subject: 'Confirm', html: '<p>x</p>',
+      text: `Confirm:\nhttp://localhost:1/?wait-list-confirm=${secret}\n\nOff: http://localhost:1/?wait-list-remove=${'cd'.repeat(32)}\n`};
+    assert.equal((await send('wrong', mail)).status, 401);
+    assert.equal((await send(resend.key, {...mail, text: ''})).status, 422);
+    assert.equal((await send(resend.key, mail)).status, 200);
+    assert.deepEqual(resend.mails, [mail]);
+    assert.equal(mailLink(mail, 'wait-list-confirm'), `http://localhost:1/?wait-list-confirm=${secret}`);
+    assert.equal(mailLink(mail, 'wait-list-remove'), `http://localhost:1/?wait-list-remove=${'cd'.repeat(32)}`);
+    assert.equal(mailLink({text: 'Join: http://localhost:1/#/w/r?invite=AAEC-_x\n'}, 'invite'), 'http://localhost:1/#/w/r?invite=AAEC-_x');
+    assert.equal(mailLink({text: 'nothing'}, 'invite'), null);
+  } finally {
+    await resend.close();
+  }
 });

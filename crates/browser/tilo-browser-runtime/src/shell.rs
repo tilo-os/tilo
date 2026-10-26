@@ -20,7 +20,13 @@
 //! Who is here comes from the page ([`crate::here`]): their avatars join
 //! the bar's from a copy of the tree, the bar's avatars open the People
 //! popover with each person's place, status and recent summary, and the
-//! windows they are in carry their faces.
+//! windows they are in carry their faces. Pinned, the roster floats over
+//! the windows as the people overlay, and following someone tracks their
+//! view ([`people`]).
+
+mod control_hints;
+pub(crate) mod people;
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -32,8 +38,8 @@ use tilo_desktop::chrome::{
     AvatarAsk, ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
 };
 use tilo_desktop::collaborators::{
-    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, LineSource, RecentChange,
-    RosterRow, RosterStatus,
+    CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, RecentChange, RosterRow,
+    RosterStatus,
 };
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadCopy};
 use tilo_desktop::overview::{OverviewHost, room_cards};
@@ -78,11 +84,51 @@ pub(crate) enum HostRequest {
     /// Have the room's host run an action of a room record for the person
     /// (`peer.actions`), and answer it with `desktop_room_action_answer`.
     RoomAction(crate::desktop::RoomActionRequest),
+    /// Open Chat's direct conversation with this person, through Chat's own
+    /// action, as following a link to it does (`desktop_run_own_ask`).
+    Message(people::OwnAsk),
+    /// Send a direct message through Chat's own `send-direct-message`
+    /// (`desktop_run_own_ask`), and answer `id` with `desktop_message_answer`.
+    Send(people::OwnAsk),
+    /// Keep what the person says they are doing, and how they share it, in
+    /// their profile, which each of their devices reads
+    /// (`desktop_set_own_status`): set here, it shows there too.
+    Status { status: String, sharing: String },
+    /// Go to this address, leaving the page: a service's consent page,
+    /// which comes back to the room's host and from there to this entry.
+    Open(String),
+    /// The person's linked accounts, as the room's host answered: their
+    /// profile names them, and wears an account's picture until the person
+    /// uploads their own (`onHostAction('set-linked', {accounts})`).
+    Linked(Vec<tilo_app::linked_accounts::ProfileLink>),
+}
+
+/// How a person shares what they are doing, as their profile keeps it.
+pub(crate) fn sharing_word(sharing: ui::StatusSharing) -> &'static str {
+    match sharing {
+        ui::StatusSharing::Automatic => "automatic",
+        ui::StatusSharing::ManualOnly => "manual",
+        ui::StatusSharing::Off => "off",
+    }
+}
+
+/// The sharing a profile's word names, if any.
+pub(crate) fn sharing_of(word: &str) -> Option<ui::StatusSharing> {
+    Some(match word {
+        "automatic" => ui::StatusSharing::Automatic,
+        "manual" => ui::StatusSharing::ManualOnly,
+        "off" => ui::StatusSharing::Off,
+        _ => return None,
+    })
 }
 
 /// The page's host action that lets the person choose their name; the
 /// People panel offers it on the own name when the page lists it.
 const RENAME_ACTION: &str = "set-name";
+/// The avatar menu's "Report a problem…", which the page answers itself.
+const REPORT_PROBLEM: &str = "report-problem";
+/// Chat, which holds person-to-person conversations.
+const CHAT_APP: &str = "so.tilo.chat";
 
 /// Workspace menu keys: a workspace of this page's desktop, by id, and one
 /// of the person's others the page opens, by its host action.
@@ -117,6 +163,11 @@ pub(crate) struct HostOffers {
     pub host: Option<String>,
     /// The deployment's links the About sheet offers.
     pub about: tilo_desktop::about::AboutLinks,
+    /// The build this page runs (its commit), which a report names.
+    pub build: Option<String>,
+    /// A linked-account offer's token the page arrived with: the profile
+    /// card opens on it, asking the person to confirm.
+    pub link_offer: Option<String>,
 }
 
 /// Who this desktop's person is when they make something in the room,
@@ -253,11 +304,35 @@ impl PageChrome {
         here_people(&self.here, &self.shared, tree)
     }
 
+    /// The roster's rows for `people`, each follower's saying whom they
+    /// follow, and those `(follower, followed)` pairs.
+    fn roster_rows(
+        &self,
+        people: &[tilo_desktop::here::Person],
+        theme: &Theme,
+    ) -> (Vec<RosterRow>, Vec<(String, String)>) {
+        let mut rows: Vec<RosterRow> = people
+            .iter()
+            .map(|person| roster_row(person, theme))
+            .collect();
+        let here = self.here.borrow();
+        let pairs = here.following_pairs(people);
+        tilo_desktop::collaborators::note_following(&mut rows, &pairs, here.own_id());
+        (rows, pairs)
+    }
+
     /// This page's person as everyone here sees them: their name (numbered
     /// when someone else here shares it) and colour.
     fn own_chip(&self) -> tilo_desktop::chrome::OwnChip {
-        let (name, rgb) = own_identity(&self.here.borrow());
-        tilo_desktop::chrome::OwnChip { name, rgb }
+        let here = self.here.borrow();
+        let (name, rgb) = own_identity(&here);
+        // Their root key, which wears the picture they chose.
+        let identity = here.own_user().unwrap_or_default().to_owned();
+        tilo_desktop::chrome::OwnChip {
+            name,
+            rgb,
+            identity,
+        }
     }
 }
 
@@ -331,7 +406,7 @@ pub(crate) fn now_ms() -> u64 {
 fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
     let status = |line: &tilo_desktop::here::Line| RosterStatus {
         text: line.text.clone(),
-        source: LineSource::generated_if(line.automatic),
+        source: line.source,
     };
     RosterRow {
         id: person.id.clone(),
@@ -359,12 +434,29 @@ fn roster_row(person: &tilo_desktop::here::Person, theme: &Theme) -> RosterRow {
                 entry: None,
             })
             .collect(),
-        followable: false,
+        // Following brings forward, here, the window of what they are in.
+        followable: true,
         availability: ui::Availability::Available,
         call: None,
         join: None,
         own_device: false,
     }
+}
+
+/// This page's person as the people here read them, for their own row in
+/// the pinned roster: their name, colour, and what they are doing (their
+/// own words, else the host's automatic line while they share one).
+fn own_row(here: &tilo_desktop::here::HereState, theme: &Theme) -> RosterRow {
+    let (label, rgb) = own_identity(here);
+    RosterRow::own(
+        ui::collaboration::local_user_id().0,
+        label,
+        theme.tokens.colors.presence.of_rgb(rgb),
+        here.own_doing().map(|line| RosterStatus {
+            text: line.text,
+            source: line.source,
+        }),
+    )
 }
 
 /// The wall clock's minute, which the bar shows.
@@ -484,13 +576,22 @@ pub(crate) struct BrowserShell {
     requests: HostRequests,
     workspace_menu: WorkspaceMenu,
     profile: ProfileCard,
+    /// Whose card the profile card shows, by roster id; `None` for the
+    /// person's own.
+    profile_of: Option<String>,
     /// The People popover the bar's avatars open.
     people: CollaboratorsOverlay,
     people_open: bool,
+    /// The roster pinned out of the popover, and following someone.
+    pinned: people::PagePeople,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
     linking: tilo_app::linked_accounts::LinkingRecheck,
+    /// The linked accounts last handed to the page for the person's profile.
+    profile_links: Option<Vec<tilo_app::linked_accounts::ProfileLink>>,
+    /// How often, and when last, the room was asked for them unopened.
+    links_asked: (u32, Option<ui::time::Instant>),
     /// The person whose recent summary the popover shows.
     expanded: Option<String>,
     /// The pointer, in logical pixels, for the popover's targets.
@@ -507,6 +608,12 @@ pub(crate) struct BrowserShell {
     /// revisions, whether the overview covered the desktop, and the content
     /// area.
     navigator_seen: Option<(u64, u64, bool, Rect)>,
+    /// Pointing at what is wrong, to report it.
+    picker: crate::feedback_pick::PagePicker,
+    /// The desktop's control hints, and what the page's frame last showed
+    /// them.
+    hints: tilo_desktop::control_hints::ControlHints,
+    hints_frame: tilo_desktop::control_hints::HintFrame,
 }
 
 /// What the top bar's chrome reads from the page besides the desktop tree.
@@ -558,7 +665,10 @@ impl BrowserShell {
         }
         let empty = Rc::new(Cell::new(desk_is_empty(&tree)));
         let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy(offers.mac));
+        let hints = control_hints::load();
+        // Beneath the rest, so the surface stays the area's top layer.
         let area = Stack::new()
+            .push(Box::new(hints.announcer()))
             .push(Box::new(EmptyWorkspace {
                 launchpad,
                 shown: Rc::clone(&empty),
@@ -582,16 +692,23 @@ impl BrowserShell {
             requests,
             workspace_menu: WorkspaceMenu::new(),
             profile: ProfileCard::new(),
+            profile_of: None,
             people: CollaboratorsOverlay::default(),
             people_open: false,
+            pinned: people::PagePeople::new(),
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
+            profile_links: None,
+            links_asked: (0, None),
             expanded: None,
             cursor: None,
             shortcuts: ShortcutConfig::default(),
             navigator: StripNavigator::default(),
             navigator_frame: StripFrame::empty(Rect::ZERO),
             navigator_seen: None,
+            picker: crate::feedback_pick::PagePicker::default(),
+            hints,
+            hints_frame: tilo_desktop::control_hints::HintFrame::default(),
         }
     }
 
@@ -603,12 +720,8 @@ impl BrowserShell {
         theme: &Theme,
     ) {
         let tree = self.handle.read(Clone::clone);
-        let rows: Vec<RosterRow> = self
-            .chrome
-            .people(&tree)
-            .iter()
-            .map(|person| roster_row(person, theme))
-            .collect();
+        let people = self.chrome.people(&tree);
+        let (rows, following_pairs) = self.chrome.roster_rows(&people, theme);
         if self
             .expanded
             .as_ref()
@@ -633,8 +746,9 @@ impl BrowserShell {
                 unavailable: None,
                 exposure: None,
                 may_invite: self.chrome.may_invite(),
-                followed_id: None,
-                following_pairs: &[],
+                may_pin: !self.pinned.is_pinned(),
+                followed_id: self.pinned.followed(),
+                following_pairs: &following_pairs,
                 expanded_id: self.expanded.as_deref(),
                 watching,
                 waved: &self.chrome.here.borrow().waved(now_ms()),
@@ -642,6 +756,159 @@ impl BrowserShell {
             },
             self.cursor,
         );
+    }
+
+    /// The pinned roster and the following banner, over the windows and
+    /// under what the bar opens. While following, the window of what they
+    /// are in comes forward here first.
+    fn draw_pinned_people(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tree = self.handle.read(Clone::clone);
+        let people = self.chrome.people(&tree);
+        let (handle, generation) = (&self.handle, &self.generation);
+        // As following a link to their app does: its window here, else one.
+        let open_app = |app: &str| {
+            crate::desktop::known_application(app).is_some()
+                && handle
+                    .dispatch(
+                        &Command::Open {
+                            generation: generation.clone(),
+                            app: app.to_owned(),
+                        },
+                        generation,
+                    )
+                    .is_ok()
+        };
+        if self.pinned.track(&people, handle, &open_app) {
+            (self.chrome.wake)();
+        }
+        // Everyone here hears whom this person follows, while they do.
+        let followed = self.pinned.followed().map(str::to_owned);
+        self.chrome.here.borrow_mut().set_following(followed);
+        let (rows, _) = self.chrome.roster_rows(&people, theme);
+        // Whose device each row is: a row is someone's live publisher, a
+        // conversation is with the person.
+        let persons: Vec<(String, String)> = {
+            let here = self.chrome.here.borrow();
+            rows.iter()
+                .filter_map(|row| Some((row.id.clone(), here.user_of(&row.id)?.to_owned())))
+                .collect()
+        };
+        // Every window here, by the record it shows as the live layer names
+        // it: a window on someone's screen showing one of these is shared.
+        // A spectator only watches: nobody here reads them, so no row.
+        let own = (!self.chrome.shared.watching.get())
+            .then(|| own_row(&self.chrome.here.borrow(), theme));
+        let records: Vec<(TabId, String, String)> = tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter_map(|tab| {
+                let (app, record) = self.chrome.shared.live_record_of(&tree, tab.id)?;
+                Some((tab.id, app, record))
+            })
+            .collect();
+        self.pinned.draw(
+            scene,
+            transform,
+            text,
+            theme,
+            &people::Frame {
+                rect: self.rect,
+                rows: &rows,
+                own: own.as_ref(),
+                persons: &persons,
+                people: &people,
+                tree: &tree,
+                records: &records,
+                cursor: self.cursor,
+                content_top: self
+                    .handle
+                    .shown_tabs()
+                    .iter()
+                    .map(|(_, rect)| rect.y0)
+                    .fold(0.0, f64::max),
+            },
+        );
+        if let Some((name, reason)) = self.pinned.take_failed_send() {
+            let title = tilo_desktop_surface::i18n::t_args(
+                "people-overlay-message-failed",
+                &[("name", name.into()), ("reason", reason.into())],
+            );
+            self.chrome
+                .notifications
+                .post(tilo_desktop_surface::notifications::Notification::new(
+                    &title, "",
+                ));
+            (self.chrome.wake)();
+        }
+    }
+
+    /// The pinned roster's and following's share of `event`: what lands on
+    /// the overlay or the banner, the message box's keys, and the person's
+    /// own input, which takes their view back from whom they follow.
+    /// Returns whether the event was taken.
+    fn pinned_people_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        let (taken, hit) = self.pinned.key(event, ctx.modifiers);
+        if let Some(hit) = hit {
+            self.apply_pinned_hit(hit);
+        }
+        if taken {
+            *ctx.handled = true;
+            return true;
+        }
+        let mut handled = false;
+        if let Some(hit) =
+            self.pinned
+                .handle_event(event, ctx.scale_factor, self.cursor, &mut handled)
+        {
+            self.apply_pinned_hit(hit);
+        }
+        if handled {
+            *ctx.handled = true;
+            return true;
+        }
+        // A press on the desktop itself, not the bar: the person's own.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            ..
+        } = event
+            && self
+                .cursor
+                .is_some_and(|point| point.y >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX))
+        {
+            self.pinned.pressed_elsewhere();
+        }
+        false
+    }
+
+    fn apply_pinned_hit(&mut self, hit: tilo_desktop::people_overlay::PeopleHit) {
+        use tilo_desktop::people_overlay::PeopleHit;
+        match hit {
+            PeopleHit::ToggleFollow(id) => self.pinned.toggle_follow(&id),
+            PeopleHit::Unpin => self.pinned.pin(false),
+            // Through Chat's own action, the one way a direct message goes.
+            PeopleHit::Send { to, text } => {
+                if let Some(outgoing) = self.pinned.send(&to, &text) {
+                    self.requests.borrow_mut().push(HostRequest::Send(outgoing));
+                }
+            }
+            // The edge was kept as it moved.
+            PeopleHit::Moved(_) => {}
+            PeopleHit::ShowPerson { id, anchor } => self.show_person(&id, None, anchor),
+            PeopleHit::SetStatus(words) => {
+                self.chrome.here.borrow_mut().set_own_words(Some(words));
+                self.keep_own_status();
+            }
+        }
+        (self.chrome.wake)();
     }
 
     fn apply_people_hit(&mut self, hit: CollaboratorsHit) {
@@ -670,9 +937,17 @@ impl BrowserShell {
                     (self.chrome.wake)();
                 }
             }
-            CollaboratorsHit::ToggleFollow(_)
-            | CollaboratorsHit::JoinCall(_)
-            | CollaboratorsHit::Absorb => {}
+            CollaboratorsHit::ToggleFollow(index) => {
+                if let Some(id) = self.people.follow_target(index).map(str::to_owned) {
+                    self.pinned.toggle_follow(&id);
+                }
+            }
+            CollaboratorsHit::Pin => {
+                self.people_open = false;
+                self.people.clear();
+                self.pinned.pin(true);
+            }
+            CollaboratorsHit::JoinCall(_) | CollaboratorsHit::Absorb => {}
         }
     }
 
@@ -689,6 +964,9 @@ impl BrowserShell {
 
     fn launch(&self, app: &str) {
         if crate::desktop::known_application(app).is_some() {
+            ui::control_hints::performed::note(
+                ui::control_hints::performed::Performed::OpenedWindow,
+            );
             self.dispatch(&Command::Launch {
                 generation: self.generation.clone(),
                 app: app.into(),
@@ -723,6 +1001,94 @@ impl BrowserShell {
             }
             None => self.launch(tilo_desktop::feedback::PACKAGE),
         }
+    }
+
+    /// Point at what is wrong: the picker, where the page holds a
+    /// destination for reports.
+    fn report_problem(&mut self) {
+        if self.chrome.shared.feedback.borrow().is_some() {
+            self.profile.close();
+            self.picker.open();
+        }
+    }
+
+    /// The windows on screen, as a report names what is in them.
+    fn pick_windows(&self) -> Vec<crate::feedback_pick::PickWindow> {
+        let records = self.chrome.shared.bound_records();
+        let shown = self.handle.shown_tabs();
+        self.handle.read(|tree| {
+            shown
+                .into_iter()
+                .filter_map(|(tab, rect)| {
+                    let subject = tilo_desktop::feedback::tab_subject(tree, tab, |app| {
+                        crate::desktop::known_application(app).map(str::to_owned)
+                    })?;
+                    Some(crate::feedback_pick::PickWindow {
+                        rect,
+                        instance: tab,
+                        app: subject.app,
+                        name: subject.name,
+                        record: records
+                            .iter()
+                            .find(|(shown, _)| *shown == tab)
+                            .map(|(_, checkout)| checkout.id.as_str().to_owned()),
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// Hand what the person picked to the composer, and open it on it.
+    fn follow_picker(&mut self) -> bool {
+        let names = {
+            let tree = self.chrome.tree();
+            let mut names: Vec<String> = self
+                .chrome
+                .people(&tree)
+                .into_iter()
+                .map(|person| person.label)
+                .collect();
+            names.push(self.chrome.own_chip().name);
+            names
+        };
+        let cx = crate::feedback_pick::ReportContext {
+            windows: self.pick_windows(),
+            build: self.offers.build.clone(),
+            names,
+        };
+        if let Some((draft, crops)) = self.picker.take_report(&self.area, &cx) {
+            // The frame drawn next has no picker over it: the parts'
+            // pictures are copied from it, then the composer opens.
+            crate::feedback_crops::want(crate::feedback_crops::Wanted {
+                draft,
+                crops,
+                wake: Arc::clone(&self.chrome.wake),
+            });
+            return true;
+        }
+        let Some(report) = crate::feedback_crops::take_ready() else {
+            return false;
+        };
+        let started = self
+            .chrome
+            .shared
+            .feedback
+            .borrow()
+            .as_ref()
+            .map(|feedback| feedback.services().begin_report(report));
+        match started {
+            Some(Ok(())) => match self.handle.read(tilo_desktop::feedback::composer_tab) {
+                Some((.., tab)) => {
+                    self.handle.focus_tab(tab);
+                }
+                None => self.launch(tilo_desktop::feedback::PACKAGE),
+            },
+            Some(Err(error)) => {
+                web_sys::console::warn_1(&format!("feedback: {error}").into());
+            }
+            None => {}
+        }
+        true
     }
 
     fn activity(&self) {
@@ -786,15 +1152,12 @@ impl BrowserShell {
                 self.invite();
             }
             ChromeIntent::ShowPerson(id) => {
-                // Who is here, open at them: a second press on the same
-                // face closes it, as the list's own toggle does.
-                let again = self.people_open && self.expanded.as_deref() == Some(id.as_str());
-                self.close_bar_popovers_except(BarPopover::People);
-                self.people_open = !again && !self.tilo_menu.is_open();
-                self.expanded = self.people_open.then_some(id);
-                if !self.people_open {
-                    self.people.clear();
-                }
+                // Their card, under their face.
+                let anchor = self
+                    .bar
+                    .face_rect(&id)
+                    .unwrap_or_else(|| self.bar.collaborators_rect());
+                self.show_person(&id, None, anchor);
             }
             ChromeIntent::ToggleWorkspaceMenu => {
                 self.close_bar_popovers_except(BarPopover::Workspace);
@@ -811,18 +1174,7 @@ impl BrowserShell {
             }
             ChromeIntent::AnswerAvatarAsk => self.handle.answer_personal_ask(),
             ChromeIntent::PutOffAvatarAsk => self.handle.put_off_personal_ask(),
-            ChromeIntent::ToggleProfile => {
-                self.close_bar_popovers_except(BarPopover::Profile);
-                if !self.profile.is_open() {
-                    // Where the person stands with each connected service
-                    // is asked of the room's host; the card shows it once
-                    // answered.
-                    self.chrome.shared.linked.refresh();
-                }
-                let model = self.profile_model();
-                self.profile
-                    .toggle(&model, self.bar.own_avatar_rect(), self.rect);
-            }
+            ChromeIntent::ToggleProfile => self.toggle_profile(),
             ChromeIntent::ToggleOverview => self.toggle_overview(),
             ChromeIntent::RenameWorkspace { name } => self.rename_workspace(name),
             ChromeIntent::ToggleTiloMenu => {
@@ -951,6 +1303,113 @@ impl BrowserShell {
         }
     }
 
+    /// The one card of a person, wherever they were clicked (a face on the
+    /// bar, a row of the people overlay, an author in Chat), under
+    /// `anchor`: `who` is their roster id or their root key, `name` what
+    /// the click showed them as. The person's own opens their own card. A
+    /// second ask for the card open closes it.
+    fn show_person(&mut self, who: &str, name: Option<&str>, anchor: Rect) {
+        let own = {
+            let here = self.chrome.here.borrow();
+            here.own_id()
+                .is_some_and(|own| own.eq_ignore_ascii_case(who))
+                || here
+                    .own_user()
+                    .is_some_and(|own| own.eq_ignore_ascii_case(who))
+                || ui::collaboration::local_user_id()
+                    .0
+                    .eq_ignore_ascii_case(who)
+        };
+        let again = self.profile.is_open()
+            && if own {
+                self.profile_of.is_none()
+            } else {
+                self.profile_of.as_deref() == Some(who)
+            };
+        self.close_bar_popovers_except(BarPopover::Profile);
+        self.profile.close();
+        let _ = self.profile.take_choice();
+        self.profile_of = None;
+        if again {
+            return;
+        }
+        if own {
+            self.chrome.shared.linked.refresh();
+            let model = self.profile_model();
+            self.profile.toggle(&model, anchor, self.rect);
+        } else if let Some(model) = self.person_model(who, name) {
+            self.profile.toggle(&model, anchor, self.rect);
+            self.profile_of = Some(who.to_owned());
+        }
+    }
+
+    /// The card of the person `who` (their roster id, or their root key):
+    /// who they are, what they are doing (their own words, or marked
+    /// automatic), their id that stays theirs, and following them or
+    /// writing to them in Chat. Someone not here now (an author of an old
+    /// message) still has a card: their name, picture and id, and Message.
+    fn person_model(&self, who: &str, name: Option<&str>) -> Option<ProfileModel> {
+        let tree = self.handle.read(Clone::clone);
+        let people = self.chrome.people(&tree);
+        let person = people.iter().find(|person| person.id == who).or_else(|| {
+            let here = self.chrome.here.borrow();
+            people.iter().find(|person| {
+                here.user_of(&person.id)
+                    .or(person.user.as_deref())
+                    .is_some_and(|user| user.eq_ignore_ascii_case(who))
+            })
+        });
+        let Some(person) = person else {
+            return absent_person(who, name?);
+        };
+        let id = person.id.as_str();
+        let (rows, _) = self.chrome.roster_rows(&people, &Theme::dark());
+        let row = rows.iter().find(|row| row.id == id)?;
+        let key = self
+            .chrome
+            .here
+            .borrow()
+            .user_of(id)
+            .map(str::to_owned)
+            .or_else(|| person.user.clone());
+        // Chat holds person-only conversations with people it lists; one
+        // without a known person (a guest before the host's line) has none.
+        let can_message =
+            !person.agent && key.is_some() && crate::desktop::known_application(CHAT_APP).is_some();
+        let linked = key
+            .as_deref()
+            .map(|key| self.chrome.here.borrow().linked_of(key).to_vec())
+            .unwrap_or_default();
+        Some(ProfileModel {
+            name: row.label.clone(),
+            identity: person.id.clone(),
+            colour: Some(row.color),
+            key,
+            other: Some(tilo_desktop::profile_card::OtherPerson {
+                id: id.to_owned(),
+                status: row.status.clone(),
+                place: row.activity.clone(),
+                following: self.pinned.followed() == Some(id),
+                can_follow: row.followable && !person.agent,
+                can_message,
+                linked,
+            }),
+            ..ProfileModel::default()
+        })
+    }
+
+    /// Show the card asked for by an app (an author in Chat), at the
+    /// pointer. Whether one was asked for.
+    fn take_person_card_ask(&mut self) -> bool {
+        let Some(asked) = ui::person_card::take() else {
+            return false;
+        };
+        let at = self.cursor.unwrap_or_else(|| self.rect.center());
+        let anchor = Rect::from_center_size(at, (2.0, 2.0));
+        self.show_person(&asked.person, Some(&asked.name), anchor);
+        true
+    }
+
     /// Who the profile card is about, and what the page offers about them.
     fn profile_model(&self) -> ProfileModel {
         let offered = self.handle.host_actions();
@@ -985,7 +1444,17 @@ impl BrowserShell {
                     icon,
                 })
             })
-            .collect();
+            .collect::<Vec<_>>();
+        // Reporting a problem, where the page holds a destination for it.
+        let mut actions = actions;
+        if self.chrome.shared.feedback.borrow().is_some() {
+            actions.push(ProfileAction {
+                id: REPORT_PROBLEM.into(),
+                title: tilo_desktop::i18n::t("feedback-report-problem"),
+                group: ProfileGroup::Together,
+                icon: ui::icons::Icon::Flag,
+            });
+        }
         let rgb = Some(self.chrome.own_chip().rgb);
         // The name in the field is the person's own, without the number
         // others are shown beside it.
@@ -1008,32 +1477,77 @@ impl BrowserShell {
             // choose here, beside their name; a spectator shares nothing,
             // since nobody here sees them.
             sharing: (!watching).then(|| self.chrome.here.borrow().sharing()),
+            // What they are doing, in their own words: the card's field
+            // beside how it is shared.
+            status: self
+                .chrome
+                .here
+                .borrow()
+                .own_words()
+                .unwrap_or_default()
+                .to_owned(),
             seen: if watching {
                 tilo_desktop::profile_card::Seen::Watching
             } else {
                 tilo_desktop::profile_card::Seen::Here
             },
+            control_hints: Some(self.hints.enabled()),
+            key: self.chrome.here.borrow().own_user().map(str::to_owned),
             // Status, colour and what people see are the desktop's to keep;
             // a page shows the person as their host names them.
             ..ProfileModel::default()
         }
     }
 
-    fn apply_profile_choice(&self, choice: ProfileChoice) {
+    fn apply_profile_choice(&mut self, choice: ProfileChoice) {
         let request = match choice {
+            ProfileChoice::ControlHints(on) => return self.set_hints_enabled(on),
             ProfileChoice::Rename(name) => HostRequest::Named(name),
+            ProfileChoice::Action(id) if id == REPORT_PROBLEM => {
+                self.report_problem();
+                return;
+            }
             ProfileChoice::Action(id) => HostRequest::Action(id),
             ProfileChoice::Link(app) => return self.link_account(&app, true),
             ProfileChoice::Unlink(app) => return self.link_account(&app, false),
+            ProfileChoice::Accept(app) => return self.chrome.shared.linked.accept(&app),
+            ProfileChoice::Decline(app) => return self.chrome.shared.linked.decline(&app),
             ProfileChoice::Sharing(mode) => {
                 self.chrome.here.borrow_mut().set_sharing(mode);
+                self.keep_own_status();
                 return;
             }
+            ProfileChoice::Status(words) => {
+                self.chrome.here.borrow_mut().set_own_words(Some(words));
+                self.keep_own_status();
+                return;
+            }
+            ProfileChoice::Follow(id) => {
+                self.pinned.toggle_follow(&id);
+                (self.chrome.wake)();
+                return;
+            }
+            ProfileChoice::Message(key) => HostRequest::Message(people::ask_own(
+                &key,
+                "open-direct-conversation",
+                serde_json::Map::new(),
+            )),
             ProfileChoice::Availability(_)
-            | ProfileChoice::Status(_)
             | ProfileChoice::Colour(_)
             | ProfileChoice::Visibility(_) => return,
         };
+        self.requests.borrow_mut().push(request);
+    }
+
+    /// Keep the person's own words and how they share what they do in
+    /// their profile, so their other devices show the same.
+    fn keep_own_status(&self) {
+        let here = self.chrome.here.borrow();
+        let request = HostRequest::Status {
+            status: here.own_words().unwrap_or_default().to_owned(),
+            sharing: sharing_word(here.sharing()).to_owned(),
+        };
+        drop(here);
         self.requests.borrow_mut().push(request);
     }
 
@@ -1049,21 +1563,103 @@ impl BrowserShell {
         }
     }
 
+    /// Open or close the profile card from the bar's own avatar.
+    fn toggle_profile(&mut self) {
+        self.close_bar_popovers_except(BarPopover::Profile);
+        if !self.profile.is_open() {
+            // Where the person stands with each connected service is asked
+            // of the room's host; the card shows it once answered.
+            self.chrome.shared.linked.refresh();
+        }
+        if self.profile_of.take().is_some() {
+            // Someone else's card gives way to the person's own.
+            self.profile.close();
+            let _ = self.profile.take_choice();
+        }
+        let model = self.profile_model();
+        self.profile
+            .toggle(&model, self.bar.own_avatar_rect(), self.rect);
+    }
+
+    /// The page arrived with an account to link (`#?link=`): once the bar
+    /// is drawn, the profile card opens on it and asks the person to
+    /// confirm. Whether it opened.
+    fn take_link_offer(&mut self) -> bool {
+        // The card opens under the own avatar, which the bar knows once it
+        // drew it, and asks in the person's name, once the room knows it.
+        if !link_offer_ready(
+            self.rect,
+            self.bar.own_avatar_rect(),
+            self.chrome.here.borrow().own_label(),
+        ) {
+            return false;
+        }
+        let Some(token) = self.offers.link_offer.take() else {
+            return false;
+        };
+        self.chrome.shared.linked.offer(&token);
+        if !self.profile.is_open() {
+            self.toggle_profile();
+        }
+        true
+    }
+
+    /// The person's profile names their linked accounts and wears their
+    /// picture, so the room's host is asked where they stand once the room
+    /// is known, without the card open; what it answers goes to the page
+    /// whenever it changed.
+    fn follow_profile_links(&mut self) {
+        /// How many times, and how far apart, the room is asked unopened:
+        /// its records arrive a moment after the page.
+        const TRIES: u32 = 6;
+        const APART: std::time::Duration = std::time::Duration::from_secs(5);
+        let linked = &self.chrome.shared.linked;
+        let links = linked.profile_links();
+        if links.is_none() && self.chrome.here.borrow().own_user().is_some() {
+            let now = ui::time::now();
+            let (asked, last) = self.links_asked;
+            let due = last.is_none_or(|last| now.saturating_duration_since(last) >= APART);
+            if asked < TRIES && due {
+                linked.refresh();
+                self.links_asked = (asked.saturating_add(1), Some(now));
+            }
+        }
+        if let Some(links) = links
+            && self.profile_links.as_ref() != Some(&links)
+        {
+            self.profile_links = Some(links.clone());
+            self.requests.borrow_mut().push(HostRequest::Linked(links));
+        }
+    }
+
     /// Hand the room actions the chrome asked for to the page, which has the
     /// room's host run them, and show the linked accounts again when an
     /// answer changed them. Whether anything changed.
     fn follow_room_actions(&mut self) -> bool {
+        // A waiting offer draws again until the bar is there to open it.
+        let mut offered = self.take_link_offer() || self.offers.link_offer.is_some();
+        if self.profile_of.is_none() {
+            offered |= self
+                .profile
+                .follow_anchor(self.bar.own_avatar_rect(), self.rect);
+        }
         // Before the requests are taken, so the asks it makes go out now.
+        // Only the person's own card shows their linked accounts.
         self.linking.follow(
             &self.chrome.shared.linked,
-            self.profile.is_open(),
+            self.profile.is_open() && self.profile_of.is_none(),
             ui::time::now(),
         );
+        self.follow_profile_links();
         let asked = self.chrome.shared.room_actions.take_requests();
-        let changed = !asked.is_empty();
+        let opens = self.chrome.shared.room_actions.take_opens();
+        let changed = offered || !asked.is_empty() || !opens.is_empty();
         self.requests
             .borrow_mut()
             .extend(asked.into_iter().map(HostRequest::RoomAction));
+        self.requests
+            .borrow_mut()
+            .extend(opens.into_iter().map(HostRequest::Open));
         let linked = &self.chrome.shared.linked;
         let revision = linked.revision();
         if self.linked_seen.replace(revision) != revision {
@@ -1484,6 +2080,7 @@ impl BrowserShell {
             ShortcutAction::MaximizeWindow => self.maximize_focused(Some(true)),
             ShortcutAction::RestoreWindow => self.maximize_focused(Some(false)),
             ShortcutAction::ToggleMaximize => self.maximize_focused(None),
+            ShortcutAction::ReportProblem => self.report_problem(),
             other => {
                 if let Some(index) = other.focus_strip_index() {
                     self.go_to_strip(|_| Some(index));
@@ -1598,10 +2195,29 @@ impl Widget for BrowserShell {
             changed = true;
         }
         changed |= self.follow_room_actions();
+        changed |= self.take_person_card_ask();
+        // What a reader pressed on the pinned roster or the bar's people
+        // panel, as a press is.
+        for hit in self.pinned.take_pressed() {
+            self.apply_pinned_hit(hit);
+            changed = true;
+        }
+        if let Some(target) = self.pinned.take_panel_pressed()
+            && let Some(hit) = self.people.hit_for_target(&target)
+        {
+            self.apply_people_hit(hit);
+            changed = true;
+        }
         if self.tilo_menu.take_feedback() {
             self.open_feedback();
             changed = true;
         }
+        if self.chrome.shared.adopt_feedback() {
+            // The page holds a destination now: the Tilo menu offers it too.
+            self.tilo_menu.offer_feedback();
+            changed = true;
+        }
+        changed |= self.follow_picker();
         let menu_open = self.tilo_menu.is_menu_open();
         if self.menu_shown.replace(menu_open) != menu_open {
             self.bar.set_tilo_menu_open(menu_open);
@@ -1610,6 +2226,7 @@ impl Widget for BrowserShell {
         changed |= self.bar.update(state, path);
         changed |= self.area.update(state, path);
         self.observe_navigation();
+        self.update_hints();
         // Chosen while the surface updated (search, a banner): the page
         // performs them when it reads this frame's status.
         let choices = self.handle.take_host_choices();
@@ -1666,6 +2283,7 @@ impl Widget for BrowserShell {
         let tilo_menu = self.tilo_menu.build_layout(taffy, theme, map);
         let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
         let profile = self.profile.build_layout(taffy, theme, map);
+        let pinned = self.pinned.build_layout(taffy, theme, map);
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
@@ -1682,6 +2300,7 @@ impl Widget for BrowserShell {
                 tilo_menu,
                 workspace_menu,
                 profile,
+                pinned,
             ],
             map,
             self,
@@ -1700,6 +2319,7 @@ impl Widget for BrowserShell {
             tilo_menu,
             workspace_menu,
             profile,
+            pinned,
         ] = nodes[..]
         {
             self.backdrop.apply_layout(taffy, backdrop, inner);
@@ -1710,6 +2330,7 @@ impl Widget for BrowserShell {
             self.workspace_menu
                 .apply_layout(taffy, workspace_menu, inner);
             self.profile.apply_layout(taffy, profile, inner);
+            self.pinned.apply_layout(taffy, pinned, inner);
         }
     }
 
@@ -1721,6 +2342,7 @@ impl Widget for BrowserShell {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let started = ui::time::now();
         self.drawn_minute.set(minute());
         self.backdrop.draw(scene, transform, text, theme, presence);
         ui::widget::draw_child(&mut self.area, scene, transform, text, theme, presence);
@@ -1735,16 +2357,37 @@ impl Widget for BrowserShell {
         self.overview.draw(scene, transform, text, theme, presence);
         // Last, so what the bar opens below its band stays above windows.
         self.bar.draw(scene, transform, text, theme, presence);
+        self.draw_pinned_people(scene, transform, text, theme);
+        // Above the bar: a learned hint's dot settles into the avatar.
+        self.draw_hints(scene, transform, text, theme);
         if self.people_open {
             self.draw_people(scene, transform, text, theme);
+            self.pinned
+                .set_panel(Some(self.people.accessibility_with_targets()));
         } else {
             self.people.clear();
+            self.pinned.set_panel(None);
         }
+        // Over everything, while picking what to report.
+        self.picker.draw(scene, transform, text, theme, self.rect);
+        let built = ui::time::now().saturating_duration_since(started);
+        self.picker
+            .frame_built(u32::try_from(built.as_micros()).unwrap_or(u32::MAX));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let [_, bar, area, overview, tilo_menu, workspace_menu, profile] = nodes[..] else {
+        let [
+            _,
+            bar,
+            area,
+            overview,
+            tilo_menu,
+            workspace_menu,
+            profile,
+            _,
+        ] = nodes[..]
+        else {
             return;
         };
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -1755,6 +2398,17 @@ impl Widget for BrowserShell {
         } else if matches!(event, WindowEvent::CursorLeft { .. }) {
             self.cursor = None;
         }
+        // Picking what to report takes every event: nothing underneath
+        // reacts to a pick.
+        if self.picker.is_open() {
+            let windows = self.pick_windows();
+            let modifiers = ctx.modifiers.state();
+            *ctx.handled =
+                self.picker
+                    .handle_event(event, self.cursor, modifiers, &self.area, &windows);
+            return;
+        }
+        self.hints.heard(event, ui::time::now());
         // The open popover takes the keyboard and the pointer over it; a
         // press elsewhere closes it, and the bar's avatars toggle it.
         if self.people_open || self.people.wants_pointer_capture() {
@@ -1784,6 +2438,9 @@ impl Widget for BrowserShell {
             if *ctx.handled {
                 return;
             }
+        }
+        if self.pinned_people_event(event, ctx) {
+            return;
         }
         // The workspace menu and the profile card, like the Tilo menu, take
         // what they cover, the keyboard and the press that dismisses them.
@@ -1846,6 +2503,8 @@ impl Widget for BrowserShell {
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         !self.people_open
             && !self.people.wants_pointer_capture()
+            && !self.pinned.wants_pointer_capture()
+            && self.cursor.is_none_or(|point| !self.pinned.contains(point))
             && !self.tilo_menu.is_open()
             && !self.workspace_menu.is_open()
             && !self.profile.is_open()
@@ -1873,6 +2532,7 @@ impl Widget for BrowserShell {
             &self.tilo_menu,
             &self.workspace_menu,
             &self.profile,
+            &self.pinned,
         ]
     }
 
@@ -1895,13 +2555,23 @@ impl Widget for BrowserShell {
             &mut self.tilo_menu,
             &mut self.workspace_menu,
             &mut self.profile,
+            &mut self.pinned,
         ]
+    }
+
+    /// The page adds no structure of its own: a change a window carries out
+    /// in place stays in place, and the rest of the desktop's layout is kept.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        ui::widget::StructureChange::of_children(self.children_mut())
     }
 
     fn needs_redraw(&self) -> bool {
         self.drawn_minute.get() != minute()
+            || self.picker.needs_animation_frame()
             || (self.people_open && self.people.needs_animation_frame())
+            || self.pinned.needs_animation_frame()
             || self.navigator.needs_animation_frame(ui::time::now())
+            || self.hints.needs_animation_frame(ui::time::now())
             || [
                 &self.backdrop as &dyn Widget,
                 &self.bar,
@@ -1913,6 +2583,24 @@ impl Widget for BrowserShell {
             ]
             .iter()
             .any(|child| child.needs_redraw())
+    }
+
+    /// The page asks for animation frames by this, not by
+    /// [`Self::needs_redraw`]: a hint drawn by the shell itself, not by a
+    /// child, says here that it moves.
+    fn needs_animation_frame(&self) -> bool {
+        self.hints.needs_animation_frame(ui::time::now())
+            || [
+                &self.backdrop as &dyn Widget,
+                &self.bar,
+                &self.area,
+                &self.overview,
+                &self.tilo_menu,
+                &self.workspace_menu,
+                &self.profile,
+            ]
+            .iter()
+            .any(|child| child.needs_animation_frame())
     }
 
     /// The earliest wake any part of the page asked for. The bar's own
@@ -1934,11 +2622,13 @@ impl Widget for BrowserShell {
                 .then(|| self.people.next_wake_deadline())
                 .flatten(),
         )
+        .chain(self.pinned.next_wake_deadline())
         .chain(
             self.navigator
                 .next_wake_deadline(&self.navigator_frame, ui::time::now()),
         )
         .chain(self.linking.due())
+        .chain(self.hints.next_wake_deadline(ui::time::now()))
         .min()
     }
 
@@ -1949,6 +2639,16 @@ impl Widget for BrowserShell {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+}
+
+/// Whether a link offer the page arrived with can open the card: the bar
+/// is drawn (the card opens under the own avatar) and the room named the
+/// person, since the card asks "Link Discord @name to <you>?" in their own
+/// name and must never ask it of "Guest".
+fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> bool {
+    !page.is_zero_area()
+        && !own_avatar.is_zero_area()
+        && own_name.is_some_and(|name| !name.trim().is_empty())
 }
 
 #[cfg(test)]
@@ -1993,6 +2693,22 @@ mod tests {
             layout_shared: true,
             members: None,
         }
+    }
+
+    /// The confirm a `/link` button opens asks in the person's own name:
+    /// it waits for the room to name them rather than ask it of "Guest".
+    #[test]
+    fn a_link_offer_waits_for_the_persons_own_name() {
+        let page = Rect::new(0.0, 0.0, 1440.0, 900.0);
+        let avatar = Rect::new(1380.0, 4.0, 1404.0, 28.0);
+        assert!(!link_offer_ready(page, avatar, None), "not named yet");
+        assert!(!link_offer_ready(page, avatar, Some("  ")));
+        assert!(
+            !link_offer_ready(page, Rect::ZERO, Some("Quinn Davis")),
+            "no bar yet"
+        );
+        assert!(!link_offer_ready(Rect::ZERO, avatar, Some("Quinn Davis")));
+        assert!(link_offer_ready(page, avatar, Some("Quinn Davis")));
     }
 
     #[test]
@@ -2092,4 +2808,31 @@ mod tests {
             assert_eq!(edits, OfferedEdits::default(), "{role:?}");
         }
     }
+}
+
+/// The card of someone not here now, known by their root key `key` and the
+/// name they were shown by: no status or place, nothing to follow, and
+/// Message where Chat holds person-only conversations.
+fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
+    let key = key.to_ascii_lowercase();
+    if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let (r, g, b) = ui::presence::user_color(&key);
+    Some(ProfileModel {
+        name: name.to_owned(),
+        identity: key.clone(),
+        colour: Some(ui::vello::peniko::Color::from_rgb8(r, g, b)),
+        other: Some(tilo_desktop::profile_card::OtherPerson {
+            id: key.clone(),
+            status: None,
+            place: None,
+            following: false,
+            can_follow: false,
+            can_message: crate::desktop::known_application(CHAT_APP).is_some(),
+            linked: Vec::new(),
+        }),
+        key: Some(key),
+        ..ProfileModel::default()
+    })
 }

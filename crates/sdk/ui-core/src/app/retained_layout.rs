@@ -55,11 +55,24 @@ impl App {
         if self.layout.node_map.is_empty() {
             return false;
         }
+        let mut relaid = Vec::new();
         if self
             .layout
             .adopted
-            .still_live(&|visit| self.visit_layout_roots(visit))
+            .still_live(&|visit| self.visit_layout_roots(visit), &mut relaid)
         {
+            let removed = crate::retained_widgets::let_go_under(
+                &relaid,
+                &mut self.layout.taffy,
+                &mut self.layout.node_map,
+            );
+            self.bindings.forget(&removed);
+            if self
+                .focused_node
+                .is_some_and(|node| removed.contains(&node))
+            {
+                self.focused_node = None;
+            }
             return false;
         }
         self.bindings.clear();

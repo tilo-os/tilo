@@ -216,6 +216,7 @@ fn an_agents_run_is_approved_by_a_person_reported_by_its_agent_and_steered_in_th
                 resource: "mail.account".into(),
                 arguments_digest: "digest".into(),
                 draft: ui::serde_json::json!({ "to": "team" }),
+                preview: None,
             },
         }))
         .unwrap();

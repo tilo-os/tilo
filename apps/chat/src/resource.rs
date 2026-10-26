@@ -44,12 +44,11 @@ impl Chat {
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
         });
+        // A report is found by what its message says: the summary, and the
+        // picks of one filed without words.
         let feedback = self.feedback.iter().filter_map(|(id, report)| {
-            let submission = report.submission.as_ref()?;
-            Some(
-                SearchEntry::new(&submission.feedback.text, "Feedback")
-                    .anchored(anchor("feedback", id)),
-            )
+            let message = crate::feedback::message::message(report)?;
+            Some(SearchEntry::new(&message.text, "Feedback").anchored(anchor("feedback", id)))
         });
         let people = self.people.iter().map(|person| {
             SearchEntry::new(&person.name, "Person")
@@ -125,6 +124,8 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "live-context",
     "context",
     "msgmenu",
+    "msgbar",
+    "msgbar-shift",
     "attach",
     "attach-loading",
     "attach-error",
@@ -157,6 +158,9 @@ impl ResourceApp for ChatShell {
     /// The chat's messages, kept in parts beside the room's chat record.
     fn records(records: &mut ui::framework::Records<'_>) {
         records.chain::<crate::parts::ChatPart>();
+        // The workspace's emoji are Chat's: every app of the room opens
+        // them, and their changes are decided against Chat's surface.
+        records.workspace::<ui::tilo_workspace_emoji::WorkspaceEmoji>();
     }
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {
@@ -239,6 +243,22 @@ impl ResourceApp for ChatShell {
                 }
                 input.type_text(line);
             }
+            input.relayout();
+        }
+        if name == Some("msgmenu") {
+            // The hovered message's bar is up; click its More as a person
+            // does, so the menu opens where that click opens it.
+            input.relayout();
+            let more = input
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some("More"))
+                .and_then(|(_, node)| node.bounds())
+                .ok_or("the message's bar shows no More button")?;
+            input.click_at(
+                f64::midpoint(more.x0, more.x1),
+                f64::midpoint(more.y0, more.y1),
+            );
             input.relayout();
         }
         if name == Some("mention") {
@@ -542,12 +562,32 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
                     self.adopt_private_draft(token, invocation)
                 });
             }
-            ChatEffect::OpenDirectConversation { .. }
-            | ChatEffect::SendDirectMessage { .. }
-            | ChatEffect::ReadDirectConversation { .. } => {
+            ChatEffect::OpenDirectConversation { .. } => {
                 return ui::person_chat::with_invocation(cx.invocation(), || {
                     self.answer_effect(effect)
                 });
+            }
+            // The room answers these: at once from the native host, later in
+            // a page. Either way the effect answers when it has.
+            ChatEffect::SendDirectMessage { public_key, text } => {
+                let reply = ui::person_chat::with_invocation(cx.invocation(), || {
+                    self.send_person_message(public_key, text)
+                })?;
+                let public_key = public_key.clone();
+                return Ok(cx.spawn(
+                    |_| reply,
+                    move |chat: &mut Self, answer, _| chat.sent_person_answer(&public_key, answer),
+                ));
+            }
+            ChatEffect::ReadDirectConversation { public_key } => {
+                let reply = ui::person_chat::with_invocation(cx.invocation(), || {
+                    self.read_person_conversation(public_key)
+                })?;
+                let public_key = public_key.clone();
+                return Ok(cx.spawn(
+                    |_| reply,
+                    move |chat: &mut Self, answer, _| chat.read_person_answer(&public_key, answer),
+                ));
             }
             _ => {}
         }

@@ -931,6 +931,60 @@ specific to this; it is the same model a Tilo workspace runs:
   each participant only their own part (a hand of cards) hides it, but it is
   not a secret from them.
 
+#### A new version in a running room
+
+`tilo-app push` runs your build of an app, or a new program of your bot, in
+a room that is running now (a Lounge, a team's room), for everyone in it,
+without restarting the room's host:
+
+```bash
+tilo-app package                                   # dist/<pkg>.tapp, signed with your key
+tilo-app push --room tilo-room:<relay>/<workspace>/<room> --identity ~/.tilo-dev
+tilo-app push --room … --identity … \
+  --bot bot/program.json --entry dev.you.greeter --version 0.2.0-dev.3
+```
+
+- The room records the version it runs: the app, its version, the hash of
+  its `surface.toml`, the package's `tapp:` hash and the key that signed it,
+  who installed it and when. It is part of the room's governance, so every
+  member reads it, and anyone can see which version runs and whose build it
+  is. A build that is not a registry release is recorded as a dev build
+  (`--published` says otherwise).
+- The push hands the `.tapp` itself to the room's host first
+  (`upload-app-file`, in pieces); the room's version names the file's
+  BLAKE3 hash, and the host refuses a version naming a file it does not
+  have. Every member's desktop that runs another build of the app asks the
+  room for that hash, as it asks for any content a record references,
+  checks the bytes hash to it, and updates the app from them with
+  `app update --from`, bound to the version's package root and publisher.
+- A change made with another version of the app than the room runs is held,
+  never merged and never refused: once its author runs the room's version,
+  the same changes go out naming that version's surface and are decided
+  against it. Mixed versions cannot write each other's data unseen.
+- A bot's program goes to the room's host with the room's request for that
+  bot. The host runs it at once, as the same bot: its installation, and
+  what its runs had read up to, are kept, and the room's row for it takes
+  the new program and its grants. You must hold every grant the program
+  asks for yourself.
+- Only people the room lets install apps (the `install-app` governance
+  action; the owner holds it, and gives it to a developer as a grant) or
+  bots (`install-bot`) may push.
+- `--identity` is a Tilo identity directory of this machine, enrolled as
+  one of your devices (`tilo-enroll certify`), so the room knows it is you.
+  The room's link names its host's relay endpoint, the workspace that
+  carries the room there, and the room; `@<ip:port>` after the endpoint
+  reaches a relay on this machine or network directly.
+
+Iteration time is the build plus a round trip to the room's host. A native
+build of one app is that app alone. The web desktop is one module today:
+every web app is linked into it and split out of it afterwards, so a web
+build relinks the whole desktop, and a running page cannot load a newer
+module for one app, so a browser in the room keeps its version until the
+page loads a desktop build that carries the room's. A native desktop
+installs the room's version but does not yet restart the app's open
+windows: they run it from their next start, and until then their changes
+to that app wait, held, as a member's on another version do.
+
 ### Android
 
 The same app builds as a standalone Android app, with nothing Android-specific
@@ -1679,10 +1733,10 @@ facts that let a caller plan safely:
   execution.
 - `permission`: `read`, `comment`, `write`, `invite`, or `admin`; the broker
   uses this exact value for both discovery and invocation.
-- `risk`, `confirmation`, and `reversible`: privileged and sensitive actions,
-  and destructive ones Undo cannot take back, require a confirmation policy.
-  A destructive action Undo takes back (`reversible`, or a compensated undo)
-  asks nothing: it runs at once and the app offers Undo
+- `risk` and `confirmation`: privileged and sensitive actions, and
+  destructive ones Undo cannot take back, require a confirmation policy.
+  A destructive action Undo takes back (`ActionKind::Undoable`, or a
+  compensated undo) asks nothing: it runs at once and the app offers Undo
   (`RiskLevel::requires_confirmation_when`). A typed phrase
   (`ConfirmationPolicy::Phrase`) is for irreversible, high-risk actions only,
   and names what is lost (the drive, the app), never a word like "CONFIRM";
@@ -1804,7 +1858,6 @@ ActionSpec::operation(
     &ArchiveArgs { conversation_id },
 )?
 .requiring(PermissionRequirement::Write)
-.reversible()
 .retry_policy(RetryPolicy::Idempotent)
 .returns(ResultSpec::Resource {
     resource_kind: "mail.conversation".into(),

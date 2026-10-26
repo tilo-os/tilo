@@ -484,6 +484,41 @@ impl ShellNetwork {
         Some(answer)
     }
 
+    /// Ask the host governing `room` the member action `action` (one of
+    /// `resource.share`, `resource.unshare`, `resource.permits`) with
+    /// `arguments`, as this device's person: the room decides it there, as
+    /// it decides every read and write a share's grant covers.
+    ///
+    /// # Errors
+    /// No host governs the room (a device governing it keeps no grants of a
+    /// share yet), or the ask cannot be sent.
+    pub(crate) fn ask_member_at_host(
+        &self,
+        room: RoomId,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_actions::remote::Pending<Result<serde_json::Value, String>>, String> {
+        let host = self
+            .host_governor(room)?
+            .ok_or("only a room a host governs keeps what is shared in it")?;
+        let receiver = self.ask_as_member(room, host, action, arguments)?;
+        let runtime = self
+            .runtime
+            .as_ref()
+            .ok_or("the room's reply queue is unavailable")?;
+        let (completer, answer) = tilo_actions::remote::pending();
+        runtime.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || receiver.recv_timeout(ADMIN_TIMEOUT))
+                .await
+                .map_err(|_| "the room's reply worker stopped".to_owned())
+                .and_then(|reply| reply.map_err(|_| "the room did not answer in time".to_owned()))
+                .and_then(std::convert::identity)
+                .and_then(receipt_value);
+            completer.complete(result);
+        });
+        Ok(answer)
+    }
+
     /// Send a person's own bounded terminal audit to the exact signed governor.
     /// Room administration retains its independent same-person owner checks.
     pub(crate) async fn record_governed_effect_receipt(
@@ -507,6 +542,51 @@ impl ShellNetwork {
             .map_err(|_| "effect reply worker stopped")?
             .map_err(|_| "effect governor did not answer in time; outcome unknown")??;
         receipt_value(status).map(drop)
+    }
+
+    /// Have the host governing `room` make the membership change `action`
+    /// with `arguments`, as `caller`, this device: adding or removing an
+    /// agent, or giving and taking back a grant. The room's governance, not
+    /// this device's, decides it there, because the host is the one party
+    /// that may commit a change to a room whose channels it stewards.
+    /// Answers the governance generation the host committed it in. `None`
+    /// when no host governs the room.
+    pub(crate) async fn govern_membership_at_host(
+        &self,
+        room: RoomId,
+        caller: &tilo_user_identity::DeviceCert,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<Result<u64, String>> {
+        let host = match self.governing_host(room, caller) {
+            Ok(None) => return None,
+            Ok(Some(host)) => host,
+            Err(error) => return Some(Err(error)),
+        };
+        let invoke = invocation(
+            ROOM_GOVERNANCE_PROVIDER,
+            room_governance_resource(&room.to_string()),
+            action,
+            arguments,
+        );
+        Some(
+            async {
+                let answer =
+                    self.ask_relay(room_topic_id(room), Addressee::Device(host), invoke)?;
+                let status =
+                    tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
+                        .await
+                        .map_err(|_| "membership reply worker stopped")?
+                        .map_err(|_| "the host did not answer the membership change in time")??;
+                receipt_value(status)?
+                    .get("generation")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        "the host answered the membership change with something else".to_owned()
+                    })
+            }
+            .await,
+        )
     }
 
     /// Have the host governing `room` let `app` author the room's records,
@@ -1050,6 +1130,7 @@ impl BotAsk {
                 entry: entry.clone(),
                 version: version.clone(),
                 inputs: std::collections::BTreeMap::new(),
+                program: None,
             }),
             Self::Remove { entry } => WorkspaceMembershipCommand::WithdrawBotRequest {
                 entry: entry.clone(),

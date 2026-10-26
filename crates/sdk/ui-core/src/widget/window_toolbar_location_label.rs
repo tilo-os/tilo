@@ -1,5 +1,5 @@
-//! A location's label in the window bar, and the word that follows an
-//! edited document's label.
+//! A location's label in the window bar, and the word that follows it: an
+//! edited document's, or one its person may only look at.
 
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -25,13 +25,12 @@ impl LocationLabel {
         tr: &mut TextRenderer,
         theme: &Theme,
         shown: &str,
-        edited: bool,
+        word: Option<String>,
         room: f64,
     ) -> Self {
         let style = theme.text(TextRole::Body);
         let gap = f64::from(theme.tokens.spacing.s2);
-        let mut edited = edited.then(|| {
-            let word = edited_word();
+        let mut edited = word.map(|word| {
             let (w, _) = tr.measure_style(&word, None, &style);
             (word, f64::from(w))
         });
@@ -92,4 +91,17 @@ impl LocationLabel {
 /// The word that follows an edited document's label.
 pub(super) fn edited_word() -> String {
     crate::i18n::I18nManager::lookup_plain("window-toolbar-edited")
+}
+
+/// The word that follows `location`'s label: "View only" where its person
+/// may only look, which no edit of theirs can follow; else "Edited" for a
+/// document with unsaved changes; else none.
+pub(crate) fn trailing_word(location: &crate::window_toolbar::ToolbarLocation) -> Option<String> {
+    if location.view_only {
+        Some(crate::i18n::I18nManager::lookup_plain(
+            "window-toolbar-view-only",
+        ))
+    } else {
+        location.edited.then(edited_word)
+    }
 }

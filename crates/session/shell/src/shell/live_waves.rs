@@ -8,6 +8,10 @@
 //! their roster id, `peer@{handle}` with the handle of their device key, so
 //! a wave is aimed at the device behind a roster id and heard back as the
 //! roster id of the device that waved.
+//!
+//! Following rides the same frame and the same mapping: a frame says whose
+//! view its sender follows by their live publisher, heard here as the
+//! roster id of that device.
 
 use std::collections::HashMap;
 
@@ -23,6 +27,9 @@ pub struct LiveWaves {
     devices: HashMap<u64, [u8; 32]>,
     /// Who waved at this person and was not taken yet, by roster id.
     heard: Vec<String>,
+    /// Whom each device a live frame came from follows, by roster id, as
+    /// its last frame said.
+    following: HashMap<u64, String>,
 }
 
 #[must_use]
@@ -56,18 +63,46 @@ impl LiveWaves {
     /// live frame came from and `others` (the room's other devices). `None`
     /// for nobody known by that id, or someone waved at within the minute.
     pub fn aim(&mut self, target: &str, others: &[[u8; 32]], now_ms: u64) -> Option<LiveWave> {
-        let handle: u64 = target.strip_prefix("peer@")?.parse().ok()?;
-        let device = self.devices.get(&handle).copied().or_else(|| {
-            others
-                .iter()
-                .find(|device| neighbour_wire::peer_handle(device) == handle)
-                .copied()
-        })?;
+        let device = self.device_of(target, others)?;
         let wave = self.out.wave_at(&hex::encode(device), now_ms)?;
         Some(LiveWave {
             seq: wave.seq,
             target: wave.target,
         })
+    }
+
+    /// The device behind roster id `target`, among those a live frame came
+    /// from and `others` (the room's other devices).
+    #[must_use]
+    pub fn device_of(&self, target: &str, others: &[[u8; 32]]) -> Option<[u8; 32]> {
+        let handle: u64 = target.strip_prefix("peer@")?.parse().ok()?;
+        self.devices.get(&handle).copied().or_else(|| {
+            others
+                .iter()
+                .find(|device| neighbour_wire::peer_handle(device) == handle)
+                .copied()
+        })
+    }
+
+    /// A live frame from `from` saying whose view it follows: `following`,
+    /// a live publisher in hex. Whom it follows now, by roster id (`None`:
+    /// nobody), when that changed since its last frame; every frame
+    /// restates it, so a roster hears it once.
+    pub fn hear_following(
+        &mut self,
+        from: [u8; 32],
+        following: Option<&str>,
+    ) -> Option<Option<String>> {
+        let handle = neighbour_wire::peer_handle(&from);
+        self.devices.insert(handle, from);
+        let target = following
+            .and_then(|publisher| <[u8; 32]>::try_from(hex::decode(publisher).ok()?).ok())
+            .map(|device| roster_id(&device));
+        let before = match &target {
+            Some(target) => self.following.insert(handle, target.clone()),
+            None => self.following.remove(&handle),
+        };
+        (before != target).then_some(target)
     }
 
     /// Who waved at this person since the last call, by roster id.
@@ -213,5 +248,28 @@ mod tests {
             "nobody known by that id"
         );
         assert!(waves.aim(&roster_id(&[3; 32]), &[[3; 32]], 0).is_some());
+    }
+
+    /// A browser tab follows this desktop: every frame restates it, the
+    /// roster hears it once, by roster ids, and once more when it stops.
+    #[test]
+    fn a_followers_frames_say_whom_they_follow_once() {
+        let tab = [9u8; 32];
+        let desk = [7u8; 32];
+        let mut waves = LiveWaves::default();
+        assert_eq!(waves.hear_following(tab, None), None, "nothing to say");
+        let following = hex::encode(desk);
+        assert_eq!(
+            waves.hear_following(tab, Some(&following)),
+            Some(Some(roster_id(&desk)))
+        );
+        assert_eq!(waves.hear_following(tab, Some(&following)), None, "once");
+        assert_eq!(
+            waves.device_of(&roster_id(&tab), &[]),
+            Some(tab),
+            "a follower is a device the desktop can name back"
+        );
+        assert_eq!(waves.hear_following(tab, Some("zz")), Some(None));
+        assert_eq!(waves.hear_following(tab, None), None);
     }
 }

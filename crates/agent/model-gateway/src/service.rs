@@ -76,6 +76,9 @@ const AGENT_APP: &str = "so.tilo.agent";
 const CHAT_APP: &str = "so.tilo.chat";
 const PHOTOS_APP: &str = "so.tilo.photos";
 const CANVAS_APP: &str = "so.tilo.canvas";
+/// The desktop's report composer: its review asks a model which words of a
+/// report are personal, a completion without tools, as Chat's are.
+const FEEDBACK_APP: &str = "so.tilo.feedback-composer";
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 /// Face batches are intentionally small.  A large library is scanned as
 /// bounded background batches by Photos, never materialized into one giant
@@ -512,6 +515,7 @@ async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<Handoff, St
         || (!crate::caller::provider_admin_app(&handoff.app_id)
             && handoff.app_id != AGENT_APP
             && handoff.app_id != CHAT_APP
+            && handoff.app_id != FEEDBACK_APP
             && handoff.app_id != PHOTOS_APP
             && handoff.app_id != CANVAS_APP)
     {
@@ -562,7 +566,8 @@ pub(super) async fn handle_streaming(
         }
         request @ (Request::Complete { .. } | Request::CompleteDefault { .. })
             if app_id == AGENT_APP
-                || (app_id == CHAT_APP && crate::caller::chat_completion(&request)) =>
+                || ((app_id == CHAT_APP || app_id == FEEDBACK_APP)
+                    && crate::caller::chat_completion(&request)) =>
         {
             return complete_request(http, request, emit)
                 .await
@@ -3015,6 +3020,46 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+
+    /// The report composer may ask a model which words are personal, a
+    /// completion without tools, and nothing more; an app it does not
+    /// know may ask nothing.
+    #[tokio::test]
+    async fn the_report_composer_completes_text_and_is_refused_tools() {
+        use agent_provider_config::protocol::{
+            Message, ModelRequest, Role, ToolChoice, ToolDefinition,
+        };
+        let http = provider_client().unwrap();
+        let ask = |tools: Vec<ToolDefinition>| Request::CompleteDefault {
+            request: ModelRequest {
+                messages: vec![Message::text(Role::User, "[0] Thanks Ada")],
+                tool_choice: if tools.is_empty() {
+                    ToolChoice::None
+                } else {
+                    ToolChoice::Auto
+                },
+                tools,
+                max_output_tokens: 64,
+            },
+            timeout_ms: 1_000,
+            stream: false,
+        };
+        let tool = ToolDefinition {
+            name: "send_mail".into(),
+            description: "Send mail".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        };
+        let refused = handle(FEEDBACK_APP, ask(vec![tool]), &http).await;
+        assert_eq!(
+            refused.model_error.map(|error| error.kind),
+            Some(ErrorKind::PermissionDenied)
+        );
+        let other = handle("so.tilo.files", ask(Vec::new()), &http).await;
+        assert_eq!(
+            other.model_error.map(|error| error.kind),
+            Some(ErrorKind::PermissionDenied)
+        );
+    }
 
     #[tokio::test]
     async fn subject_requests_observe_the_build_capability_and_caller_boundary() {

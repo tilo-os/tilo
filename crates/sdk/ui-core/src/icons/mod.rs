@@ -13,8 +13,10 @@
 
 mod app_glyph;
 mod app_image;
+mod service_mark;
 
 pub use app_glyph::app_glyph;
+pub use service_mark::{ServiceMark, service_mark};
 
 pub use app_image::{AppImage, AppImageSource, MAX_DEVICE_PX, device_px, draw_app_image};
 
@@ -305,6 +307,9 @@ icons! {
     Unlink => "unlink",
     /// An agent. Lucide `bot`.
     Bot => "bot",
+    /// Discord's mark, for linking a Discord account. Not Lucide: drawn
+    /// filled ([`Icon::is_brand`]), its eyes left open.
+    Discord => "discord",
     /// A rectangle of an area being selected. Lucide `square-dashed`.
     SquareDashed => "square-dashed",
     /// An ellipse of an area being selected. Lucide `circle-dashed`.
@@ -365,6 +370,13 @@ impl Icon {
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|icon| icon.name() == name)
     }
+
+    /// A service's mark rather than a Lucide glyph: always drawn filled,
+    /// as the service draws it.
+    #[must_use]
+    pub const fn is_brand(self) -> bool {
+        matches!(self, Self::Discord)
+    }
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -419,6 +431,19 @@ fn circle_path(cx: f64, cy: f64, r: f64) -> BezPath {
     Circle::new(Point::new(cx, cy), r)
         .path_elements(0.1)
         .collect()
+}
+
+/// Discord's mark in the 24×24 viewBox: its outline and its two eyes as
+/// inner loops of one path, which an even-odd fill leaves open.
+fn discord_mark() -> BezPath {
+    let mut mark = path_from_d(
+        "M20.32 4.37C18.8 3.67 17.15 3.16 15.43 2.86C15.22 3.24 14.98 3.73 14.82 4.12C12.98 3.84 11.15 3.84 9.34 4.12C9.17 3.73 8.93 3.24 8.71 2.86C7 3.16 5.35 3.67 3.82 4.37C0.53 9.05 -0.32 13.58 0.1 18.06C2.15 19.56 4.14 20.48 6.09 21.08C6.57 20.43 7 19.73 7.37 19.01C6.67 18.75 6.01 18.43 5.39 18.06C5.55 17.94 5.71 17.82 5.87 17.7C9.8 19.49 14.06 19.49 17.94 17.7C18.1 17.82 18.26 17.94 18.42 18.06C17.8 18.43 17.13 18.75 16.44 19.01C16.81 19.73 17.24 20.43 17.71 21.08C19.67 20.48 21.66 19.56 23.71 18.06C24.21 12.88 22.87 8.38 20.32 4.37Z",
+    );
+    for eye_x in [8.02, 15.98] {
+        let eye = vello::kurbo::Ellipse::new(Point::new(eye_x, 12.91), (2.16, 2.42), 0.0);
+        mark.extend(eye.path_elements(0.05));
+    }
+    mark
 }
 
 /// The strokable subpaths for `icon` in the lucide 24×24 viewBox.
@@ -1673,6 +1698,7 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             rect_path(3.0, 11.0, 18.0, 11.0, 2.0),
             path_from_d("M7 11V7a5 5 0 0 1 9.9-1"),
         ],
+        Icon::Discord => vec![discord_mark()],
         Icon::Unlink => vec![
             path_from_d(
                 "m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71",
@@ -1898,8 +1924,15 @@ impl Icon {
         let tx = rect.x0 + (size.width - glyph) / 2.0;
         let ty = rect.y0 + (size.height - glyph) / 2.0;
         let local = transform * Affine::translate((tx, ty)) * Affine::scale(scale);
+        // A brand mark fills even-odd, so its inner loops (Discord's eyes)
+        // stay open; Lucide glyphs keep their non-zero fill.
+        let rule = if self.is_brand() {
+            Fill::EvenOdd
+        } else {
+            Fill::NonZero
+        };
         for sub in icon_subpaths(self) {
-            scene.fill(Fill::NonZero, local, color, None, &sub);
+            scene.fill(rule, local, color, None, &sub);
         }
     }
 

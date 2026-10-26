@@ -62,7 +62,8 @@ pub struct Guild {
     pub roles: Keyed<DRole>,
     pub map: Keyed<Mapping>,                    // Tilo id ⇄ Discord id (§6)
     pub links: Keyed<Link>,                     // Discord account ⇄ Tilo person (§5)
-    pub pending_links: Keyed<PendingLink>,
+    pub link_offers: Keyed<LinkOffer>,          // accounts Discord vouched for, by token check
+    pub connects: Keyed<Connect>,               // sign-ins with Discord under way, by person
     pub blocked_personas: Set<String>,          // Discord user ids
     pub tilo_only: Set<String>,                 // Tilo ids kept out of Discord
     pub discord_only: Set<String>,              // Discord ids kept out of Tilo
@@ -83,12 +84,19 @@ pub struct DRole { pub id: String, pub name: String, pub permissions: String,
 
 | Verb | Who may call | Kind | What it does |
 |---|---|---|---|
-| `observe-layout(channels, roles)` | bots | Undoable | Records Discord's layout as the latest layout event reported it, for the reconcile (§4). |
+| `observe-layout(channels, roles, emojis)` | bots | Undoable | Records Discord's layout (and the server's custom emoji) as the latest layout event reported it, for the reconcile (§4) and for mirroring reactions (§3). |
 | `send`, `edit`, `delete`, `react`, `unreact`, `start-thread`, `create-webhook` | bots | Outside | Queues the matching webhook or REST call. |
 | `apply-channel`, `delete-channel`, `apply-role`, `delete-role`, `set-member-roles`, `kick`, `ban`, `unban`, `set-overwrite` | bots | Outside | Queues layout and membership calls (§4, §5). |
+| `apply-emoji`, `delete-emoji` | bots | Outside | Uploads, renames or deletes a custom emoji the bridge uploaded for a workspace emoji (§3, Reactions). |
+| `settle-emoji` | bots | Undoable | Records the emoji an `apply-emoji` or `delete-emoji` left in the server, or why there is none (`emoji_problem`). |
 | `map`, `unmap` | bots | Undoable | Writes the id map (§6). |
-| `begin-link` | a person (device effect, then this verb) | Undoable | Stores a pending link code's hash (§5). |
-| `complete-link`, `unlink` | bots | Undoable | Confirms or removes a link. |
+| `begin-connect(state_sha256)` | a person (the `connect-account` effect) | Undoable | Stores the hash of a sign-in's OAuth2 state for ten minutes (§5). |
+| `set-sign-in(page)` | bots | Undoable | Holds Discord's consent page (without its state) when the room's host offers signing in with Discord; members are then offered "Connect Discord" (§5). |
+| `offer-link` | bots | Undoable | Offers an account that ran `/link`, under the check of a one-time token, to whoever holds the token (§5). |
+| `offer-sign-in` | bots | Undoable | Offers an account signed in with from Tilo, under the check of a one-time token, to the person whose `begin-connect` state it carries (§5). |
+| `complete-link(proof)` | a person (the `accept-link` effect) | Undoable | Takes the offer the proof opens and links the account to the caller. |
+| `answer-interaction` | bots | Outside | Edits the reply to `/link` or `/unlink` to what came of it. |
+| `unlink` | bots, or the link's person | Undoable | Removes a link. |
 | `block-persona`, `unblock-persona` | moderation | Undoable | Stops mirroring a Discord user into Tilo (§7). |
 | `set-bot-token(token: Secret)` | the host's administrator, on the host | effect | Stores the token in the host's secret store (bots.md §6). |
 
@@ -105,16 +113,18 @@ another server.
 | `message-created` | channel, message id, author (id, display name, avatar hash, bot flag, webhook id), content, reply reference, thread, attachments (name, size, type, CDN URL) | message id |
 | `message-updated` | channel, message id, content, edit time | message id + edit time |
 | `message-deleted` | channel, message id, executor from the audit log when Discord reports one | message id + `deleted` |
-| `reaction-added`, `reaction-removed` | channel, message id, user id, emoji (unicode, or custom name) | message, user, emoji, add or remove, and the gateway sequence |
-| `layout-changed` | the guild's channels and roles, read after any channel or role event | gateway sequence |
+| `reaction-added`, `reaction-removed` | channel, message id, user id, the member's name and avatar (on an add), emoji (Unicode, or a custom emoji as `:name:` with its id and whether it is animated) | message, user, emoji, add or remove, and the gateway sequence |
+| `layout-changed` | the guild's channels, roles and custom emoji, read after any channel, role or emoji event | gateway sequence |
 | `member-changed` | user id, roles, banned or kicked | gateway sequence |
-| `command` | `/link` or `/unlink`, user id, the code's SHA-256 (the worker hashes it on arrival) | interaction id |
+| `command` | `/link` or `/unlink`, interaction id, user id, names and avatar hash; for `/link` the check of the token its reply's button carries (the token itself stays in the worker and the button) | interaction id |
+| `sign-in` | the consent page the room's host offers signing in with Discord through, without its state, or empty for none; appended by the relay at start | `sign-in:` + the page's SHA-256, shortened |
+| `authorized` | someone signed in with Discord on the room's host: user id, names, avatar hash, the OAuth2 state's SHA-256 and the token's check | `authorized:` + the check |
 
 ### Outside worker
 
 The worker is the `discord-worker` binary in the connector's package. It keeps
 one gateway session with the intents `GUILDS`, `GUILD_MEMBERS`,
-`GUILD_MODERATION`, `GUILD_VOICE_STATES`, `GUILD_MESSAGES`,
+`GUILD_MODERATION`, `GUILD_EXPRESSIONS` (custom emoji), `GUILD_VOICE_STATES`, `GUILD_MESSAGES`,
 `GUILD_MESSAGE_REACTIONS` and `MESSAGE_CONTENT`, and receives slash-command
 interactions over the same gateway. Its egress allowlist is `discord.com`,
 `gateway.discord.gg` (and the regional `*.discord.gg` gateways Discord names),
@@ -181,9 +191,12 @@ The bridge is a Shortcut program with `RecordChanged` triggers on
 (`set-role`, `remove-member`, `ban` and `unban`, for role and moderation
 mirroring). It asks for `Personas`
 appearance. Its derived grant comes to: Chat `post`, `edit-message`,
-`delete-message`, `react`, `unreact`, `create-category`, `create-channel`,
+`delete-message`, `create-category`, `create-channel`,
 `move-channel`, `delete-channel`, `remove-message`, `lock-channel` and
-`unlock-channel`; the connector's bot verbs; and Read on both records, on the
+`unlock-channel`; the field edit of Chat's messages
+(`chat.messages/resource:*/**/action:field-edit`), which reaches only their
+reactions: every other field of a message is read-only, so the record and
+the room take no other field edit of it; the connector's bot verbs; and Read on both records, on the
 connector's app node and on the room. The program's inputs bind `workspace` and `guild` at install.
 
 ### Tilo to Discord
@@ -194,7 +207,7 @@ connector's app node and on the room. The program's inputs bind `workspace` and 
 | reply (`parent`) | Posted into the Discord thread mapped to the Tilo thread. If the thread has none yet, `start-thread` on the root's Discord message first. |
 | `edit-message` | Webhook message edit. |
 | `delete-message`, `remove-message` | Webhook message delete. |
-| `react` / `unreact` | The bot user adds the emoji once while at least one Tilo person has that reaction, and removes it when the last one goes. Discord shows one bot reaction per emoji. Tilo shows who reacted. |
+| a reaction (the `react` / `unreact` field edit of a message's reactions) | The bot user adds the emoji once while at least one Tilo person has that reaction, and removes it when the last one goes. Discord shows one bot reaction per emoji. Tilo shows who reacted. A workspace emoji `:name:` is the server's custom emoji of that name (`name:id`); see Reactions below. |
 | attachment | Uploaded with the webhook call if it is at most 10 MiB (Discord's limit for bots). A larger one becomes a line: "📎 name (size) – open in Tilo" with the message's link. |
 | channel and category changes | Layout reconcile (§4). |
 
@@ -211,7 +224,7 @@ way to mark a webhook author as automated.
 | message in a Discord thread | Reply to the thread's mapped root. |
 | `MESSAGE_UPDATE` | `edit-message` on the mapped message. |
 | `MESSAGE_DELETE` | `delete-message` on the mapped message (the bot is its author). |
-| `MESSAGE_REACTION_ADD` / `REMOVE` | `react` / `unreact` with the emoji and appearance. Chat records the persona on the reaction (`Reacted.persona`), so different Discord users count separately. A custom emoji arrives as its name, `:tilo_hello:`. |
+| `MESSAGE_REACTION_ADD` / `REMOVE` | The `react` / `unreact` field edit of the mapped message's reactions, with the member's appearance. The reaction records the persona (`discord/<user id>`) and the name, so each Discord member is a reaction of their own. A custom emoji arrives as its name, `:tilo_hello:`, which shows as the workspace's emoji of that name, or as its text where the workspace has none. |
 | attachments | Each one up to 32 MiB (Chat's limit) is downloaded from the CDN and posted as a Chat attachment. A larger one becomes a link to its CDN URL. Discord's URLs expire, so the bytes are copied, not linked, whenever they fit. |
 
 ### Echo suppression
@@ -227,6 +240,46 @@ The bridge must not mirror its own output back. Two rules cover every case:
 
 The id map is how edits, deletes, reactions and replies find their
 counterparts. It is not needed to stop echoes.
+
+### Reactions
+
+Chat keeps a message's reactions in the framework's `Reactions` field, which
+changes only through the `react` and `unreact` field edits. The bridge reads
+those edits from the change's history entry (`op` `react` or `unreact` on
+`messages › <message> › reactions`, the emoji as `new`), and makes them
+itself for Discord members, under each member's appearance.
+
+- **Unicode emoji** cross as they are, skin tones included. One emoji may be
+  spelled with or without its variation selector (`❤️`, `❤`); the bridge
+  compares emoji without it, and a Discord reaction takes the spelling the
+  message's Tilo reactions already use, so one emoji never shows as two.
+- **Custom emoji.** Tilo writes a workspace's own emoji `:name:`, under the
+  rule Discord names custom emoji by (2 to 32 letters, digits and
+  underscores). A Discord custom emoji becomes its `:name:` in Tilo, in a
+  reaction and in a message's text (`<:name:id>` is written `:name:`). The
+  bridge uploads each workspace emoji to the server as a custom emoji of the
+  same name (`apply-emoji`, its picture as a data URI), renames it when the
+  workspace's is renamed (one removed and another added with the same
+  picture) and deletes it when the workspace's goes (`delete-emoji`). It keeps
+  the ids of the emoji it uploaded in the map (`emoji` entries, with the
+  picture's content address) and never renames or deletes any other; where
+  the server has an emoji of its own under a workspace emoji's name, that one
+  stands for it and nothing is uploaded. The plan runs on every change to the
+  workspace's emoji and on every layout event (so on every start), and
+  compares, so running it again changes nothing. The host hands the bridge
+  the workspace's emoji as its `emoji` input (each name with its picture's
+  content address) and keeps each picture in its content store, where the
+  op's `attach` list reaches the worker. A Tilo reaction or text `:name:`
+  then becomes that emoji (`name:id`, `<:name:id>`). Uploading needs the
+  bot's role to hold Create Expressions; without it, or when the server's
+  emoji slots are full, the bridge's page says so ("The workspace's emoji
+  don't reach Discord: …", `emoji_problem`) and such an emoji stays in Tilo
+  as before, crossing once the next layout event (the role's change, or a
+  slot freed) lets it upload. A bridge of one channel uploads nothing.
+- **Echoes.** Reactions the bridge made for Discord members never count
+  toward the bot's own reaction, and the dispatcher never fires the bridge
+  on its own edits, so nothing mirrored in goes back out. The bot's own
+  reactions come back from the gateway as its user and are dropped.
 
 ## 4. Channel layout
 
@@ -311,46 +364,85 @@ command.
 ### Linking
 
 A Discord user is an appearance-only persona until they link their account.
-After linking, their Discord messages still arrive as the bot's posts with their
-appearance, but the persona resolves to their Tilo person. The author view then
-links to their profile, and with `map_roles` their Tilo role is mirrored to
-Discord.
+After linking, their Discord messages still arrive as the bot's posts, but the
+persona resolves to their Tilo person: they show as that person (with their
+Tilo picture, or their Discord one while they have none in Tilo) with the
+Discord badge, the author view links to their profile, and with `map_roles`
+their Tilo role is mirrored to Discord. Their Tilo messages reach Discord
+under "Name (@handle)", cut to Discord's 80 characters, with their Tilo
+picture or else their Discord one.
 
-1. In Tilo, the person runs "Link Discord account" (an action on the guild
-   record). A device effect generates a code of 60 random bits, shown as 12
-   base-32 characters. `begin-link` records the person, the code's SHA-256 and
-   an expiry 10 minutes out. The code itself stays on the person's screen.
-2. In Discord, they run `/link CODE`. The worker hashes the code before it is
-   delivered and answers the interaction ephemerally. The `command` event
-   carries the Discord user id and the hash.
-3. The bot finds the pending link with that hash, checks the expiry, and calls
-   `complete-link`. The verb checks again that the hash matches and that the
-   pending link belongs to the person it names, then records
-   `Link { discord_user, person, linked_at }` and removes the pending entry.
+There are two ways in, and both end in the same verb, `complete-link`, which
+the person runs themselves with proof of a one-time token. Discord vouches
+for the account (the bot is the authority: only it calls `offer-link` and `offer-sign-in`), and
+the token decides who takes it. The record never holds a token: it keeps the
+token's check, `sha256(sha256(token))`; the person proves the token with
+`sha256(token)`, which opens the offer and uses it up. An offer lasts ten
+minutes.
 
-`/unlink` in Discord and "Unlink" in Tilo both call `unlink`. Five failed
-`/link` attempts from one Discord user within an hour are ignored for the rest
-of that hour. With 60 bits and a 10-minute window, guessing a code is not
-practical. The limit keeps the log quiet.
+**From Tilo: Connect Discord.** The profile card and Settings → External
+Accounts show "Connect Discord" with Discord's mark when the room's host
+offers signing in with Discord (OAuth2's authorization code flow, scope
+`identify` only). The host starts the room's relay with the client id, its
+callback and Discord's consent page (`--discord-client-id`,
+`--discord-redirect-url`, `--discord-authorize-url`; never the secret); the
+relay appends them as a `sign-in` event, and the bot stores the consent page
+on the record with `set-sign-in`. The effect reads it from there, since a
+member's effects run without the host's environment.
+
+1. The `connect-account` effect makes a 256-bit state on the host, records
+   its SHA-256 for the person with `begin-connect`, and answers Discord's
+   consent page address, which the page goes to.
+2. Discord sends the browser back to the host's `/discord/callback` with a
+   code and the state. The host trades the code for an access token with the
+   client secret, asks `/users/@me` who signed in, and makes a one-time
+   token. It hands the account, the state's hash and the token's check to
+   the connector as an `authorized` event, and sends the browser on to the
+   web entry with the token (`#?link=`). A sign-in Discord refused or the
+   person cancelled goes back to the entry without one; a failed exchange
+   shows a page that says what to do.
+3. The bot calls `offer-sign-in` with the state's hash. The verb finds the
+   person who began that sign-in (a state comes back once, within ten
+   minutes) and binds the offer to them; a state nobody began here is
+   refused.
+4. The page takes the token out of the address bar before anything runs,
+   asks `link-offer` which account it opens, and since the person started it
+   here, links it at once with `accept-link`. The card shows "Linked as
+   @name" with Unlink.
+
+A link that comes back to someone else's browser (CSRF) links nothing: the
+offer belongs to the person who began the sign-in, and only they can take it.
+
+**From Discord: /link.** `/link` takes no code. The worker answers it at once,
+privately, with a "Link in Tilo" button into the room's web entry carrying a
+fresh one-time token, and reports only the token's check. The bot offers the
+account under that check. Whoever opens the button and is signed in to Tilo
+sees, in their profile card, "Link Discord @name to <their name>?" with Link
+and Cancel. Link runs `accept-link`; then the bot edits the Discord reply to
+"Linked to <name> ✓". A button nobody used is edited to "That link expired.
+Run /link again to get a new one." when its ten minutes are up. A visitor
+without access to the room sees its ordinary door.
+
+`/unlink` in Discord and "Unlink" in Tilo both call `unlink`. `/unlink` is
+answered once the room has acted, with what came of it. Linking again
+replaces the person's earlier link.
 
 The person does this from their profile card or from Settings → External
 Accounts, without opening the connector's window. Both list "Linked accounts"
 for every service the room is connected to (`tilo_app::linked_accounts`).
-The connector's code stays on the room's host: `my-link`, `link-account` and
-`unlink-mine` are effects any member may ask the host to run for themselves
-(`#[effect(member)]`). The host runs them as that member, and the page needs
-none of the connector's code. `my-link` answers whether the record is
-connected to a server, the reader's linked account by name (username, and
-display name when it differs), and the actions that link and unlink it.
-`link-account` makes the code on the host, records only its hash with
-`begin-link` and answers the code to the asking device alone, which shows it
-in a monospace chip with a Copy button under "In Discord, type /link with this
-code. It works for 10 minutes." `unlink-mine` unlinks the invoker's own
-account.
+The connector's code stays on the room's host: `my-link`, `connect-account`,
+`link-offer`, `accept-link` and `unlink-mine` are effects any member may ask
+the host to run for themselves (`#[effect(member)]`). The host runs them as
+that member, and the page needs none of the connector's code. `my-link`
+answers whether the record is connected to a server, the reader's linked
+account by name (username, and display name when it differs), whether the
+host offers signing in, how to link from Discord's side, and the actions
+that do each. Tokens are effect parameters marked secret, so they never
+reach history.
 
-The worker reads each `/link` author's username and display name off the
-interaction. `complete-link` records them in the `Link`, and `rename-link`
-updates them when a member event shows newer ones.
+The worker reads each `/link` author's username, display name and avatar
+off the interaction. `complete-link` records them in the `Link`, and
+`rename-link` updates them when a member event shows newer ones.
 
 ### Roles
 
@@ -412,8 +504,7 @@ Moderation is Chat's own, decided by Tilo roles ([permissions.md](permissions.md
 | In Discord | Effect in Tilo |
 |---|---|
 | A Discord-origin message deleted | The mirrored message is deleted (§3). |
-| A Tilo-origin message deleted by a linked Tilo Moderator (read from the audit log's executor) | `remove-message` in Tilo, attributed to the bot, with the Moderator's link noted in the reason. |
-| A Tilo-origin message deleted by anyone else | Sent again by the bridge, because a Discord-only permission must not remove a Tilo person's message. |
+| A Tilo-origin message deleted by anyone but the bridge (its linked author, a server moderator or admin) | `remove-message` in Tilo, attributed to the bot, with the deleter's link noted in the reason when the audit log names a linked account. A message gone on one side is gone on both; it is never sent again. |
 | A Discord user banned | The persona is blocked (`block-persona`). |
 
 ## 8. Failure handling
@@ -570,9 +661,10 @@ visitor is their own person, and joining is rate-limited.
 - **Declarative administration.** `TILO_ROOMS_OWNERS` and
   `TILO_ROOMS_MODERATORS` list user public keys. At start the host root makes
   them Owner or Moderator members with an ordinary `set-role`, and drops the
-  role of keys removed from the lists. `TILO_ROOMS_BOTS` lists bot directory
-  entries to install at first start (`so.tilo.bots.discord-bridge`), with their
-  inputs, approved by the host-held root. `TILO_ROOMS_SEED_APPS` lists apps
+  role of keys removed from the lists. `TILO_ROOMS_BOTS` lists what to install
+  at first start — a bot directory entry (`so.tilo.bots.discord-bridge`) or,
+  for a bridge the image ships, its program file — with their inputs, approved
+  by the host-held root. `TILO_ROOMS_SEED_APPS` lists apps
   authored into the room at first start (`so.tilo.chat`), via
   `Rooms::author_application`. `TILO_ROOMS_CHAT_CHANNELS` names the
   channels Chat starts with while the room's workspace has none; each id is
@@ -610,6 +702,13 @@ is never in the image, the environment or a record. At start the service passes
 the file to the connector's `set-bot-token` effect if the token's hash differs
 from what is stored. That puts it in the host's `TILO_SECRETS_DIR` store on the
 volume, which is the store the connector reads (bots.md §6).
+
+The Discord application's client secret, for signing in with Discord (§5),
+arrives the same way at `/run/secrets/discord-client-secret`. The service reads
+it at start and uses it only to trade a sign-in's code for an access token;
+it never reaches the relay, the connector, a record or a log. Without it (or
+without `TILO_ROOMS_DISCORD_CLIENT_ID`) nobody is offered "Connect Discord",
+and `/link` from Discord still works.
 
 The room's owner root arrives the same way, as an encrypted secret mounted
 at `/run/secrets/room-root`. The operator generates it once and stores it
@@ -666,9 +765,12 @@ id>)`), never in a record, the environment or a log.
   | `TILO_ROOMS_ROOT_FILE` | `/run/secrets/room-root` (the default) |
   | `TILO_ROOMS_MAX_SPECTATORS` | `1000` |
   | `TILO_ROOMS_TRUSTED_PROXIES` | the ingress's address range |
+  | `TILO_ROOMS_DISCORD_CLIENT_ID` | the Discord application's client id; with a client secret, the host offers signing in with Discord (§5) |
+  | `TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE` | the client secret's file, `/run/secrets/discord-client-secret` (the default) |
+  | `TILO_ROOMS_DISCORD_REDIRECT_URL` | where Discord sends the browser back; `TILO_ROOMS_PUBLIC_API` + `/discord/callback` by default, and registered as a redirect in the Discord application |
   | `TILO_ROOMS_MAX_GUESTS` | `300` |
   | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat` |
-  | `TILO_ROOMS_BOTS` | `so.tilo.bots.discord-bridge` with `guild=<Discord server id>`, `channel=<id>` to bridge one channel only, `mirror-channels=yes` to make channels created in Tilo in Discord too, and `map-roles=yes` to mirror Tilo roles as the bridge's own Discord roles (both off by default) |
+  | `TILO_ROOMS_BOTS` | `so.tilo.bots.discord-bridge`, or the image's program file `/usr/local/share/tilo/bots/discord-bridge.json`, with `guild=<Discord server id>`, `channel=<id>` to bridge one channel only, `mirror-channels=yes` to make channels created in Tilo in Discord too, and `map-roles=yes` to mirror Tilo roles as the bridge's own Discord roles (both off by default) |
   | `TILO_ROOMS_OWNERS`, `TILO_ROOMS_MODERATORS` | the operators' user public keys |
   | `TILO_SECRETS_DIR` | a directory on the volume, e.g. `/state/<name>/secrets` |
 
@@ -699,13 +801,17 @@ service answers the origins in `TILO_ROOMS_SITE_ORIGINS` with CORS.
   webhooks, Discord-side renames and deletions are kept, only opted-in bridges
   make channels or roles and only their own, and role membership is mirrored
   only for linked accounts.
-- **Linking.** Codes expire, a wrong code is refused, attempts are rate-limited,
-  and a code from one person cannot link another.
+- **Linking.** An offer is taken once and only with its token's proof; an
+  expired, reused or forged token links nobody, a sign-in's state links only
+  the person who began it and comes back once, and only the bot offers
+  accounts. The worker reports a token's check, never the token, and edits
+  its replies to the outcome. End to end, both ways in run against the fake
+  Discord's consent page and token endpoint in a local room.
 - **Moderation.** A guest cannot edit or delete another's message. A Moderator can
   remove it, and the removal reaches Discord. Kicking, banning and unbanning a
   linked person do the same to their Discord account, and leave an unlinked
   guest's Discord side alone. A lock blocks posts on both sides.
-  A Discord delete of a Tilo message by a non-Moderator is sent again.
+  A Discord delete of a Tilo message, by anyone, removes it in Tilo.
 - **Room-service.** Integration tests for persistent restart (same room id, same
   history), `/join` limits and the online cap, the hashed-IP cooldown, `PreAdmit`
   over operator protocol v2, and `/presence`.

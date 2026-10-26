@@ -95,7 +95,7 @@ impl Draft {
             feedback: ReviewedFeedback {
                 text,
                 context: fields.collect(),
-                screenshot: None,
+                ..ReviewedFeedback::default()
             },
             approved: false,
             screenshot: None,

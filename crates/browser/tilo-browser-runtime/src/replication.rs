@@ -26,7 +26,7 @@
 //! native broker sends it; in the page's stores it is
 //! [`RecordId::package_primary`], kept at the room index.
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -140,6 +140,15 @@ pub(crate) struct Room {
     standing: crate::desktop::Standing,
     /// The standing the mounts' permissions were last set to.
     followed: u8,
+    /// Nodes below the room the page's windows asked whether its person may
+    /// change (an item someone shares), with the asked node's text form and
+    /// the room's last answer. Those it allows beyond their role (an item
+    /// shared with them to edit) are mirrored into the mounts' permissions;
+    /// each is asked again with the person's role, so a share switched to
+    /// view or ended stops letting their windows change it.
+    permitted: BTreeMap<ui::permissions::TreePath, (String, bool)>,
+    /// The room's answers about those nodes, not applied yet.
+    permit_answers: Arc<Mutex<Vec<(String, bool)>>>,
     /// The room keeps no member's layout: it refused this page's desktop as
     /// a public room does. The attached desktops are their people's own
     /// from then on: sent to nobody, and not replaced by the room's.
@@ -154,6 +163,9 @@ pub(crate) struct Room {
     /// Content the open records' windows lacked and the page asked the
     /// room for, by the wire `(app, record)` that references it.
     content: ContentWants<(String, String)>,
+    /// Records a peer's change reached since the desktop last looked for
+    /// mentions in them ([`take_touched`]), as wire `(app, record)`.
+    touched: BTreeSet<(String, String)>,
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -209,10 +221,13 @@ pub(crate) fn open(
         moderation_due_ms: Arc::default(),
         standing: crate::desktop::Standing::unknown(),
         followed: 0,
+        permitted: BTreeMap::new(),
+        permit_answers: Arc::default(),
         own_layout: false,
         members: None,
         in_flight: HashMap::new(),
         content: ContentWants::default(),
+        touched: BTreeSet::new(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
@@ -273,6 +288,45 @@ pub(crate) fn records(id: u32) -> Vec<(String, String)> {
     records.into_iter().collect()
 }
 
+/// The records a peer's change reached since this was last taken, as wire
+/// `(app, record)`, and whether the room had replayed what it held by then:
+/// before that, what arrives is what the room already held.
+pub(crate) fn take_touched(id: u32) -> (bool, Vec<(String, String)>) {
+    let Some(room) = room(id) else {
+        return (false, Vec::new());
+    };
+    let mut room = room.borrow_mut();
+    let touched = std::mem::take(&mut room.touched);
+    (room.ready, touched.into_iter().collect())
+}
+
+/// Wire record `record` of `app` as peer `id` holds it now: the open
+/// record a mount has, else the document the page keeps for it.
+pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCommit> {
+    let room = room(id)?;
+    let room = room.borrow();
+    for mounted in room.mounts.values() {
+        for store in mounted.attachment.stores.borrow().iter() {
+            if store.package_and_home().0 != app {
+                continue;
+            }
+            let Some(checkout) = store
+                .open_records()
+                .into_iter()
+                .find(|checkout| wire_record(&checkout.id) == record)
+            else {
+                continue;
+            };
+            if let Some(doc) = store.read(&checkout.id, AutoCommit::clone) {
+                return Some(doc);
+            }
+        }
+    }
+    let key = storage_key(app, &room.uuid, record).ok()?;
+    let stored = room.store.read(&key).ok().flatten()?;
+    AutoCommit::load(&stored.bytes).ok()
+}
+
 /// The name of the workspace in front on peer `id`'s room desktop, once the
 /// room delivered or the page published one.
 pub(crate) fn workspace_name(id: u32) -> Option<String> {
@@ -301,7 +355,7 @@ pub(crate) fn desktop_history_heads(id: u32) -> Option<Vec<ui::automerge::Change
 }
 
 pub(crate) fn close(id: u32) {
-    crate::browser::forget_feedback_startup(id);
+    crate::feedback_delivery::forget_feedback_startup(id);
     crate::feedback_delivery::forget(id);
     ROOMS.with_borrow_mut(|rooms| rooms.remove(&id));
 }
@@ -327,6 +381,37 @@ pub(crate) enum Kept {
 
 fn room(id: u32) -> Option<Rc<RefCell<Room>>> {
     ROOMS.with_borrow(|rooms| rooms.get(&id).cloned())
+}
+
+/// Ask peer `id`'s room `request` through the host's rooms door; `done`
+/// gets its answer.
+///
+/// # Errors
+/// The peer replicates no room, or its session is gone.
+pub(crate) fn rooms_then(
+    id: u32,
+    request: impl FnOnce(&str) -> tilo_relay_protocol::rooms::RoomsRequest,
+    done: tilo_browser_peer::RoomsCompletion,
+) -> Result<(), String> {
+    let room = room(id).ok_or("this page joined no room")?;
+    let room = room.borrow();
+    room.peer.rooms_then(request(&room.uuid), done)
+}
+
+/// The room told peer `id`'s person whether they may change things at
+/// `node` (its text form): their windows let them where the room will keep
+/// it, and stop where it no longer would.
+pub(crate) fn permit(id: u32, node: &str, may: bool) {
+    let Some(room) = room(id) else {
+        return;
+    };
+    let mut room = room.borrow_mut();
+    if room.note_permit(node, may) {
+        room.apply_standing();
+        for mounted in room.mounts.values() {
+            (mounted.attachment.notify)();
+        }
+    }
 }
 
 /// Attach mount `mount` to peer `id`'s room.
@@ -395,6 +480,16 @@ pub(crate) fn publish(id: u32) {
     }
 }
 
+/// Take what the room answered about this page's person since the last
+/// frame, before the frame decides whether it has anything to do: an
+/// answer that changes what their windows may do marks them changed, so an
+/// idle page draws it at once instead of whenever something else wakes it.
+pub(crate) fn follow_answers(id: u32) {
+    if let Some(room) = room(id) {
+        room.borrow_mut().follow_standing();
+    }
+}
+
 /// Ask the room now for content the open records' windows lack.
 pub(crate) fn ask_content(id: u32) {
     if let Some(room) = room(id) {
@@ -442,6 +537,7 @@ impl Room {
             now.saturating_add(MODERATION_ASK_EVERY_MS),
             Ordering::Relaxed,
         );
+        self.ask_permits();
         let wake: Vec<_> = self
             .mounts
             .values()
@@ -508,21 +604,105 @@ impl Room {
         }
     }
 
+    /// Hold the room's answer whether this page's person may change `node`
+    /// (its text form); whether what their windows may do changed.
+    fn note_permit(&mut self, node: &str, may: bool) -> bool {
+        let Ok(path) = node.parse::<ui::permissions::TreePath>() else {
+            return false;
+        };
+        let held = self
+            .permitted
+            .insert(path.within_room(), (node.to_owned(), may));
+        match held {
+            Some((_, before)) => before != may,
+            None => may,
+        }
+    }
+
+    /// Ask the room again about every node this page's windows asked of,
+    /// with the person's role: what a share gives changes when it is
+    /// switched or ends, whether or not the app that asked is running.
+    fn ask_permits(&self) {
+        for (node, _) in self.permitted.values() {
+            let answers = Arc::clone(&self.permit_answers);
+            let asked = node.clone();
+            let wake: Vec<_> = self
+                .mounts
+                .values()
+                .map(|mounted| Arc::clone(&mounted.attachment.notify))
+                .collect();
+            let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
+                room: self.uuid.clone(),
+                node: node.clone(),
+            };
+            if let Err(error) = self.peer.rooms_then(
+                request,
+                Box::new(move |answer| {
+                    if let Ok(tilo_relay_protocol::rooms::RoomsReply::Permits(may)) = answer {
+                        answers
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .push((asked, may));
+                        for wake in &wake {
+                            wake();
+                        }
+                    }
+                }),
+            ) {
+                warn(&format!(
+                    "could not ask the room what this page may change: {error}"
+                ));
+                return;
+            }
+        }
+    }
+
     /// Give every mount's apps the role the room last answered, once per
     /// answer that changed it.
     fn follow_standing(&mut self) {
+        let answers = std::mem::take(
+            &mut *self
+                .permit_answers
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        let mut changed = false;
+        for (node, may) in answers {
+            changed |= self.note_permit(&node, may);
+        }
+        if changed {
+            self.apply_standing();
+            for mounted in self.mounts.values() {
+                (mounted.attachment.notify)();
+            }
+        }
         let standing = self.standing.code();
         if standing == self.followed {
             return;
         }
+        self.apply_standing();
+    }
+
+    /// Set every mount's permissions to the role the room last answered,
+    /// with what it permits beyond it.
+    fn apply_standing(&mut self) {
         let Some(role) = self.standing.role() else {
             return;
         };
-        self.followed = standing;
+        self.followed = self.standing.code();
         for mounted in self.mounts.values() {
             let attachment = &mounted.attachment;
             *attachment.permissions.borrow_mut() =
-                ui::permissions::PermissionContext::member(attachment.author.clone(), role);
+                self.permitted.iter().filter(|(_, (_, may))| *may).fold(
+                    ui::permissions::PermissionContext::member(attachment.author.clone(), role),
+                    |context, (node, _)| {
+                        context.permitted_at(node, ui::permissions::KindSet::UNDOABLE)
+                    },
+                );
+            // Its windows sync again, so what they offer (a bar's "View
+            // only", an editor that takes typing) follows at once rather
+            // than at the next change of their record.
+            attachment.changed.set(true);
             // A window waiting to learn whether its person starts the
             // room's record now knows.
             if let Some((handle, shared)) = &attachment.desktop {
@@ -939,6 +1119,7 @@ impl Room {
         let app = route.app_id.clone();
         let record = route.record.clone();
         let key = (app.clone(), record.clone());
+        self.touched.insert(key.clone());
         // What waited for the changes it builds on goes with what arrived:
         // after it, so a snapshot that may hold those changes comes first.
         let mutations = snapshots_first(

@@ -1920,7 +1920,9 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
             .with_secret(true);
         input.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
         input.text = "correct horse battery staple".into();
+        // An edit not yet measured nor published.
         input.dirty = true;
+        input.layout_dirty = true;
         let document = AutoCommit::new();
         input.sync(&document, &automerge::ROOT);
 

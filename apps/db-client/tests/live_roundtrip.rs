@@ -160,7 +160,10 @@ fn postgres_real_round_trip_and_cancellation() {
         s.block_until_idle();
         let bounded = s.query_result.as_ref().expect("bounded select result");
         assert_eq!(bounded.rows.len(), MAX_QUERY_ROWS);
-        assert!(bounded.truncated, "the sentinel row must mark truncation");
+        assert!(
+            bounded.truncation == Some(db_client::model::Truncation::RowLimit),
+            "the sentinel row must mark truncation"
+        );
         assert_eq!(bounded.rows[0][0].display(), "1");
         assert_eq!(
             bounded.rows[MAX_QUERY_ROWS - 1][0].display(),

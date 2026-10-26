@@ -281,6 +281,9 @@ pub struct OwnChip {
     pub name: String,
     /// Their colour.
     pub rgb: (u8, u8, u8),
+    /// Who they are (their root key, hex), for the picture they chose;
+    /// empty where the host names none.
+    pub identity: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -252,6 +252,7 @@ mod tests {
         RunReport {
             run,
             shortcut: "s".into(),
+            version: None,
             trigger: "t".into(),
             mode: RunMode::Unattended,
             steps: vec![],

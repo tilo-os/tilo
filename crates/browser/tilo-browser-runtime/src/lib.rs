@@ -42,7 +42,7 @@ pub fn register_feedback_startup(
     peer: u32,
     startup: tilo_desktop::feedback::transport::Startup,
 ) -> Result<(), String> {
-    browser::register_feedback_startup(peer, startup)
+    feedback_delivery::register_feedback_startup(peer, startup)
 }
 /// Prepare the runtime before anything runs in it; the module's start
 /// function calls it first.
@@ -55,8 +55,11 @@ pub fn register_feedback_startup(
 /// It also has the frame loop render the pixels apps ask for, which the
 /// page cannot wait for the GPU to read back
 /// ([`ui::offscreen::pixels`]).
+///
+/// And it has the page's `tracing` warnings and errors reach the console.
 #[cfg(target_arch = "wasm32")]
 pub fn start() {
+    console_log::install();
     let _ = ui::rt::cpu_pool();
     browser::start_pixels();
 }
@@ -76,17 +79,31 @@ pub fn first_frame_presented() -> bool {
 #[cfg(target_arch = "wasm32")]
 mod clipboard;
 #[cfg(target_arch = "wasm32")]
+mod console_log;
+#[cfg(target_arch = "wasm32")]
 mod crash;
 #[cfg(target_arch = "wasm32")]
 mod desktop;
 #[cfg(target_arch = "wasm32")]
 mod feedback_composer;
 #[cfg(target_arch = "wasm32")]
+mod feedback_crops;
+#[cfg(target_arch = "wasm32")]
 mod feedback_delivery;
+#[cfg(target_arch = "wasm32")]
+mod feedback_pick;
+#[cfg(target_arch = "wasm32")]
+mod feedback_review;
 #[cfg(all(target_arch = "wasm32", feature = "deferred-feedback-composer"))]
 pub use feedback_composer::install_feedback_composer;
 #[cfg(target_arch = "wasm32")]
 pub use feedback_composer::{FEEDBACK_COMPOSER, FeedbackComposerCode, builtin_feedback_composer};
+#[cfg(target_arch = "wasm32")]
+mod pinned_roster;
+#[cfg(target_arch = "wasm32")]
+pub use pinned_roster::{MakePinnedRoster, PinnedRoster, builtin_pinned_roster};
+#[cfg(all(target_arch = "wasm32", feature = "deferred-people-overlay"))]
+pub use pinned_roster::{defer_people_overlay, install_people_overlay, people_overlay_load_failed};
 #[cfg(target_arch = "wasm32")]
 mod files;
 #[cfg(target_arch = "wasm32")]
@@ -110,6 +127,8 @@ mod page_authors;
 #[cfg(target_arch = "wasm32")]
 mod peer;
 #[cfg(target_arch = "wasm32")]
+mod person_chat;
+#[cfg(target_arch = "wasm32")]
 mod replication;
 #[cfg(target_arch = "wasm32")]
 mod scratch;
@@ -118,13 +137,15 @@ mod semantics_status;
 #[cfg(target_arch = "wasm32")]
 mod settings;
 #[cfg(target_arch = "wasm32")]
-mod shell;
+pub(crate) mod shell;
 #[cfg(target_arch = "wasm32")]
 mod storage;
 #[cfg(target_arch = "wasm32")]
 mod throttle;
 #[cfg(target_arch = "wasm32")]
 mod video_pictures;
+#[cfg(target_arch = "wasm32")]
+mod workspace_records;
 // When graphics start-up is said to stall: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(
@@ -139,3 +160,10 @@ mod first_frame;
     allow(dead_code, reason = "only the browser draws; the host runs its tests")
 )]
 mod viewport;
+// How many frames the GPU may still be drawing: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser draws; the host runs its tests")
+)]
+mod frame_pacing;

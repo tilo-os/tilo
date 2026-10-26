@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,9 +28,12 @@ class Violation:
     workflow: str
     job: str
 
+    @property
+    def message(self) -> str:
+        return f"job {self.job!r} needs a timeout-minutes between 1 and {MAX_MINUTES}"
+
     def __str__(self) -> str:
-        return (f"{self.workflow}: job {self.job!r} needs a timeout-minutes between 1 "
-                f"and {MAX_MINUTES}")
+        return f"{self.workflow}: {self.message}"
 
 
 def jobs_without_timeouts(path: Path) -> list[str]:
@@ -95,9 +99,11 @@ def main() -> int:
     violations = audit()
     if violations:
         for violation in violations:
-            print(violation)
+            # A finding names its workflow from the top of the tree (findings.py).
+            path = (WORKFLOWS / violation.workflow).relative_to(ROOT).as_posix()
+            print(f"{path}: {violation.message}")
         return 1
-    print(f"Workflow timeout policy OK ({len(workflow_files(WORKFLOWS))} workflows)")
+    print(f"Workflow timeout policy OK ({len(workflow_files(WORKFLOWS))} workflows)", file=sys.stderr)
     return 0
 
 

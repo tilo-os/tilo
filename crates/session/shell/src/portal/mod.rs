@@ -108,6 +108,7 @@ pub mod notification;
 pub mod permission_store;
 pub mod picker_queue;
 pub mod print;
+pub mod prompt;
 #[cfg(any(test, target_os = "linux"))]
 #[cfg_attr(
     not(target_os = "linux"),
@@ -762,6 +763,28 @@ pub struct PendingGrant {
     /// One-shot reply channel: the shell's permission-prompt pump fulfils
     /// this on a user click; test mode fulfils it synchronously from [`PromptResolver`].
     pub reply: oneshot::Sender<PromptOutcome>,
+}
+
+impl PendingGrant {
+    /// The portal request that owns this prompt, when one does.
+    pub fn request_key(&self) -> Option<&str> {
+        self.request_key.as_deref()
+    }
+
+    /// A prompt no request owns, for tests that need one to queue.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        caller: PortalCaller,
+        capability: Capability,
+        reply: oneshot::Sender<PromptOutcome>,
+    ) -> Self {
+        Self {
+            caller,
+            capability,
+            request_key: None,
+            reply,
+        }
+    }
 }
 
 /// Outcome of a permission prompt — mirrors [`ui::widget::PromptChoice`]

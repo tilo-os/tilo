@@ -1189,6 +1189,9 @@ impl App {
             &doctor::root_owned_build_dirs(&build_dirs(&root), 3),
             &std::env::var("USER").unwrap_or_else(|_| "$USER".into()),
         ));
+        checks.push(doctor::contended_build_check(
+            &doctor::contended_build_dirs(&root.join("target"), &build_dirs(&root)),
+        ));
         let listing = disk::AuthHeader::new(token.as_ref())
             .and_then(|auth| disk::get(&mut self.runner, disk::VERSIONS, &auth));
         checks.push(doctor::disk_check(
@@ -2661,6 +2664,9 @@ impl App {
     fn vm_upgrade(&mut self, args: &UpgradeArgs) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(args.name.as_deref())?;
         let endpoint = self.endpoint(&vm)?;
+        if let Some(branch) = args.branch.as_deref() {
+            return self.vm_upgrade_branch(&vm, &endpoint, args, branch);
+        }
         let Some(from) = args.from.as_deref() else {
             if let Some(layout) = args.image.as_deref().map(Path::new)
                 && imageup::is_layout(layout)
@@ -2989,6 +2995,7 @@ impl App {
         let stage = Stage {
             transport: "oci",
             imgref: imageup::layout_imgref(),
+            pin: None,
             expected: Some(digest),
             no_reboot: args.no_reboot,
         };
@@ -3081,7 +3088,7 @@ impl App {
                     String::new()
                 })
             };
-            let vm_tags = listing("registry.tilo.so/tilo/tilo-vm")?;
+            let vm_tags = listing(ci::REF_IMAGE)?;
             let ci_tags = listing("registry.tilo.so/tilo/tilo-ci")?;
             let refs = imageup::ci_ref_candidates(
                 sha,
@@ -3134,6 +3141,72 @@ impl App {
         Ok(found)
     }
 
+    /// `vm upgrade --ref BRANCH`: t builds the branch's head for this device's target, reusing
+    /// every layer it built before, and publishes it signed; the device then takes it the way
+    /// it takes any update, pinned until its channel moves on.
+    fn vm_upgrade_branch(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        args: &UpgradeArgs,
+        branch: &str,
+    ) -> Result<Outcome, CliError> {
+        let facts = self.vm_facts(vm, endpoint, "vm upgrade")?;
+        let target = facts.board.clone().unwrap_or_else(|| {
+            facts
+                .arch()
+                .unwrap_or_else(|| std::env::consts::ARCH.to_owned())
+        });
+        let ls_remote =
+            CommandLine::new("git", &["ls-remote", "origin"]).arg(format!("refs/heads/{branch}"));
+        let listed = self.runner.output(&ls_remote)?;
+        let head = listed
+            .stdout
+            .split_whitespace()
+            .next()
+            .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(str::to_owned)
+            .ok_or_else(|| CliError::Unsupported {
+                what: format!("--ref {branch}: origin has no such branch"),
+                alternative: format!("push it first: git push origin HEAD:{branch}"),
+            })?;
+        if !on_path("t") {
+            return Err(CliError::ToolMissing {
+                tool: "t".into(),
+                purpose: "build and publish the branch's image (docs/t.md)".into(),
+            });
+        }
+        let check = format!("publish-os-ref-{target}");
+        let dispatch = CommandLine::new(
+            "t",
+            &["dispatch", &check, "--ref", branch, "--publish", "--human"],
+        );
+        let runner = &mut self.runner;
+        let published = self
+            .receipt
+            .phase("publish", || runner.interactive(&dispatch))?;
+        if !published {
+            return Err(CliError::CommandFailed {
+                command: dispatch.display(),
+                status: "failed".into(),
+                stderr: format!(
+                    "t's output above names the cause. A branch's build publishes only where t \
+                     gives runs of branches identity tokens for registry.tilo.so and \
+                     tilo-dev-signing (\"needs identity tokens\" above); until it does, the \
+                     temporary path builds here: tilo-vm vm upgrade {} --from local",
+                    vm.name
+                ),
+            });
+        }
+        let image = format!(
+            "{}:ref-{}-{}-{target}",
+            ci::REF_IMAGE,
+            ci::ref_slug(branch),
+            head.chars().take(7).collect::<String>()
+        );
+        self.vm_upgrade_registry(vm, endpoint, args, Some(&image))
+    }
+
     /// `vm upgrade`, `vm upgrade --image` and a published `--from ci:`: bootc
     /// pulls from a registry.
     fn vm_upgrade_registry(
@@ -3161,6 +3234,7 @@ impl App {
         let stage = Stage {
             transport,
             imgref: imgref.clone(),
+            pin: image.map(str::to_owned),
             expected: None,
             no_reboot: args.no_reboot,
         };
@@ -3372,6 +3446,10 @@ impl App {
             && facts.bootc.rollback.as_ref().map(|r| &r.digest) == stage.expected.as_ref();
         let words = if reuse {
             vec!["bootc".to_owned(), "rollback".to_owned()]
+        } else if stage.transport == "registry" {
+            // The device's own update path: the named image pinned in its channel's place,
+            // or none named, back to its channel.
+            imageup::update_command(stage.pin.as_deref())
         } else {
             imageup::stage_command(&facts.bootc, stage.transport, &stage.imgref)
         };
@@ -5410,6 +5488,9 @@ impl CiTarget {
 struct Stage {
     transport: &'static str,
     imgref: String,
+    /// The registry image named to move onto, which the device follows in place of its
+    /// channel until the channel moves on; `None` returns it to its channel.
+    pin: Option<String>,
     expected: Option<String>,
     no_reboot: bool,
 }

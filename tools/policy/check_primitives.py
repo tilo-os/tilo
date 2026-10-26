@@ -180,6 +180,8 @@ def load_baseline(path: Path) -> dict[tuple[str, str], int]:
 def check(root: Path, baseline_path: Path) -> list[str]:
     found = scan(root)
     allowed = load_baseline(baseline_path)
+    shown = (baseline_path.relative_to(root).as_posix()
+             if baseline_path.is_relative_to(root) else baseline_path.name)
     errors = []
     for key in sorted(set(found) | set(allowed)):
         file, rule = key
@@ -188,7 +190,7 @@ def check(root: Path, baseline_path: Path) -> list[str]:
             errors.append(f"{file}: {have} {rule} (allowed {may}); build it from the "
                           "design system's primitives (docs/design-language.md, Primitives)")
         elif have < may:
-            errors.append(f"{baseline_path.name}: {rule} {may} {file} is now {have}; "
+            errors.append(f"{shown}: {rule} {may} {file} is now {have}; "
                           "lower the count (or delete the line at 0)")
     return errors
 
@@ -209,7 +211,8 @@ def main(argv: list[str]) -> int:
     if errors:
         print("\n".join(errors))
         return 1
-    print("primitives OK (controls, facts, icons and colours come from the design system)")
+    print("primitives OK (controls, facts, icons and colours come from the design system)",
+          file=sys.stderr)
     return 0
 
 

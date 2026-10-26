@@ -4,16 +4,20 @@ import {createDataLoader} from './data-loader.mjs';
 import {createImageDecoder} from './image-decode.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
-import {MountRegistry,applyEditorHints,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
+import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
-import {semanticBridge} from './semantics.mjs';
+import {semanticBridge,applySemanticsPatch} from './semantics.mjs';
 import {recoverableClose} from './close-recovery.mjs';
 import {createCrashQuarantine,crashAction} from './app-crash.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createLiveCursors} from './live-cursors.mjs';
 import {createHere} from './here.mjs';
+/** Chat, which holds person-to-person conversations. */
+const CHAT_APP='so.tilo.chat';
+import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs';
+import {focusedApp,untilSnapshot} from './open-target.mjs';
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
 export {createPanorama} from './panorama.mjs';
@@ -109,6 +113,7 @@ export async function mountDesktop(target,options={}) {
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
+  const fillScreen=createScreenFill(surface,{canvas,observe:globalThis.ResizeObserver});
   let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
@@ -191,6 +196,64 @@ export async function mountDesktop(target,options={}) {
     if(focused){const scope=inputScope.capture();if(scope)(scope.legacy||scope.ime?editor:canvas).focus({preventScroll:true});}
   }
   function active(){return !closed&&!crashed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
+  // The pictures people chose for their profiles, worn by their avatars here.
+  async function showPhoto(user,url){const pixels=url?await photoPixels(url):null;if(active()&&runtime.desktop_set_person_photo)runtime.desktop_set_person_photo(id,user,pixels?.width??0,pixels?.height??0,pixels?.rgba??new Uint8Array());}
+  // Chat's window to run its actions in: one already open (left where it
+  // is), else Chat opened, as invoking an action shows its view.
+  async function chatWindow(){
+    const nav=navigation?.controller;if(!nav)throw Error('This desktop cannot open Chat');
+    const snapshot=nav.getSnapshot();
+    if(focusedApp(snapshot)===CHAT_APP)return snapshot.active.tab;
+    const open=snapshot.entries?.find(entry=>entry.app===CHAT_APP);
+    if(open)return open.route.tab;
+    await nav.dispatch({kind:'open',app:CHAT_APP,generation:snapshot.generation});
+    const shown=await untilSnapshot(nav,next=>focusedApp(next)===CHAT_APP,{frames:()=>lastState?.frames??Infinity});
+    return shown.active.tab;
+  }
+  // Run what the person asked of Chat on its conversation with `ask.to`
+  // (root key, hex), as their own act: Chat offers it once the room's list
+  // of people has them.
+  async function runOwnAsk(ask){
+    const window=await chatWindow();
+    for(let waited=0;;waited+=100){
+      const offered=active()&&JSON.parse(runtime.component_actions(id,undefined,window)).find(entry=>entry.address?.action===ask.action&&String(entry.address.resource??'').endsWith(`chat.person:${ask.to}`));
+      if(offered)return runtime.desktop_run_own_ask(id,ask.id,offered.address.resource,window);
+      if(waited>=10_000)throw Error('Chat has no conversation with this person');
+      await new Promise(done=>setTimeout(done,100));
+    }
+  }
+  // Chat's direct conversation with someone, opened as following a link to it does.
+  async function messagePerson(ask){
+    const nav=navigation?.controller;if(!nav)throw Error('This desktop cannot open Chat');
+    const snapshot=nav.getSnapshot();
+    if(focusedApp(snapshot)!==CHAT_APP){
+      await nav.dispatch({kind:'open',app:CHAT_APP,generation:snapshot.generation});
+      await untilSnapshot(nav,next=>focusedApp(next)===CHAT_APP,{frames:()=>lastState?.frames??Infinity});
+    }
+    await runOwnAsk(ask);
+  }
+  // A message written to `to` in the people overlay, sent by Chat's own
+  // `send-direct-message`, the one way a direct message goes; the overlay
+  // hears whether Chat took it.
+  async function sendToPerson(ask){
+    let refusal=null;
+    try{await runOwnAsk(ask);}catch(error){refusal=String(error?.message??error);}
+    if(active()&&runtime.desktop_message_answer)runtime.desktop_message_answer(id,ask.id,refusal??undefined);
+  }
+  // What the person says they are doing and how they share it, as their
+  // profile keeps it: set on another of their devices, it shows here too.
+  function ownStatus(profile){
+    const status=typeof profile.status==='string'?profile.status:'';
+    const sharing=typeof profile.sharing==='string'?profile.sharing:'';
+    options.onHostAction?.('set-status',{status,sharing,keep:false});
+    // Whether their picture is a linked account's, which a newer one of
+    // that account's replaces, or one they uploaded, which stays.
+    options.onHostAction?.('set-linked',{photoFrom:typeof profile.photo_from==='string'?profile.photo_from:null,linked:Array.isArray(profile.linked)?profile.linked:[],keep:false});
+    if(active()&&runtime.desktop_set_own_status)runtime.desktop_set_own_status(id,status,sharing);
+  }
+  // The accounts elsewhere someone's profile names, which their card says.
+  function showLinked(user,linked){if(active()&&runtime.desktop_set_person_links)runtime.desktop_set_person_links(id,user,JSON.stringify(linked));}
+  const photos=followPhotos({profileOf:user=>fetchPersonProfile(options.peer.origin,user),show:showPhoto,linked:showLinked,own:()=>options.peer?.userPublicKey,onOwn:ownStatus,onError:error=>report({photoError:String(error)})});
   const nativeCatalogue = createNativeCatalogueBridge({current:active,
     actions:()=>options.peer?.actions,
     membership:()=>options.peer?.membership,
@@ -202,12 +265,21 @@ export async function mountDesktop(target,options={}) {
   function update(raw){
     if(closed||crashed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
+    // After the first tree a status carries only what changed in it; one
+    // made for a tree this page does not hold asks for the whole tree.
+    if(state.semanticsPatch){
+      const patched=applySemanticsPatch(lastState?.semantics,lastState?.semanticsSeq,state.semanticsPatch);
+      if(patched){state.semantics=patched;state.semanticsSeq=state.semanticsPatch.seq;}
+      else if(active())queueMicrotask(()=>{if(active())runtime.request_semantics?.(id);});
+      delete state.semanticsPatch;
+    }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.['room-action']){const asked=request['room-action'];void runRoomAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_room_action_answer(id,asked.id,JSON.stringify(answer));});}}
+    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.message)void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.send)void sendToPerson(request.send);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(typeof request?.message==='string')void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.['room-action']){const asked=request['room-action'];void runRoomAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_room_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
-    if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null});liveCursors?.wake();}
+    if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});liveCursors?.wake();}
     // This person's latest wave, which the one it is for shows once.
     if('liveWave' in state)liveLayer()?.publishPresence({wave:state.liveWave});
+    if('liveFollowing' in state)liveLayer()?.publishPresence({following:state.liveFollowing});
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
       desktopOwnership=Boolean(runtime.desktop_input_ownership&&runtime.desktop_navigation_snapshot?.(id));
       runtimeReady=true;
@@ -236,7 +308,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;inputScope.capture();}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,setPointers:pointers=>{if(active())runtime.remote_pointers(id,JSON.stringify(pointers));},anchor:(x,y)=>{const at=active()&&runtime.pointer_anchor(id,x,y);return at?JSON.parse(at):null;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],onError:error=>report({nodeAppsError:String(error)})});}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,setPointers:pointers=>{if(active())runtime.remote_pointers(id,JSON.stringify(pointers));},anchor:(x,y)=>{const at=active()&&runtime.pointer_anchor(id,x,y);return at?JSON.parse(at):null;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],onError:error=>report({nodeAppsError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
@@ -246,6 +318,7 @@ export async function mountDesktop(target,options={}) {
     if(state.semantics)semantic.update(state.semantics);
     placeSemantics();
     const ownership=inputScope.capture(),ime=ownership?.legacy?state.ime:ownership?.ime;
+    fillScreen(!ime);
     if(ime){
       editor.style.left=`${ime.x}px`;editor.style.top=`${ime.y}px`;editor.style.height=`${Math.max(1,ime.height)}px`;
       applyEditorHints(editor,ime.hints);
@@ -525,6 +598,8 @@ export async function mountDesktop(target,options={}) {
       // Host actions (`[{id, title, subtitle?}]`) in place of earlier ones, and a banner offering one (`{action, title, body}`).
       setHostActions:actions=>{if(active()&&runtime.desktop_set_host_actions)runtime.desktop_set_host_actions(id,JSON.stringify(actions));},
       offerHostAction:offer=>{if(active()&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
+      // The picture `user` (root key, hex) chose, as a `data:` URL, shown on their avatars now; `null` takes it away.
+      setPersonPhoto:(user,url)=>{photos.chose(user,url);return showPhoto(user,url);},
       // What the page just did out of sight, said in passing ("Link copied").
       acknowledge:text=>{if(active()&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
       // Who the desktop shows as here (`[{id, label, agent}]`, one row per person), or null for a single app.

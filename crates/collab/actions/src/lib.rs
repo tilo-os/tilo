@@ -160,7 +160,7 @@ pub use content::{
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
     ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, Cause, ChangeKind,
-    MAX_PARTICIPANT_ID_BYTES, ParticipantId, RISK_FACET,
+    MAX_PARTICIPANT_ID_BYTES, PLACE_FACET, ParticipantId, RISK_FACET,
 };
 pub use contract::{
     AGENTS_AUDIENCE_TAG, ARGUMENT_RISK_TAG, ATTENDED_TAG, ActionContract, ActionKind, ActionNeed,

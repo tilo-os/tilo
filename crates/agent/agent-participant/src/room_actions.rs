@@ -205,6 +205,33 @@ pub trait RoomRecordsLink: Send + Sync {
     fn content_blob(&self, _workspace: u64, _hash: &str) -> Option<Vec<u8>> {
         None
     }
+    /// The model the host looks over its reporters' reviews with, when it
+    /// lends one ([`FeedbackReviewer`]). Absence leaves reviews to the
+    /// reporters' own devices.
+    fn feedback_reviewer(&self) -> Option<Arc<dyn FeedbackReviewer>> {
+        None
+    }
+}
+
+/// A model the host lends its admitted reporters to look over a report's
+/// review: it is asked only the feedback review contract
+/// (`ui::feedback::model_review`) over the report's model view, which shows
+/// personal values only as placeholders, and only quotes from the texts
+/// asked about go back.
+pub trait FeedbackReviewer: Send + Sync {
+    /// What a review calls the model: the provider and model.
+    fn name(&self) -> String;
+    /// Ask the model `prompt` for `caller`, its answer held to the JSON
+    /// `schema` where the provider can, then call `done` with its
+    /// answer, from any thread. A host may refuse a caller who asks too
+    /// often.
+    fn review(
+        &self,
+        caller: &Caller,
+        prompt: String,
+        schema: serde_json::Value,
+        done: Box<dyn FnOnce(Result<String, String>) + Send>,
+    );
 }
 
 struct Entry {
@@ -1049,25 +1076,19 @@ impl Worker {
                     query,
                     caller,
                     done,
-                } => {
-                    let result = self
-                        .shared
-                        .link
-                        .get()
-                        .ok_or_else(|| ActionHostError::Unavailable {
-                            reason: "feedback host unavailable".into(),
-                        })
-                        .and_then(|link| {
-                            feedback::answer(
-                                link,
-                                self.catalogue.clone(),
-                                workspace_id,
-                                caller,
-                                *query,
-                            )
-                        });
-                    done.complete(result);
-                }
+                } => match self.shared.link.get() {
+                    Some(link) => feedback::answer_and_review(
+                        link,
+                        self.catalogue.clone(),
+                        workspace_id,
+                        caller,
+                        *query,
+                        done,
+                    ),
+                    None => done.complete(Err(ActionHostError::Unavailable {
+                        reason: "feedback host unavailable".into(),
+                    })),
+                },
                 Job::Catalogue {
                     workspace_id,
                     query,

@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-pub(crate) const HOST_SOURCE_NAMES: [&str; 28] = [
+pub(crate) const HOST_SOURCE_NAMES: [&str; 31] = [
     "root-transition",
     "quick-settings",
     "workspace-settings",
@@ -37,6 +37,9 @@ pub(crate) const HOST_SOURCE_NAMES: [&str; 28] = [
     "dictation",
     "emoji-picker",
     "display-confirm",
+    "feedback-picker",
+    "control-hints",
+    "onboarding",
 ];
 
 #[allow(
@@ -77,6 +80,9 @@ pub(crate) struct HostDemandInputs {
     pub dictation: bool,
     pub emoji_picker: bool,
     pub display_confirm: bool,
+    /// Pointing at what is wrong, to report it.
+    pub feedback_picker: bool,
+    pub control_hints: bool,
 }
 
 /// The bit of [`host_bits`] that says the workspace content animates.
@@ -84,7 +90,8 @@ pub(crate) const CONTENT_BIT: u32 = 1 << 8;
 
 pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
     if inputs.onboarding {
-        return u32::from(inputs.onboarding_animating) | (u32::from(inputs.capture_studio) << 1);
+        return (u32::from(inputs.capture_studio) << 6)
+            | (u32::from(inputs.onboarding_animating) << 30);
     }
     u32::from(inputs.root_transition)
         | (u32::from(inputs.quick_settings) << 1)
@@ -114,6 +121,8 @@ pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
         | (u32::from(inputs.dictation) << 25)
         | (u32::from(inputs.emoji_picker) << 26)
         | (u32::from(inputs.display_confirm) << 27)
+        | (u32::from(inputs.feedback_picker) << 28)
+        | (u32::from(inputs.control_hints) << 29)
 }
 
 pub(crate) fn host_labels(bits: u32) -> impl Iterator<Item = &'static str> {
@@ -238,9 +247,14 @@ mod tests {
             dictation: false,
             emoji_picker: false,
             display_confirm: false,
+            feedback_picker: false,
+            control_hints: false,
         };
         assert_eq!(host_bits(&inputs(false, false)), 0);
-        assert_eq!(host_bits(&inputs(true, false)), 1);
+        assert_eq!(
+            host_labels(host_bits(&inputs(true, false))).collect::<Vec<_>>(),
+            ["onboarding"],
+        );
         // Setup owns the screen: the desktop's sources beneath it are hidden.
         assert_eq!(host_bits(&inputs(false, true)), 0);
     }

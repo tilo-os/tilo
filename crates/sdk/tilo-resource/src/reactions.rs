@@ -217,6 +217,32 @@ impl Reactions {
     }
 }
 
+/// The [`Reactions`] field of `record`, a record of `table`'s type, and the
+/// key it is stored under, when the record holds one: the reactions to the
+/// record itself, which a window showing it offers in its bar. A record
+/// opts in by holding the field, nothing else; the first such field
+/// counts.
+///
+/// `table` is the record's own ([`Resource::RECORD_TABLE`](crate::Resource::RECORD_TABLE)),
+/// so code that does not know the record's type reads it.
+#[must_use]
+pub fn record_reactions<'a>(
+    table: &'static crate::table::ModelTable,
+    record: &'a dyn std::any::Any,
+) -> Option<(&'static str, &'a Reactions)> {
+    let desc = table.record()?;
+    let own = <Reactions as Model>::TABLE;
+    desc.fields
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| std::ptr::eq(field.table, own))
+        .find_map(|(index, field)| {
+            (desc.field)(record, index)?
+                .downcast_ref::<Reactions>()
+                .map(|reactions| (field.key, reactions))
+        })
+}
+
 /// The name of the workspace emoji `emoji` writes as `:name:`, when it is
 /// one.
 #[must_use]

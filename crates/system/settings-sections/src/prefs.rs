@@ -283,6 +283,7 @@ impl Default for InputPrefs {
 /// and tablets, read by the compositor's input layer.
 impl ui::storage::SettingsSchema for InputPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("input");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.input", label = "Input")]
@@ -427,6 +428,9 @@ fn default_suspend_minutes() -> u32 {
 fn default_lock_minutes() -> u32 {
     5
 }
+fn default_lock_on_sleep() -> bool {
+    settings_store::power::DEFAULT_LOCK_ON_SLEEP
+}
 fn default_lid_action() -> PowerActionPref {
     PowerActionPref::Suspend
 }
@@ -482,6 +486,12 @@ pub struct PowerPrefs {
     #[serde(default = "default_lock_minutes")]
     #[model(weaker = "higher", weakest = 0)]
     pub lock_minutes: u32,
+    /// Whether waking from sleep asks for the password. An idle, explicit or
+    /// in-flight lock survives either way; only the lock this device adds on
+    /// the way into sleep follows this.
+    #[serde(default = "default_lock_on_sleep")]
+    #[model(weaker = false)]
+    pub lock_on_sleep: bool,
     /// What to do when the lid closes.
     #[serde(default = "default_lid_action")]
     pub lid_close_action: PowerActionPref,
@@ -557,6 +567,7 @@ impl Default for DeskWidgetsPrefs {
 impl ui::storage::SettingsSchema for DeskWidgetsPrefs {
     const SCOPE: ui::storage::Scope =
         ui::storage::Scope::Shared(settings_store::desk_widgets::SECTION);
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.desk_widgets", label = "Desk widgets")]
@@ -566,6 +577,7 @@ impl DeskWidgetsPrefs {}
 /// idle layer.
 impl ui::storage::SettingsSchema for PowerPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("power");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(
@@ -665,6 +677,7 @@ impl Default for PowerPrefs {
             performance_suspend_minutes: None,
             blank_minutes: 10,
             lock_minutes: default_lock_minutes(),
+            lock_on_sleep: default_lock_on_sleep(),
             lid_close_action: default_lid_action(),
             power_key_action: default_power_key_action(),
             low_battery_percent: default_low_battery_percent(),
@@ -687,6 +700,7 @@ pub struct UpdatePrefs {
 /// This device's update preferences.
 impl ui::storage::SettingsSchema for UpdatePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("updates");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(
@@ -986,6 +1000,7 @@ impl AppearancePrefs {
 
 impl ui::storage::SettingsSchema for AppearancePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.appearance", label = "Appearance")]
@@ -1103,6 +1118,7 @@ fn default_true() -> bool {
 /// layer.
 impl ui::storage::SettingsSchema for NotificationPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("notifications");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.notifications", label = "Notifications")]
@@ -1179,6 +1195,7 @@ pub fn valid_app_id(id: &str) -> bool {
 
 impl ui::storage::SettingsSchema for AudioPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.audio", label = "Sound")]
@@ -1186,6 +1203,7 @@ impl AudioPrefs {}
 
 impl ui::storage::SettingsSchema for DisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
+    ui::settings_codec!();
 }
 
 #[ui::tilo_resource::resource(kind = "settings.display", label = "Displays")]

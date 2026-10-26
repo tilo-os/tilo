@@ -282,19 +282,6 @@ pub(crate) fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message>
                 continue;
             }
             let parent = text("parent");
-            let mut reactions = ui::tilo_resource::Set::new();
-            if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&row, "reactions") {
-                for index in 0..doc.length(&list) {
-                    if let Ok(Some((Value::Object(ObjType::Map), reaction))) = doc.get(&list, index)
-                    {
-                        let emoji = read_key::<String>(doc, &reaction, "emoji").unwrap_or_default();
-                        let user = read_key::<String>(doc, &reaction, "user").unwrap_or_default();
-                        if !emoji.is_empty() && !user.is_empty() {
-                            reactions.insert(Reacted { emoji, user });
-                        }
-                    }
-                }
-            }
             listed.push((
                 Id::from_raw(id),
                 Message {
@@ -305,7 +292,6 @@ pub(crate) fn kept_messages(doc: &ui::tilo_resource::Doc) -> Collection<Message>
                     edited: flag("edited"),
                     parent: (!parent.is_empty()).then(|| Id::from_raw(parent)),
                     pinned: flag("pinned"),
-                    reactions,
                     ..Message::default()
                 },
             ));
@@ -495,10 +481,10 @@ pub struct Message {
     /// The message it answers in a thread.
     #[model(readonly)]
     pub parent: Option<Id>,
-    /// Who reacted with which emoji: one element per person and emoji, so
-    /// two people's first reactions with one emoji both count.
+    /// Who reacted with which emoji: the framework's reactions, each the
+    /// invoker's own, so this read-only message still takes them.
     #[model(readonly)]
-    pub reactions: ui::tilo_resource::Set<Reacted>,
+    pub reactions: ui::tilo_resource::Reactions,
     /// Who the text refers to, resolved when it was written.
     #[model(readonly)]
     pub mentions: Vec<crate::mention::Mention>,
@@ -522,6 +508,59 @@ pub struct Message {
     /// posting an outside person's line); the author stays the bot.
     #[model(readonly)]
     pub appearance: Option<ShownAs>,
+    /// The window it shares live, when it was written by sharing one: the
+    /// resource is `reference`, in the record `source_provider` names.
+    #[model(readonly)]
+    pub share: Option<WindowShare>,
+}
+
+/// A window shared live into a channel: everyone who reads the channel sees
+/// the resource as it is now, drawn by its own app from their own copy of
+/// its record, and opens it with the access the sharer gave.
+#[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowShare {
+    /// What the people who open it may do there.
+    pub access: ShareAccess,
+    /// Whether the sharer still has the window open: the embed says it is
+    /// live while they do.
+    pub open: bool,
+    /// The sharer stopped sharing it: the message keeps saying what was
+    /// shared, and no longer shows or opens it.
+    pub ended: bool,
+}
+
+/// What the people a window is shared with may do when they open it.
+#[derive(
+    Model,
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    ui::tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareAccess {
+    /// Look at it: the window opens read-only.
+    #[default]
+    View,
+    /// Work on it with the sharer.
+    Edit,
+}
+
+impl ShareAccess {
+    /// Its name in an action's argument and in the record.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::View => "view",
+            Self::Edit => "edit",
+        }
+    }
 }
 
 /// The name and avatar a bot showed for a message instead of its own, as the
@@ -590,7 +629,7 @@ impl Default for Message {
             edited: false,
             history: Vec::new(),
             parent: None,
-            reactions: ui::tilo_resource::Set::new(),
+            reactions: ui::tilo_resource::Reactions::new(),
             mentions: Vec::new(),
             reference: None,
             source_provider: None,
@@ -598,18 +637,10 @@ impl Default for Message {
             pinned: false,
             work: None,
             appearance: None,
+            share: None,
         }
     }
 }
-
-/// One person's reaction to a message with one emoji.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Reacted {
-    pub emoji: String,
-    pub user: String,
-}
-
-ui::tilo_resource::json_model!(Reacted);
 
 /// An earlier text of a message.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -725,6 +756,11 @@ pub struct FeedbackReport {
     /// What happened to it since.
     #[model(readonly)]
     pub triage: Collection<Triage>,
+    /// Who answered it with which emoji (a +1 from someone who sees the
+    /// same): the framework's reactions, as on a message, each the
+    /// invoker's own.
+    #[model(readonly)]
+    pub reactions: ui::tilo_resource::Reactions,
 }
 
 /// One triage step of a feedback report.
@@ -1052,6 +1088,7 @@ pub(crate) struct Posting {
     pub reference: Option<tilo_reference::ResourceRef>,
     pub source_provider: Option<String>,
     pub appearance: Option<tilo_actions::Appearance>,
+    pub share: Option<WindowShare>,
     /// Who the text refers to, as the chat record resolved it where the
     /// message was written.
     pub mentions: Vec<crate::mention::Mention>,
@@ -1596,6 +1633,7 @@ impl Chat {
                 author: Atom(me),
                 ts,
                 triage: Collection::new(),
+                reactions: ui::tilo_resource::Reactions::new(),
             },
         );
         Ok(())
@@ -1633,6 +1671,8 @@ impl Chat {
     }
 }
 
+#[cfg(test)]
+mod mention_tests;
 #[cfg(test)]
 mod migration_tests;
 #[cfg(test)]

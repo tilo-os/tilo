@@ -97,11 +97,14 @@ email client's accounts + folders.
     the app says what its content is (`.content_kind(ContentKind::List)`,
     `Reading`, `Page`, `Grid`, `Document`) and the shell knows what that
     needs (`list_min_width` 320, `reading_min_width` 360, `page_min_width`
-    360, `grid_min_width` 280). The sidebar first shrinks from
-    `sidebar_width` toward `sidebar_min_width`; the layout changes only
-    below `sidebar_min_width` + the content's minimum (a Files window docks
-    down to 520). Hiding it is the person's choice, remembered per size
-    class; showing it again docks it and the content reflows.
+    360, `grid_min_width` 280). The sidebar **docks at its own width**; on
+    the way down it shrinks only toward its own minimum
+    (`panel_min_width` 200), and the layout changes below that minimum plus
+    the content's minimum (a Files window docks down to 520, Settings to
+    560, Mail to 720). A panel never widens to fill a roomy window, and it
+    never narrows past the width it needs to read so the content can stay
+    wider. Hiding it is the person's choice, remembered per size class;
+    showing it again docks it and the content reflows.
   - **One at a time (push)** below that: the list (sidebar or overview) or
     the page fills the window, with Back — the Settings list or a setting,
     Files' places or a folder. A new narrow window opens on the list;
@@ -1354,6 +1357,7 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   |---|---|---|
   | `header_height` | 56 | the one header row: `min_pointer_target` 32 in an `s3` inset |
   | `sidebar_width` | 280 | a docked sidebar (drag range `sidebar_min_width` 200 – `sidebar_max_width` 420) |
+  | `panel_min_width` | 200 | the narrowest a docked sidebar or panel shrinks to before it floats (`sidebar_min_width`); a content column beside it pans out of view at this width rather than shrinking further |
   | `drawer_width` | 320 | the floating drawer, `s2` in from the window edges |
   | `rail_width` | 76 | a docked icon rail (`NavMode::Docked`, `NavList::rail`) |
   | `overview_width` | 340 | the overview column |
@@ -1366,21 +1370,27 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   | `inspector_width` | 300 | the inspector; it floats from the trailing edge when it does not fit |
   | `nav_row_height` | 32 | a navigation row (`NavList`, `paint_nav_row`) |
 
-  The breakpoints follow from them: the sidebar docks while
-  `sidebar_min_width` + the content's minimum fits (with an overview,
-  `sidebar_min_width + overview_width +` the minimum), shrinking from
-  `sidebar_width` first: Files docks down to 520, Settings to 560, Mail to
-  900. The overview and detail stand side by side while `overview_width +`
-  the minimum fits. The shell's buttons (sidebar toggle, Back,
+  The breakpoints follow from them: the sidebar docks at `sidebar_width`
+  while `panel_min_width` + the content's minimum fits (with an overview,
+  `panel_min_width + overview_width +` the minimum), shrinking from
+  `sidebar_width` toward `panel_min_width` first: Files docks down to 520,
+  Settings to 560, Mail to 720. The overview and detail stand side by side
+  while `overview_width +` the minimum fits. The shell's buttons (sidebar toggle, Back,
   inspector toggle, the window's History control) are Plain icon buttons of
   `min_pointer_target` in the `s3` inset. `content_min_width` (560) and
   `detail_min_width` (360) remain for painted apps that split their own
-  window; a painted app's `SidebarDrawer` takes the same content kinds
+  window; a painted app's own content column states it with
+  `SidebarDrawer::content_is_column(min)`, and the panel keeps its own width
+  beside that column instead of shrinking so the column can become a phone.
+  A painted app's `SidebarDrawer` takes the same content kinds
   (`.content_kind(..)`) and shrinks, docks and keeps hysteresis the same way.
   Too narrow to dock, its list and its content take turns filling the
   window (`SidebarDrawer::is_push`: the list on the sidebar region under the
-  header row, the toggle bringing the content back) — Music, Calendar, Chat;
-  only a `Document` kind floats as a drawer.
+  header row, the toggle bringing the content back) — Music, Calendar, Chat,
+  and the video library beside a picture too narrow to keep it. Every other
+  panel floats as a drawer over the content: a `Document` kind's outline, an
+  inspector, and `SidebarDrawer::with_push()` for a panel that would cover
+  what the content is for (Video Player's library beside the picture).
   Chat's channel list and conversation form a master/detail composition:
   its conversation reserves a reading column, rather than the form-sheet
   `content_min_width`: it is a `Reading` kind, and the panel docks down to
@@ -1437,6 +1447,7 @@ says how (no curve, duration, spring constant or eased ratio of its own):
 | `Ambient` | chrome that comes back on its own (leaves at once, arrives slowly unless asked) |
 | `Feedback` | press and hover tints: on at once, off over `fast` |
 | `Attention` | a refusal's shake, a single pulse; a tint under reduced motion |
+| `Beckon` | a control hint (`ui::control_hints`): arrives with the library's one deliberate overshoot and a glow pulse, loops its gesture picture while it shows, and when the gesture is done checks, folds to a dot and drifts to the person's avatar. The overshoot and the loop are the exception to "nothing bounces" and "nothing moves at idle": a hint exists to be noticed, shows once, and goes on its own. Reduced motion: a fade in, the picture at its resting frame, the check held briefly |
 
 They all run on `MotionValue`, a damped spring solved in closed form: exact
 at any frame rate, interruptible (a new target continues from the drawn
@@ -1810,3 +1821,99 @@ of exactly three faces:
 ## Form composition
 
 For content-first account/settings forms, use `FormPage`, `Form`, `FormSection` and `Field`; see [automatic and guided forms](FORM_COMPOSITION.md) for the API, independent override/reset rules and runnable primitive comparison. Manual composition remains supported with the same standard controls.
+
+## 10. Jobs: long work has a body, and outlives its window
+
+Anything that can take longer than a breath is a **job**, and a job is the
+toolkit's (`ui::jobs`), not the app's. Nine apps improvising "Installing…",
+"Scanning…", "Connecting…" produced nine progress stories, none of them
+cancellable and most of them dead the moment the person left the page.
+
+**The five fields.** Every job has a title in the person's words ("Installing
+LibreOffice"), a subject (what it is about, and where **Show me** goes), a
+progress, a way out, and an outcome:
+
+| Field | Rule |
+|---|---|
+| title | what is happening, as the person would say it — not a code, not an id |
+| subject | the app (icon *and* name) and the thing; `opens` carries what **Show me** opens |
+| progress | determinate when a total is known (`312 MB of 480 MB`), honest when it is not (`Reading 12,480 files`) — never a bare spinner, never a fake percentage |
+| Stop | present only when the worker honours it (`Spec::stoppable`). A job whose stopping would not be honoured shows no Stop: a Stop that does nothing is worse than none |
+| outcome | done (one sentence), failed **with the reason**, or stopped |
+
+**The surface.** One row per job, built by `ui::jobs::Band` (the window's foot,
+`NavShell::bottom_band`) or `ui::jobs::Pane` (the Jobs surface). A row is a
+`ListRow`: the app's icon leading, the title, the live line as the secondary,
+the percentage as the value, and the controls trailing — **Stop** while it
+runs and can be stopped, **Show me** and **Read** once it has ended. The bar
+of a job's progress goes under its row in the pane, and facts are never joined
+into one string with a separator glyph.
+
+**The registry is the process's, not the window's.** Starting a job puts it
+where every window reads it, so leaving the page, closing the panel or opening
+another window does not end the work: the next surface reads the same rows.
+An app keeps a `jobs::Presses` beside the widget and answers what was pressed
+in its update (`ui::jobs::apply`): **Stop** calls the worker's way out,
+**Read** takes the row away, **Show me** gets the subject and navigates.
+
+**A failure is not just a row.** `Running::failed` raises an attention item
+with the reason and a **Show me** action, and reading the job's row takes that
+item back (`attention::dismissed(Target::Job)`). A failure nobody can decide
+about is a ledger entry, not a failure.
+
+**What an app never does.** Draw its own progress bar beside a long
+operation, refuse every other action "while one is in progress" (jobs are
+concurrent by construction), or time out a job's notice. Reachable from
+anywhere: `ui::jobs::CHORD` (Ctrl+Shift+J) and `ui::jobs::open` ask for the
+surface; a host resolves the request with `take_opening`.
+
+## 11. Attention and the ledger: one raised hand, one record
+
+Everything the system says about itself goes to exactly one of two places,
+and `ui::attention::publish` is the one call that decides:
+
+* **it needs a person** → an item in the waiting stack (`Notice::needs`, with
+  the `Action` it waits on);
+* **it does not** → the ledger (`Notice::did`), append-only, attributed,
+  never on a timer.
+
+There is no third place. In particular there is no toast: a notice that
+expires is a claim that something matters now and will not matter in four
+seconds, and the timer teaches people to stop reading.
+
+**An item.** `Item::new(owner, title, action)`: an owner with a face (icon
+*and* name — never the icon alone), what happened, what it is about, why,
+since when, how urgent, and **one** action. The action is not optional in the
+type, because a row a person cannot act on is not a row.
+
+**Three states, deliberately distinct.** Unseen counts on the bar
+(`attention::unseen`, `attention::pill`), seen stops counting and keeps the
+row, deferred puts it out of the way and **stays counted** (`attention::deferred`,
+and the stack says "4 put aside" under itself). Nothing expires: an item
+leaves when it is acted on or when the app that raised it takes it back
+(`dismissed`).
+
+**Order.** By what it costs to leave (Blocking, then Waiting, then Noted), and
+within that by age — the first row is the one that costs most to ignore.
+Groups get a `SectionHeader` naming the urgency, never a colour alone.
+
+**Keys.** `Presses::key`: Up and Down move the choice, Home and End go to the
+ends, Enter acts on the chosen row, Escape puts it aside. The chosen row is
+selected (the lift, §9.3). Acting reports the verb once
+(`attention::apply` → `Acted`), and the app performs it.
+
+**The surface.** `ui::attention::Stack` — the waiting stack as a widget, kept
+by the app that shows it. Reachable from anywhere: `ui::attention::CHORD`
+(Ctrl+Shift+A) and `ui::attention::open`, which a host resolves.
+
+**The ledger.** `ui::attention::entries` — every outcome that needed nobody,
+with the app that did it, when, and what it was about. Activity's History
+lists it beside the workspace's changes, found by the same find
+(`entry.matches`), and nothing about it steals the focus: it is read when
+someone looks. `MAX_ENTRIES` is a bound on memory, never a lifetime.
+
+**What an app never does.** Its own notice with its own severity vocabulary
+and its own lifetime; a badge count collected and never drawn; a failure that
+vanishes; a success that interrupts. `tools/policy/check_no_transient_cards.py`
+keeps the notification card the shell's; this section keeps the outcomes the
+system's.
