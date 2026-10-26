@@ -129,7 +129,10 @@ impl Screen for BootScreen {
     fn ask(&mut self, prompt: &Prompt<'_>) -> Entry {
         let person = prompt.person;
         let label = person.secret.label();
+        let (slot, initials) = person.face();
+        self.tell(&format!("tilo-signin-face:{slot}:{initials}"));
         self.tell(&format!("tilo-signin-name:{}", person.display_name));
+        self.tell(&format!("tilo-signin-account:{}", person.account()));
         self.tell(&format!("tilo-signin-kind:{}", person.secret.wire()));
         self.tell(&format!("tilo-signin-back:{}", u8::from(prompt.several)));
         let note = prompt.note.text();
@@ -478,13 +481,16 @@ printf '%s' "$answer"
             ),
             "asked on Plymouth itself, whose answer can be empty"
         );
+        let face = format!("tilo-signin-face:{}:A", tilo_face::presence_slot("anna"));
         assert_eq!(
             read(dir.path(), "messages")
                 .lines()
-                .take(4)
+                .take(6)
                 .collect::<Vec<_>>(),
             [
+                face.as_str(),
                 "tilo-signin-name:Anna",
+                "tilo-signin-account:anna",
                 "tilo-signin-kind:pin",
                 "tilo-signin-back:0",
                 "tilo-signin-note:wrong:Incorrect PIN. 4 tries left.",

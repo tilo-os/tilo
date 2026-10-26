@@ -58,6 +58,32 @@ struct Listed {
     secret: Option<String>,
 }
 
+impl Person {
+    /// The face the login screen draws for this person: their presence
+    /// slot, from the account name as the greeter's avatar takes it, and the
+    /// initials of the name it shows. Initials the boot screen's font cannot
+    /// draw (it carries Latin, Greek and Cyrillic) are left out, and the
+    /// theme draws a figure instead.
+    pub fn face(&self) -> (usize, String) {
+        let initials = tilo_face::initials(&self.display_name);
+        let drawable = initials.chars().all(|c| c < '\u{0530}');
+        (
+            tilo_face::presence_slot(&self.name),
+            if drawable { initials } else { String::new() },
+        )
+    }
+
+    /// The account name under the shown name, when the two differ, as the
+    /// login screen shows it.
+    pub fn account(&self) -> &str {
+        if self.display_name == self.name {
+            ""
+        } else {
+            &self.name
+        }
+    }
+}
+
 /// Parse `boot-people` output. Anything unreadable lists nobody, so the boot
 /// falls back to the prompts that need no list.
 pub fn parse(json: &str) -> Vec<Person> {
@@ -138,6 +164,28 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_person_has_the_face_and_account_the_login_screen_shows() {
+        let people = parse(
+            r#"[
+              {"uid":1000,"name":"ada","display_name":"Ada Example","secret":"password"},
+              {"uid":1001,"name":"ben","display_name":""},
+              {"uid":1002,"name":"mei","display_name":"\u674e \u6885"}
+            ]"#,
+        );
+        let [ada, ben, mei] = people.as_slice() else {
+            panic!("three people");
+        };
+        assert_eq!(
+            ada.face(),
+            (tilo_face::presence_slot("ada"), "AE".to_owned())
+        );
+        assert_eq!(ada.account(), "ada");
+        assert_eq!(ben.face().1, "B");
+        assert_eq!(ben.account(), "");
+        assert_eq!(mei.face(), (tilo_face::presence_slot("mei"), String::new()));
     }
 
     #[test]

@@ -59,8 +59,8 @@ assert '"tilo-otherways:"' in body("display_message"), \
     "the theme must say how to go back to signing in from another way in"
 # Every message tilo-boot-signin sends is one the theme reads.
 signin = body("signin_message")
-for key in ("people", "person", "choose", "name", "kind", "back", "note",
-            "checking", "end"):
+for key in ("people", "person", "choose", "face", "name", "account", "kind", "back",
+            "note", "checking", "end"):
     assert f'key == "{key}"' in signin, f"tilo.script ignores tilo-signin-{key}"
 PY
 if grep -Eq '^[[:space:]]+dialog\.(heading|help|entry|lock|bullet_image)[[:space:]]*=' "$script"; then
@@ -84,7 +84,17 @@ mkdir -p "$scratch"
 tmp="$(mktemp -d "$scratch/boot-ux.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 python3 "$root/os/dev/make-boot-splash.py" "$tmp/splash.bmp"
-python3 "$root/os/dev/make-plymouth-assets.py" "$tmp/plymouth"
+look="$root/os/usr/share/plymouth/themes/tilo/look.json"
+python3 "$root/os/dev/make-plymouth-assets.py" "$tmp/plymouth" "$look"
+# Plymouth's script language reads no files: the login screen's look sits in
+# tilo.script itself, and must be the look.json the greeter's test keeps.
+python3 "$root/os/dev/make-plymouth-assets.py" --script-look "$look" >"$tmp/look.block"
+python3 - "$script" "$tmp/look.block" <<'PY'
+import sys
+script, block = (open(path).read() for path in sys.argv[1:])
+assert block in script, \
+    "tilo.script's look is not look.json's: paste make-plymouth-assets.py --script-look over it"
+PY
 python3 - "$tmp/splash.bmp" <<'PY'
 import struct, sys
 data = open(sys.argv[1], "rb").read()
@@ -130,13 +140,13 @@ expected = {"tilo-logo.png", "entry.png", "lock.png", "bullet.png",
             "starting-tilo.png", "shutting-down.png", "startup-help.png",
             "progress-background.png", "progress-fill.png",
             # The sign-in screen (tilo.script, "Sign-in").
-            "avatar.png", "avatar-person.png", "signin-heading.png",
-            "placeholder-pin.png", "placeholder-password.png",
+            "avatar-person.png", "signin-heading.png", "field.png", "field-invalid.png",
+            "field-bullet.png", "alert.png", "placeholder-pin.png", "placeholder-password.png",
             "note-wrong-pin.png", "note-wrong-password.png", "note-wait.png",
             "signing-in.png", "hint-other-ways.png", "hint-someone-else.png", "hint-go-back.png",
             "list-heading.png", "list-keys.png", "row.png", "row-selected.png",
             "cant-sign-in.png", "account-1.png", "account-2.png", "account-3.png",
-            "account-4.png"}
+            "account-4.png"} | {f"avatar-{slot}.png" for slot in range(12)}
 assert {path.name for path in root.iterdir()} == expected
 # Every image the theme loads by name is one the build renders.
 loaded = set(re.findall(r'Image\("([^"]+\.png)"\)', open(sys.argv[2]).read()))

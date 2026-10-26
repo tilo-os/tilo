@@ -568,23 +568,7 @@ impl<'a> AvatarFace<'a> {
     }
 }
 
-/// The first letters of the first and the last word, upper-cased:
-/// `"Ada Lovelace"` gives `"AL"`, `"Grace Brewster Hopper"` gives `"GH"`,
-/// `"ada"` gives `"A"`. Words without a letter are skipped, so `"Tilo 4"`
-/// gives `"T"`, never `"T4"`.
-#[must_use]
-pub fn initials_for_name(name: &str) -> String {
-    let letters: Vec<char> = name
-        .split_whitespace()
-        .filter_map(|word| word.chars().find(|c| c.is_alphabetic()))
-        .collect();
-    let picked: Vec<char> = match letters.as_slice() {
-        [] => Vec::new(),
-        [only] => vec![*only],
-        [first, .., last] => vec![*first, *last],
-    };
-    picked.into_iter().flat_map(char::to_uppercase).collect()
-}
+pub use tilo_face::initials as initials_for_name;
 
 /// Whether initials are dark in this theme: one direction per presence
 /// palette, whichever reads better on the palette's weakest hue, so initials

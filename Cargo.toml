@@ -299,6 +299,7 @@ members = [
     "crates/platform/tilo-clock",
     "crates/platform/tilo-lock",
     "crates/platform/tilo-sort",
+    "crates/platform/tilo-face",
     "crates/platform/tilo-mime",
     "crates/platform/tilo-wake",
     "crates/platform/tilo-agent-models",

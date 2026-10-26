@@ -29,6 +29,8 @@ path = "src/lib.rs"
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 # Sorts without a copy of std's sort per call site (presence colours).
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+# The hue someone wears until they choose one, as every surface derives it.
+tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 getrandom.workspace = true
 web-time = { version = "1", features = ["serde"] }
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }

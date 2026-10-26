@@ -125,6 +125,8 @@ portal = ["native", "tilo-host/portal"]
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
 tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
+# Initials, as the login and boot sign-in screens draw them too.
+tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 # Only the session vocabulary and the engine launch boundary: this crate is
 # in libruntime_dylib.so, and browser-continuity's capture (with SQLite) must
