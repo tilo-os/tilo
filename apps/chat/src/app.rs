@@ -3144,6 +3144,10 @@ impl ChatApp {
         self.refresh_native_streams();
         self.users = self.room_people_from(&chat, &per_channel);
         self.sync_reload_composers(doc);
+        // A share started, switched or ended reaches the room as soon as
+        // the record says so, not at the window's next settled frame,
+        // which an idle window may not have for a long while.
+        self.follow_share_grants();
     }
 
     fn sync_reload_composers(&mut self, doc: &AutoCommit) {
