@@ -1175,6 +1175,10 @@ impl ShellNetwork {
     /// hosting them, for the person's workspace list. Never waits for the
     /// owner to open: the frame loop asks.
     pub(super) fn held_personal_rooms(&self) -> crate::shell::personal_workspaces::HeldRooms {
+        #[cfg(test)]
+        if let Some(held) = &self.held_personal_rooms_override {
+            return held.clone();
+        }
         let (Some(owner), Some(user)) = (self.opened_native_owner(), self.personal_continuity_user)
         else {
             return crate::shell::personal_workspaces::HeldRooms::new();
