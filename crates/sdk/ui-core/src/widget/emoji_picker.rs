@@ -13,8 +13,8 @@
 //! A pick is [`PickerEvent::Picked`]: the emoji itself, or a workspace
 //! emoji written `:name:`; it joins the recents
 //! ([`crate::emoji_catalogue::record_recent`]). The Unicode emoji come from
-//! the catalogue the program handed over ([`crate::emoji_catalogue`]):
-//! until it has, the workspace's emoji and the recents still show.
+//! the toolkit's own catalogue ([`crate::emoji_catalogue`]); the workspace's
+//! emoji are added to it, and the person's recents come first.
 //!
 //! Hosts: a retained view puts it in a [`super::Popover`]
 //! ([`EmojiPicker::new`] lays out at its own size); a canvas that paints by
