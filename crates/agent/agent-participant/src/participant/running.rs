@@ -113,6 +113,9 @@ pub(super) struct Running {
     /// The pictures its steps and its plans' reads rendered (a canvas
     /// look), by content address, oldest first, at most [`MOST_LOOKED`].
     pub(super) looked: Vec<String>,
+    /// The room's pictures its steps read as content since its last plan
+    /// ([`crate::vision::read_picture`]), oldest first: shown to the next.
+    pub(super) read_pictures: Vec<String>,
     /// Apps an import of the task was refused in for what the record held:
     /// its plans are offered a new document of each
     /// ([`PlanContext::new_documents`]).
@@ -626,6 +629,7 @@ impl Running {
             ran: Vec::new(),
             invoked: Vec::new(),
             looked: Vec::new(),
+            read_pictures: Vec::new(),
             new_documents: Vec::new(),
             checklist: Checklist::default(),
         };
@@ -647,6 +651,15 @@ impl Running {
         };
         let rendered = self.looked.iter().chain(&self.produced).cloned().collect();
         (newest, rendered)
+    }
+
+    /// Whether the picture at `address` was rendered or made for the task
+    /// (a look, an export), rather than being one of the room's own.
+    pub(super) fn rendered(&self, address: &str) -> bool {
+        self.looked
+            .iter()
+            .chain(&self.produced)
+            .any(|rendered| rendered == address)
     }
 
     /// Keep the addresses of `pictures`, rendered for the task, newest last.
@@ -710,6 +723,15 @@ impl Running {
             self.observe(step.app.clone(), observed);
         }
         self.looked_at(rendered_picture(&output));
+        // A picture read as content: one the task rendered is looked at
+        // again; one of the room's own is shown to the next plan alone.
+        if let Some(picture) = output.value.as_ref().and_then(crate::vision::read_picture) {
+            if self.rendered(&picture) {
+                self.looked_at([picture]);
+            } else if !self.read_pictures.contains(&picture) {
+                self.read_pictures.push(picture);
+            }
+        }
         if !produced(&output).is_empty() {
             self.last_handed_on = hands_on(step, &output);
             self.last = Some(output);

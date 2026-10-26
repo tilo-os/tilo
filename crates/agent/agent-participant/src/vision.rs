@@ -11,7 +11,9 @@
 //! - [`LOOK_CONTENT`] shows a picture kept as content by its address, one
 //!   this conversation was shown;
 //! - a re-plan's first turn carries the newest picture the task's steps
-//!   looked at.
+//!   looked at, and the room's pictures its steps read since its last plan;
+//! - a read asked to read content as text that answers it is a picture
+//!   ([`read_picture`]) shows the picture, as [`LOOK_CONTENT`] would.
 //!
 //! Every picture is at most [`MOST_PICTURE_SIDE`] pixels a side and
 //! [`MOST_PICTURE_BYTES`] bytes, a PNG or a JPEG. A picture an app rendered
@@ -62,6 +64,57 @@ pub const ROOM_PICTURES_ENV: &str = "TILO_AGENT_ROOM_PICTURES";
 
 /// The prefix of a content address.
 const CONTENT_PREFIX: &str = "tilo.content:";
+
+/// The `format` of a read's answer that the content it was asked to read is
+/// a picture, named by its address under `picture` ([`read_picture`]).
+pub const PICTURE_FORMAT: &str = "picture";
+
+/// Why a picture is not shown to a model that is not shown pictures.
+pub const NOT_SEEING: &str = "this agent's model is not shown pictures";
+
+/// Why one of the room's own pictures is not shown where the agent may not
+/// show them ([`ROOM_PICTURES_ENV`]).
+pub const ROOM_WITHHELD: &str = "this agent is not shown the room's pictures";
+
+/// The refusal of the picture `name` for `why` ([`NOT_SEEING`],
+/// [`ROOM_WITHHELD`]): plain, so the model plans without it rather than
+/// trying another way to see it.
+#[must_use]
+pub fn withheld(name: &str, why: &str) -> String {
+    format!("{name} is a picture, and {why}: plan with what the request and the reads say of it")
+}
+
+/// The content address of the picture a read answered with: content asked
+/// to be read as text that is a picture (`format` [`PICTURE_FORMAT`], its
+/// address under `picture`), which the model is shown rather than read.
+/// `None` for any other answer.
+#[must_use]
+pub fn read_picture(value: &serde_json::Value) -> Option<String> {
+    if value.get("format")?.as_str()? != PICTURE_FORMAT {
+        return None;
+    }
+    content_hash(value.get("picture")?.as_str()?).map(|hash| content_address(&hash))
+}
+
+/// What a read answered as a picture names it by: its file name and
+/// address, or its address alone.
+#[must_use]
+pub fn read_picture_name(value: &serde_json::Value, address: &str) -> String {
+    match value.get("file").and_then(serde_json::Value::as_str) {
+        Some(file) if !file.trim().is_empty() => format!("{} ({address})", file.trim()),
+        _ => address.to_owned(),
+    }
+}
+
+/// Whether `bytes` start as a picture, from their signature alone (a
+/// head of 16 bytes will do): a PNG or JPEG, or a format the worker
+/// writes out as one.
+#[must_use]
+pub fn is_picture(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+        || bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+        || other_picture(bytes)
+}
 
 /// A picture as a model is shown it: a PNG or a JPEG within the limits.
 #[derive(Clone, PartialEq, Eq)]
@@ -372,7 +425,7 @@ impl Eyes {
         for picture in pictures {
             self.show(&picture.content);
             let withheld = if !self.sees {
-                Some("this model is not shown pictures".to_owned())
+                Some(NOT_SEEING.to_owned())
             } else if self.plan_left == 0 {
                 Some(format!(
                     "this plan has been shown its {MOST_PICTURES_PER_PLAN} pictures"
@@ -434,6 +487,23 @@ pub fn pictures_in(request: &ModelRequest) -> (usize, usize) {
         .fold((0_usize, 0_usize), |(count, bytes), size| {
             (count.saturating_add(1), bytes.saturating_add(size))
         })
+}
+
+/// Whether an agent's model is shown pictures at all
+/// ([`crate::PlanModel::sees`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sight {
+    /// Shown none: the default.
+    #[default]
+    Blind,
+    /// Shown pictures.
+    Sees,
+}
+
+impl From<bool> for Sight {
+    fn from(sees: bool) -> Self {
+        if sees { Self::Sees } else { Self::Blind }
+    }
 }
 
 /// Whether an agent shows the room's own pictures to its model's provider.
