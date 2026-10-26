@@ -20,10 +20,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use base64::Engine as _;
 use discord_wire::op::{
-    ChannelKind, ChannelSpec, CreateWebhookOp, DeleteOp, DiscordOp, DiscordResult, EditOp,
-    FetchAssetOp, InAttachment, MemberOp, MemberRolesOp, OverwriteKind, OverwriteOp, ReactOp,
-    RoleSpec, SendOp, StartThreadOp,
+    AnswerInteractionOp, ChannelKind, ChannelSpec, CreateWebhookOp, DeleteEmojiOp, DeleteOp,
+    DiscordOp, DiscordResult, EditOp, EmojiSpec, FetchAssetOp, InAttachment, MemberOp,
+    MemberRolesOp, OverwriteKind, OverwriteOp, ReactOp, RoleSpec, SendOp, StartThreadOp,
 };
 use serde_json::{Value, json};
 use tilo_connector::protocol::{Bytes, FromWorker, Outcome};
@@ -45,6 +46,19 @@ pub const DUPLICATE_WINDOW: u32 = 50;
 pub const WEBHOOK_NAME: &str = "Tilo";
 /// Discord's error for a second thread on one message.
 const THREAD_EXISTS: u64 = 160_004;
+/// Discord's error for a call the bot's permissions do not allow.
+const MISSING_PERMISSIONS: u64 = 50_013;
+/// Discord's error for a server whose emoji slots are all taken.
+const MAX_EMOJIS: u64 = 30_008;
+/// The largest picture Discord takes for a custom emoji.
+pub const MAX_EMOJI_BYTES: usize = 256 * 1024;
+/// What the bridge's page says when the bot may not upload emoji: the
+/// permission its role needs, by the name Discord's settings show.
+pub const EMOJI_PERMISSION_PROBLEM: &str =
+    "the bot needs the Create Expressions permission in the Discord server";
+/// What the bridge's page says when the server has no emoji slot left.
+pub const EMOJI_FULL_PROBLEM: &str =
+    "the Discord server has no free emoji slot, so newer ones stay in Tilo";
 
 /// Why an op did not complete.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,7 +229,112 @@ impl Performer {
             }
             DiscordOp::SetOverwrite(op) => self.overwrite(op).await,
             DiscordOp::FetchAsset(op) => self.fetch_asset(op).await,
+            DiscordOp::AnswerInteraction(op) => self.answer_interaction(op).await,
+            DiscordOp::ApplyEmoji(spec) => self.apply_emoji(spec).await,
+            DiscordOp::DeleteEmoji(op) => self.delete_emoji(op).await,
         }
+    }
+
+    /// Upload a workspace emoji, or rename the one the bridge uploaded for
+    /// it (uploading it again when it was deleted in Discord meanwhile).
+    /// What Discord refuses for the server's sake, a permission the bot
+    /// lacks or no free slot, is the result's problem, said on the bridge's
+    /// page, rather than a failure: the bridge carries on without it.
+    async fn apply_emoji(&self, spec: EmojiSpec) -> OpResult {
+        let guild = self.guild()?;
+        if let Some(id) = &spec.id {
+            let path = format!("/guilds/{}/emojis/{}", segment(&guild), segment(id));
+            let renamed = self
+                .ctx
+                .rest
+                .call(
+                    Method::PATCH,
+                    &path,
+                    &[],
+                    Body::Json(json!({"name": spec.name})),
+                    Auth::Bot,
+                    None,
+                )
+                .await;
+            match renamed {
+                Ok(_) => {
+                    return Ok(DiscordResult::Emoji {
+                        emoji_id: id.clone(),
+                        tilo: spec.tilo,
+                        problem: None,
+                    });
+                }
+                // Deleted in Discord meanwhile: uploaded again below.
+                Err(error) if error.is_unknown() => {}
+                Err(error) => return emoji_refusal(error, spec.tilo),
+            }
+        }
+        let picture = spec.picture.as_deref().unwrap_or_default();
+        let bytes = self
+            .blobs
+            .lock()
+            .ok()
+            .and_then(|mut blobs| blobs.remove(picture))
+            .ok_or_else(|| OpError::Unavailable("the emoji's picture has not arrived".into()))?;
+        if bytes.len() > MAX_EMOJI_BYTES {
+            return Ok(DiscordResult::Emoji {
+                emoji_id: String::new(),
+                tilo: spec.tilo,
+                problem: Some(format!(
+                    "Discord takes pictures of at most 256 KB, and :{}:'s is larger",
+                    spec.name
+                )),
+            });
+        }
+        let image = format!(
+            "data:{};base64,{}",
+            picture_type(&bytes),
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        );
+        let path = format!("/guilds/{}/emojis", segment(&guild));
+        let uploaded = self
+            .ctx
+            .rest
+            .call(
+                Method::POST,
+                &path,
+                &[],
+                Body::Json(json!({"name": spec.name, "image": image, "roles": []})),
+                Auth::Bot,
+                None,
+            )
+            .await;
+        match uploaded {
+            Ok(emoji) => Ok(DiscordResult::Emoji {
+                emoji_id: emoji["id"].as_str().unwrap_or_default().to_owned(),
+                tilo: spec.tilo,
+                problem: None,
+            }),
+            Err(error) => emoji_refusal(error, spec.tilo),
+        }
+    }
+
+    async fn delete_emoji(&self, op: DeleteEmojiOp) -> OpResult {
+        let path = format!(
+            "/guilds/{}/emojis/{}",
+            segment(&self.guild()?),
+            segment(&op.emoji)
+        );
+        let deleted = self
+            .ctx
+            .rest
+            .call(Method::DELETE, &path, &[], Body::Empty, Auth::Bot, None)
+            .await;
+        match deleted {
+            Ok(_) => {}
+            Err(error) if error.is_unknown() => {}
+            Err(error) => return emoji_refusal(error, op.tilo),
+        }
+        Ok(DiscordResult::Emoji {
+            emoji_id: String::new(),
+            tilo: op.tilo,
+            problem: None,
+        })
     }
 
     fn guild(&self) -> Result<String, OpError> {
@@ -753,6 +872,20 @@ impl Performer {
     /// Download a CDN file (an avatar, an attachment) up to `max_bytes` and
     /// hand its bytes to the host, which stores them before it reads the
     /// result naming them.
+    /// Edit the reply to a slash command to what came of it, its button
+    /// gone.
+    async fn answer_interaction(&self, op: AnswerInteractionOp) -> OpResult {
+        let Some(kept) = self.ctx.take_interaction(&op.interaction) else {
+            return Err(OpError::Refused(
+                "the reply was answered already, or Discord no longer lets it be edited".into(),
+            ));
+        };
+        crate::gateway::edit_reply(&self.ctx.rest, &kept, &op.content)
+            .await
+            .map_err(|error| OpError::Unavailable(format!("editing the reply: {error:?}")))?;
+        Ok(DiscordResult::Done)
+    }
+
     async fn fetch_asset(&self, op: FetchAssetOp) -> OpResult {
         let url = Url::parse(&op.url).map_err(|_| OpError::Refused("not a URL".into()))?;
         if self.ctx.config.egress.check(&url, Purpose::Cdn).is_err() {
@@ -812,6 +945,42 @@ impl Performer {
 
 fn reason(op: &MemberOp) -> Option<&str> {
     Some(op.reason.as_str()).filter(|r| !r.is_empty())
+}
+
+/// What became of an emoji op Discord refused. A permission the bot lacks,
+/// a full server or a picture Discord would not take is the result's
+/// problem, which the bridge's page says; Discord out of reach is retried.
+fn emoji_refusal(error: RestError, tilo: String) -> OpResult {
+    let problem = match (&error, error.code()) {
+        (_, Some(MISSING_PERMISSIONS)) | (RestError::Refused { status: 403, .. }, _) => {
+            EMOJI_PERMISSION_PROBLEM.to_owned()
+        }
+        (_, Some(MAX_EMOJIS)) => EMOJI_FULL_PROBLEM.to_owned(),
+        (RestError::Refused { message, .. }, _) => {
+            let said: String = message.chars().take(200).collect();
+            format!("Discord did not take :{tilo}: ({said})")
+        }
+        _ => return Err(error.into()),
+    };
+    Ok(DiscordResult::Emoji {
+        emoji_id: String::new(),
+        tilo,
+        problem: Some(problem),
+    })
+}
+
+/// The media type of an emoji's picture, by its first bytes: Discord takes
+/// PNG, JPEG, GIF and WebP.
+fn picture_type(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        "image/jpeg"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        "image/webp"
+    } else {
+        "image/png"
+    }
 }
 
 /// Whether a webhook message's `shown` text is `content`, alone or as one

@@ -39,7 +39,7 @@ impl LockClock {
         LockView {
             alert,
             keyboard,
-            password_len: lock.buffer_len(),
+            prompt: Some(lock.prompt()),
             error: lock.error(),
             clock: &self.clock,
             date: &self.date,

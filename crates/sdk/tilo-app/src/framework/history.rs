@@ -240,7 +240,7 @@ fn edit(
             Err(reason) => invalid(&reason),
         },
     )
-    .reversible()
+    .of_kind(tilo_actions::ActionKind::Undoable)
     .with_description(description);
     spec.contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
@@ -386,7 +386,7 @@ fn part_edit(
             }
         },
     )
-    .reversible()
+    .of_kind(tilo_actions::ActionKind::Undoable)
     .with_description(description)
     // A part is named by its number, which only history shows: agents and
     // scripts take it from there. A person undoes in the app itself.

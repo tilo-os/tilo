@@ -1089,6 +1089,14 @@ impl Decorator for HostedSurface {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<ui_core::vello::kurbo::Rect> {
+        // Asked once per node without bounds of its own while the tree is
+        // built, so describing the whole surface here made a build
+        // quadratic in its nodes (a long Chat channel: tens of
+        // milliseconds). With no empty state painted there is nothing of
+        // the host's own to place.
+        if self.painted.is_empty() {
+            return self.host.surface().synthetic_accessibility_rect(path);
+        }
         Decorator::accessibility(self)
             .and_then(|described| self.painted.action_rect(&described, path))
             .or_else(|| self.host.surface().synthetic_accessibility_rect(path))

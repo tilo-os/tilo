@@ -5,7 +5,7 @@
 [ceilings]
 "apps/agent/src/model.rs" = 3500
 "apps/agent/src/session/agent_loop.rs" = 5500
-"apps/browser/src/browser_widget.rs" = 11000
+"apps/browser/src/browser_widget.rs" = 10000
 "apps/calendar/src/app.rs" = 5000
 "apps/calendar/src/app/tests.rs" = 4000
 "apps/camera/src/app.rs" = 5500
@@ -52,7 +52,6 @@
 "apps/store/src/app.rs" = 6500
 "apps/terminal/src/main_body.rs" = 8000
 "apps/terminal/src/tests.rs" = 5000
-"apps/tube/src/app.rs" = 3500
 "apps/video-editor/src/app.rs" = 9000
 "apps/video-editor/src/app/tests.rs" = 11000
 "apps/video-editor/src/model.rs" = 5000

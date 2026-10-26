@@ -166,6 +166,53 @@ fn a_rejection_keeps_focus_in_the_field_and_selects_its_text() {
     assert_eq!(prompt.error(), None, "typing makes the old error moot");
 }
 
+/// While the answer is checked the field reads as checking, not as
+/// unavailable: it keeps its face, its line says so in the informational
+/// tone, and a screen reader hears it busy and not editable.
+#[test]
+fn a_field_being_checked_keeps_its_face_and_says_it_is_busy() {
+    let mut prompt = focused(SecretKind::Secret);
+    typed(&mut prompt, "secret");
+    dispatch(&mut prompt, &named_key(NamedKey::Enter));
+    let _ = submitted(&mut prompt);
+    prompt.set_busy(Some("Checking…".into()));
+    let field = prompt.field(FieldRole::Secret).expect("secret field");
+    assert!(
+        !field.is_disabled(),
+        "a checked field is not drawn disabled"
+    );
+    assert_eq!(
+        prompt.notice_line(),
+        Some(("Checking…".to_string(), NoticeTone::Busy))
+    );
+    let tree = Widget::accessibility(&prompt).expect("the prompt is described");
+    let node = tree
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some(t_label(&prompt).as_str()))
+        .expect("the field's node");
+    assert!(node.state.busy && node.state.disabled);
+
+    prompt.set_busy(None);
+    let tree = Widget::accessibility(&prompt).expect("the prompt is described");
+    let node = tree
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some(t_label(&prompt).as_str()))
+        .expect("the field's node");
+    assert!(!node.state.busy && !node.state.disabled);
+}
+
+/// The secret field's label.
+fn t_label(prompt: &SecretPrompt) -> String {
+    prompt
+        .fields
+        .iter()
+        .find(|field| field.role == FieldRole::Secret)
+        .map(|field| field.label.clone())
+        .unwrap_or_default()
+}
+
 #[test]
 fn show_hide_reveals_only_the_paint_never_the_accessible_value() {
     let mut prompt = focused(SecretKind::Secret);

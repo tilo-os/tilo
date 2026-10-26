@@ -112,3 +112,45 @@ fn a_change_of_modality_and_a_pinch_wait_for_the_hosts_frame() {
         "the host's frame lays both out once"
     );
 }
+
+/// Other people's presence arrives many times a frame while they type and
+/// move. A host on its own frame clock lays none of it out on arrival: its
+/// next frame draws all of it, once.
+#[test]
+fn presence_arriving_between_frames_lays_out_once_on_the_hosts_frame() {
+    let mut frame = FrameHarness::for_root(
+        State::new(),
+        TextInput::local(),
+        (400, 80),
+        crate::Theme::dark(),
+    );
+    frame.set_coalesce_input_frames(true);
+    frame.relayout();
+    let before = frame.relayout_frames();
+    for (user, name) in [("a1", "Ada"), ("b2", "Bo"), ("c3", "Cy"), ("a1", "Ada L")] {
+        frame.update_presence(|presence| {
+            presence.set_display_name(crate::permissions::UserId(user.into()), name);
+            presence.unregister_peer("gone");
+            true
+        });
+    }
+    assert_eq!(
+        frame.relayout_frames(),
+        before,
+        "presence is laid out by no one but the next frame"
+    );
+    assert!(
+        frame.frame_schedule().needs_redraw,
+        "the presence asks for a frame"
+    );
+    assert!(frame.poll_frame().unwrap());
+    assert_eq!(
+        frame.relayout_frames(),
+        before + 1,
+        "the host's frame lays all of it out once"
+    );
+    assert!(
+        !frame.queued_work_sources().contains(&"presence redraw"),
+        "that frame took all of it"
+    );
+}

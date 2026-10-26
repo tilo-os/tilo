@@ -2,41 +2,64 @@
 //!
 //! A bot's program only sequences steps, so `plan-route` and `plan-event`
 //! work out what an event means ([`crate::bridge`]) and answer the lists
-//! the program loops over, one per verb to invoke. `link-account` and `set-bot-token` are a person's:
-//! the first makes a code for `/link` on this device and stores only its
-//! hash, the second keeps the bot token in the host's secret store.
-//! `my-link` tells the person reading it whether they linked their account,
-//! which the profile card and Settings show
-//! ([`ui::linked_accounts`]).
+//! the program loops over, one per verb to invoke. The linking effects
+//! are a person's, run by the room's host for them
+//! ([`ui::linked_accounts`]): `my-link` says whether they linked their
+//! account, `connect` starts a sign-in on Discord's consent page,
+//! `link-offer` and `accept-link` show and take the account a one-time
+//! token offers, and `unlink-mine` unlinks it. `set-bot-token` keeps the
+//! bot token in the host's secret store.
 
+use discord_wire::event::{link_check, link_proof, sha256_hex};
 use serde_json::{Value, json};
 use ui::framework::{EffectAnswer, EffectCx, Effected};
-use ui::linked_accounts::{AccountName, LinkCode, Reading};
+use ui::linked_accounts::{AccountName, LinkStart, OfferReading, Reading};
 use ui::tilo_resource::{self, Effect, Id};
 
+use crate::bridge;
 use crate::locales::CATALOG;
 use crate::outbound::Context;
-use crate::record::Guild;
-use crate::{bridge, link};
+use crate::record::{Guild, LinkOffer};
 
 /// The connector's effects.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "discord.effects")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "an effect is decoded once per call and matched at once, never stored in bulk"
+)]
 pub enum DiscordEffect {
-    /// Link my Discord account
+    /// Connect my Discord account
     ///
-    /// Makes a one-time code to send to the bridge with `/link` in Discord.
-    /// Only the code's hash is kept; it expires after ten minutes. Any
-    /// member may ask the room's host to make it for them: the code comes
-    /// back to the asking device alone.
+    /// Starts signing in on Discord's consent page, which comes back to
+    /// the room's host and links the account to the invoker. Answers the
+    /// page's address, for the asking device alone.
     #[effect(returns, kind = "undoable", member)]
-    LinkAccount,
+    ConnectAccount,
     /// Read my linked account
     ///
     /// Whether this room is bridged to a Discord server, and the Discord
     /// account the reader linked, if any.
     #[effect(kind = "read", returns, audience = "agents", member)]
     MyLink,
+    /// Read a link offer
+    ///
+    /// The Discord account a one-time link token offers, and whether the
+    /// reader may take it.
+    #[effect(kind = "read", returns, member)]
+    LinkOffer {
+        #[param(secret)]
+        token: String,
+    },
+    /// Link the offered Discord account
+    ///
+    /// Links the Discord account a one-time link token offers to the
+    /// invoker, using the token up.
+    #[effect(kind = "undoable", member)]
+    AcceptLink {
+        #[param(secret)]
+        token: String,
+    },
     /// Unlink my Discord account
     ///
     /// Unlinks the Discord account the invoker linked, if any.
@@ -93,6 +116,8 @@ pub enum DiscordEffect {
         context: Option<Context>,
         #[param("The room's members with their roles")]
         room: Option<Value>,
+        #[param("The workspace's emoji: emoji [{name, picture}]")]
+        emoji: Option<Value>,
     },
 }
 
@@ -101,8 +126,10 @@ pub enum DiscordEffect {
 #[must_use]
 pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
     match effect {
-        DiscordEffect::LinkAccount
+        DiscordEffect::ConnectAccount
         | DiscordEffect::MyLink
+        | DiscordEffect::LinkOffer { .. }
+        | DiscordEffect::AcceptLink { .. }
         | DiscordEffect::UnlinkMine
         | DiscordEffect::SetBotToken { .. }
         | DiscordEffect::FindServers { .. }
@@ -116,12 +143,14 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
             chat,
             context,
             room,
+            emoji,
         } => serde_json::to_value(bridge::plan(
             bridge::Reading {
                 guild,
                 chat,
                 context: &context.clone().unwrap_or_default(),
                 room: room.as_ref().unwrap_or(&Value::Null),
+                emoji: emoji.as_ref(),
             },
             event,
         ))
@@ -129,13 +158,26 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
     }
 }
 
-/// What [`DiscordEffect::MyLink`] answers `me` at `now_ms`.
+/// Discord's consent page for one round trip carrying `state`: the page
+/// the room's host offers ([`Guild::sign_in_page`]) with the state added.
 #[must_use]
-pub fn my_link(guild: &Guild, me: Option<&str>, now_ms: i64) -> Reading {
+pub fn consent_url(page: &str, state: &str) -> String {
+    format!("{page}&state={}", discord_wire::event::query_value(state))
+}
+
+/// A fresh state for one round trip: 256 random bits, URL-safe.
+fn new_state() -> String {
+    let mut bytes = [0u8; 32];
+    rand::fill(&mut bytes);
+    data_encoding::BASE64URL_NOPAD.encode(&bytes)
+}
+
+/// What [`DiscordEffect::MyLink`] answers `me`.
+#[must_use]
+pub fn my_link(guild: &Guild, me: Option<&str>) -> Reading {
     let link = me.and_then(|me| guild.links.iter().find(|link| link.person == me));
-    let pending = me
-        .and_then(|me| guild.pending_links.find(&Id::from_raw(me)))
-        .is_some_and(|pending| now_ms <= pending.expires_ms);
+    // `/link` is registered only in a bridge of the whole server.
+    let slash = guild.only_channel.is_none();
     Reading {
         service: "Discord".into(),
         connected: !guild.guild_id.is_empty(),
@@ -143,19 +185,59 @@ pub fn my_link(guild: &Guild, me: Option<&str>, now_ms: i64) -> Reading {
             user_name: link.user_name.clone(),
             display_name: link.display_name.clone(),
         }),
-        pending,
-        link: DiscordEffect::LinkAccount.id().to_owned(),
+        connect: guild
+            .sign_in_page
+            .is_some()
+            .then(|| DiscordEffect::ConnectAccount.id().to_owned()),
+        elsewhere: slash.then(|| CATALOG.t("discord-link-elsewhere")),
         unlink: link.map(|_| DiscordEffect::UnlinkMine.id().to_owned()),
+        offer: DiscordEffect::LinkOffer {
+            token: String::new(),
+        }
+        .id()
+        .to_owned(),
+        accept: DiscordEffect::AcceptLink {
+            token: String::new(),
+        }
+        .id()
+        .to_owned(),
     }
 }
 
-/// The code `/link` takes, with the line saying what to do with it.
-#[must_use]
-pub fn link_code(code: String) -> LinkCode {
-    LinkCode {
-        instruction: CATALOG.t("discord-link-code"),
-        code,
+/// The offer `token` opens, still good at `now_ms`.
+fn offer<'a>(guild: &'a Guild, token: &str) -> Option<&'a LinkOffer> {
+    guild
+        .link_offers
+        .find(&Id::from_raw(link_check(&link_proof(token))))
+}
+
+/// What [`DiscordEffect::LinkOffer`] answers `me` about `token` at `now_ms`.
+///
+/// # Errors
+/// What to do instead, when the token opens no offer `me` may take.
+pub fn read_offer(
+    guild: &Guild,
+    token: &str,
+    me: Option<&str>,
+    now_ms: i64,
+) -> Result<OfferReading, String> {
+    let Some(offer) = offer(guild, token) else {
+        return Err(CATALOG.t("discord-offer-gone"));
+    };
+    if now_ms > offer.expires_ms {
+        return Err(CATALOG.t("discord-offer-expired"));
     }
+    if offer.person.is_some() && offer.person.as_deref() != me {
+        return Err(CATALOG.t("discord-offer-not-yours"));
+    }
+    Ok(OfferReading {
+        service: "Discord".into(),
+        account: AccountName {
+            user_name: offer.user_name.clone(),
+            display_name: offer.display_name.clone(),
+        },
+        started_here: offer.person.is_some(),
+    })
 }
 
 /// Answer `effect` for the guild the view shows.
@@ -168,26 +250,52 @@ pub fn answer(effect: DiscordEffect, cx: &mut EffectCx<Guild>) -> EffectAnswer {
         return Ok(Effected::value(value));
     }
     match effect {
-        DiscordEffect::LinkAccount => {
+        DiscordEffect::ConnectAccount => {
             if guild.guild_id.is_empty() {
-                return Err("this record is not connected to a Discord server yet".into());
+                return Err(CATALOG.t("discord-not-bridged"));
             }
-            let code = link::new_code();
+            let Some(page) = guild.sign_in_page.clone() else {
+                return Err(CATALOG.t("discord-no-sign-in"));
+            };
+            let state = new_state();
             cx.dispatcher()
-                .submit(Guild::BEGIN_LINK.with(link::hash(&code)));
+                .submit(Guild::BEGIN_CONNECT.with(sha256_hex(state.as_bytes())));
+            let start = LinkStart {
+                url: consent_url(&page, &state),
+            };
             Ok(Effected::value(
-                serde_json::to_value(link_code(code)).map_err(|error| error.to_string())?,
+                serde_json::to_value(start).map_err(|error| error.to_string())?,
             ))
         }
         DiscordEffect::MyLink => {
-            let reading = my_link(
-                &guild,
-                cx.person().as_deref(),
-                tilo_resource::origin_now_ms(),
-            );
+            let reading = my_link(&guild, cx.person().as_deref());
             Ok(Effected::value(
                 serde_json::to_value(reading).map_err(|error| error.to_string())?,
             ))
+        }
+        DiscordEffect::LinkOffer { token } => {
+            let reading = read_offer(
+                &guild,
+                &token,
+                cx.person().as_deref(),
+                tilo_resource::origin_now_ms(),
+            )?;
+            Ok(Effected::value(
+                serde_json::to_value(reading).map_err(|error| error.to_string())?,
+            ))
+        }
+        DiscordEffect::AcceptLink { token } => {
+            // Said here, in the words the person reads; the record checks
+            // the same again when it takes the proof.
+            read_offer(
+                &guild,
+                &token,
+                cx.person().as_deref(),
+                tilo_resource::origin_now_ms(),
+            )?;
+            cx.dispatcher()
+                .submit(Guild::COMPLETE_LINK.with(link_proof(&token)));
+            Ok(Effected::done())
         }
         DiscordEffect::UnlinkMine => {
             let me = cx.person();

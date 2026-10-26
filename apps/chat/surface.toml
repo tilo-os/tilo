@@ -385,6 +385,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "set-share-access"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "access", required = true, schema = { oneOf = [{ type = "string", const = "view" }, { type = "string", const = "edit" }] } },
+]
+
+[[resources.verbs]]
 id = "share-open"
 kind = "undoable"
 params = [

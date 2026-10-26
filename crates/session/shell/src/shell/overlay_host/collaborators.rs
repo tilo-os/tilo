@@ -76,7 +76,7 @@ impl ShellOverlayHost {
     }
 
     /// Open who is here at `id`, or close it when it is already open there.
-    fn show_person(&mut self, id: String) {
+    pub(super) fn show_person(&mut self, id: String) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
@@ -243,13 +243,19 @@ impl ShellOverlayHost {
     /// This is the same local state and publisher used by pointer/keyboard UI,
     /// so agents do not get a parallel or less truthful collaboration path.
     pub(super) fn pump_presence_requests(&mut self) -> bool {
+        // An app in this process asked for someone's card (an author in
+        // Chat): who is here opens at them, as a face on the bar does.
+        let asked = ui::person_card::take();
+        if let Some(asked) = &asked {
+            self.show_person(asked.person.clone());
+        }
         let requests = self
             .chrome
             .as_ref()
             .map(|chrome| chrome.borrow_mut().take_presence_requests())
             .unwrap_or_default();
         if requests.is_empty() {
-            return false;
+            return asked.is_some();
         }
         for request in requests {
             match request {

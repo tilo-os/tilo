@@ -202,6 +202,10 @@ impl std::ops::DerefMut for DispatchCore {
 pub(crate) struct DispatchState {
     app_id: &'static str,
     resource_id: Rc<str>,
+    /// The route of the record the resource is, as the room names its node
+    /// (empty for the app's own record of the room): an action on an item
+    /// of it is decided at that item's node.
+    record: Rc<str>,
     /// [`Resource::KIND`] and [`Resource::LABEL`] of the resource.
     kind: &'static str,
     label: &'static str,
@@ -284,6 +288,7 @@ impl Clone for DispatchCore {
         Self(std::mem::ManuallyDrop::new(DispatchState {
             app_id: self.app_id,
             resource_id: self.resource_id.clone(),
+            record: self.record.clone(),
             kind: self.kind,
             label: self.label,
             applied_as: self.applied_as,
@@ -369,6 +374,7 @@ impl DispatchCore {
         Self(std::mem::ManuallyDrop::new(DispatchState {
             app_id,
             resource_id: Rc::from(resource_id),
+            record: Rc::from(""),
             kind,
             label,
             resource_label: LocalState::new(label.to_owned()),
@@ -412,6 +418,7 @@ impl DispatchCore {
             me: self.me.clone(),
             custody: self.custody.clone(),
             resource_id: Rc::from(id),
+            record: Rc::from(""),
             kind,
             label,
             resource_label: LocalState::new(label.to_owned()),
@@ -545,7 +552,7 @@ impl DispatchCore {
     }
 
     fn may(&self, need: &ActionNeed) -> bool {
-        let mut node = TreePath::root().app(self.app_id);
+        let mut node = self.node();
         if let Some(field) = &need.field {
             node = node.field(field);
         }
@@ -553,6 +560,33 @@ impl DispatchCore {
             node,
             kind: need.kind,
         })
+    }
+
+    /// The node below the room where the room decides this resource's
+    /// changes, as far as a decision here can name it: an item of the
+    /// record for a resource nested in one at `<kind>/<field>/<item>` (a
+    /// note's body), so what the room grants on that item alone (an item
+    /// shared to edit) lets it be changed here too; else the app's.
+    fn node(&self) -> TreePath {
+        let app = TreePath::root().app(self.app_id);
+        if self.applied_as.is_none() {
+            return app;
+        }
+        match self
+            .resource_id
+            .rsplit_once('/')
+            .and_then(|(collection, item)| Some((collection.split_once('/')?, item)))
+        {
+            Some(((kind, field), item))
+                if !kind.is_empty()
+                    && !field.is_empty()
+                    && !field.contains('/')
+                    && !item.is_empty() =>
+            {
+                app.kind(kind).resource(&*self.record).item(item)
+            }
+            _ => app,
+        }
     }
 
     /// Whether the participant may react here: never in a past version,
@@ -974,6 +1008,13 @@ impl<R: Resource> Dispatcher<R> {
     /// ever applied.
     pub(crate) fn past(mut self) -> Self {
         self.core.past();
+        self
+    }
+
+    /// The dispatcher of the record the room names by `route` (empty for
+    /// the app's own record of the room).
+    pub(crate) fn on_record(mut self, route: &str) -> Self {
+        self.core.record = Rc::from(route);
         self
     }
 

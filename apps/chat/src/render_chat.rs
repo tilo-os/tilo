@@ -46,10 +46,10 @@ use ui::tokens::colors::NON_TEXT_MIN_CONTRAST as MENTION_BAND_CONTRAST;
 use ui::tokens::contrast::BODY_TEXT_MIN_CONTRAST as MENTION_TEXT_CONTRAST;
 
 #[derive(Clone, Copy)]
-struct MessageColumn {
-    area: Rect,
-    text_x: f64,
-    text_width: f32,
+pub(crate) struct MessageColumn {
+    pub(crate) area: Rect,
+    pub(crate) text_x: f64,
+    pub(crate) text_width: f32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -121,7 +121,12 @@ impl ChatApp {
             if area.width() > 0.0 && area.height() >= self.chrome.body_line {
                 push_clip(scene, tf, area);
                 if self.direct_person.is_some() {
-                    self.draw_person_messages(PaintCtx::new(scene, tf, tr, theme), presence, area);
+                    self.draw_person_messages(
+                        PaintCtx::new(scene, tf, tr, theme),
+                        presence,
+                        area,
+                        hits,
+                    );
                 } else {
                     self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
                 }
@@ -392,6 +397,37 @@ impl ChatApp {
         (end, line_h, line)
     }
 
+    /// A person's avatar and name, through both, open their card; a bot's
+    /// or an agent's message has none.
+    fn push_author_hit(
+        &self,
+        m: &Message,
+        parts: &crate::app::PaintedMessage,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        if m.author.starts_with("bot:")
+            || self.agent_authors.contains_key(&m.author)
+            || self.is_provider_output(m)
+        {
+            return;
+        }
+        let name = parts.author.as_ref().map(|(rect, _)| *rect);
+        let face = match (parts.avatar, name) {
+            (Some(avatar), Some(name)) => Some(avatar.union(name)),
+            (avatar, name) => avatar.or(name),
+        };
+        if let Some(face) = face {
+            ChatApp::push_hit(
+                hits,
+                face,
+                Hit::ShowPerson {
+                    person: m.author.clone(),
+                    place: m.id.clone(),
+                },
+            );
+        }
+    }
+
     pub(crate) fn message_author<'a>(
         &'a self,
         m: &'a Message,
@@ -451,12 +487,12 @@ impl ChatApp {
 
     /// Whether the pointer is over `rect`.
     pub(crate) fn hovered(&self, rect: Rect) -> bool {
-        rect.contains(self.last_mouse)
+        self.pointer_over(rect)
     }
 
     /// Whether an open context menu acts on `target`: its row stays lifted
     /// while the menu is open, so it is clear what the menu will change.
-    fn menu_targets(&self, target: &MenuTarget) -> bool {
+    pub(crate) fn menu_targets(&self, target: &MenuTarget) -> bool {
         self.menu
             .as_ref()
             .is_some_and(|menu| menu.target == *target)
@@ -549,6 +585,7 @@ impl ChatApp {
         mut paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         area: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
     ) {
         let gap = f64::from(paint.theme.tokens.spacing.s3);
         let width = (area.width() - 2.0 * self.chrome.gutter).max(1.0);
@@ -613,9 +650,20 @@ impl ChatApp {
                 y + heading_h,
             );
             let color = paint.theme.text_dim;
-            line_in(
+            let shown = line_in(
                 &mut paint, &author, &style, color, heading.x0, heading, width,
             );
+            // Each line's author opens their card, as in a channel.
+            if heading.y1 > area.y0 && heading.y0 < area.y1 {
+                ChatApp::push_hit(
+                    hits,
+                    Rect::new(heading.x0, heading.y0, heading.x0 + shown, heading.y1),
+                    Hit::ShowPerson {
+                        person: message.author.clone(),
+                        place: message.id.clone(),
+                    },
+                );
+            }
             if let Some((_, editor)) = self.person_body_views.get_mut(&message.id) {
                 let body = Rect::new(heading.x0, heading.y1, heading.x1, y + height - gap);
                 editor.layout(body, paint.theme, paint.text);
@@ -718,7 +766,7 @@ impl ChatApp {
             return;
         }
 
-        let groups = model::group_messages(&self.messages);
+        let groups = self.timeline_groups();
         let clock = ConversationClock::local();
         let (items, total) = self.measure_message_rows(tr, theme, &groups, text_w, clock);
 
@@ -788,13 +836,21 @@ impl ChatApp {
         self.timeline_total_height = total;
 
         let first_row_hit = hits.len();
+        // Only what stands in view is painted; a row keeps its scene for
+        // the frames it stays there ([`crate::timeline`]).
+        self.begin_timeline_paint(theme, tf, column);
         for item in &items {
+            let height = Self::item_height(item, theme);
+            if y >= area.y1 || y + height <= area.y0 {
+                y += height;
+                continue;
+            }
             match item {
                 TimelineItem::Divider { label } => {
                     y = self.draw_day_divider(PaintCtx::new(scene, tf, tr, theme), area, label, y);
                 }
                 TimelineItem::Row(rm) => {
-                    self.draw_row(
+                    self.paint_row(
                         PaintCtx::new(scene, tf, tr, theme),
                         presence,
                         rm,
@@ -805,6 +861,7 @@ impl ChatApp {
                 }
             }
         }
+        self.end_timeline_paint();
         // A row scrolled half out of the timeline is clipped where it is
         // painted; so is what it answers to, never reaching the header.
         let rows_hits = hits.split_off(first_row_hit);
@@ -879,7 +936,7 @@ impl ChatApp {
                         label: clock.day_label(day),
                     });
                 }
-                let rm = self.measure_row(tr, theme, m, gi == 0, text_w);
+                let rm = self.measure_row_kept(tr, theme, m, gi == 0, text_w);
                 total += rm.height();
                 items.push(TimelineItem::Row(rm));
             }
@@ -907,7 +964,7 @@ impl ChatApp {
         y + height
     }
 
-    fn measure_row(
+    pub(crate) fn measure_row(
         &self,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -1024,7 +1081,8 @@ impl ChatApp {
         }
     }
 
-    fn draw_row(
+    /// Paint the row `rm` from `*y`; returns where it drew its texts.
+    pub(crate) fn draw_row(
         &mut self,
         paint: PaintCtx<'_>,
         presence: &PresenceCtx,
@@ -1032,7 +1090,7 @@ impl ChatApp {
         column: MessageColumn,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
-    ) {
+    ) -> crate::app::PaintedMessage {
         let PaintCtx {
             scene,
             transform: tf,
@@ -1040,8 +1098,9 @@ impl ChatApp {
             theme,
         } = paint;
         let area = column.area;
+        let mut parts = crate::app::PaintedMessage::default();
         let Some(m) = self.message(&rm.idx_id).cloned() else {
-            return;
+            return parts;
         };
         let revealed = self.revealed_message.as_deref() == Some(m.id.as_str());
         let targeted = self.menu_targets(&MenuTarget::Message(m.id.clone()));
@@ -1058,10 +1117,6 @@ impl ChatApp {
         }
         *y += rm.top_gap;
         let content_top = *y;
-        // Only a row that shows notes where its texts are: one scrolled out
-        // costs nothing more.
-        let shown = *y < area.y1 && *y + rm.height() - rm.top_gap > area.y0;
-        let mut parts = crate::app::PaintedMessage::default();
 
         if rm.show_header {
             self.draw_row_header(
@@ -1129,8 +1184,9 @@ impl ChatApp {
                 Hit::MessageMenu { msg: m.id.clone() },
             );
         }
-        if shown {
-            self.note_painted(&m.id, parts, !rm.editing, area);
+        self.push_author_hit(&m, &parts, hits);
+        if !rm.editing {
+            parts.lines = self.body_lines(&m.id);
         }
         if rm.resource_h > 0.0 && m.share.is_some() {
             let place = (column.text_x, f64::from(column.text_width), column.area);
@@ -1140,6 +1196,7 @@ impl ChatApp {
         }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;
+        parts
     }
 
     /// The button that shows or hides the reasoning an agent's provider
@@ -1175,18 +1232,9 @@ impl ChatApp {
         *y += rm.reasoning_h;
     }
 
-    /// Keep where a shown message drew its texts, its body's lines read off
-    /// the view when `body` was drawn, cut to the timeline's `area`.
-    fn note_painted(
-        &mut self,
-        id: &str,
-        mut parts: crate::app::PaintedMessage,
-        body: bool,
-        area: Rect,
-    ) {
-        if body {
-            parts.lines = self.body_lines(id);
-        }
+    /// Keep where a shown message drew its texts, cut to the timeline's
+    /// `area`.
+    pub(crate) fn note_painted(&mut self, id: &str, parts: crate::app::PaintedMessage, area: Rect) {
         let parts = parts.clipped(area);
         if !parts.is_empty() {
             self.painted_messages.insert(id.to_owned(), parts);
@@ -1592,7 +1640,10 @@ impl ChatApp {
             };
             ChatApp::push_hit(hits, rect, hit);
         }
-        let hover = (self.menu.is_none() && !self.emoji_open).then_some(self.last_mouse);
+        // The strip lifts the chip under the pointer: the row asks about
+        // each of them.
+        self.note_pointer_probes(laid.targets().into_iter().map(|(rect, _)| rect));
+        let hover = (self.menu.is_none() && !self.emoji_open).then_some(self.pointer_in_row());
         strip.paint(&mut PaintCtx::new(scene, tf, tr, theme), hover, None);
         height
     }
@@ -2680,7 +2731,22 @@ impl ChatApp {
                 }
                 let row_h = face.height(ctx.text, theme);
                 let row = Rect::new(body.x0 + inset, y, body.x1 - inset, y + row_h);
-                face.paint(&mut ctx, row);
+                face.interaction(ui::widget::Interaction {
+                    hovered: !person.is_agent && self.hovered(row),
+                    ..ui::widget::Interaction::default()
+                })
+                .paint(&mut ctx, row);
+                // A person's row opens their card; an agent has none.
+                if !person.is_agent {
+                    ChatApp::push_hit(
+                        hits,
+                        row,
+                        Hit::ShowPerson {
+                            person: person.id.clone(),
+                            place: format!("member:{}", person.id),
+                        },
+                    );
+                }
                 y += row_h;
             }
         }
@@ -3124,7 +3190,9 @@ fn thread_bar_h(theme: &Theme) -> f64 {
 mod agent_work;
 
 pub(crate) use agent_work::agent_work_accessible_description;
-use agent_work::*;
+use agent_work::{
+    AgentWorkLineStyle, AgentWorkPresentation, draw_agent_work_line, measure_agent_work,
+};
 /// Per-row measured heights for the timeline layout.
 /// One thing the timeline paints, in order: a day divider, or a message.
 enum TimelineItem {
@@ -3135,9 +3203,10 @@ enum TimelineItem {
     Row(RowM),
 }
 
-struct RowM {
-    idx_id: String,
-    show_header: bool,
+#[derive(Clone)]
+pub(crate) struct RowM {
+    pub(crate) idx_id: String,
+    pub(crate) show_header: bool,
     /// Space above the row: a group's first row stands apart from the one
     /// before it; a continuation row follows closely.
     top_gap: f64,
@@ -3148,19 +3217,19 @@ struct RowM {
     body_h: f64,
     work_h: f64,
     reasoning_h: f64,
-    resource_h: f64,
+    pub(crate) resource_h: f64,
     att_h: f64,
     react_h: f64,
     edited_h: f64,
     thread_h: f64,
     /// This row is the message being edited inline: its body is the editor
     /// field (padded) plus a controls row.
-    editing: bool,
+    pub(crate) editing: bool,
     edit_ctrl_h: f64,
 }
 
 impl RowM {
-    fn height(&self) -> f64 {
+    pub(crate) fn height(&self) -> f64 {
         let header = if self.show_header { self.header_h } else { 0.0 };
         let body = if self.editing {
             self.body_h + 2.0 * self.pad + self.pad + self.edit_ctrl_h
@@ -3255,6 +3324,7 @@ mod tests {
             pinned: false,
             work: None,
             appearance: None,
+            share: None,
         };
         // Two hours apart across midnight, and one three days later.
         let start = 1_782_828_300_i64;

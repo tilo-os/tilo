@@ -640,11 +640,31 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(report==text_field_report_)return;
     text_field_report_=report;text_field_editable_=d->GetBool("editable");Event("text_field",d);
   }
+  // A drag the engine opened for a gesture that had already let go ends here.
+  static void EndOpenedDrag(CefRefPtr<CefBrowser> browser) {
+    if(!browser) return;
+    auto host=browser->GetHost();
+    host->DragSourceEndedAt(0,0,DRAG_OPERATION_NONE);
+    host->DragSourceSystemDragEnded();
+  }
   // Windowless: the page's drag begins here and ends when the gesture does.
   // A windowless view has no file to offer an editor, so the page's text
   // moves, which is what the gesture asked for.
-  bool StartDragging(CefRefPtr<CefBrowser>,CefRefPtr<CefDragData> data,DragOperationsMask,int x,int y) override {
+  bool StartDragging(CefRefPtr<CefBrowser>,CefRefPtr<CefDragData> data,CefRenderHandler::DragOperationsMask allowed_ops,int x,int y) override {
     if(!data) return false;
+    // A gesture this automation drives carries its own drag: its press, its
+    // moves and its release are the pointer steps already sent, and the page
+    // has already heard the drop. The engine opens its drag a turn after those
+    // steps have gone, so there is nothing left to carry: it is ended here at
+    // once, or the page is left holding a drag nobody lets go of and reads
+    // every input after it as part of that drag.
+    if(page_automation_ && page_automation_->DrivesDrag()) {
+      CefMouseEvent at;at.x=x;at.y=y;at.modifiers=EVENTFLAG_LEFT_MOUSE_BUTTON;
+      CefRefPtr<CefBrowser> browser=browser_;
+      CefPostDelayedTask(TID_UI,base::BindOnce(&EndOpenedDrag,browser),0);
+      (void)at;
+      return true;
+    }
     if(data->IsFile() && !data->IsFragment()) data->ResetFileContents();
     dragging_=data;dragging_entered_=false;
     // The drag begins where the hand is, so the page hears it enter there
@@ -1527,6 +1547,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // stays the target, so a drop lands where the hand let go.
   void PagePointer(CefRefPtr<CefDictionaryValue> step) {
     if(!browser_)return;auto host=browser_->GetHost();const double zoom=std::pow(1.2,host->GetZoomLevel());
+    // A pointer reaches the page only when the view is the one being used, just
+    // as a key does: an app's window can be open without being focused, and its
+    // page would then never see the pointer move.
+    host->SetFocus(true);
     const auto kind=step->GetString("kind").ToString();
     const bool down=kind=="down",press=down||kind=="up";
     const bool right=step->GetString("button")=="right";
@@ -1588,7 +1612,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // What a gesture's drag may do here: a page reorders its own items with a
   // move, and a drop that copies leaves the original where it was. A page's
   // own drag offers both, so accepting only a move would refuse its drops.
-  static constexpr DragOperationsMask kPageDragOps=static_cast<DragOperationsMask>(DRAG_OPERATION_MOVE|DRAG_OPERATION_COPY);
+  static constexpr cef_drag_operations_mask_t kPageDragOps=static_cast<cef_drag_operations_mask_t>(DRAG_OPERATION_MOVE|DRAG_OPERATION_COPY);
   // The page's own drag while a gesture carries it, and whether the element
   // under the pointer has heard it arrive.
   CefRefPtr<CefDragData> dragging_;bool dragging_entered_=false;
@@ -2389,10 +2413,12 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING))return false;
     const auto action=d->GetString("action").ToString();
     if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="fill_files" && action!="press" && action!="submit" &&
-       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" && action!="reader" &&
-       action!="pointer")return false;
+       action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" &&
+       action!="reader" && action!="pointer" && action!="hover" && action!="drag" && action!="path" &&
+       action!="pointer_rest")return false;
     const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
-      action=="console" || action=="network" || action=="reader" || action=="pointer";
+      action=="console" || action=="network" || action=="reader" || action=="pointer" || action=="hover" ||
+      action=="drag" || action=="path" || action=="pointer_rest";
     if(action=="pointer") {
       if(!type("steps",VTYPE_LIST) || !type("button",VTYPE_STRING))return false;
       const auto button=d->GetString("button").ToString();
@@ -2436,6 +2462,37 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(action=="press") {
       if(!type("key",VTYPE_STRING) || d->GetString("key").empty() || d->GetString("key").length()>16)return false;
       for(const char* flag:{"ctrl","shift","alt","meta"})if(!type(flag,VTYPE_BOOL))return false;
+    }
+    // Where the engine's own pointer came to rest, so the page's hover
+    // styles follow it; the engine sends it, the action door never does.
+    if(action=="pointer_rest") return (d->HasKey("x") && d->HasKey("y"));
+    if(action=="hover" || action=="drag") {
+      // One end of a gesture either names an element or gives its point.
+      if(d->HasKey("x")!=d->HasKey("y") || d->HasKey("to_x")!=d->HasKey("to_y"))return false;
+      const auto point=[&](const char* x,const char* y) {
+        if(!d->HasKey(x))return true;
+        return number(x) && number(y) && Number(d,x)>=0 && Number(d,y)>=0 && Number(d,x)<=100000 && Number(d,y)<=100000;
+      };
+      if(!point("x","y") || !point("to_x","to_y"))return false;
+      if(action=="hover" && !d->HasKey("element") && !d->HasKey("x"))return false;
+      if(action=="drag" && (!d->HasKey("element") && !d->HasKey("x") || !d->HasKey("to") && !d->HasKey("to_x")))return false;
+      if(d->HasKey("element") && d->HasKey("x") || d->HasKey("to") && d->HasKey("to_x"))return false;
+      if(d->HasKey("to") && (!type("to",VTYPE_STRING) || d->GetString("to").empty() || d->GetString("to").length()>64))return false;
+    }
+    if(action=="drag" && (!type("steps",VTYPE_INT) || d->GetInt("steps")<1 || d->GetInt("steps")>64))return false;
+    if(action=="path") {
+      if(!type("points",VTYPE_LIST))return false;
+      auto points=d->GetList("points");
+      if(points->GetSize()<2 || points->GetSize()>1024)return false;
+      const bool relative=d->HasKey("element");
+      for(size_t i=0;i<points->GetSize();++i) {
+        auto pair=points->GetType(i)==VTYPE_LIST?points->GetList(i):nullptr;
+        auto scalar=[](CefRefPtr<CefValue> v){return v->GetType()==VTYPE_DOUBLE || v->GetType()==VTYPE_INT;};
+        if(!pair || pair->GetSize()!=2 || !scalar(pair->GetValue(0)) || !scalar(pair->GetValue(1)))return false;
+        const double x=pair->GetDouble(0),y=pair->GetDouble(1);
+        if(!std::isfinite(x) || !std::isfinite(y))return false;
+        if(relative ? std::abs(x)>100000 || std::abs(y)>100000 : x<0 || y<0 || x>100000 || y>100000)return false;
+      }
     }
     return true;
   }

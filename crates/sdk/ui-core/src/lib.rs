@@ -237,6 +237,7 @@ pub mod pen;
 pub mod people_photos;
 pub mod permissions;
 pub mod persist;
+pub mod person_card;
 pub mod pick;
 pub mod pick_wire;
 pub mod platform;
@@ -294,6 +295,7 @@ pub mod host_operation {
 )]
 pub(crate) mod draw_cull;
 pub mod host_palette;
+pub mod mentions;
 pub mod published;
 pub mod reader_hud;
 pub mod record;

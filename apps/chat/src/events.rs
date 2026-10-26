@@ -840,6 +840,7 @@ impl ChatApp {
             Hit::OpenResource(message) => self.open_shared_resource(&message),
             Hit::OpenShare(message) => self.open_share(&message),
             Hit::StopShare(message) => self.stop_share(doc, &message),
+            Hit::SwitchShare(message, access) => self.switch_share(doc, &message, access),
             Hit::ShareWindowPanel if self.can_participate() => self.open_share_panel(None),
             Hit::ShareAccess(access) => self.choose_share_access(access),
             Hit::SharePick(tab) => self.choose_share_window(tab),
@@ -908,6 +909,10 @@ impl ChatApp {
             }
             // A pin whose message is gone has nowhere to lead.
             Hit::RevealMessage(id) => drop(self.reveal_message(&id)),
+            // The desktop shows the one card it has for people.
+            Hit::ShowPerson { person, .. } => {
+                ui::person_card::show(&person, &self.user_name(&person));
+            }
             Hit::Dismiss => self.on_hit_dismiss(),
             // MessageMenu is a right-click affordance and drag handles are
             // handled at press time; permission-gated fallthroughs are no-ops.

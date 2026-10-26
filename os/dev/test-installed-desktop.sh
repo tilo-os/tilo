@@ -68,6 +68,9 @@ cleanup() {
       > "$out/session-journal.txt" 2>&1 || true
     TILO_SSH_BOUND=60 "$vm" ssh 'cat "$HOME"/.local/state/tilo/session-logs/*.log' \
       > "$out/compositor-session.log" 2>&1 || true
+    # A compositor the watchdog ended for freezing records every thread's stack.
+    TILO_SSH_BOUND=60 "$vm" ssh 'cat "$HOME"/.cache/tilo/crashes/*-freeze.log 2>/dev/null' \
+      > "$out/compositor-freeze.log" 2>&1 || true
   fi
   "$vm" stop >/dev/null 2>&1 || true
   cp -f "$TILO_RUN/qemu.log" "$TILO_RUN/serial.log" "$TILO_RUN"/*.png "$out/" 2>/dev/null || true
@@ -164,7 +167,13 @@ for attempt in $(seq 1 60); do
   fi
   sleep 1
 done
-"$vm" keys tab ret
+# The ready screen is finished with the keyboard: Tab reaches its primary
+# action once the screen holds focus, and Return takes it.
+"$vm" test native-atspi-smoke.sh oobe-ready
+"$vm" keys tab
+"$vm" test native-atspi-smoke.sh oobe-finish-focused
+"$vm" keys ret
+"$vm" test native-atspi-smoke.sh oobe-finished
 
 # A desktop that reached its first session can still be degraded. No unit may
 # have failed by now, and the rollback confirmation (which refuses to confirm

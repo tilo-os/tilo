@@ -1408,8 +1408,14 @@ fn describe(input: &Value, catalogue: &Catalogue, revealed: &mut Revealed) -> St
     let _ = writeln!(
         s,
         "  contract: kind={:?}; risk={:?}; confirmation={:?}; retry={:?}; \
-         reversible={}; execution={:?}; result={:?}",
-        c.kind, c.risk, c.confirmation, c.retry, c.reversible, c.execution, c.result
+         undo_takes_it_back={}; execution={:?}; result={:?}",
+        c.kind,
+        c.risk,
+        c.confirmation,
+        c.retry,
+        c.can_be_undone(),
+        c.execution,
+        c.result
     );
     if let Some(note) = confirmation_note(offer) {
         let _ = writeln!(s, "  {note}: your step waits until the person answers it");

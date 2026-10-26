@@ -41,7 +41,7 @@ topbar-bell-silenced = { $unread ->
     [one] Mitteilungen stummgeschaltet, 1 ungelesen
    *[other] Mitteilungen stummgeschaltet, { $unread } ungelesen
 }
-topbar-show-collaborators = Mitwirkende anzeigen
+topbar-show-collaborators = Alle hier
 topbar-viewer-can-control = kann { $targets } steuern
 topbar-viewer-view-only = sieht nur { $targets }
 topbar-viewer-entry = { $name } ({ $kind ->
@@ -106,9 +106,15 @@ profile-add-your-name = Deinen Namen hinzufügen
 profile-section-identity = Deine Identität
 profile-section-devices = Geräte
 profile-section-linked = Verknüpfte Konten
-profile-link = { $service }-Konto verknüpfen
+profile-link = Mit { $service } verbinden
 profile-unlink = Trennen
-profile-copy = Kopieren
+profile-linked-as = Verknüpft als { $account }
+profile-link-offer = { $service } { $account } mit { $name } verknüpfen?
+profile-link-offer-why = Was du in { $service } schreibst, erscheint hier als du, und dort ebenso.
+profile-link-accept = Verknüpfen
+profile-link-decline = Abbrechen
+profile-connecting = { $service } wird geöffnet…
+profile-looking = Deine { $service }-Verknüpfung wird geprüft…
 profile-sharing = Teilen, woran du arbeitest
 profile-sharing-auto = Automatisch
 profile-sharing-manual = Eigene Worte
@@ -1020,6 +1026,7 @@ people-panel-stop-following = Beenden
 # The people overlay: the roster pinned out of the bar, floating over windows
 people-panel-pin = Auf dem Bildschirm halten
 a11y-people-pin = Wer hier ist, auf dem Bildschirm halten
+a11y-people-overlay = Wer hier ist
 people-overlay-title = { $count ->
     [0] Nur du
     [one] 1 hier

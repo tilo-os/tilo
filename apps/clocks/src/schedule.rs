@@ -63,6 +63,21 @@ pub struct Delivery {
     /// cancel a snooze retained by the host. Edits and deletion still cancel.
     #[serde(default)]
     pub native_completed_alarms: BTreeMap<String, (u8, u8, u8, i64)>,
+    /// Alarm occurrences this device snoozed, by alarm id. Kept beside the
+    /// alarm's ordinary armed occurrence so a one-shot alarm that already
+    /// rang (and was turned off) can still ring once more.
+    #[serde(default)]
+    pub snoozes: BTreeMap<String, Snooze>,
+}
+
+/// One snoozed alarm occurrence on this device.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snooze {
+    /// When it rings again.
+    pub due_ms: i64,
+    /// The alarm settings it was snoozed under; an edit arms it afresh and
+    /// cancels the snooze.
+    pub schedule: (u8, u8, u8, i64),
 }
 
 /// One alarm's armed occurrence on this device.
@@ -81,6 +96,34 @@ pub struct ArmedAlarm {
 
 pub(crate) fn schedule_of(alarm: &Alarm) -> (u8, u8, u8, i64) {
     (alarm.hour, alarm.minute, alarm.repeat, alarm.enabled_at_ms)
+}
+
+/// Snooze `alarm` on this device for `minutes`, keeping the settings it was
+/// snoozed under so an edit cancels the snooze. A snooze is an occurrence of
+/// its own: it rings once at `now_ms + minutes` even when the alarm has
+/// already turned itself off.
+///
+/// # Errors
+/// A snooze of no minutes.
+pub fn snooze(
+    delivery: &mut Delivery,
+    id: &Id,
+    alarm: &Alarm,
+    now_ms: i64,
+    minutes: u32,
+) -> Result<(), String> {
+    if minutes == 0 {
+        return Err("a snooze needs at least one minute".into());
+    }
+    let millis = i64::from(minutes).saturating_mul(60_000);
+    delivery.snoozes.insert(
+        id.as_str().to_owned(),
+        Snooze {
+            due_ms: now_ms.saturating_add(millis),
+            schedule: schedule_of(alarm),
+        },
+    );
+    Ok(())
 }
 
 /// An alarm or timer that is due now.
@@ -118,6 +161,32 @@ pub fn tick(
 ) -> Tick {
     let mut found = Tick::default();
     let now_ms = now_utc.timestamp_millis();
+    let mut snoozed_due = Vec::new();
+    delivery.snoozes.retain(|id, snooze| {
+        let Some(alarm) = clocks.alarms.get(&Id::from_raw(id.as_str())) else {
+            return false;
+        };
+        if schedule_of(alarm) != snooze.schedule {
+            return false;
+        }
+        if snooze.due_ms > now_ms {
+            return true;
+        }
+        snoozed_due.push((id.clone(), snooze.due_ms));
+        false
+    });
+    for (id, due_ms) in snoozed_due {
+        let id = Id::from_raw(id);
+        let Some(alarm) = clocks.alarms.get(&id) else {
+            continue;
+        };
+        found.due.push(DueEvent::Alarm {
+            id,
+            label: alarm.label.clone(),
+            scheduled_for: instant(due_ms),
+            native_scheduled: false,
+        });
+    }
     delivery
         .alarms
         .retain(|id, _| clocks.alarms.contains(&Id::from_raw(id.as_str())));

@@ -95,7 +95,10 @@ impl ChatApp {
                 .person_contacts
                 .iter()
                 .map(|contact| {
-                    NavItem::new(person_place(&contact.public_key), &contact.display_name)
+                    NavItem::new(
+                        person_place(&contact.public_key),
+                        &self.contact_name(contact),
+                    )
                 })
                 .collect();
             sections.push(NavSection::new(

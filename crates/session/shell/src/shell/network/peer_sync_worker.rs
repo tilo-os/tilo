@@ -50,6 +50,22 @@ enum Work {
     },
 }
 
+impl Work {
+    /// What it is, for the log; a slow request also logs its own name.
+    const fn label(&self) -> &'static str {
+        match self {
+            Self::Job(_) => "job",
+            Self::FinishSharedRooms => "shared rooms",
+            Self::SyncRound => "sync round",
+            Self::PersonalWorkspaces => "personal workspaces",
+            Self::RoomBatch { .. } => "room batch",
+        }
+    }
+}
+
+/// How long one item may hold the serial worker before it is logged.
+const SLOW_WORK: Duration = Duration::from_secs(5);
+
 #[derive(Default)]
 pub(super) struct State {
     worker: OnceLock<mpsc::Sender<Work>>,
@@ -83,6 +99,8 @@ impl ShellNetwork {
                     };
                     // A panicking request must not take later ones with it.
                     // Each says whether the loop has anything to take from it.
+                    let what = item.label();
+                    let started = Instant::now();
                     let ran =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match item {
                             Work::Job(job) => {
@@ -119,6 +137,16 @@ impl ShellNetwork {
                         }));
                     if ran.is_err() {
                         tracing::error!("a peer-sync request panicked on its worker");
+                    }
+                    // The worker is serial: whatever runs long here holds up
+                    // every join queued behind it.
+                    let took = started.elapsed();
+                    if took >= SLOW_WORK {
+                        tracing::warn!(
+                            work = what,
+                            took_ms = took.as_millis(),
+                            "the peer-sync worker was held; joins queued behind it waited"
+                        );
                     }
                     drop(network);
                     // The loop applies what the request answered.

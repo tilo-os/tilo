@@ -45,6 +45,10 @@ use tilo_lock::MutexRecover as _;
 const IDLE: Duration = Duration::from_secs(30);
 /// The input a program declares to be told the room's members and roles.
 const ROOM_INPUT: &str = "room";
+/// The input a program declares to be told the workspace's own emoji: each
+/// name with its picture's content address, the picture kept in the
+/// content store its connectors read, so an op may attach it.
+const EMOJI_INPUT: &str = "emoji";
 /// How many dead letters an installation keeps, newest last.
 pub const DEAD_LETTERS_KEPT: usize = 200;
 
@@ -189,6 +193,8 @@ pub struct BotRunner {
     connectors: BTreeMap<String, Arc<ConnectorProcess>>,
     progress: Progress,
     state_file: PathBuf,
+    /// The emoji pictures already kept for the connectors, by address.
+    kept: Mutex<BTreeSet<String>>,
     /// How many more changes are published before the room is made to
     /// refuse one, for a test.
     #[cfg(test)]
@@ -278,6 +284,7 @@ impl BotRunner {
             connectors,
             progress,
             state_file,
+            kept: Mutex::new(BTreeSet::new()),
             #[cfg(test)]
             refuse_after: Mutex::new(None),
         })
@@ -450,8 +457,11 @@ impl BotRunner {
             // happens after it is installed, not the room's past. A new
             // part of a chain of an app the bot already follows (the next
             // part of a chat's messages) is what happened since: read whole.
+            // So is a record every app of the room opens (the workspace's
+            // emoji), which its first change creates.
             let part = ui::record::RecordId::parse(&record)
-                .is_some_and(|record| record.chain_part().is_some());
+                .is_some_and(|record| record.chain_part().is_some())
+                || collab_types::workspace_record(&app, &record).is_some();
             let since = match self.progress.records.get(&key).cloned() {
                 Some(since) => since,
                 None if part && self.follows_app(&app) => Vec::new(),
@@ -523,6 +533,20 @@ impl BotRunner {
         })
     }
 
+    /// The bot's own inputs, with each the host binds that its program
+    /// declares: the room's members, the workspace's emoji.
+    async fn host_inputs(&self) -> Result<Map<String, Value>, String> {
+        let declares = |name: &str| self.shortcut.inputs.iter().any(|input| input.name == name);
+        let mut inputs = self.bot.inputs.clone();
+        if declares(ROOM_INPUT) {
+            inputs.insert(ROOM_INPUT.to_owned(), self.room_input().await?);
+        }
+        if declares(EMOJI_INPUT) {
+            inputs.insert(EMOJI_INPUT.to_owned(), self.emoji_input().await?);
+        }
+        Ok(inputs)
+    }
+
     /// Run `firing` through the bot's door and publish what it changed.
     async fn fire(&self, firing: &Firing) -> Result<Fired, String> {
         // The replicas are brought up to the room's records first, so the
@@ -552,15 +576,7 @@ impl BotRunner {
                 }
             }
         }
-        let mut inputs = self.bot.inputs.clone();
-        if self
-            .shortcut
-            .inputs
-            .iter()
-            .any(|input| input.name == ROOM_INPUT)
-        {
-            inputs.insert(ROOM_INPUT.to_owned(), self.room_input().await?);
-        }
+        let mut inputs = self.host_inputs().await?;
         inputs.extend(firing.inputs.clone());
         let caller = Caller::bot(
             self.bot.installation.clone(),
@@ -669,6 +685,35 @@ impl BotRunner {
                 }),
         );
         Ok(serde_json::json!({ "members": members }))
+    }
+
+    /// The workspace's own emoji as the room holds them now: `{"emoji":
+    /// [{"name", "picture"}]}`, each picture its content address. The
+    /// pictures live in the emoji record itself, which a bot does not hold
+    /// (`HeldRecords`), so the host reads them and keeps each in the
+    /// content store of every connector the bot runs, where an op that
+    /// attaches it finds it.
+    pub(crate) async fn emoji_input(&self) -> Result<Value, String> {
+        use tilo_resource::Resource as _;
+        use tilo_workspace_emoji::{KIND, OWNER, WorkspaceEmoji};
+        let record = collab_types::workspace_record_id(KIND);
+        let Some(saved) = self.read(OWNER, &record).await? else {
+            return Ok(serde_json::json!({ "emoji": [] }));
+        };
+        let doc = AutoCommit::load(&saved).map_err(|error| error.to_string())?;
+        let emoji = WorkspaceEmoji::read(&doc).map_err(|error| error.to_string())?;
+        let mut listed = Vec::new();
+        for (name, emoji) in emoji.emoji.iter() {
+            let picture = blake3::hash(emoji.image.bytes()).to_hex().to_string();
+            if !self.kept.lock_recover().contains(&picture) {
+                for process in self.connectors.values() {
+                    process.keep(emoji.image.bytes())?;
+                }
+                self.kept.lock_recover().insert(picture.clone());
+            }
+            listed.push(serde_json::json!({ "name": name, "picture": picture }));
+        }
+        Ok(serde_json::json!({ "emoji": listed }))
     }
 
     /// The room's readable records of the apps the bot works with.

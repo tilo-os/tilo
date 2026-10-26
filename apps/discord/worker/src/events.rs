@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 use discord_wire::event::{
     AttachmentInfo, Author, ChannelInfo, Command, EmojiInfo, LayoutChanged, MemberChanged,
     MessageCreated, MessageDeleted, MessageUpdated, OverwriteInfo, ReactionChanged, RoleInfo,
-    ThreadRef, UserName, code_sha256, event_id, source,
+    ThreadRef, UserName, event_id, link_check, link_proof, source,
 };
 use discord_wire::op::ChannelKind;
 use serde::Serialize;
@@ -562,10 +562,11 @@ impl Guild {
         ))
     }
 
-    /// A `/link` or `/unlink` interaction. The code is hashed here, so it
-    /// never reaches the host.
+    /// A `/link` or `/unlink` interaction. A `/link` carries the check of
+    /// `token`, the one-time token its reply's button holds; the token
+    /// itself never reaches the host.
     #[must_use]
-    pub fn command(&self, data: &Value) -> Option<Emit> {
+    pub fn command(&self, data: &Value, token: Option<&str>) -> Option<Emit> {
         if data["type"].as_u64() != Some(2) {
             return None;
         }
@@ -575,23 +576,17 @@ impl Guild {
         }
         let interaction = opt_text(&data["id"])?;
         let user = opt_text(&data["member"]["user"]["id"])?;
-        let code_sha256 = (name == "link")
-            .then(|| {
-                data["data"]["options"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .find(|o| o["name"] == "code")
-                    .and_then(|o| o["value"].as_str())
-                    .map(code_sha256)
-            })
-            .flatten();
+        let link_check = token
+            .filter(|_| name == "link")
+            .map(|token| link_check(&link_proof(token)));
         let event = Command {
             guild_id: self.id.clone(),
             user_id: user,
             name: name.to_owned(),
-            code_sha256,
+            interaction: interaction.clone(),
+            link_check,
             user: UserName::of_member(&data["member"]),
+            avatar: opt_text(&data["member"]["user"]["avatar"]),
         };
         Some(Emit::new(
             source::COMMAND,
@@ -730,19 +725,33 @@ mod tests {
         assert_eq!(unicode.payload["emoji"], "👍🏽");
         assert_eq!(unicode.payload["emoji_id"], Value::Null);
         let command = guild
-            .command(&json!({
-                "id": "77", "type": 2, "member": {"user": {"id": "7"}},
-                "data": {"name": "link", "options": [{"name": "code", "value": "abcd efgh ijkl"}]},
-            }))
+            .command(
+                &json!({
+                    "id": "77", "type": 2, "member": {"user": {"id": "7", "username": "ada", "avatar": "abc"}},
+                    "data": {"name": "link"},
+                }),
+                Some("T0KEN"),
+            )
             .unwrap();
         assert_eq!(command.id, "77");
-        assert_eq!(command.payload["code_sha256"], code_sha256("ABCDEFGHIJKL"));
-        assert!(
-            !serde_json::to_string(&command.payload)
-                .unwrap()
-                .contains("abcd"),
-            "the code itself never leaves the worker"
+        assert_eq!(command.payload["interaction"], "77");
+        assert_eq!(command.payload["avatar"], "abc");
+        assert_eq!(
+            command.payload["link_check"],
+            link_check(&link_proof("T0KEN"))
         );
+        let said = serde_json::to_string(&command.payload).unwrap();
+        assert!(
+            !said.contains("T0KEN") && !said.contains(&link_proof("T0KEN")),
+            "neither the token nor its proof leaves the worker"
+        );
+        let unlink = guild
+            .command(
+                &json!({"id": "78", "type": 2, "member": {"user": {"id": "7"}}, "data": {"name": "unlink"}}),
+                Some("T0KEN"),
+            )
+            .unwrap();
+        assert_eq!(unlink.payload["link_check"], Value::Null);
     }
 
     #[test]

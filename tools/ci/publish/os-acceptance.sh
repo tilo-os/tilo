@@ -86,11 +86,17 @@ for i in "${!tracks[@]}"; do
   fi
 done
 # A failed check keeps no outputs, so the guests' own account of a failure goes to the log:
-# the end of each session's journal and compositor log the gates collected.
+# the end of each session's journal and compositor log the gates collected,
+# without the periodic frame counters and SSH logins that would fill it.
 if ((status != 0)); then
   while IFS= read -r -d '' evidence; do
-    printf '\n--- %s (last 60 lines)\n' "${evidence#"$out"/}"
-    tail -n 60 "$evidence"
+    printf '\n--- %s (last 80 lines of what it said)\n' "${evidence#"$out"/}"
+    grep -avE '^(paint-stats|frames)[:=]|sshd-session\[' "$evidence" | tail -n 80
   done < <(find "$out" -type f \( -name '*session-journal.txt' -o -name '*compositor-session.log' \) -print0 | sort -z)
+  # A frozen compositor's record opens with its main thread, the one that froze.
+  while IFS= read -r -d '' evidence; do
+    printf '\n--- %s (first 80 lines)\n' "${evidence#"$out"/}"
+    head -n 80 "$evidence"
+  done < <(find "$out" -type f -name '*compositor-freeze.log' -size +0 -print0 | sort -z)
 fi
 exit "$status"

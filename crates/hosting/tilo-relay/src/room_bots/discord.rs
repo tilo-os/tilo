@@ -201,7 +201,12 @@ pub async fn link_bridge(
     {
         bot.inputs.insert("context".to_owned(), context);
     }
-    Ok(link.worker_env())
+    let mut env = link.worker_env();
+    // `/link` answers with a button into the room's web entry.
+    if let Some(entry) = &served.web_entry {
+        env.push(("DISCORD_LINK_URL".to_owned(), entry.clone()));
+    }
+    Ok(env)
 }
 
 /// What the room's host serves publicly that the bridge's posts point at.
