@@ -126,7 +126,9 @@ pub enum BrowserEffect {
     /// Open in new tab
     ///
     /// Another Browser, at the address, in a desktop tab right after this
-    /// one; this window keeps its page.
+    /// one; this window keeps its page. The tab is an instance of its own:
+    /// its page is addressed through that instance's peer id, not this
+    /// window's refs.
     #[effect(row, returns)]
     OpenTab {
         #[param("Absolute URL or search terms")]
