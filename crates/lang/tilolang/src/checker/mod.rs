@@ -7,6 +7,7 @@ mod call;
 mod enums;
 mod expr;
 mod native;
+mod pred;
 #[cfg(test)]
 mod tests;
 mod ui;
