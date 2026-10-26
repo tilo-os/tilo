@@ -2092,10 +2092,6 @@ COPY \
     /usr/lib/systemd/system/
 COPY os/usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf \
     /usr/lib/systemd/system/NetworkManager.service.d/20-tilo-firewall-first.conf
-# authselect-apply-changes skips a boot on which nothing it applies from changed, instead
-# of holding the greeter for a run that changes nothing (tilo-authselect-unchanged).
-COPY os/usr/lib/systemd/system/authselect-apply-changes.service.d/10-tilo-skip-unchanged.conf \
-    /usr/lib/systemd/system/authselect-apply-changes.service.d/10-tilo-skip-unchanged.conf
 COPY os/usr/lib/NetworkManager/conf.d/20-tilo-wake.conf \
     /usr/lib/NetworkManager/conf.d/20-tilo-wake.conf
 COPY os/usr/lib/NetworkManager/conf.d/25-tilo-dns-cache.conf \
@@ -2667,7 +2663,13 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # NetworkManager are system services/timers. joycond is not enabled here:
 # 72-joycond.rules pulls it in when a Joy-Con appears, so it stays off the
 # boot path and off machines that never see one.
-RUN systemctl enable greetd.service && \
+# authselect-apply-changes skips a boot on which nothing it applies from changed, instead
+# of holding the greeter for a run that changes nothing (tilo-authselect-unchanged). Its
+# drop-in is installed by this RUN rather than a COPY of its own: the layer budget.
+RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.service.d/10-tilo-skip-unchanged.conf,target=/run/tilo-authselect-skip-unchanged.conf,ro \
+    install -D -m 0644 /run/tilo-authselect-skip-unchanged.conf \
+      /usr/lib/systemd/system/authselect-apply-changes.service.d/10-tilo-skip-unchanged.conf && \
+    systemctl enable greetd.service && \
     systemctl disable NetworkManager.service firewalld.service chronyd.service && \
     # Fedora's presets start these at boot, ordered before multi-user.target or
     # graphical.target. They start on demand instead: ModemManager and
