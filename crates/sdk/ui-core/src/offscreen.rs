@@ -2175,6 +2175,50 @@ mod tests {
     use vello::kurbo::{Affine, BezPath, Rect};
     use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 
+    /// What a test of the GPU's own rendering needs of this host: the probed
+    /// value when it is here, and `None` when it is not — a skip on a lane
+    /// that promises no GPU, and a failure on one that does (`TILO_REQUIRE_GPU`,
+    /// which every GPU lane sets). A test whose subject is the renderer must
+    /// not pass on a host that never ran it.
+    fn gpu_here<T>(subject: &str, probe: Option<T>) -> Option<T> {
+        match probe {
+            Some(value) => Some(value),
+            None => {
+                tilo_test_env::capability_unavailable(
+                    tilo_test_env::Capability::Gpu,
+                    format_args!("{subject}"),
+                );
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn a_gpu_test_fails_when_the_lane_promises_a_gpu_and_skips_otherwise() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_REQUIRE_GPU");
+        assert!(
+            gpu_here::<u8>("the renderer", None).is_none(),
+            "a host without the capability skips off a lane that does not promise it"
+        );
+        assert_eq!(
+            gpu_here("the renderer", Some(7_u8)),
+            Some(7),
+            "a host with it yields what was probed"
+        );
+
+        env.set("TILO_REQUIRE_GPU", "1");
+        let failed = std::panic::catch_unwind(|| gpu_here::<u8>("the renderer", None))
+            .expect_err("a lane that promises a GPU must fail, not skip");
+        let message = failed
+            .downcast_ref::<String>()
+            .expect("formatted panic message");
+        assert_eq!(
+            message,
+            "TILO_REQUIRE_GPU is set but GPU is unavailable: the renderer"
+        );
+    }
+
     #[test]
     fn a_renderer_is_refused_where_the_thread_cannot_wait() {
         // A browser page's thread cannot wait on the GPU: building a renderer
@@ -2319,8 +2363,10 @@ mod tests {
     /// measure of a photograph behind a feathered mask.
     #[test]
     fn resilient_render_grows_through_cascading_stage_overflows() {
-        let Ok(mut renderer) = OffscreenRenderer::try_new(320, 320) else {
-            eprintln!("skipping cascading overflow test: no GPU");
+        let Some(mut renderer) = gpu_here(
+            "cascading overflow test",
+            OffscreenRenderer::try_new(320, 320).ok(),
+        ) else {
             return;
         };
         let side = 320.0;
@@ -3167,8 +3213,7 @@ mod tests {
                 eprintln!("skipping sparse coarse test: coarse selection is not requested");
                 break 'sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames;
             }
-            let Ok(_gpu) = shared_gpu() else {
-                eprintln!("skipping sparse coarse test: no shared GPU");
+            let Some(_gpu) = gpu_here("the sparse coarse oracle", shared_gpu().ok()) else {
                 break 'sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames;
             };
             const W: u32 = 544;
@@ -3605,6 +3650,9 @@ mod tests {
                 break 'sparse_upload_reuse_grows_once_and_matches_an_unbatched_dense_oracle;
             }
 
+            let Some(_gpu) = gpu_here("the sparse upload reuse path", shared_gpu().ok()) else {
+                break 'sparse_upload_reuse_grows_once_and_matches_an_unbatched_dense_oracle;
+            };
             const W: u32 = 128;
             const H: u32 = 96;
             let mut retained = OffscreenRenderer::new(W, H);
@@ -3750,10 +3798,7 @@ mod tests {
             );
             return None;
         }
-        if shared_gpu().is_err() {
-            eprintln!("skipping {test_name}: no shared GPU");
-            return None;
-        }
+        let _gpu = gpu_here(test_name, shared_gpu().ok())?;
         let renderer = OffscreenRenderer::new(width, height);
         if !renderer.vello().sparse_coarse_active_bins_available() {
             eprintln!("skipping {test_name}: active native-bin coarse is unavailable");
@@ -3779,10 +3824,7 @@ mod tests {
             );
             return None;
         }
-        if shared_gpu().is_err() {
-            eprintln!("skipping {test_name}: no shared GPU");
-            return None;
-        }
+        let _gpu = gpu_here(test_name, shared_gpu().ok())?;
         let renderer = OffscreenRenderer::new(width, height);
         if !renderer.vello().sparse_coarse_adaptive_enabled() {
             eprintln!("skipping {test_name}: adaptive sparse coarse is unavailable");
@@ -4001,8 +4043,7 @@ mod tests {
                 eprintln!("skipping CPU path-tag test: selective path tags are not requested");
                 break 'cpu_pathtag_matches_gpu_oracle_and_restores_gpu_stages_when_disabled;
             }
-            let Ok(_gpu) = shared_gpu() else {
-                eprintln!("skipping CPU path-tag test: no shared GPU");
+            let Some(_gpu) = gpu_here("the CPU path-tag oracle", shared_gpu().ok()) else {
                 break 'cpu_pathtag_matches_gpu_oracle_and_restores_gpu_stages_when_disabled;
             };
             const W: u32 = 384;
@@ -4358,8 +4399,7 @@ mod tests {
                 eprintln!("skipping direct path-dispatch test: experiment is not requested");
                 break 'direct_path_dispatch_matches_an_indirect_gpu_oracle_and_restores_stages;
             }
-            let Ok(_gpu) = shared_gpu() else {
-                eprintln!("skipping direct path-dispatch test: no shared GPU");
+            let Some(_gpu) = gpu_here("the direct path-dispatch oracle", shared_gpu().ok()) else {
                 break 'direct_path_dispatch_matches_an_indirect_gpu_oracle_and_restores_stages;
             };
             const W: u32 = 384;
@@ -4511,10 +4551,9 @@ mod tests {
                 eprintln!("skipping GPU path recovery test: no experiment is requested");
                 break 'gpu_path_experiments_keep_overflow_recovery_complete;
             }
-            if shared_gpu().is_err() {
-                eprintln!("skipping deferred bump recovery test: no shared GPU");
+            let Some(_gpu) = gpu_here("GPU path recovery", shared_gpu().ok()) else {
                 break 'gpu_path_experiments_keep_overflow_recovery_complete;
-            }
+            };
 
             const W: u32 = 384;
             const H: u32 = 256;
