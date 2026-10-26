@@ -274,6 +274,12 @@ if command -v auditctl >/dev/null 2>&1; then
   auditctl -a always,exit -F arch=b64 -S execve -F path=/usr/bin/chcon -k chcon \
     && echo 'tilo-e2e-shell: chcon audit rule installed' \
     || echo 'tilo-e2e-shell: the chcon audit rule could not be installed'
+elif [ -x /etc/tilo-e2e-chcon ]; then
+  mkdir -p /run/tilo-e2e && touch /run/tilo-e2e/chcon.real \
+    && mount --bind /usr/bin/chcon /run/tilo-e2e/chcon.real \
+    && mount --bind /etc/tilo-e2e-chcon /usr/bin/chcon \
+    && echo 'tilo-e2e-shell: no auditctl; chcon calls are traced by a wrapper' \
+    || echo 'tilo-e2e-shell: no auditctl, and the chcon wrapper could not be mounted'
 else
   echo 'tilo-e2e-shell: this image has no auditctl'
 fi
@@ -284,6 +290,20 @@ while :; do
   fi
   sleep 1
 done
+"""
+CHCON_TRACE = r"""#!/usr/bin/bash
+# signin-e2e check, this throwaway disk only: say who runs chcon, then run it.
+{
+  printf 'chcon pid=%s ctx=%s args=%s\n' "$$" "$(cat /proc/self/attr/current 2>/dev/null)" "$*"
+  gp=$(awk '{print $4}' /proc/$PPID/stat 2>/dev/null)
+  printf 'parent pid=%s exe=%s ctx=%s cmd=%s\n' "$PPID" "$(readlink /proc/$PPID/exe)" \
+    "$(cat /proc/$PPID/attr/current 2>/dev/null)" "$(tr '\0' ' ' </proc/$PPID/cmdline)"
+  printf 'grandparent pid=%s exe=%s cmd=%s\n' "$gp" "$(readlink /proc/$gp/exe 2>/dev/null)" \
+    "$(tr '\0' ' ' </proc/$gp/cmdline 2>/dev/null)"
+  printf 'cgroup=%s\n' "$(cat /proc/$$/cgroup)"
+  for arg in "$@"; do [ -e "$arg" ] && ls -Zd -- "$arg"; done
+} 2>&1 | systemd-cat -t tilo-e2e-chcon
+exec /run/tilo-e2e/chcon.real "$@"
 """
 SHELL_UNIT = """[Unit]
 Description=signin-e2e check: root shell on a hot-plugged virtio-serial port (this test disk only)
@@ -572,6 +592,10 @@ test -d "$etc/systemd/system"
 cat > "$etc/tilo-e2e-shell" <<'E2E_SCRIPT'
 {SHELL_SCRIPT}E2E_SCRIPT
 chmod 0755 "$etc/tilo-e2e-shell"
+cat > "$etc/tilo-e2e-chcon" <<'E2E_CHCON'
+{CHCON_TRACE}E2E_CHCON
+chmod 0755 "$etc/tilo-e2e-chcon"
+chcon system_u:object_r:bin_t:s0 "$etc/tilo-e2e-chcon"
 cat > "$etc/systemd/system/tilo-e2e-shell.service" <<'E2E_UNIT'
 {SHELL_UNIT}E2E_UNIT
 mkdir -p "$etc/systemd/system/multi-user.target.wants"
@@ -685,9 +709,9 @@ cryptsetup close e2e-target
         "failed": "systemctl --failed --no-pager --plain --no-legend; "
                   "systemctl status --no-pager tilo-authd.socket tilo-authd.service greetd | tail -n 60",
         "sessions": "loginctl list-sessions --no-pager",
-        "chcon": "{ journalctl -b -u tilo-e2e-shell -o cat | grep -i 'audit\\|auditctl'; "
-                 "ausearch -k chcon -i 2>/dev/null || journalctl -b --no-pager -o short-monotonic "
-                 "_TRANSPORT=audit | grep -E -A4 'key=\"chcon\"'; } | tail -n 160",
+        "chcon": "{ journalctl -b -u tilo-e2e-shell -o cat | grep -i 'audit\\|chcon'; "
+                 "journalctl -b --no-pager -o short-monotonic -t tilo-e2e-chcon; "
+                 "ausearch -k chcon -i 2>/dev/null; } | tail -n 200",
         "initrd": "journalctl -b --no-pager -o short-monotonic | grep -E "
                   "'tilo-root-discover|tilo-boot-signin|tilo-auth|systemd-cryptsetup|plymouth' "
                   "| head -n 300",
