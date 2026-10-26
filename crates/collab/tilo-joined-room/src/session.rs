@@ -156,9 +156,11 @@ impl Scope {
     #[must_use]
     pub fn input(self: &Arc<Self>, author: [u8; 32], retained: bool, msg: NeighbourMsg) -> Input {
         Input {
-            scope: self.clone(),
+            provenance: Provenance::Relay {
+                scope: self.clone(),
+                retained,
+            },
             author,
-            retained,
             msg,
         }
     }
@@ -333,27 +335,67 @@ impl Scope {
         )
     }
 }
-/// Only the authenticated relay pump can construct this. Generic gossip messages
+/// How an input reached this device: over the enrolled room's relay
+/// session, or directly from a peer the transport authenticated.
+#[derive(Clone)]
+enum Provenance {
+    Relay {
+        scope: Arc<Scope>,
+        retained: bool,
+    },
+    Direct {
+        owner: NativeWorkspaceOwner,
+        room: RoomId,
+        /// The peer's certificate as the room's admitted governance holds it,
+        /// pinned to the transport that delivered the message.
+        device: DeviceCert,
+    },
+}
+/// Only an authenticated carrier can construct this. Generic gossip messages
 /// cannot become `RelayDelta` evidence through a host's event dispatcher.
 #[derive(Clone)]
 pub struct Input {
-    scope: Arc<Scope>,
+    provenance: Provenance,
     author: [u8; 32],
-    retained: bool,
     msg: NeighbourMsg,
 }
 impl std::fmt::Debug for Input {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeRelayInput")
-            .field("room", &self.scope.connect.room)
-            .field("retained", &self.retained)
+        f.debug_struct("NativeRoomInput")
+            .field("room", &self.room())
+            .field("retained", &self.retained())
             .finish_non_exhaustive()
     }
 }
 impl Input {
+    /// A state message from `device`, a current member of `room`, whose
+    /// transport identity the caller authenticated. Admission still checks
+    /// the exact certificate, current policy and every change as it does for
+    /// a relay delta; the owner only accepts `State` messages here.
+    #[must_use]
+    pub fn direct(
+        owner: NativeWorkspaceOwner,
+        room: RoomId,
+        device: DeviceCert,
+        msg: NeighbourMsg,
+    ) -> Self {
+        let author = device.device_public_key;
+        Self {
+            provenance: Provenance::Direct {
+                owner,
+                room,
+                device,
+            },
+            author,
+            msg,
+        }
+    }
     #[must_use]
     pub fn room(&self) -> RoomId {
-        self.scope.connect.room
+        match &self.provenance {
+            Provenance::Relay { scope, .. } => scope.connect.room,
+            Provenance::Direct { room, .. } => *room,
+        }
     }
     #[must_use]
     pub fn author(&self) -> [u8; 32] {
@@ -367,14 +409,18 @@ impl Input {
     /// answering the subscription.
     #[must_use]
     pub fn retained(&self) -> bool {
-        self.retained
+        matches!(self.provenance, Provenance::Relay { retained: true, .. })
     }
     /// Observe the actual committed owner generation, without granting admission.
     pub fn generation(&self) -> Result<u64, String> {
-        self.scope
-            .connect
-            .owner
-            .with_current(self.room(), |view| Ok(view.generation()))
+        let owner = self.owner();
+        owner.with_current(self.room(), |view| Ok(view.generation()))
+    }
+    fn owner(&self) -> &NativeWorkspaceOwner {
+        match &self.provenance {
+            Provenance::Relay { scope, .. } => &scope.connect.owner,
+            Provenance::Direct { owner, .. } => owner,
+        }
     }
     /// Admit the delta into the owner while the session is still live and
     /// pinned to the owner's current material.
@@ -389,23 +435,46 @@ impl Input {
             .pop()
             .ok_or_else(|| "native owner admitted no input".to_owned())?
     }
-    /// Whether `other` came over the same relay session as this one: what
+    /// Whether `other` came over the same session as this one: what
     /// [`Self::admit_all`] admits together.
     #[must_use]
     pub fn same_session(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.scope, &other.scope)
+        match (&self.provenance, &other.provenance) {
+            (Provenance::Relay { scope: left, .. }, Provenance::Relay { scope: right, .. }) => {
+                Arc::ptr_eq(left, right)
+            }
+            (
+                Provenance::Direct {
+                    room: left_room,
+                    device: left_device,
+                    ..
+                },
+                Provenance::Direct {
+                    room: right_room,
+                    device: right_device,
+                    ..
+                },
+            ) => {
+                left_room == right_room
+                    && left_device.device_public_key == right_device.device_public_key
+            }
+            _ => false,
+        }
     }
-    /// Admit `inputs`, all of one relay session, in the order they came, in
-    /// one commit of the owner, while the session is still live and pinned
-    /// to the owner's current material: each is authorized as one alone is,
-    /// and a burst of them persists once. One report per input.
+    /// Admit `inputs`, all of one session, in the order they came, in one
+    /// commit of the owner. Relay inputs are admitted while the session is
+    /// still live and pinned to the owner's current material; direct inputs
+    /// while the sending device is still a current member. Each is
+    /// authorized as one alone is, and a burst of them persists once. One
+    /// report per input.
     ///
     /// # Errors
-    /// The inputs span sessions, the session closed or its pin changed, or
-    /// the commit failed: no input is admitted.
+    /// The inputs span sessions, the session closed or its pin changed, the
+    /// direct sender is no longer admitted, or the commit failed: no input
+    /// is admitted.
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the live flag stays locked through admission so a close cannot interleave"
+        reason = "the relay session's live flag stays locked through admission so a close cannot interleave"
     )]
     pub fn admit_all(
         inputs: &[Self],
@@ -415,41 +484,65 @@ impl Input {
             return Ok(Vec::new());
         };
         if !inputs.iter().all(|input| first.same_session(input)) {
-            return Err("native relay inputs of different sessions".into());
+            return Err("native room inputs of different sessions".into());
         }
-        let live = first
-            .scope
-            .live
-            .lock()
-            .map_err(|_| "native relay continuity poisoned")?;
-        if !*live {
-            return Err("native relay session closed".into());
+        match &first.provenance {
+            Provenance::Relay { scope, retained } => {
+                let live = scope
+                    .live
+                    .lock()
+                    .map_err(|_| "native relay continuity poisoned")?;
+                if !*live {
+                    return Err("native relay session closed".into());
+                }
+                let (hint, device, _, continuity) = scope.connect.material(identity)?;
+                if !scope.pinned_to(&hint, &device, continuity) {
+                    return Err("native relay pin changed".into());
+                }
+                let batch = inputs
+                    .iter()
+                    .map(|input| {
+                        let origin = if *retained {
+                            TransportOrigin::RetainedRelayDelta(input.author)
+                        } else {
+                            TransportOrigin::RelayDelta(input.author)
+                        };
+                        (origin, input.msg.clone())
+                    })
+                    .collect();
+                scope
+                    .connect
+                    .owner
+                    .receive_batch(first.room(), batch, std::time::SystemTime::now())
+            }
+            Provenance::Direct {
+                owner,
+                room,
+                device,
+            } => {
+                let now = std::time::SystemTime::now();
+                owner.with_current(*room, |view| {
+                    if view.device() == device {
+                        return Err("a direct peer cannot be this device".into());
+                    }
+                    if !view.peer().certificates().contains(device) {
+                        return Err("direct peer certificate is not the admitted one".into());
+                    }
+                    view.peer().permissions(device.device_public_key, now)?;
+                    Ok(())
+                })?;
+                let batch = inputs
+                    .iter()
+                    .map(|input| (TransportOrigin::RelayDelta(input.author), input.msg.clone()))
+                    .collect();
+                owner.receive_batch(*room, batch, now)
+            }
         }
-        let (hint, device, _, continuity) = first.scope.connect.material(identity)?;
-        if !first.scope.pinned_to(&hint, &device, continuity) {
-            return Err("native relay pin changed".into());
-        }
-        let batch = inputs
-            .iter()
-            .map(|input| {
-                let origin = if input.retained {
-                    TransportOrigin::RetainedRelayDelta(input.author)
-                } else {
-                    TransportOrigin::RelayDelta(input.author)
-                };
-                (origin, input.msg.clone())
-            })
-            .collect();
-        first
-            .scope
-            .connect
-            .owner
-            .receive_batch(first.room(), batch, std::time::SystemTime::now())
     }
     /// The author's current standing in the room: the room's policy, and
     /// the bound on a device not theirs.
     pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
-        self.scope.connect.owner.with_current(self.room(), |view| {
+        self.owner().with_current(self.room(), |view| {
             view.peer()
                 .permissions(self.author, std::time::SystemTime::now())
                 .map(tilo_peer_state::MemberAuthority::standing)

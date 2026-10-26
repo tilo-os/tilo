@@ -23,6 +23,7 @@ mod room_window_views;
 pub use room_window_views::RoomWindowViewer;
 #[cfg(test)]
 mod device_certification_tests;
+mod direct_carrier;
 #[cfg(test)]
 mod hostless_live_tests;
 #[cfg(test)]
@@ -1411,6 +1412,7 @@ fn write_pending_invitations(path: &Path, bytes: &[u8]) {
 pub struct ShellNetwork {
     native_enrollment: native_enrollment::State,
     native_admission: native_admission::State,
+    direct_carrier: direct_carrier::State,
     peer_sync_worker: peer_sync_worker::State,
     hosted_topology: hosted_topology::State,
     /// Members viewing this device's windows, and what this device views
@@ -2346,6 +2348,7 @@ impl ShellNetwork {
             pending_redemptions: Mutex::new(std::collections::HashMap::new()),
             native_enrollment: native_enrollment::State::default(),
             native_admission: native_admission::State::default(),
+            direct_carrier: direct_carrier::State::default(),
             peer_sync_worker: peer_sync_worker::State::default(),
             hosted_topology: hosted_topology::State::default(),
             room_window_views: room_window_views::State::default(),
@@ -2797,7 +2800,10 @@ impl ShellNetwork {
             *invite_id = Some(redemption);
         }
         let ws = self.topic_for_message(&msg);
-        if self.native_topic_required(ws)
+        let native = self.native_topic_required(ws);
+        let direct = native && self.direct_native_topic(ws);
+        if native
+            && !direct
             && matches!(
                 &msg,
                 NeighbourMsg::SyncReq { .. }
@@ -2808,7 +2814,8 @@ impl ShellNetwork {
         {
             return false;
         }
-        if self.native_topic_required(ws)
+        if native
+            && !direct
             && matches!(&msg, NeighbourMsg::AppDocument { .. })
             && !self.native_document_committed(&msg)
             && !self.sealed_record_write(&msg)
@@ -5149,6 +5156,15 @@ impl ShellNetwork {
                     .ok_or("this workspace's relay is not reachable yet; try again in a moment")?;
                 return self.issue_relay_invitation(&held, &terms);
             }
+            InviteRoute::Governor => {
+                let direct = crate::shell::peer_sync_overlay::InvitationTerms {
+                    role,
+                    expires_in_seconds: expiry_seconds_from_now,
+                    invitee_name: invitee.map(str::to_owned),
+                    recipient_user_public_key,
+                };
+                return self.issue_direct_invitation(ws.room(), &direct);
+            }
             InviteRoute::ShareOnRelay => {
                 if let Some(token) = self.share_on_home_relay(local, ws.room(), &ws.name, &terms)? {
                     return Ok(token);
@@ -7079,6 +7095,8 @@ impl ShellNetwork {
         // Local room changes go out the tick they land; the periodic pull
         // repairs whatever a peer missed.
         steps.time("network/room-push", || self.push_room_changes());
+        steps.time("network/govern-rooms", || self.govern_awaiting_rooms());
+        steps.time("network/direct-carrier", || self.drive_direct_carriers());
         steps.time("network/periodic-sync", || self.kick_periodic_sync());
         steps.time("network/personal-workspaces", || {
             self.reconcile_personal_workspaces_if_changed(matches!(admission, Admission::InPlace));
@@ -7702,6 +7720,20 @@ impl ShellNetwork {
                 expected,
                 "dropping collaboration message on the wrong room topic"
             );
+            return;
+        }
+        // A room with no workspace host speaks its state over the same
+        // authenticated gossip topic its peers authenticated on; a room a
+        // host holds keeps its relay admission.
+        if self.native_topic_required(ws)
+            && matches!(
+                &msg,
+                NeighbourMsg::SyncReq { .. }
+                    | NeighbourMsg::SyncResp { .. }
+                    | NeighbourMsg::AppDocument { .. }
+            )
+            && self.dispatch_direct_carrier(ws, peer, msg.clone())
+        {
             return;
         }
         if self.native_topic_required(ws)
@@ -9041,6 +9073,7 @@ pub(crate) fn shell_network_for_test(
         pending_redemptions: Mutex::new(std::collections::HashMap::new()),
         native_enrollment: native_enrollment::State::default(),
         native_admission: native_admission::State::default(),
+        direct_carrier: direct_carrier::State::default(),
         peer_sync_worker: peer_sync_worker::State::default(),
         hosted_topology: hosted_topology::State::default(),
         room_window_views: room_window_views::State::default(),

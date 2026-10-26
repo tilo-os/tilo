@@ -1142,3 +1142,83 @@ fn an_unchanged_tree_is_not_compared_against_the_directory_again() {
     laptop_list.publish_local(&laptop, PERSON);
     assert_eq!(laptop_list.publish_passes, passes + 4);
 }
+
+/// The person's own room is carried by one governing device: the other
+/// device finds the signed invitation addressed to it in the person's list,
+/// makes the workspace that is that room, and leaves the invitation for the
+/// native owner to redeem. It never creates a second, shell-governed copy.
+#[test]
+fn a_signed_invitation_in_the_list_joins_the_room_instead_of_copying_it() {
+    let (laptop, board) = person_with_two_devices();
+    let laptop_tree = device_tree(LAPTOP, "Garden");
+    let mut board_tree = WorkspaceTree::default();
+    board_tree.set_salt_override(BOARD);
+    board_tree.enable_native_governance();
+    let room = laptop_tree.desktop.workspaces[0].room();
+    let mut laptop_list = list_for(&laptop).with_label("Laptop");
+    let mut board_list = list_for(&board).with_label("Orange Pi");
+
+    assert!(laptop_list.set_join_invitation(
+        room,
+        board.cert.device_public_key,
+        Some("tilo-workspace-invitation:addressed-to-the-board"),
+    ));
+    deliver(
+        &mut laptop_list,
+        &laptop,
+        &laptop_tree,
+        &mut board_list,
+        &mut board_tree,
+    );
+
+    let joined = board_tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room() == room)
+        .expect("the room has the workspace made for its join");
+    assert_eq!(
+        joined.name, "Garden",
+        "the joining device uses the room's own name"
+    );
+    let pending = board_list.take_pending_joins();
+    assert_eq!(
+        pending.len(),
+        1,
+        "the addressed invitation is redeemed once"
+    );
+    assert_eq!(pending[0].0, room);
+    assert_eq!(pending[0].1, joined.id);
+    assert!(pending[0].2.contains("addressed-to-the-board"));
+    assert!(
+        board_list.take_pending_joins().is_empty(),
+        "a taken invitation is not redeemed twice"
+    );
+}
+
+/// A session with an identity marks the rooms it governs as native once the
+/// owner has opened, and the older engine stops writing them only after the
+/// one-time creation pass, so a gesture during that pass still lands.
+#[test]
+fn native_governance_takes_a_governed_room_off_the_older_engine_when_ready() {
+    let mut tree = device_tree(LAPTOP, "Garden");
+    let room = tree.desktop.workspaces[0].room();
+    assert!(!tree.requires_native_owner(room));
+    tree.enable_native_governance();
+    assert!(
+        !tree.requires_native_owner(room),
+        "the room keeps the older engine until its native record exists"
+    );
+    assert_eq!(
+        tree.rooms_awaiting_native_governance()
+            .into_iter()
+            .map(|(waiting, _, _)| waiting)
+            .collect::<Vec<_>>(),
+        vec![room]
+    );
+    tree.native_rooms_ready();
+    assert!(
+        tree.requires_native_owner(room),
+        "once the owner holds every earlier room, the older engine writes none"
+    );
+}

@@ -7,6 +7,7 @@ use tilo_clock::unix_now_i64;
 
 mod continuation_labels;
 mod local_app_records;
+mod native_governance;
 mod room_bases;
 mod room_binding;
 mod tree_handle;
@@ -836,6 +837,22 @@ pub struct WorkspaceTree {
     pub native_authority: super::native_workspace_owner::NativeAuthorityStorage,
     #[serde(skip)]
     pub native_runtime: super::native_workspace_owner::NativeStateRuntime,
+    /// Whether this session moves the rooms it governs onto the native room
+    /// owner. Set once at session start, when this device has an identity:
+    /// every non-nil room this device governs is a `StatePeer` room from then
+    /// on, and the shell's older room document engine writes none of them.
+    /// Not persisted: a session without the owner (unit tests, an offscreen
+    /// renderer) keeps the older path, and a session with it recreates the
+    /// governed rooms it finds.
+    #[serde(skip)]
+    pub native_governance: bool,
+    /// Whether the rooms this session found when it opened have all been
+    /// created on the native owner. Until they have, those rooms keep the
+    /// older engine so a gesture during the one-time migration still lands;
+    /// once it is set, every room this device governs is native from the
+    /// moment it is made.
+    #[serde(skip)]
+    pub native_rooms_ready: bool,
     /// Enrolled rooms whose governor stewards their channels: a node (a
     /// host its person's root let own workspaces). Their records are sealed channels
     /// every member opens itself, never documents the governor commits.
@@ -1014,6 +1031,8 @@ impl Default for WorkspaceTree {
             desktop: DesktopTree::default(),
             native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
             native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
+            native_governance: false,
+            native_rooms_ready: false,
             stewarded_rooms: BTreeSet::new(),
             policy_revision: 0,
             doc: AutoCommit::new(),
@@ -1135,6 +1154,12 @@ impl WorkspaceTree {
         self.native_authority.requires(room)
             || self.joining_rooms.contains(&room)
             || self.native_runtime.requires_uncertain(room)
+            // A room this device governs is a native room from the moment
+            // its workspace exists, even while the owner is still creating
+            // it: the shell's older engine must not write it in between.
+            || (self.native_governance
+                && self.native_rooms_ready
+                && self.governed_here(room))
     }
 
     /// Whether this device holds `room`: its replica is installed, or it is
@@ -1279,7 +1304,13 @@ impl WorkspaceTree {
         let Some(document) = peer.admitted_room() else {
             return;
         };
-        if let Ok(endpoint) = iroh::EndpointId::from_bytes(&peer.authority().device_public_key) {
+        if self.native_authority.governed_here(room) {
+            // This device made the room: its governance is here, not at a
+            // peer endpoint that happens to be this same device.
+            self.room_authority.insert(room, RoomAuthority::Local);
+        } else if let Ok(endpoint) =
+            iroh::EndpointId::from_bytes(&peer.authority().device_public_key)
+        {
             self.room_authority
                 .insert(room, RoomAuthority::Peer(PeerOrigin::peer(&endpoint)));
         }

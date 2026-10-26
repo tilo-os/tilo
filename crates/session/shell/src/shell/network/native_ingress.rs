@@ -120,6 +120,29 @@ impl ShellNetwork {
         if !self.join_topic(room_topic_id(room)) {
             return Err("native topic queue unavailable".into());
         }
+        // A direct room has no relay host to dial: its peers carry the same
+        // messages over the topic joined above. An enrolled member dials the
+        // governing device the invitation named, so gossip has a peer.
+        if owner
+            .with_current(room, |view| Ok(super::direct_carrier::is_direct(view)))
+            .unwrap_or(false)
+        {
+            let peer = owner.with_current(room, |view| {
+                let hint = match view.transport_hint() {
+                    Ok(hint) => hint,
+                    // A room governed here has no invitation to dial from.
+                    Err(_) => return Ok(None),
+                };
+                let (payload, _) =
+                    tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(hint)
+                        .map_err(|error| error.to_string())?;
+                Ok(Some(payload.endpoint_addr))
+            });
+            if let Ok(Some(addr)) = peer {
+                let _ = self.cmd_tx.try_send(NetCmd::Connect { addr });
+            }
+            return Ok(());
+        }
         let connect = native_ingress::Connect::new(owner, room)?;
         // A room joined through a site is reached over its host's HTTPS
         // routes; every other over the iroh endpoint its hint names.

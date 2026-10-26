@@ -71,6 +71,11 @@ pub struct PersonalWorkspaces {
     /// directory instead of answering from `published`.
     #[cfg(test)]
     publish_passes: usize,
+    /// Rooms this device found an invitation for in the directory, as
+    /// `(room, local workspace, invitation)`, waiting for the network to
+    /// redeem them. Never persisted: the accepted invitation is in the
+    /// room's own enrollment then.
+    pending_joins: Vec<(RoomId, crate::shell::state::WorkspaceId, String)>,
 }
 
 /// The parts of a tree [`PersonalWorkspaces::publish_local`] reads.
@@ -136,8 +141,13 @@ pub fn member_workspaces(tree: &WorkspaceTree, person: &str) -> BTreeMap<RoomId,
         .iter()
         .filter(|workspace| {
             !workspace.room().is_nil()
-                && !tree.requires_native_owner(workspace.room())
                 && !tree.continuation_rooms.contains(&workspace.room())
+                // A room this device governs, or one of the shell's older
+                // rooms, is in the person's list. A room a host or another
+                // device governs is carried by that governor's list, not
+                // restated here as this device's own.
+                && (!tree.requires_native_owner(workspace.room())
+                    || tree.governs_room(workspace.room()))
         })
         .filter_map(|workspace| {
             let governor = if workspace.owner().map(String::as_str) == Some(person.as_str()) {
@@ -210,6 +220,7 @@ impl PersonalWorkspaces {
             published: None,
             #[cfg(test)]
             publish_passes: 0,
+            pending_joins: Vec::new(),
         }
     }
 
@@ -414,6 +425,61 @@ impl PersonalWorkspaces {
         changed
     }
 
+    /// The canonical join invitations this device found for itself in the
+    /// person's list, as `(room, local workspace, invitation)`. The network
+    /// redeems them; the list keeps the addressed text, never a bearer for
+    /// an unknown device.
+    pub fn take_pending_joins(
+        &mut self,
+    ) -> Vec<(RoomId, crate::shell::state::WorkspaceId, String)> {
+        std::mem::take(&mut self.pending_joins)
+    }
+
+    /// The devices registered in this person's list, so this device can
+    /// address a join invitation to each of them.
+    pub fn known_devices(&self) -> Vec<[u8; 32]> {
+        self.directory
+            .devices()
+            .into_iter()
+            .map(|(device, _)| device)
+            .collect()
+    }
+
+    /// The invitation `device` may redeem for `room`, when the list holds
+    /// one.
+    pub fn join_invitation_for(&self, room: RoomId, device: [u8; 32]) -> Option<String> {
+        self.directory
+            .join_invitation(entry_id(room), device)
+            .map(|held| held.invitation)
+    }
+
+    /// Store `invitation` for `device` to redeem `room`, or remove it with
+    /// `None`. Answers whether the directory changed.
+    pub fn set_join_invitation(
+        &mut self,
+        room: RoomId,
+        device: [u8; 32],
+        invitation: Option<&str>,
+    ) -> bool {
+        if self
+            .directory
+            .join_invitation(entry_id(room), device)
+            .map(|held| held.invitation)
+            .as_deref()
+            == invitation
+        {
+            return false;
+        }
+        let changed = self
+            .directory
+            .set_join_invitation(entry_id(room), device, invitation)
+            .is_ok();
+        if changed {
+            self.persist();
+        }
+        changed
+    }
+
     /// Bring what changed in the directory since the last agreement into
     /// `tree`: join each new workspace's room as `person`'s, take new names
     /// and the person's order, and drop workspaces deleted on another device
@@ -435,6 +501,37 @@ impl PersonalWorkspaces {
                 name: meta.name.clone(),
                 governor: meta.governor.clone(),
             };
+            // A room this person governs has a signed workspace-join
+            // invitation for each of their devices. This device redeems the
+            // one addressed to it, and holds the room as an owner-role member
+            // of the one device that governs it.
+            if let Some(join) = meta
+                .join_invitations
+                .iter()
+                .find(|join| join.device_public_key == self.device)
+                && !tree.native_authority.holds(*room)
+                && !tree.is_joining(*room)
+                && let Some(local) = tree.join_native_room(&meta.name, *room)
+            {
+                self.pending_joins
+                    .push((*room, local, join.invitation.clone()));
+                self.agreed.insert(*room, entry);
+                changed = true;
+                continue;
+            }
+            // A native room this device already holds needs no second join;
+            // an enrollment or its invitation carries it.
+            if tree.requires_native_owner(*room) {
+                self.agreed.insert(*room, entry);
+                continue;
+            }
+            // With the native owner enabled, a room another device of this
+            // person governs enters through its invitation, never as a
+            // second, shell-owned copy of the same room.
+            if tree.native_governance && entry.governor.is_none() {
+                self.agreed.insert(*room, entry);
+                continue;
+            }
             // An agreed room still unpinned — adopted before rooms pinned their
             // governor from this list — is adopted again so the list pins it.
             if self.agreed.get(room) == Some(&entry)

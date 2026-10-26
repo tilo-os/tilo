@@ -218,6 +218,53 @@ impl TreeStore {
     }
 }
 
+/// Create `room`, the room of local workspace `workspace`, as a room this
+/// device governs with `key`: its governance and the layout this device
+/// shows at that moment, so the projection that follows creation keeps the
+/// workspace it was made from. The room's name comes from the workspace and
+/// the topology namespace from `salt`, which must be this device's.
+///
+/// # Errors
+/// The room is already held, the workspace is gone, the seed is refused or
+/// the record cannot be published.
+pub(crate) fn create_governed_workspace(
+    owner: &NativeWorkspaceOwner,
+    tree: &super::state::WorkspaceTreeHandle,
+    room: RoomId,
+    workspace: WorkspaceId,
+    device: &tilo_user_identity::DeviceCert,
+    key: &ed25519_dalek::SigningKey,
+    salt: u16,
+) -> Result<(), String> {
+    // Read the seed under a short read lock: the owner's publication takes
+    // the tree's writer, and holding the reader across it would deadlock.
+    let seed = {
+        let tree = tree.read();
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter()
+            .chain(&tree.archived_workspaces)
+            .find(|ws| ws.id == workspace && ws.room() == room)
+            .ok_or("the workspace made for the room is gone")?;
+        tilo_peer_state::workspace_seed(
+            &room.to_string(),
+            device,
+            std::slice::from_ref(device),
+            &ws.name,
+            salt,
+        )?
+    };
+    owner.create_governed(
+        room,
+        workspace.raw(),
+        device,
+        key,
+        seed,
+        std::time::SystemTime::now(),
+    )
+}
+
 /// The owner of the state file behind `tree`, attached to its writer.
 ///
 /// The tree is never held across the state file's I/O: binding the writer
