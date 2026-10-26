@@ -108,6 +108,13 @@ impl Default for LockPrompt {
 }
 
 impl LockPrompt {
+    /// What an input method needs to serve this field: its caret and its
+    /// secret purpose. The prompt is the same widget every password field is,
+    /// so it answers for itself rather than from the painted rect.
+    fn ime_field(&self) -> Option<ui::ime::ImeWindowState> {
+        ui::ime::ImeWindowState::from_widget(&*self.prompt.borrow())
+    }
+
     pub fn new() -> Self {
         let mut prompt = SecretPrompt::new(SecretKind::Secret)
             .with_presentation(Presentation::DialogBody)
@@ -544,6 +551,16 @@ impl LockController {
     /// text field does (caret, selection, paste, input methods) and shows or
     /// hides the password from its own button; Enter starts an attempt and
     /// Escape clears the field.
+    /// What the seat's input method needs to serve this field: its caret, its
+    /// purpose (a secret, so a keyboard offers no suggestions), and nothing
+    /// else. `None` while verifying, when the field refuses edits.
+    pub fn ime_field(&self) -> Option<ui::ime::ImeWindowState> {
+        if self.is_verifying() {
+            return None;
+        }
+        self.prompt.ime_field()
+    }
+
     pub fn handle_event(&mut self, event: &WindowEvent, modifiers: &Modifiers) -> UnlockOutcome {
         if self.is_verifying() {
             return UnlockOutcome::StillLocked;
