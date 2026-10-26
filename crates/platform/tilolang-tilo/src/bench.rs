@@ -21,6 +21,11 @@
 //!   process of its own.
 //! * `idle`: ten seconds with nothing happening: how often the process was woken, and how
 //!   many views ran.
+//! * `thread_open`, `thread_keystroke`, `thread_post`, `thread_scroll`: for a package whose
+//!   items hold a collection of their own (a conversation's messages), one item holding N of
+//!   them, in its own window ([`thread`]).
+
+mod thread;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -181,6 +186,14 @@ struct List {
     item_ty: String,
     /// The item's text fields, the first being its title.
     texts: Vec<String>,
+    /// The item's own collection, when it has one: a conversation's messages.
+    nested: Option<Nested>,
+}
+
+/// The collection an item holds.
+struct Nested {
+    field: String,
+    item_ty: String,
 }
 
 impl Shape {
@@ -220,10 +233,21 @@ fn shape_of(meta: &Meta, others: &[&Meta]) -> Result<Shape, String> {
                 .filter(|f| f.kind == MergeKind::Text)
                 .map(|f| f.id.clone())
                 .collect::<Vec<_>>();
+            let nested = lookup(&item_ty)?
+                .fields
+                .iter()
+                .find(|f| f.kind == MergeKind::Collection)
+                .and_then(|f| {
+                    Some(Nested {
+                        field: f.id.clone(),
+                        item_ty: f.record.clone()?,
+                    })
+                });
             (!texts.is_empty()).then(|| List {
                 field: f.id.clone(),
                 item_ty,
                 texts,
+                nested,
             })
         });
     let counter = schema
@@ -706,6 +730,25 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
             out.push(record);
         }
         out.push(idle(&sized, &mut room)?);
+    }
+    if let Some(list) = &shape.list
+        && let Some(nested) = &list.nested
+        && has_default_view(&packages, &list.item_ty)
+    {
+        for &n in &config.sizes {
+            let sized = Sized {
+                config,
+                packages: &packages,
+                meta: &meta,
+                shape: &shape,
+                short: &short,
+                n,
+                base: thread::seeded(&packages, &shape, list, nested, n)?,
+            };
+            for record in thread::run(&sized, list, nested)? {
+                out.push(record);
+            }
+        }
     }
     Ok(out.records)
 }

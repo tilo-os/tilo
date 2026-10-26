@@ -12,7 +12,7 @@ use crate::meta::ParamMeta;
 use crate::registry::Package;
 use crate::space::Space;
 use crate::value::Value;
-use crate::view::{NodeBuild, UiNode};
+use crate::view::{LIST_LEN, NodeBuild, PREVIEW, UiNode};
 use crate::view_state::StateKey;
 
 /// Nested foreign views deeper than this are refused: a module that applies views in a loop
@@ -98,6 +98,9 @@ pub(crate) struct Walk<'a> {
     pub prefix: Option<&'a str>,
     /// Whether the nodes here are the rows of a `list`.
     pub in_list: bool,
+    /// How many rows that list shows, when it is a card's preview (its `preview` property):
+    /// the rows after those are never shown, so they are not built.
+    pub preview: Option<usize>,
 }
 
 /// A view call met while building a tree: the boundary the host renders.
@@ -247,6 +250,7 @@ impl Core {
             level: 0,
             prefix,
             in_list: false,
+            preview: None,
         };
         let tree = self.build_node(&cx, root, walk, &mut acc, hook)?;
         Ok(Rendered {
@@ -321,30 +325,23 @@ impl Core {
                 walk.prefix
             },
             in_list: n.kind == "list",
+            preview: match n.props.get(PREVIEW) {
+                Some(Value::Int(rows)) if n.kind == "list" => usize::try_from(*rows).ok(),
+                _ => None,
+            },
         };
-        let mut keys = HashSet::new();
-        let mut children = Vec::with_capacity(n.children.len());
-        for c in &n.children {
-            let rows = match cx.nodes.get(*c) {
-                Some(loop_node) if loop_node.kind.starts_with(FOR_EACH) => {
-                    self.build_rows(cx, loop_node, below, acc, hook.as_deref_mut())?
-                }
-                _ => vec![self.build_node(cx, *c, below, acc, hook.as_deref_mut())?],
-            };
-            for child in rows {
-                if !keys.insert(child.key.clone()) {
-                    return Err(RuntimeError::Package(format!(
-                        "duplicate key `{}` among the children of `{}`",
-                        child.key, n.key
-                    )));
-                }
-                children.push(child);
-            }
+        let (children, rows_total) = self.build_children(cx, n, below, acc, hook)?;
+        let mut props = n.props.clone();
+        if below.preview.is_some() {
+            props.insert(
+                LIST_LEN.to_owned(),
+                Value::Int(i64::try_from(rows_total).unwrap_or(i64::MAX)),
+            );
         }
         let mut node = UiNode {
             kind: n.kind.clone(),
             key,
-            props: n.props.clone(),
+            props,
             binding: n.binding.clone(),
             events,
             anchor: n.anchor.clone(),
@@ -358,10 +355,50 @@ impl Core {
         Ok(node)
     }
 
+    /// The children of `n`, its loops' rows in their places, and how many there are: a
+    /// preview's rows not built included.
+    fn build_children<'h>(
+        &self,
+        cx: &Build<'_>,
+        n: &NodeBuild,
+        below: Walk<'_>,
+        acc: &mut Acc,
+        mut hook: Option<&mut (dyn Boundaries + 'h)>,
+    ) -> Result<(Vec<UiNode>, usize), RuntimeError> {
+        let mut rows_total = 0usize;
+        let mut keys = HashSet::new();
+        let mut children = Vec::with_capacity(n.children.len());
+        for c in &n.children {
+            let rows = match cx.nodes.get(*c) {
+                Some(loop_node) if loop_node.kind.starts_with(FOR_EACH) => {
+                    let (rows, total) =
+                        self.build_rows(cx, loop_node, below, acc, hook.as_deref_mut())?;
+                    rows_total = rows_total.saturating_add(total);
+                    rows
+                }
+                _ => {
+                    rows_total = rows_total.saturating_add(1);
+                    vec![self.build_node(cx, *c, below, acc, hook.as_deref_mut())?]
+                }
+            };
+            for child in rows {
+                if !keys.insert(child.key.clone()) {
+                    return Err(RuntimeError::Package(format!(
+                        "duplicate key `{}` among the children of `{}`",
+                        child.key, n.key
+                    )));
+                }
+                children.push(child);
+            }
+        }
+        Ok((children, rows_total))
+    }
+
     /// The rows of a loop's node, in its place among its parent's children: per item, a
     /// `fragment` keyed by the item that stands for the row view called on it. With
     /// `boundaries` each row is a boundary of its own (rendered when shown, for a row of a
-    /// `list`); without, each is rendered here and its reads join this view's.
+    /// `list`); without, each is rendered here and its reads join this view's. In a preview
+    /// only the rows it shows are built. Returns them and how many items the loop has.
     fn build_rows<'h>(
         &self,
         cx: &Build<'_>,
@@ -369,7 +406,7 @@ impl Core {
         walk: Walk<'_>,
         acc: &mut Acc,
         mut hook: Option<&mut (dyn Boundaries + 'h)>,
-    ) -> Result<Vec<UiNode>, RuntimeError> {
+    ) -> Result<(Vec<UiNode>, usize), RuntimeError> {
         let target = n.kind.strip_prefix(FOR_EACH).unwrap_or_default();
         let key = match walk.prefix {
             Some(prefix) => format!("{prefix}~{}", n.key),
@@ -396,8 +433,11 @@ impl Core {
             })
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
-        let mut rows = Vec::with_capacity(items.len());
-        for (i, item) in items.iter().enumerate() {
+        let shown = walk
+            .preview
+            .map_or(items.len(), |rows| rows.min(items.len()));
+        let mut rows = Vec::with_capacity(shown);
+        for (i, item) in items.iter().enumerate().take(shown) {
             let item_key = item_key(item, i);
             let row_key = format!("{key}/{item_key}");
             let args: Vec<Value> = args_of
@@ -430,7 +470,7 @@ impl Core {
                 children,
             });
         }
-        Ok(rows)
+        Ok((rows, items.len()))
     }
 
     /// The view a loop's node calls per row and what it passes each parameter: the item to

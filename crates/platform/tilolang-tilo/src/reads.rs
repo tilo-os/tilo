@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use automerge::legacy::Key as LegacyKey;
 use automerge::{Change, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value as AmValue};
 use serde_json::Value as Json;
+use tilo_resource::model::{MapSlot, load_slot};
 use tilo_resource::{Counter, Map, Set, read_key, stored_ids, stored_item};
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, Scalar, StoreError};
@@ -29,7 +30,7 @@ fn backend(error: impl std::fmt::Display) -> StoreError {
     StoreError::Backend(error.to_string())
 }
 
-fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Option<ObjId> {
+pub(crate) fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(obj, key) {
         Ok(Some((AmValue::Object(ObjType::Map), id))) => Some(id),
         _ => None,
@@ -138,13 +139,30 @@ pub fn read_field(
     located: &Located,
     field: &FieldSchema,
 ) -> Result<FieldValue, StoreError> {
-    let id = field.id.as_str();
     let Some(obj) = located.obj.as_ref() else {
         return Ok(default_value(field));
     };
+    let slot = doc
+        .get(obj, field.id.as_str())
+        .map_err(backend)?
+        .map(|(value, id)| (value.into_owned(), id));
+    field_of_slot(doc, slot, field)
+}
+
+/// The value of `field` from what its key holds (`None` when nothing): [`read_field`] once
+/// the field's key is read, or a walk of the resource's map has read it with the others.
+///
+/// # Errors
+/// `Backend` when the stored value does not have the field's shape.
+pub fn field_of_slot(
+    doc: &Doc,
+    slot: MapSlot,
+    field: &FieldSchema,
+) -> Result<FieldValue, StoreError> {
+    let id = field.id.as_str();
     Ok(match field.kind {
         MergeKind::Register => {
-            let value: Json = read_key(doc, obj, id).map_err(backend)?;
+            let value: Json = load_slot(doc, slot, id).map_err(backend)?;
             let value = if value.is_null() {
                 field.default.clone()
             } else {
@@ -157,33 +175,30 @@ pub fn read_field(
             }
         }
         MergeKind::Counter => {
-            FieldValue::Counter(read_key::<Counter>(doc, obj, id).map_err(backend)?.get())
+            FieldValue::Counter(load_slot::<Counter>(doc, slot, id).map_err(backend)?.get())
         }
-        MergeKind::Text => FieldValue::Text(read_key::<String>(doc, obj, id).map_err(backend)?),
+        MergeKind::Text => FieldValue::Text(load_slot::<String>(doc, slot, id).map_err(backend)?),
         MergeKind::Set => {
-            let set: Set<Json> = read_key(doc, obj, id).map_err(backend)?;
+            let set: Set<Json> = load_slot(doc, slot, id).map_err(backend)?;
             let mut keys: Vec<String> = set.iter().map(element_key).collect();
             keys.sort();
             FieldValue::Keys(keys)
         }
         MergeKind::Map => {
-            let map: Map<Json> = read_key(doc, obj, id).map_err(backend)?;
+            let map: Map<Json> = load_slot(doc, slot, id).map_err(backend)?;
             FieldValue::Entries(
                 map.iter()
                     .map(|(key, value)| (key.clone(), scalar_of_json(value, false)))
                     .collect(),
             )
         }
-        MergeKind::Collection => FieldValue::Items(
-            map_at(doc, obj, id)
-                .map(|coll| {
-                    stored_ids(doc, &coll)
-                        .into_iter()
-                        .map(|item| item.as_str().to_owned())
-                        .collect()
-                })
-                .unwrap_or_default(),
-        ),
+        MergeKind::Collection => FieldValue::Items(match slot {
+            Some((AmValue::Object(ObjType::Map), coll)) => stored_ids(doc, &coll)
+                .into_iter()
+                .map(|item| item.as_str().to_owned())
+                .collect(),
+            _ => Vec::new(),
+        }),
         MergeKind::Record => {
             return Err(StoreError::Invalid(
                 "a nested record is not a field the runtime reads".into(),
@@ -192,7 +207,9 @@ pub fn read_field(
     })
 }
 
-fn default_value(field: &FieldSchema) -> FieldValue {
+/// What `field` of an item stored as its order key alone reads as.
+#[must_use]
+pub fn default_value(field: &FieldSchema) -> FieldValue {
     match field.kind {
         MergeKind::Register if field.default.is_null() => FieldValue::Absent,
         MergeKind::Register => FieldValue::Scalar(scalar_of_json(&field.default, field.composite)),
@@ -225,6 +242,9 @@ pub struct Changed {
     /// Whether an op's object could not be placed in the record: every document must be read
     /// again.
     pub unplaced: bool,
+    /// Whether the record's layout above the resources changed (not just one resource):
+    /// anything read of any resource may be stale.
+    pub layout: bool,
 }
 
 /// Name the (resource, field) pairs `changes` wrote, once `doc` holds them. `index` gives each
@@ -287,6 +307,7 @@ struct ChangedBuilder {
     whole: BTreeSet<DocId>,
     structure: bool,
     unplaced: bool,
+    layout: bool,
 }
 
 fn key_of(prop: &Prop) -> Option<&str> {
@@ -305,6 +326,7 @@ impl ChangedBuilder {
         }
         let Some(Some(doc)) = keys.get(2).copied() else {
             self.structure = true;
+            self.layout = true;
             return;
         };
         if keys.len() <= 3 {
@@ -349,8 +371,9 @@ impl ChangedBuilder {
                     schema = item_schema;
                     at = at.saturating_add(3);
                 }
-                // The item itself was put or replaced: the collection and every field of the item.
-                (MergeKind::Collection, [Some(item), Some("v")], _) => {
+                // The item itself was put, replaced or removed: the collection and every field
+                // of the item.
+                (MergeKind::Collection, [Some(item), Some("v")] | [Some(item)], _) => {
                     self.field(doc, &resource, field);
                     self.any(doc, &format!("{resource}/{field}:{item}"));
                     return;
@@ -393,8 +416,32 @@ impl ChangedBuilder {
             docs,
             structure: self.structure,
             unplaced: self.unplaced,
+            layout: self.layout,
         }
     }
+}
+
+/// Whether a resource of type `schema` can hold a text at all: a text field of its own, or one
+/// in a record or a collection's items it holds. Naming a resource skips a collection whose
+/// items cannot, rather than open each of its items to find none.
+#[must_use]
+pub fn may_hold_text(schema: &TypeSchema) -> bool {
+    fn holds(schema: &TypeSchema, seen: &mut Vec<String>) -> bool {
+        if seen.contains(&schema.id) {
+            return false;
+        }
+        seen.push(schema.id.clone());
+        schema.fields.iter().any(|field| match field.kind {
+            MergeKind::Text => true,
+            MergeKind::Record | MergeKind::Collection => field
+                .record
+                .as_deref()
+                .and_then(lookup)
+                .is_some_and(|inner| holds(inner, seen)),
+            _ => false,
+        })
+    }
+    holds(schema, &mut Vec::new())
 }
 
 /// The first non-empty text of the resource map `obj` of type `schema` at `path`, and the path
@@ -428,9 +475,13 @@ pub fn first_text(
                 }
             }
             MergeKind::Collection => {
-                let (Some(coll), Some(item_schema)) = (
+                let (Some(item_schema), Some(coll)) = (
+                    field
+                        .record
+                        .as_deref()
+                        .and_then(lookup)
+                        .filter(|item| may_hold_text(item)),
                     map_at(doc, obj, id),
-                    field.record.as_deref().and_then(lookup),
                 ) else {
                     continue;
                 };

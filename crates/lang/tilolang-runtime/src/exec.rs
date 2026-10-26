@@ -1,5 +1,7 @@
 //! Invocation lifecycles (implementation design 4.5): actions, flows and views.
 
+use std::rc::Rc;
+
 use serde_json::Value as Json;
 
 use crate::abi::Imp;
@@ -14,7 +16,7 @@ use crate::ids::{ModuleHash, Principal, RunId};
 use crate::meta::{EffectClass, ParamMeta, Repr, Ty, parse_ty, repr};
 use crate::registry::Package;
 use crate::store::{ChangeNote, Mutation};
-use crate::value::{ActionRef, Value, to_json};
+use crate::value::{ActionRef, ResourceRef, Value, to_json};
 
 /// Who an invocation runs for, and through which code.
 #[derive(Clone, Debug)]
@@ -261,7 +263,7 @@ impl Core {
             .clone();
         let txn = self.store.borrow_mut().begin()?;
         let primary = aref.args.iter().find_map(|v| match v {
-            Value::Ref(r) => Some(r.target.clone()),
+            Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
             _ => None,
         });
         self.frames.borrow_mut().push(
@@ -816,7 +818,7 @@ impl Core {
     }
 
     fn queue_block(&self, part_h: i32, field_h: i32, source_h: i32) -> HResult<Option<Wasm>> {
-        let part = self.ref_arg(part_h)?.target;
+        let part = Rc::unwrap_or_clone(self.ref_arg(part_h)?.target);
         let (field, source) = (self.text(field_h)?, self.text(source_h)?);
         let known = self
             .registry

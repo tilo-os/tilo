@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilolang_tilo::runtime::{Binding, UiNode, Value};
+use tilolang_tilo::runtime::{Binding, ResourceRef, UiNode, Value};
 use ui::LocalState;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::arrange::{
@@ -210,6 +210,34 @@ fn fit_of(node: &UiNode) -> Fit {
     fit
 }
 
+/// How `child` is sized in its container `parent`: the fit its own arguments ask for, the
+/// columns it spans, where it sits among layers.
+fn placement(parent: &UiNode, child: &UiNode) -> Placement {
+    let mut fit = fit_of(child);
+    // Beside siblings in a row, a container takes the room they leave rather than hugging
+    // its content, so what it holds lays out in the width the row offers.
+    if parent.kind == "row"
+        && (is_container(&child.kind) || child.kind == "embed")
+        && number(child, "fill").is_none()
+    {
+        fit = Fit::fill(1.0);
+        fit.width.min = length(child, "min");
+        fit.width.max = length(child, "max");
+    }
+    if child.kind == "spacer" {
+        fit = Fit::fill(1.0);
+    }
+    let span = match prop(child, "span") {
+        Some(Value::Int(span)) => u16::try_from(*span).unwrap_or(1).max(1),
+        _ => 1,
+    };
+    Placement {
+        fit,
+        span,
+        at: position(child),
+    }
+}
+
 /// The shell of a node: everything of it but its children. Two nodes with equal shells keep
 /// their container widget; only the children are reconciled.
 fn same_shell(a: &UiNode, b: &UiNode) -> bool {
@@ -236,20 +264,50 @@ fn is_container(kind: &str) -> bool {
     )
 }
 
-/// Container widgets, whatever their layout, as the keyed reconciler reaches their children.
+/// Container widgets, whatever their layout, as the keyed reconciler reaches their children:
+/// each change through the container's slot operations, which describe it to the window.
 trait SlotHost {
-    fn take(&mut self) -> Vec<Slot>;
-    fn put(&mut self, slots: Vec<Slot>);
+    fn child_mut(&mut self, index: usize) -> Option<&mut Element>;
+    fn replace(&mut self, index: usize, element: Element);
+    fn insert(&mut self, index: usize, slot: Slot);
+    fn remove(&mut self, index: usize);
+    fn move_slot(&mut self, from: usize, to: usize);
+    fn set_placement(&mut self, index: usize, placement: Placement);
 }
 
 impl<L: ui::widget::arrange::Layout + 'static> SlotHost for ui::widget::arrange::Arranged<L> {
-    fn take(&mut self) -> Vec<Slot> {
-        self.take_slots()
+    fn child_mut(&mut self, index: usize) -> Option<&mut Element> {
+        ui::widget::arrange::Arranged::child_mut(self, index)
     }
 
-    fn put(&mut self, slots: Vec<Slot>) {
-        self.set_slots(slots);
+    fn replace(&mut self, index: usize, element: Element) {
+        ui::widget::arrange::Arranged::replace(self, index, element);
     }
+
+    fn insert(&mut self, index: usize, slot: Slot) {
+        ui::widget::arrange::Arranged::insert(self, index, slot);
+    }
+
+    fn remove(&mut self, index: usize) {
+        ui::widget::arrange::Arranged::remove(self, index);
+    }
+
+    fn move_slot(&mut self, from: usize, to: usize) {
+        ui::widget::arrange::Arranged::move_slot(self, from, to);
+    }
+
+    fn set_placement(&mut self, index: usize, placement: Placement) {
+        let Placement { fit, span, at } = placement;
+        ui::widget::arrange::Arranged::set_placement(self, index, fit, span, at);
+    }
+}
+
+/// How a child is sized and placed in its container.
+#[derive(Clone, Copy)]
+struct Placement {
+    fit: Fit,
+    span: u16,
+    at: Option<At>,
 }
 
 fn with_host<R>(element: &mut Element, run: impl FnOnce(&mut dyn SlotHost) -> R) -> Option<R> {
@@ -380,33 +438,17 @@ impl Reconciler {
     fn slots(&mut self, node: &UiNode) -> Vec<Slot> {
         node.children
             .iter()
-            .map(|child| self.slot(node, child, None))
+            .map(|child| self.slot(node, child))
             .collect()
     }
 
-    /// `child` as a slot of its container, with the fit its own arguments ask for. `reuse` is
-    /// the widget it keeps from the previous tree.
-    fn slot(&mut self, parent: &UiNode, child: &UiNode, reuse: Option<Element>) -> Slot {
-        let element = reuse.unwrap_or_else(|| self.build(child));
-        let mut slot = Slot::new(element);
-        slot.fit = fit_of(child);
-        // Beside siblings in a row, a container takes the room they leave rather than hugging
-        // its content, so what it holds lays out in the width the row offers.
-        if parent.kind == "row"
-            && (is_container(&child.kind) || child.kind == "embed")
-            && number(child, "fill").is_none()
-        {
-            slot.fit = Fit::fill(1.0);
-            slot.fit.width.min = length(child, "min");
-            slot.fit.width.max = length(child, "max");
-        }
-        if child.kind == "spacer" {
-            slot.fit = Fit::fill(1.0);
-        }
-        if let Some(Value::Int(span)) = prop(child, "span") {
-            slot.span = u16::try_from(*span).unwrap_or(1).max(1);
-        }
-        slot.at = position(child);
+    /// `child`, built, as a slot of its container `parent`.
+    fn slot(&mut self, parent: &UiNode, child: &UiNode) -> Slot {
+        let mut slot = Slot::new(self.build(child));
+        let Placement { fit, span, at } = placement(parent, child);
+        slot.fit = fit;
+        slot.span = span;
+        slot.at = at;
         slot
     }
 
@@ -582,8 +624,7 @@ impl Reconciler {
             Some("small") => ControlSize::Small,
             _ => ControlSize::Regular,
         };
-        let enabled = prop(node, "enabled").is_none_or(|_| flag(node, "enabled"))
-            && node.events.contains_key("press");
+        let enabled = button_enabled(node);
         let icon = token(node, "icon")
             .and_then(|name| ui::icons::Icon::from_name(&name.replace('_', "-")));
         let button = match icon {
@@ -631,8 +672,11 @@ impl Reconciler {
         if let Some(icon) = icon_prop(node, "icon") {
             row = row.icon(icon);
         }
-        if let Some(Value::Principal(who)) = prop(node, "avatar") {
-            row = row.avatar((self.people)(&who.0), who.0.clone());
+        match prop(node, "avatar") {
+            Some(Value::Principal(who)) => row = row.avatar((self.people)(&who.0), who.0.clone()),
+            // A row with no avatar this time keeps the room one takes, in line with the others.
+            Some(Value::Opt(None)) => row = row.avatar_space(),
+            _ => {}
         }
         if prop(node, "checked").is_some() {
             row = row.checked(flag(node, "checked"));
@@ -654,7 +698,7 @@ impl Reconciler {
         if node.events.contains_key("press") {
             row = row.on_view(move || sink.borrow_mut().push(UiEvent::Press(key.clone())));
         } else if let Some(Value::Ref(reference)) = prop(node, "resource") {
-            let target = reference.target.clone();
+            let target = ResourceRef::clone(&reference.target);
             row = row.on_view(move || sink.borrow_mut().push(UiEvent::Open(target.clone())));
         }
         Box::new(row)
@@ -904,7 +948,15 @@ impl Reconciler {
                 let body = panes
                     .into_iter()
                     .fold(body, |body, pane| body.push_slot(Slot::new(pane)));
-                let card = Card::new(Box::new(body));
+                let mut card = Card::new(Box::new(body));
+                // A card is a summary of its resource: pressing it opens the resource.
+                if let Some(Value::Ref(item)) = prop(node, "item") {
+                    let sink = Rc::clone(&self.sink);
+                    let target = ResourceRef::clone(&item.target);
+                    card = card.on_activate(node.key.clone(), move || {
+                        sink.borrow_mut().push(UiEvent::Open(target.clone()));
+                    });
+                }
                 let title = crate::date::shown(node, "title").unwrap_or_default();
                 if title.is_empty() {
                     return Box::new(card);
@@ -940,23 +992,29 @@ impl Reconciler {
         }
     }
 
-    fn update_holder(&mut self, mut old: Element, old_node: &UiNode, new_node: &UiNode) -> Element {
+    /// A holder whose shape is the same keeps its widget; each part is reconciled in its pane.
+    fn update_holder(
+        &mut self,
+        widget: &mut Element,
+        old_node: &UiNode,
+        new_node: &UiNode,
+    ) -> Option<Element> {
         if holder_shape(old_node) != holder_shape(new_node) {
-            return self.build(new_node);
+            return Some(self.build(new_node));
         }
         let old_parts = holder_parts(old_node);
         let new_parts = holder_parts(new_node);
         let mut panes = Vec::new();
-        collect_panes(old.as_mut(), &mut panes);
+        collect_panes(widget.as_mut(), &mut panes);
         if panes.len() != new_parts.len() {
-            return self.build(new_node);
+            return Some(self.build(new_node));
         }
         for ((pane, before), after) in panes.into_iter().zip(old_parts).zip(new_parts) {
-            let inner = pane.take();
-            let updated = self.update(inner, before, after);
-            pane.set(updated);
+            if let Some(replaced) = self.update_in(pane.content_mut(), before, after) {
+                pane.replace(replaced);
+            }
         }
-        old
+        None
     }
 
     /// Facts: the native property list, a label and a value per fact.
@@ -1052,7 +1110,8 @@ impl Reconciler {
         Box::new(Avatar::person(name, identity))
     }
 
-    /// A list inside content: its rows, as a section of the page.
+    /// A list inside content: its rows (a card's preview, which has only those it shows), as a
+    /// section of the page.
     fn rows(&mut self, node: &UiNode) -> Element {
         let rows: Vec<Element> = node
             .children
@@ -1073,118 +1132,184 @@ impl Reconciler {
         Box::new(Section::new(rows))
     }
 
-    /// Bring `old`, the widget built for `old_node`, up to date with `new_node`.
+    /// Bring `old`, the widget built for `old_node`, up to date with `new_node`: the same
+    /// widget, changed in place, or the one built in its stead.
     pub fn update(&mut self, mut old: Element, old_node: &UiNode, new_node: &UiNode) -> Element {
+        self.update_in(&mut old, old_node, new_node).unwrap_or(old)
+    }
+
+    /// Bring `widget`, built for `old_node`, up to date with `new_node` in place: a changed
+    /// value sets the widget that shows it, which draws itself again, and a container's
+    /// children are inserted, removed, moved or replaced by key through its slot operations.
+    /// `Some` is a widget built for `new_node` that its container shows instead (through its
+    /// own `replace`): `widget` could not take the change.
+    pub fn update_in(
+        &mut self,
+        widget: &mut Element,
+        old_node: &UiNode,
+        new_node: &UiNode,
+    ) -> Option<Element> {
         if old_node == new_node {
-            return old;
+            return None;
         }
         if old_node.kind != new_node.kind || old_node.key != new_node.key {
-            return self.build(new_node);
+            return Some(self.build(new_node));
         }
         match new_node.kind.as_str() {
             "text" | "heading" | "image" => {
-                if same_shell_without_value(old_node, new_node) {
+                if same_shell_but(old_node, new_node, "value") {
                     let value = crate::date::shown_brief(new_node, "value").unwrap_or_default();
                     self.set_text(&new_node.key, &value);
-                    return old;
+                    return None;
                 }
-                self.build(new_node)
+                Some(self.build(new_node))
             }
-            "section" | "card" | "form" | "field" => self.update_holder(old, old_node, new_node),
+            "section" | "card" | "form" | "field" => self.update_holder(widget, old_node, new_node),
+            // A button acts through its key, so a press handler run again leaves it as it is;
+            // whether it can act is set in place.
+            "button" if same_shell_but(old_node, new_node, "enabled") => {
+                let Some(button) = widget
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<Button>())
+                else {
+                    return Some(self.build(new_node));
+                };
+                button.set_enabled(button_enabled(new_node));
+                None
+            }
             "input" | "checkbox" | "date" => {
-                if same_shell(old_node, new_node) {
-                    old
-                } else {
-                    self.build(new_node)
-                }
+                (!same_shell(old_node, new_node)).then(|| self.build(new_node))
             }
             "scroll" if same_shell(old_node, new_node) => {
-                if let Some(scroll) = old
+                let Some(scroll) = widget
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<Scrollable>())
-                    && let Some(content) = scroll.child_mut()
-                {
-                    let inner = std::mem::replace(content, Box::new(Spacer::fixed(0.0)));
-                    *content = self.update_children(inner, old_node, new_node);
-                    return old;
-                }
-                self.build(new_node)
+                else {
+                    return Some(self.build(new_node));
+                };
+                let kept = scroll
+                    .child_mut()
+                    .is_some_and(|content| self.reconcile_children(content, old_node, new_node));
+                (!kept).then(|| self.build(new_node))
             }
             "embed" if same_shell(old_node, new_node) => {
-                if let Some(card) = old
+                let Some(card) = widget
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<Container>())
-                    && let Some(inner) = card.take_child()
-                {
-                    let updated = self.update_children(inner, old_node, new_node);
-                    card.set_child(updated);
-                    return old;
-                }
-                self.build(new_node)
+                else {
+                    return Some(self.build(new_node));
+                };
+                let kept = card
+                    .child_mut()
+                    .is_some_and(|inner| self.reconcile_children(inner, old_node, new_node));
+                (!kept).then(|| self.build(new_node))
             }
             kind if is_container(kind) && same_shell(old_node, new_node) => {
-                self.update_children(old, old_node, new_node)
+                let kept = self.reconcile_children(widget, old_node, new_node);
+                (!kept).then(|| self.build(new_node))
             }
-            kind if is_container(kind) => self.rebuild_shell(old, old_node, new_node),
-            _ => self.build(new_node),
+            kind if is_container(kind) => Some(self.rebuild_shell(widget, old_node, new_node)),
+            _ => Some(self.build(new_node)),
         }
     }
 
-    /// Keep `container`, reconciling its children against the new node's.
-    fn update_children(
+    /// Reconcile the children of `container`, built for `old_node`, with `new_node`'s by key,
+    /// through its slot operations: whether it is a container that could.
+    fn reconcile_children(
         &mut self,
-        mut container: Element,
+        container: &mut Element,
+        old_node: &UiNode,
+        new_node: &UiNode,
+    ) -> bool {
+        with_host(container, |host| {
+            self.reconcile_slots(host, old_node, new_node);
+        })
+        .is_some()
+    }
+
+    /// A container whose own arguments changed: a new shell around the children, which keep
+    /// their widgets.
+    fn rebuild_shell(
+        &mut self,
+        old: &mut Element,
         old_node: &UiNode,
         new_node: &UiNode,
     ) -> Element {
-        let Some(old_slots) = with_host(&mut container, |host| host.take()) else {
-            return self.build(new_node);
-        };
-        let slots = self.reconcile_slots(old_slots, old_node, new_node);
-        if with_host(&mut container, |host| host.put(slots)).is_none() {
-            return self.build(new_node);
-        }
-        container
-    }
-
-    /// A container whose own arguments changed: a new shell around the children that keep their
-    /// widgets.
-    fn rebuild_shell(&mut self, mut old: Element, old_node: &UiNode, new_node: &UiNode) -> Element {
-        let Some(old_slots) = with_host(&mut old, |host| host.take()) else {
-            return self.build(new_node);
-        };
-        let slots = self.reconcile_slots(old_slots, old_node, new_node);
         let mut fresh = self.build(&UiNode {
             children: Vec::new(),
             ..new_node.clone()
         });
-        if with_host(&mut fresh, |host| host.put(slots)).is_none() {
+        let moved = with_host(old, |old_host| {
+            with_host(&mut fresh, |host| {
+                // The old children, in order, into the new shell; then reconciled there.
+                for (index, child) in old_node.children.iter().enumerate() {
+                    let widget = old_host
+                        .child_mut(index)
+                        .map(|held| std::mem::replace(held, Box::new(Spacer::fixed(0.0))));
+                    let Some(widget) = widget else {
+                        break;
+                    };
+                    let mut slot = Slot::new(widget);
+                    let Placement { fit, span, at } = placement(old_node, child);
+                    slot.fit = fit;
+                    slot.span = span;
+                    slot.at = at;
+                    host.insert(index, slot);
+                }
+            })
+        })
+        .flatten();
+        if moved.is_none() {
             return self.build(new_node);
         }
-        fresh
+        let old_shell = UiNode {
+            props: new_node.props.clone(),
+            ..old_node.clone()
+        };
+        if self.reconcile_children(&mut fresh, &old_shell, new_node) {
+            fresh
+        } else {
+            self.build(new_node)
+        }
     }
 
-    fn reconcile_slots(
-        &mut self,
-        old_slots: Vec<Slot>,
-        old_node: &UiNode,
-        new_node: &UiNode,
-    ) -> Vec<Slot> {
-        let mut kept: HashMap<&str, (Element, &UiNode)> = old_slots
-            .into_iter()
-            .zip(&old_node.children)
-            .map(|(slot, node)| (node.key.as_str(), (slot.into_element(), node)))
-            .collect();
-        new_node
-            .children
-            .iter()
-            .map(|child| {
-                let reuse = kept
-                    .remove(child.key.as_str())
-                    .map(|(element, old_child)| self.update(element, old_child, child));
-                self.slot(new_node, child, reuse)
-            })
-            .collect()
+    /// Bring the slots of `host`, built for `old_node`'s children, to `new_node`'s by key:
+    /// those gone removed, those kept moved to their place and reconciled in it, those new
+    /// built and inserted.
+    fn reconcile_slots(&mut self, host: &mut dyn SlotHost, old_node: &UiNode, new_node: &UiNode) {
+        let mut held: Vec<&UiNode> = old_node.children.iter().collect();
+        for index in (0..held.len()).rev() {
+            let gone = held
+                .get(index)
+                .is_some_and(|old| !new_node.children.iter().any(|child| child.key == old.key));
+            if gone {
+                host.remove(index);
+                held.remove(index);
+            }
+        }
+        for (index, child) in new_node.children.iter().enumerate() {
+            let Some(at) = held.iter().position(|old| old.key == child.key) else {
+                let slot = self.slot(new_node, child);
+                host.insert(index, slot);
+                held.insert(index, child);
+                continue;
+            };
+            if at != index {
+                host.move_slot(at, index);
+                let moved = held.remove(at);
+                held.insert(index, moved);
+            }
+            let Some(&old_child) = held.get(index) else {
+                continue;
+            };
+            let replaced = host
+                .child_mut(index)
+                .and_then(|widget| self.update_in(widget, old_child, child));
+            if let Some(replaced) = replaced {
+                host.replace(index, replaced);
+            }
+            host.set_placement(index, placement(new_node, child));
+        }
     }
 }
 
@@ -1301,13 +1426,24 @@ fn icon_prop(node: &UiNode, name: &str) -> Option<ui::icons::Icon> {
     ui::icons::Icon::from_name(&name.replace('_', "-"))
 }
 
-fn same_shell_without_value(a: &UiNode, b: &UiNode) -> bool {
+/// Whether the button `node` can act: it has something to do, and the view does not say no.
+fn button_enabled(node: &UiNode) -> bool {
+    prop(node, "enabled").is_none_or(|_| flag(node, "enabled")) && node.events.contains_key("press")
+}
+
+/// Whether `a` and `b` have the same shell but for their property `name`, which the widget
+/// built for `a` takes in place.
+fn same_shell_but(a: &UiNode, b: &UiNode, name: &str) -> bool {
     let strip = |node: &UiNode| {
         let mut props = node.props.clone();
-        props.remove("value");
+        props.remove(name);
         props
     };
-    a.kind == b.kind && a.key == b.key && strip(a) == strip(b)
+    a.kind == b.kind
+        && a.key == b.key
+        && a.binding == b.binding
+        && a.events.keys().eq(b.events.keys())
+        && strip(a) == strip(b)
 }
 
 fn heading_role(node: &UiNode) -> TextRole {
@@ -1378,7 +1514,7 @@ mod tests {
         let mut reconciler = reconciler();
         let old = stack("s", vec![text("a", "a"), text("b", "b"), text("c", "c")]);
         let built = reconciler.build(&old);
-        let [a, b, c] = identities(&built)[..] else {
+        let [a, _, c] = identities(&built)[..] else {
             panic!("three children");
         };
         // A new child at the front, `b` gone, `c` moved before `a`.
@@ -1387,9 +1523,10 @@ mod tests {
         let after = identities(&updated);
         assert_eq!(after.len(), 3);
         assert_eq!(&after[1..], &[c, a], "kept widgets follow their keys");
-        assert!(
-            ![a, b, c].contains(&after[0]),
-            "the new child is a new widget"
+        assert_eq!(
+            updated.children().first().and_then(|new| new.test_id()),
+            Some("n"),
+            "the new child is built for its node"
         );
     }
 

@@ -195,6 +195,53 @@ fn a_trial_run_takes_back_only_its_own_writes() {
     assert_eq!(ada.host.store().stats().full_syncs, 0);
 }
 
+#[test]
+fn what_the_runtime_read_follows_every_change_after() {
+    let (mut ada, mut grace, meta, root) = room();
+    let ids = item_ids(&ada, &meta, &root);
+    let list = tilolang_runtime::value::ResourceRef::root(&root, type_id(&meta, "TodoList"));
+    let first = list.item(
+        &field_id(&meta, "TodoList", "items"),
+        &ids[0],
+        type_id(&meta, "Item"),
+    );
+    let count = |ada: &Replica| match ada.host.runtime().read(&list, "items").unwrap() {
+        Value::List(items) => items.len(),
+        other => panic!("{other:?}"),
+    };
+    let text = |ada: &Replica| ada.host.runtime().read(&first, "text").unwrap();
+    // Read once, so that the store keeps what it read.
+    assert_eq!(text(&ada), Value::text("milk"));
+    assert_eq!(count(&ada), 3);
+
+    // A peer retypes the item and adds one.
+    retype(&mut grace, &meta, &root, &ids[0], "oat milk");
+    add(&mut grace, &meta, &root, "tea");
+    ada.sync_with(&mut grace);
+    assert_eq!(text(&ada), Value::text("oat milk"));
+    assert_eq!(count(&ada), 4);
+
+    // A trial run adds one and takes it back.
+    let action = meta.actions.iter().find(|a| a.name == "add").unwrap();
+    let args = json!({ "text": "jam" }).as_object().cloned().unwrap();
+    ada.host
+        .plan(&PlanRequest {
+            app: APP,
+            kind: "tl.so.tilo.todo.TodoList",
+            action_id: &action.id,
+            resource: Some(&root),
+            args: &args,
+            caller: None,
+        })
+        .unwrap();
+    assert_eq!(count(&ada), 4);
+
+    // An addition of its own.
+    add(&mut ada, &meta, &root, "jam");
+    assert_eq!(count(&ada), 5);
+    assert_eq!(text(&ada), Value::text("oat milk"));
+}
+
 fn type_id(meta: &tilolang_runtime::Meta, name: &str) -> String {
     meta.types
         .iter()

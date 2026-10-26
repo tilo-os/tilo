@@ -1,6 +1,7 @@
 //! Runtime values: what handles refer to, what actions take and return, what flows journal.
 
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value as Json};
@@ -124,8 +125,28 @@ pub struct EnumValue {
 /// A resource reference together with the module that created the handle.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RefValue {
-    pub target: ResourceRef,
+    /// Shared: a reference is copied wherever a value goes (an item taken out of a list, an
+    /// argument, a list built by a filter), and a view over a list copies tens of thousands.
+    #[serde(with = "shared")]
+    pub target: Rc<ResourceRef>,
     pub author: Option<ModuleHash>,
+}
+
+/// Serde for a shared reference: as the reference itself.
+mod shared {
+    use std::rc::Rc;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::ResourceRef;
+
+    pub fn serialize<S: Serializer>(target: &Rc<ResourceRef>, s: S) -> Result<S::Ok, S::Error> {
+        target.as_ref().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Rc<ResourceRef>, D::Error> {
+        ResourceRef::deserialize(d).map(Rc::new)
+    }
 }
 
 /// A value of the language.
@@ -162,7 +183,7 @@ impl Value {
     /// A reference value with no authoring module, as handed in by the host.
     pub fn resource(target: &ResourceRef) -> Self {
         Self::Ref(RefValue {
-            target: target.clone(),
+            target: Rc::new(target.clone()),
             author: None,
         })
     }
@@ -350,7 +371,7 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
     if let (Some(Json::String(id)), Some(Json::String(ty))) = (m.get("ref"), m.get("ty")) {
         let target = ResourceRef::parse_id(id, ty.clone()).ok_or("malformed reference")?;
         return Ok(Value::Ref(RefValue {
-            target,
+            target: Rc::new(target),
             author: author_of(m),
         }));
     }
@@ -418,7 +439,7 @@ mod tests {
             Value::Tuple(vec![Value::text("x"), Value::none()]),
             Value::some(Value::Bool(true)),
             Value::Ref(RefValue {
-                target,
+                target: Rc::new(target),
                 author: Some(ModuleHash("m".into())),
             }),
             Value::Action(ActionRef::new("a", vec![Value::Int(1)])),

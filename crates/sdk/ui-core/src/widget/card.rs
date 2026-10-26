@@ -667,6 +667,15 @@ impl Widget for Card {
         dirty
     }
 
+    /// No structure of its own: what its content describes stays described.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        let mut change = crate::widget::StructureChange::None;
+        for child in &mut self.parts.children {
+            change = change.join(child.take_structure_change());
+        }
+        change
+    }
+
     fn wants_pointer_capture(&self) -> bool {
         self.parts
             .children

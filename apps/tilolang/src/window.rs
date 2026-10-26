@@ -28,6 +28,7 @@ mod list;
 pub(crate) mod pane;
 #[cfg(test)]
 mod tests;
+mod transcript;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -63,6 +64,7 @@ use crate::reconcile::{EventSink, Reconciler, UiEvent};
 use crate::resource::{Live, Room, RoomState, caller_of};
 use list::{Empty, ListPane, Peers, RowSource};
 use pane::Pane;
+use transcript::{Thread, ThreadSource};
 
 /// What the shell's controls ask of the window.
 #[derive(Clone, Debug, PartialEq)]
@@ -226,12 +228,13 @@ fn key_path(tree: &UiNode, key: &str) -> Option<Vec<String>> {
     })
 }
 
-/// Render every row of the lists of `view` but `skip` (the list column's, which renders the
-/// rows it shows): a list inside a page or a card is drawn whole.
-fn show_content_rows(view: &mut ViewInstance, skip: Option<&str>) {
-    fn lists(node: &UiNode, skip: Option<&str>, out: &mut Vec<String>) {
+/// Render every row of the lists of `view` but those of `skip` (the list column's and a
+/// transcript's, which render the rows they show): a list inside a page is drawn whole, one in a card as its preview (the rows
+/// the runtime built for it).
+fn show_content_rows(view: &mut ViewInstance, skip: &[Option<&str>]) {
+    fn lists(node: &UiNode, skip: &[Option<&str>], out: &mut Vec<String>) {
         if node.kind == "list" {
-            if Some(node.key.as_str()) == skip {
+            if skip.contains(&Some(node.key.as_str())) {
                 return;
             }
             out.push(node.key.clone());
@@ -311,17 +314,6 @@ fn scrolling(body: Element) -> Element {
     Box::new(ui::widget::Scrollable::new_vertical().with_child(body))
 }
 
-fn unscroll(mut scroll: Element) -> Element {
-    if let Some(scrollable) = scroll
-        .as_any_mut()
-        .and_then(|any| any.downcast_mut::<Scrollable>())
-        && let Some(content) = scrollable.child_mut()
-    {
-        return std::mem::replace(content, Box::new(Spacer::fixed(0.0)));
-    }
-    scroll
-}
-
 /// A frame's composer as the page under its content: the same readable measure, so the two
 /// share one content edge.
 fn composer_page(frame: &UiNode) -> Option<UiNode> {
@@ -354,35 +346,108 @@ fn iconic_buttons(node: &mut UiNode) {
 /// A transcript: the content scrolls above the composer, which stays at the bottom of the
 /// column; it opens at its newest line and follows it, as a conversation does.
 fn transcript(content: Element, composer: Element) -> Element {
+    above_composer(
+        Box::new(
+            Scrollable::new_vertical()
+                .following_end()
+                .with_child(content),
+        ),
+        composer,
+    )
+}
+
+/// `top`, which scrolls itself, filling the column above `composer`.
+fn above_composer(top: Element, composer: Element) -> Element {
     Box::new(
         Stack::stack()
             .fill_width()
             .fill_height()
-            .push_slot(slot(
-                Box::new(
-                    Scrollable::new_vertical()
-                        .following_end()
-                        .with_child(content),
-                ),
-                Fit::fill(1.0),
-            ))
+            .push_slot(slot(top, Fit::fill(1.0)))
             .push_slot(slot(composer, Fit::hug())),
     )
 }
 
-/// The content and the composer of a [`transcript`], taken out to be reconciled.
-fn untranscript(mut element: Element) -> Result<(Element, Element), Element> {
+/// The transcript of a frame whose content is one list ([`transcript::thread_list`]): where its
+/// rows come from, and the reconciler that builds them.
+struct ThreadOf {
+    source: Rc<ThreadSource>,
+    reconciler: Reconciler,
+}
+
+/// The thread the transcript `element` shows, when it shows one.
+fn thread_in(element: &mut Element) -> Option<&mut Thread> {
+    element
+        .as_any_mut()?
+        .downcast_mut::<Stack>()?
+        .child_mut(0)?
+        .as_any_mut()?
+        .downcast_mut::<Thread>()
+}
+
+/// Reconcile what the scroll view `scroll` shows, built for `old`, with `new` in place: the
+/// content keeps its widgets and the view its scroll position. Whether `scroll` is a scroll
+/// view.
+fn reconcile_scrolled(
+    reconciler: &mut Reconciler,
+    scroll: &mut Element,
+    old: &UiNode,
+    new: &UiNode,
+) -> bool {
+    let Some(scroll) = scroll
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<Scrollable>())
+    else {
+        return false;
+    };
+    let Some(content) = scroll.child_mut() else {
+        return false;
+    };
+    if let Some(replaced) = reconciler.update_in(content, old, new) {
+        scroll.replace_child(replaced);
+    }
+    true
+}
+
+/// Reconcile a [`transcript`] in place: its content, built for `old_content`, with
+/// `content`, and its composer, built for `old_composer`, with `composer`. Whether `element`
+/// is a transcript.
+fn reconcile_transcript(
+    reconciler: &mut Reconciler,
+    element: &mut Element,
+    (old_content, content): (&UiNode, &UiNode),
+    (old_composer, composer): (&UiNode, &UiNode),
+    thread: Option<&ThreadOf>,
+) -> bool {
+    let shown = thread_in(element)
+        .map(|shown| thread.is_some_and(|thread| shown.model().reads(&thread.source)));
     let Some(stack) = element
         .as_any_mut()
         .and_then(|any| any.downcast_mut::<Stack>())
     else {
-        return Err(element);
+        return false;
     };
-    let mut slots = stack.take_slots().into_iter().map(Slot::into_element);
-    match (slots.next(), slots.next()) {
-        (Some(scroll), Some(composer)) => Ok((unscroll(scroll), composer)),
-        _ => Err(element),
+    if stack.len() != 2 {
+        return false;
     }
+    // A thread takes its rows' changes as they come (`apply_polled`): it stays while it shows
+    // the same list. A scrolled content is reconciled in place.
+    let kept = match (shown, thread) {
+        (Some(same), _) => same,
+        (None, Some(_)) => false,
+        (None, None) => stack
+            .child_mut(0)
+            .is_some_and(|scroll| reconcile_scrolled(reconciler, scroll, old_content, content)),
+    };
+    if !kept {
+        return false;
+    }
+    let replaced = stack
+        .child_mut(1)
+        .and_then(|footer| reconciler.update_in(footer, old_composer, composer));
+    if let Some(replaced) = replaced {
+        stack.replace(1, replaced);
+    }
+    true
 }
 
 /// Bring the pane up to date with `node` and the frame's composer `composer`: a frame with a
@@ -391,8 +456,8 @@ fn fill_framed(
     pane: &mut Pane,
     reconciler: &mut Reconciler,
     built: (&mut Option<UiNode>, &mut Option<UiNode>),
-    node: &UiNode,
-    composer: Option<&UiNode>,
+    (node, composer): (&UiNode, Option<&UiNode>),
+    thread: Option<ThreadOf>,
 ) {
     let (built_content, built_composer) = built;
     let Some(composer) = composer else {
@@ -410,41 +475,40 @@ fn fill_framed(
         (Some(old_content), Some(old_composer))
             if same(built_content, node) && same(built_composer, composer) =>
         {
-            untranscript(pane.take()).ok().map(|(content, footer)| {
-                let content = if old_content == node {
-                    content
-                } else {
-                    reconciler.update(content, old_content, node)
-                };
-                let footer = if old_composer == composer {
-                    footer
-                } else {
-                    reconciler.update(footer, old_composer, composer)
-                };
-                transcript(content, footer)
-            })
+            reconcile_transcript(
+                reconciler,
+                pane.content_mut(),
+                (old_content, node),
+                (old_composer, composer),
+                thread.as_ref(),
+            )
         }
-        _ => None,
+        _ => false,
     };
-    pane.set(
-        kept.unwrap_or_else(|| transcript(reconciler.build(node), reconciler.build(composer))),
-    );
+    if !kept {
+        let footer = reconciler.build(composer);
+        pane.set(match thread {
+            Some(ThreadOf { source, reconciler }) => {
+                above_composer(Box::new(transcript::thread(source, reconciler)), footer)
+            }
+            None => transcript(reconciler.build(node), footer),
+        });
+    }
     *built_content = Some(node.clone());
     *built_composer = Some(composer.clone());
 }
 
-/// Bring the pane up to date with `node`: reconcile what it shows when it was built from the
-/// same node, else build it.
+/// Bring the pane up to date with `node`: reconcile what it shows in place when it was built
+/// from the same node, else build it.
 fn fill(pane: &mut Pane, reconciler: &mut Reconciler, built: &mut Option<UiNode>, node: &UiNode) {
-    match built.as_ref() {
+    let kept = match built.as_ref() {
         Some(old) if old.key == node.key && old.kind == node.kind => {
-            if old != node {
-                let inner = unscroll(pane.take());
-                let updated = reconciler.update(inner, old, node);
-                pane.set(scrolling(updated));
-            }
+            old == node || reconcile_scrolled(reconciler, pane.content_mut(), old, node)
         }
-        _ => pane.set(scrolling(reconciler.build(node))),
+        _ => false,
+    };
+    if !kept {
+        pane.set(scrolling(reconciler.build(node)));
     }
     *built = Some(node.clone());
 }
@@ -487,6 +551,8 @@ struct Lane {
     view: Rc<RefCell<ViewInstance>>,
     /// The `list` frame whose rows the list column shows: the root's, when its frame is one.
     list: Option<String>,
+    /// The `list` a frame with a composer shows as its transcript, rendering the rows it shows.
+    thread: Option<String>,
     events: EventSink,
     reconciler: Reconciler,
     /// What was built into the content, sidebar and inspector panes from it.
@@ -639,12 +705,14 @@ fn shows_nothing(node: &UiNode) -> bool {
     })
 }
 
-/// How many list rows `node` holds, under any containers.
+/// How many rows the lists under `node` hold: every row, shown or not (a card shows a preview).
 fn rows_in(node: &UiNode) -> usize {
     node.children
         .iter()
         .map(|child| {
-            if child.kind == "list_row" {
+            if child.kind == "list" {
+                child.items_total()
+            } else if child.kind == "list_row" {
                 1
             } else {
                 rows_in(child)
@@ -897,11 +965,15 @@ impl Window {
         let list = frame_of(view.tree())
             .filter(|frame| root && frame.kind == "list")
             .map(|frame| frame.key.clone());
-        show_content_rows(&mut view, list.as_deref());
+        let thread = frame_of(view.tree())
+            .and_then(transcript::thread_list)
+            .map(|list| list.key.clone());
+        show_content_rows(&mut view, &[list.as_deref(), thread.as_deref()]);
         Lane {
             target,
             view: Rc::new(RefCell::new(view)),
             list,
+            thread,
             reconciler: Reconciler::new(Rc::clone(&events), self.field_names())
                 .with_lookups(self.case_lookup(), self.people()),
             events,
@@ -909,6 +981,20 @@ impl Window {
             sidebar: None,
             composer: None,
         }
+    }
+
+    /// The transcript of `lane`'s frame `frame`, when its content is one list beside a
+    /// composer: the lane renders that list's rows as the transcript shows them.
+    fn thread_of(&self, lane: &Lane, frame: &UiNode) -> Option<ThreadOf> {
+        let list = transcript::thread_list(frame)?.key.clone();
+        Some(ThreadOf {
+            source: Rc::new(ThreadSource {
+                view: Rc::clone(&lane.view),
+                list,
+            }),
+            reconciler: Reconciler::new(Rc::clone(&lane.events), self.field_names())
+                .with_lookups(self.case_lookup(), self.people()),
+        })
     }
 
     /// Open the package's root window.
@@ -1025,7 +1111,9 @@ impl Window {
             .runtime()
             .invoke_action(&Principal::new(self.me.clone()), (action, Vec::new()))
         {
-            Ok(InvokeOutcome::Done(Value::Ref(shown))) => return Some(shown.target),
+            Ok(InvokeOutcome::Done(Value::Ref(shown))) => {
+                return Some(Rc::unwrap_or_clone(shown.target));
+            }
             Ok(InvokeOutcome::Done(_)) => {}
             Ok(other) => tracing::warn!(scenario = name, ?other, "the scenario did not run"),
             Err(error) => tracing::warn!(scenario = name, %error, "the scenario failed"),
@@ -1511,6 +1599,13 @@ impl Window {
                 window.action_buttons(&actions, &title, controls)
             });
             let composer = composer_page(&frame);
+            let thread = self
+                .root
+                .as_ref()
+                .and_then(|lane| self.thread_of(lane, &frame));
+            if let Some(lane) = self.root.as_mut() {
+                lane.thread = thread.as_ref().map(|thread| thread.source.list.clone());
+            }
             // A canvas with nothing on it (a board pointing at nothing yet) says so, as a native
             // app's empty window does, rather than showing a blank page.
             let blank = frame.kind == "canvas" && composer.is_none() && shows_nothing(&page);
@@ -1539,8 +1634,8 @@ impl Window {
                             pane,
                             &mut lane.reconciler,
                             (&mut lane.content, &mut lane.composer),
-                            &page,
-                            composer.as_ref(),
+                            (&page, composer.as_ref()),
+                            thread,
                         );
                     }
                 }
@@ -1579,6 +1674,13 @@ impl Window {
                     window.action_buttons(&actions, &title, controls)
                 });
                 let composer = composer_page(detail_frame);
+                let thread = self
+                    .detail
+                    .as_ref()
+                    .and_then(|lane| self.thread_of(lane, detail_frame));
+                if let Some(lane) = self.detail.as_mut() {
+                    lane.thread = thread.as_ref().map(|thread| thread.source.list.clone());
+                }
                 let Self { body, detail, .. } = self;
                 if let (Some(shell), Some(lane)) = (shell_of(body), detail.as_mut()) {
                     if shell.content_mut::<Pane>().is_none() {
@@ -1591,8 +1693,8 @@ impl Window {
                             pane,
                             &mut lane.reconciler,
                             (&mut lane.content, &mut lane.composer),
-                            &page,
-                            composer.as_ref(),
+                            (&page, composer.as_ref()),
+                            thread,
                         );
                     }
                     shell.set_can_go_back(kind != Frame::List);
@@ -1766,14 +1868,25 @@ impl Window {
                 .list
                 .as_deref()
                 .and_then(|list| key_path(view.tree(), list));
+            let thread = lane
+                .thread
+                .as_deref()
+                .and_then(|thread| key_path(view.tree(), thread));
             let content = polled.content;
             polled.content = false;
-            polled.sort(patches, list.as_deref());
+            let changes = polled.sort(patches, list.as_deref(), thread.as_deref());
             if polled.content {
                 // A list inside the content may have rows the view has not rendered yet.
-                show_content_rows(&mut view, lane.list.as_deref());
+                show_content_rows(&mut view, &[lane.list.as_deref(), lane.thread.as_deref()]);
             }
             polled.content |= content;
+            if let Some(thread) = &lane.thread
+                && (changes.reread || !changes.is_empty())
+            {
+                polled
+                    .threads
+                    .push((Rc::clone(&lane.view), thread.clone(), changes));
+            }
         }
         polled
     }
@@ -1782,12 +1895,20 @@ impl Window {
     /// place, the columns reconciled when anything else changed. Whether anything did.
     fn apply_polled(&mut self, polled: Polled) -> bool {
         let Polled {
-            structure,
-            rows,
-            reread,
-            content,
+            list:
+                ListChanges {
+                    structure,
+                    rows,
+                    reread,
+                },
+            threads,
+            mut content,
         } = polled;
-        let rows_changed = !structure.is_empty() || !rows.is_empty();
+        let mut rows_changed = !structure.is_empty() || !rows.is_empty();
+        for (view, list, changes) in threads {
+            rows_changed |= !changes.is_empty();
+            content |= self.apply_thread(view, list, changes);
+        }
         if let Some(pane) = self.list_pane() {
             if reread {
                 pane.forget();
@@ -1802,6 +1923,38 @@ impl Window {
             self.refresh_bound();
         }
         content || reread || rows_changed
+    }
+
+    /// Apply what the view `view` changed of its transcript's list `list` to the transcript
+    /// the content column shows, when it shows that one. Whether the columns are to be composed
+    /// again: the view replaced the list as a whole, so the transcript is built anew.
+    fn apply_thread(
+        &mut self,
+        view: Rc<RefCell<ViewInstance>>,
+        list: String,
+        changes: ListChanges,
+    ) -> bool {
+        if changes.reread {
+            for lane in [self.root.as_mut(), self.detail.as_mut()]
+                .into_iter()
+                .flatten()
+            {
+                if Rc::ptr_eq(&lane.view, &view) {
+                    lane.content = None;
+                }
+            }
+            return true;
+        }
+        let source = ThreadSource { view, list };
+        let thread = self
+            .shell()
+            .and_then(|shell| shell.content_mut::<Pane>())
+            .and_then(|pane| thread_in(pane.content_mut()))
+            .filter(|thread| thread.model().reads(&source));
+        if let Some(thread) = thread {
+            list::apply_changes(thread, &changes.structure, changes.rows);
+        }
+        false
     }
 
     /// The windows the views asked to open.
@@ -1955,7 +2108,9 @@ impl Window {
                                 let lane = self.root.as_ref()?;
                                 let view = lane.view.borrow();
                                 match find_kind(view.find(&key)?, "item")?.props.get("item") {
-                                    Some(Value::Ref(reference)) => Some(reference.target.clone()),
+                                    Some(Value::Ref(reference)) => {
+                                        Some(ResourceRef::clone(&reference.target))
+                                    }
                                     _ => None,
                                 }
                             },
@@ -2234,28 +2389,94 @@ fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
         .find_map(|child| find_kind(child, kind))
 }
 
+/// What a view changed of a list whose rows the window renders as it shows them.
+#[derive(Default)]
+struct ListChanges {
+    /// Rows inserted, removed or moved, in order.
+    structure: Vec<Patch>,
+    /// The rows whose content changed.
+    rows: Vec<String>,
+    /// The list was replaced as a whole: its rows are read anew.
+    reread: bool,
+}
+
+impl ListChanges {
+    fn is_empty(&self) -> bool {
+        self.structure.is_empty() && self.rows.is_empty()
+    }
+}
+
+/// Where a patch is, against a list whose rows the window renders.
+enum Place {
+    /// Among the list's own children: a row inserted, removed or moved.
+    Rows,
+    /// Inside the row of this key.
+    Row(String),
+    /// Above the list, changing what holds it.
+    Above,
+    Elsewhere,
+}
+
+impl Place {
+    /// Where a patch at `path` (`structural` when it inserts, removes or moves) is, against the
+    /// list at `list` (its keys from the root).
+    fn of(path: &[String], structural: bool, list: &[String]) -> Self {
+        if structural && path == list {
+            Self::Rows
+        } else if path.len() > list.len() && path.starts_with(list) {
+            path.get(list.len())
+                .map_or(Self::Elsewhere, |row| Self::Row(row.clone()))
+        } else if structural && list.starts_with(path) {
+            Self::Above
+        } else {
+            Self::Elsewhere
+        }
+    }
+
+    /// Take `patch` into `changes` when it is among or inside the list's rows; the patch back
+    /// when it is not.
+    fn take(self, patch: Patch, changes: &mut ListChanges) -> Option<Patch> {
+        match self {
+            Self::Rows => changes.structure.push(patch),
+            Self::Row(row) => {
+                if !changes.rows.contains(&row) {
+                    changes.rows.push(row);
+                }
+            }
+            Self::Above | Self::Elsewhere => return Some(patch),
+        }
+        None
+    }
+}
+
 /// What the views changed, by where it shows.
 #[derive(Default)]
 struct Polled {
-    /// Rows of the list column inserted, removed or moved, in order.
-    structure: Vec<Patch>,
-    /// The rows of the list column whose content changed.
-    rows: Vec<String>,
-    /// The list column's list was replaced as a whole: its rows are read anew.
-    reread: bool,
-    /// Something the columns show besides the list's rows changed.
+    /// What the list column's list changed.
+    list: ListChanges,
+    /// What the transcripts' lists changed: the view and list of each.
+    threads: Vec<(Rc<RefCell<ViewInstance>>, String, ListChanges)>,
+    /// Something the columns show besides those rows changed.
     content: bool,
 }
 
 impl Polled {
-    /// Sort `patches` of a view whose list column shows the list at `list` (its keys from the
-    /// root), when it has one.
-    fn sort(&mut self, patches: Vec<Patch>, list: Option<&[String]>) {
+    /// Sort `patches` of a view whose list column shows the list at `list`, and whose
+    /// transcript the list at `thread` (their keys from the root), when it has them. Returns
+    /// what changed of the transcript's list.
+    fn sort(
+        &mut self,
+        patches: Vec<Patch>,
+        list: Option<&[String]>,
+        thread: Option<&[String]>,
+    ) -> ListChanges {
+        let mut threaded = ListChanges::default();
         for patch in patches {
             let (path, structural) = match &patch {
                 Patch::SetRoot(_) => {
                     self.content = true;
-                    self.reread |= list.is_some();
+                    self.list.reread |= list.is_some();
+                    threaded.reread |= thread.is_some();
                     continue;
                 }
                 Patch::Insert { parent, .. }
@@ -2266,22 +2487,25 @@ impl Polled {
                 | Patch::SetEvent { path, .. }
                 | Patch::SetAnchor { path, .. } => (path.as_slice(), false),
             };
-            match list {
-                Some(list) if structural && path == list => self.structure.push(patch),
-                Some(list) if path.len() > list.len() && path.starts_with(list) => {
-                    if let Some(row) = path.get(list.len())
-                        && !self.rows.contains(row)
-                    {
-                        self.rows.push(row.clone());
-                    }
-                }
-                Some(list) if structural && list.starts_with(path) => {
-                    self.content = true;
-                    self.reread = true;
-                }
-                _ => self.content = true,
+            let at_list = list.map_or(Place::Elsewhere, |list| Place::of(path, structural, list));
+            let at_thread = thread.map_or(Place::Elsewhere, |thread| {
+                Place::of(path, structural, thread)
+            });
+            let above = (
+                matches!(at_list, Place::Above),
+                matches!(at_thread, Place::Above),
+            );
+            let Some(untaken) = at_list.take(patch, &mut self.list) else {
+                continue;
+            };
+            if at_thread.take(untaken, &mut threaded).is_none() {
+                continue;
             }
+            self.content = true;
+            self.list.reread |= above.0;
+            threaded.reread |= above.1;
         }
+        threaded
     }
 }
 
@@ -2569,5 +2793,12 @@ impl Widget for Window {
     fn take_structure_dirty(&mut self) -> bool {
         let dirty = std::mem::take(&mut self.structure_dirty);
         self.body.take_structure_dirty() || dirty
+    }
+
+    /// The window's own changes (a shell built, a bar shown) rebuild; what its body describes
+    /// (a column's content changed in place) stays described.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        let own = ui::widget::StructureChange::of(std::mem::take(&mut self.structure_dirty));
+        own.join(self.body.take_structure_change())
     }
 }

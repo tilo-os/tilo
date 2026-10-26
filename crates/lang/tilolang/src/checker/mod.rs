@@ -62,18 +62,28 @@ struct FnState {
     states: HashMap<String, StateRef>,
     /// Set while checking a scenario, where `root T` names a root resource.
     scenario: bool,
-    /// The primitive whose block is being lowered, empty at a view's top: `sidebar` and
-    /// `inspector` sit directly in a frame, a fact directly in `facts`.
-    ui_parent: &'static str,
-    /// Whether a list row `row(title, ...)` may stand here: directly in a list's item block or
-    /// as a row view's body.
-    list_row_ok: bool,
+    /// Where the UI being lowered stands.
+    ui: UiPlace,
     /// For a view made of a loop body, the declared view it was written in (for anchors).
     owner_view: Option<String>,
     /// UI loops of this view lowered to loop nodes so far.
     fors: usize,
     /// Views made of this view's loop bodies so far.
     row_views: usize,
+}
+
+/// Where the UI being lowered stands, saved and restored around each block.
+#[derive(Clone, Copy, Default)]
+struct UiPlace {
+    /// The primitive whose block is being lowered, empty at a view's top: `sidebar` and
+    /// `inspector` sit directly in a frame, a fact directly in `facts`.
+    parent: &'static str,
+    /// Whether a list row `row(title, ...)` may stand here: directly in a list's item block or
+    /// as a row view's body.
+    list_row_ok: bool,
+    /// Whether it is inside a `card`: a list there is the card's preview
+    /// ([`crate::prims::PREVIEW_ROWS`]).
+    in_card: bool,
 }
 
 /// A `window` or `lens` declaration in scope, for `bind:` and `set(...)`.
@@ -354,7 +364,7 @@ impl Checker<'_> {
             .find(|(key, view)| key.app == env.app && *view == c.name);
         if let Some((key, _)) = row_of {
             self.row_view_body(&c.name, &key.name, &rest, v.body_span);
-            self.st.list_row_ok = true;
+            self.st.ui.list_row_ok = true;
         }
         self.view_body(&rest);
         let mut f = self.end(FuncKind::View, &c.name, &format!("v_{}", c.id));

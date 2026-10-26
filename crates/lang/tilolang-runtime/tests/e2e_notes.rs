@@ -110,7 +110,7 @@ mod cases {
                     .any(|r| text_prop(r, "title") == title)
             })
             .and_then(|item| match item.props.get("item") {
-                Some(Value::Ref(r)) => Some(r.target.clone()),
+                Some(Value::Ref(r)) => Some(ResourceRef::clone(&r.target)),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no item {title} in\n{}", dump(view.tree())))

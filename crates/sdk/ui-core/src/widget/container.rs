@@ -23,6 +23,9 @@ use winit::event::WindowEvent;
 )]
 pub struct Container {
     child: Option<Box<dyn Widget>>,
+    /// A child shown in place of another since the host last read it
+    /// ([`Container::replace_child`]): described.
+    structure: crate::widget::StructureChange,
     /// Stable graph / test identity when built from a serialized UI node.
     id: Option<String>,
     rect: Rect,
@@ -82,6 +85,7 @@ impl Container {
     pub fn new() -> Self {
         Self {
             child: None,
+            structure: crate::widget::StructureChange::None,
             id: None,
             rect: Rect::ZERO,
             has_background: false,
@@ -160,6 +164,21 @@ impl Container {
     /// Replace the single child after a graph reconcile pass.
     pub fn set_child(&mut self, child: Box<dyn Widget>) {
         self.child = Some(child);
+    }
+
+    /// The single child, to change it in place: what it reports of the change is its own.
+    pub fn child_mut(&mut self) -> Option<&mut Box<dyn Widget>> {
+        self.child.as_mut()
+    }
+
+    /// Show `child` instead of the single child, which it returns. A change the frame's
+    /// damage describes: the new child draws itself whole, and the host repaints where the
+    /// boxes it moved were and are.
+    pub fn replace_child(&mut self, child: Box<dyn Widget>) -> Option<Box<dyn Widget>> {
+        self.structure = self
+            .structure
+            .join(crate::widget::StructureChange::Described);
+        self.child.replace(child)
     }
 
     /// Apply layout flags from a serialized container node without rebuilding.
@@ -656,9 +675,19 @@ impl Widget for Container {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure).rebuilds();
         self.child
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty())
+            | own
+    }
+
+    /// A child replaced in place is described; so is what the child describes.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        let own = std::mem::take(&mut self.structure);
+        self.child
+            .as_mut()
+            .map_or(own, |child| own.join(child.take_structure_change()))
     }
 }
 

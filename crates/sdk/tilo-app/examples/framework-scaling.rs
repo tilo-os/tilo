@@ -1168,6 +1168,44 @@ fn focus_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// What publishing a window of each size costs, and the heap it holds.
+fn publication_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
+    println!("tasks  resources  publication p50  heap held  heap per task");
+    for &tasks in sizes {
+        let Publication {
+            ms,
+            resources,
+            held,
+        } = publication(tasks)?;
+        let per_task = held
+            .checked_div(usize::try_from(tasks)?)
+            .unwrap_or_default();
+        println!("{tasks:>5}  {resources:>9}  {ms:>12.3} ms  {held:>9}  {per_task:>11} B");
+    }
+    Ok(())
+}
+
+/// What a keystroke costs to the next frame in a live window of each size.
+fn keystrokes_mode(sizes: &[u32]) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "tasks  keystroke→frame p50  p99  release→frame p50  \
+         publications per keystroke  publishing/keystroke p50"
+    );
+    for &tasks in sizes {
+        TASKS.store(tasks, Ordering::Relaxed);
+        let keys = drive_live_window::<Scaling, _>(keystrokes)??;
+        println!(
+            "{tasks:>5}  {:>16.3} ms  {:>8.3} ms  {:>14.3} ms  {:>26}  {:>21.3} ms",
+            keys.to_frame_ms,
+            keys.to_frame_p99_ms,
+            keys.release_ms,
+            keys.publications,
+            keys.publication_ms
+        );
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mode = std::env::args().nth(2);
     let open_only = mode.as_deref() == Some("open");
@@ -1184,38 +1222,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return focus_mode(&sizes);
     }
     if mode.as_deref() == Some("publication") {
-        println!("tasks  resources  publication p50  heap held  heap per task");
-        for &tasks in &sizes {
-            let Publication {
-                ms,
-                resources,
-                held,
-            } = publication(tasks)?;
-            let per_task = held
-                .checked_div(usize::try_from(tasks)?)
-                .unwrap_or_default();
-            println!("{tasks:>5}  {resources:>9}  {ms:>12.3} ms  {held:>9}  {per_task:>11} B");
-        }
-        return Ok(());
+        return publication_mode(&sizes);
     }
     if std::env::var_os("TILO_SCALING_KEYSTROKES").is_some() {
-        println!(
-            "tasks  keystroke→frame p50  p99  release→frame p50  \
-             publications per keystroke  publishing/keystroke p50"
-        );
-        for &tasks in &sizes {
-            TASKS.store(tasks, Ordering::Relaxed);
-            let keys = drive_live_window::<Scaling, _>(keystrokes)??;
-            println!(
-                "{tasks:>5}  {:>16.3} ms  {:>8.3} ms  {:>14.3} ms  {:>26}  {:>21.3} ms",
-                keys.to_frame_ms,
-                keys.to_frame_p99_ms,
-                keys.release_ms,
-                keys.publications,
-                keys.publication_ms
-            );
-        }
-        return Ok(());
+        return keystrokes_mode(&sizes);
     }
     if !open_only {
         println!(

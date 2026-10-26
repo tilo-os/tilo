@@ -363,3 +363,85 @@ fn layers_put_children_over_each_other_at_logical_positions() {
         "leading is the right edge"
     );
 }
+
+#[test]
+fn a_child_replaced_inserted_removed_or_moved_in_place_is_a_described_change() {
+    use crate::widget::StructureChange;
+    let theme = Theme::default();
+    let mut stack = Stack::stack().push(boxed(10.0)).push(boxed(20.0));
+    solve(&mut stack, &theme, 300.0);
+    assert_eq!(stack.take_structure_change(), StructureChange::None);
+
+    let kept = std::ptr::from_ref(stack.children()[1]).cast::<()>();
+    stack.replace(0, boxed(30.0));
+    assert_eq!(stack.take_structure_change(), StructureChange::Described);
+    stack.insert(2, Slot::new(boxed(40.0)));
+    stack.move_slot(2, 0);
+    stack.set_placement(1, Fit::hug(), 2, None);
+    assert_eq!(stack.take_structure_change(), StructureChange::Described);
+    assert!(stack.remove(0).is_some());
+    assert_eq!(stack.take_structure_change(), StructureChange::Described);
+    assert_eq!(
+        stack.take_structure_change(),
+        StructureChange::None,
+        "read once"
+    );
+    assert_eq!(
+        std::ptr::from_ref(stack.children()[1]).cast::<()>(),
+        kept,
+        "the other child is the same widget"
+    );
+    solve(&mut stack, &theme, 300.0);
+    assert_eq!(
+        rects(&stack).iter().map(|r| r.height()).collect::<Vec<_>>(),
+        vec![30.0, 20.0]
+    );
+
+    // Children replaced wholesale say nothing of what changed.
+    let slots = stack.take_slots();
+    stack.set_slots(slots);
+    assert_eq!(stack.take_structure_change(), StructureChange::Rebuild);
+}
+
+#[test]
+fn a_page_its_parent_places_stays_where_it_is_placed_when_it_settles_its_width() {
+    use taffy::style_helpers::length;
+
+    let theme = Theme::dark();
+    let mut tree = TaffyTree::new();
+    let mut nodes: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+    let mut page = Page::full().row().push(boxed(20.0));
+    let node = page.build_layout(&mut tree, &theme, &mut nodes);
+    // Placed as a virtual list places a row.
+    let mut placed = tree.style(node).expect("styled").clone();
+    placed.position = taffy::Position::Absolute;
+    placed.inset.top = length(100.0_f32);
+    placed.inset.left = length(10.0_f32);
+    placed.inset.right = length(10.0_f32);
+    placed.size.width = taffy::Dimension::auto();
+    tree.set_style(node, placed).expect("placed");
+    let parent = tree
+        .new_with_children(
+            taffy::Style {
+                size: taffy::Size::from_lengths(900.0_f32, 600.0_f32),
+                ..Default::default()
+            },
+            &[node],
+        )
+        .expect("parent");
+    let space = taffy::Size {
+        width: taffy::AvailableSpace::MaxContent,
+        height: taffy::AvailableSpace::MaxContent,
+    };
+    tree.compute_layout(parent, space).expect("laid out");
+    let mut text = crate::font_catalog::fixture_renderer();
+    assert!(
+        page.adjust_layout_style(&mut tree, node, &mut text),
+        "the page settles its width class"
+    );
+    tree.compute_layout(parent, space).expect("laid out again");
+    let laid = tree.layout(node).expect("laid");
+    assert!((laid.location.y - 100.0).abs() < 0.5, "{laid:?}");
+    assert!((laid.location.x - 10.0).abs() < 0.5, "{laid:?}");
+    assert!((laid.size.width - 880.0).abs() < 0.5, "{laid:?}");
+}
