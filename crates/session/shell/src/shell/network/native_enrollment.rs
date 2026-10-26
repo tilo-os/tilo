@@ -145,8 +145,12 @@ impl ShellNetwork {
             return NativeOwnerStatus::Opening;
         }
         // Without a state file no open can succeed: say so now, rather than
-        // once a thread found out.
-        if tree.read().persist_path.is_none()
+        // once a thread found out. A tree another thread holds is not waited
+        // for here; the open thread finds out and the loop is woken.
+        let no_state_file = tree
+            .try_read()
+            .is_some_and(|tree| tree.persist_path.is_none());
+        if no_state_file
             || background
                 .failed_at
                 .is_some_and(|failed| failed.elapsed() < REOPEN_AFTER)

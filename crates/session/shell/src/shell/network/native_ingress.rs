@@ -127,19 +127,38 @@ impl ShellNetwork {
             .with_current(room, |view| Ok(super::direct_carrier::is_direct(view)))
             .unwrap_or(false)
         {
-            let peer = owner.with_current(room, |view| {
-                let hint = match view.transport_hint() {
-                    Ok(hint) => hint,
-                    // A room governed here has no invitation to dial from.
-                    Err(_) => return Ok(None),
-                };
-                let (payload, _) =
-                    tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(hint)
-                        .map_err(|error| error.to_string())?;
-                Ok(Some(payload.endpoint_addr))
+            // A direct room has no relay to dial, but a member still has to
+            // reach the device that governs it: the invitation's hint at
+            // first, and the governor the room names *now* after any
+            // succession or restart. Dialing both is harmless when they are
+            // the same endpoint.
+            let own = self
+                .host_identity
+                .as_ref()
+                .map(|identity| identity.device_cert.device_public_key);
+            let dialed = owner.with_current(room, |view| {
+                let mut addrs = Vec::new();
+                if let Ok(hint) = view.transport_hint()
+                    && let Ok((payload, _)) =
+                        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(hint)
+                {
+                    addrs.push(payload.endpoint_addr);
+                }
+                let governor = view.governor().device_public_key;
+                if Some(governor) != own
+                    && let Ok(endpoint) = iroh::EndpointId::from_bytes(&governor)
+                {
+                    let addr = iroh::EndpointAddr::new(endpoint);
+                    if !addrs.contains(&addr) {
+                        addrs.push(addr);
+                    }
+                }
+                Ok(addrs)
             });
-            if let Ok(Some(addr)) = peer {
-                let _ = self.cmd_tx.try_send(NetCmd::Connect { addr });
+            if let Ok(addrs) = dialed {
+                for addr in addrs {
+                    let _ = self.cmd_tx.try_send(NetCmd::Connect { addr });
+                }
             }
             return Ok(());
         }

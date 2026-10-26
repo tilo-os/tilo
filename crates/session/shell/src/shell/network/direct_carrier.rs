@@ -117,6 +117,7 @@ impl ShellNetwork {
                 due
             });
             if due {
+                self.dial_direct_governor(&owner, room);
                 let since = owner
                     .with_current(room, |view| {
                         Ok(view
@@ -134,6 +135,37 @@ impl ShellNetwork {
                 });
             }
         }
+    }
+
+    /// Dial the device that governs `room` now, if this device is a member.
+    /// A succession changes the governor, and a restart forgets every
+    /// connection: the room's own current governance is the address, not a
+    /// hint an older invitation carried.
+    fn dial_direct_governor(&self, owner: &NativeWorkspaceOwner, room: RoomId) {
+        let own = match self.host_identity.as_ref() {
+            Some(identity) => identity.device_cert.device_public_key,
+            None => return,
+        };
+        let governor = owner
+            .with_current(room, |view| {
+                if view.governed_here() {
+                    return Ok(None);
+                }
+                Ok(Some(view.governor().device_public_key))
+            })
+            .ok()
+            .flatten();
+        let Some(governor) = governor.filter(|governor| *governor != own) else {
+            return;
+        };
+        let Ok(endpoint) = iroh::EndpointId::from_bytes(&governor) else {
+            return;
+        };
+        let _ = self
+            .cmd_tx
+            .try_send(crate::network::actor::NetCmd::Connect {
+                addr: iroh::EndpointAddr::new(endpoint),
+            });
     }
 
     /// Whether `msg` belongs to a direct room's carrier, and if it does,
