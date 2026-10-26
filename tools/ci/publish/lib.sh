@@ -14,6 +14,14 @@ export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-${CARGO_TARGET_DIR:-$repo_
 
 die() { printf 'publish: %s\n' "$*" >&2; exit 1; }
 
+# Under errexit a command that fails without a word (a grep that matched nothing) would end the
+# step silently: name it, its status and where it ran, in functions and substitutions too.
+set -o errtrace
+trap 'failed $? "$BASH_COMMAND" "${BASH_SOURCE[0]:-$0}" "$LINENO"' ERR
+failed() {
+  if [[ $- == *e* ]]; then printf 'publish: `%s` failed with status %s at %s:%s\n' "$2" "$1" "$3" "$4" >&2; fi
+}
+
 # The channel of this run: `dev` on main, `release` on stable and release tags, `branch` on any
 # other branch, which publishes only its own build under tags that name the branch (`t dispatch
 # --ref BRANCH` of a check that publishes there). A working tree publishes nothing.
@@ -178,9 +186,18 @@ use_cosign() {
   PATH=$tools/tilo-cosign-tools:$PATH
 }
 
+# The manifest digest of the single image an OCI index.json (on stdin, from $1) names, compact
+# (podman's) or not (Python's json.dump, as tools/ci/os/oci_layers.py writes layouts).
+index_digest() {
+  local digest
+  digest=$(tr -d '[:space:]' | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | head -1 | cut -d'"' -f4) || true
+  [[ -n $digest ]] || die "$1 names no image digest"
+  printf '%s' "$digest"
+}
+
 # The manifest digest of the single image in an OCI archive, from its index.json.
 archive_digest() {
-  tar -xOf "$1" index.json | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | head -1 | cut -d'"' -f4
+  tar -xOf "$1" index.json | index_digest "$1 index.json"
 }
 
 # The image a build left in OUT, as an OCI archive (OUT/image.oci.tar) or an OCI layout
@@ -193,7 +210,7 @@ built_digest() {
   if [[ -f $1/image.oci.tar ]]; then
     archive_digest "$1/image.oci.tar"
   else
-    grep -o '"digest":"sha256:[0-9a-f]\{64\}"' "$1/oci/index.json" | head -1 | cut -d'"' -f4
+    index_digest "$1/oci/index.json" < "$1/oci/index.json"
   fi
 }
 
