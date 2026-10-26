@@ -162,11 +162,43 @@ page's state lives in its scripts:
   sent to the host with who gave them and dispatched there. The page sees
   input as from one user, the latest input winning. Everyone has their own
   cursor.
-- **Typing echoes locally.** A key typed into a field appears at once in
-  that viewer's mirror; the host's result replaces it when it arrives.
-  - Each person's focus is kept in their own mirror. When they type, the
-    host moves the page's focus to their field first, and keeps each
-    person's IME composition whole.
+- **Text fields are edited collaboratively, then applied to the page.**
+  Typing is the one interaction where "the latest input wins" would lose
+  work, so fields aren't driven by forwarding keystrokes.
+  - **Each field is a shared text.** Each field the page offers (`input`,
+    `textarea`, `contenteditable`) is backed, while anyone edits it, by a
+    text CRDT keyed by the agent's id for that element. Every viewer edits
+    their mirror's field locally, with their own caret and selection, and
+    their edits merge into that text. Typing appears at once, and two
+    people typing in the same field both keep what they typed, merged
+    character by character, with each caret staying where its owner left
+    it.
+  - **The host applies the merged edits to the real field as typing.** For
+    a plain field, it uses the element's own value setter and the input
+    events the page expects (`beforeinput`, `input`, with the input type and
+    range of each edit), so frameworks that listen for input, React's
+    controlled fields among them, see ordinary typing. This needs no focus
+    change: two people typing in two different plain fields at once move
+    nobody's focus and fire no blur, so validation and suggestion lists
+    don't react to the other person.
+  - **Rich editors get the edit at its own caret.** A `contenteditable`
+    editor (ProseMirror, Slate, Lexical and the like) keeps its own model,
+    so the host sets the document selection to the editing person's caret
+    in that editor and gives the edit to the engine as native text input,
+    which the editor handles as its own typing. Edits from several people in
+    the same editor are applied one after another, each at its author's
+    caret, mapped through the edits before it.
+  - **The page has the last word.** What the page does with an edit (an
+    input mask, autocorrect, a length limit, a reformatted number) comes back
+    through the mirror, and the agent writes it into the shared text as the
+    page's own edit. Each viewer then sees what the page accepted, with
+    their caret mapped through it.
+  - **Composition stays with its author.** An IME composition shows only in
+    its author's mirror until it is committed. Then it is one edit,
+    applied whole.
+  - **Focus is per person.** Each person's focus is kept in their own
+    mirror. The page's focus moves only when someone clicks or tabs to
+    something, not because someone else typed.
 - **Video plays in each viewer's engine.** The agent hands over the media
   the page loads, including the segments a site appends through Media Source
   Extensions, still encoded. Each viewer decodes them in its own engine, with
@@ -182,9 +214,10 @@ page's state lives in its scripts:
   captured on the host either: headless Chromium has no Widevine, and
   output protection blocks capture even where it does. A viewer's own engine
   could decrypt only with a licence of its own, which the site issues to
-  its own origin and session, not to a mirror. Netflix-type services
-  therefore show "can't be shared" in the shared window, and each person
-  opens them on their own.
+  its own origin and session, not to a mirror. In the shared window, such a
+  video's place shows a clear explanation: that this video is protected by
+  its service and can't be shown to others, and how to watch it yourself.
+  Nothing opens on anyone's behalf.
 - **Each person scrolls independently only where the page renders the
   content.** One script instance has one viewport. Applications that render
   only the rows in view (virtualized lists: mail, chat, feeds) build rows for
@@ -195,10 +228,16 @@ page's state lives in its scripts:
   queries are evaluated in each viewer's mirror, but a script that picks
   mobile or desktop markup from the window size picks it once, for the
   host. The host's viewport follows the person who last interacted.
-- **Typing at the same time in different fields is approximate.** Each
-  switch moves the page's focus, which fires blur and focus events; a site
-  that validates or closes a suggestion list on blur will react to them.
-  Typing into the same field at the same time isn't supported.
+- **Typing at the same time in two different rich editors moves the page's
+  focus.** A document has one selection, so applying an edit in one
+  `contenteditable` editor and then the other moves focus between them, and
+  each move fires blur and focus there. Plain fields aren't affected, nor
+  are several people in the same editor. Edits for each editor are batched,
+  to keep these moves few.
+- **A field the page draws itself isn't a field to the agent.** An editor
+  that draws its own text on a canvas and takes keys from a hidden input
+  (Google Docs, for one) is edited through that input, as one stream of
+  typing. Such applications usually have multiplayer of their own.
 - **Every interaction run by script costs a round trip to the host.** Hover
   and focus done in CSS are local; a menu opened by a script on
   `mouseenter` waits for the host. On a nearby host this is fast; across
@@ -223,8 +262,8 @@ page's state lives in its scripts:
   comments are workspace records anchored to the text.
 - **A video site:** mode 1. The encoded media is forwarded and each viewer
   plays it in its own engine, in sync. DRM video is the exception above.
-- **A stateful application:** mode 1, with the limits above for
-  virtualized lists and typing at the same time.
+- **A stateful application:** mode 1, with the limit above for
+  virtualized lists. Typing at the same time works as described.
 - **An application with its own multiplayer:** mode 1 for now. On Tilo
   devices mode 2 fits better, with everyone appearing as the workspace's
   one account until separate sessions exist.
