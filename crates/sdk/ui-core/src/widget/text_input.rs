@@ -5541,6 +5541,12 @@ impl Widget for TextInput {
             // A single-line field is its band tall, never squashed to
             // nothing when what is above or below it outgrows a column.
             flex_shrink: if self.multiline { 1.0 } else { 0.0 },
+            // Its only child (the reveal control) is placed absolutely, so
+            // the direction lays nothing out; a column says it is no nested
+            // row, which a `Row` would shrink to its children's width (none,
+            // here) where it lets a full-width field shrink to the room its
+            // siblings leave.
+            flex_direction: taffy::FlexDirection::Column,
             ..Default::default()
         };
         self.refresh_reveal_control();

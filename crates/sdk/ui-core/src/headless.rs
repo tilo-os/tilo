@@ -7395,6 +7395,7 @@ impl FrameHarness {
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
         let _person = crate::invocation_scope::InvokerScope::enter(
             tilo_actions::ActionInvoker::actor(self.author.0.clone()),
         );
