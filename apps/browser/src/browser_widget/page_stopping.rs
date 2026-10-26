@@ -6,7 +6,7 @@
 //! is that the action may already have acted on the page, and neither leaves
 //! the tab waiting on an answer nobody reads.
 
-use super::*;
+use super::{BrowserWidget, PAGE_OPERATION_TIMEOUT, PageOperation, PagePhase, action_failed};
 
 impl BrowserWidget {
     /// What a page operation's phase is called in a log, so a stopped one says
