@@ -176,17 +176,16 @@ globalThis.__tiloPage ||= (() => {
     for (const [id, ref] of refs) if (!ref.deref()?.isConnected) refs.delete(id);
   }
 
-  // Frame 1 is the first frame of this document, numbered in document order
-  // and kept with the frame element for as long as the document is; a frame of
-  // a frame is addressed `1.2`.
-  const frameNumbers = new Map(), framesByNumber = new Map();
+  // Frame 1 is the first frame in this document, and a frame of a frame is
+  // addressed `1.2`: the number is the frame's place in the document now,
+  // counted the way an action counts it, so the first frame a page shows is
+  // frame 1 however many frames the page has had, and a number printed is a
+  // number the actions take.
+  const framesByNumber = new Map();
   function frameNumber(element) {
-    if (frameNumbers.size >= 4096) { frameNumbers.clear(); framesByNumber.clear(); }
-    for (const [number, frame] of framesByNumber) {
-      if (frame.deref?.() === element) return number;
-    }
-    const number = ++next;
-    frameNumbers.set(element, number);
+    if (!element.isConnected) return 1;
+    if (framesByNumber.size >= 4096) framesByNumber.clear();
+    const number = [...document.querySelectorAll('iframe,frame')].indexOf(element) + 1;
     framesByNumber.set(number, new WeakRef(element));
     return number;
   }
