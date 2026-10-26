@@ -127,6 +127,31 @@ pub(crate) trait Boundaries {
 
     /// Take the rows of a loop over a collection to keep: their boundaries are met next.
     fn rows(&mut self, rows: LoopRows);
+
+    /// Whether the rows of a `list` are virtual: built when the host shows them, and absent
+    /// from the tree until then.
+    fn virtualizes(&self) -> bool;
+
+    /// The rows of a `list` that are virtual: the ones built so far that still stand, as the
+    /// list's children, in order. Nothing is built per item: the list's length and each row's
+    /// key are read from `rows` when the host asks.
+    fn virtual_rows(&mut self, rows: VirtualRows) -> Result<Vec<UiNode>, RuntimeError>;
+}
+
+/// What the rows of a virtual list are made from: the items of a collection, read from its
+/// listing as they are needed, or a list of values.
+#[derive(Clone)]
+pub(crate) enum RowSource {
+    Coll(Rc<crate::value::CollRef>),
+    List(Rc<[Value]>),
+}
+
+/// The rows of a `list` that the host shows as it scrolls: the list's key, how each row is
+/// made, and from what.
+pub(crate) struct VirtualRows {
+    pub list: String,
+    pub rows: RowsOf,
+    pub source: RowSource,
 }
 
 /// How a boundary is rendered: under which key, and who renders its view calls.
@@ -465,6 +490,32 @@ impl Core {
             depth: cx.offer.depth.saturating_add(1),
         };
         let total = items.len();
+        // The rows of a `list`, alone in it, are virtual: none is built until the host shows
+        // it, so the list costs the rows on screen, not its length.
+        if walk.in_list
+            && walk.preview.is_none()
+            && let (Some(list), Some(boundaries)) = (parent, hook.as_deref_mut())
+            && boundaries.virtualizes()
+        {
+            let source = match &items {
+                Items::Coll(coll, _) => {
+                    boundaries.rows(LoopRows {
+                        coll: Rc::clone(coll),
+                        resource: coll.target.id_string(),
+                        parent: list.to_owned(),
+                        rows: template.clone(),
+                    });
+                    RowSource::Coll(Rc::clone(coll))
+                }
+                Items::List(values) => RowSource::List(Rc::from(*values)),
+            };
+            let rows = boundaries.virtual_rows(VirtualRows {
+                list: list.to_owned(),
+                rows: template,
+                source,
+            })?;
+            return Ok((rows, total));
+        }
         let shown = walk.preview.map_or(total, |rows| rows.min(total));
         // The rows depend on the collection's items: in a preview, on its length and the items
         // it shows; for rows the boundaries keep, on nothing here; else on all of them.
@@ -478,6 +529,10 @@ impl Core {
                     parent: parent.to_owned(),
                     rows: template.clone(),
                 });
+            } else if coll.filter.is_some() {
+                // Which items a filtered collection has is no field of it: the rows depend on
+                // each of them.
+                acc.colls.push(CollSeen::shown(coll, listing, total));
             } else {
                 acc.reads
                     .push((coll.target.id_string(), coll.field.clone()));
@@ -485,7 +540,7 @@ impl Core {
         }
         let mut rows = Vec::with_capacity(shown);
         for i in 0..shown {
-            let Some(item) = items.get(i) else {
+            let Some(item) = items.get(self, i) else {
                 break;
             };
             let (row_key, args) = template.row(&item, i);
@@ -668,17 +723,17 @@ impl Items<'_> {
     }
 
     /// The `index`th item, as a value.
-    fn get(&self, index: usize) -> Option<Value> {
+    fn get(&self, core: &Core, index: usize) -> Option<Value> {
         match self {
             Self::List(items) => items.get(index).cloned(),
-            Self::Coll(coll, listing) => listing.get(index).map(|id| coll.item_ref(id)),
+            Self::Coll(coll, listing) => listing.get(index).map(|id| core.item_ref(coll, id)),
         }
     }
 }
 
 /// What keys the row of `item`, the `index`th of its loop: a resource by its id, any other
 /// value by its place.
-fn item_key(item: &Value, index: usize) -> String {
+pub(crate) fn item_key(item: &Value, index: usize) -> String {
     match item {
         Value::Ref(r) => r.target.id_string(),
         _ => index.to_string(),
@@ -702,6 +757,21 @@ pub(crate) struct RowsOf {
 }
 
 impl RowsOf {
+    /// The key of the row whose item is keyed `item_key` (see [`item_key`]).
+    pub fn key_of(&self, item_key: &str) -> String {
+        format!("{}/{item_key}", self.key)
+    }
+
+    /// The key of the row of the item `id` of `coll`, without a reference to it.
+    pub fn coll_row_key(&self, coll: &crate::value::CollRef, id: &str) -> String {
+        format!(
+            "{}/{}/{}:{id}",
+            self.key,
+            coll.target.id_string(),
+            coll.field
+        )
+    }
+
     /// The key of the row of `item`, the `index`th, and the row view's arguments.
     pub fn row(&self, item: &Value, index: usize) -> (String, Vec<Value>) {
         let item_key = item_key(item, index);
@@ -756,8 +826,13 @@ pub(crate) struct LoopRows {
 
 impl LoopRows {
     /// The key of the row of the item `id` and the row view's arguments.
-    pub fn row(&self, id: &str) -> (String, Vec<Value>) {
-        self.rows.row(&self.coll.item_ref(id), 0)
+    pub fn row(&self, core: &Core, id: &str) -> (String, Vec<Value>) {
+        self.rows.row(&core.item_ref(&self.coll, id), 0)
+    }
+
+    /// The key of the row of the item `id`, without a reference to it.
+    pub fn row_key(&self, id: &str) -> String {
+        self.rows.coll_row_key(&self.coll, id)
     }
 }
 

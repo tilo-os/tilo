@@ -71,6 +71,9 @@ pub struct Core {
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. Read
     /// once per outermost invocation; until the host sets one, it is the epoch.
     pub clock: RefCell<Option<Box<dyn Fn() -> String>>>,
+    /// References to collection items built so far: what a view materialized of the
+    /// collections it read.
+    pub items_built: std::cell::Cell<u64>,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -165,6 +168,7 @@ impl Core {
             embeds: RefCell::new(crate::embed::EmbedState::default()),
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
             clock: RefCell::new(None),
+            items_built: std::cell::Cell::new(0),
         });
         // The types the host provides to every module, such as `Invocation`.
         let host = crate::registry::Package::new(
@@ -227,17 +231,17 @@ impl Host for Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, CollInsert, CollMove, CollRemove, EnumGetF, EnumGetH,
-            EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, FloatToStr, IntToStr, Invoke,
-            Invoker, InvokerPop, InvokerPush, IsError, IsSome, ListEnd, ListGetF, ListGetH,
-            ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListSortByKey, MapGetH,
-            MapKeys, MapPut, MapRemove, ModelCall, NoneV, Now, Outside, PrincipalEq, PrincipalName,
-            PrincipalNamed, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefLit,
-            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
-            SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp, StrConcat,
-            StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
-            TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
-            UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            Abort, ActOpen, ActRef, ActSet, CollInsert, CollMove, CollRemove, CollWhere, EnumGetF,
+            EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, FloatToStr,
+            IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, ListEnd, ListGetF,
+            ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListSortByKey,
+            MapGetH, MapKeys, MapPut, MapRemove, ModelCall, NoneV, Now, Outside, PrincipalEq,
+            PrincipalName, PrincipalNamed, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
+            RefId, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
+            ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp,
+            StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
+            TupleSetF, TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
+            UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -247,6 +251,10 @@ impl Core {
             | ListSortByKey | ListGetH | ListEnd | TupleNew | TupleSetI | TupleSetF | TupleSetH
             | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome
             | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
+            CollWhere => {
+                let found = self.coll_where(a.h(0)?, a.h(1)?)?;
+                self.ret_h(found)
+            }
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF

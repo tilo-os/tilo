@@ -73,7 +73,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
     })
 }
 
-fn declared_default(ty: &Ty, default: Option<&Json>) -> Result<Value, String> {
+pub(crate) fn declared_default(ty: &Ty, default: Option<&Json>) -> Result<Value, String> {
     match (ty, default) {
         (Ty::Int, Some(j)) => j
             .as_i64()
@@ -420,6 +420,7 @@ impl Core {
                     field: f.id.clone(),
                     item: item.id.clone(),
                     author: Some(author.clone()),
+                    filter: None,
                 })));
             }
             let value = self.read_value(target, f, Some(author))?;

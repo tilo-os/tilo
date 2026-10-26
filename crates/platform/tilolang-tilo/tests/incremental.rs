@@ -842,3 +842,132 @@ fn the_store_keeps_a_listing_by_the_items_a_change_touched() {
         listed()
     );
 }
+
+/// A filtered listing (the items a predicate holds of) is kept across items finished, added,
+/// moved and removed, here and by a peer: each change has the store evaluate the items it
+/// touched, not every item, and what it holds is what evaluating every item anew finds.
+#[test]
+fn the_store_keeps_a_filtered_listing_by_the_items_a_change_touched() {
+    use tilolang_runtime::meta::FieldKind;
+    use tilolang_runtime::store::{FieldSpec, Store as _};
+    use tilolang_runtime::value::{ResourceRef, Value};
+
+    let (mut ada, meta, root, lock) = room_with_ids();
+    let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+    let items = field_id(&meta, "TodoList", "items");
+    let done = field_id(&meta, "Item", "done");
+    let type_id = |name: &str| {
+        meta.types
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let list = ResourceRef::root(&root, type_id("TodoList"));
+    let item_ty = type_id("Item");
+    let spec = FieldSpec {
+        id: items.clone(),
+        kind: FieldKind::Collection,
+    };
+    let open = not_done(done);
+    let store = ada.host.store().clone();
+    let filtered = || {
+        store
+            .listing_where(&list, &spec, &item_ty, &open)
+            .unwrap()
+            .ids()
+    };
+    // Every item evaluated anew, read by read.
+    let anew = |replica: &Replica| -> Vec<String> {
+        item_ids(replica, &meta, &root)
+            .into_iter()
+            .filter(|id| {
+                let item = list.item(&items, id, item_ty.clone());
+                replica.host.runtime().read(&item, "done").ok() != Some(Value::Bool(true))
+            })
+            .collect()
+    };
+    let evaluated = || store.read_stats().evaluated;
+
+    assert_eq!(filtered(), anew(&ada));
+    assert_eq!(evaluated(), 3, "listed once, each item evaluated once");
+    assert_eq!(filtered(), anew(&ada));
+    assert_eq!(evaluated(), 3, "kept");
+
+    // Finished here: it leaves, and only it is evaluated again.
+    let ids = item_ids(&ada, &meta, &root);
+    let finish = meta.actions.iter().find(|a| a.name == "finish").unwrap();
+    ada.host
+        .runtime()
+        .invoke_action(
+            &tilolang_runtime::Principal::new("ada"),
+            (
+                finish.id.as_str(),
+                vec![Value::resource(&list.item(
+                    &items,
+                    &ids[1],
+                    item_ty.clone(),
+                ))],
+            ),
+        )
+        .unwrap();
+    ada.commit();
+    let before = evaluated();
+    assert_eq!(filtered(), anew(&ada));
+    assert_eq!(filtered().len(), 2);
+    assert!(evaluated() - before <= 1, "the finished item alone");
+
+    // A peer's item arrives at the end, and one moves to the front.
+    add(&mut grace, &meta, &root, "tea");
+    ada.sync_with(&mut grace);
+    let before = evaluated();
+    assert_eq!(filtered(), anew(&ada));
+    assert!(evaluated() - before <= 1, "the arrived item alone");
+    let tea = item_ids(&ada, &meta, &root)[3].clone();
+    let moved = plan_move_first(&ada, &meta, &root, &tea);
+    ada.apply(&moved);
+    let before = evaluated();
+    assert_eq!(filtered(), anew(&ada));
+    assert_eq!(filtered()[0], tea);
+    assert!(evaluated() - before <= 1, "the moved item alone");
+
+    // Removed by a peer.
+    grace.sync_with(&mut ada);
+    let first_open = filtered()[1].clone();
+    remove(&mut grace, &meta, &root, &first_open);
+    ada.sync_with(&mut grace);
+    assert_eq!(filtered(), anew(&ada));
+    assert!(!filtered().contains(&first_open));
+
+    // A store that lists the collection anew finds the same.
+    let fresh = Replica::new("ada", ada.doc.fork(), &[(TODO, &lock)]).0;
+    assert_eq!(
+        fresh
+            .host
+            .store()
+            .listing_where(&list, &spec, &item_ty, &open)
+            .unwrap()
+            .ids(),
+        filtered()
+    );
+}
+
+/// `not item.done`, as the store answers it: the register `done`, false where unwritten.
+fn not_done(done: String) -> tilolang_runtime::store::Pred {
+    use tilolang::pred::{CmpOp, Lit, Operand};
+    use tilolang_runtime::meta::FieldKind;
+    use tilolang_runtime::store::{FieldRead, FieldSpec, Pred};
+
+    Pred::Not(Box::new(Pred::Cmp(
+        CmpOp::Eq,
+        Operand::Field(FieldRead {
+            spec: FieldSpec {
+                id: done,
+                kind: FieldKind::Register,
+            },
+            absent: Lit::Bool(false),
+        }),
+        Operand::Lit(Lit::Bool(true)),
+    )))
+}

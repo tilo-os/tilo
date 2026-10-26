@@ -138,7 +138,9 @@ impl ViewInstance {
         }
     }
 
-    /// The current tree. Rows of a `list` that were not shown are empty `fragment`s.
+    /// The current tree. Rows of a `list` that were not shown are not in it (for the patches,
+    /// such a row is an empty `fragment`): [`Self::list_len`] and [`Self::row_key`] say which
+    /// rows a list has.
     pub fn tree(&self) -> &UiNode {
         &self.live.tree
     }
@@ -221,6 +223,8 @@ impl ViewInstance {
                 self.live.show_row(&self.core, &list, i)?;
             }
         }
+        // Every row is built: the lists hold all their rows from now on.
+        self.live.devirtualize();
         self.subscribe_new();
         Ok(())
     }

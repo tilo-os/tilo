@@ -25,7 +25,9 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
+use std::sync::Arc;
 
+use automerge::transaction::Transactable as _;
 use automerge::{ChangeHash, ObjType, ReadDoc, ScalarValue, Value as AmValue};
 use serde_json::Value as Json;
 use tilo_automerge::ApplyIncoming as _;
@@ -34,7 +36,8 @@ use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{AppId, DocId, RunId, TypeId};
 use tilolang_runtime::store::{
     ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Listing,
-    ListingChange, Mutation, NewRecord, OutboxEntry, Scalar, Splice, Store, StoreError, SubId, Txn,
+    ListingChange, Mutation, NewRecord, OutboxEntry, Pred, Scalar, Splice, Store, StoreError,
+    SubId, Txn,
 };
 use tilolang_runtime::value::ResourceRef;
 
@@ -114,7 +117,9 @@ pub struct StoreStats {
 }
 
 struct Inner {
-    mirror: Doc,
+    /// Shared with the snapshots taken of it until it changes: a change while one is read
+    /// copies it then ([`Inner::mirror_mut`]).
+    mirror: Arc<Doc>,
     /// The heads of the room record the mirror holds every change of.
     seen: Vec<ChangeHash>,
     /// What the store wrote into the mirror since it last caught up with the record, oldest
@@ -152,10 +157,11 @@ struct Inner {
 }
 
 /// The mirror as it was when taken, to read on another thread: what search and publication read
-/// a whole room from without holding up a frame. Taking one copies the mirror (2 ms at 10k items),
-/// reading it costs what reading the store does.
+/// a whole room from without holding up a frame. Taking one shares the mirror; the store copies
+/// it only when it changes while a snapshot is still read. Reading it costs what reading the
+/// store does.
 pub struct Snapshot {
-    mirror: Doc,
+    mirror: Arc<Doc>,
     index: BTreeMap<DocId, (AppId, TypeId)>,
 }
 
@@ -377,7 +383,7 @@ impl TiloStore {
         let index = scan(&mirror);
         Self {
             inner: Rc::new(RefCell::new(Inner {
-                mirror,
+                mirror: Arc::new(mirror),
                 seen,
                 local: Vec::new(),
                 stats: StoreStats::default(),
@@ -416,11 +422,12 @@ impl TiloStore {
         // The store's own writes leave the mirror: what they touched is forgotten, and the items
         // they added, removed or moved are moved again below, as the record has them.
         let mut items = inner.drop_local_from(0);
-        inner.mirror.rollback();
-        let changed = if inner.mirror.get_heads() == inner.seen {
+        inner.rollback();
+        let changed = if inner.mirror.committed_document().get_heads() == inner.seen {
             let changes = record.committed_document().get_changes(&inner.seen);
-            let applied = inner.mirror.apply_incoming(changes.iter().cloned());
-            write_as_a_known_actor(&mut inner.mirror);
+            let mirror = inner.mirror_mut();
+            let applied = mirror.apply_incoming(changes.iter().cloned());
+            write_as_a_known_actor(mirror);
             applied
                 .ok()
                 .map(|()| changed_by(&changes, &inner.mirror, &inner.index))
@@ -469,9 +476,10 @@ impl TiloStore {
             // The mirror held a change of its own, which only a copy of the record removes.
             inner.stats.full_syncs = inner.stats.full_syncs.saturating_add(1);
             inner.cache.borrow_mut().clear();
-            inner.mirror = record.clone();
-            inner.mirror.rollback();
-            write_as_a_known_actor(&mut inner.mirror);
+            let mut mirror = record.clone();
+            mirror.rollback();
+            write_as_a_known_actor(&mut mirror);
+            inner.mirror = Arc::new(mirror);
             inner.index = scan(&inner.mirror);
             inner.notify_all();
         }
@@ -491,6 +499,12 @@ impl TiloStore {
     #[must_use]
     pub fn stats(&self) -> StoreStats {
         self.inner.borrow().stats
+    }
+
+    /// How much the store read from its mirror so far.
+    #[must_use]
+    pub fn read_stats(&self) -> crate::cache::ReadStats {
+        self.inner.borrow().cache.borrow().stats()
     }
 
     /// The actions the runtime committed since the host last took them, oldest first. They stay
@@ -676,7 +690,7 @@ impl TiloStore {
             return taken;
         }
         let taken = std::sync::Arc::new(Snapshot {
-            mirror: inner.mirror.clone(),
+            mirror: Arc::clone(&inner.mirror),
             index: inner.index.clone(),
         });
         inner.snapshot = std::sync::Arc::downgrade(&taken);
@@ -817,7 +831,7 @@ impl Inner {
         touched: Vec<FieldKey>,
         items: Vec<(FieldKey, String)>,
     ) -> Result<BTreeMap<DocId, Vec<ListingChange>>, StoreError> {
-        let applied = apply_edits(&mut self.mirror, app, std::slice::from_ref(&edit), &seed);
+        let applied = apply_edits(self.mirror_mut(), app, std::slice::from_ref(&edit), &seed);
         // Forgotten or moved either way: a failed edit may have written part of itself.
         self.forget(&touched);
         let mut moved = ItemTouches::new();
@@ -877,15 +891,28 @@ impl Inner {
     /// Drop the mirror's open transaction and apply the store's committed writes again: the
     /// mirror as those writes left it, without whatever was written after them.
     fn reapply(&mut self) {
-        self.mirror.rollback();
+        self.rollback();
+        let mirror = Arc::make_mut(&mut self.mirror);
         for write in &self.local {
             // Each applied once already, on this same base.
             let _ = apply_edits(
-                &mut self.mirror,
+                mirror,
                 &write.app,
                 std::slice::from_ref(&write.edit),
                 &write.seed,
             );
+        }
+    }
+
+    /// The mirror, to change: a copy of it when a snapshot still reads it.
+    fn mirror_mut(&mut self) -> &mut Doc {
+        Arc::make_mut(&mut self.mirror)
+    }
+
+    /// Drop the mirror's open transaction, if it has one.
+    fn rollback(&mut self) {
+        if self.mirror.pending_ops() > 0 {
+            self.mirror_mut().rollback();
         }
     }
 
@@ -1224,6 +1251,27 @@ impl Store for TiloStore {
             .cache
             .borrow_mut()
             .listing(&inner.mirror, (app, ty), at, &field.id)
+    }
+
+    fn listing_where(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        item: &TypeId,
+        pred: &Pred,
+    ) -> Result<Rc<Listing>, StoreError> {
+        let inner = self.inner.borrow();
+        let (app, ty) = inner
+            .index
+            .get(&at.doc)
+            .ok_or_else(|| not_found(format!("resource {}", at.doc)))?;
+        inner.cache.borrow_mut().listing_where(
+            &inner.mirror,
+            (app, ty),
+            at,
+            (&field.id, item),
+            pred,
+        )
     }
 
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError> {

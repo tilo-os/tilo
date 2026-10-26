@@ -9,9 +9,11 @@
 //! * where each resource is (its map), so a read walks no further than the resource;
 //! * each field value read, so the second pass of a filter (a list and its filter counts, a
 //!   card's count and its rows) reads nothing;
-//! * a collection read with the scalar fields (registers and counters) of its items, every
-//!   entry and item map opened once, on several threads for a large collection: a view that
-//!   lists a collection mostly filters, counts or sorts it by those.
+//! * a collection read with where each item is, every entry opened once, on several threads
+//!   for a large collection;
+//! * the items of a collection a filter holds of (a view's `filter` and `count` the runtime
+//!   hands the store), the fields the filter reads read for every item in one pass on several
+//!   threads, then kept up to date item by item.
 //!
 //! A change forgets exactly what it touched (the store's own writes by the field they wrote,
 //! the record's changes by the [`FieldKey`]s [`crate::reads::changed_by`] names), and a change
@@ -36,7 +38,9 @@ use tilo_resource::collection::{
 };
 use tilo_resource::model::MapSlot;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
-use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, Listing, Splice, StoreError};
+use tilolang_runtime::store::{
+    ANY_FIELD, FieldKey, FieldRead, FieldValue, Listing, Lit, Pred, Splice, StoreError,
+};
 use tilolang_runtime::value::ResourceRef;
 
 use crate::reads::{default_value, field_of_slot, resource_obj};
@@ -55,6 +59,26 @@ const MAX_THREADS: usize = 8;
 #[derive(Default)]
 pub struct ReadCache {
     docs: Map<DocId, DocCache>,
+    stats: ReadStats,
+}
+
+/// How much the store read from its mirror, counted since it was made: work that does not
+/// depend on the machine or its load, which tests hold to how it grows with the record.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadStats {
+    /// Collections listed by walking their entries.
+    pub listings: u64,
+    /// Collection entries read while listing (each an item's order key).
+    pub entries: u64,
+    /// Resources found by walking the record (not from what was read before).
+    pub located: u64,
+    /// Field values read from the record one by one.
+    pub fields: u64,
+    /// Scalar fields of items read with their collection's listing.
+    pub scanned: u64,
+    /// Items a filter was evaluated on, listing a filtered collection or bringing one up to
+    /// date.
+    pub evaluated: u64,
 }
 
 /// What the store read of one document: per resource (the document's root, or an item, keyed
@@ -71,6 +95,39 @@ struct DocCache {
     /// than listed with their collection: forgotten with it, as its listed items are, without a
     /// look at the other resources.
     inside: Map<String, Vec<String>>,
+    /// Per resource kept, the filtered views of its collections listed so far.
+    filtered: Map<String, Vec<Filtered>>,
+}
+
+/// The items of a collection a filter holds of, in the collection's order, kept up to date
+/// item by item: a change to an item, or to where it is, marks it to be looked at again when
+/// next asked, and only those are evaluated then.
+struct Filtered {
+    field: String,
+    pred: Pred,
+    listing: Rc<Listing>,
+    /// The order key each item had when it was put in.
+    keys: Map<Rc<str>, String>,
+    /// The items to look at again.
+    stale: BTreeSet<String>,
+}
+
+impl Filtered {
+    /// Where the item `id` with the order key `key` is, or would go.
+    fn position(&self, key: &str, id: &str) -> usize {
+        self.listing.items.partition_point(|other| {
+            let other_key = self.keys.get(other).map_or("", String::as_str);
+            (other_key, &**other) < (key, id)
+        })
+    }
+}
+
+/// The collection an item resource (written as [`ResourceRef::id_string`]) is in, and the
+/// item: its parent resource, the collection's field and the item's id.
+fn item_of(resource: &str) -> Option<(&str, &str, &str)> {
+    let (parent, step) = resource.rsplit_once('/')?;
+    let (field, id) = step.split_once(':')?;
+    Some((parent, field, id))
 }
 
 /// One resource: where it is and the fields read so far, keyed by the field ids its schema
@@ -111,6 +168,8 @@ impl DocCache {
             if self.resources.remove(&key).is_none() {
                 continue;
             }
+            self.filtered.remove(&key);
+            self.mark_stale(&key, ANY_FIELD);
             for (field, listed) in self.lists.remove(&key).unwrap_or_default() {
                 gone.extend(listed.member_keys(&key, field));
             }
@@ -118,9 +177,32 @@ impl DocCache {
         }
     }
 
+    /// Mark the item `key` to be looked at again by the filtered views of its collection whose
+    /// filter reads its field `field` (any, for [`ANY_FIELD`]).
+    fn mark_stale(&mut self, key: &str, field: &str) {
+        let Some((parent, coll, id)) = item_of(key) else {
+            return;
+        };
+        for filtered in self.filtered.get_mut(parent).into_iter().flatten() {
+            if filtered.field == coll
+                && (field == ANY_FIELD
+                    || filtered
+                        .pred
+                        .fields()
+                        .iter()
+                        .any(|read| read.spec.id == field))
+            {
+                filtered.stale.insert(id.to_owned());
+            }
+        }
+    }
+
     /// Forget the listing of the collection `field` of the resource `key`, and the items kept
     /// with it: they are listed, and kept, again when next read.
     fn drop_listing(&mut self, key: &str, field: &str) {
+        if let Some(views) = self.filtered.get_mut(key) {
+            views.retain(|view| view.field != field);
+        }
         let Some(listed) = self
             .lists
             .get_mut(key)
@@ -167,7 +249,6 @@ impl Listed {
 struct Found {
     stored: Stored,
     obj: Option<ObjId>,
-    fields: Vec<(&'static str, FieldValue)>,
 }
 
 fn not_found(what: impl Into<String>) -> StoreError {
@@ -214,9 +295,40 @@ impl ReadCache {
                 self.listing(doc, (app, ty), at, field)?.ids(),
             ));
         }
+        // A register or counter is read with the item's others, in one walk of its map: a row
+        // reads several fields of its item, and a seek for each costs about what the walk does.
+        if let Some(obj) = obj.as_ref()
+            && matches!(spec.kind, MergeKind::Register | MergeKind::Counter)
+        {
+            let wanted: Vec<&'static FieldSchema> = schema
+                .fields
+                .iter()
+                .filter(|f| matches!(f.kind, MergeKind::Register | MergeKind::Counter))
+                .collect();
+            let read = scalars(doc, obj, &wanted);
+            let found = read
+                .iter()
+                .find(|(name, _)| *name == spec.id.as_str())
+                .map(|(_, value)| value.clone());
+            if let Some(value) = found {
+                self.stats.fields = self.stats.fields.saturating_add(1);
+                if let Some(cached) = self
+                    .docs
+                    .get_mut(&at.doc)
+                    .and_then(|d| d.resources.get_mut(&key))
+                {
+                    for (name, value) in read {
+                        cached.fields.entry(name).or_insert(value);
+                    }
+                }
+                return Ok(value);
+            }
+            // Of the wrong shape: read alone below, which says so.
+        }
         let value = match obj.as_ref() {
             None => default_value(spec),
             Some(obj) => {
+                self.stats.fields = self.stats.fields.saturating_add(1);
                 let slot = doc
                     .get(obj, spec.id.as_str())
                     .map_err(|e| StoreError::Backend(e.to_string()))?
@@ -266,7 +378,10 @@ impl ReadCache {
                 listing: Rc::default(),
                 keys: Map::default(),
             },
-            Some(obj) => self.list(doc, obj, &key, spec)?,
+            Some(obj) => {
+                self.stats.listings = self.stats.listings.saturating_add(1);
+                self.list(doc, obj, &key, spec)?
+            }
         };
         let listing = Rc::clone(&listed.listing);
         if let Some(d) = self.docs.get_mut(&at.doc)
@@ -278,6 +393,201 @@ impl ReadCache {
                 .insert(spec.id.as_str(), listed);
         }
         Ok(listing)
+    }
+
+    /// The items of the collection `field` of the resource `at` that `pred` holds of, in order,
+    /// shared: evaluated on every item once, then kept, and kept up to date by evaluating each
+    /// item a change touched (its fields, or where it is) when next asked.
+    ///
+    /// # Errors
+    /// As [`Self::listing`], and as reading a field `pred` reads.
+    pub fn listing_where(
+        &mut self,
+        doc: &Doc,
+        (app, ty): (&AppId, &TypeId),
+        at: &ResourceRef,
+        (field, item): (&str, &TypeId),
+        pred: &Pred,
+    ) -> Result<Rc<Listing>, StoreError> {
+        let all = self.listing(doc, (app, ty), at, field)?;
+        // A predicate that reads no field holds of every item or of none.
+        if pred.fields().is_empty() {
+            let holds = pred.eval(&mut |_: &FieldRead| -> Result<Lit, StoreError> {
+                Err(StoreError::Invalid("a field".into()))
+            })?;
+            return Ok(if holds { all } else { Rc::default() });
+        }
+        let key = at.id_string();
+        let prefix = format!("{key}/{field}:");
+        let held = self.docs.get_mut(&at.doc).and_then(|d| {
+            let views = d.filtered.get_mut(&key)?;
+            let at = views
+                .iter()
+                .position(|view| view.field == field && view.pred == *pred)?;
+            Some(views.swap_remove(at))
+        });
+        let view = if let Some(mut view) = held {
+            let stale = std::mem::take(&mut view.stale);
+            for id in stale {
+                // Found by the key it went in with, which the search needs it to keep.
+                if let Some(before) = view.keys.get(id.as_str()) {
+                    let at = view.position(before, &id);
+                    if view.listing.get(at).is_some_and(|found| **found == *id) {
+                        Rc::make_mut(&mut view.listing).items.remove(at);
+                    }
+                    view.keys.remove(id.as_str());
+                }
+                let Some(order) = self.order_key(&at.doc, &key, field, &id) else {
+                    continue;
+                };
+                if self.holds(doc, (app, ty), (at, &prefix), (field, item), &id, pred)? {
+                    let at = view.position(&order, &id);
+                    let shared: Rc<str> = Rc::from(id.as_str());
+                    let items = &mut Rc::make_mut(&mut view.listing).items;
+                    items.insert(at.min(items.len()), Rc::clone(&shared));
+                    view.keys.insert(shared, order);
+                }
+            }
+            view
+        } else {
+            self.read_for(doc, &at.doc, &prefix, &all, item, pred);
+            let mut items = Vec::new();
+            let mut keys = Map::default();
+            for id in &all.items {
+                if self.holds(doc, (app, ty), (at, &prefix), (field, item), id, pred)? {
+                    let order = self.order_key(&at.doc, &key, field, id).unwrap_or_default();
+                    keys.insert(Rc::clone(id), order);
+                    items.push(Rc::clone(id));
+                }
+            }
+            Filtered {
+                field: field.to_owned(),
+                pred: pred.clone(),
+                listing: Rc::new(Listing { items }),
+                keys,
+                stale: BTreeSet::new(),
+            }
+        };
+        let listing = Rc::clone(&view.listing);
+        if let Some(d) = self.docs.get_mut(&at.doc)
+            && d.resources.contains_key(&key)
+        {
+            d.filtered.entry(key).or_default().push(view);
+        }
+        Ok(listing)
+    }
+
+    /// Read the fields `pred` reads of each item of `listing` (whose items are written `prefix`
+    /// and the id) that is kept without them, in one pass on several threads: evaluating
+    /// `pred` on every item then reads nothing more.
+    fn read_for(
+        &mut self,
+        doc: &Doc,
+        doc_id: &str,
+        prefix: &str,
+        listing: &Listing,
+        item: &TypeId,
+        pred: &Pred,
+    ) {
+        let Some(schema) = lookup(item) else {
+            return;
+        };
+        let mut wanted: Vec<&'static FieldSchema> = Vec::new();
+        for read in pred.fields() {
+            if let Some(spec) = schema.field(&read.spec.id)
+                && !wanted.iter().any(|w| w.id == spec.id)
+            {
+                wanted.push(spec);
+            }
+        }
+        let Some(cache) = self.docs.get(doc_id) else {
+            return;
+        };
+        let jobs: Vec<(String, ObjId)> = listing
+            .items
+            .iter()
+            .filter_map(|id| {
+                let key = format!("{prefix}{id}");
+                let cached = cache.resources.get(&key)?;
+                let obj = cached.obj.clone()?;
+                let missing = wanted
+                    .iter()
+                    .any(|f| !cached.fields.contains_key(f.id.as_str()));
+                missing.then_some((key, obj))
+            })
+            .collect();
+        let read = in_parallel(jobs, |(key, obj)| {
+            let fields: Vec<(&'static str, FieldValue)> = wanted
+                .iter()
+                .filter_map(|spec| {
+                    let slot = doc
+                        .get(&obj, spec.id.as_str())
+                        .ok()?
+                        .map(|(value, id)| (value.into_owned(), id));
+                    // A value of the wrong shape is left to the read that wants it.
+                    field_of_slot(doc, slot, spec)
+                        .ok()
+                        .map(|value| (spec.id.as_str(), value))
+                })
+                .collect();
+            Some((key, fields))
+        });
+        let Some(cache) = self.docs.get_mut(doc_id) else {
+            return;
+        };
+        for (key, fields) in read {
+            self.stats.scanned = self.stats.scanned.saturating_add(fields.len() as u64);
+            if let Some(cached) = cache.resources.get_mut(&key) {
+                for (name, value) in fields {
+                    cached.fields.entry(name).or_insert(value);
+                }
+            }
+        }
+    }
+
+    /// The order key of the item `id` in the listed collection `field` of the resource `key`.
+    fn order_key(&self, doc: &str, key: &str, field: &str, id: &str) -> Option<String> {
+        self.docs
+            .get(doc)?
+            .lists
+            .get(key)?
+            .get(field)?
+            .keys
+            .get(id)
+            .cloned()
+    }
+
+    /// Whether `pred` holds of the item `id` of the collection `field` of `at` (whose items
+    /// are written `prefix` and the id), its fields read through what was read before.
+    fn holds(
+        &mut self,
+        doc: &Doc,
+        (app, ty): (&AppId, &TypeId),
+        (at, prefix): (&ResourceRef, &str),
+        (field, item): (&str, &TypeId),
+        id: &str,
+        pred: &Pred,
+    ) -> Result<bool, StoreError> {
+        self.stats.evaluated = self.stats.evaluated.saturating_add(1);
+        let key = format!("{prefix}{id}");
+        pred.eval(&mut |read: &FieldRead| {
+            let kept = self
+                .docs
+                .get(&at.doc)
+                .and_then(|d| d.resources.get(&key))
+                .and_then(|r| r.fields.get(read.spec.id.as_str()))
+                .cloned();
+            let value = match kept {
+                Some(value) => value,
+                None => self.read(
+                    doc,
+                    (app, ty),
+                    &at.item(field, id, item.clone()),
+                    &read.spec.id,
+                )?,
+            };
+            read.lit(value)
+        })
     }
 
     /// Where the item `id` is in the collection `field` of `at`, if it is there and the
@@ -305,6 +615,11 @@ impl ReadCache {
         items: &BTreeSet<String>,
     ) -> Option<Vec<Splice>> {
         let cache = self.docs.get_mut(coll.doc())?;
+        for view in cache.filtered.get_mut(&coll.resource).into_iter().flatten() {
+            if view.field == coll.field.as_str() {
+                view.stale.extend(items.iter().cloned());
+            }
+        }
         let map = cache
             .resources
             .get(&coll.resource)?
@@ -400,6 +715,8 @@ impl ReadCache {
             let schema = lookup(ty).ok_or_else(|| not_found(format!("type {ty}")))?;
             let obj = resource_obj(doc, app, &at.doc)
                 .ok_or_else(|| not_found(format!("resource {}", at.doc)))?;
+            self.stats.located = self.stats.located.saturating_add(1);
+            let cache = self.docs.entry(at.doc.clone()).or_default();
             cache
                 .resources
                 .insert(key.to_owned(), Cached::new(Some(obj.clone()), schema));
@@ -428,6 +745,7 @@ impl ReadCache {
             .ok_or_else(|| not_found(format!("item `{}`", last.item)))?;
         let obj = tilo_resource::stored_item(doc, &coll, &last.item)
             .ok_or_else(|| not_found(format!("item `{}`", last.item)))?;
+        self.stats.located = self.stats.located.saturating_add(1);
         self.docs.entry(at.doc.clone()).or_default().keep_within(
             &parent.id_string(),
             key.to_owned(),
@@ -437,8 +755,8 @@ impl ReadCache {
     }
 
     /// The items of the collection `field` of the resource map `obj` (written `key`), in
-    /// order, with their order keys; each item that was not read before is kept with its
-    /// scalar fields.
+    /// order, with their order keys; each item that was not read before is kept, with where
+    /// it is and none of its fields.
     fn list(
         &mut self,
         doc: &Doc,
@@ -457,31 +775,22 @@ impl ReadCache {
             });
         };
         let item_schema = field.record.as_deref().and_then(lookup);
-        let doc_id = tilolang_runtime::store::doc_of(key).to_owned();
-        let cache = self.docs.entry(doc_id).or_default();
         let prefix = format!("{key}/{}:", field.id);
-        let entries: Vec<(StoredEntry, bool)> = collection_entries(doc, &coll)
-            .into_iter()
-            .map(|entry| {
-                // An item kept already needs only its entry read; the others their scalars too.
-                let kept = cache
-                    .resources
-                    .contains_key(&format!("{prefix}{}", entry.id().as_str()));
-                (entry, !kept)
-            })
-            .collect();
-        let listed = read_listing(doc, entries, item_schema);
+        let entries = collection_entries(doc, &coll);
+        self.stats.entries = self.stats.entries.saturating_add(entries.len() as u64);
+        let listed = read_listing(doc, entries);
+        let cache = self
+            .docs
+            .entry(tilolang_runtime::store::doc_of(key).to_owned())
+            .or_default();
         let mut stored: Vec<Stored> = Vec::with_capacity(listed.len());
         for item in listed {
-            let id = format!("{prefix}{}", item.stored.id.as_str());
             if let Some(schema) = item_schema {
-                let cached = cache
+                let id = format!("{prefix}{}", item.stored.id.as_str());
+                cache
                     .resources
                     .entry(id)
-                    .or_insert_with(|| Cached::new(item.obj.clone(), schema));
-                for (name, value) in item.fields {
-                    cached.fields.entry(name).or_insert(value);
-                }
+                    .or_insert_with(|| Cached::new(item.obj, schema));
             }
             stored.push(item.stored);
         }
@@ -571,8 +880,14 @@ impl ReadCache {
             if let Some(cached) = cache.resources.get_mut(&key.resource) {
                 cached.fields.remove(key.field.as_str());
             }
+            cache.mark_stale(&key.resource, &key.field);
             cache.drop_listing(&key.resource, &key.field);
         }
+    }
+
+    /// How much was read so far.
+    pub fn stats(&self) -> ReadStats {
+        self.stats
     }
 
     /// Forget everything read of the document `doc`.
@@ -586,24 +901,20 @@ impl ReadCache {
     }
 }
 
-/// Read the entries of a collection, and each item's scalar fields: on several threads when
-/// there are many.
-fn read_listing(
-    doc: &Doc,
-    entries: Vec<(StoredEntry, bool)>,
-    item: Option<&'static TypeSchema>,
-) -> Vec<Found> {
+/// `each` over `items`, on several threads when there are many: the results in no particular
+/// order.
+fn in_parallel<T: Send, R: Send>(items: Vec<T>, each: impl Fn(T) -> Option<R> + Sync) -> Vec<R> {
     let threads = std::thread::available_parallelism()
         .map_or(1, std::num::NonZeroUsize::get)
         .min(MAX_THREADS);
-    if entries.len() < PARALLEL_FROM || threads < 2 {
-        return read_items(doc, entries, item);
+    if items.len() < PARALLEL_FROM || threads < 2 {
+        return items.into_iter().filter_map(each).collect();
     }
     // Chunks a few times smaller than a thread's share, taken from one queue by the threads
     // and by this one: a thread the system does not give, or a slow one, costs no items.
-    let per = entries.len().div_ceil(threads.saturating_mul(4));
-    let mut chunks: Vec<Vec<(StoredEntry, bool)>> = Vec::new();
-    let mut rest = entries.into_iter();
+    let per = items.len().div_ceil(threads.saturating_mul(4));
+    let mut chunks: Vec<Vec<T>> = Vec::new();
+    let mut rest = items.into_iter();
     loop {
         let chunk: Vec<_> = rest.by_ref().take(per).collect();
         if chunk.is_empty() {
@@ -622,7 +933,7 @@ fn read_listing(
             let Some(chunk) = chunk else {
                 break out;
             };
-            out.extend(read_items(doc, chunk, item));
+            out.extend(chunk.into_iter().filter_map(&each));
         }
     };
     std::thread::scope(|scope| {
@@ -634,7 +945,6 @@ fn read_listing(
                     .ok()
             })
             .collect();
-        // The order does not matter: the caller sorts the items into stored order.
         let mut out = run();
         for worker in workers {
             match worker.join() {
@@ -646,44 +956,17 @@ fn read_listing(
     })
 }
 
-/// Read entries, and the scalar fields of the items marked to be read, in order.
-fn read_items(
-    doc: &Doc,
-    entries: Vec<(StoredEntry, bool)>,
-    item: Option<&'static TypeSchema>,
-) -> Vec<Found> {
-    let wanted: Vec<&'static FieldSchema> = item.map_or_else(Vec::new, |schema| {
-        schema
-            .fields
-            .iter()
-            .filter(|f| matches!(f.kind, MergeKind::Register | MergeKind::Counter))
-            .collect()
-    });
-    entries
-        .into_iter()
-        .filter_map(|(entry, read)| read_entry(doc, entry).map(|stored| (stored, read)))
-        .map(|(stored, read)| {
-            let obj = if stored.entry.is_some() {
-                map_of(&stored.value)
-            } else {
-                None
-            };
-            let fields = match obj.as_ref() {
-                _ if !read => Vec::new(),
-                Some(obj) => scalars(doc, obj, &wanted),
-                None if stored.entry.is_none() => wanted
-                    .iter()
-                    .map(|f| (f.id.as_str(), default_value(f)))
-                    .collect(),
-                None => Vec::new(),
-            };
-            Found {
-                stored,
-                obj,
-                fields,
-            }
-        })
-        .collect()
+/// Read the entries of a collection: each item's order key and map, not its fields.
+fn read_listing(doc: &Doc, entries: Vec<StoredEntry>) -> Vec<Found> {
+    in_parallel(entries, |entry| {
+        let stored = read_entry(doc, entry)?;
+        let obj = if stored.entry.is_some() {
+            map_of(&stored.value)
+        } else {
+            None
+        };
+        Some(Found { stored, obj })
+    })
 }
 
 /// The fields `wanted` (registers and counters) of the resource map `obj`, read in one walk of
@@ -693,9 +976,6 @@ fn scalars(
     obj: &ObjId,
     wanted: &[&'static FieldSchema],
 ) -> Vec<(&'static str, FieldValue)> {
-    if wanted.is_empty() {
-        return Vec::new();
-    }
     let mut slots: Vec<MapSlot> = vec![None; wanted.len()];
     for entry in doc.map_range(obj, ..) {
         if let Some(slot) = wanted

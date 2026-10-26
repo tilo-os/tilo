@@ -175,9 +175,41 @@ pub enum Patch {
 /// Whether two retained action references are the same action on the same arguments.
 pub type EventEq<'a> = &'a dyn Fn(Retained, Retained) -> bool;
 
+/// One step of the rows of a virtual list (a `list` whose rows are built when shown, and are
+/// absent from the tree until then), against the rows the host holds: every row, shown or not.
+#[derive(Clone, Debug)]
+pub(crate) enum RowStep {
+    Remove(String),
+    Insert(usize, Box<UiNode>),
+    Move(String, usize),
+}
+
+/// What became of the rows of a virtual list when the boundary holding it ran: the steps from
+/// the rows before to the rows now, or a list to read anew.
+#[derive(Clone, Debug)]
+pub(crate) enum RowsChange {
+    Steps(Vec<RowStep>),
+    Replace,
+}
+
+/// The virtual lists of a render, by key, and what became of their rows. The children of such
+/// a list are the rows built, which are not all its rows: they are diffed by key, and its rows
+/// change by their steps.
+pub(crate) type VirtualLists = HashMap<String, RowsChange>;
+
 /// The patches that turn `old` into `new`.
 pub fn diff(old: &UiNode, new: &UiNode, same_event: EventEq<'_>) -> Vec<Patch> {
-    if old.kind != new.kind || old.key != new.key {
+    diff_with(old, new, same_event, &VirtualLists::new())
+}
+
+/// [`diff`], for a tree that holds virtual lists.
+pub(crate) fn diff_with(
+    old: &UiNode,
+    new: &UiNode,
+    same_event: EventEq<'_>,
+    lists: &VirtualLists,
+) -> Vec<Patch> {
+    if old.kind != new.kind || old.key != new.key || replaced(lists, new) {
         return vec![Patch::SetRoot(new.clone())];
     }
     let mut out = Vec::new();
@@ -185,17 +217,22 @@ pub fn diff(old: &UiNode, new: &UiNode, same_event: EventEq<'_>) -> Vec<Patch> {
         old,
         new,
         std::slice::from_ref(&new.key),
-        same_event,
+        (same_event, lists),
         &mut out,
     );
     out
+}
+
+/// Whether `node` is a virtual list whose rows are to be read anew.
+fn replaced(lists: &VirtualLists, node: &UiNode) -> bool {
+    node.kind == "list" && matches!(lists.get(&node.key), Some(RowsChange::Replace))
 }
 
 fn diff_node(
     old: &UiNode,
     new: &UiNode,
     path: &[String],
-    same_event: EventEq<'_>,
+    (same_event, lists): (EventEq<'_>, &VirtualLists),
     out: &mut Vec<Patch>,
 ) {
     let names: BTreeSet<&String> = old.props.keys().chain(new.props.keys()).collect();
@@ -236,22 +273,70 @@ fn diff_node(
             anchor: new.anchor.clone(),
         });
     }
-    diff_children(old, new, path, same_event, out);
+    if new.kind == "list"
+        && let Some(RowsChange::Steps(steps)) = lists.get(&new.key)
+    {
+        virtual_rows(old, new, path, steps, (same_event, lists), out);
+        return;
+    }
+    diff_children(old, new, path, (same_event, lists), out);
+}
+
+/// The rows of a virtual list: its steps, then what changed inside each row built before and
+/// now, paired by key.
+fn virtual_rows(
+    old: &UiNode,
+    new: &UiNode,
+    path: &[String],
+    steps: &[RowStep],
+    cx: (EventEq<'_>, &VirtualLists),
+    out: &mut Vec<Patch>,
+) {
+    for step in steps {
+        out.push(match step {
+            RowStep::Remove(key) => Patch::Remove {
+                parent: path.to_vec(),
+                key: key.clone(),
+            },
+            RowStep::Insert(index, node) => Patch::Insert {
+                parent: path.to_vec(),
+                index: *index,
+                node: (**node).clone(),
+            },
+            RowStep::Move(key, to) => Patch::Move {
+                parent: path.to_vec(),
+                key: key.clone(),
+                to: *to,
+            },
+        });
+    }
+    let before: HashMap<&str, &UiNode> = old
+        .children
+        .iter()
+        .map(|row| (row.key.as_str(), row))
+        .collect();
+    for row in &new.children {
+        if let Some(was) = before.get(row.key.as_str()) {
+            let mut row_path = path.to_vec();
+            row_path.push(row.key.clone());
+            diff_node(was, row, &row_path, cx, out);
+        }
+    }
 }
 
 /// The patches that turn `old`, the only child of the node at `parent` (keys from the root),
 /// into `new`.
-pub fn diff_at(
+pub(crate) fn diff_at(
     parent: &[String],
     old: &UiNode,
     new: &UiNode,
-    same_event: EventEq<'_>,
+    cx: (EventEq<'_>, &VirtualLists),
     out: &mut Vec<Patch>,
 ) {
-    if old.kind == new.kind && old.key == new.key {
+    if old.kind == new.kind && old.key == new.key && !replaced(cx.1, new) {
         let mut path = parent.to_vec();
         path.push(new.key.clone());
-        diff_node(old, new, &path, same_event, out);
+        diff_node(old, new, &path, cx, out);
         return;
     }
     out.push(Patch::Remove {
@@ -271,7 +356,7 @@ fn diff_children(
     old: &UiNode,
     new: &UiNode,
     path: &[String],
-    same_event: EventEq<'_>,
+    cx: (EventEq<'_>, &VirtualLists),
     out: &mut Vec<Patch>,
 ) {
     if old.children.is_empty() && new.children.is_empty() {
@@ -313,6 +398,24 @@ fn diff_children(
             });
             continue;
         };
+        if replaced(cx.1, n) {
+            // A virtual list whose rows are new: the host reads it anew.
+            if current.get(j).is_some_and(|c| c.key == n.key) {
+                j = j.saturating_add(1);
+            } else {
+                moved.insert(n.key.as_str());
+            }
+            out.push(Patch::Remove {
+                parent: path.to_vec(),
+                key: n.key.clone(),
+            });
+            out.push(Patch::Insert {
+                parent: path.to_vec(),
+                index: i,
+                node: n.clone(),
+            });
+            continue;
+        }
         if current.get(j).is_some_and(|c| c.key == n.key) {
             j = j.saturating_add(1);
         } else {
@@ -325,8 +428,47 @@ fn diff_children(
         }
         let mut child_path = path.to_vec();
         child_path.push(n.key.clone());
-        diff_node(o, n, &child_path, same_event, out);
+        diff_node(o, n, &child_path, cx, out);
     }
+}
+
+/// The steps from the rows keyed `old` to the rows keyed `new`, in linear time, as
+/// [`diff_children`] finds them: removals first, then each row in order already in place,
+/// moved there, or inserted there (`row` makes the node of an inserted one).
+pub(crate) fn row_steps(
+    old: &[String],
+    new: &[String],
+    row: &dyn Fn(&str) -> UiNode,
+) -> Vec<RowStep> {
+    let fresh: HashSet<&str> = new.iter().map(String::as_str).collect();
+    let mut out = Vec::new();
+    let mut current: Vec<&str> = Vec::with_capacity(old.len());
+    for key in old {
+        if fresh.contains(key.as_str()) {
+            current.push(key);
+        } else {
+            out.push(RowStep::Remove(key.clone()));
+        }
+    }
+    let survivors: HashSet<&str> = current.iter().copied().collect();
+    let mut moved: HashSet<&str> = HashSet::new();
+    let mut j = 0;
+    for (i, key) in new.iter().enumerate() {
+        while current.get(j).is_some_and(|c| moved.contains(c)) {
+            j = j.saturating_add(1);
+        }
+        if !survivors.contains(key.as_str()) {
+            out.push(RowStep::Insert(i, Box::new(row(key))));
+            continue;
+        }
+        if current.get(j).is_some_and(|c| *c == key.as_str()) {
+            j = j.saturating_add(1);
+        } else {
+            out.push(RowStep::Move(key.clone(), i));
+            moved.insert(key.as_str());
+        }
+    }
+    out
 }
 
 #[cfg(test)]

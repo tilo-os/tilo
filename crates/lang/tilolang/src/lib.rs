@@ -40,6 +40,7 @@ pub mod lexer;
 pub mod meta;
 mod package;
 pub mod parser;
+pub mod pred;
 mod prims;
 pub mod print;
 pub mod resolve;
