@@ -1,8 +1,8 @@
 //! What opening an app costs the desktop's layout tree when other windows
 //! are open, on the desktop surface the browser desktop hosts apps in: a
-//! window opens holding the app's place, then the app arrives in it. The
-//! app is laid out under its window's retained node, not by rebuilding the
-//! desktop's tree.
+//! window opens holding the app's place, its slot springing open beside the
+//! others, then the app arrives in it. The slot's motion restyles the nodes
+//! the desktop's tree keeps instead of building the tree again each frame.
 
 use crate::component_support::{self, NotebookFixture};
 use std::{cell::RefCell, collections::HashMap, collections::HashSet, rc::Rc};
@@ -179,16 +179,38 @@ impl Desktop {
     }
 }
 
-/// What one more Notes window cost the layout once it had opened holding
-/// the app's place: the app arriving in it.
-fn open_with(others: usize) -> Step {
+/// What one more Notes window cost the layout: opening it holding the
+/// app's place (its slot springing open beside the others), and the app
+/// arriving in it.
+struct Opened {
+    opening: Step,
+    /// The frames the opening drew before it came to rest.
+    opening_frames: usize,
+    arrived: Step,
+}
+
+impl Opened {
+    fn rebuilt(&self) -> u64 {
+        self.opening.rebuilt + self.arrived.rebuilt
+    }
+}
+
+fn open_with(others: usize) -> Opened {
     ui::i18n::I18nManager::init("en-US");
     let f = NotebookFixture::rich();
     let checkout = component_support::notebook(&f);
     let mut desktop = Desktop::with_windows(&f, &checkout, others);
     let before = desktop.shown();
+    let start = desktop.spent();
+    let wall = std::time::Instant::now();
     desktop.launch();
-    desktop.settle(240);
+    let opening_frames = desktop.settle(240);
+    let opening = desktop.spent().since(start);
+    let opening_us = wall.elapsed().as_micros();
+    let per_frame = opening_us / u128::try_from(opening_frames.max(1)).unwrap_or(1);
+    eprintln!(
+        "perf open beside {others}: the window opening took {opening_us}us over {opening_frames} frames ({per_frame}us a frame), {opening:?}"
+    );
     let tab = desktop
         .shown()
         .into_iter()
@@ -205,23 +227,35 @@ fn open_with(others: usize) -> Step {
     );
     desktop.settle(240);
     let arrived = desktop.spent().since(start);
+    eprintln!("perf open beside {others}: the app arriving cost {arrived:?}");
     assert!(
         desktop.arrived.borrow().is_empty(),
         "the new window took its app"
     );
-    arrived
+    Opened {
+        opening,
+        opening_frames,
+        arrived,
+    }
 }
 
 #[test]
-fn an_app_arriving_rebuilds_only_its_window() {
-    for others in [1, 6] {
-        let cost = open_with(others);
-        // A bound component arriving in its window rebuilds the tree once
-        // (its callbacks name the tile's nodes), and the window's own new
-        // width once more: never once per window open.
+fn opening_an_app_lays_out_the_row_in_place() {
+    let one = open_with(1);
+    let six = open_with(6);
+    for (others, opened) in [(1, &one), (6, &six)] {
+        // The window joins the row and its slot springs open beside the
+        // others: every frame of the motion restyles nodes the tree keeps.
+        // What still rebuilds is the window joining the row and the app's
+        // component arriving in its window (its bound callbacks name the
+        // tile's nodes): a count that no longer grows with the frames.
         assert!(
-            cost.rebuilt <= 2,
-            "an app arriving in its window beside {others} others rebuilt the desktop's layout tree more than for its component and the window's width: {cost:?}"
+            opened.opening.rebuilt <= 2 && opened.arrived.rebuilt <= 1,
+            "opening Notes beside {others} others rebuilt the desktop's layout tree {} times over {} frames: opening {:?}, arriving {:?}",
+            opened.rebuilt(),
+            opened.opening_frames,
+            opened.opening,
+            opened.arrived,
         );
     }
 }
