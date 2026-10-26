@@ -30,6 +30,7 @@
 //! copied from writes only the items changed, added and removed, and for a
 //! [`Keyed`] those someone else touched meanwhile.
 
+use std::any::Any;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
@@ -400,6 +401,400 @@ fn settle_with_ids<T: Identified>(items: &mut [T], ids: &mut [Arc<str>]) -> bool
 
 /// Items stored under the ids they carry. See the module docs.
 pub type Keyed<T> = Items<T, ById>;
+
+/// A `Vec<T>` stored under each item's id, as [`Keyed`] stores its items,
+/// while the in-memory value stays a plain vector (`#[model(keyed)]`).
+///
+/// The serde form is still a list, so a settings file or an action argument
+/// written by an older build reads unchanged. Only the document's shape
+/// changes: a list's items move by position, where a keyed map keeps each
+/// item under its own id, so two people changing different providers do not
+/// overwrite one another.
+pub struct KeyedVecOf<T>(PhantomData<T>);
+
+/// A keyed vector, reached without its item type: reading its items, and
+/// appending an item read through the item table.
+pub(crate) trait VecItems {
+    fn clear_items(&mut self);
+    fn push_from_json(
+        &mut self,
+        item: &'static crate::table::ModelTable,
+        value: &serde_json::Value,
+    ) -> Result<(), ModelError>;
+    fn push_loaded(
+        &mut self,
+        item: &'static crate::table::ModelTable,
+        doc: &Doc,
+        value: &Value<'_>,
+        id: &ObjId,
+    ) -> Result<(), ModelError>;
+}
+
+impl<T: Model + 'static> VecItems for Vec<T> {
+    fn clear_items(&mut self) {
+        self.clear();
+    }
+
+    fn push_from_json(
+        &mut self,
+        item: &'static crate::table::ModelTable,
+        value: &serde_json::Value,
+    ) -> Result<(), ModelError> {
+        let mut staged: Option<T> = None;
+        (item.ops.from_json)(item, value, &mut staged)?;
+        self.push(staged.ok_or_else(crate::table::mismatch)?);
+        Ok(())
+    }
+
+    fn push_loaded(
+        &mut self,
+        item: &'static crate::table::ModelTable,
+        doc: &Doc,
+        value: &Value<'_>,
+        id: &ObjId,
+    ) -> Result<(), ModelError> {
+        let mut staged: Option<T> = None;
+        (item.ops.load)(item, doc, value, id, &mut staged)?;
+        self.push(staged.ok_or_else(crate::table::mismatch)?);
+        Ok(())
+    }
+}
+
+/// What [`KeyedVecOf<T>`]'s table reaches into a value with.
+pub struct KeyedVecDesc {
+    pub(crate) item: &'static crate::table::ModelTable,
+    pub(crate) items: for<'a> fn(&'a dyn Any) -> Option<&'a dyn crate::collection::ItemList>,
+    pub(crate) values: for<'a> fn(&'a mut dyn Any) -> Option<&'a mut dyn VecItems>,
+    pub(crate) staged: (fn() -> Box<dyn Any>, crate::table::Unstage),
+    pub(crate) replace: fn(&mut dyn Any, &mut dyn Any) -> Result<(), ModelError>,
+}
+
+impl<T: Model + Identified + 'static> KeyedVecOf<T> {
+    pub(crate) const DESC: KeyedVecDesc = KeyedVecDesc {
+        item: T::TABLE,
+        items: |value| Some(value.downcast_ref::<Vec<T>>()? as &dyn crate::collection::ItemList),
+        values: |value| {
+            let items = value.downcast_mut::<Option<Vec<T>>>()?;
+            Some(items.get_or_insert_with(Vec::new) as &mut dyn VecItems)
+        },
+        staged: (
+            crate::table::empty_of::<Vec<T>>,
+            crate::table::unwrap_of::<Vec<T>>,
+        ),
+        replace: crate::table::replace_of::<Vec<T>>,
+    };
+
+    pub const TABLE: crate::table::ModelTable =
+        crate::table::ModelTable::of_keyed_vec(&Self::DESC, T::CHECKS, T::OPS);
+}
+
+impl<T: Identified + 'static> crate::collection::ItemList for Vec<T> {
+    fn count(&self) -> usize {
+        self.len()
+    }
+
+    fn item(&self, at: usize) -> Option<(Id, &dyn Any)> {
+        let item = self.get(at)?;
+        Some((item.id(), item as &dyn Any))
+    }
+}
+
+fn keyed_vecs(table: &crate::table::ModelTable) -> Result<&'static KeyedVecDesc, ModelError> {
+    table.keyed_vec().ok_or_else(crate::table::mismatch)
+}
+
+fn keyed_vec_values<'a>(
+    table: &'a crate::table::ModelTable,
+    value: &'a mut dyn Any,
+) -> Result<&'a mut dyn VecItems, ModelError> {
+    (keyed_vecs(table)?.values)(value).ok_or_else(crate::table::mismatch)
+}
+
+fn keyed_vec_json(table: &crate::table::ModelTable, value: &dyn Any) -> serde_json::Value {
+    let Ok(desc) = keyed_vecs(table) else {
+        return serde_json::Value::Null;
+    };
+    let Some(items) = (desc.items)(value) else {
+        return serde_json::Value::Null;
+    };
+    serde_json::Value::Array(
+        (0..items.count())
+            .filter_map(|at| items.item(at))
+            .map(|(_, item)| (desc.item.ops.to_json)(desc.item, item))
+            .collect(),
+    )
+}
+
+fn keyed_vec_from_json(
+    table: &crate::table::ModelTable,
+    value: &serde_json::Value,
+    out: &mut dyn Any,
+) -> Result<(), ModelError> {
+    let desc = keyed_vecs(table)?;
+    let values = keyed_vec_values(table, out)?;
+    values.clear_items();
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                values.push_from_json(desc.item, item)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Null => Ok(()),
+        _ => Err(ModelError::shape("a list")),
+    }
+}
+
+fn keyed_vec_load(
+    table: &crate::table::ModelTable,
+    doc: &Doc,
+    value: &Value<'_>,
+    id: &ObjId,
+    out: &mut dyn Any,
+) -> Result<(), ModelError> {
+    let desc = keyed_vecs(table)?;
+    if !matches!(value, Value::Object(ObjType::Map)) {
+        return Err(ModelError::shape("keyed items"));
+    }
+    let values = keyed_vec_values(table, out)?;
+    values.clear_items();
+    let mut keys: Vec<String> = doc.keys(id).collect();
+    keys.sort_unstable();
+    for key in keys {
+        let Some((value, item)) = doc.get(id, key.as_str())? else {
+            continue;
+        };
+        values.push_loaded(desc.item, doc, &value, &item)?;
+    }
+    Ok(())
+}
+
+fn keyed_vec_store(
+    table: &crate::table::ModelTable,
+    value: &dyn Any,
+    doc: &mut Doc,
+    slot: Slot<'_>,
+) -> Result<(), ModelError> {
+    let desc = keyed_vecs(table)?;
+    let items = (desc.items)(value).ok_or_else(crate::table::mismatch)?;
+    store_by_id_in(desc.item, items, doc, slot)
+}
+
+fn keyed_vec_store_changed(
+    table: &crate::table::ModelTable,
+    value: &dyn Any,
+    before: &dyn Any,
+    doc: &mut Doc,
+    slot: Slot<'_>,
+    dirty: &Delta,
+) -> Result<(), ModelError> {
+    let desc = keyed_vecs(table)?;
+    let now = (desc.items)(value).ok_or_else(crate::table::mismatch)?;
+    let was = (desc.items)(before).ok_or_else(crate::table::mismatch)?;
+    let Some((Value::Object(ObjType::Map), map)) = slot.current(doc)? else {
+        return store_by_id_in(desc.item, now, doc, slot);
+    };
+    let mut held = HashMap::with_capacity(was.count());
+    for at in 0..was.count() {
+        if let Some((id, _)) = was.item(at) {
+            held.insert(id.as_str().to_owned(), at);
+        }
+    }
+    let mut kept = HashSet::with_capacity(now.count());
+    for at in 0..now.count() {
+        if let Some((id, _)) = now.item(at) {
+            kept.insert(id.as_str().to_owned());
+        }
+    }
+    // An id the copy held and no longer does is this change's removal. An
+    // id neither copy holds was added elsewhere meanwhile: keep it.
+    let stale: Vec<String> = doc
+        .keys(&map)
+        .filter(|key| held.contains_key(key.as_str()) && !kept.contains(key.as_str()))
+        .collect();
+    for key in stale {
+        doc.delete(&map, key.as_str())?;
+    }
+    for at in 0..now.count() {
+        let Some((id, item)) = now.item(at) else {
+            continue;
+        };
+        let key = id.as_str();
+        match held.get(key).and_then(|at| was.item(*at)) {
+            Some((_, was)) => write_item_changed(desc.item, (doc, &map, key), item, was, dirty)?,
+            None => {
+                (desc.item.ops.store)(desc.item, item, doc, Slot::Key(&map, key)).located(key)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn keyed_vec_reload(
+    table: &crate::table::ModelTable,
+    target: &mut dyn Any,
+    doc: &Doc,
+    slot: Option<(&Value<'_>, &ObjId)>,
+) -> Result<(), ModelError> {
+    let desc = keyed_vecs(table)?;
+    let mut staged = (desc.staged.0)();
+    if let Some((value, id)) = slot {
+        keyed_vec_load(table, doc, value, id, staged.as_mut())?;
+    } else {
+        let values = keyed_vec_values(table, staged.as_mut())?;
+        values.clear_items();
+    }
+    (desc.replace)(target, staged.as_mut())
+}
+
+fn keyed_vec_check(
+    table: &crate::table::ModelTable,
+    value: &dyn Any,
+) -> Result<(), crate::action::Refusal> {
+    let Ok(desc) = keyed_vecs(table) else {
+        return Ok(());
+    };
+    let Some(items) = (desc.items)(value) else {
+        return Ok(());
+    };
+    for at in 0..items.count() {
+        if let Some((_, item)) = items.item(at) {
+            (desc.item.ops.check)(desc.item, item)?;
+        }
+    }
+    Ok(())
+}
+
+fn keyed_vec_collect_text(
+    table: &crate::table::ModelTable,
+    value: &dyn Any,
+    out: &mut Vec<String>,
+) {
+    let Ok(desc) = keyed_vecs(table) else {
+        return;
+    };
+    let Some(items) = (desc.items)(value) else {
+        return;
+    };
+    for at in 0..items.count() {
+        if let Some((_, item)) = items.item(at) {
+            (desc.item.ops.collect_text)(desc.item, item, out);
+        }
+    }
+}
+
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a model table's check has one shape, whether this type has an invariant or not"
+)]
+fn no_check(_: &crate::table::ModelTable, _: &dyn Any) -> Result<(), crate::action::Refusal> {
+    Ok(())
+}
+
+fn no_coalesces(
+    _: &crate::table::ModelTable,
+    _: &[Segment],
+    _: &serde_json::Value,
+    _: &serde_json::Value,
+) -> Option<bool> {
+    None
+}
+
+fn no_continuable(
+    _: &crate::table::ModelTable,
+    _: &[Segment],
+    _: &serde_json::Value,
+) -> Option<bool> {
+    None
+}
+
+fn no_describe(
+    _: &crate::table::ModelTable,
+    _: &[Segment],
+    _: &serde_json::Value,
+) -> Option<crate::path::OpDescription> {
+    None
+}
+
+fn no_lands(
+    _: &crate::table::ModelTable,
+    _: &dyn Any,
+    _: &[Segment],
+    _: &serde_json::Value,
+) -> Option<crate::resource::Place> {
+    None
+}
+
+fn no_schemas(_: &crate::table::ModelTable, _: &str, _: &mut Vec<(String, serde_json::Value)>) {}
+
+fn no_nested(_: &crate::table::ModelTable, _: &dyn Any) -> Vec<crate::items::ItemCollection> {
+    Vec::new()
+}
+
+fn no_get_at<'a>(
+    _: &crate::table::ModelTable,
+    _: &'a dyn Any,
+    _: &[Segment],
+) -> Option<&'a dyn Any> {
+    None
+}
+
+/// The functions of a `Vec<T>` stored under each item's id.
+pub(crate) static KEYED_VEC_OPS: crate::table::ModelOps = crate::table::ModelOps {
+    without_absent: crate::shape::kept_whole,
+    to_json: |table, value| keyed_vec_json(table, value),
+    from_json: |table, value, out| keyed_vec_from_json(table, value, out),
+    load: |table, doc, value, id, out| keyed_vec_load(table, doc, value, id, out),
+    missing: |table, out| {
+        let values = keyed_vec_values(table, out)?;
+        values.clear_items();
+        Ok(())
+    },
+    reload: |table, target, doc, slot| keyed_vec_reload(table, target, doc, slot),
+    store: |table, value, doc, slot| keyed_vec_store(table, value, doc, slot),
+    stores_as: |table, value, before| keyed_vec_json(table, value) == keyed_vec_json(table, before),
+    store_changed: |table, value, before, doc, slot, dirty| {
+        keyed_vec_store_changed(table, value, before, doc, slot, dirty)
+    },
+    refresh: |table, target, doc, value, id, _| {
+        keyed_vec_reload(table, target, doc, Some((value, id)))
+    },
+    read_whole: |_, _, _| Ok(()),
+    edit: |table, doc, slot, path, op, _| {
+        let desc = keyed_vecs(table)?;
+        crate::table::edit_whole(
+            table,
+            ((desc.staged.0)(), desc.staged.1),
+            false,
+            doc,
+            slot,
+            path,
+            op,
+        )
+    },
+    diff: |table, before, after, path, out| {
+        let value = keyed_vec_json(table, after);
+        if keyed_vec_json(table, before) != value {
+            out.push(Edit::new(path.to_vec(), EditOp::Set { value }));
+        }
+    },
+    collect_text: |table, value, out| keyed_vec_collect_text(table, value, out),
+    check: |table, value| {
+        if table.checks {
+            keyed_vec_check(table, value)
+        } else {
+            no_check(table, value)
+        }
+    },
+    get_at: no_get_at,
+    label: |_, _| None,
+    nested_collections: no_nested,
+    op_coalesces: no_coalesces,
+    op_continuable: no_continuable,
+    op_describe: no_describe,
+    op_lands: no_lands,
+    op_schemas: no_schemas,
+};
 
 /// How [`Items`] are stored: the parts of their [`Model`] that differ.
 pub trait ItemStorage: 'static {

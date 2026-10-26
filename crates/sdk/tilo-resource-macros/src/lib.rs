@@ -36,7 +36,9 @@ fn krate() -> Tokens {
 /// stored; the containing type's `Default` on read), `#[model(atom)]` on a
 /// `String` (written whole, last writer wins, as `Atom` is),
 /// `#[model(whole)]` (read every part of a value that loads on demand,
-/// rich text's paragraphs), `#[model(resource)]` on a field whose type is a
+/// rich text's paragraphs), `#[model(keyed)]` on a `Vec<T>` whose items carry
+/// their own stable id (stored under those ids, so edits of different items
+/// merge; the in-memory value stays a `Vec`), `#[model(resource)]` on a field whose type is a
 /// resource with its own operations (rich text: published beneath the
 /// record's resource, an item's or the record's own, at `<record>/<key>`,
 /// its actions applied as field edits; see `tilo_resource::child`), `#[model(remove = "quiet")]` on a collection whose items are cheap to
@@ -155,6 +157,7 @@ struct FieldOptions {
     readonly: bool,
     unit: bool,
     atom: bool,
+    keyed: bool,
     quiet_remove: bool,
     whole: bool,
     resource: bool,
@@ -288,6 +291,8 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.unit = true;
             } else if meta.path.is_ident("atom") {
                 options.atom = true;
+            } else if meta.path.is_ident("keyed") {
+                options.keyed = true;
             } else if meta.path.is_ident("whole") {
                 options.whole = true;
             } else if meta.path.is_ident("resource") {
@@ -309,8 +314,8 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else {
                 return Err(meta.error(
                     "expected `skip`, `rename = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
-                     `whole`, `resource`, `default = ..`, `trust = \"..\"`, `weaker = ..`, \
-                     `weakest = N` or `remove = \"quiet\"`",
+                     `keyed`, `whole`, `resource`, `default = ..`, `trust = \"..\"`, \
+                     `weaker = ..`, `weakest = N` or `remove = \"quiet\"`",
                 ));
             }
             Ok(())
@@ -362,6 +367,24 @@ fn field_list(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Vec<String>>
         .split_whitespace()
         .map(str::to_owned)
         .collect())
+}
+
+/// The `T` of a field whose type is `Vec<T>`.
+fn vec_item(ty: &syn::Type) -> Option<&syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != "Vec" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    arguments.args.iter().find_map(|argument| match argument {
+        syn::GenericArgument::Type(item) => Some(item),
+        _ => None,
+    })
 }
 
 /// `#[model(check = path, label = "first last")]` on the type.
@@ -749,8 +772,18 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             }
             label = Some(descs.len());
         }
+        let mut keyed_shape = None;
         let field_table = if options.atom {
             quote!(&#table::ATOM_STRING)
+        } else if options.keyed {
+            let Some(item) = vec_item(ty) else {
+                return Err(syn::Error::new(
+                    field.span(),
+                    "`#[model(keyed)]` is for a `Vec<T>` whose `T` carries an id",
+                ));
+            };
+            keyed_shape = Some(quote!(#krate::Shape::Keyed(&<#item as #krate::Model>::SHAPE)));
+            quote!(&#krate::KeyedVecOf::<#item>::TABLE)
         } else {
             quote!(<#ty as #krate::Model>::TABLE)
         };
@@ -796,13 +829,15 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             .replace(" :: ", "::")
             .replace(":: ", "::")
             .replace(" ,", ",");
+        let keyed_shape_or_type =
+            keyed_shape.unwrap_or_else(|| quote!(<#ty as #krate::Model>::SHAPE));
         shapes.push(quote!(#krate::FieldShape {
             key: #key,
             owner: #owner,
             name: #field_name,
             ty: #ty_text,
             title: #title,
-            shape: <#ty as #krate::Model>::SHAPE,
+            shape: #keyed_shape_or_type,
             unit: #unit,
             readonly: #readonly,
             label: #is_label,
