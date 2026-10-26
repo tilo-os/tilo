@@ -12,7 +12,7 @@ pub use tilolang::types::{EffectClass, MergeKind, Ty, TypeKey};
 pub type Meta = PackageMeta;
 
 /// How a field merges concurrent edits (implementation design 3.2 and 4.8).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FieldKind {
     Register,
     Counter,

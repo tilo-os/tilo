@@ -1002,6 +1002,20 @@ impl Checker<'_> {
             }
             return Ex::error();
         };
+        // Over a collection, a lambda the store can answer is asked of it first; the collection
+        // is held in a local for that, which the loop reads too.
+        let pred = match (&list.ty, m) {
+            (Ty::Collection(_), "filter" | "count") => self.native_pred(elem, &param.name, body),
+            _ => None,
+        };
+        let (list, native) = match pred {
+            Some(pred) => {
+                let ty = list.ty.clone();
+                let local = self.fresh(ty.clone());
+                (Ex::local(local, ty), Some((local, list, pred)))
+            }
+            None => (list, None),
+        };
         let mut fl = self.new_for(list, elem);
         let item = Ex::local(fl.item_local, elem.clone());
         self.push_sink();
@@ -1033,10 +1047,14 @@ impl Checker<'_> {
             stmts.push(Stmt::Set(result, i));
         }
         stmts.push(Stmt::ForList(Box::new(fl)));
-        Ex::new(
+        let looped = Ex::new(
             Ek::Seq(stmts, Box::new(Ex::local(result, result_ty.clone()))),
             result_ty,
-        )
+        );
+        match native {
+            Some((local, held, pred)) => self.where_or_loop(local, held, m, &pred, looped),
+            None => looped,
+        }
     }
 
     /// `first()` or `last()`: the host reads the end of the list (`list_end`), so a view over a

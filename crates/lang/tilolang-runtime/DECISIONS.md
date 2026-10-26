@@ -344,10 +344,11 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   gets `press` (its first button). `peer_edit` retitles an
   item, or bumps the root's counter. `memory_anon` is measured in a process of its own that loads
   the saved room and opens it, as an app process does (the bench's own process keeps what
-  seeding allocated). `cargo test --release -p tilolang-tilo --test budgets` holds section 4.1 of
-  the design on the apps in `apps/tl`: notes, chat, todo and the board at 10k (open p95 150 ms,
-  half the section's 300; keystroke and peer p95 2 ms; scroll p50 1 ms for the lists; no idle
-  wakeups) and memory at 1k (60 MiB); and the counter.
+  seeding allocated). `--budgets` holds the records to section 4.1 of the design on the
+  machine it runs on (open p95 300 ms; keystroke, press and peer p95 2 ms; scroll p50 1 ms; no
+  idle wakeups, at 10k items; memory 60 MiB at 1k) and fails when one is over: a recorded local
+  check, since times depend on the machine. `tests/budgets.rs` gates on the work each scenario
+  records instead (see "Counted, not timed" below).
 - **Where it stands** (release, aarch64, 10k items, 20 samples, p95; the runtime's share, the
   bench drives no window). notes: open 48 ms, keystroke 0.48 ms, peer edit 0.29 ms, scroll p50
   0.09 ms, idle 0 wakeups; ready (search and publication done) 421 ms. chat: open 27 ms,
@@ -434,3 +435,45 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   peer edit 0.2 to 0.5 ms at 10k; a keystroke in a 10k draft 1.4 ms, a peer's message in it
   90 ms; no idle wakeups. Against the split alone, notes, todo and chat hold 9 to 16 MiB more
   at 10k and the board 97 MiB less; where that sits is not measured yet.
+- **Filters and counts the store answers.** `items.filter(x -> ...)` and `items.count(x -> ...)`
+  over a collection field, with a lambda that reads only registers, counters and texts of the
+  item and literals, compile to a predicate (`tilolang::pred`) beside their loop. The guest asks
+  the host first (`coll_where`); in a view the host hands back the collection narrowed to the
+  predicate (a `CollRef` with a filter), which the store lists (`Store::listing_where`) and the
+  view reads like any collection: its length for a count, the items a list shows. No reference
+  is built per item and the lambda runs on none. The Tilo store evaluates the predicate on every
+  item once, reading only the fields it reads, in one pass on several threads, then keeps the
+  filtered listing and evaluates only the items a change touches (a field the predicate reads,
+  or where the item is). A boundary that read a filtered collection depends on what it saw item
+  by item, since an item moving in or out changes no field of the collection. Elsewhere (an
+  action, a flow, a lambda that reads anything else) the loop runs. A collection's listing
+  reads each entry's order key and map and none of the item's fields; a row's first read of a
+  register or counter reads the item's others in the same walk. Search and publication read the
+  whole room from a snapshot that shares the mirror (`Arc`) rather than copying it on the frame;
+  the store copies the mirror only when it changes while a snapshot is still being read.
+- **Counted, not timed.** The bench records, beside each time, the work the scenario did in
+  counts that do not depend on the machine (`bench::Work`): boundaries rendered, item references
+  built, patches sent, resources located and fields read one by one, collections listed, their
+  entries read, item fields read for a filter, items a filter evaluated, allocations. A scenario
+  that changes the room records its first change apart: it is the first change of a writer new
+  to the record, and Automerge numbers a new actor through the whole record (13k allocations at
+  100k todo items against 1k for a steady keystroke). `tests/budgets.rs` runs the bench at 1k and
+  10k items for notes, chat, todo and the board and fails when what a scenario shows or changes
+  differs (renders, items, patches, located, fields, listings, count for count, also for the first
+  change); when opening reads a collection's items more than once per listing; when a steady
+  change reads entries, item fields or evaluations at all more at 10k; or when its allocations
+  grow by more than a tenth. Times are the bench's `--budgets` check.
+- **Where it stands** (release, aarch64 laptop, 5 samples, p95 open and memory_anon; before is
+  the commit that built a list's rows when shown). Open, 1k / 10k / 100k: board 20.6 / 132 / 2963
+  ms to 19.1 / 66 / 1041; notes 7.9 / 33 / 402 to 7.9 / 24 / 300; todo 8.8 / 52 / 623 to 10.5 /
+  30 / 394; chat 6.2 / 17 / 162 to 7.2 / 14 / 147. Memory: board 24.5 / 237 / 1998 MiB to 22.9 /
+  207 / 1722; notes 11.7 / 113 / 1070 to 10.8 / 102 / 883; todo 11.5 / 113 / 1024 to 11.4 / 103 /
+  836; chat 12.6 / 98 / 915 to 10.8 / 98 / 819. What the first frame builds no longer grows with
+  the room (the board renders 11 boundaries and builds 10 item references at every size), but
+  opening is still linear: the store lists each collection it shows, an Automerge seek per entry
+  (and per item for a filter's field), 30k entries and 20k filter reads for the board at 10k, all
+  of its open time. Answering a count or a preview without that needs an index of each
+  collection's order and filtered fields kept across opens, which Automerge does not keep.
+  Loading the record from its bytes, which opening from disk adds first, takes longer than all
+  of it (board 412 ms at 10k, 6.7 s at 100k). Memory is the record, search's index and the
+  published resources, all per item; the view's share is the store's per-item location cache.

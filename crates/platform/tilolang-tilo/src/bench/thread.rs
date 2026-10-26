@@ -18,8 +18,8 @@ use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{Principal, ViewInstance};
 
 use super::{
-    Doc, List, Nested, PAGE, Record, Room, SCROLL_STEP, Shape, Sized, content_lists, execute,
-    item_id, ms, root_id, text_input,
+    Changes, Doc, List, Nested, PAGE, Record, Room, SCROLL_STEP, Shape, Sized, Work, content_lists,
+    execute, item_id, ms, root_id, text_input, with_work,
 };
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::record::{DynRecord, DynValue};
@@ -177,6 +177,9 @@ pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec
         list.item_ty.clone(),
     );
     let mut out = vec![open(sized, &item)?];
+    if sized.config.open_only {
+        return Ok(out);
+    }
     let mut room = sized.open()?;
     room.settle();
     let mut thread = Thread::open(&room, &item)?;
@@ -192,18 +195,25 @@ pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec
 fn open(sized: &Sized<'_>, item: &ResourceRef) -> Result<Record, String> {
     let mut samples = Vec::new();
     let mut nodes = 0;
+    let mut work = None;
     for _ in 0..sized.config.samples {
         let room = sized.open()?;
+        let before = Work::of(&room, &[]);
         let start = Instant::now();
         let thread = Thread::open(&room, item)?;
         samples.push(ms(start.elapsed()));
         nodes = thread.view.tree().count();
+        let mut opened = Work::of(&room, &[&thread.view]).since(before);
+        // The window's own boundaries: the room's window rendered none of them.
+        opened.renders = thread.view.stats().renders;
+        work.get_or_insert(opened);
     }
+    let extra = json!({"nodes": nodes, "shown": PAGE});
     Ok(sized.record(
         "thread_open",
         "ms",
         samples,
-        json!({"nodes": nodes, "shown": PAGE}),
+        with_work(extra, work.unwrap_or_default()),
     ))
 }
 
@@ -211,18 +221,23 @@ fn open(sized: &Sized<'_>, item: &ResourceRef) -> Result<Record, String> {
 fn keystroke(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<Record, String> {
     let (input, mut text) =
         text_input(&room.host, thread.view.tree()).ok_or("the item's window has no text input")?;
-    let mut samples = Vec::new();
+    let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         text.push('x');
+        let before = Work::of(room, &[&thread.view]);
         let start = Instant::now();
         thread
             .view
             .edit(&input, &Value::text(text.clone()))
             .map_err(|e| e.to_string())?;
-        room.frame(&mut [&mut thread.view])?;
-        samples.push(ms(start.elapsed()));
+        let patches = room.frame(&mut [&mut thread.view])?;
+        let took = ms(start.elapsed());
+        let mut done = Work::of(room, &[&thread.view]).since(before);
+        done.patches = patches as u64;
+        changes.push(took, done);
     }
-    Ok(sized.record("thread_keystroke", "ms", samples, room.phases.take()))
+    let (samples, extra) = changes.into_record(room.phases.take());
+    Ok(sized.record("thread_keystroke", "ms", samples, extra))
 }
 
 /// Another replica appending a row, which the transcript, following its end, shows.
@@ -235,7 +250,7 @@ fn post(
     let shape = sized.shape;
     let principals = principals(sized.packages);
     let mut peer = room.doc.fork();
-    let mut samples = Vec::new();
+    let mut changes = Changes::default();
     for sample in 0..sized.config.samples {
         let message = filled(
             &nested.item_ty,
@@ -266,17 +281,22 @@ fn post(
             }],
         };
         execute(&mut peer, &action, "peer")?;
+        let before = Work::of(room, &[&thread.view]);
         let start = Instant::now();
         room.doc
             .merge_incoming(&mut peer)
             .map_err(|e| e.to_string())?;
-        room.frame(&mut [&mut thread.view])?;
+        let patches = room.frame(&mut [&mut thread.view])?;
         // The transcript follows its end: the new last row comes into view.
         let len = thread.view.list_len(&thread.list).unwrap_or(0);
         thread.show(len.saturating_sub(PAGE)..len)?;
-        samples.push(ms(start.elapsed()));
+        let took = ms(start.elapsed());
+        let mut done = Work::of(room, &[&thread.view]).since(before);
+        done.patches = patches as u64;
+        changes.push(took, done);
     }
-    Ok(sized.record("thread_post", "ms", samples, room.phases.take()))
+    let (samples, extra) = changes.into_record(room.phases.take());
+    Ok(sized.record("thread_post", "ms", samples, extra))
 }
 
 /// The transcript scrolled back a few rows a frame.

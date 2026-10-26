@@ -545,6 +545,12 @@ impl Runtime {
         &self.core.engine
     }
 
+    /// How many references to collection items views and code built so far: what reading
+    /// collections materialized, a count that does not depend on the machine.
+    pub fn items_built(&self) -> u64 {
+        self.core.items_built.get()
+    }
+
     /// Hash of a module's bytes, the id [`Runtime::load_package`] returns for it.
     pub fn module_hash(wasm: &[u8]) -> ModuleHash {
         ModuleHash::of_bytes(wasm)

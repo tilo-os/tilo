@@ -17,13 +17,16 @@ use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::handles::Retained;
 use crate::ids::Principal;
-use crate::meta::FieldKind;
-use crate::render::{Boundaries, LoopRows, Offer, Rendered, Scoped, Stub, ViewTarget};
+use crate::render::{Boundaries, LoopRows, Offer, Rendered, Scoped, Stub, ViewTarget, VirtualRows};
 use crate::space::Space;
-use crate::store::{ANY_FIELD, ChangeSummary, FieldSpec, Splice, doc_of};
+use crate::store::{ANY_FIELD, ChangeSummary, Splice, doc_of};
 use crate::value::Value;
-use crate::view::{Patch, UiNode, diff_at};
+use crate::view::{Patch, UiNode, VirtualLists, diff_at};
+
+mod virtual_rows;
+
 use crate::view_state::StateKey;
+use virtual_rows::Virtual;
 
 pub(crate) type BoundId = usize;
 
@@ -91,6 +94,19 @@ fn distinct(mut reads: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut first = first.into_iter();
     reads.retain(|_| first.next().unwrap_or(false));
     reads
+}
+
+/// The collection an item resource (written as [`crate::value::ResourceRef::id_string`]) is
+/// in: its parent resource and the collection's field.
+fn item_of(resource: &str) -> Option<(&str, &str)> {
+    let (parent, step) = resource.rsplit_once('/')?;
+    let (field, _) = step.split_once(':')?;
+    Some((parent, field))
+}
+
+/// Whether a change to the item field `field` may change what `pred` holds of the item.
+fn reads(pred: &crate::store::Pred, field: &str) -> bool {
+    field == ANY_FIELD || pred.fields().iter().any(|read| read.spec.id == field)
 }
 
 /// Which boundaries read what.
@@ -313,6 +329,10 @@ pub(crate) struct Live {
     state_clock: u64,
     /// Steps heard for the rows of loops, applied at the next poll.
     pending: Vec<Pending>,
+    /// The virtual lists, by key: lists whose rows are built when the host shows them.
+    lists: HashMap<String, Virtual>,
+    /// What became of the rows of the virtual lists met by the render under way, for its diff.
+    row_changes: VirtualLists,
 }
 
 pub(crate) const ROOT: BoundId = 0;
@@ -360,10 +380,13 @@ impl Live {
             found_paths: RefCell::default(),
             state_clock: core.view_states.borrow().clock(),
             pending: Vec::new(),
+            lists: HashMap::new(),
+            row_changes: VirtualLists::new(),
         };
         let tree = live.render(core, ROOT)?;
         live.tree = tree;
         live.reused.clear();
+        live.row_changes.clear();
         live.refresh_paths(ROOT);
         live.release(core);
         Ok(live)
@@ -410,34 +433,70 @@ impl Live {
             reach
                 .hit
                 .extend(self.index.readers(&key.resource, &key.field));
-            for (id, field) in self.index.coll_readers(&key.resource, &key.field) {
-                let Some(seen) = self.bound(id).and_then(|b| {
-                    b.colls
-                        .iter()
-                        .find(|seen| seen.resource == key.resource && seen.coll.field == field)
-                }) else {
-                    continue;
-                };
-                if !seen.holds_now(core) {
-                    reach.hit.push(id);
-                }
-            }
+            self.reach_colls(core, &key.resource, &key.field, false, &mut reach);
             for (id, field) in self.index.loop_holders(&key.resource, &key.field) {
                 let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
                 for rows in held.filter(|rows| rows.coll.field == field) {
                     match change.listing(key) {
                         Some([]) => {}
-                        Some(splices) if key.field != ANY_FIELD => reach.steps.push(Pending {
-                            holder: id,
-                            rows: Rc::clone(rows),
-                            splices: splices.to_vec(),
-                        }),
+                        // The steps are the collection's; a filtered one's rows are not its
+                        // items, and are built again by their boundary.
+                        Some(splices) if key.field != ANY_FIELD && rows.coll.filter.is_none() => {
+                            reach.steps.push(Pending {
+                                holder: id,
+                                rows: Rc::clone(rows),
+                                splices: splices.to_vec(),
+                            });
+                        }
                         _ => reach.hit.push(id),
+                    }
+                }
+            }
+            // A field of an item of a collection decides whether the item is in a filtered
+            // view of it: the readers of filtered views of the item's collection look again.
+            if let Some((parent, coll)) = item_of(&key.resource) {
+                self.reach_colls(core, parent, coll, true, &mut reach);
+                for (id, field) in self.index.loop_holders(parent, coll) {
+                    let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
+                    if held.filter(|rows| rows.coll.field == field).any(|rows| {
+                        rows.coll
+                            .filter
+                            .as_deref()
+                            .is_some_and(|pred| reads(pred, &key.field))
+                    }) {
+                        reach.hit.push(id);
                     }
                 }
             }
         }
         reach
+    }
+
+    /// The boundaries that saw something of the collection `field` of `resource` (or of any
+    /// collection of it, for [`ANY_FIELD`]) that no longer holds: of its filtered views alone
+    /// when `filtered`.
+    fn reach_colls(
+        &self,
+        core: &Core,
+        resource: &str,
+        field: &str,
+        filtered: bool,
+        reach: &mut Reach,
+    ) {
+        for (id, coll) in self.index.coll_readers(resource, field) {
+            let Some(b) = self.bound(id) else {
+                continue;
+            };
+            let stale = b
+                .colls
+                .iter()
+                .filter(|seen| seen.resource == resource && seen.coll.field == coll)
+                .filter(|seen| !filtered || seen.coll.filter.is_some())
+                .any(|seen| !seen.holds_now(core));
+            if stale {
+                reach.hit.push(id);
+            }
+        }
     }
 
     /// Whether a change reaches some boundary or the rows of some loop.
@@ -574,6 +633,7 @@ impl Live {
         let mut builder = Builder {
             live: self,
             core,
+            id,
             old,
             new: Vec::new(),
             loops: Vec::new(),
@@ -661,6 +721,7 @@ impl Live {
         if self.by_key.get(&b.key) == Some(&id) {
             self.by_key.remove(&b.key);
         }
+        self.forget_rows_of(id);
         self.free.push(id);
         for child in b.children {
             self.drop_bound(child);
@@ -676,6 +737,7 @@ impl Live {
         for child in children {
             self.drop_bound(child);
         }
+        self.lists.retain(|_, list| list.holder != id);
         if let Some(mut b) = self.bounds.get_mut(id).and_then(Option::take) {
             self.index.remove(id, &b);
             self.to_release.append(&mut b.retained);
@@ -793,15 +855,18 @@ impl Live {
             return Ok(());
         };
         self.reused.clear();
+        self.row_changes.clear();
         let new_content = match self.render(core, id) {
             Ok(tree) => tree,
             Err(e) => {
                 self.dirty.remove(&id);
+                self.row_changes.clear();
                 self.release(core);
                 return Err(e);
             }
         };
         let reused = std::mem::take(&mut self.reused);
+        let row_changes = std::mem::take(&mut self.row_changes);
         // The node under the boundary: the whole tree for the root, else the fragment's child.
         let (parent_keys, old) = if id == ROOT {
             (
@@ -832,9 +897,20 @@ impl Live {
             frames.retained(a) == frames.retained(b)
         };
         if id == ROOT {
-            patches.extend(crate::view::diff(&old, &new_content, &same));
+            patches.extend(crate::view::diff_with(
+                &old,
+                &new_content,
+                &same,
+                &row_changes,
+            ));
         } else {
-            diff_at(&parent_keys, &old, &new_content, &same, patches);
+            diff_at(
+                &parent_keys,
+                &old,
+                &new_content,
+                (&same, &row_changes),
+                patches,
+            );
         }
         if !kept.is_empty() {
             put_reused(&mut new_content, &mut kept);
@@ -866,11 +942,15 @@ impl Live {
             let held = self
                 .bound(step.holder)
                 .is_some_and(|b| b.loops.iter().any(|rows| Rc::ptr_eq(rows, &step.rows)));
-            if !held || self.dirty.contains(&step.holder) {
+            // The rows of a virtual list take their steps even when their holder runs again:
+            // it then finds them as the listing is, and keeps them.
+            let virtual_rows = self.lists.contains_key(&step.rows.parent);
+            if !held || (self.dirty.contains(&step.holder) && !virtual_rows) {
                 continue;
             }
             if !self.splice_rows(core, &step, patches)? {
                 self.dirty.insert(step.holder);
+                self.lose_rows(&step.rows.parent);
                 continue;
             }
             if !followed
@@ -881,8 +961,12 @@ impl Live {
             }
         }
         for (holder, rows) in followed {
-            if !self.dirty.contains(&holder) && !self.rows_fit(core, holder, &rows) {
+            // A virtual list's rows stand for the listing as it is once they fit it, so they
+            // are checked even when their holder runs again.
+            let check = !self.dirty.contains(&holder) || self.lists.contains_key(&rows.parent);
+            if check && !self.rows_fit(core, holder, &rows) {
                 self.dirty.insert(holder);
+                self.lose_rows(&rows.parent);
             }
         }
         self.release(core);
@@ -897,6 +981,9 @@ impl Live {
         patches: &mut Vec<Patch>,
     ) -> Result<bool, RuntimeError> {
         let rows = &step.rows;
+        if self.lists.contains_key(&rows.parent) {
+            return self.splice_virtual(core, step, patches);
+        }
         let Some(at) = self.node_path_in(step.holder, &rows.parent) else {
             return Ok(false);
         };
@@ -914,7 +1001,7 @@ impl Live {
                     let Some(Splice::Insert { at: to, .. }) = splices.next() else {
                         return Ok(false);
                     };
-                    let (key, _) = rows.row(item);
+                    let key = rows.row_key(item);
                     let Some(row) = self.take_row(&at, *index, &key) else {
                         return Ok(false);
                     };
@@ -930,7 +1017,7 @@ impl Live {
                     }
                 }
                 Splice::Remove { at: index, item } => {
-                    let (key, _) = rows.row(item);
+                    let key = rows.row_key(item);
                     if self.take_row(&at, *index, &key).is_none() {
                         return Ok(false);
                     }
@@ -987,7 +1074,7 @@ impl Live {
         item: &str,
     ) -> Result<Option<UiNode>, RuntimeError> {
         let rows = &step.rows;
-        let (key, args) = rows.row(item);
+        let (key, args) = rows.row(core, item);
         let len = self.node_at(at).map_or(0, |node| node.children.len());
         if index > len || self.by_key.contains_key(&key) {
             return Ok(None);
@@ -1020,8 +1107,11 @@ impl Live {
     /// Render the row `id` into its `fragment`, at its path.
     fn render_row(&mut self, core: &Rc<Core>, id: BoundId) -> Result<(), RuntimeError> {
         self.reused.clear();
-        let content = self.render(core, id)?;
+        let content = self.render(core, id);
         self.reused.clear();
+        // A row's first render has nothing to diff: lists inside it start as they are.
+        self.row_changes.clear();
+        let content = content?;
         let path = self.bound(id).map(|b| b.path.clone()).unwrap_or_default();
         if let Some(fragment) = self.node_at_mut(&path) {
             fragment.children = vec![content];
@@ -1084,12 +1174,11 @@ impl Live {
     }
 
     /// Whether the rows of a loop are as many as its collection's items.
-    fn rows_fit(&self, core: &Core, holder: BoundId, rows: &LoopRows) -> bool {
-        let spec = FieldSpec {
-            id: rows.coll.field.clone(),
-            kind: FieldKind::Collection,
-        };
-        let Ok(listing) = core.store.borrow().listing(&rows.coll.target, &spec) else {
+    fn rows_fit(&mut self, core: &Core, holder: BoundId, rows: &LoopRows) -> bool {
+        if self.lists.contains_key(&rows.parent) {
+            return self.virtual_fits(core, rows);
+        }
+        let Ok(listing) = crate::colls::listing_of(&**core.store.borrow(), &rows.coll) else {
             return false;
         };
         self.node_path_in(holder, &rows.parent)
@@ -1175,10 +1264,16 @@ impl Live {
     }
 
     pub fn list_len(&self, list: &str) -> Option<usize> {
+        if let Some(rows) = self.lists.get(list) {
+            return Some(rows.len);
+        }
         self.list_node(list).map(|n| n.children.len())
     }
 
     pub fn row_key(&self, list: &str, index: usize) -> Option<String> {
+        if let Some(rows) = self.lists.get(list) {
+            return rows.key(index);
+        }
         self.list_node(list)?
             .children
             .get(index)
@@ -1192,6 +1287,9 @@ impl Live {
         list: &str,
         index: usize,
     ) -> Result<Option<String>, RuntimeError> {
+        if self.lists.contains_key(list) {
+            return self.show_virtual(core, list, index);
+        }
         let Some(key) = self.row_key(list, index) else {
             return Ok(None);
         };
@@ -1226,6 +1324,9 @@ impl Live {
         list: &str,
         keep: std::ops::Range<usize>,
     ) -> Vec<Patch> {
+        if self.lists.contains_key(list) {
+            return self.hide_virtual(core, list, &keep);
+        }
         let Some(node) = self.list_node(list) else {
             return Vec::new();
         };
@@ -1279,6 +1380,8 @@ impl Live {
 struct Builder<'a> {
     live: &'a mut Live,
     core: &'a Rc<Core>,
+    /// The boundary being built.
+    id: BoundId,
     /// The boundary's calls at its last render, by key.
     old: HashMap<String, BoundId>,
     /// Its calls now, in order.
@@ -1290,6 +1393,14 @@ struct Builder<'a> {
 impl Boundaries for Builder<'_> {
     fn rows(&mut self, rows: LoopRows) {
         self.loops.push(Rc::new(rows));
+    }
+
+    fn virtualizes(&self) -> bool {
+        self.live.lazy_rows
+    }
+
+    fn virtual_rows(&mut self, rows: VirtualRows) -> Result<Vec<UiNode>, RuntimeError> {
+        self.build_virtual(rows)
     }
 
     fn boundary(&mut self, stub: Stub<'_>) -> Result<Vec<UiNode>, RuntimeError> {

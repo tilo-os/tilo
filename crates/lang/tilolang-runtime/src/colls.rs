@@ -15,8 +15,8 @@ use std::rc::Rc;
 
 use crate::core::{Core, HResult, trap};
 use crate::handles::FrameKind;
-use crate::meta::FieldKind;
-use crate::store::{FieldSpec, Listing};
+use crate::meta::{FieldKind, Ty};
+use crate::store::{FieldRead, FieldSpec, Listing, Lit, Store, StoreError};
 use crate::value::{CollRef, Value};
 
 /// What a view saw of one collection: its length, its first and last item, and the item at
@@ -68,7 +68,9 @@ impl CollSeen {
 
     /// Whether this is what was seen of `coll`.
     fn is_of(&self, coll: &CollRef) -> bool {
-        self.coll.field == coll.field && self.coll.target == coll.target
+        self.coll.field == coll.field
+            && self.coll.target == coll.target
+            && self.coll.filter == coll.filter
     }
 
     /// Whether everything seen is still so in `listing`.
@@ -83,12 +85,7 @@ impl CollSeen {
 
     /// Whether everything seen is still so in the store.
     pub fn holds_now(&self, core: &Core) -> bool {
-        let spec = FieldSpec {
-            id: self.coll.field.clone(),
-            kind: FieldKind::Collection,
-        };
-        let listing = core.store.borrow().listing(&self.coll.target, &spec);
-        listing.is_ok_and(|listing| self.holds(&listing))
+        listing_of(&**core.store.borrow(), &self.coll).is_ok_and(|listing| self.holds(&listing))
     }
 
     /// Take on what `other`, of the same collection, saw.
@@ -136,6 +133,22 @@ pub(crate) fn merge_seen(into: &mut Vec<CollSeen>, seen: Vec<CollSeen>) {
     }
 }
 
+/// The listing of `coll` in `store`: its items, or those its filter holds of.
+///
+/// # Errors
+///
+/// As [`Store::listing`] and [`Store::listing_where`].
+pub(crate) fn listing_of(store: &dyn Store, coll: &CollRef) -> Result<Rc<Listing>, StoreError> {
+    let spec = FieldSpec {
+        id: coll.field.clone(),
+        kind: FieldKind::Collection,
+    };
+    match coll.filter.as_deref() {
+        None => store.listing(&coll.target, &spec),
+        Some(pred) => store.listing_where(&coll.target, &spec, &coll.item, pred),
+    }
+}
+
 /// One read of a collection, recorded as what it saw.
 enum Read {
     Len(usize),
@@ -145,6 +158,13 @@ enum Read {
 }
 
 impl Core {
+    /// A reference to the item `id` of `coll`, counted: what reading collections materialized.
+    pub(crate) fn item_ref(&self, coll: &CollRef, id: &str) -> Value {
+        self.items_built
+            .set(self.items_built.get().saturating_add(1));
+        coll.item_ref(id)
+    }
+
     /// The listing of `coll`: the one this view run read already, else the store's.
     pub(crate) fn coll_listing(&self, coll: &Rc<CollRef>) -> Result<Rc<Listing>, String> {
         if let Ok(frame) = self.frames.borrow().top()
@@ -156,15 +176,7 @@ impl Core {
         {
             return Ok(Rc::clone(listing));
         }
-        let spec = FieldSpec {
-            id: coll.field.clone(),
-            kind: FieldKind::Collection,
-        };
-        let listing = self
-            .store
-            .borrow()
-            .listing(&coll.target, &spec)
-            .map_err(|e| e.to_string())?;
+        let listing = listing_of(&**self.store.borrow(), coll).map_err(|e| e.to_string())?;
         if let Ok(frame) = self.frames.borrow_mut().top_mut()
             && let FrameKind::View(vs) = &mut frame.kind
         {
@@ -207,11 +219,57 @@ impl Core {
                 seen.at.push((i, id));
             }
         }
-        if seen.sweep == len && len > 0 {
+        // A filtered collection read whole still depends on what it saw item by item: an item
+        // changing whether it is in is no change to the collection's field.
+        if seen.sweep == len && len > 0 && coll.filter.is_none() {
             seen.whole = true;
             seen.at = Vec::new();
             vs.reads.push((seen.resource.clone(), coll.field.clone()));
         }
+    }
+
+    /// `coll_where(list, pred)`: the items of the collection `list` that the predicate written
+    /// `pred` holds of, as a collection the store lists (some), when `list` is a collection read
+    /// in a view and the predicate reads fields the store answers for; none otherwise, and the
+    /// caller's loop runs instead.
+    pub(crate) fn coll_where(&self, list: i32, pred: i32) -> HResult<Value> {
+        let Value::Coll(coll) = self.val(list)? else {
+            return Ok(Value::none());
+        };
+        let text = self.text(pred)?;
+        let Ok(written) = serde_json::from_str::<tilolang::pred::Pred<String>>(&text) else {
+            return Ok(Value::none());
+        };
+        let Some((_, item)) = self.registry.borrow().type_info(&coll.item) else {
+            return Ok(Value::none());
+        };
+        let resolved = written.resolve(&mut |id: &String| {
+            let field = item.fields.iter().find(|f| f.id == *id)?;
+            let absent = match (field.kind, &field.ty) {
+                (FieldKind::Register, Ty::Bool | Ty::Int | Ty::Text) => {
+                    crate::host_res::declared_default(&field.ty, field.default.as_ref()).ok()?
+                }
+                (FieldKind::Counter, Ty::Int) => Value::Int(0),
+                (FieldKind::Text, Ty::Text) => Value::text(""),
+                _ => return None,
+            };
+            let absent = match absent {
+                Value::Bool(b) => Lit::Bool(b),
+                Value::Int(i) => Lit::Int(i),
+                Value::Text(t) => Lit::Text(t),
+                _ => return None,
+            };
+            Some(FieldRead {
+                spec: FieldSpec {
+                    id: field.id.clone(),
+                    kind: field.kind,
+                },
+                absent,
+            })
+        });
+        Ok(resolved.map_or_else(Value::none, |pred| {
+            Value::some(Value::Coll(Rc::new(coll.filtered(pred))))
+        }))
     }
 
     /// How many items `coll` has.
@@ -231,7 +289,7 @@ impl Core {
             ));
         };
         self.saw(coll, Read::At(index, Rc::clone(id)), listing.len());
-        Ok(coll.item_ref(id))
+        Ok(self.item_ref(coll, id))
     }
 
     /// The first or last item of `coll`, as an option.
@@ -245,7 +303,7 @@ impl Core {
         .cloned();
         let value = end
             .as_deref()
-            .map_or_else(Value::none, |id| Value::some(coll.item_ref(id)));
+            .map_or_else(Value::none, |id| Value::some(self.item_ref(coll, id)));
         self.saw(
             coll,
             if last {
@@ -266,12 +324,21 @@ impl Core {
     /// A message when the store cannot list the collection.
     pub(crate) fn coll_items(&self, coll: &Rc<CollRef>) -> Result<Vec<Value>, String> {
         let listing = self.coll_listing(coll)?;
-        if let Ok(frame) = self.frames.borrow_mut().top_mut()
+        if coll.filter.is_some() {
+            self.saw(coll, Read::Len(listing.len()), listing.len());
+            for (i, id) in listing.items.iter().enumerate() {
+                self.saw(coll, Read::At(i, Rc::clone(id)), listing.len());
+            }
+        } else if let Ok(frame) = self.frames.borrow_mut().top_mut()
             && let FrameKind::View(vs) = &mut frame.kind
         {
             vs.reads.push((coll.target.id_string(), coll.field.clone()));
         }
-        Ok(listing.items.iter().map(|id| coll.item_ref(id)).collect())
+        Ok(listing
+            .items
+            .iter()
+            .map(|id| self.item_ref(coll, id))
+            .collect())
     }
 
     /// `v`, with a collection read whole into a list: what goes into another value.
