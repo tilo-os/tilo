@@ -72,7 +72,8 @@ impl PersonChatServices for NativeOwnerCommitService {
         let value = match command {
             PersonChatCommand::Contacts => serde_json::json!(owner.direct_contacts(room, &authority, now)?
                 .into_iter().map(|contact| serde_json::json!({
-                    "public_key": contact.public_key, "display_name": contact.display_name.unwrap_or_default()
+                    "public_key": contact.public_key, "display_name": contact.display_name.unwrap_or_default(),
+                    "conversation": contact.conversation
                 })).collect::<Vec<_>>()),
             PersonChatCommand::Open { public_key } => {
                 owner.open_direct_conversation(room, &public_key, &authority, now)?;
