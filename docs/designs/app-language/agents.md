@@ -57,6 +57,31 @@ transcripts and anything else in the workspace.
 - **The same language is the `tilo` command in a terminal.** The existing path tools
   (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`) are kept as one-call spellings.
 
+## 1.1 What it takes from main's agent door
+
+Agents write tilolang programs and do complex work in one call; that is the interface. Under it
+sits what main already has, which this design keeps rather than rebuilds:
+
+- **The door** (`docs/runtime-mcp.md`):
+  - path addressing resolved against the live directory;
+  - reads that cost what they touch;
+  - actions that answer when they settle.
+
+  Program calls go through it, and its path tools stay as the one-call form.
+- **The agent participant** (`crates/agent/agent-participant`):
+  - its own identity under a delegation;
+  - presence and attributed edits;
+  - the gated catalogue, where a denied operation does not exist for the agent;
+  - ids that can't be invented;
+  - allow, ask first and deny with editable drafts;
+  - task obligations.
+
+  A program is one more kind of task step on it, checked the same way.
+- **New here:**
+  - programs over mounted packages, with a REPL session;
+  - typed search with paths and identifier patterns;
+  - composed native views as answers.
+
 ## 2. Orientation
 
 **Context usually arrives with the message.** Right-clicking anything in Tilo offers a chat field
