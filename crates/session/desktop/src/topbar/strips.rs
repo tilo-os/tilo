@@ -244,6 +244,28 @@ impl TopBarChrome {
         );
     }
 
+    /// Let the painted name field take a pointer event, and copy its
+    /// selection back into the name the bar owns.
+    pub(super) fn field_pointer(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let Some(naming) = self.strips.naming.as_mut() else {
+            return false;
+        };
+        let Some(input) = naming.input.as_mut() else {
+            return false;
+        };
+        let took = input.handle_chrome_pointer(event, scale_factor, modifiers);
+        if took {
+            let (anchor, cursor) = input.selection_anchor_focus_or_caret();
+            naming.selection = ui::text_selection::Selection { anchor, cursor };
+        }
+        took
+    }
+
     /// Start renaming the workspace in place, from its current name, as the
     /// workspace menu's Rename asks.
     pub fn begin_workspace_rename(&mut self) {
@@ -357,6 +379,11 @@ impl TopBarChrome {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Some(ctx.logical(position));
+                // The name field is painted by the toolkit's TextInput but
+                // lives outside the retained tree; its pointer path is
+                // forwarded here so caret placement, drag selection and the
+                // context menu reach the same editor that paints it.
+                self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
                 false
             }
             WindowEvent::KeyboardInput { .. } => {
@@ -372,10 +399,17 @@ impl TopBarChrome {
                     .last_cursor
                     .is_some_and(|point| self.strips.field_rect.contains(point));
                 if inside {
+                    self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
                     *ctx.handled = true;
                     return true;
                 }
+                self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
                 self.cancel_workspace_rename();
+                false
+            }
+            WindowEvent::MouseInput { .. } => {
+                // A release ends a drag that may have left the field.
+                self.field_pointer(event, ctx.scale_factor, *ctx.modifiers);
                 false
             }
             _ => false,

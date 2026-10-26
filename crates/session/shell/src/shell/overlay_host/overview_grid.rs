@@ -1196,8 +1196,18 @@ impl ShellOverlayHost {
     /// A press while a strip's name is typed: on the field it stays with the
     /// field, anywhere else it keeps the name and is taken, so it does not
     /// also act on what is under it.
-    pub(super) fn overview_naming_takes_press(&mut self, event: &WindowEvent) -> bool {
+    pub(super) fn overview_naming_takes_press(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+    ) -> bool {
         if self.overview_naming.is_none() {
+            return false;
+        }
+        if let WindowEvent::CursorMoved { .. } = event {
+            // The field is painted by the toolkit's TextInput outside the
+            // retained tree; its hover and drag need the same local cursor.
+            self.overview_naming_field_pointer(event, scale_factor);
             return false;
         }
         let WindowEvent::MouseInput {
@@ -1205,7 +1215,8 @@ impl ShellOverlayHost {
             ..
         } = event
         else {
-            return false;
+            self.overview_naming_field_pointer(event, scale_factor);
+            return matches!(event, WindowEvent::MouseInput { .. });
         };
         let picture = self.overview_picture();
         let on_field = self
@@ -1215,11 +1226,30 @@ impl ShellOverlayHost {
             .and_then(|si| self.overview_naming_field(&picture, si))
             .zip(self.last_cursor)
             .is_some_and(|(field, p)| field.contains(p));
-        if !on_field {
+        if on_field {
+            self.overview_naming_field_pointer(event, scale_factor);
+        } else {
             self.commit_overview_naming();
         }
         self.bump_chrome();
         true
+    }
+
+    /// Hand a pointer event to the naming field and copy its selection back.
+    fn overview_naming_field_pointer(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
+        let Some(naming) = self.overview_naming.as_mut() else {
+            return false;
+        };
+        let Some(field) = naming.input.as_mut() else {
+            return false;
+        };
+        let took =
+            field.handle_chrome_pointer(event, scale_factor, winit::event::Modifiers::default());
+        if took {
+            let (anchor, cursor) = field.selection_anchor_focus_or_caret();
+            naming.selection = Selection { anchor, cursor };
+        }
+        took
     }
 
     /// A click or tap on the picture's strip names and controls. Returns

@@ -379,6 +379,13 @@ impl DirectorySheet {
                     .find(|(_, rect)| rect.area() > 0.0 && rect.contains(point))
                     .map(|(target, _)| target.clone());
                 match hit {
+                    Some(Target::Search) => {
+                        // The field looks like a text field; clicking it
+                        // places a caret and dragging selects, through the
+                        // same editor that paints it.
+                        self.field_pointer(event, cursor, modifiers);
+                        DirectoryOutcome::consumed()
+                    }
                     Some(target) => self.activate(&target),
                     // A press outside the sheet closes it, as a press
                     // outside any sheet does.
@@ -388,6 +395,14 @@ impl DirectorySheet {
                     }
                     None => DirectoryOutcome::consumed(),
                 }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                self.field_pointer(event, cursor, modifiers);
+                DirectoryOutcome::consumed()
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let down = match delta {
@@ -402,11 +417,48 @@ impl DirectorySheet {
                 };
                 DirectoryOutcome::consumed()
             }
-            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } => {
+            WindowEvent::CursorMoved { .. } => {
+                self.field_pointer(event, cursor, modifiers);
                 DirectoryOutcome::consumed()
             }
+            WindowEvent::MouseInput { .. } => DirectoryOutcome::consumed(),
             _ => DirectoryOutcome::ignored(),
         }
+    }
+
+    /// Let the painted search field take a pointer event and copy its
+    /// selection back into the query the drawer owns.
+    fn field_pointer(
+        &mut self,
+        event: &WindowEvent,
+        cursor: Option<Point>,
+        modifiers: Modifiers,
+    ) -> bool {
+        // The field was laid out in the sheet's local space; the event
+        // carries a desktop position. Move the caret with a local cursor
+        // first, then hand the event itself to the editor.
+        let local =
+            cursor
+                .map(|point| self.to_local(point))
+                .map(|point| WindowEvent::CursorMoved {
+                    device_id: winit::event::DeviceId::dummy(),
+                    position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+                });
+        let Some(input) = self.input.as_mut() else {
+            return false;
+        };
+        let mut took = false;
+        if let Some(local) = local.as_ref() {
+            took |= input.handle_chrome_pointer(local, 1.0, modifiers);
+        }
+        if !matches!(event, WindowEvent::CursorMoved { .. }) {
+            took |= input.handle_chrome_pointer(event, 1.0, modifiers);
+        }
+        if took {
+            let (anchor, cursor) = input.selection_anchor_focus_or_caret();
+            self.query_selection = ui::text_selection::Selection { anchor, cursor };
+        }
+        took
     }
 
     fn handle_key(&mut self, key: &Key, mods: ModifiersState) -> DirectoryOutcome {

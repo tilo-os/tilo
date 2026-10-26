@@ -5458,3 +5458,71 @@ fn a_focused_field_that_widens_shows_its_text_from_the_start() {
     draw_at(&mut ti, 400.0);
     assert_eq!(ti.scroll_x(), 0.0, "wide, the whole name shows");
 }
+
+/// Six chrome surfaces paint a field themselves and forward its pointer
+/// events ([`TextInput::handle_chrome_pointer`]); each copies the selection
+/// back into the text it owns. Hover is not ours to take, a press places the
+/// caret where the person pointed, a drag sweeps a selection, and a press
+/// that takes the selection back reports it collapsed rather than nothing to
+/// say — otherwise the surface keeps painting a selection nobody holds.
+#[test]
+fn a_chrome_owned_field_places_the_caret_and_reports_every_selection() {
+    let _settled = crate::motion::testing::settled();
+    {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+
+        let inside = x_for_byte(&ti, 8);
+        let before = ti.selection_anchor_focus_or_caret();
+        assert!(
+            !ti.handle_chrome_pointer(&cursor_moved(inside, 20.0), 1.0, mods(false, false)),
+            "a hover belongs to the surface, not to the field"
+        );
+        assert_eq!(
+            ti.selection_anchor_focus_or_caret(),
+            before,
+            "and it places no caret"
+        );
+        assert!(
+            ti.handle_chrome_pointer(&mouse_press(), 1.0, mods(false, false)),
+            "a press on the field is the field's"
+        );
+        assert_eq!(
+            ti.selection_anchor_focus_or_caret(),
+            (8, 8),
+            "the caret went where the person pressed"
+        );
+    }
+    {
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+
+        let start = x_for_byte(&ti, 2);
+        let end = x_for_byte(&ti, 9);
+        ti.handle_chrome_pointer(&cursor_moved(start, 20.0), 1.0, mods(false, false));
+        assert!(ti.handle_chrome_pointer(&mouse_press(), 1.0, mods(false, false)));
+        ti.handle_chrome_pointer(&cursor_moved(end, 20.0), 1.0, mods(false, false));
+        assert_eq!(
+            ti.selection_anchor_focus_or_caret(),
+            (2, 9),
+            "the drag swept a selection the surface can paint"
+        );
+        // A press back on the text collapses that selection; the surface
+        // hears the collapsed pair, not silence.
+        assert!(ti.handle_chrome_pointer(&mouse_press(), 1.0, mods(false, false)));
+        let (anchor, caret) = ti.selection_anchor_focus_or_caret();
+        assert_eq!(anchor, caret, "a click takes the selection back");
+    }
+    {
+        // The same press at a device scale of two lands on the same letter.
+        let mut ti = TextInput::local().with_initial_value("hello world");
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        draw_to_populate(&mut ti);
+        let inside = x_for_byte(&ti, 8);
+        ti.handle_chrome_pointer(&cursor_moved(inside * 2.0, 40.0), 2.0, mods(false, false));
+        assert!(ti.handle_chrome_pointer(&mouse_press(), 2.0, mods(false, false)));
+        assert_eq!(ti.selection_anchor_focus_or_caret(), (8, 8));
+    }
+}
