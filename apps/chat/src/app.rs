@@ -915,9 +915,6 @@ pub struct ChatApp {
     /// This window's person still has to be announced into the shared
     /// roster under the name this device knows them by.
     announce: Option<crate::identity::LocalIdentity>,
-    /// A live window tells its person about mentions of them that arrive
-    /// while they look elsewhere.
-    mention_alerts: Option<crate::mention_alerts::MentionAlerts>,
     /// The person's own drafts record, so the sidebar can say where the
     /// unsent words are.
     pub(crate) drafts_record: Option<ui::framework::PersonRecord<crate::drafts::ChatDrafts>>,
@@ -1000,7 +997,6 @@ impl ChatApp {
     /// sync, under the name this device knows them by.
     pub(crate) fn announcing(mut self) -> Self {
         self.announce = Some(self.me.clone());
-        self.mention_alerts = Some(crate::mention_alerts::MentionAlerts::default());
         self
     }
 
@@ -1215,7 +1211,6 @@ impl ChatApp {
             relayout: false,
             flap_animating: false,
             announce: None,
-            mention_alerts: None,
             drafts_record: None,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
@@ -3014,8 +3009,8 @@ impl ChatApp {
     /// Rebuild the snapshot from the CRDT. Called at the tail of `sync` and
     /// after every mutation so `draw` always reflects the latest document.
     /// Count each channel's unread mentions of this peer, the badge that
-    /// says someone is waiting on you, not just talking, and tell about new
-    /// ones in a live window.
+    /// says someone is waiting on you, not just talking. Telling about a new
+    /// one is the desktop's, for every app's mentions (`ui::mentions`).
     fn note_mentions(&mut self, per_channel: &[(Id, Vec<Message>)]) {
         let me: Vec<&str> = std::iter::once(self.me.id.as_str())
             .chain(self.former_ids.iter().map(String::as_str))
@@ -3035,47 +3030,6 @@ impl ChatApp {
         for c in &mut self.channels {
             c.mentions = mentions.get(&c.id).copied().unwrap_or_default();
         }
-        if let Some(mut alerter) = self.mention_alerts.take() {
-            let named: Vec<(Id, String, &[Message])> = per_channel
-                .iter()
-                .map(|(id, messages)| {
-                    let name = self
-                        .channels
-                        .iter()
-                        .find(|c| c.id == *id)
-                        .map_or_else(String::new, |c| c.name.clone());
-                    (id.clone(), name, messages.as_slice())
-                })
-                .collect();
-            let reading = self.host_focused.then_some(self.active_channel.as_str());
-            let now = ui::tilo_resource::origin_now_ms() / 1000;
-            let alerts = alerter.take_new(&named, &me, (reading, now), |id| self.display_name(id));
-            alerter.show(&alerts);
-            self.mention_alerts = Some(alerter);
-        }
-    }
-
-    /// Open the message a mention notification was about: the channel it was
-    /// said in, and the message itself where it is loaded. A message no longer
-    /// in view cannot be revealed, so the channel opens at its newest edge and
-    /// the reason is the only thing missing.
-    fn open_mention(&mut self, channel: &str, message: &str) -> bool {
-        if self.reveal_message(message).is_ok() {
-            return true;
-        }
-        if !self
-            .channels
-            .iter()
-            .any(|candidate| candidate.id == channel)
-        {
-            return false;
-        }
-        channel.clone_into(&mut self.active_channel);
-        self.thread_open = None;
-        self.revealed_message = None;
-        self.reset_timeline_to_latest();
-        self.reselect();
-        true
     }
 
     pub(crate) fn reload(&mut self, doc: &AutoCommit) {
@@ -5349,17 +5303,10 @@ impl Widget for ChatApp {
     fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
         let model_changed = self.pump_model();
         let room_changed = self.take_room();
-        // A mention chosen from the host's notifications opens its own
-        // message, in the channel it was said in.
         self.settle_attachment_save();
-        let opened = self
-            .mention_alerts
-            .as_ref()
-            .and_then(crate::mention_alerts::MentionAlerts::take_open)
-            .is_some_and(|(channel, message)| self.open_mention(&channel, &message));
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
-        std::mem::take(&mut self.read_on_present) || model_changed || room_changed || opened
+        std::mem::take(&mut self.read_on_present) || model_changed || room_changed
     }
 
     fn needs_animation_frame(&self) -> bool {
