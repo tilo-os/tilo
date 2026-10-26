@@ -86,6 +86,108 @@ pub(super) enum Sessions {
     Closed,
 }
 
+/// What became of invocations to a room's host, kept in tests only, so a
+/// test that times out waiting on one says where it stopped: output from
+/// the network's threads is not captured with the test's.
+pub(crate) mod trace {
+    #[cfg(test)]
+    static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    /// Note `line`, in tests.
+    #[cfg_attr(
+        not(test),
+        expect(unused_variables, reason = "only tests keep what is noted")
+    )]
+    pub(crate) fn note(line: impl FnOnce() -> String) {
+        #[cfg(test)]
+        {
+            let started = *STARTED.get_or_init(std::time::Instant::now);
+            let mut said = SAID
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // The latest lines say where a wait stopped.
+            if said.len() >= 400 {
+                said.remove(0);
+            }
+            said.push(format!(
+                "{:>8.3}s {}",
+                started.elapsed().as_secs_f64(),
+                line()
+            ));
+        }
+    }
+
+    #[cfg(test)]
+    static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+    /// Keep every warning logged in this process from now on with what is
+    /// noted, from the network's threads and the hosts' as well, and what
+    /// the hosts say of their work.
+    #[cfg(test)]
+    pub(crate) fn capture_warnings() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        static INSTALLED: std::sync::Once = std::sync::Once::new();
+        INSTALLED.call_once(|| {
+            let subscriber = tracing_subscriber::registry()
+                .with(
+                    tracing_subscriber::filter::Targets::new()
+                        .with_default(tracing::Level::WARN)
+                        .with_target("tilo_room_host", tracing::Level::INFO),
+                )
+                .with(Noting);
+            let _ = tracing::subscriber::set_global_default(subscriber);
+        });
+    }
+
+    /// Notes each event it sees, a line each. It keeps nothing per thread,
+    /// so an event logged while a thread's locals are destroyed (a store
+    /// dropped with its thread) is noted too, never a panic.
+    #[cfg(test)]
+    struct Noting;
+
+    #[cfg(test)]
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Noting {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    use std::fmt::Write as _;
+                    let _ = if field.name() == "message" {
+                        write!(self.0, " {value:?}")
+                    } else {
+                        write!(self.0, " {}={value:?}", field.name())
+                    };
+                }
+            }
+            let metadata = event.metadata();
+            let mut fields = Fields(format!("{} {}:", metadata.level(), metadata.target()));
+            event.record(&mut fields);
+            note(|| fields.0);
+        }
+    }
+
+    /// Everything noted so far, a line each.
+    #[cfg(test)]
+    pub(crate) fn said() -> String {
+        SAID.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .fold(String::new(), |mut said, line| {
+                said.push_str("\n    ");
+                said.push_str(line);
+                said
+            })
+    }
+}
+
 /// Why an invocation sent on a workspace's sessions has no answer coming.
 const SESSIONS_CLOSED: &str = "the connection to the room's host was lost";
 
@@ -140,6 +242,7 @@ impl Waiting {
         self.entries.retain(|_, waiter| {
             let keep = sessions(waiter.ws) == Sessions::Open;
             if !keep {
+                trace::note(|| format!("sent invocation failed: ws {} has no session", waiter.ws));
                 let _ = waiter.reply.send(Err(SESSIONS_CLOSED.into()));
             }
             keep
@@ -158,6 +261,12 @@ impl Waiting {
                 Sessions::Open => ready.push(request),
                 Sessions::Connecting => self.connecting.push(request),
                 Sessions::Closed => {
+                    trace::note(|| {
+                        format!(
+                            "held {:?} failed: ws {} has no session",
+                            request.invoke.invocation, request.ws
+                        )
+                    });
                     let _ = request.reply.send(Err(SESSIONS_CLOSED.into()));
                 }
             }
@@ -190,8 +299,13 @@ impl Waiting {
 
     /// Drop what has waited too long: its caller stopped waiting.
     fn forget(&mut self, now: Instant) {
-        self.entries
-            .retain(|_, waiter| now.saturating_duration_since(waiter.since) < FORGET_AFTER);
+        self.entries.retain(|invocation, waiter| {
+            let keep = now.saturating_duration_since(waiter.since) < FORGET_AFTER;
+            if !keep {
+                trace::note(|| format!("forgot {invocation:?}"));
+            }
+            keep
+        });
         self.unsent
             .retain(|(since, _)| now.saturating_duration_since(*since) < FORGET_AFTER);
     }
@@ -259,6 +373,14 @@ impl Waiting {
             .entries
             .get(&receipt.invocation)
             .is_some_and(|waiter| waiter.ws == ws && waiter.host == author);
+        trace::note(|| {
+            format!(
+                "receipt for {:?} from {author} on ws {ws}: {}, {:?}",
+                receipt.invocation,
+                if ours { "ours" } else { "not ours" },
+                receipt.status
+            )
+        });
         if !ours {
             return false;
         }

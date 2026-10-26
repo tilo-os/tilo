@@ -142,7 +142,7 @@ build_one() {
         # pulls Fedora multimedia DSOs which are deliberately not part of the
         # host-session runtime contract.
         shell) args=(-p shell --bin shell --no-default-features --features dev-session) ;;
-        shots) args=(-p shell --bin shots --no-default-features --features dev-session,hosted-test-control) ;;
+        shots) args=(-p shell --bin shots --no-default-features --features dev-session,hosted-test-control,test-support) ;;
         tilo-launcher) args=(-p launcher --bin tilo-launcher) ;;
         tilo-unlock-helper) args=(-p tilo-unlock-helper --bin tilo-unlock-helper) ;;
         *) safe_name "$package"; args=(-p "$package") ;;
