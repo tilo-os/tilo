@@ -34,6 +34,12 @@ class Unobservable(CheckFailed):
     """The check could not observe its subject. Reported as a failure, never a skip."""
 
 
+class Skipped(Exception):
+    """The run lacks what the check needs (a GPU for a GPU check on a software-rendered VM),
+    named in the reason. Reported as `skip`: never a pass, listed in the summary and with
+    the failures, and it does not fail the run, since nothing about the subject was seen."""
+
+
 class ExpectedFailure(CheckFailed):
     """The subject is known to be broken or missing in this image, and the reason is named.
 
@@ -141,6 +147,8 @@ def run_check(ctx, chk: Check) -> Result:
         res.status = "pass"
     except ExpectedFailure as exc:
         res.status, res.detail = "xfail", _join(res.detail, f"expected failure: {exc}")
+    except Skipped as exc:
+        res.status, res.detail = "skip", _join(res.detail, f"skipped: {exc}")
     except Unobservable as exc:
         res.status, res.unobservable, res.detail = "fail", True, _join(res.detail, str(exc))
     except CheckFailed as exc:
