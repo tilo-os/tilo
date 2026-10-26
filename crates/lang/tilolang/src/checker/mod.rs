@@ -71,6 +71,8 @@ struct FnState {
     fors: usize,
     /// Views made of this view's loop bodies so far.
     row_views: usize,
+    /// What the locals bound by `let` hold, in terms of places (see [`outcomes::Sym`]).
+    syms: HashMap<LocalId, outcomes::Sym>,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.
@@ -607,6 +609,7 @@ impl Checker<'_> {
             Some(w) => self.expr_as(value, w),
             None => self.expr(value, None),
         };
+        let sym = self.sym_of(value);
         let mut ty = want.unwrap_or_else(|| ex.ty.clone());
         if ty == Ty::Unit {
             self.err(
@@ -617,6 +620,9 @@ impl Checker<'_> {
             ty = Ty::Error;
         }
         let id = self.declare(name, ty);
+        if let Some(sym) = sym {
+            self.st.syms.insert(id, sym);
+        }
         self.emit(Stmt::Set(id, ex));
     }
 
@@ -712,7 +718,17 @@ impl Checker<'_> {
             };
         }
         let base_ex = self.expr(&base, None);
+        let base_ty = base_ex.ty.clone();
         self.assign_field(base_ex, last, op, value, span);
+        if op == ast::AssignOp::Set
+            && self.st.ctx == Ctx::Action
+            && let Ty::Record(key) = &base_ty
+            && let Some(f) = self.env.type_info(key).and_then(|t| t.field(&last.name))
+            && f.merge == MergeKind::Register
+        {
+            let ty = f.ty.clone();
+            self.self_dependent_write(&base, last, &ty, value, span);
+        }
     }
 
     fn assign_local(&mut self, name: &ast::Ident, op: ast::AssignOp, value: &ast::Expr) {
@@ -729,6 +745,8 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
+        // What the variable holds now depends on the path taken here.
+        self.st.syms.remove(&id);
         let cur = Ex::local(id, ty.clone());
         let rhs = self.expr_as(value, &ty);
         let new = match op {
@@ -838,7 +856,7 @@ impl Checker<'_> {
                     "E030",
                     span,
                     format!(
-                        "`{}` on a register field loses concurrent updates; declare `{name}: {ty} merge counter`, or write the read and the write out (`x.{name} = x.{name} + 1`)",
+                        "`{}` on a register field loses concurrent updates; declare `{name}: {ty} merge counter`, or take the new value as an argument: a parameter with a default the invoker gets when they leave it out (`{name}: {ty} = x.{name} + 1`, then `x.{name} = {name}`)",
                         op.text(),
                         name = f.name,
                     ),

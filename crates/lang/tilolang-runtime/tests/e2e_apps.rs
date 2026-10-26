@@ -995,7 +995,7 @@ mod cases {
         for (t, done) in [("milk", true), ("eggs", false)] {
             let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]));
             if done {
-                w.call(&apps.todo, "toggle", vec![res(&item)]);
+                w.call(&apps.todo, "check", vec![res(&item)]);
             }
         }
         let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
@@ -1052,7 +1052,7 @@ mod cases {
         let item =
             returned_ref(m.w.call(&apps.todo, "add", vec![res(&m.list), Value::text(title)]));
         if done {
-            m.w.call(&apps.todo, "toggle", vec![res(&item)]);
+            m.w.call(&apps.todo, "check", vec![res(&item)]);
         }
     }
 
@@ -1254,7 +1254,7 @@ mod cases {
         for (t, done) in [("milk", true), ("eggs", false), ("rice", true)] {
             let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]));
             if done {
-                w.call(&apps.todo, "toggle", vec![res(&item)]);
+                w.call(&apps.todo, "check", vec![res(&item)]);
             }
         }
         let out = w.call(&apps.todo, "clear_done", vec![res(&list)]);

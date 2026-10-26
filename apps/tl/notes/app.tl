@@ -43,8 +43,8 @@ primary action new_note(nb: Notebook) -> Note (icon: .plus) {
 }
 
 /// Pins or unpins a note.
-action toggle_pin(n: Note) (label: if n.pinned { "Unpin" } else { "Pin" }, icon: .pin, on: n.pinned) {
-    n.pinned = not n.pinned
+action pin(n: Note, pinned: Bool = not n.pinned) (label: if pinned { "Pin" } else { "Unpin" }, icon: .pin, on: n.pinned) {
+    n.pinned = pinned
 }
 
 /// Deletes a note.

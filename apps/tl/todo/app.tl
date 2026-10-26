@@ -52,8 +52,8 @@ action add_draft(list: TodoList) {
 }
 
 /// Checks or unchecks an item.
-action toggle(item: Todo) (label: if item.done { "Uncheck" } else { "Check" }, icon: .check, on: item.done) {
-    item.done = not item.done
+action check(item: Todo, done: Bool = not item.done) (label: if done { "Check" } else { "Uncheck" }, icon: .check, on: item.done) {
+    item.done = done
 }
 
 /// Removes an item.
