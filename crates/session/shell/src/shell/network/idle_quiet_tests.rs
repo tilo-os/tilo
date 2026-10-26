@@ -542,15 +542,15 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
     let mut first = Desktop::new(&first_device, room);
     let mut second = Desktop::new(&second_device, room);
 
-    // The first desktop's person points at the shared tab, the second sees
-    // it arrive, and then the hand comes off the mouse.
+    // The first desktop's person points at the shared tab, the second draws
+    // that pointer (the pointer itself: a roster change repaints too), and
+    // then the hand comes off the mouse.
     first.desk.pointer = Some((120.0, 80.0));
-    let before = second.repaints;
     assert!(
         run(
             &mut [&mut first, &mut second],
             tilo_test_env::hang_bound(),
-            |desktops| desktops[1].repaints > before,
+            |desktops| !desktops[1].ctx.remote_cursors.is_empty(),
         ),
         "the peer never drew the pointer"
     );

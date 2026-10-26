@@ -6855,6 +6855,9 @@ impl ShellNetwork {
                 active,
             } => self.host_member(ws, host, device, active),
             NetEvent::HostReady { ws, peer } => {
+                // What was live before this session to the room's host was up
+                // (a resting pointer) reached nobody: it is said again now.
+                self.note_peer_joined();
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));
                 }
