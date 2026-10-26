@@ -275,6 +275,8 @@ pub struct FrameOutput<'a> {
 
 mod caller_palette;
 mod capture;
+mod inspection_patch;
+pub use inspection_patch::{InspectionPatchStats, write_inspection_patch};
 mod drive;
 mod invocation_results;
 mod nav_gesture;

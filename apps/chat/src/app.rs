@@ -5108,6 +5108,9 @@ impl Widget for ChatApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
+        #[cfg(test)]
+        crate::component_tests::ACCESSIBILITY_BUILDS
+            .set(crate::component_tests::ACCESSIBILITY_BUILDS.get() + 1);
         let controls = self
             .semantic_hits()
             .into_iter()

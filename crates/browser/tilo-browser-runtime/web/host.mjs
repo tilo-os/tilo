@@ -8,7 +8,7 @@ import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createF
 
 import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
-import {semanticBridge} from './semantics.mjs';
+import {semanticBridge,applySemanticsPatch} from './semantics.mjs';
 import {recoverableClose} from './close-recovery.mjs';
 import {createCrashQuarantine,crashAction} from './app-crash.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
@@ -260,6 +260,14 @@ export async function mountDesktop(target,options={}) {
   function update(raw){
     if(closed||crashed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
+    // After the first tree a status carries only what changed in it; one
+    // made for a tree this page does not hold asks for the whole tree.
+    if(state.semanticsPatch){
+      const patched=applySemanticsPatch(lastState?.semantics,lastState?.semanticsSeq,state.semanticsPatch);
+      if(patched){state.semantics=patched;state.semanticsSeq=state.semanticsPatch.seq;}
+      else if(active())queueMicrotask(()=>{if(active())runtime.request_semantics?.(id);});
+      delete state.semanticsPatch;
+    }
     nativeCatalogue.pump();
     for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.message)void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.send)void sendToPerson(request.send);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(typeof request?.message==='string')void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.['room-action']){const asked=request['room-action'];void runRoomAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_room_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
