@@ -267,6 +267,10 @@ mod tests {
         serde_json::from_str(json).unwrap_or_default()
     }
 
+    #[allow(
+        clippy::float_cmp,
+        reason = "a fallback or clamp yields exactly the named constant, so equality is the assertion"
+    )]
     #[test]
     fn settings_round_trip_and_fall_back_per_key() {
         let entry = RecentMedia {
