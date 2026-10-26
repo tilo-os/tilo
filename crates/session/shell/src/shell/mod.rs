@@ -277,6 +277,40 @@ pub(crate) fn hosted_label_for_title(title: &str) -> String {
         .map_or_else(|| title.to_string(), |(_, label)| (*label).to_string())
 }
 
+/// Whether a tab is an app this host mounts as its own component. Its record
+/// is the app's, made by its definition's genesis when the component first
+/// mounts, never a scratch `tab` record the compositor invents beside it.
+fn mounts_in_process(tile: &ShellTile) -> bool {
+    let ShellTile::AppPlaceholder { kind, .. } = tile else {
+        return false;
+    };
+    match kind {
+        ShellKind::Terminal | ShellKind::FileExplorer | ShellKind::Browser => true,
+        ShellKind::Other(name)
+            if name.eq_ignore_ascii_case(tilo_desktop::feedback::KIND)
+                || ["Notes", "Editor", "Word", "Messages", "Passwords"]
+                    .iter()
+                    .any(|known| name.eq_ignore_ascii_case(known)) =>
+        {
+            true
+        }
+        ShellKind::Settings | ShellKind::Other(_) => false,
+    }
+}
+
+/// The record a freshly opened tab needs from the compositor: only content it
+/// shows itself has a scratch tab document. A mounted app creates its own
+/// when this host mounts apps in process; a host that does not keeps the
+/// compositor's own tab document.
+pub(crate) fn new_tab_record(
+    tile: &ShellTile,
+    tab: state::TabId,
+    mounts_apps: bool,
+) -> Option<ui::record::RecordCheckout> {
+    (!(mounts_apps && mounts_in_process(tile)))
+        .then(|| crate::shell::tab_documents::scratch_tab_record(tab))
+}
+
 /// How the shell resolves `t`, for tests that don't want the full `UiTile`
 /// type (and its boxed `AppWidget`) on the public surface.
 #[cfg(any(test, debug_assertions))]
@@ -539,7 +573,9 @@ fn try_to_ui_tile_for_tab(
                 ));
             }
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Word") => {
-                UiTile::App(Box::new(word_processor::WordProcessorWidget::new()))
+                return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
+                    "in-process apps",
+                ));
             }
             _ => UiTile::Stub {
                 kind: to_ui_kind(kind),
@@ -610,11 +646,12 @@ pub fn to_ui_window_group_with_inputs(
             )
         })
         .collect();
-    let mut group =
+    let group =
         UiGroup::new(g.id, tabs_with_content, g.active_tab, g.width).with_maximized(g.maximized);
-    // Every tab gets its own document before it is ever synced, so no
-    // hosted app writes a keystroke into the shell's own state.
-    tab_documents::bind_group_records(&mut group, records);
+    // A mounted component holds its own record; content that shows no
+    // document has none to bind. The group still carries each tab's
+    // identity, so a tab dragged elsewhere keeps what it shows.
+    let _ = records;
     group
 }
 
@@ -995,6 +1032,16 @@ pub fn mount_in_process(
             ui::record::RecordId::for_tab(tab),
             |_| {},
         ),
+        // Writer is the word processor's own component on the tab's record:
+        // its actions, History and collaboration are the ones it has in its
+        // window, not a second document host beside them.
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Word") => apps.borrow_mut().mount(
+            word_processor::definition(),
+            &room,
+            tab,
+            ui::record::RecordId::for_tab(tab),
+            |_| {},
+        ),
         // An Editor tab opened on a file is the editor's project of that
         // file, which the editor reads from disk itself; one opened on
         // nothing is a project of the tab's own.
@@ -1364,6 +1411,69 @@ mod hosted_app_tests {
 
         every_hosted_app_round_trips_from_its_tab_title_into_a_live_app();
         an_unhosted_title_is_carried_through_unchanged();
+    }
+
+    /// Writer is its app's own component on the tab's record, not a legacy
+    /// content widget the compositor binds a scratch tab document beside.
+    #[test]
+    fn document_tab_mounts_writer_component_on_its_own_record() {
+        let inputs = hosted_inputs::HostedTileInputs::fixture().expect("tile inputs");
+        let tab = state::Tab {
+            id: 77,
+            title: "Document".into(),
+            tile: ShellTile::AppPlaceholder {
+                kind: ShellKind::Other("Word".into()),
+                label: "Document".into(),
+            },
+            app_title: None,
+        };
+        let request = tilo_desktop::resolver::TileRequest {
+            room: state::RoomId::new(),
+            tab: &tab,
+        };
+        let tilo_desktop::resolver::TileResolution::App(component, _) =
+            mount_in_process(&request, &inputs).expect("Writer mounts in process")
+        else {
+            panic!("Writer is not the mounted app its tab opens");
+        };
+        assert_eq!(component.app_id(), word_processor::definition().app_id);
+        assert!(
+            new_tab_record(&tab.tile, tab.id, true).is_none(),
+            "Writer's own component makes its record, not a scratch tab document"
+        );
+    }
+
+    /// Opening Writer through the desktop's own action mounts its component
+    /// and leaves the record to that component's genesis.
+    #[test]
+    fn opening_a_document_tab_creates_the_writers_own_record() {
+        let tree = state::WorkspaceTree::bootstrap_demo();
+        let strip = tree
+            .desktop
+            .active_workspace()
+            .and_then(|workspace| workspace.strips.first())
+            .map(|strip| strip.id)
+            .expect("a demo strip");
+        let records = ui::record::RecordStore::in_memory();
+        let (mut host, chrome) =
+            crate::shell::build_tilo_overlay_host_with_records(tree.shared(), false, records);
+        let tab = crate::shell::window_actions::open_hosted(
+            &mut chrome.borrow_mut(),
+            ShellKind::Other("Word".into()),
+            "Document",
+            crate::shell::window_actions::Destination::Here,
+        );
+        // The action's splice is harvested into the rows on the next frame.
+        host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
+        host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
+        let group = host.group_at_for_tests(strip, 0).expect("the active group");
+        assert!(
+            matches!(
+                group.host_for_tab_mut(tab).expect("the new tab").content(),
+                ui::widget::TileContent::App(_)
+            ),
+            "the new tab shows Writer's component"
+        );
     }
 
     /// Each tab wears its own app's mark: Files' tab a folder, the browser's

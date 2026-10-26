@@ -138,15 +138,6 @@ impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<
     }
 }
 impl TileResolution {
-    /// Whether the tile holds its record itself (a mounted app, or one still
-    /// opening its own), so the host binds it no scratch record.
-    pub(crate) fn holds_its_own_record(&self) -> bool {
-        matches!(
-            self,
-            Self::Component(_) | Self::App(..) | Self::Retained(_) | Self::Opening
-        )
-    }
-
     pub(crate) fn mount(
         self,
         failures: &mut Vec<LaunchError>,

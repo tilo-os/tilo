@@ -1334,6 +1334,18 @@ mod tests {
             "a Notes tab publishes its notebook"
         );
 
+        let word = mount_tab(
+            &inputs,
+            73,
+            crate::shell::state::AppKind::Other("Word".into()),
+        );
+        assert!(
+            word.resources()
+                .iter()
+                .any(|resource| resource.kind == word_processor::RECORD_KIND),
+            "a Writer tab publishes the document it keeps"
+        );
+
         inputs.bind_document(
             72,
             crate::shell::hosted_inputs::HostedDocument {

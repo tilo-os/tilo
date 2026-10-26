@@ -25,6 +25,8 @@ use tilo_desktop::notifications::{
 };
 pub use tilo_desktop::workspace_settings::{GrantDraft, WsTab};
 
+mod tab_records;
+
 /// The place a deletion toast's workspace goes back to when it was archived:
 /// among the archived ones, not into the switcher's list.
 const ARCHIVED_UNDO: usize = usize::MAX;
@@ -65,6 +67,7 @@ impl TabRecordCreationIdentity {
 struct PendingTabRecordCreation {
     identity: TabRecordCreationIdentity,
     store: RecordStore,
+    checkout: ui::record::RecordCheckout,
 }
 
 fn visual_notification_alerts_enabled() -> bool {
@@ -1964,79 +1967,6 @@ impl ChromeState {
         // documents on their own threads and call this, and a tab refused
         // meanwhile resolves again on the resync the flag causes.
         durable_store::waiting::decline_on_this_thread(ready);
-    }
-
-    /// Finalize a new-tab action after its complete document reference/setup.
-    /// Only transient record-loan contention retains a bounded retry ticket.
-    pub(crate) fn create_new_tab_record(&mut self, tab: u64) {
-        let Some(identity) = TabRecordCreationIdentity::capture(&self.tree(), tab) else {
-            return;
-        };
-        match super::tab_documents::create_scratch_tab_record(&self.records, tab) {
-            Ok(()) => {}
-            // Retried by `retry_new_tab_records`; an opening document wakes
-            // the loop for it.
-            Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
-                self.pending_tab_records
-                    .push_back(PendingTabRecordCreation {
-                        identity,
-                        store: self.records.clone(),
-                    });
-            }
-            Err(error) => {
-                self.failed_tab_records
-                    .insert(tab, (identity, new_document_unavailable(&error)));
-            }
-        }
-    }
-
-    /// Retain every valid ticket, attempting at most 64 per drain. Busy tickets
-    /// rotate behind unattempted work; rebuilding missing tabs adds no authority.
-    pub(crate) fn retry_new_tab_records(&mut self) {
-        let tree = self.tree_handle.read();
-        let before = self.failed_tab_records.len();
-        self.failed_tab_records.retain(|tab, (identity, _)| {
-            TabRecordCreationIdentity::capture(&tree, *tab).as_ref() == Some(identity)
-        });
-        let mut changed = self.failed_tab_records.len() != before;
-        // A document the store finished opening: tabs that were refused
-        // while it opened bind again on the resync this bump causes.
-        if self
-            .records_opened
-            .swap(false, std::sync::atomic::Ordering::Acquire)
-        {
-            changed = true;
-        }
-        self.pending_tab_records.retain(|pending| {
-            TabRecordCreationIdentity::capture(&tree, pending.identity.tab).as_ref()
-                == Some(&pending.identity)
-        });
-        let attempts = self.pending_tab_records.len().min(64);
-        for _ in 0..attempts {
-            let Some(pending) = self.pending_tab_records.pop_front() else {
-                break;
-            };
-            match super::tab_documents::create_scratch_tab_record(
-                &pending.store,
-                pending.identity.tab,
-            ) {
-                Ok(()) => changed = true,
-                Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
-                    self.pending_tab_records.push_back(pending);
-                }
-                Err(error) => {
-                    self.failed_tab_records.insert(
-                        pending.identity.tab,
-                        (pending.identity, new_document_unavailable(&error)),
-                    );
-                    changed = true;
-                }
-            }
-        }
-        drop(tree);
-        if changed {
-            self.bump();
-        }
     }
 
     pub(crate) fn record_creation_errors(&self, tree: &WorkspaceTree) -> BTreeMap<u64, String> {
