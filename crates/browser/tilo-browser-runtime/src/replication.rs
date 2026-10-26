@@ -437,6 +437,16 @@ pub(crate) fn publish(id: u32) {
     }
 }
 
+/// Take what the room answered about this page's person since the last
+/// frame, before the frame decides whether it has anything to do: an
+/// answer that changes what their windows may do marks them changed, so an
+/// idle page draws it at once instead of whenever something else wakes it.
+pub(crate) fn follow_answers(id: u32) {
+    if let Some(room) = room(id) {
+        room.borrow_mut().follow_standing();
+    }
+}
+
 /// Ask the room now for content the open records' windows lack.
 pub(crate) fn ask_content(id: u32) {
     if let Some(room) = room(id) {

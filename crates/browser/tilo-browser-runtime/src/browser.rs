@@ -2358,6 +2358,9 @@ impl Mount {
                 .woken
                 .load(std::sync::atomic::Ordering::Acquire)
         });
+        if let Some(peer) = self.peer {
+            crate::replication::follow_answers(peer);
+        }
         self.pending |= desktop_woken || self.replica_changed.get();
         let frame = self.frame.frame_schedule();
         let due = frame
