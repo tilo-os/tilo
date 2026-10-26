@@ -1512,42 +1512,87 @@ fn a_keystroke_in_the_composer_of_a_long_channel_handled() {
         }
     }
     handled.sort();
-    for index in 0..3 {
-        let rebuilt = frame.rebuilt_frames();
-        frame
-            .call_on(
-                &chain,
-                "post",
-                serde_json::json!({"channel": "c_chat", "text": format!("Arrived {index}")}),
-            )
-            .unwrap();
-        let (elapsed, scopes) = ui::tilo_resource::profiling::observe(|| {
-            let started = ui::time::Instant::now();
-            for _ in 0..8 {
-                if !frame.poll_frame().unwrap() {
-                    break;
-                }
-            }
-            started.elapsed()
-        });
-        let mut scopes: Vec<_> = scopes
-            .iter()
-            .map(|sample| (sample.phase, sample.calls, sample.elapsed_ns / 1000))
-            .collect();
-        scopes.sort_by_key(|(_, _, us)| std::cmp::Reverse(*us));
-        assert_eq!(
-            frame.rebuilt_frames(),
-            rebuilt,
-            "a new message rebuilds no layout tree"
-        );
-        report.push_str(&format!(
-            "message {index}: frames in {elapsed:?}; scopes: {scopes:?}\n"
-        ));
-    }
     frame.close_components();
     eprintln!(
         "{report}composer keystroke handled: p50 {:?}, max {:?}",
         handled[handled.len() / 2],
         handled[handled.len() - 1]
     );
+}
+
+/// A new message in an open Chat over a long channel, as the browser host
+/// takes it: the post's own frame, then whatever the window's components
+/// were woken for, served when the host idles, until the window rests. After
+/// the post's frame the window rests within a frame or two, and no layout
+/// tree is built again for it.
+#[test]
+fn a_new_message_leaves_the_window_at_rest() {
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-new-message");
+    let chain = crate::testing::chain();
+    let post = |frame: &mut ui::headless::FrameHarness, text: String| {
+        frame
+            .call_on(
+                &chain,
+                "post",
+                serde_json::json!({"channel": "c_chat", "text": text}),
+            )
+            .unwrap();
+    };
+    for index in 0..300 {
+        post(
+            &mut frame,
+            format!("Message {index}, long enough to wrap onto a second line"),
+        );
+    }
+    // As the browser host does: serve what woke the window, then draw until
+    // it rests. Each frame's time.
+    let settle = |frame: &mut ui::headless::FrameHarness| {
+        let mut frames = Vec::new();
+        for _ in 0..30 {
+            let started = ui::time::Instant::now();
+            let _ = frame.service_pending_owner_models();
+            if !frame.poll_frame().unwrap() {
+                break;
+            }
+            frames.push(started.elapsed());
+        }
+        frames
+    };
+    settle(&mut frame);
+    let mut report = String::new();
+    for index in 0..3 {
+        let rebuilt = frame.rebuilt_frames();
+        let ((posted, frames), scopes) = ui::tilo_resource::profiling::observe(|| {
+            let started = ui::time::Instant::now();
+            post(&mut frame, format!("News {index}"));
+            (started.elapsed(), settle(&mut frame))
+        });
+        let mut scopes: Vec<_> = scopes
+            .iter()
+            .map(|sample| (sample.phase, sample.calls, sample.elapsed_ns / 1000))
+            .collect();
+        scopes.sort_by_key(|(_, _, us)| std::cmp::Reverse(*us));
+        report.push_str(&format!(
+            "message {index}: posted and drawn in {posted:?}, then frames {frames:?}; scopes: {scopes:?}\n"
+        ));
+        assert_eq!(
+            frame.rebuilt_frames(),
+            rebuilt,
+            "a new message builds no layout tree again: {report}"
+        );
+        let misses = scopes
+            .iter()
+            .find(|(phase, ..)| *phase == "ui.bound_discovery_miss")
+            .map_or(0, |(_, calls, _)| *calls);
+        assert!(
+            misses <= 1,
+            "the post rediscovers the bound components once, where the record changed: {report}"
+        );
+        assert!(
+            frames.len() <= 2,
+            "a new message is drawn in a frame or two, then the window rests: {report}"
+        );
+    }
+    frame.close_components();
+    eprintln!("{report}");
 }

@@ -333,6 +333,31 @@ pub enum BrowserEffect {
         #[param("The download's id")]
         id: String,
     },
+    /// Read downloaded file
+    ///
+    /// Answers with the completed download's text, bounded; a file that is
+    /// not UTF-8 text answers only its type and size.
+    #[effect(row, returns, idempotent, audience = "agents", untrusted)]
+    ReadDownload {
+        #[param("The download's id")]
+        id: String,
+    },
+    /// Keep the download
+    ///
+    /// Saves the file the page offered, answering where it went.
+    #[effect(row, returns)]
+    SaveDownload {
+        #[param("The download's id")]
+        id: String,
+    },
+    /// Discard the download
+    ///
+    /// Refuses the file the page offered, which is not saved.
+    #[effect(row, returns, destructive)]
+    DiscardDownload {
+        #[param("The download's id")]
+        id: String,
+    },
     /// Zoom in
     ///
     /// Makes the page larger on this device; answers the page's size.
@@ -591,6 +616,19 @@ pub enum BrowserEffect {
         #[param("The question's id")]
         dialog: u32,
     },
+    /// Answer the site's permission request
+    ///
+    /// What its Allow or Block button does: the site's request for a
+    /// capability, such as its location, is granted or refused, and the page
+    /// goes on from there. Granting or refusing reaches the site's own
+    /// privacy boundary, so it is asked first like the person's prompt is.
+    #[effect(row, privileged, returns)]
+    AnswerPermission {
+        #[param("The request's id from the page's outline")]
+        request: u32,
+        #[param("Allow the site the capability (true) or refuse it (false)")]
+        allow: bool,
+    },
     /// Move the pointer on the page
     ///
     /// Runs one gesture of real pointer input, as a hand makes it: steps in
@@ -761,6 +799,9 @@ impl BrowserEffect {
             Self::RetryDownload { id } => BrowserOperation::RetryDownload { id },
             Self::OpenDownload { id } => BrowserOperation::OpenDownload { id },
             Self::RevealDownload { id } => BrowserOperation::RevealDownload { id },
+            Self::ReadDownload { id } => BrowserOperation::ReadDownload { id },
+            Self::SaveDownload { id } => BrowserOperation::AnswerDownload { id, allow: true },
+            Self::DiscardDownload { id } => BrowserOperation::AnswerDownload { id, allow: false },
             Self::AcceptPageDialog { dialog, text } => BrowserOperation::AnswerPageDialog {
                 dialog,
                 accept: true,
@@ -771,6 +812,9 @@ impl BrowserEffect {
                 accept: false,
                 text: None,
             },
+            Self::AnswerPermission { request, allow } => {
+                BrowserOperation::AnswerPermission { request, allow }
+            }
             Self::ReadPage { frame } => page(PageRequest::Outline {
                 frame: page_frame(frame),
             }),
@@ -1007,6 +1051,15 @@ pub enum BrowserOperation {
     RevealDownload {
         id: String,
     },
+    /// Answer the page's offer to download `id`: save it when `allow`.
+    AnswerDownload {
+        id: String,
+        allow: bool,
+    },
+    /// Read a completed download's file, bounded and as text.
+    ReadDownload {
+        id: String,
+    },
     Page(PageRequest),
     /// Answer the page's question `dialog`: OK, Leave or Reload when
     /// `accept`, else Cancel, with a prompt's `text`.
@@ -1014,6 +1067,12 @@ pub enum BrowserOperation {
         dialog: u32,
         accept: bool,
         text: Option<String>,
+    },
+    /// Answer the site's permission request `request`: allow it when
+    /// `allow`, else deny it.
+    AnswerPermission {
+        request: u32,
+        allow: bool,
     },
     Extension(ExtensionRequest),
     /// Offer the Web Store item on the page, as Add to Tilo Browser does.

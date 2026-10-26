@@ -98,6 +98,33 @@ def _calibrated(func, why: str):
     return run
 
 
+# The session locks after 5 minutes without a person's input (Settings' default), and the
+# harness drives most checks through the control socket, which is no person's input: R01 to
+# R03 alone run that long, and the idle lock then fired inside R03 (its compositor memory
+# taken over the lock overlay, the session left locked). A lone Shift press, real input that
+# no binding takes, restarts the person's idle period before a check once the last one is
+# this old; the settle keeps its handling out of the check's own idle windows.
+AWAKE_EVERY_S = 120
+AWAKE_SETTLE_S = 2.0
+
+
+def keep_awake(ctx) -> None:
+    """Press Shift on the slot's seat when the last press is `AWAKE_EVERY_S` old (or there was
+    none), so no check meets the idle dim, blank or lock it is not about. run.py calls it
+    before each check."""
+    now = time.monotonic()
+    last = ctx.facts.get("awake_at")
+    if last is not None and now - last < AWAKE_EVERY_S:
+        return
+    try:
+        ctx.vm.key("shift")
+    except VmError as exc:
+        ctx.facts["awake_failed"] = exc.reason()
+        return
+    ctx.facts["awake_at"] = now
+    time.sleep(AWAKE_SETTLE_S)
+
+
 def run_check(ctx, chk: Check) -> Result:
     res = Result(chk.id, chk.area, chk.title)
     started = time.monotonic()
@@ -124,6 +151,8 @@ def run_check(ctx, chk: Check) -> Result:
         res.detail = _join(res.detail, f"{type(exc).__name__}: {exc}")
         (ctx.out / "errors").mkdir(exist_ok=True)
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
+        res.evidence.append(f"errors/{chk.id}.txt")
+    leave_running(ctx, chk, res)
     leave_unlocked(ctx, chk, res)
     leave_no_dialog(ctx, chk, res)
     restarted = session_restart(ctx, chk.id)
@@ -133,6 +162,41 @@ def run_check(ctx, chk: Check) -> Result:
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
+
+
+LEFT_STOPPED = "left no slot session answering"
+# How long a session that is not answering after a check is given to come back by itself
+# (systemd's Restart= after a crash, a session still starting) before the harness restarts it.
+SESSION_RETURN_S = 60
+
+
+def leave_running(ctx, chk: Check, res: Result) -> None:
+    """No check may hand the next one a slot whose session does not answer: every later
+    check would fail on a missing control socket instead of its subject (after A17 ended
+    the session on purpose and the next one died too, R04 and W01-W07 all failed so). A
+    session that does not answer is waited for until its control socket answers again,
+    as long as systemd may still be bringing it back; one still silent after that is
+    restarted by the harness and the check fails, however it ended."""
+    def answering():
+        try:
+            return ctx.state()
+        except VmError:
+            return None
+
+    if answering() is not None:
+        return
+    if wait_until(answering, SESSION_RETURN_S, 2.0) is not None:
+        return
+    res.status = "fail"
+    ctx.facts.setdefault("session_recovered_after", []).append(chk.id)
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s, and restarting "
+                                       f"the slot session failed: {exc.reason()}")
+        return
+    res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s; the harness "
+                                   "restarted the slot session")
 
 
 LEFT_LOCKED = "left the session locked"
@@ -1174,16 +1238,25 @@ def ush_environment_refusal(ctx) -> str | None:
     return environment_refusal(journal)
 
 
-def ush_journal_tail(ctx, lines: int = 4) -> str | None:
-    """The last `lines` lines the slot's `tilo-ush` logged, joined with " | ", or None: what a
-    Terminal with no shell, and no refusal to quote, can still say in its detail."""
+_USH_EVIDENCE = r'''set +e
+echo "journal: $(journalctl --user -u tilo-ush.service --no-pager -o cat -n 200 2>&1 | grep -v '^$' | tail -n 4 | tr '\n' '|' | cut -c1-900)"
+echo "session log: $(grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo/session-logs" 2>/dev/null | grep -v APP-STARTUP | tail -n 3 | tr '\n' '|' | cut -c1-900)"
+echo "guests: $(ps -u "$(id -u)" -o pid=,etimes=,time=,args= 2>/dev/null | grep -E 'tilo-ush (run|guest-init)' | grep -v grep | cut -c1-160 | tr '\n' '|')"
+'''
+
+
+def ush_evidence(ctx) -> str | None:
+    """What a Terminal with no shell can say in its detail, since a failed run publishes no
+    report data: the shell runtime's last journal lines (its runtime import's start and
+    duration among them), the session log's last lines about it or Terminal, and the guest
+    processes still running with their age and CPU time. None when nothing could be read."""
     try:
-        journal = ctx.vm.exec("journalctl --user -u tilo-ush.service --no-pager -o cat -n 200 2>&1",
-                              timeout=60, check=False)
+        text = ctx.vm.exec(_USH_EVIDENCE, timeout=60, check=False)
     except VmError:
         return None
-    said = [_ANSI.sub("", line).strip() for line in journal.splitlines() if line.strip()]
-    return " | ".join(said[-lines:]) or None
+    lines = [_ANSI.sub("", line).strip() for line in text.splitlines()
+             if line.strip() and not line.rstrip().endswith(":")]
+    return "; ".join(lines) or None
 
 
 def ush_diagnostics(ctx) -> str:

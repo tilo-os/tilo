@@ -115,16 +115,20 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
 # ui::webview::chromium::runtime::RUNTIME_VERSION (scripts/browser/
 # test_engine_runtime.py keeps the two equal). Release builds sign it with the
 # runtime publisher key; other builds with a key made for this build alone.
+# The engine is the `chromium-engine` build context's chromium-engine/: the compiled
+# tree where the compile built it, else the engine's own build (os-chromium-<arch>),
+# which a compile keeping its build directory leaves out (os/dev/build-image.sh).
 ARG TILO_BROWSER_RUNTIME_PUBLISHER=""
 ARG CHROMIUM_RUNTIME_VERSION
 RUN --mount=type=secret,id=browser_runtime_identity \
+    --mount=type=bind,from=chromium-engine,source=/,target=/run/tilo-chromium,ro \
     : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
          pinned="$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \
               /build/crates/sdk/ui-core/src/webview/chromium/runtime.rs)" \
          && test -n "$pinned" \
          && test "$pinned" = "${CHROMIUM_RUNTIME_VERSION}" \
-         && test -x /out/chromium-engine/chromium/tilo-chromium-host \
+         && test -x /run/tilo-chromium/chromium-engine/chromium/tilo-chromium-host \
          && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
               test -s /run/secrets/browser_runtime_identity \
               && actual="$(/out/tilo-runtime-bundle key pubkey \
@@ -137,7 +141,7 @@ RUN --mount=type=secret,id=browser_runtime_identity \
             fi \
          && /out/tilo-runtime-bundle build \
               --version "${CHROMIUM_RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
-              --include /out/chromium-engine/chromium \
+              --include /run/tilo-chromium/chromium-engine/chromium \
               --identity "$identity" \
               --out "/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}" \
          && /out/tilo-runtime-bundle key pubkey \

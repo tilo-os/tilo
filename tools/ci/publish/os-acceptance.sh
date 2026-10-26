@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # The OS image and its dev image as devices get them, as root in a micro-VM step with a
-# /dev/kvm of its own. Nothing here holds a secret or publishes. The stable channel's gate;
-# main's dev images need only os-dev-gate-ARCH, which installed the disk these tracks boot.
+# /dev/kvm of its own. Nothing here holds a secret or publishes. The stable channel's gate, and
+# the dev disk's; main's dev images need only os-dev-gate-ARCH.
 #
-#   os-acceptance.sh ARCH IMAGE GATE OUT   IMAGE: os-image-ARCH's layout, GATE: os-dev-gate-ARCH's
-#                                          output (its disk); reports and logs into OUT
+#   os-acceptance.sh ARCH IMAGE DISK OUT   IMAGE: os-image-ARCH's layout, DISK: os-dev-disk-ARCH's
+#                                          output (the dev image installed); reports and logs into
+#                                          OUT
 #
-# Three tracks run side by side, each booting throwaway overlays of the gate's disk or the OS
+# Three tracks run side by side, each booting throwaway overlays of the installed disk or the OS
 # image's own UKI:
 #
 #   devices  a joined device signs in (os/dev/test-joined-device-startup.sh); nearby pairing,
@@ -19,7 +20,7 @@ set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
 
-arch=${1:?usage: os-acceptance.sh ARCH IMAGE GATE OUT}
+arch=${1:?usage: os-acceptance.sh ARCH IMAGE DISK OUT}
 image=${2:?}
 disk=${3:?}/disk/disk.qcow2
 out=${4:?}

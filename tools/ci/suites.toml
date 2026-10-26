@@ -553,6 +553,7 @@ suites = [
   "scripts/vm-acceptance/test_dialog_guard.py",
   "scripts/vm-acceptance/test_device_fidelity.py",
   "scripts/vm-acceptance/test_session_restart.py",
+  "scripts/vm-acceptance/test_session_guard.py",
   "scripts/vm-acceptance/test_ui.py",
   "scripts/vm-acceptance/test_vm_actions.py",
 ]
@@ -1833,7 +1834,7 @@ reason = "runs inside a booted guest as its device admin, after first login; t's
 
 [[unrequired]]
 suite = "os/tests/live-update-check.sh"
-reason = "runs inside a booted dev VM as root and stages an update; t's os-acceptance-<arch> runs it"
+reason = "runs inside a booted dev VM as root and stages an update; t's os-dev-gate-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/input-hotplug-check.sh"

@@ -153,6 +153,40 @@ FRAMED = b'''<!doctype html><title>Framed</title>
 '''
 
 
+# A frame holding a frame: the outer one is frame 1, the inner one frame 1.1.
+NESTED = b'''<!doctype html><title>Nested</title>
+<h1>Nested frames</h1>
+<iframe src="/outer" title="Outer frame" style="width:600px;height:400px;border:0"></iframe>
+'''
+
+
+OUTER = b'''<!doctype html><title>Outer</title>
+<p>Outer document</p>
+<iframe src="/widget" title="Payment form" style="width:560px;height:240px;border:0"></iframe>
+'''
+
+
+LATE = b'''<!doctype html><title>Late frame</title>
+<h1>Late page</h1>
+<p>The frame is made by script, after the page has loaded.</p>
+<script>setTimeout(() => {
+  const fr = document.createElement('iframe');
+  fr.title = 'Late payment form';
+  fr.src = '/widget-late';
+  fr.style.cssText = 'width:600px;height:240px;border:0';
+  document.body.append(fr);
+}, 300);</script>
+'''
+
+
+# The frame's first document moves on to the form by itself, so the frame the
+# page attached is navigated again before an action can name it.
+WIDGET_LATE = b'''<!doctype html><title>Connecting</title>
+<p id="state">Connecting to the payment service</p>
+<script>setTimeout(() => location.replace('/widget'), 200);</script>
+'''
+
+
 WIDGET = b'''<!doctype html><title>Payment details</title>
 <form action="/done" method="get">
   <label>IBAN <input name="iban"></label>
@@ -180,6 +214,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else CANVAS if path == '/canvas' \
             else GESTURES if path == '/gestures' \
             else FRAMED if path == '/framed' else WIDGET if path == '/widget' \
+            else LATE if path == '/late' else WIDGET_LATE if path == '/widget-late' \
+            else NESTED if path == '/nested' else OUTER if path == '/outer' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -279,6 +315,54 @@ class PageActions(unittest.TestCase):
         # A frame id the outline never printed is refused, not read as the page.
         invented = self.page('outline', frame='7')
         self.assertEqual((invented['ok'], invented['code']), (False, 'no_frame'), invented)
+
+    def test_a_frame_of_a_frame_is_numbered_inside_the_frame_that_holds_it(self):
+        self.h.navigate(self.url + '/nested')
+        # Each document numbers the frames it holds, so the page's frame is 1
+        # and the frame inside it is 1.1 wherever it sits in the page's numbering.
+        self.assertRegex(self.outline(), r'iframe "Outer frame" \[frame=1\]')
+        outer = self.ok('outline', frame='1')['outline']
+        self.assertNotIn('Nested frames', outer, 'the frame reads its own document alone')
+        self.assertRegex(outer, r'iframe "Payment form" \[frame=1\]')
+        # A frame of a frame is named by both numbers, joined: the same id the
+        # page printed to reach its own frame, then the one inside it.
+        inner = self.ok('outline', frame='1.1')['outline']
+        self.assertRegex(inner, r'textbox "IBAN" \[ref=d\d+e\d+\]')
+        self.assertNotIn('Outer document', inner, 'the inner frame reads its own document alone')
+        iban = self.ref(inner, 'textbox "IBAN"')
+        self.ok('fill', element=iban, text='EX89370400440532013000', frame='1.1')
+        self.assertIn('value="EX89370400440532013000"', self.ok('outline', frame='1.1')['outline'])
+        # The outer frame holds no IBAN of its own: the dotted id is the address.
+        held = self.page('fill', element=iban, text='EX11', frame='1')
+        self.assertEqual((held['ok'], held['code']), (False, 'stale_element'), held)
+
+    def test_a_frame_the_page_adds_later_is_named_and_operated_in(self):
+        self.h.navigate(self.url + '/late')
+        # The frame is made by script once the page is up, so it is in no frame
+        # tree a read of the page already made; its own document then moves on
+        # to the form by itself. Every read of the page from here on must print
+        # an id an action can run in, and that frame must be reachable by it.
+        deadline = time.monotonic() + HANG_BOUND
+        while 'iframe' not in (outline := self.outline()):
+            self.assertLess(time.monotonic(), deadline, 'the late frame never appeared')
+            time.sleep(0.2)
+        numbers = re.findall(r'iframe "Late payment form" \[frame=([\d.]+)\]', outline)
+        self.assertEqual(len(numbers), 1, outline)
+        frame = numbers[0]
+        # The frame's first document leaves for the form by itself, and the read
+        # follows it: the id names the frame, never one document of it.
+        while 'IBAN' not in (inside := self.ok('outline', frame=frame))['outline']:
+            self.assertLess(time.monotonic(), deadline, 'the frame never reached its form')
+            time.sleep(0.1)
+        self.assertRegex(inside['outline'], r'textbox "IBAN" \[ref=d\d+e\d+\]')
+        iban = self.ref(inside['outline'], 'textbox "IBAN"')
+        self.ok('fill', element=iban, text='EX89370400440532013000', frame=frame)
+        self.assertIn('value="EX89370400440532013000"', self.ok('outline', frame=frame)['outline'])
+        holder = self.ref(inside['outline'], 'textbox "Account holder"')
+        self.ok('fill', element=holder, text='Maria Fischer', frame=frame)
+        save = self.ref(inside['outline'], 'button "Save bank details"')
+        self.ok('click', element=save, frame=frame)
+        self.assertNotIn('Save bank details', self.ok('outline', frame=frame)['outline'])
 
     def test_a_click_inside_a_frame_is_a_click_in_the_page(self):
         self.h.navigate(self.url + '/framed')

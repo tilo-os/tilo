@@ -10,8 +10,12 @@
 //! nothing is acknowledged, delivered or answered until the ticket resolves.
 //!
 //! A started write always finishes, also when nobody waits for its ticket
-//! any more. The first failed write fails every later one: the journal then
-//! requires recovery, as a failed barrier always did.
+//! any more. A write that failed before any of its bytes were durable left
+//! the store exactly as the last durable write did, so the next write is
+//! simply attempted again; a disk that is once full may be free again. Only a
+//! write that may be durable although its ticket reports failure (the store
+//! renamed but its directory not yet synced) fails every later one: the
+//! journal then requires recovery, as a failed barrier always did.
 
 #[cfg(test)]
 use super::BarrierFailure;
@@ -21,8 +25,6 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
-
-const FAILED: &str = "invocation journal requires recovery after a failed barrier";
 
 /// What this writer asked of the disk. `elide` skips the barriers themselves
 /// for tests that measure size rather than durability.
@@ -256,8 +258,14 @@ pub(super) struct Injected {
     #[cfg(test)]
     pub after: Option<Box<dyn FnOnce() + Send>>,
     /// Durable, but the caller is told the process crashed before acting.
+    /// The store now holds an entry this writer never recounts, so only a
+    /// restart may append to it.
     #[cfg(test)]
     pub crash_after: bool,
+    /// The write was made durable but could not be confirmed: a later write
+    /// could not tell whether the store already holds it.
+    #[cfg(test)]
+    pub unconfirmed: bool,
     /// Run before the write starts, as a slow disk holds it.
     #[cfg(test)]
     pub hold: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -269,11 +277,34 @@ struct Job {
     injected: Injected,
 }
 
+/// What a write left the writer in.
+enum Made {
+    Durable,
+    /// Failed with nothing of it durable: the next write may go on.
+    Withdrawn,
+    /// Failed, and whether the store holds it is unknown: nothing may be
+    /// written after it.
+    Unconfirmed,
+    /// Not attempted: an earlier write stopped the writer. It touched nothing.
+    Stopped(String),
+}
+
 /// The writer thread, its order and its failure.
 pub(super) struct Writer {
     jobs: Option<mpsc::Sender<Job>>,
     thread: Option<std::thread::JoinHandle<()>>,
     failed: Arc<AtomicBool>,
+    reestablish: Arc<AtomicBool>,
+}
+
+impl Made {
+    fn withdrew(written: Result<(), &'static str>) -> Self {
+        if written == Err(FAILED) {
+            Self::Unconfirmed
+        } else {
+            Self::Withdrawn
+        }
+    }
 }
 
 impl Writer {
@@ -289,36 +320,80 @@ impl Writer {
         let (jobs, received) = mpsc::channel::<Job>();
         let failed = Arc::new(AtomicBool::new(false));
         let failing = failed.clone();
+        let reestablish = Arc::new(AtomicBool::new(false));
+        let reestablishing = reestablish.clone();
+        let stopped = Arc::new(Mutex::new(None));
+        let stopping = stopped.clone();
         let thread = std::thread::Builder::new()
             .name("invocation-journal".into())
             .spawn(move || {
                 let _lock = lock;
                 let mut tail = tail;
                 for job in received {
-                    let outcome = if failing.load(Ordering::Acquire) {
-                        Err(FAILED.to_string())
+                    let beside = matches!(job.write, Write::Beside { .. });
+                    let snapshot_written = matches!(job.write, Write::Snapshot(_));
+                    if reestablishing.swap(false, Ordering::AcqRel) {
+                        // The store was recovered: only its snapshot's bytes
+                        // can say where appends belong now.
+                        tail = None;
+                    }
+                    let made = if failing.load(Ordering::Acquire) {
+                        // Everything staged before this one kept its own
+                        // outcome; this one never touched the disk.
+                        Made::Stopped(
+                            stopping
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .clone()
+                                .unwrap_or_else(|| FAILED.to_string()),
+                        )
                     } else {
-                        let beside = matches!(job.write, Write::Beside { .. });
-                        let written =
-                            make_durable(&root, &mut tail, job.write, &job.injected, &counted);
-                        if written.is_err() && !beside {
-                            failing.store(true, Ordering::Release);
-                            tail = None;
+                        match make_durable(&root, &mut tail, job.write, &job.injected, &counted) {
+                            Ok(()) => Made::Durable,
+                            Err(error) => Made::withdrew(Err(error)),
                         }
-                        written.map_err(str::to_string)
                     };
+                    let mut error = match &made {
+                        Made::Durable => None,
+                        Made::Withdrawn => Some(WITHDRAWN.to_string()),
+                        Made::Unconfirmed => Some(FAILED.to_string()),
+                        Made::Stopped(why) => Some(why.clone()),
+                    };
+                    // A write taken back left the store exactly as the last
+                    // durable one did, so the next one still belongs at the
+                    // same end (a snapshot write renamed a new store, so its
+                    // end is only known from its bytes).
+                    if matches!(made, Made::Withdrawn) && snapshot_written {
+                        tail = None;
+                    }
+                    let mut fatal = matches!(made, Made::Unconfirmed);
                     #[cfg(test)]
-                    let outcome = outcome.and_then(|()| {
-                        if let Some(after) = job.injected.after {
+                    {
+                        if error.is_none()
+                            && let Some(after) = job.injected.after
+                        {
                             after();
                         }
                         if job.injected.crash_after {
-                            failing.store(true, Ordering::Release);
-                            tail = None;
-                            return Err("injected admission-before-delivery crash".to_string());
+                            error = Some("injected admission-before-delivery crash".to_string());
+                            fatal = true;
                         }
-                        Ok(())
-                    });
+                        if job.injected.unconfirmed {
+                            error = Some(FAILED.to_string());
+                            fatal = true;
+                        }
+                    }
+                    if fatal && !beside {
+                        failing.store(true, Ordering::Release);
+                        tail = None;
+                        if let Some(why) = &error {
+                            *stopping
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some(why.clone());
+                        }
+                    }
+                    let outcome = error.map_or(Ok(()), Err);
                     job.ticket.resolve(&outcome);
                 }
             })
@@ -327,11 +402,19 @@ impl Writer {
             jobs: Some(jobs),
             thread: Some(thread),
             failed,
+            reestablish,
         })
     }
 
     pub(super) fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
+    }
+
+    /// The journal rewrote the store as one recovered snapshot: writes may go
+    /// on, after one that rewrites the snapshot again to find the store's end.
+    pub(super) fn recovered(&self) {
+        self.reestablish.store(true, Ordering::Release);
+        self.failed.store(false, Ordering::Release);
     }
 
     /// Queue `write` after every write staged before it.
@@ -368,6 +451,24 @@ impl Drop for Writer {
     }
 }
 
+pub(super) const FAILED: &str = "invocation journal requires recovery after a failed barrier";
+
+/// A write that reached no durable byte and was taken back: nothing was
+/// acknowledged and the store is unchanged, so the journal carries on.
+const WITHDRAWN: &str = "invocation journal write failed";
+
+/// Whether `write` left nothing of itself durable, so the journal goes on as
+/// if it had never been staged: a withdrawn write is not the failed barrier
+/// that stops the writer.
+pub(super) fn withdrew(outcome: &Result<(), String>) -> bool {
+    matches!(outcome, Err(error) if error != FAILED)
+}
+
+/// [`withdrew`], for a message alone.
+pub(super) fn withdrew_error(error: &String) -> bool {
+    error != FAILED
+}
+
 fn make_durable(
     root: &Path,
     tail: &mut Option<File>,
@@ -387,7 +488,14 @@ fn make_durable(
         }
         Write::Append(bytes) => {
             let file = tail.as_mut().ok_or(FAILED)?;
-            append(file, &bytes, injected, counted)
+            // A failed append is taken back when the disk lets it, and the
+            // length it was before tells whether it was.
+            let len = file.metadata().map_err(|_| FAILED)?.len();
+            let appended = append(file, &bytes, injected, counted);
+            if appended.is_err() && file.metadata().is_ok_and(|after| after.len() == len) {
+                return Err(WITHDRAWN);
+            }
+            appended
         }
         Write::Beside { name, line } => append_beside(root, name, &line),
     }
@@ -458,11 +566,18 @@ pub(super) fn append(
     }
     if let Err(error) = durable {
         let _ = file.set_len(len);
+        // Bytes the disk kept are durable whatever the caller is told, so only
+        // a store that reads exactly as before the write is taken back.
+        if !file.metadata().is_ok_and(|after| after.len() == len) {
+            return Err(FAILED);
+        }
         return Err(error);
     }
+    // The entry is in the store; only the barrier that would confirm it for
+    // good did not happen, so it may be durable and nothing was acknowledged.
     #[cfg(test)]
     if fail == Some(BarrierFailure::Directory) {
-        return Err("injected failure after a durable entry");
+        return Err(FAILED);
     }
     Ok(())
 }
@@ -500,13 +615,15 @@ pub(super) fn write_snapshot(
             .map_err(|_| "invocation journal file barrier failed")?;
         std::fs::rename(&temporary, root.join("records.json"))
             .map_err(|_| "invocation journal rename failed")?;
+        // From here on the new snapshot may be the store for good: a failure
+        // to confirm it leaves later appends unable to know what it holds.
         #[cfg(test)]
         if fail == Some(BarrierFailure::Directory) {
-            return Err("injected directory barrier failure");
+            return Err(FAILED);
         }
         counted
             .directory(|| File::open(root).and_then(|directory| directory.sync_all()))
-            .map_err(|_| "invocation journal directory barrier failed")?;
+            .map_err(|_| FAILED)?;
         Ok(file)
     })();
     let _ = std::fs::remove_file(&temporary);

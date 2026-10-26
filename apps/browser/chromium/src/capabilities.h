@@ -318,6 +318,15 @@ class Capabilities final : public CefPermissionHandler {
     int id=++sequence_;permissions_[id]={nullptr,callback,permissions,0,context,origin};
     Prompt(id,origin,PermissionNames(permissions,true));return true;
   }
+  // The engine asks the person about `origin`'s request for `permissions`, as
+  // a page's own request is asked: the answer reaches `answer`.
+  void AskEngine(const std::string& origin,const std::string& permissions,std::function<void(bool)> answer) {
+    // As many requests as a page's own prompts may leave waiting; past that the
+    // answer is no rather than a request nothing will ever settle.
+    if(permissions_.size()>=32) {answer(false);return;}
+    int id=++sequence_;permissions_[id]={nullptr,nullptr,0,0,nullptr,origin,std::move(answer)};
+    Prompt(id,origin,permissions);
+  }
   void OnDismissPermissionPrompt(CefRefPtr<CefBrowser>,uint64_t prompt,cef_permission_request_result_t) override {
     for(auto it=permissions_.begin();it!=permissions_.end();++it) if(it->second.prompt && it->second.prompt==prompt) {int id=it->first;permissions_.erase(it);Closed(id);break;}
   }
@@ -342,6 +351,7 @@ class Capabilities final : public CefPermissionHandler {
   void Settle(int id,cef_permission_request_result_t result) {
     auto it=permissions_.find(id);if(it==permissions_.end()) return;
     auto p=it->second;permissions_.erase(it);
+    if(p.engine) {p.engine(result==CEF_PERMISSION_RESULT_ACCEPT);Closed(id);return;}
     if(p.permission) p.permission->Continue(result);
     if(p.media) {
       // A different tab may revoke the origin while this prompt is pending.
@@ -355,7 +365,10 @@ class Capabilities final : public CefPermissionHandler {
     }
     Closed(id);
   }
-  struct Permission {CefRefPtr<CefPermissionPromptCallback> permission;CefRefPtr<CefMediaAccessCallback> media;uint32_t mask;uint64_t prompt;CefRefPtr<CefRequestContext> context;std::string origin;};
+  struct Permission {CefRefPtr<CefPermissionPromptCallback> permission;CefRefPtr<CefMediaAccessCallback> media;uint32_t mask;uint64_t prompt;CefRefPtr<CefRequestContext> context;std::string origin;
+    // A request the engine made on the page's behalf, answered here rather
+    // than by Chromium: the engine's own geolocation has no Chromium prompt.
+    std::function<void(bool)> engine;};
   static void SetMedia(const Permission& p,cef_content_setting_values_t value) {
     for(const auto& device:kMediaSettings) if(p.mask & device.mask)
       p.context->SetContentSetting(p.origin,p.origin,device.type,value);

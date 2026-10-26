@@ -222,15 +222,26 @@ fn a_kept_row_paints_what_painting_it_afresh_does() {
             &mut doc,
             &ui::synthetic_input::mouse_wheel(0.0, 1.0),
         );
-        let kept = frames.scene(&mut app);
-        assert!(
-            app.timeline.borrow().counts().reused > 0,
-            "step {step} kept rows"
-        );
-        *app.timeline.borrow_mut() = crate::timeline::Timeline::default();
-        let afresh = frames.scene(&mut app);
-        *app.timeline.borrow_mut() = crate::timeline::Timeline::default();
-        let again = frames.scene(&mut app);
+        // Pictures the step brought into view are decoded off the thread;
+        // one that lands between the kept frame and the fresh one is a
+        // different picture, not a stale row, so they land first. The three
+        // frames are painted at one instant, so a caret's blink cannot move
+        // between them on a slow run either.
+        frames.draw(&mut app);
+        app.images
+            .block_until_idle(std::time::Duration::from_secs(30));
+        let (kept, afresh, again) = ui::time::testing::with_monotonic_time(ui::time::now(), || {
+            let kept = frames.scene(&mut app);
+            assert!(
+                app.timeline.borrow().counts().reused > 0,
+                "step {step} kept rows"
+            );
+            *app.timeline.borrow_mut() = crate::timeline::Timeline::default();
+            let afresh = frames.scene(&mut app);
+            *app.timeline.borrow_mut() = crate::timeline::Timeline::default();
+            let again = frames.scene(&mut app);
+            (kept, afresh, again)
+        });
         // A frame that does not paint the same twice from scratch says
         // nothing about the kept rows.
         if !afresh.encoding_eq(&again) {

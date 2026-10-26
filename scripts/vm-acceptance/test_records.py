@@ -282,6 +282,13 @@ class SoftwareRaster(unittest.TestCase):
         [problem] = resources._budget_problems(self.window(1), self.BUDGETS, "idle")
         self.assertTrue(problem.startswith("compositor CPU 1.7% > 1.0% (tilo-gpu-driver×2 1.4%"), problem)
 
+    def test_an_idle_loop_over_budget_names_what_woke_it(self):
+        rows = [{"wake": "io"}, {"wake": "cadence"}, {"wake": "io"}, {}]
+        self.assertEqual(resources.loop_wakes(rows), {"io": 2, "cadence": 1, "unrecorded": 1})
+        m = {**self.window(1), "shell_loop_ticks_per_s": 2.5, "loop_woke_by": resources.loop_wakes(rows)}
+        [problem] = resources._budget_problems(m, self.BUDGETS, "idle", software=True)
+        self.assertEqual(problem, "compositor loop woke 2.5/s > 2.0/s (woken by io 2, cadence 1, unrecorded 1)")
+
     def test_idle_frames_over_budget_name_why_and_whose(self):
         painted = [{"painted": 1, "paint_reasons": "revision", "paint_clients": ""},
                    {"painted": 1, "paint_reasons": "apps", "paint_clients": "so.tilo.file-explorer"},
