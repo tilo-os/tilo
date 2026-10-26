@@ -867,6 +867,17 @@ impl StructureChange {
     pub fn join(self, other: Self) -> Self {
         self.max(other)
     }
+
+    /// Every one of `children`'s changes, joined: for a container that adds
+    /// no structure of its own, so a change a child carries out in place
+    /// ([`Self::Children`]) stays one. Each child's change is taken, none
+    /// skipped.
+    #[must_use]
+    pub fn of_children(children: Vec<&mut (dyn Widget + '_)>) -> Self {
+        children.into_iter().fold(Self::None, |change, child| {
+            change.join(child.take_structure_change())
+        })
+    }
 }
 
 /// Optional cross-device continuation capability for an app root.
@@ -2397,6 +2408,17 @@ pub trait Widget {
         StructureChange::of(self.take_structure_dirty())
     }
 
+    /// This widget's own layout node while the widgets under it are laid
+    /// out again in place, in it, by the coming
+    /// [`Self::remount_children`]: it then names none of them through
+    /// [`Self::for_each_layout_child`], and the host lets go of every node
+    /// under this one, as their widgets may be gone. `None` (the default)
+    /// otherwise.
+    #[doc(hidden)]
+    fn relaid_layout_node(&self) -> Option<NodeId> {
+        None
+    }
+
     /// Carry out a [`StructureChange::Children`] this widget or one under it
     /// reported, in the retained layout tree, through `remount` (see
     /// [`remount`](crate::widget::remount)). Returns `false` when it cannot be
@@ -3217,7 +3239,9 @@ pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
-pub use context_menu::{ContextMenu, MenuButton, MenuItem};
+pub use context_menu::{
+    ContextMenu, MenuButton, MenuItem, note_shift, shift_held, shift_skips_confirmation,
+};
 mod row_menu;
 pub use primitives::{
     BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureState, Fact, Facts,

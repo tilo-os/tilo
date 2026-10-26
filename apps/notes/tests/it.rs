@@ -160,6 +160,8 @@ mod paragraph_damage;
 #[path = "perf_scroll.rs"]
 mod perf_scroll;
 
+#[path = "desktop_open_work.rs"]
+mod desktop_open_work;
 #[path = "desktop_pan_frame.rs"]
 mod desktop_pan_frame;
 #[path = "typing_frame_work.rs"]

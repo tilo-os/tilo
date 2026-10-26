@@ -41,6 +41,30 @@ pub fn service_icon(app: &str) -> crate::icons::Icon {
     }
 }
 
+/// The glyph of a service by the name a profile gives it ("Discord").
+#[must_use]
+pub fn service_name_icon(service: &str) -> crate::icons::Icon {
+    if service.eq_ignore_ascii_case("discord") {
+        crate::icons::Icon::Discord
+    } else {
+        crate::icons::Icon::Link
+    }
+}
+
+/// A linked account as the person's profile names it to everyone: the
+/// service, the handle there, and the account's picture when the service
+/// has one for it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileLink {
+    /// The service's name ("Discord").
+    pub service: String,
+    /// The account's unique name there, without the `@`.
+    pub handle: String,
+    /// The account's picture as a small `data:` URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+}
+
 /// The read action a connector's room record publishes, answering a
 /// [`Reading`] for the person who reads it.
 pub const READ_ACTION: &str = "my-link";
@@ -55,6 +79,10 @@ pub struct Reading {
     pub connected: bool,
     #[serde(default)]
     pub account: Option<AccountName>,
+    /// The linked account's picture, small, as a `data:` URL: the reader's
+    /// Tilo picture until they upload their own.
+    #[serde(default)]
+    pub picture: Option<String>,
     /// The action that starts signing in on the service's consent page,
     /// answering a [`LinkStart`]; none when the host offers no sign-in.
     #[serde(default)]
@@ -161,6 +189,11 @@ pub trait LinkedAccountsHost {
     fn accounts(&self) -> Vec<LinkedAccount>;
     /// Moves whenever [`Self::accounts`] changed.
     fn revision(&self) -> u64;
+    /// The person's linked accounts as their profile names them; `None`
+    /// until the room's host answered where they stand.
+    fn profile_links(&self) -> Option<Vec<ProfileLink>> {
+        None
+    }
     /// Ask again where every account stands.
     fn refresh(&self);
     /// Ask again where the account with `app`'s service stands.
@@ -215,6 +248,11 @@ impl LinkedAccounts {
     #[must_use]
     pub fn revision(&self) -> u64 {
         self.0.as_ref().map_or(0, |host| host.revision())
+    }
+
+    #[must_use]
+    pub fn profile_links(&self) -> Option<Vec<ProfileLink>> {
+        self.0.as_ref().and_then(|host| host.profile_links())
     }
 
     pub fn refresh(&self) {
@@ -628,6 +666,27 @@ impl LinkedAccountsHost for RoomAccounts {
         self.revision.get()
     }
 
+    fn profile_links(&self) -> Option<Vec<ProfileLink>> {
+        let known = self.known.borrow();
+        if known.readings.is_empty() {
+            return None;
+        }
+        Some(
+            known
+                .readings
+                .values()
+                .filter_map(|reading| {
+                    let account = reading.account.as_ref()?;
+                    Some(ProfileLink {
+                        service: reading.service.clone(),
+                        handle: account.user_name.clone(),
+                        picture: reading.picture.clone(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
     fn refresh(&self) {
         for app in self.actions.apps() {
             self.read(&app);
@@ -919,6 +978,33 @@ mod tests {
         accounts.link("so.tilo.discord");
         assert_eq!(*host.opened.borrow(), ["https://discord.example/authorize"]);
         assert_eq!(accounts.accounts()[0].state, LinkState::Connecting);
+    }
+
+    #[test]
+    fn a_linked_account_is_named_with_its_picture_for_the_profile() {
+        let host = host(Ok(kim()));
+        let accounts = RoomAccounts::new(Rc::new(Rc::clone(&host)), Rc::new(|| {}));
+        assert_eq!(accounts.profile_links(), None, "nothing answered yet");
+        accounts.refresh();
+        assert_eq!(accounts.profile_links(), Some(Vec::new()), "not linked");
+        {
+            let mut reading = host.reading.borrow_mut();
+            reading.account = Some(kim().account);
+            reading.picture = Some("data:image/png;base64,AAAA".into());
+            reading.unlink = Some("unlink-mine".into());
+        }
+        accounts.refresh();
+        assert_eq!(
+            accounts.profile_links(),
+            Some(vec![ProfileLink {
+                service: "Discord".into(),
+                handle: "kim".into(),
+                picture: Some("data:image/png;base64,AAAA".into()),
+            }])
+        );
+        accounts.unlink("so.tilo.discord");
+        accounts.refresh();
+        assert_eq!(accounts.profile_links(), Some(Vec::new()));
     }
 
     #[test]

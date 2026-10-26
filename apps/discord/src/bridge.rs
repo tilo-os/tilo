@@ -116,6 +116,8 @@ pub struct BridgePlan {
     pub unlinks: Vec<Value>,
     /// `rename-link`.
     pub renames: Vec<Value>,
+    /// `fetch-asset` of a linked account's avatar, then `set-link-photo`.
+    pub photos: Vec<Value>,
     pub import_categories: Vec<Value>,
     pub import_channels: Vec<Value>,
     /// `map` of a Tilo channel or category that already matches.
@@ -650,6 +652,9 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
         // On every start too: the workspace's emoji made while the bridge
         // was away, or that the server had no room or permission for.
         emoji(plan, read);
+        // Linked avatars that changed while the bridge was away.
+        plan.photos
+            .extend(values(inbound::plan_link_photos(read.guild)));
     } else {
         plan.observe.push(json!({
             "bot_user": layout.bot_user,
@@ -725,6 +730,7 @@ fn inbound_plan(plan: &mut BridgePlan, inbound: InboundPlan) {
             .map(|user| json!({ "discord_user": user })),
     );
     plan.renames.extend(values(inbound.renames));
+    plan.photos.extend(values(inbound.photos));
 }
 
 #[cfg(test)]

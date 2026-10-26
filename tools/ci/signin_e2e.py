@@ -269,20 +269,6 @@ def quote(value: str) -> str:
 # check hot-plugs it; without the port the loop only waits.
 SHELL_SCRIPT = f"""#!/usr/bin/bash
 # signin-e2e check, this throwaway disk only: a root shell on {SHELL_PORT}.
-# Who runs chcon on this system: its parent and arguments, for the evidence.
-if command -v auditctl >/dev/null 2>&1; then
-  auditctl -a always,exit -F arch=b64 -S execve -F path=/usr/bin/chcon -k chcon \
-    && echo 'tilo-e2e-shell: chcon audit rule installed' \
-    || echo 'tilo-e2e-shell: the chcon audit rule could not be installed'
-elif [ -x /etc/tilo-e2e-chcon ]; then
-  mkdir -p /run/tilo-e2e && touch /run/tilo-e2e/chcon.real \
-    && mount --bind /usr/bin/chcon /run/tilo-e2e/chcon.real \
-    && mount --bind /etc/tilo-e2e-chcon /usr/bin/chcon \
-    && echo 'tilo-e2e-shell: no auditctl; chcon calls are traced by a wrapper' \
-    || echo 'tilo-e2e-shell: no auditctl, and the chcon wrapper could not be mounted'
-else
-  echo 'tilo-e2e-shell: this image has no auditctl'
-fi
 echo 'tilo-e2e-shell: waiting for {SHELL_PORT}'
 while :; do
   if [ -e /dev/virtio-ports/{SHELL_PORT} ]; then
@@ -290,20 +276,6 @@ while :; do
   fi
   sleep 1
 done
-"""
-CHCON_TRACE = r"""#!/usr/bin/bash
-# signin-e2e check, this throwaway disk only: say who runs chcon, then run it.
-{
-  printf 'chcon pid=%s ctx=%s args=%s\n' "$$" "$(cat /proc/self/attr/current 2>/dev/null)" "$*"
-  gp=$(awk '{print $4}' /proc/$PPID/stat 2>/dev/null)
-  printf 'parent pid=%s exe=%s ctx=%s cmd=%s\n' "$PPID" "$(readlink /proc/$PPID/exe)" \
-    "$(cat /proc/$PPID/attr/current 2>/dev/null)" "$(tr '\0' ' ' </proc/$PPID/cmdline)"
-  printf 'grandparent pid=%s exe=%s cmd=%s\n' "$gp" "$(readlink /proc/$gp/exe 2>/dev/null)" \
-    "$(tr '\0' ' ' </proc/$gp/cmdline 2>/dev/null)"
-  printf 'cgroup=%s\n' "$(cat /proc/$$/cgroup)"
-  for arg in "$@"; do [ -e "$arg" ] && ls -Zd -- "$arg"; done
-} 2>&1 | systemd-cat -t tilo-e2e-chcon
-exec /run/tilo-e2e/chcon.real "$@"
 """
 SHELL_UNIT = """[Unit]
 Description=signin-e2e check: root shell on a hot-plugged virtio-serial port (this test disk only)
@@ -592,10 +564,6 @@ test -d "$etc/systemd/system"
 cat > "$etc/tilo-e2e-shell" <<'E2E_SCRIPT'
 {SHELL_SCRIPT}E2E_SCRIPT
 chmod 0755 "$etc/tilo-e2e-shell"
-cat > "$etc/tilo-e2e-chcon" <<'E2E_CHCON'
-{CHCON_TRACE}E2E_CHCON
-chmod 0755 "$etc/tilo-e2e-chcon"
-chcon system_u:object_r:bin_t:s0 "$etc/tilo-e2e-chcon"
 cat > "$etc/systemd/system/tilo-e2e-shell.service" <<'E2E_UNIT'
 {SHELL_UNIT}E2E_UNIT
 mkdir -p "$etc/systemd/system/multi-user.target.wants"
@@ -709,9 +677,6 @@ cryptsetup close e2e-target
         "failed": "systemctl --failed --no-pager --plain --no-legend; "
                   "systemctl status --no-pager tilo-authd.socket tilo-authd.service greetd | tail -n 60",
         "sessions": "loginctl list-sessions --no-pager",
-        "chcon": "{ journalctl -b -u tilo-e2e-shell -o cat | grep -i 'audit\\|chcon'; "
-                 "journalctl -b --no-pager -o short-monotonic -t tilo-e2e-chcon; "
-                 "ausearch -k chcon -i 2>/dev/null; } | tail -n 200",
         "initrd": "journalctl -b --no-pager -o short-monotonic | grep -E "
                   "'tilo-root-discover|tilo-boot-signin|tilo-auth|systemd-cryptsetup|plymouth' "
                   "| head -n 300",
@@ -872,7 +837,6 @@ cryptsetup close e2e-target
         session = self.wait_session(300)
         prompts = self.watch_greeter_prompts(label, 25)
         again = self.classify(self.cycle.screen()[1]) == "disk-prompt"
-        _, pending = self.guest("test -e /etc/tilo/firstboot-autologin-pending && echo pending || echo consumed")
         _, greetd = self.guest("journalctl -b -u greetd --no-pager -o cat | tail -n 40", quiet=True)
         self.save("first-boot-greetd.txt", greetd)
         _, sessions = self.guest("loginctl list-sessions --no-pager; systemctl --failed --no-pager "
@@ -882,10 +846,14 @@ cryptsetup close e2e-target
         self.cycle.keep_screen("first-boot-after-unlock", path, text)
         custody = self.lockout_custody(wait=240)
         hardened = custody["reset_auth_set"] is True and custody["harden_file"] == "root:600"
+        _, pending = self.guest("test -e /etc/tilo/firstboot-autologin-pending && echo pending || echo consumed; "
+                                "systemctl show -P ActiveState -P Result tilo-firstboot-autologin-cleanup; "
+                                "journalctl -b -u tilo-firstboot-autologin-cleanup --no-pager -o cat | tail -n 5")
+        consumed = pending.strip().startswith("consumed")
         evidence = {"disk_prompts_answered": typed, "user_session": session,
                     "greeter_prompts": prompts, "disk_prompt_again": again,
                     "firstboot_autologin_marker": pending.strip(), "lockout_custody": custody}
-        if typed == 1 and session and not prompts and not again and hardened:
+        if typed == 1 and session and not prompts and not again and hardened and consumed:
             self.item("1", "passed", "one disk prompt at first boot, then the session started "
                       "without the greeter asking", **evidence)
         else:
@@ -900,6 +868,9 @@ cryptsetup close e2e-target
                 why.append("the disk prompt came back")
             if not hardened:
                 why.append(f"the TPM reset authorisation was not set by harden: {custody}")
+            if not consumed:
+                why.append("the one-boot autologin handoff was not consumed, so the next boot "
+                           f"logs in without the greeter again: {pending.strip()}")
             self.item("1", "failed", "; ".join(why), **evidence)
         self.power_off(label)
 

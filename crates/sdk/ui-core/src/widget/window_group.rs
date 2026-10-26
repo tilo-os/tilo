@@ -2377,6 +2377,14 @@ impl WindowGroup {
         self.bar.set_desktop_control(id, on)
     }
 
+    /// Mark tab `id` as running a developer's own build, installed by
+    /// `installer` into the room it is in, or clear the mark: while it is in
+    /// front the bar says "Dev build · by …". `true` when that changed what
+    /// the window shows.
+    pub fn set_tab_dev_build(&mut self, id: u64, installer: Option<String>) -> bool {
+        self.bar.set_dev_build(id, installer)
+    }
+
     /// Press the bar's "Controls your desktop" chip without a pointer, as an
     /// assistive technology does. Whether the bar shows it.
     pub fn activate_desktop_control(&mut self) -> bool {
@@ -3979,6 +3987,12 @@ impl Widget for WindowGroup {
                 .is_some_and(super::Widget::wants_pointer_capture)
     }
     fn take_structure_dirty(&mut self) -> bool {
+        self.take_structure_change().rebuilds()
+    }
+    /// A change the active tab's content carries out in place stays in
+    /// place; the window's own changes rebuild.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        use crate::widget::StructureChange;
         // Every child's flag is drained, but only the active host's counts:
         // inactive hosts have no layout nodes (see `is_layout_dirty`), and
         // selecting one rebuilds through `active_switched` anyway.
@@ -3990,11 +4004,11 @@ impl Widget for WindowGroup {
         self.style_dirty |= self.fullscreen_bar.laid_out != self.bar_over_content();
         let bar = self.bar.take_structure_dirty();
         let active = self.bar.active_id();
-        let mut active_host = false;
+        let mut active_host = StructureChange::None;
         for (id, host) in &mut self.hosts {
-            let dirty = host.take_structure_dirty();
+            let change = host.take_structure_change();
             if *id == active {
-                active_host = dirty;
+                active_host = change;
             }
         }
         let style = std::mem::take(&mut self.style_dirty);
@@ -4002,7 +4016,7 @@ impl Widget for WindowGroup {
         let closing = self.is_closing()
             && !self.close_complete()
             && !std::mem::replace(&mut self.close_rebuild_taken, true);
-        bar || active_host || style || active_switched || closing
+        StructureChange::of(bar || style || active_switched || closing).join(active_host)
     }
     fn needs_redraw(&self) -> bool {
         // Redraw follows the presentation tree. Retained inactive hosts still

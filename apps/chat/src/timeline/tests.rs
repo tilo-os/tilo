@@ -200,6 +200,8 @@ fn a_row_the_pointer_comes_over_is_painted_again_and_the_others_are_kept() {
 fn a_kept_row_paints_what_painting_it_afresh_does() {
     // The demo's lines over and over: pictures, reactions, threads.
     let (mut app, mut doc) = long_channel(40);
+    // The hovered row's bar at rest: its fade is not what is compared.
+    app.message_bar.settle_for_visual_review();
     let mut frames = Frames::new();
     settle(&mut app, &mut frames);
     let area = app.messages_rect();
@@ -241,4 +243,58 @@ fn a_kept_row_paints_what_painting_it_afresh_does() {
         );
     }
     assert!(compared >= 9, "{compared} of 18 steps compared");
+}
+
+#[test]
+fn a_received_message_lays_out_and_draws_only_its_row() {
+    // A channel of 300 messages someone else wrote, as a window over the
+    // room reads it, scrolled to its end.
+    let mut doc = crate::testing::demo_doc();
+    let mut app = ChatApp::new_ephemeral();
+    app.attach_room(&doc);
+    app.sync(&doc.chat, &automerge::ROOT);
+    let channel = app.active_channel.clone();
+    for i in 0..300 {
+        crate::testing::say(
+            &mut doc,
+            "u_aria",
+            &channel,
+            &format!("Line {i} of a long day"),
+        );
+    }
+    app.sync(&doc.chat, &automerge::ROOT);
+    let mut frames = Frames::new();
+    settle(&mut app, &mut frames);
+    assert!(!app.take_structure_dirty());
+    let mut took = Vec::new();
+    let mut report = String::new();
+    let idle = std::time::Instant::now();
+    app.canonical_dirty = true;
+    let ((), scopes) = ui::tilo_resource::profiling::observe(|| {
+        frames.draw(&mut app);
+    });
+    report.push_str(&format!("idle draw {:?} {scopes:?}\n", idle.elapsed()));
+    for i in 0..8 {
+        let id = crate::testing::say(&mut doc, "u_milo", &channel, &format!("News {i}"));
+        let started = std::time::Instant::now();
+        let ((), sync_scopes) =
+            ui::tilo_resource::profiling::observe(|| app.sync(&doc.chat, &automerge::ROOT));
+        let synced = started.elapsed();
+        let ((counts, shown), draw_scopes) =
+            ui::tilo_resource::profiling::observe(|| frames.draw(&mut app));
+        took.push((synced, started.elapsed() - synced));
+        report.push_str(&format!("sync {sync_scopes:?}\ndraw {draw_scopes:?}\n"));
+        assert!(shown.contains(&id), "the new message shows: {shown:?}");
+        assert!(
+            !app.take_structure_dirty(),
+            "a received message rebuilds no layout tree"
+        );
+        assert_eq!(
+            counts.measured, 1,
+            "only the new row is laid out: {counts:?}"
+        );
+        assert_eq!(counts.drawn, 1, "only the new row is painted: {counts:?}");
+        assert_eq!(counts.reused + counts.drawn, shown.len());
+    }
+    eprintln!("{report}received message (sync, draw): {took:?}");
 }
