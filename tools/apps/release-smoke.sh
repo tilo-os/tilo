@@ -198,7 +198,11 @@ spotify() (
 # one), and the PDF engine's apps, Imager, Browser, Store, Chat and the
 # on-screen keyboard none (build-thin-apps.sh runs those engines' own
 # checks): for those only the trace of the start counts (an app need not
-# accept --help).
+# accept --help). An engine another engine chains on (`via:` the engine the
+# app loads) must arrive from the app or through that engine, which the app
+# loaded itself:
+# Browser's import engine carries its service sessions, whose custody comes
+# from the accounts engine; on x86_64 Browser names only the import engine.
 engines() (
   set -euo pipefail
   libdir=$(rustc --print target-libdir)
@@ -223,11 +227,13 @@ engines() (
                "imager libtilo_fuse_engine.so" \
                "imager libtilo_accounts_engine.so" \
                "browser libtilo_browser_import_engine.so" \
-               "browser libtilo_accounts_engine.so" \
+               "browser libtilo_accounts_engine.so via:libtilo_browser_import_engine.so" \
                "store libtilo_app_host_engine.so" \
                "chat libtilo_emoji_engine.so" \
                "osk libtilo_emoji_engine.so"; do
     read -r app library option <<<"$probe"
+    via=""
+    if [[ $option == via:* ]]; then via=${option#via:}; option=""; fi
     if [[ ! -x $target/thin-app/$app ]]; then
       echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"
       continue
@@ -251,7 +257,19 @@ engines() (
     else
       arrival=$(grep -Eo "file=${library//./\\.} \[0\];  needed by [^ ]*" \
         "$runtime/loader.log" | head -1 || true)
-      if [[ $arrival == */$app && -n $option ]]; then
+      if [[ -n $via ]]; then
+        # Either the app names it too (aarch64's link keeps it), or it comes
+        # through the chain, whose first link must be the app's own.
+        through=$(grep -Eo "file=${via//./\\.} \[0\];  needed by [^ ]*" \
+          "$runtime/loader.log" | head -1 || true)
+        if [[ $arrival == */$app || ($arrival == */$via && $through == */$app) ]]; then
+          printf '%s starts with %s\nand %s\n' "$app" "$through" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
+        else
+          echo "$app started without loading $library through $via, which it loads itself:" \
+            "${arrival:-$library not loaded}; ${through:-$via not loaded}" >&2
+          failed=1
+        fi
+      elif [[ $arrival == */$app && -n $option ]]; then
         printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
       elif [[ $arrival == */$app ]]; then
         printf '%s starts with %s\n' "$app" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
