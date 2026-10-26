@@ -8,7 +8,7 @@ use crate::model::issue::{
     AgentRequest, Imported, Issue, Link, MAX_MESSAGE_CHARS, Message, MessageKind, Status,
 };
 use crate::model::run::{
-    Budget, Confirmation, ConfirmationState, ModelChoice, Question, Run, RunOutcome, RunPhase,
+    Area, Budget, Confirmation, ConfirmationState, ModelChoice, Question, Run, RunOutcome, RunPhase,
 };
 
 /// A workspace's issues.
@@ -289,6 +289,7 @@ impl Tracker {
                 starter,
                 phase: RunPhase::Approved,
                 model: ask.model,
+                device: None,
                 started_ms: now,
                 updated_ms: now,
                 confirmation: None,
@@ -446,6 +447,7 @@ impl Tracker {
             agent: ui::tilo_resource::Atom(agent),
             starter,
             model,
+            device: None,
             phase: RunPhase::Approved,
             started_ms: now,
             updated_ms: now,
@@ -508,6 +510,49 @@ impl Tracker {
                 ));
             }
         };
+        Ok(())
+    }
+
+    /// Plan the issue: the goal it works towards, how urgent it is and what
+    /// its work may cost. Each argument is optional, and the one given is the
+    /// one written; the others stay as they were.
+    ///
+    /// # Errors
+    /// Refuses a goal that is not a resource, an urgency outside 1 to 4, or
+    /// a budget of nothing.
+    #[action(audience = "people", writes = issues)]
+    pub fn plan(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("The resource it works towards: resource, app, kind and label")] area: Option<Area>,
+        #[param("How urgent it is, 1 (most urgent) to 4")] priority: Option<u8>,
+        #[param("The most its work may cost, in the workspace's units")] cost_budget: Option<u64>,
+        #[param("When it is wanted, in milliseconds since the epoch")] due_ms: Option<i64>,
+    ) -> Result<(), Refusal> {
+        person(cx)?;
+        let target = self.issue_mut(issue)?;
+        if let Some(area) = area {
+            if !area.names_a_resource() {
+                return Err(Refusal::new("A goal is a resource of the workspace"));
+            }
+            target.area = Some(area);
+        }
+        if let Some(priority) = priority {
+            if !(1..=4).contains(&priority) {
+                return Err(Refusal::new("A priority is 1 (most urgent) to 4"));
+            }
+            target.priority = Some(priority);
+        }
+        if let Some(cost_budget) = cost_budget {
+            if cost_budget == 0 {
+                return Err(Refusal::new("A cost budget is more than nothing"));
+            }
+            target.cost_budget = Some(cost_budget);
+        }
+        if let Some(due_ms) = due_ms {
+            target.due_ms = Some(due_ms);
+        }
         Ok(())
     }
 
@@ -763,6 +808,49 @@ impl Tracker {
                 },
             );
         }
+        Ok(())
+    }
+
+    /// Record the device the run is working on, as its agent says, and whose
+    /// device that is: a device a run is moved to is handed over from this
+    /// one, and the record keeps the last on each.
+    ///
+    /// # Errors
+    /// Refuses anyone but the run's own agent, an ended run, or a device
+    /// named by nothing.
+    #[action(audience = "agents", writes = issues)]
+    pub fn run_on_device(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("The device it runs on")] device: String,
+    ) -> Result<(), Refusal> {
+        let device = device.trim();
+        if device.is_empty() {
+            return Err(Refusal::new("Name the device it runs on"));
+        }
+        let target = self.issue_mut(issue)?;
+        let run = own_run(cx, target)?;
+        run.device = Some(device.to_owned());
+        Ok(())
+    }
+
+    /// Record what the run has spent so far, in the workspace's units: what
+    /// its person reads of the cost, and what its budget is measured
+    /// against.
+    ///
+    /// # Errors
+    /// Refuses anyone but the run's own agent, or an ended run.
+    #[action(audience = "agents", writes = issues)]
+    pub fn record_spend(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("What its runs have spent so far, in the workspace's units")] spent: u64,
+    ) -> Result<(), Refusal> {
+        let target = self.issue_mut(issue)?;
+        own_run(cx, target)?;
+        target.spend = Some(spent);
         Ok(())
     }
 

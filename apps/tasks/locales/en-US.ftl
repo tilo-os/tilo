@@ -39,6 +39,10 @@ tasks-issue-gone-title = This issue was deleted
 tasks-issue-gone-message = Undo brings it back.
 tasks-sub-issues = Sub-issues
 tasks-links = Links
+tasks-fact-goal = Goal: { $goal }
+tasks-fact-priority = Priority { $priority }
+tasks-fact-due = Due { $date }
+tasks-fact-cost = Spent { $spent } of { $budget }
 
 tasks-run = Agent
 tasks-run-agent = { $agent }: { $phase }
