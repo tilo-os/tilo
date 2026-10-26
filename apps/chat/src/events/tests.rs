@@ -352,34 +352,6 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
         );
     }
 
-    // Phase: composer_emoji_pick_inserts_into_the_draft.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.focus = Focus::Main;
-        assert!(app.draft_main.is_empty());
-        app.on_hit(
-            Hit::ComposerEmoji(Rect::ZERO),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert!(
-            app.emoji_open && app.emoji_target.is_none(),
-            "the composer picker has no reaction target"
-        );
-        app.on_hit(
-            Hit::EmojiChoice("🎉".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert_eq!(
-            app.draft_main, "🎉",
-            "the emoji was typed into the composer draft"
-        );
-        assert_eq!(
-            ui::emoji_catalogue::recents(),
-            ["🎉"],
-            "picks are remembered"
-        );
-    }
-
     // Phase: reply_in_thread_sets_parent.
     {
         let (mut app, mut doc) = app_with_doc();
@@ -1319,7 +1291,10 @@ fn the_pickers_add_emoji_tile_is_a_named_action() {
     let _in = scope.enter();
     let (mut app, mut doc) = app_with_doc();
     app.on_hit(
-        Hit::ComposerEmoji(vello::kurbo::Rect::new(400.0, 600.0, 430.0, 630.0)),
+        Hit::AddReaction {
+            msg: "m_me1".into(),
+            anchor: vello::kurbo::Rect::new(400.0, 600.0, 430.0, 630.0),
+        },
         &mut ui::widget::Edits::lend(&mut doc),
     );
     render_frame(&mut app, 1280.0, 720.0);
@@ -2703,23 +2678,21 @@ fn floating_pins_leave_the_composer_whole() {
     );
     let panel = app.right_flap.sidebar_rect();
     let scrim = app.right_flap.scrim_rect();
-    for wanted in ["chat.composer-emoji", "chat.send"] {
-        let (rect, hit) = app
-            .hits
-            .iter()
-            .find(|(_, hit)| hit.semantic_id() == wanted)
-            .cloned()
-            .unwrap_or_else(|| panic!("the composer's {wanted}"));
-        assert!(
-            rect.intersect(panel).area() <= 0.0 && rect.intersect(scrim).area() <= 0.0,
-            "{wanted} at {rect:?} stays clear of the pins {panel:?} and their scrim {scrim:?}"
-        );
-        assert_eq!(
-            app.hit_at(rect.center()).map(|hit| hit.semantic_id()),
-            Some(hit.semantic_id()),
-            "a press on {wanted} reaches it"
-        );
-    }
+    let (rect, hit) = app
+        .hits
+        .iter()
+        .find(|(_, hit)| hit.semantic_id() == "chat.send")
+        .cloned()
+        .expect("the composer's send control is drawn");
+    assert!(
+        rect.intersect(panel).area() <= 0.0 && rect.intersect(scrim).area() <= 0.0,
+        "the send control at {rect:?} stays clear of the pins {panel:?} and their scrim {scrim:?}"
+    );
+    assert_eq!(
+        app.hit_at(rect.center()).map(|hit| hit.semantic_id()),
+        Some(hit.semantic_id()),
+        "a press on the send control reaches it"
+    );
 }
 
 mod calls_and_peers;
