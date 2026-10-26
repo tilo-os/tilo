@@ -328,7 +328,8 @@ fn seed_gallery_state(state: &mut State) {
     ];
     for (r, row) in rows.iter().enumerate() {
         for (c, cell) in row.iter().enumerate() {
-            table::set_cell_text(&mut state.doc, &root, r, c, cell);
+            table::set_cell_text(&mut state.doc, &root, r, c, cell)
+                .expect("a seeded cell is in the table");
         }
     }
 }

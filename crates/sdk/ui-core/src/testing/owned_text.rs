@@ -46,8 +46,9 @@ impl OwnedText {
         }
         impl tilo_actions::Action for WriteText {
             fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
-                crate::doc::put_text_diffed(doc, &self.root, &self.key, &self.text);
-                Ok(())
+                crate::doc::put_text_diffed(doc, &self.root, &self.key, &self.text)
+                    .map(drop)
+                    .map_err(|error| tilo_actions::ActionError::Refused(error.to_string()))
             }
         }
         let mut host = crate::action_host::ActionHost::new();

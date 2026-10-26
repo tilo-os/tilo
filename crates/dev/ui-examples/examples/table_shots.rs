@@ -72,7 +72,7 @@ fn seed(doc: &mut AutoCommit, t: &ObjId) {
     ];
     for (r, row) in data.iter().enumerate() {
         for (c, cell) in row.iter().enumerate() {
-            table::set_cell_text(doc, t, r, c, cell);
+            table::set_cell_text(doc, t, r, c, cell).expect("a seeded cell is in the table");
         }
     }
 }
@@ -220,7 +220,7 @@ pub fn run(_args: &[String]) {
     dispatch(&mut table, &taffy, node, &mut doc, &t, &mouse_press());
     // The owner applies what the table hands it.
     for edit in table.take_edits() {
-        table::apply(&mut doc, &t, &edit);
+        table::apply(&mut doc, &t, &edit).expect("the table's edit applies");
     }
     let cols_after = table::dims(&doc, &t).1;
     assert_eq!(

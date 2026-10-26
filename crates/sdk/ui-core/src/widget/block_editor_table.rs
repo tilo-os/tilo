@@ -1436,7 +1436,8 @@ mod tests {
         }
         for r in 0..rows {
             for c in 0..cols {
-                set_cell_text(doc, t, r, c, &format!("{r}{c}"));
+                set_cell_text(doc, t, r, c, &format!("{r}{c}"))
+                    .expect("the seeded cell is in the table");
             }
         }
     }
@@ -1458,9 +1459,9 @@ mod tests {
             for _ in 0..3 {
                 insert_column(&mut doc, &t, usize::MAX);
             }
-            set_cell_text(&mut doc, &t, 0, 0, "A");
-            set_cell_text(&mut doc, &t, 0, 1, "B");
-            set_cell_text(&mut doc, &t, 0, 2, "C");
+            set_cell_text(&mut doc, &t, 0, 0, "A").expect("the seeded cell is in the table");
+            set_cell_text(&mut doc, &t, 0, 1, "B").expect("the seeded cell is in the table");
+            set_cell_text(&mut doc, &t, 0, 2, "C").expect("the seeded cell is in the table");
 
             insert_column(&mut doc, &t, 1); // middle, between A and B
 
@@ -1479,9 +1480,9 @@ mod tests {
             for _ in 0..3 {
                 insert_row(&mut doc, &t, usize::MAX);
             }
-            set_cell_text(&mut doc, &t, 0, 0, "R0");
-            set_cell_text(&mut doc, &t, 1, 0, "R1");
-            set_cell_text(&mut doc, &t, 2, 0, "R2");
+            set_cell_text(&mut doc, &t, 0, 0, "R0").expect("the seeded cell is in the table");
+            set_cell_text(&mut doc, &t, 1, 0, "R1").expect("the seeded cell is in the table");
+            set_cell_text(&mut doc, &t, 2, 0, "R2").expect("the seeded cell is in the table");
 
             insert_row(&mut doc, &t, 1);
 
@@ -1495,7 +1496,8 @@ mod tests {
             insert_column(&mut doc, &t, 0);
             for i in 0..3 {
                 insert_row(&mut doc, &t, usize::MAX);
-                set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"));
+                set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"))
+                    .expect("the seeded cell is in the table");
             }
             remove_row(&mut doc, &t, 1);
             assert_eq!(dims(&doc, &t), (2, 1));
@@ -1508,7 +1510,8 @@ mod tests {
             insert_row(&mut doc, &t, 0);
             for i in 0..3 {
                 insert_column(&mut doc, &t, usize::MAX);
-                set_cell_text(&mut doc, &t, 0, i, &format!("C{i}"));
+                set_cell_text(&mut doc, &t, 0, i, &format!("C{i}"))
+                    .expect("the seeded cell is in the table");
             }
             remove_column(&mut doc, &t, 1);
             assert_eq!(dims(&doc, &t), (1, 2));
@@ -1519,8 +1522,8 @@ mod tests {
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 1);
-            set_cell_text(&mut doc, &t, 0, 0, "first");
-            set_cell_text(&mut doc, &t, 0, 0, "second");
+            set_cell_text(&mut doc, &t, 0, 0, "first").expect("the seeded cell is in the table");
+            set_cell_text(&mut doc, &t, 0, 0, "second").expect("the seeded cell is in the table");
             assert_eq!(cell_text(&doc, &t, 0, 0), "second");
         }
 
@@ -1531,7 +1534,8 @@ mod tests {
             insert_row(&mut doc, &t, 0);
             for i in 0..4 {
                 insert_column(&mut doc, &t, usize::MAX);
-                set_cell_text(&mut doc, &t, 0, i, &format!("c{i}"));
+                set_cell_text(&mut doc, &t, 0, i, &format!("c{i}"))
+                    .expect("the seeded cell is in the table");
             }
             let ids_before = col_ids(&doc, &t);
             remove_column(&mut doc, &t, 2);
@@ -1610,7 +1614,7 @@ mod tests {
             .layout(taffy, node)
             .send(table, ev);
         for edit in table.take_edits() {
-            apply(doc, root, &edit);
+            apply(doc, root, &edit).expect("the table's own edit applies");
         }
         (sent.handled, sent.focus_target)
     }
@@ -1623,8 +1627,8 @@ mod tests {
             insert_row(&mut doc, &t, 0);
             insert_column(&mut doc, &t, 0);
             insert_column(&mut doc, &t, 1);
-            set_cell_text(&mut doc, &t, 0, 0, "A");
-            set_cell_text(&mut doc, &t, 0, 1, "B");
+            set_cell_text(&mut doc, &t, 0, 0, "A").expect("the seeded cell is in the table");
+            set_cell_text(&mut doc, &t, 0, 1, "B").expect("the seeded cell is in the table");
 
             let mut table = Table::new("t");
             let (taffy, node) = layout(&mut table, &doc, &t);
@@ -1664,7 +1668,8 @@ mod tests {
             insert_column(&mut doc, &t, 0);
             for i in 0..3 {
                 insert_row(&mut doc, &t, usize::MAX);
-                set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"));
+                set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"))
+                    .expect("the seeded cell is in the table");
             }
             let mut table = Table::new("t");
             let (taffy, node) = layout(&mut table, &doc, &t);
@@ -1779,7 +1784,7 @@ mod tests {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 1);
             // Clear the seeded content so we assert on exactly what we type.
-            set_cell_text(&mut doc, &t, 0, 0, "");
+            set_cell_text(&mut doc, &t, 0, 0, "").expect("the seeded cell is in the table");
 
             let mut table = Table::new("t");
             let (taffy, node) = layout(&mut table, &doc, &t);
@@ -1827,12 +1832,12 @@ mod tests {
             insert_row(&mut doc, &t, 0);
             insert_column(&mut doc, &t, 0);
 
-            set_cell_text(&mut doc, &t, 0, 0, "");
+            set_cell_text(&mut doc, &t, 0, 0, "").expect("the seeded cell is in the table");
             let baseline = doc.save().len();
             let mut typed = String::new();
             for i in 0..300 {
                 typed.push(if i % 9 == 8 { ' ' } else { 'x' });
-                set_cell_text(&mut doc, &t, 0, 0, &typed);
+                set_cell_text(&mut doc, &t, 0, 0, &typed).expect("the seeded cell is in the table");
             }
             let grown = doc.save().len() - baseline;
 
@@ -1852,11 +1857,12 @@ mod tests {
         {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 1);
-            set_cell_text(&mut doc, &t, 0, 0, "steady");
+            set_cell_text(&mut doc, &t, 0, 0, "steady").expect("the seeded cell is in the table");
             let before = doc.save().len();
 
             for _ in 0..50 {
-                set_cell_text(&mut doc, &t, 0, 0, "steady");
+                set_cell_text(&mut doc, &t, 0, 0, "steady")
+                    .expect("the seeded cell is in the table");
             }
 
             assert_eq!(cell_text(&doc, &t, 0, 0), "steady");

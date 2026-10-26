@@ -101,6 +101,101 @@ fn index(doc: &Doc, text: &str, chars: usize) -> usize {
     }
 }
 
+/// Why a character-coordinate splice wrote nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextSpliceError {
+    /// The object is not a text any more: it was deleted or replaced by
+    /// another type, so there is nowhere to splice.
+    NotText,
+    /// The splice reaches past the end of the text, which holds `length`
+    /// characters.
+    PastEnd {
+        length: usize,
+        at: usize,
+        delete: usize,
+    },
+    /// The document refused the write.
+    Refused(String),
+}
+
+impl std::fmt::Display for TextSpliceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotText => f.write_str("the text is gone"),
+            Self::PastEnd { length, at, delete } => write!(
+                f,
+                "the text has {length} characters; the splice at {at} deleting {delete} \
+                 reaches past its end"
+            ),
+            Self::Refused(error) => f.write_str(error),
+        }
+    }
+}
+
+impl std::error::Error for TextSpliceError {}
+
+impl From<automerge::AutomergeError> for TextSpliceError {
+    fn from(error: automerge::AutomergeError) -> Self {
+        Self::Refused(error.to_string())
+    }
+}
+
+/// The text `obj` holds, which must be a text object: reading a map or a list
+/// as text would answer an empty string, and a splice into it an error that
+/// names the document's type rather than the caller's mistake.
+///
+/// # Errors
+/// Returns [`TextSpliceError::NotText`] when `obj` is not a text object (it
+/// was deleted, or replaced by another type).
+pub fn text_of(doc: &impl ReadDoc, obj: &ObjId) -> Result<String, TextSpliceError> {
+    match doc.object_type(obj) {
+        Ok(automerge::ObjType::Text) => doc.text(obj).map_err(|_| TextSpliceError::NotText),
+        _ => Err(TextSpliceError::NotText),
+    }
+}
+
+/// The text's length in characters (Unicode scalar values): what a caret and
+/// a selection count, whatever the document's text encoding.
+///
+/// # Errors
+/// Returns [`TextSpliceError::NotText`] when `obj` is not a text object.
+pub fn char_len(doc: &impl ReadDoc, obj: &ObjId) -> Result<usize, TextSpliceError> {
+    Ok(text_of(doc, obj)?.chars().count())
+}
+
+/// Splice `insert` over `delete` characters at character `at` of the text
+/// object `obj`: the one mutation plain text and table cells share.
+///
+/// Positions count Unicode scalar values, independent of the document's text
+/// encoding ([`TextEdit`]'s coordinates), so a byte-indexed or UTF-16
+/// document splices in the right place. What it inserts is marked with the
+/// author of the action applying now ([`mark_authored`]).
+///
+/// # Errors
+/// Returns [`TextSpliceError`] and writes nothing: the object is no longer
+/// text, the splice reaches past the end, or the document refuses the
+/// write.
+pub fn splice_chars(
+    doc: &mut Doc,
+    obj: &ObjId,
+    at: usize,
+    delete: usize,
+    insert: &str,
+) -> Result<(), TextSpliceError> {
+    let current = text_of(doc, obj)?;
+    let length = current.chars().count();
+    if at > length || delete > length.saturating_sub(at) {
+        return Err(TextSpliceError::PastEnd { length, at, delete });
+    }
+    let start = index(doc, &current, at);
+    let end = index(doc, &current, at.saturating_add(delete));
+    let removed = isize::try_from(end.saturating_sub(start))
+        .map_err(|_| TextSpliceError::Refused("the edit is too large".to_owned()))?;
+    doc.splice_text(obj, start, removed, insert)?;
+    mark_authored(doc, obj, start, insert)?;
+    Ok(())
+}
+
 /// The smallest splice, in characters, that turns `before` into `after`:
 /// what the two share at their start and end is kept.
 #[must_use]
@@ -141,29 +236,20 @@ impl TextEdit {
     /// Returns [`ActionError::Refused`] when `obj` is not a text object or
     /// the splice reaches past the end of the text; nothing is written.
     pub fn apply_under(&self, doc: &mut Doc, obj: &ObjId) -> Result<(), ActionError> {
-        let current = doc
-            .text(obj)
-            .map_err(|_| ActionError::Refused("the text is gone".into()))?;
-        let (at, delete, insert) = match self {
+        let splice = match self {
             Self::Splice { at, delete, insert } => (*at, *delete, insert.clone()),
-            Self::ReplaceText { text } => match splice_between(&current, text) {
-                Some(Self::Splice { at, delete, insert }) => (at, delete, insert),
-                _ => return Ok(()),
-            },
+            Self::ReplaceText { text } => {
+                let current =
+                    text_of(doc, obj).map_err(|error| ActionError::Refused(error.to_string()))?;
+                match splice_between(&current, text) {
+                    Some(Self::Splice { at, delete, insert }) => (at, delete, insert),
+                    _ => return Ok(()),
+                }
+            }
         };
-        let length = current.chars().count();
-        if at > length || delete > length.saturating_sub(at) {
-            return Err(ActionError::Refused(format!(
-                "the text has {length} characters; the edit reaches past its end"
-            )));
-        }
-        let start = index(doc, &current, at);
-        let end = index(doc, &current, at.saturating_add(delete));
-        let removed = isize::try_from(end.saturating_sub(start))
-            .map_err(|_| ActionError::Refused("the edit is too large".into()))?;
-        doc.splice_text(obj, start, removed, &insert)?;
-        mark_authored(doc, obj, start, &insert)?;
-        Ok(())
+        let (at, delete, insert) = splice;
+        splice_chars(doc, obj, at, delete, &insert)
+            .map_err(|error| ActionError::Refused(error.to_string()))
     }
 }
 
@@ -375,6 +461,54 @@ mod tests {
             insert: "ö".into(),
         };
         assert_eq!(spliced("naïve", &edit), "naöve");
+    }
+
+    /// The shared mutation counts characters whatever the document's text
+    /// encoding counts, so a UTF-8 or UTF-16 document splices in the right
+    /// place.
+    #[test]
+    fn the_shared_splice_is_encoding_aware() {
+        use automerge::TextEncoding;
+        for encoding in [
+            TextEncoding::UnicodeCodePoint,
+            TextEncoding::Utf8CodeUnit,
+            TextEncoding::Utf16CodeUnit,
+        ] {
+            let mut doc = Doc::new_with_encoding(encoding);
+            let obj = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+            doc.splice_text(&obj, 0, 0, "naïve café 🎨").unwrap();
+            // Replace `café` (characters 6..10) with `Kaffee`.
+            splice_chars(&mut doc, &obj, 6, 4, "Kaffee").expect("the splice applies");
+            assert_eq!(
+                doc.text(&obj).unwrap(),
+                "naïve Kaffee 🎨",
+                "{encoding:?}: four characters were replaced at character six"
+            );
+            assert_eq!(char_len(&doc, &obj).unwrap(), 14, "{encoding:?}");
+        }
+    }
+
+    /// A refusal is reported and writes nothing, so a caller can refuse the
+    /// action instead of reporting an edit that never happened.
+    #[test]
+    fn a_refused_shared_splice_writes_nothing() {
+        let mut doc = Doc::new();
+        let obj = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+        doc.splice_text(&obj, 0, 0, "abc").unwrap();
+        assert_eq!(
+            splice_chars(&mut doc, &obj, 2, 5, "x"),
+            Err(TextSpliceError::PastEnd {
+                length: 3,
+                at: 2,
+                delete: 5
+            })
+        );
+        let map = doc.put_object(ROOT, "map", ObjType::Map).unwrap();
+        assert_eq!(
+            splice_chars(&mut doc, &map, 0, 0, "x"),
+            Err(TextSpliceError::NotText)
+        );
+        assert_eq!(doc.text(&obj).unwrap(), "abc", "nothing was written");
     }
 
     #[test]

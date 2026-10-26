@@ -13,6 +13,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value};
 use std::any::Any;
+use tilo_resource::text::TextSpliceError;
 
 /// Where `doc` stands, to tell whether a settle pass changed it.
 pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
@@ -73,89 +74,62 @@ impl TextEdit {
 
 /// Prefer [`put_text_diffed`] when you have a parent object + key and want the
 /// `Text` created on first use.
-pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> TextEdit {
-    let cur = doc.text(text_id).unwrap_or_default();
-    if cur == new {
-        return TextEdit {
-            pos: 0,
-            del: 0,
-            ins: 0,
-        };
-    }
-    let cur_chars: Vec<char> = cur.chars().collect();
-    let new_chars: Vec<char> = new.chars().collect();
-
-    let prefix_len = cur_chars
-        .iter()
-        .zip(new_chars.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-    // Suffix search bounds exclude the prefix so the two spans can't
-    // overlap. `prefix_len` is at most `min(cur_chars.len(),
-    // new_chars.len())` by construction above, so both tails are `Some`.
-    let cur_tail = cur_chars.get(prefix_len..).unwrap_or(&[]);
-    let new_tail = new_chars.get(prefix_len..).unwrap_or(&[]);
-    let suffix_len = cur_tail
-        .iter()
-        .rev()
-        .zip(new_tail.iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    // `suffix_len` never exceeds either tail's length, so none of these underflow.
-    let del = cur_chars
-        .len()
-        .saturating_sub(prefix_len)
-        .saturating_sub(suffix_len);
-    let ins_end = new_chars.len().saturating_sub(suffix_len);
-    let ins: String = new_chars
-        .get(prefix_len..ins_end)
-        .unwrap_or(&[])
-        .iter()
-        .collect();
-    let ins_len = ins_end.saturating_sub(prefix_len);
-    // `del` is bounded by `Vec<char>::len()`, which the global allocator
-    // already caps at `isize::MAX` bytes (4 bytes per `char`), so it always
-    // fits `isize` on every real target.
-    #[allow(
-        clippy::cast_possible_wrap,
-        reason = "del is bounded by Vec<char>::len(), which the allocator already caps under isize::MAX"
-    )]
-    let del_isize = del as isize;
-    let _ = doc.splice_text(text_id, prefix_len, del_isize, &ins);
-    TextEdit {
-        pos: prefix_len,
-        del,
-        ins: ins_len,
-    }
+///
+/// The diff is computed in characters (what [`TextEdit`] reports) and applied
+/// through [`tilo_resource::text::splice_chars`], the one mutation plain text
+/// and table cells share: it converts the character offsets to the document's
+/// own text index (a UTF-8 or UTF-16 document splices in the right place) and
+/// marks what it inserts with the author of the action applying now.
+///
+/// # Errors
+/// Returns [`TextSpliceError`] instead of reporting an edit it did not make:
+/// the object is not text any more, the document refuses the splice, or the
+/// text changed under a concurrent writer such that the diff no longer
+/// applies. Nothing is written when it returns an error.
+pub fn splice_text_diffed(
+    doc: &mut AutoCommit,
+    text_id: &ObjId,
+    new: &str,
+) -> Result<TextEdit, TextSpliceError> {
+    let cur = tilo_resource::text::text_of(doc, text_id)?;
+    let (at, delete, insert) = match tilo_resource::text::splice_between(&cur, new) {
+        Some(tilo_resource::text::TextEdit::Splice { at, delete, insert }) => (at, delete, insert),
+        // Identical text (or a form this helper does not write): nothing to do.
+        _ => {
+            return Ok(TextEdit {
+                pos: 0,
+                del: 0,
+                ins: 0,
+            });
+        }
+    };
+    let ins = insert.chars().count();
+    tilo_resource::text::splice_chars(doc, text_id, at, delete, &insert)?;
+    Ok(TextEdit {
+        pos: at,
+        del: delete,
+        ins,
+    })
 }
 
 /// Creates the `Text` object on first use (inserting the whole value);
 /// subsequent calls splice only the diff.
 ///
-/// `put_object` only fails here if `obj` was concurrently deleted (or
-/// retyped) by another collaborator between the read and the write; there is
-/// no longer a place to put the text, so this reports the no-op edit rather
-/// than panicking.
+/// # Errors
+/// Returns [`TextSpliceError`] instead of reporting a no-op edit: `obj` was
+/// concurrently deleted (or retyped) by another collaborator between the read
+/// and the write, so there is nowhere to put the text; or the splice into an
+/// existing text refused (see [`splice_text_diffed`]).
 pub fn put_text_diffed<P: Into<Prop>>(
     doc: &mut AutoCommit,
     obj: &ObjId,
     key: P,
     new: &str,
-) -> TextEdit {
+) -> Result<TextEdit, TextSpliceError> {
     let prop = key.into();
     let tid = match doc.get(obj, prop.clone()) {
         Ok(Some((Value::Object(ObjType::Text), id))) => id,
-        _ => match doc.put_object(obj, prop, ObjType::Text) {
-            Ok(id) => id,
-            Err(_) => {
-                return TextEdit {
-                    pos: 0,
-                    del: 0,
-                    ins: 0,
-                };
-            }
-        },
+        _ => doc.put_object(obj, prop, ObjType::Text)?,
     };
     splice_text_diffed(doc, &tid, new)
 }
@@ -228,7 +202,7 @@ mod tests {
             let mut target = long.to_string();
             target.push('!');
 
-            let edit = splice_text_diffed(&mut doc, &id, &target);
+            let edit = splice_text_diffed(&mut doc, &id, &target).expect("the text splices");
 
             assert_eq!(
                 edit,
@@ -253,7 +227,8 @@ mod tests {
             let before = "the quick brown fox";
             let id = seed_text(&mut doc, "t", before);
 
-            let edit = splice_text_diffed(&mut doc, &id, "the slow brown fox");
+            let edit =
+                splice_text_diffed(&mut doc, &id, "the slow brown fox").expect("the text splices");
 
             assert_eq!(edit.pos, 4, "prefix 'the ' is common");
             assert_eq!(edit.del, 5, "'quick' is deleted");
@@ -271,7 +246,7 @@ mod tests {
             let id = seed_text(&mut doc, "t", "unchanged");
             let before = doc.save().len();
 
-            let edit = splice_text_diffed(&mut doc, &id, "unchanged");
+            let edit = splice_text_diffed(&mut doc, &id, "unchanged").expect("the text splices");
 
             assert!(edit.is_noop(), "re-storing the same value must be a no-op");
             assert_eq!(
@@ -293,7 +268,8 @@ mod tests {
         {
             let mut doc = AutoCommit::new();
 
-            let e0 = put_text_diffed(&mut doc, &ROOT, "body", "hello world");
+            let e0 =
+                put_text_diffed(&mut doc, &ROOT, "body", "hello world").expect("the text writes");
             assert_eq!(
                 e0,
                 TextEdit {
@@ -303,7 +279,8 @@ mod tests {
                 }
             );
 
-            let e1 = put_text_diffed(&mut doc, &ROOT, "body", "hello world!");
+            let e1 =
+                put_text_diffed(&mut doc, &ROOT, "body", "hello world!").expect("the text splices");
             assert_eq!(
                 e1,
                 TextEdit {
@@ -326,7 +303,7 @@ mod tests {
             let mut s = String::new();
             for i in 0..500 {
                 s.push(if i % 7 == 6 { ' ' } else { 'x' });
-                put_text_diffed(&mut doc, &ROOT, "b", &s);
+                put_text_diffed(&mut doc, &ROOT, "b", &s).expect("the text splices");
             }
             let size = doc.save().len();
             assert!(
@@ -341,5 +318,131 @@ mod tests {
                 "typed value must round-trip exactly"
             );
         }
+    }
+
+    /// A character is a character: multi-byte, combining and astral text
+    /// splices at the same character offset whatever the document's own text
+    /// encoding counts.
+    #[test]
+    fn a_unicode_splice_counts_characters_whatever_the_document_encoding() {
+        for encoding in [
+            automerge::TextEncoding::UnicodeCodePoint,
+            automerge::TextEncoding::Utf8CodeUnit,
+            automerge::TextEncoding::Utf16CodeUnit,
+        ] {
+            let mut doc = AutoCommit::new_with_encoding(encoding);
+            let id = seed_text(&mut doc, "t", "naïve café 🎨");
+
+            let replaced =
+                splice_text_diffed(&mut doc, &id, "naïve Kaffee 🎨").expect("the text splices");
+            assert_eq!(
+                replaced,
+                TextEdit {
+                    pos: 6,
+                    del: 4,
+                    ins: 6
+                },
+                "{encoding:?}: `café` is four characters"
+            );
+            assert_eq!(doc.text(&id).unwrap(), "naïve Kaffee 🎨");
+
+            // An astral character plus a combining mark inserted after `naï`.
+            let inserted = splice_text_diffed(&mut doc, &id, "naïe\u{301}🖌ve Kaffee 🎨")
+                .expect("the text splices");
+            assert_eq!(
+                inserted,
+                TextEdit {
+                    pos: 3,
+                    del: 0,
+                    ins: 3
+                },
+                "{encoding:?}: the inserted run counts its combining mark and emoji once each"
+            );
+            assert_eq!(doc.text(&id).unwrap(), "naïe\u{301}🖌ve Kaffee 🎨");
+        }
+    }
+
+    /// A splice that cannot be made says so instead of reporting an edit:
+    /// nothing is written and the caller can refuse the action.
+    #[test]
+    fn a_splice_with_no_text_to_write_is_reported() {
+        let mut doc = AutoCommit::new();
+        let map = doc.put_object(&ROOT, "map", ObjType::Map).unwrap();
+        assert_eq!(
+            splice_text_diffed(&mut doc, &map, "anything"),
+            Err(TextSpliceError::NotText),
+            "a map is not text"
+        );
+        // A text object cannot hold a child text: creating one refuses.
+        let text = seed_text(&mut doc, "t", "typed");
+        assert!(matches!(
+            put_text_diffed(&mut doc, &text, "child", "value"),
+            Err(TextSpliceError::Refused(_))
+        ));
+        assert_eq!(doc.text(&text).unwrap(), "typed", "nothing was written");
+    }
+
+    /// What a splice inserts carries the author of the action applying now,
+    /// so the table's cell edits are attributed like any resource's text.
+    #[test]
+    fn an_inserted_run_is_marked_with_the_applying_actions_author() {
+        use automerge::marks::Mark;
+
+        #[derive(Debug, serde::Serialize)]
+        struct TypeCell {
+            text: String,
+        }
+        impl tilo_actions::Action for TypeCell {
+            fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+                put_text_diffed(doc, &ROOT, "cell", &self.text)
+                    .map(drop)
+                    .map_err(|error| tilo_actions::ActionError::Refused(error.to_string()))
+            }
+        }
+
+        let mut doc = AutoCommit::new();
+        let context = tilo_actions::ActionContext::for_resource("table", "tilo.table", "Table")
+            .with_invoker(tilo_actions::ActionInvoker::actor("alice"));
+        tilo_actions::apply_local_with_context(
+            &mut doc,
+            &TypeCell {
+                text: "héllo".into(),
+            },
+            tilo_actions::EncodedAction::encode(
+                "tilo.table",
+                &TypeCell {
+                    text: "héllo".into(),
+                },
+            )
+            .unwrap(),
+            None,
+            context.clone(),
+        )
+        .expect("the action applies");
+        let (_, id) = doc.get(&ROOT, "cell").unwrap().unwrap();
+        let runs: Vec<(String, usize, usize)> = doc
+            .marks(&id)
+            .unwrap()
+            .into_iter()
+            .filter(|mark: &Mark| mark.name() == "author")
+            .map(|mark| {
+                (
+                    mark.value().as_str().unwrap_or_default().to_owned(),
+                    mark.start,
+                    mark.end,
+                )
+            })
+            .collect();
+        assert_eq!(
+            runs,
+            vec![("alice".to_owned(), 0, 5)],
+            "the five characters typed are alice's"
+        );
+
+        // Outside an action nobody is named, and nothing is marked.
+        let mut plain = AutoCommit::new();
+        put_text_diffed(&mut plain, &ROOT, "cell", "unattributed").expect("the text writes");
+        let (_, id) = plain.get(&ROOT, "cell").unwrap().unwrap();
+        assert!(plain.marks(&id).unwrap().is_empty());
     }
 }
