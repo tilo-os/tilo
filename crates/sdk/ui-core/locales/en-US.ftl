@@ -957,6 +957,7 @@ emoji-chooser-results = Matching emoji
 emoji-chooser-no-results = No emoji found
 emoji-chooser-arriving = More emoji are on their way
 emoji-chooser-add = Add emoji
+emoji-chooser-add-failed = Couldn't add that picture: { $reason }
 emoji-chooser-tones = Skin tones
 emoji-chooser-tone-hint = Pick a skin tone
 emoji-chooser-toned = { $name }, { $tone }
@@ -970,3 +971,10 @@ emoji-chooser-tone-dark = dark skin tone
 workspace-emoji-choose-title = Add an emoji
 workspace-emoji-choose-accept = Add
 workspace-emoji-image-files = Pictures
+# Why a picture chosen in the emoji picker was not added, after
+# emoji-chooser-add-failed's colon: short, it shares the picker's last line.
+workspace-emoji-loading = the picture tools are still loading
+workspace-emoji-not-a-picture = it isn't a PNG, JPEG or WebP
+workspace-emoji-too-detailed = it's too detailed for an emoji
+workspace-emoji-unavailable = this workspace's emoji aren't available
+workspace-emoji-not-allowed = you may not add emoji here

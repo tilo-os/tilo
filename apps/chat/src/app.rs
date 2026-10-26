@@ -3742,6 +3742,19 @@ impl ChatApp {
         }
     }
 
+    /// Why a picture chosen to add as an emoji was not, where the open
+    /// picker says so.
+    fn emoji_notice_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let (notice, footer) = self.emoji_picker.notice().filter(|_| self.emoji_open)?;
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::StaticText)
+                .with_name(notice.to_owned())
+                .with_bounds(footer)
+                .with_live(ui::a11y::Politeness::Assertive)
+                .with_hashed_key(("emoji-picker-notice", notice)),
+        )
+    }
+
     pub(crate) fn push_hit(hits: &mut Vec<(Rect, Hit)>, rect: Rect, hit: Hit) {
         hits.push((rect, hit));
     }
@@ -5045,6 +5058,7 @@ impl Widget for ChatApp {
                     .with_hashed_key(("call-count", &self.call.channel)),
             );
         }
+        children.extend(self.emoji_notice_accessibility());
         if let Some(menu) = self.menu.as_ref()
             && let Some(menu_node) = menu.widget.accessibility()
         {
