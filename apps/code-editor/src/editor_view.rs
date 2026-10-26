@@ -278,6 +278,10 @@ pub struct EditorView {
     /// The `Code` role's resolved size last drawn with, so a change of theme
     /// or text scale re-measures the cell and keeps the caret in view.
     code_size: f32,
+    /// The editor's own text zoom, on top of the window's theme. The window
+    /// zoom still reflows every part of the window; this changes only the
+    /// code and its line numbers.
+    text_zoom: f32,
     is_focused: bool,
     dirty: bool,
     /// Snapshot of the buffer text the line cache was built from — lets `sync`
@@ -375,6 +379,7 @@ impl EditorView {
             text_dy: 0.0,
             pad: nominal.2,
             code_size: 0.0,
+            text_zoom: 1.0,
             is_focused: true,
             dirty: true,
             cached_text: String::new(),
@@ -2701,6 +2706,25 @@ impl EditorView {
     }
 }
 
+impl EditorView {
+    /// The editor's text zoom, as a factor of the theme's code size.
+    #[must_use]
+    pub fn text_zoom(&self) -> f32 {
+        self.text_zoom
+    }
+
+    /// Set the editor's text zoom. The next draw re-measures the code line and
+    /// keeps the caret in view, so rows, hit-testing and the caret all follow
+    /// the new size.
+    pub fn set_text_zoom(&mut self, zoom: f32) {
+        let zoom = zoom.clamp(ui::content_zoom::MIN, ui::content_zoom::MAX);
+        if (zoom - self.text_zoom).abs() > f32::EPSILON {
+            self.text_zoom = zoom;
+            self.dirty = true;
+        }
+    }
+}
+
 impl Widget for EditorView {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         use automerge::transaction::Transactable;
@@ -2777,6 +2801,7 @@ impl Widget for EditorView {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let theme = &theme.clone().with_text_scale(self.text_zoom);
         self.collect_highlights();
         let code_size = theme.text(TextRole::Code).size;
         if (self.code_size - code_size).abs() > f32::EPSILON {
