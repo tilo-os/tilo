@@ -41,6 +41,7 @@ imports! {
     (ListGetF, "list_get_f", "il", "f"),
     (ListGetH, "list_get_h", "il", "i"),
     (ListSortByKey, "list_sort_by_key", "ii", "i"),
+    (ListEnd, "list_end", "ii", "i"),
 
     (TupleNew, "tuple_new", "i", "i"),
     (TupleSetI, "tuple_set_i", "iil", ""),

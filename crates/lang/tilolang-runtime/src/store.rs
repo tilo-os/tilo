@@ -185,12 +185,21 @@ pub fn doc_of(resource: &str) -> &str {
 
 /// The items of a collection, in order: what [`Store::listing`] hands out, shared, so a view
 /// reads a collection's length or one item without copying its items.
+///
+/// Item ids are shared too: what a view read of a listing (the item at an index) is kept to
+/// compare with the listing after a change, which costs a count, not a copy.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Listing {
-    pub items: Vec<ItemId>,
+    pub items: Vec<Rc<str>>,
 }
 
 impl Listing {
+    pub fn from_ids(ids: impl IntoIterator<Item = ItemId>) -> Self {
+        Self {
+            items: ids.into_iter().map(Rc::from).collect(),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.items.len()
     }
@@ -199,8 +208,13 @@ impl Listing {
         self.items.is_empty()
     }
 
-    pub fn get(&self, index: usize) -> Option<&ItemId> {
+    pub fn get(&self, index: usize) -> Option<&Rc<str>> {
         self.items.get(index)
+    }
+
+    /// The item ids, as owned text.
+    pub fn ids(&self) -> Vec<ItemId> {
+        self.items.iter().map(ToString::to_string).collect()
     }
 }
 
@@ -335,7 +349,7 @@ pub trait Store {
     /// As [`Store::read`], and `Invalid` for a field that is not a collection.
     fn listing(&self, at: &ResourceRef, field: &FieldSpec) -> Result<Rc<Listing>, StoreError> {
         match self.read(at, field)? {
-            FieldValue::Items(items) => Ok(Rc::new(Listing { items })),
+            FieldValue::Items(items) => Ok(Rc::new(Listing::from_ids(items))),
             other => Err(StoreError::Invalid(format!(
                 "field {} is not a collection: {other:?}",
                 field.id

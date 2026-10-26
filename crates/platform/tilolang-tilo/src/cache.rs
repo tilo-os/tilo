@@ -90,7 +90,7 @@ impl Cached {
 /// binary search over (order key, id), the stored order.
 struct Listed {
     listing: Rc<Listing>,
-    keys: Map<String, String>,
+    keys: Map<Rc<str>, String>,
 }
 
 impl Listed {
@@ -98,7 +98,7 @@ impl Listed {
     fn position(&self, key: &str, id: &str) -> usize {
         self.listing.items.partition_point(|other| {
             let other_key = self.keys.get(other).map_or("", String::as_str);
-            (other_key, other.as_str()) < (key, id)
+            (other_key, &**other) < (key, id)
         })
     }
 }
@@ -151,7 +151,7 @@ impl ReadCache {
             .ok_or_else(|| not_found(format!("field {field}")))?;
         if spec.kind == MergeKind::Collection {
             return Ok(FieldValue::Items(
-                self.listing(doc, (app, ty), at, field)?.items.clone(),
+                self.listing(doc, (app, ty), at, field)?.ids(),
             ));
         }
         let value = match obj.as_ref() {
@@ -231,7 +231,7 @@ impl ReadCache {
             .get(field)?;
         let key = listed.keys.get(id)?;
         let at = listed.position(key, id);
-        (listed.listing.get(at).map(String::as_str) == Some(id)).then_some(at)
+        (listed.listing.get(at).map(|found| &**found) == Some(id)).then_some(at)
     }
 
     /// Bring the listing of the collection `coll` in line with the items `items` as `doc` holds
@@ -264,13 +264,13 @@ impl ReadCache {
                 .as_ref()
                 .and_then(|map| tilo_resource::stored_entry(doc, map, id))
                 .map(|stored| stored.key);
-            let before = listed.keys.get(id);
+            let before = listed.keys.get(id.as_str());
             if before == now.as_ref() {
                 continue;
             }
             if let Some(key) = before {
                 let at = listed.position(key, id);
-                if listed.listing.get(at) == Some(id) {
+                if listed.listing.get(at).map(|found| &**found) == Some(id.as_str()) {
                     leaving.push((at, id.clone()));
                 }
             }
@@ -289,16 +289,17 @@ impl ReadCache {
             if at < items.len() {
                 items.remove(at);
             }
-            listed.keys.remove(&id);
+            listed.keys.remove(id.as_str());
             splices.push(Splice::Remove { at, item: id });
         }
         // Inserted in stored order, so each lands after the ones before it.
         arriving.sort_unstable();
         for (key, id) in arriving {
             let at = listed.position(&key, &id);
+            let shared: Rc<str> = Rc::from(id.as_str());
             let items = &mut Rc::make_mut(&mut listed.listing).items;
-            items.insert(at.min(items.len()), id.clone());
-            listed.keys.insert(id.clone(), key);
+            items.insert(at.min(items.len()), Rc::clone(&shared));
+            listed.keys.insert(shared, key);
             splices.push(Splice::Insert { at, item: id });
         }
         // An item that left and came back to the same place (its key changed, its neighbours did
@@ -429,8 +430,8 @@ impl ReadCache {
         let items = stored
             .into_iter()
             .map(|s| {
-                let id = s.id.as_str().to_owned();
-                keys.insert(id.clone(), s.key);
+                let id: Rc<str> = Rc::from(s.id.as_str());
+                keys.insert(Rc::clone(&id), s.key);
                 id
             })
             .collect();

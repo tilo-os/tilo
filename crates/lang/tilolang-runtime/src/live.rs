@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
+use crate::colls::CollSeen;
 use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::handles::Retained;
@@ -41,6 +42,8 @@ pub(crate) struct Bound {
     /// A row of a list: rendered on demand.
     pub lazy: bool,
     pub reads: Vec<(String, String)>,
+    /// What it saw of the collections it read item by item.
+    pub colls: Vec<CollSeen>,
     pub space_reads: Vec<(String, f64)>,
     pub state_reads: Vec<(StateKey, u64)>,
     pub state_seen: Vec<(StateKey, Value)>,
@@ -71,6 +74,9 @@ fn distinct(mut reads: Vec<(String, String)>) -> Vec<(String, String)> {
 #[derive(Default)]
 struct Index {
     resources: FastMap<String, Vec<(String, BoundId)>>,
+    /// The collections read item by item, per resource: a change to one reaches a boundary only
+    /// if what it saw of it no longer holds.
+    colls: FastMap<String, Vec<(String, BoundId)>>,
     docs: FastMap<String, HashSet<BoundId>>,
     states: HashMap<StateKey, HashSet<BoundId>>,
     space: HashSet<BoundId>,
@@ -79,12 +85,25 @@ struct Index {
 impl Index {
     fn add(&mut self, id: BoundId, b: &Bound) {
         let mut docs: Vec<&str> = Vec::new();
-        for (resource, field) in &b.reads {
+        let reads = b
+            .reads
+            .iter()
+            .map(|(resource, field)| (resource, field, false));
+        let colls = b
+            .colls
+            .iter()
+            .map(|seen| (&seen.resource, &seen.coll.field, true));
+        for (resource, field, coll) in reads.chain(colls) {
             let read = (field.clone(), id);
-            match self.resources.get_mut(resource) {
+            let index = if coll {
+                &mut self.colls
+            } else {
+                &mut self.resources
+            };
+            match index.get_mut(resource) {
                 Some(readers) => readers.push(read),
                 None => {
-                    self.resources.insert(resource.clone(), vec![read]);
+                    index.insert(resource.clone(), vec![read]);
                 }
             }
             let doc = doc_of(resource);
@@ -123,11 +142,18 @@ impl Index {
                 }
             }
         }
-        for (resource, _) in &b.reads {
-            if let Some(readers) = self.resources.get_mut(resource) {
+        let reads = b.reads.iter().map(|(resource, _)| (resource, false));
+        let colls = b.colls.iter().map(|seen| (&seen.resource, true));
+        for (resource, coll) in reads.chain(colls) {
+            let index = if coll {
+                &mut self.colls
+            } else {
+                &mut self.resources
+            };
+            if let Some(readers) = index.get_mut(resource) {
                 readers.retain(|(_, reader)| *reader != id);
                 if readers.is_empty() {
-                    self.resources.remove(resource);
+                    index.remove(resource);
                 }
             }
             if let Some(ids) = self.docs.get_mut(doc_of(resource)) {
@@ -151,6 +177,21 @@ impl Index {
             .flatten()
             .filter(move |(read, _)| field == ANY_FIELD || read == field)
             .map(|(_, id)| *id)
+    }
+
+    /// The boundaries that read the collection `field` of `resource` item by item, or any
+    /// collection of it for [`ANY_FIELD`].
+    fn coll_readers<'a>(
+        &'a self,
+        resource: &str,
+        field: &'a str,
+    ) -> impl Iterator<Item = (BoundId, &'a str)> + 'a {
+        self.colls
+            .get(resource)
+            .into_iter()
+            .flatten()
+            .filter(move |(read, _)| field == ANY_FIELD || read == field)
+            .map(|(read, id)| (*id, read.as_str()))
     }
 }
 
@@ -215,6 +256,7 @@ impl Live {
             rendered: false,
             lazy: false,
             reads: Vec::new(),
+            colls: Vec::new(),
             space_reads: Vec::new(),
             state_reads: Vec::new(),
             state_seen: Vec::new(),
@@ -272,17 +314,37 @@ impl Live {
 
     // ----- invalidation ----------------------------------------------------------------------
 
-    /// Whether a change reaches some boundary.
-    pub fn reaches(&self, change: &ChangeSummary) -> bool {
+    /// The boundaries a change reaches: those that read a field it changed, and those that saw
+    /// something of a collection it changed that is no longer so.
+    fn reached(&self, core: &Core, change: &ChangeSummary) -> Vec<BoundId> {
+        let mut hit: Vec<BoundId> = Vec::new();
         if change.fields.is_empty() {
-            return self.index.docs.contains_key(&change.doc);
+            if let Some(set) = self.index.docs.get(&change.doc) {
+                hit.extend(set.iter().copied());
+            }
+            return hit;
         }
-        change.fields.iter().any(|key| {
-            self.index
-                .readers(&key.resource, &key.field)
-                .next()
-                .is_some()
-        })
+        for key in &change.fields {
+            hit.extend(self.index.readers(&key.resource, &key.field));
+            for (id, field) in self.index.coll_readers(&key.resource, &key.field) {
+                let Some(seen) = self.bound(id).and_then(|b| {
+                    b.colls
+                        .iter()
+                        .find(|seen| seen.resource == key.resource && seen.coll.field == field)
+                }) else {
+                    continue;
+                };
+                if !seen.holds_now(core) {
+                    hit.push(id);
+                }
+            }
+        }
+        hit
+    }
+
+    /// Whether a change reaches some boundary.
+    pub fn reaches(&self, core: &Core, change: &ChangeSummary) -> bool {
+        !self.reached(core, change).is_empty()
     }
 
     /// Whether a view state slot some boundary read moved since.
@@ -304,17 +366,8 @@ impl Live {
     }
 
     /// Mark the boundaries a change reaches.
-    pub fn absorb(&mut self, change: &ChangeSummary) {
-        let mut hit: Vec<BoundId> = Vec::new();
-        if change.fields.is_empty() {
-            if let Some(set) = self.index.docs.get(&change.doc) {
-                hit.extend(set.iter().copied());
-            }
-        } else {
-            for key in &change.fields {
-                hit.extend(self.index.readers(&key.resource, &key.field));
-            }
-        }
+    pub fn absorb(&mut self, core: &Core, change: &ChangeSummary) {
+        let hit = self.reached(core, change);
         self.dirty.extend(hit);
     }
 
@@ -446,6 +499,7 @@ impl Live {
         let Rendered {
             root,
             reads,
+            colls,
             space_reads,
             retained,
             state_reads,
@@ -459,6 +513,7 @@ impl Live {
             self.to_release.append(&mut b.retained);
             b.children = new;
             b.reads = reads;
+            b.colls = colls;
             b.space_reads = space_reads;
             b.state_reads = state_reads;
             b.state_seen = state_seen;
@@ -522,6 +577,7 @@ impl Live {
             self.to_release.append(&mut b.retained);
             b.children.clear();
             b.reads.clear();
+            b.colls.clear();
             b.space_reads.clear();
             b.state_reads.clear();
             b.rendered = false;
@@ -900,6 +956,7 @@ impl Boundaries for Builder<'_> {
             rendered: false,
             lazy,
             reads: Vec::new(),
+            colls: Vec::new(),
             space_reads: Vec::new(),
             state_reads: Vec::new(),
             state_seen: Vec::new(),

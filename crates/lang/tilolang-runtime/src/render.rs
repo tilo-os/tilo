@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use crate::colls::{CollSeen, merge_seen};
 use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::handles::{FrameKind, Retained, ViewState};
@@ -50,6 +51,8 @@ pub struct ViewTarget {
 pub struct Rendered {
     pub root: UiNode,
     pub reads: Vec<(String, String)>,
+    /// What it saw of the collections it read item by item.
+    pub(crate) colls: Vec<CollSeen>,
     pub space_reads: Vec<(String, f64)>,
     pub retained: Vec<Retained>,
     /// The view state slots read, with their generations.
@@ -60,6 +63,7 @@ pub struct Rendered {
 
 pub(crate) struct Acc {
     pub reads: Vec<(String, String)>,
+    pub colls: Vec<CollSeen>,
     pub space_reads: Vec<(String, f64)>,
     pub retained: Vec<Retained>,
     pub state_reads: Vec<(StateKey, u64)>,
@@ -148,6 +152,7 @@ impl Acc {
     /// Take on what a nested boundary read and retained, and hand back its tree.
     pub fn absorb(&mut self, nested: Rendered) -> UiNode {
         self.reads.extend(nested.reads);
+        merge_seen(&mut self.colls, nested.colls);
         self.space_reads.extend(nested.space_reads);
         self.retained.extend(nested.retained);
         self.state_reads.extend(nested.state_reads);
@@ -233,6 +238,7 @@ impl Core {
         };
         let mut acc = Acc {
             reads: state.reads,
+            colls: state.colls,
             space_reads: state.space_reads,
             retained: Vec::new(),
             state_reads: state.state_reads,
@@ -256,6 +262,7 @@ impl Core {
         Ok(Rendered {
             root: tree,
             reads: acc.reads,
+            colls: acc.colls,
             space_reads: acc.space_reads,
             retained: acc.retained,
             state_reads: acc.state_reads,
@@ -412,11 +419,18 @@ impl Core {
             Some(prefix) => format!("{prefix}~{}", n.key),
             None => n.key.clone(),
         };
-        let Some(Value::List(items)) = n.props.get(ITEMS) else {
-            return Err(RuntimeError::Package(format!(
-                "the loop `{}` has no list of items",
-                n.key
-            )));
+        let items = match n.props.get(ITEMS) {
+            Some(Value::List(items)) => Items::List(items),
+            Some(Value::Coll(coll)) => Items::Coll(
+                coll,
+                self.coll_listing(coll).map_err(RuntimeError::Package)?,
+            ),
+            _ => {
+                return Err(RuntimeError::Package(format!(
+                    "the loop `{}` has no list of items",
+                    n.key
+                )));
+            }
         };
         let suffix = match n.props.get(SUFFIX) {
             Some(Value::Text(suffix)) => suffix.as_str(),
@@ -433,11 +447,24 @@ impl Core {
             })
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
-        let shown = walk
-            .preview
-            .map_or(items.len(), |rows| rows.min(items.len()));
+        let total = items.len();
+        let shown = walk.preview.map_or(total, |rows| rows.min(total));
+        // The rows depend on the collection's items: in a preview, on its length and the items
+        // it shows; else on all of them.
+        if let Items::Coll(coll, listing) = &items {
+            if walk.preview.is_some() {
+                acc.colls.push(CollSeen::shown(coll, listing, shown));
+            } else {
+                acc.reads
+                    .push((coll.target.id_string(), coll.field.clone()));
+            }
+        }
         let mut rows = Vec::with_capacity(shown);
-        for (i, item) in items.iter().enumerate().take(shown) {
+        for i in 0..shown {
+            let Some(item) = items.get(i) else {
+                break;
+            };
+            let item = &item;
             let item_key = item_key(item, i);
             let row_key = format!("{key}/{item_key}");
             let args: Vec<Value> = args_of
@@ -470,7 +497,7 @@ impl Core {
                 children,
             });
         }
-        Ok((rows, items.len()))
+        Ok((rows, total))
     }
 
     /// The view a loop's node calls per row and what it passes each parameter: the item to
@@ -620,6 +647,32 @@ impl Core {
         let out = self.call_in_frame(pkg, "b_main", &[], &[], Some(value_type));
         self.frames.borrow_mut().pop();
         out
+    }
+}
+
+/// The items a loop's node holds: a list of values, or a collection read item by item.
+enum Items<'a> {
+    List(&'a [Value]),
+    Coll(
+        &'a std::rc::Rc<crate::value::CollRef>,
+        std::rc::Rc<crate::store::Listing>,
+    ),
+}
+
+impl Items<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::List(items) => items.len(),
+            Self::Coll(_, listing) => listing.len(),
+        }
+    }
+
+    /// The `index`th item, as a value.
+    fn get(&self, index: usize) -> Option<Value> {
+        match self {
+            Self::List(items) => items.get(index).cloned(),
+            Self::Coll(coll, listing) => listing.get(index).map(|id| coll.item_ref(id)),
+        }
     }
 }
 

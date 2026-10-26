@@ -752,7 +752,7 @@ fn the_store_keeps_a_listing_by_the_items_a_change_touched() {
     };
     let key = FieldKey::new(&list, items);
     let store = ada.host.store().clone();
-    let listed = || store.listing(&list, &spec).unwrap().items.clone();
+    let listed = || store.listing(&list, &spec).unwrap().ids();
     assert_eq!(listed(), item_ids(&ada, &meta, &root));
     let watch = store.watch();
 
@@ -820,7 +820,7 @@ fn the_store_keeps_a_listing_by_the_items_a_change_touched() {
     // A store that lists the collection anew reads the same.
     let fresh = Replica::new("ada", ada.doc.fork(), &[(TODO, &lock)]).0;
     assert_eq!(
-        fresh.host.store().listing(&list, &spec).unwrap().items,
+        fresh.host.store().listing(&list, &spec).unwrap().ids(),
         listed()
     );
 }

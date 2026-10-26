@@ -229,9 +229,9 @@ impl Core {
         use Imp::{
             Abort, ActOpen, ActRef, ActSet, CollInsert, CollMove, CollRemove, EnumGetF, EnumGetH,
             EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, FloatToStr, IntToStr, Invoke,
-            Invoker, InvokerPop, InvokerPush, IsError, IsSome, ListGetF, ListGetH, ListGetI,
-            ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListSortByKey, MapGetH, MapKeys,
-            MapPut, MapRemove, ModelCall, NoneV, Now, Outside, PrincipalEq, PrincipalName,
+            Invoker, InvokerPop, InvokerPush, IsError, IsSome, ListEnd, ListGetF, ListGetH,
+            ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListSortByKey, MapGetH,
+            MapKeys, MapPut, MapRemove, ModelCall, NoneV, Now, Outside, PrincipalEq, PrincipalName,
             PrincipalNamed, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefLit,
             ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
             SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp, StrConcat,
@@ -244,7 +244,7 @@ impl Core {
                 self.text_import(imp, mem, a)
             }
             ListNew | ListPushI | ListPushF | ListPushH | ListLen | ListGetI | ListGetF
-            | ListSortByKey | ListGetH | TupleNew | TupleSetI | TupleSetF | TupleSetH
+            | ListSortByKey | ListGetH | ListEnd | TupleNew | TupleSetI | TupleSetF | TupleSetH
             | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome
             | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH

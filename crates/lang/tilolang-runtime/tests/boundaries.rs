@@ -76,6 +76,30 @@ view lazy(bag: Bag) {
         row(item.title, checkbox: item.done)
     }
 }
+
+view oldest(bag: Bag) {
+    section(bag.name) {
+        text(match bag.items.first() {
+            .some(item) => item.title,
+            .none => "empty",
+        })
+    }
+}
+
+view newest(bag: Bag) {
+    section(bag.name) {
+        text(match bag.items.last() {
+            .some(item) => item.title,
+            .none => "empty",
+        })
+    }
+}
+
+view count(bag: Bag) {
+    section(bag.name) {
+        text("{bag.items.len()}")
+    }
+}
 "#;
 
     struct Rows {
@@ -310,5 +334,96 @@ view lazy(bag: Bag) {
         rows.retitle(0, "first");
         view.poll_patches().unwrap();
         assert_eq!(titles(view.tree())[0], "first");
+    }
+
+    /// How many times each of `views` ran for the change `change` made.
+    fn runs_for(
+        rows: &Rows,
+        views: &mut [&mut ViewInstance],
+        change: impl FnOnce(&Rows),
+    ) -> Vec<u64> {
+        let before: Vec<u64> = views.iter().map(|v| v.stats().renders).collect();
+        change(rows);
+        views
+            .iter_mut()
+            .zip(before)
+            .map(|(view, before)| {
+                view.poll_patches().unwrap();
+                view.stats().renders.checked_sub(before).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_view_depends_on_what_it_read_of_a_collection_not_on_all_of_it() {
+        let rows = Rows::new(1_000);
+        let mut oldest = rows.view("oldest");
+        let mut newest = rows.view("newest");
+        let mut count = rows.view("count");
+        assert_eq!(texts(oldest.tree()), ["item 0"]);
+        assert_eq!(texts(newest.tree()), ["item 999"]);
+        assert_eq!(texts(count.tree()), ["1000"]);
+        let mut views = [&mut oldest, &mut newest, &mut count];
+        let remove = |i: usize| {
+            move |rows: &Rows| {
+                rows.call(
+                    "remove",
+                    vec![Value::resource(&rows.bag), Value::resource(&rows.items[i])],
+                );
+            }
+        };
+
+        // An append changes the last item and the length, not the first.
+        let add = |rows: &Rows| {
+            rows.call("add", vec![Value::resource(&rows.bag), Value::text("new")]);
+        };
+        assert_eq!(runs_for(&rows, &mut views, add), [0, 1, 1]);
+        // A move in the middle changes none of them.
+        let shuffle = |rows: &Rows| {
+            rows.call(
+                "move_to",
+                vec![
+                    Value::resource(&rows.bag),
+                    Value::resource(&rows.items[500]),
+                    Value::Int(200),
+                ],
+            );
+        };
+        assert_eq!(runs_for(&rows, &mut views, shuffle), [0, 0, 0]);
+        // Removing the first item changes the first and the length, not the last.
+        assert_eq!(runs_for(&rows, &mut views, remove(0)), [1, 0, 1]);
+        // Removing one in the middle changes the length alone.
+        assert_eq!(runs_for(&rows, &mut views, remove(300)), [0, 0, 1]);
+
+        assert_eq!(texts(oldest.tree()), ["item 1"]);
+        assert_eq!(texts(newest.tree()), ["new"]);
+        assert_eq!(texts(count.tree()), ["999"]);
+    }
+
+    #[test]
+    fn a_lists_view_depends_on_the_rows_it_shows_not_on_the_rest() {
+        let rows = Rows::new(1_000);
+        let mut view = rows.view("lazy");
+        let list = list_key(&view);
+        for i in 0..20 {
+            view.row(&list, i).unwrap();
+        }
+        let opened = view.stats().renders;
+        // A move far below the shown rows re-runs nothing that is shown.
+        rows.call(
+            "move_to",
+            vec![
+                Value::resource(&rows.bag),
+                Value::resource(&rows.items[900]),
+                Value::Int(800),
+            ],
+        );
+        view.poll_patches().unwrap();
+        assert_eq!(
+            view.stats().renders - opened,
+            1,
+            "the list view ran, no shown row"
+        );
+        assert_eq!(titles(view.row(&list, 800).unwrap().unwrap()), ["item 900"]);
     }
 }
