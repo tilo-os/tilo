@@ -1045,6 +1045,7 @@ status-summary-empty = System status
 status-other-displays-a11y = Other displays
 
 # Notification toasts
+notification-sender-claims = App says: { $name }
 notification-source-caption = { $app } · From { $device }
 notification-app-host-apps = Host Apps
 notification-app-power = Power

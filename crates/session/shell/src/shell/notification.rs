@@ -320,6 +320,50 @@ pub fn announce_state_notice(chrome: &Chrome, notice: &crate::shell::persist::St
     );
 }
 
+/// A `Notify` sender's `image-data` hint as paint-ready artwork. The pixels
+/// say nothing about identity; they only lead the banner.
+struct WireImage {
+    key: String,
+    image: vello::peniko::ImageData,
+}
+
+impl ui::icons::AppImageSource for WireImage {
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn pixels(&self, _device_px: u32) -> Option<vello::peniko::ImageData> {
+        Some(self.image.clone())
+    }
+}
+
+fn wire_image(data: crate::notifications::IncomingImageData) -> ui::icons::AppImage {
+    let key = format!("notification:image-data:{}", blake3::hash(&data.rgba));
+    let image = ui::raster::rgba8(
+        vello::peniko::Blob::new(std::sync::Arc::new(data.rgba)),
+        data.width,
+        data.height,
+    );
+    ui::icons::AppImage::new(WireImage { key, image })
+}
+
+/// The sender's own name, shown explicitly as its claim. Bounded to one
+/// short line; an empty claim names nothing.
+fn sender_claim(app_name: &str) -> Option<String> {
+    let claim = app_name
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(64)
+        .collect::<String>();
+    let claim = claim.trim();
+    (!claim.is_empty()).then(|| {
+        crate::shell::i18n::t_args(
+            "notification-sender-claims",
+            &[("name", claim.to_string().into())],
+        )
+    })
+}
+
 /// A notification from a D-Bus `Notify` call. `urgency` 2 (critical) is
 /// forced persistent regardless of `expire_timeout` — the spec says critical
 /// must not auto-expire; otherwise `-1` → [`DEFAULT_DISMISS_AFTER`], `0` →
@@ -342,11 +386,27 @@ pub fn from_incoming(inc: IncomingNotification) -> Notification {
         }
     };
     notification.sender_id = Some(inc.dbus_id);
-    // `app_name` is sender-controlled in the freedesktop protocol. Only show
-    // the label derived from launcher attribution.
-    notification.app_name = app_id.as_ref().map(|id| {
-        crate::shell::launcher::display_name_for_app_id(id).unwrap_or_else(|| id.clone())
-    });
+    // `app_name` is sender-controlled in the freedesktop protocol. A
+    // launcher-attributed id names the app; without one, show the sender's
+    // own claim as a claim, never as verified identity.
+    notification.app_name = match app_id.as_deref() {
+        Some(id) => Some(
+            crate::shell::launcher::display_name_for_app_id(id).unwrap_or_else(|| id.to_string()),
+        ),
+        None => sender_claim(&inc.app_name),
+    };
+    // Artwork is chosen from verified identity first, then lower-trust hints
+    // that can only supply pixels (never policy or grouping).
+    notification.app_image = app_id
+        .as_deref()
+        .and_then(crate::app_icons::for_window_app_id)
+        .or_else(|| {
+            inc.desktop_entry
+                .as_deref()
+                .and_then(crate::app_icons::for_desktop_id)
+        })
+        .or_else(|| inc.image_data.clone().map(wire_image))
+        .or_else(|| inc.app_icon.as_deref().and_then(crate::app_icons::themed));
     notification.app_id = app_id;
     notification.source_workspace = inc.caller.as_ref().map(|c| c.workspace_id.0);
     // A communications app that names who a message is from, by display
@@ -682,6 +742,40 @@ mod tests {
     }
 
     #[test]
+    fn an_unattributed_sender_is_named_as_its_own_claim() {
+        let mut inc = incoming(71, 1, 5000);
+        inc.caller = None;
+        inc.app_name = "Friendly\nTool".into();
+        let notification = from_incoming(inc);
+        assert_eq!(notification.app_id, None, "nothing verified it");
+        assert_eq!(
+            notification.app_name,
+            Some(crate::shell::i18n::t_args(
+                "notification-sender-claims",
+                &[("name", "FriendlyTool".into())]
+            )),
+            "the sender's name is shown as a claim, never as an app id"
+        );
+        assert!(notification.app_image.is_none(), "and it brings no artwork");
+    }
+
+    #[test]
+    fn a_verified_app_keeps_its_launcher_attribution() {
+        let inc = incoming(72, 1, 5000);
+        let notification = from_incoming(inc);
+        assert_eq!(notification.app_id.as_deref(), Some("org.mail"));
+        assert_eq!(
+            notification.app_name.as_deref(),
+            Some(
+                crate::shell::launcher::display_name_for_app_id("org.mail")
+                    .as_deref()
+                    .unwrap_or("org.mail")
+            ),
+            "the launcher's name (or the id) names a verified app"
+        );
+    }
+
+    #[test]
     fn toast_queue_pushes_caps_dismisses_and_expires() {
         fn push_appends_to_chrome_queue() {
             let chrome = new_chrome();
@@ -923,6 +1017,9 @@ mod tests {
         IncomingNotification {
             dbus_id,
             app_name: "Mailer".into(),
+            app_icon: None,
+            desktop_entry: None,
+            image_data: None,
             summary: "New mail".into(),
             body: "secret subject".into(),
             actions: vec![("default".into(), "Open".into())],

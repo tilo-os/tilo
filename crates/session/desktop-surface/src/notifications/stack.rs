@@ -712,6 +712,7 @@ impl NotificationStack {
         // widget owns the card's look and hands back the close rect.
         let mut card = ToastCard::new(&n.title, n.severity.toast_kind())
             .icon(n.icon_kind.icon())
+            .app_image(n.app_image.as_ref())
             .body(if n.show_preview { &n.body } else { "" })
             .caption(n.app_name.as_deref().unwrap_or(""))
             // A card that offers its own way out ("Not now", "Dismiss")
@@ -1004,6 +1005,7 @@ impl NotificationStack {
         for n in banners {
             let card = ToastCard::new(&n.title, n.severity.toast_kind())
                 .icon(n.icon_kind.icon())
+                .app_image(n.app_image.as_ref())
                 .body(if n.show_preview { &n.body } else { "" })
                 .caption(n.app_name.as_deref().unwrap_or(""))
                 .closable(false);
