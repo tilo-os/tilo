@@ -656,7 +656,17 @@ async fn pump_launch(
     let code = loop {
         tokio::select! {
             frame = read_message::<_, LegacyFrame>(&mut kvm_receive) => {
-                let Ok(Some(frame)) = frame else { break None };
+                let frame = match frame {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => {
+                        tracing::warn!(launch = %hex::encode(launch), "the legacy worker ended the launch's stream without its exit");
+                        break None;
+                    }
+                    Err(error) => {
+                        tracing::warn!(launch = %hex::encode(launch), ?error, "the legacy worker's stream failed");
+                        break None;
+                    }
+                };
                 let window = match frame {
                     LegacyFrame::Started => WindowFrame::Launched {
                         launch,
@@ -669,7 +679,12 @@ async fn pump_launch(
                         continue;
                     }
                     LegacyFrame::Exited { code } => break code,
-                    LegacyFrame::Refused { .. } => break None,
+                    LegacyFrame::Refused { reason, detail } => {
+                        // The member's viewers hear only that it ended; the
+                        // worker's reason stays in the relay's log.
+                        tracing::warn!(launch = %hex::encode(launch), ?reason, %detail, "the legacy worker refused or lost the launch");
+                        break None;
+                    }
                 };
                 workspace
                     .lock()
