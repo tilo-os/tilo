@@ -16,13 +16,17 @@ pub(super) struct Sent {
 impl ShellNetwork {
     /// Tell the actor every room roster that changed since it was last told.
     /// Rosters change only with a projection of the room, which advances the
-    /// room epoch, so a tick with none costs one read of the tree.
+    /// room epoch, so a tick with none costs one read of the tree. Never
+    /// waits for it: a tick that finds another thread writing the tree
+    /// looks again on a later tick, as the placements step does.
     pub(super) fn send_room_rosters(&self) {
         let Ok(mut sent) = self.room_rosters_sent.lock() else {
             return;
         };
         let (epoch, rosters) = {
-            let tree = self.tree.read();
+            let Some(tree) = self.tree.try_read() else {
+                return;
+            };
             let epoch = tree.desktop.room_epoch;
             if sent.epoch == Some(epoch) {
                 return;
