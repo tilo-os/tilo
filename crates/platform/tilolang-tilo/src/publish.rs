@@ -109,6 +109,9 @@ fn param_type(meta: &Meta, ty: &str) -> ParamType {
         "Text" | "Date" => ParamType::Text,
         "Time" => ParamType::DateTime,
         other if meta.type_named(other).is_some() => ParamType::Text,
+        // A record of another app the package uses (`so.tilo.lang.notes.Notebook`) is given by
+        // its resource id, as one of the package's own.
+        other if crate::surface::other_apps_record(meta, other).is_some() => ParamType::Text,
         other if other.starts_with("Map<") => ParamType::Object,
         _ => ParamType::Array,
     }

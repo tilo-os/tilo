@@ -50,6 +50,18 @@ fn wrapped<'a>(ty: &'a str, wrapper: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
+/// The resource kind and type name of `ty` when it names a record type of another app than
+/// `meta`'s: a type of a package it uses, written qualified (`so.tilo.lang.notes.Notebook`).
+#[must_use]
+pub fn other_apps_record(meta: &Meta, ty: &str) -> Option<(String, String)> {
+    match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app).ok()? {
+        tilolang_runtime::meta::Ty::Record(key) if key.app != meta.app => {
+            Some((format!("tl.{}.{}", key.app, key.name), key.name))
+        }
+        _ => None,
+    }
+}
+
 /// The JSON Schema of a value of the tilolang type `ty`, as the door takes it.
 #[must_use]
 pub fn schema_of_type(meta: &Meta, ty: &str) -> Json {
@@ -84,13 +96,18 @@ pub fn schema_of_type(meta: &Meta, ty: &str) -> Json {
         "Text" => json!({"type": "string"}),
         "Date" => json!({"type": "string", "format": "date"}),
         "Time" => json!({"type": "string", "format": "date-time"}),
-        other => match meta.type_named(other) {
-            Some(declared) => json!({
+        other => match (meta.type_named(other), other_apps_record(meta, other)) {
+            (Some(declared), _) => json!({
                 "type": "string",
                 "description": format!("the id of a {} resource", declared.name),
                 "resource_kind": meta.kind_of(&declared.name),
             }),
-            None => json!({}),
+            (None, Some((kind, name))) => json!({
+                "type": "string",
+                "description": format!("the id of a {name} resource"),
+                "resource_kind": kind,
+            }),
+            (None, None) => json!({}),
         },
     }
 }
