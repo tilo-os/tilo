@@ -1931,13 +1931,7 @@ impl RecordRepository {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Concurrent-head checks made against this repository.
-    #[cfg(test)]
-    pub(crate) fn concurrent_head_checks(&self) -> u64 {
-        self.concurrent_head_checks
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
+    /// Every record of one workspace, for a full reconciliation pass.
     pub(crate) fn reconciliation_keys(&self, workspace_id: Uuid) -> Vec<RecordRepositoryKey> {
         self.records
             .lock_recover()

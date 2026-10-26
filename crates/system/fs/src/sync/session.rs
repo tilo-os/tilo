@@ -1,13 +1,10 @@
 //! One authenticated connection per peer for the whole metadata plane.
 //!
 //! `tilo-fs-session/3` replaces a connection and certified-device handshake
-//! per request (namespace exchange, authority, every record-stream pull,
+//! per request (authority, every record-stream pull,
 //! every replica receipt) with one connection per peer, authenticated once,
 //! carrying each request on its own QUIC stream:
 //!
-//! - **namespace**: writers run the Automerge sync protocol on one stream;
-//!   read-only peers ask for the changes since their heads instead of
-//!   downloading the whole document;
 //! - **records**: range-based reconciliation of stream heads
 //!   ([`crate::record_reconcile`]) finds the streams that differ in a few
 //!   round trips however large the workspace, and one pull fetches the
@@ -36,13 +33,10 @@ use tokio::sync::mpsc;
 use wire_frame::{FrameError, Framing};
 
 use super::{
-    DirectMeshAuthorizer, FsTransportIdentity, PeerPolicy, RecordPlane, accept_namespace_payload,
-    authenticate_connection, authenticated_peer_may_read_whole_workspace,
-    authenticated_peer_may_write_whole_workspace, unix_now_ms, unix_now_ns,
+    DirectMeshAuthorizer, FsTransportIdentity, PeerPolicy, RecordPlane, authenticate_connection,
+    authenticated_peer_may_read_whole_workspace, unix_now_ms, unix_now_ns,
 };
 use crate::hydration::Hydrator;
-use crate::namespace::Namespace;
-use crate::namespace_binding::{BoundNamespacePayloadV1, NamespaceBindingV1, NamespacePayloadKind};
 use crate::peer_auth::AuthenticatedFsPeer;
 use crate::record_changeset::{ChangesetLeafV1, ChangesetV1, SignedChangesetV1};
 use crate::record_materializer::ReconcileScope;
@@ -59,16 +53,15 @@ use crate::store::ContentStore;
 use crate::workspace_authority::{AuthorityRequest, AuthorityResponse, WorkspaceAuthority};
 use tilo_lock::MutexRecover as _;
 
+/// Kept at `/3` so a peer from the retired namespace era reaches the request
+/// version check and receives an explicit unsupported-version frame.
 pub const TILO_FS_SESSION_ALPN: &[u8] = b"tilo-fs-session/3";
-pub const SESSION_PROTOCOL_VERSION: u16 = 3;
+/// Protocol 4 drops the whole-namespace Automerge exchange. Records are the
+/// only structural replication.
+pub const SESSION_PROTOCOL_VERSION: u16 = 4;
 
-/// Largest request or response frame, except Automerge sync messages
-/// between writers, which carry whole changes like the per-request sync
-/// protocol does.
+/// Largest request or response frame.
 const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
-const MAX_SYNC_FRAME_BYTES: usize = 64 * 1024 * 1024;
-/// A namespace delta for a read-only peer may be as large as the document.
-const MAX_NAMESPACE_BYTES: usize = 64 * 1024 * 1024;
 /// Response frames are cut at about this size.
 const TARGET_FRAME_BYTES: usize = 1024 * 1024;
 /// Ranges in one reconciliation request.
@@ -84,8 +77,6 @@ const CHANGESET_LEAVES_PER_FRAME: usize = 8 * 1024;
 const MAX_CHANGESET_LEAVES: u64 = crate::record_repository::MAX_REPOSITORY_RECORDS as u64;
 /// Requests one connection may have in progress.
 const MAX_STREAMS_PER_CONNECTION: usize = 16;
-/// Automerge sync rounds on one stream, as in the per-request protocol.
-const MAX_SYNC_ROUNDS: usize = 200;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// A session quiet for longer than this is pinged before use.
@@ -107,11 +98,11 @@ pub enum SessionOperationV1 {
     Reconcile {
         ranges: Vec<ReconcileRangeV1>,
     },
-    /// Automerge sync rounds between two workspace writers follow on the
-    /// stream as [`SessionFrameV1::Sync`] frames, requester first.
+    /// Retired with the whole-namespace Automerge engine. Kept at this wire
+    /// position only so a peer from protocol 3 decodes and receives an
+    /// explicit unsupported-version refusal instead of being misread.
     NamespaceSync,
-    /// The namespace changes beyond `heads`, for a read-only peer: as
-    /// `NamespaceChunk` frames, then the binding of all of them.
+    /// Retired with [`Self::NamespaceSync`].
     NamespaceSince {
         heads: Vec<[u8; 32]>,
     },
@@ -176,12 +167,11 @@ pub enum SessionFrameV1 {
     Blobs {
         blobs: Vec<SessionBlobV1>,
     },
-    /// One sync round's message, bound to the workspace by its sender;
-    /// `None` when that side has nothing to send.
-    Sync(Option<BoundNamespacePayloadV1>),
+    /// Retired namespace frames keep their wire positions so an old peer's
+    /// error frame remains decodable. New peers never send or receive them.
+    Sync(Option<Vec<u8>>),
     NamespaceChunk(#[serde(with = "serde_bytes")] Vec<u8>),
-    /// The binding of the concatenated `NamespaceChunk` bytes before it.
-    NamespaceBound(NamespaceBindingV1),
+    NamespaceBound(#[serde(with = "serde_bytes")] Vec<u8>),
     ReplicaAcks {
         responses: Vec<ReplicaAckResponseV1>,
     },
@@ -203,7 +193,7 @@ pub enum SessionFrameV1 {
 /// postcard encoding. Each read bounds the frame by what that step expects
 /// (see [`read_frame`]); nothing larger than the largest of those bounds is
 /// sent.
-const SESSION_FRAMING: Framing = Framing::big_endian(MAX_SYNC_FRAME_BYTES);
+const SESSION_FRAMING: Framing = Framing::big_endian(MAX_FRAME_BYTES);
 
 async fn write_frame<T: Serialize + Sync>(send: &mut SendStream, value: &T) -> Result<()> {
     SESSION_FRAMING.write_value_async(send, value).await?;
@@ -236,7 +226,6 @@ pub(super) struct SessionProtocol {
     pub endpoint: Endpoint,
     pub identity: FsTransportIdentity,
     pub policy: PeerPolicy,
-    pub namespace: Arc<Mutex<Namespace>>,
     pub store: Arc<ContentStore>,
     pub records: Option<RecordPlane>,
     pub workspace_id: uuid::Uuid,
@@ -342,12 +331,15 @@ impl SessionProtocol {
             SessionOperationV1::Reconcile { ranges } => {
                 self.serve_reconcile(peer, &ranges, &mut send).await?;
             }
-            SessionOperationV1::NamespaceSync => {
-                self.serve_namespace_sync(peer, remote, &mut send, &mut recv)
-                    .await?;
-            }
-            SessionOperationV1::NamespaceSince { heads } => {
-                self.serve_namespace_since(peer, &heads, &mut send).await?;
+            SessionOperationV1::NamespaceSync | SessionOperationV1::NamespaceSince { .. } => {
+                // The whole-namespace Automerge engine is retired. A peer
+                // that still asks for it is refused by version, not served a
+                // second structural replication.
+                write_frame(
+                    &mut send,
+                    &SessionFrameV1::Error(RecordMeshErrorCodeV1::UnsupportedVersion),
+                )
+                .await?;
             }
             SessionOperationV1::ReplicaAcks { requests } => {
                 self.serve_replica_acks(peer, &requests, &mut send).await?;
@@ -380,13 +372,6 @@ impl SessionProtocol {
 
     /// Waits out a changeset being published here: namespace state read
     /// under this guard holds each changeset entirely or not at all.
-    async fn publication_gate(&self) -> Option<tokio::sync::RwLockReadGuard<'_, ()>> {
-        match &self.records {
-            Some(records) => Some(records.repository.publication_gate().read().await),
-            None => None,
-        }
-    }
-
     /// The record plane, if the peer may read the whole workspace (the
     /// condition of the per-request record mesh).
     fn readable_records(&self, peer: &AuthenticatedFsPeer) -> Option<&RecordPlane> {
@@ -724,145 +709,6 @@ impl SessionProtocol {
         out
     }
 
-    async fn serve_namespace_sync(
-        &self,
-        peer: &AuthenticatedFsPeer,
-        remote: iroh_base::PublicKey,
-        send: &mut SendStream,
-        recv: &mut RecvStream,
-    ) -> Result<()> {
-        if !authenticated_peer_may_write_whole_workspace(&self.policy, peer) {
-            return write_frame(send, &SessionFrameV1::Denied).await;
-        }
-        write_frame(send, &SessionFrameV1::Done).await?;
-        let (before, mut state) = {
-            let mut namespace = self.namespace.lock_recover();
-            (
-                namespace.heads(),
-                namespace.begin_sync_with(&peer.device_public_key),
-            )
-        };
-        let exchanged = self.namespace_rounds(peer, &mut state, send, recv).await;
-        // Only a completed exchange is resumed from: one cut off midway
-        // may not have agreed on what both sides hold.
-        if matches!(exchanged, Ok(true)) {
-            self.namespace
-                .lock_recover()
-                .finish_sync_with(peer.device_public_key, &state);
-        }
-        // Records that arrived before the placements this exchange brought
-        // are projected now, not at this device's next pass.
-        let changed = self.namespace.lock_recover().heads() != before;
-        if changed
-            && let Some(records) = &self.records
-            && let Some(materializer) = &records.materializer
-        {
-            let gate = records.repository.publication_gate().write().await;
-            if let Err(error) =
-                materializer.reconcile_batch(&records.repository, &[], ReconcileScope::Unplaced)
-            {
-                eprintln!("projecting records after a namespace exchange failed: {error}");
-            }
-            drop(gate);
-        }
-        // The peer's own pass brought changes: it published something, and
-        // its records are pulled now rather than at this device's next
-        // timer pass, which backs off while nothing happens.
-        if changed {
-            let _ = self.announcements.send(remote);
-        }
-        exchanged.map(|_| ())
-    }
-
-    /// Whether the exchange completed: both sides had nothing more to send.
-    async fn namespace_rounds(
-        &self,
-        peer: &AuthenticatedFsPeer,
-        state: &mut automerge::sync::State,
-        send: &mut SendStream,
-        recv: &mut RecvStream,
-    ) -> Result<bool> {
-        for _ in 0..MAX_SYNC_ROUNDS {
-            // The authority handle is live: a revocation cuts a connected
-            // writer off at the next round.
-            if !authenticated_peer_may_write_whole_workspace(&self.policy, peer)
-                || denied(peer, &self.identity)
-            {
-                break;
-            }
-            let SessionFrameV1::Sync(message) = read_frame(recv, MAX_SYNC_FRAME_BYTES).await?
-            else {
-                break;
-            };
-            let message = match message {
-                Some(payload) => {
-                    if let Err(error) = accept_namespace_payload(
-                        &self.policy,
-                        self.workspace_id,
-                        peer,
-                        NamespacePayloadKind::SyncMessage,
-                        &payload,
-                    ) {
-                        eprintln!("refusing a namespace sync message over a session: {error}");
-                        break;
-                    }
-                    payload.bytes
-                }
-                None => Vec::new(),
-            };
-            if !message.is_empty() {
-                let _ = self.namespace.lock_recover().sync_receive(state, &message);
-            }
-            let gate = self.publication_gate().await;
-            let reply = self.namespace.lock_recover().sync_generate(state);
-            drop(gate);
-            let done = message.is_empty() && reply.is_none();
-            let reply = reply
-                .map(|reply| {
-                    self.identity.bind_namespace(
-                        self.workspace_id,
-                        NamespacePayloadKind::SyncMessage,
-                        reply,
-                    )
-                })
-                .transpose()?;
-            write_frame(send, &SessionFrameV1::Sync(reply)).await?;
-            if done {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    async fn serve_namespace_since(
-        &self,
-        peer: &AuthenticatedFsPeer,
-        heads: &[[u8; 32]],
-        send: &mut SendStream,
-    ) -> Result<()> {
-        if !authenticated_peer_may_read_whole_workspace(&self.policy, peer) || heads.len() > 1024 {
-            return write_frame(send, &SessionFrameV1::Denied).await;
-        }
-        let heads: Vec<automerge::ChangeHash> =
-            heads.iter().map(|h| automerge::ChangeHash(*h)).collect();
-        let gate = self.publication_gate().await;
-        let delta = self.namespace.lock_recover().changes_since(&heads);
-        drop(gate);
-        if !delta.is_empty() {
-            let binding = NamespaceBindingV1::sign(
-                self.workspace_id,
-                NamespacePayloadKind::Changes,
-                &delta,
-                self.identity.credentials.signing_key(),
-            )?;
-            for chunk in delta.chunks(TARGET_FRAME_BYTES) {
-                write_frame(send, &SessionFrameV1::NamespaceChunk(chunk.to_vec())).await?;
-            }
-            write_frame(send, &SessionFrameV1::NamespaceBound(binding)).await?;
-        }
-        write_frame(send, &SessionFrameV1::Done).await
-    }
-
     async fn serve_replica_acks(
         &self,
         peer: &AuthenticatedFsPeer,
@@ -1162,147 +1008,6 @@ impl Session {
             frame => Ok(Some(frame)),
         }
     }
-}
-
-/// Automerge sync with a workspace writer on one stream. Returns whether
-/// changes were received. Each message the peer sends is applied only
-/// once [`accept_namespace_payload`] accepts it for this workspace.
-pub(super) async fn sync_namespace(
-    pool: &SessionPool,
-    session: &Session,
-    namespace: &Arc<Mutex<Namespace>>,
-    repository: Option<&crate::record_repository::RecordRepository>,
-    policy: &PeerPolicy,
-) -> Result<bool> {
-    let (mut send, mut recv) = session
-        .open(&pool.request(SessionOperationV1::NamespaceSync))
-        .await?;
-    if session.frames(&mut recv, MAX_FRAME_BYTES).await?.is_some() {
-        anyhow::bail!("unexpected namespace sync response");
-    }
-    let peer = session.peer.device_public_key;
-    let (before, mut state) = {
-        let mut namespace = namespace.lock_recover();
-        (namespace.heads(), namespace.begin_sync_with(&peer))
-    };
-    let mut completed = false;
-    for _ in 0..MAX_SYNC_ROUNDS {
-        // Only namespace state between changesets leaves this device.
-        let gate = match repository {
-            Some(repository) => Some(repository.publication_gate().read().await),
-            None => None,
-        };
-        let message = namespace.lock_recover().sync_generate(&mut state);
-        drop(gate);
-        let sent_nothing = message.is_none();
-        let message = message
-            .map(|message| {
-                pool.identity.bind_namespace(
-                    pool.workspace_id,
-                    NamespacePayloadKind::SyncMessage,
-                    message,
-                )
-            })
-            .transpose()?;
-        write_frame(&mut send, &SessionFrameV1::Sync(message)).await?;
-        let SessionFrameV1::Sync(reply) = read_frame(&mut recv, MAX_SYNC_FRAME_BYTES).await? else {
-            anyhow::bail!("unexpected namespace sync frame");
-        };
-        session.heard();
-        let reply = match reply {
-            Some(payload) => {
-                accept_namespace_payload(
-                    policy,
-                    pool.workspace_id,
-                    &session.peer,
-                    NamespacePayloadKind::SyncMessage,
-                    &payload,
-                )
-                .map_err(|error| anyhow!("refusing the peer's namespace sync message: {error}"))?;
-                payload.bytes
-            }
-            None => Vec::new(),
-        };
-        if !reply.is_empty() {
-            let _ = namespace.lock_recover().sync_receive(&mut state, &reply);
-        }
-        if sent_nothing && reply.is_empty() {
-            completed = true;
-            break;
-        }
-    }
-    let _ = send.finish();
-    let mut namespace = namespace.lock_recover();
-    if completed {
-        namespace.finish_sync_with(peer, &state);
-    }
-    // Every reply of an idle exchange carries the peer's heads; only
-    // changes that moved this document's heads count as received.
-    Ok(namespace.heads() != before)
-}
-
-/// The namespace changes a peer holds beyond this device's heads, for a
-/// read-only device. Returns the resolution delta and whether anything was
-/// applied. The changes are applied only once [`accept_namespace_payload`]
-/// accepts them for this workspace.
-pub(super) async fn pull_namespace(
-    pool: &SessionPool,
-    session: &Session,
-    namespace: &Arc<Mutex<Namespace>>,
-    policy: &PeerPolicy,
-) -> Result<(bool, Vec<u8>)> {
-    let heads = namespace
-        .lock_recover()
-        .heads()
-        .into_iter()
-        .map(|h| h.0)
-        .collect();
-    let (mut send, mut recv) = session
-        .open(&pool.request(SessionOperationV1::NamespaceSince { heads }))
-        .await?;
-    let _ = send.finish();
-    let mut delta = Vec::new();
-    let mut binding = None;
-    while let Some(frame) = session.frames(&mut recv, MAX_FRAME_BYTES).await? {
-        match frame {
-            SessionFrameV1::NamespaceChunk(chunk) if binding.is_none() => {
-                anyhow::ensure!(
-                    delta.len().saturating_add(chunk.len()) <= MAX_NAMESPACE_BYTES,
-                    "namespace delta exceeds {MAX_NAMESPACE_BYTES} bytes"
-                );
-                delta.extend_from_slice(&chunk);
-            }
-            SessionFrameV1::NamespaceBound(bound) if binding.is_none() => binding = Some(bound),
-            _ => anyhow::bail!("unexpected namespace frame"),
-        }
-    }
-    if delta.is_empty() {
-        return Ok((false, Vec::new()));
-    }
-    let payload = BoundNamespacePayloadV1 {
-        binding: binding.ok_or_else(|| {
-            anyhow!(
-                "refusing the peer's namespace changes: {}",
-                crate::namespace_binding::NamespaceBindingError::Unbound
-            )
-        })?,
-        bytes: delta,
-    };
-    accept_namespace_payload(
-        policy,
-        pool.workspace_id,
-        &session.peer,
-        NamespacePayloadKind::Changes,
-        &payload,
-    )
-    .map_err(|error| anyhow!("refusing the peer's namespace changes: {error}"))?;
-    let delta = payload.bytes;
-    let mut ns = namespace.lock_recover();
-    let before = ns.heads();
-    let resolution = ns.apply_remote_and_resolve(&delta).unwrap_or_default();
-    let changed = ns.heads() != before;
-    drop(ns);
-    Ok((changed, resolution))
 }
 
 /// Exchanges the signed workspace authority, publishing this device's when

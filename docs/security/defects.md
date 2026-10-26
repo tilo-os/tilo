@@ -771,26 +771,14 @@ checked the tree against the workspace the ticket names:
 Signed changesets (`PullChangesets`) were already bound: the signed header carries the workspace
 and `apply_changeset` refuses a mismatch.
 
-**Resolved.** Every namespace request names its workspace (`tilo-fs-sync/1`,
-`tilo-fs-session/2`). Every namespace payload, whether a document, the changes beyond a set of
-heads or a sync message, travels with a `NamespaceBindingV1`: the sending device's signature over
-the workspace, the payload kind and the digest of the exact bytes. Receivers on both sides apply a
-payload only after `sync::accept_namespace_payload` has accepted it. That check requires all of:
-
-- the binding names the requested workspace;
-- it was signed by the authenticated peer's own device;
-- the bytes match the signed digest;
-- the local policy lets that peer read the whole workspace (write it, for sync).
-
-A host refuses a request for another workspace explicitly. Bootstrap takes the tree only from the
-ticket's node and from persisted peers registered for the same workspace. The share client refuses
-a snapshot whose session is not the invite's workspace and record. Held by
-`crates/system/fs/src/namespace_binding.rs::tests`, the
-`crates/system/fs/src/sync/tests.rs` tests from
-`a_document_of_another_workspace_is_refused_although_validly_signed` to
-`read_only_member_never_downloads_full_snapshot` (which replaced
-`a_read_only_pull_merges_only_a_members_document_of_this_workspace`),
-`crates/system/fs/src/sync/session/tests.rs` and
+**Resolved by retirement.** Structural truth is the signed record log; the workspace-wide
+Automerge namespace document is no longer replicated. The old namespace ALPN and the protocol-3
+session operations now answer an explicit `UnsupportedVersion` refusal instead of serving or
+merging a tree, so a peer cannot substitute another workspace's document. Signed changesets stay
+bound to their workspace and `apply_changeset` refuses a mismatch. Held by
+`crates/system/fs/src/sync/tests.rs::the_retired_namespace_alpn_refuses_old_peers_by_version`,
+`crates/system/fs/src/sync/session/tests.rs::protocol_three_namespace_requests_are_refused_by_version`
+and
 `crates/system/fs/src/record_repository.rs::tests::a_validly_signed_changeset_of_another_workspace_is_refused`.
 
 ---

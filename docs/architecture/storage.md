@@ -1136,21 +1136,19 @@ One engine moves record operations, file content, CRDT segments and packages.
   engine implements** (`crates/system/fs/src/sync/session.rs`,
   `hydration/batch.rs`, `blob_access.rs`, `record_reconcile.rs`):
 
-- `tilo-fs-session/3`: one connection per peer, authenticated once, a QUIC
-  stream per request, every request authorised against the live policy and
-  certification. It carries the namespace (Automerge sync between writers;
-  changes since the reader's heads for read-only peers), each payload bound to
-  the requesting workspace by the sender's device signature over the workspace,
-  the payload kind and the digest of its bytes, and applied only from a device
-  the receiver's policy lets read (or, for sync, write) the whole workspace
-  (`crates/system/fs/src/namespace_binding.rs`; `tilo-fs-sync/1` does the same),
-  range-based reconciliation of record stream heads, pulls of up to 1024 streams
-  per request with files up to 4 KiB inline, batched replica receipts (only for
-  revisions not acknowledged recently), the authority exchange, and
-  announcements that make peers pull at once. Envelopes that belong to a signed
-  changeset travel as that whole changeset (`PullChangesets`, §8.3). A peer that
-  does not speak the session protocol is not reconciled with: it is at another
-  version.
+- `tilo-fs-session/3` (request protocol 4): one connection per peer,
+  authenticated once, a QUIC stream per request, every request authorised
+  against the live policy and certification. It carries signed-record
+  reconciliation: range-based set reconciliation of stream heads, pulls of up
+  to 1024 streams per request with files up to 4 KiB inline, batched replica
+  receipts (only for revisions not acknowledged recently), the authority
+  exchange, and announcements that make peers pull at once. Envelopes that
+  belong to a signed changeset travel as that whole changeset
+  (`PullChangesets`, §8.3). The whole-namespace Automerge exchange is retired:
+  protocol 3 requests receive an explicit `UnsupportedVersion`, and the old
+  `tilo-fs-sync/1` ALPN answers `UnsupportedVersion` instead of serving a tree.
+  A peer that does not speak this protocol is not reconciled with: it is at
+  another version.
 - Content goes over one pooled iroh-blobs connection per peer as `GetMany`
   batches (512 blobs or 8 MiB, 8 in flight per peer, spread over every healthy
   peer). Each batch names the manifests of its chunks with empty ranges; the

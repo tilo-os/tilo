@@ -3615,48 +3615,20 @@ async fn final_flush(
     }
 }
 
-/// Open a joiner's namespace: load any persisted copy, then merge the
-/// host's doc if reachable. Only a document bound to `workspace_id` by a
-/// peer `policy` lets read the whole workspace is merged
-/// ([`sync::fetch_remote_doc`]).
+/// Open a local namespace projection. Signed records are the durable truth:
+/// a joiner rebuilds the tree from the record log after its first record
+/// pull, so this never downloads or merges a second whole-tree document.
 async fn open_namespace_mount(
     author: String,
     np: Option<&Path>,
-    endpoint: &iroh::endpoint::Endpoint,
-    bootstrap: &[iroh_base::EndpointAddr],
-    identity: &FsTransportIdentity,
-    (workspace_id, policy): (uuid::Uuid, &sync::PeerPolicy),
+    _endpoint: &iroh::endpoint::Endpoint,
+    _bootstrap: &[iroh_base::EndpointAddr],
+    _identity: &FsTransportIdentity,
+    _scope: (uuid::Uuid, &sync::PeerPolicy),
 ) -> Result<Namespace> {
-    let persisted = match np.as_ref().filter(|p| p.exists()) {
-        Some(path) => Some(load_namespace(path, author.clone())?),
-        None => None,
-    };
-
-    let mut last_error = None;
-    for host in bootstrap {
-        match sync::fetch_remote_doc(endpoint, host.clone(), identity, workspace_id, policy).await {
-            Ok(doc) => {
-                return match persisted {
-                    Some(mut ns) => {
-                        ns.merge_remote_and_resolve(&doc)?;
-                        Ok(ns)
-                    }
-                    None => Ok(Namespace::from_bytes(author, &doc)?),
-                };
-            }
-            Err(error) => last_error = Some(error),
-        }
-    }
-    match persisted {
-        Some(ns) => {
-            if let Some(error) = last_error {
-                eprintln!(
-                    "bootstrap peers unreachable ({error}); starting from persisted workspace"
-                );
-            }
-            Ok(ns)
-        }
-        None => Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no bootstrap peers configured"))),
+    match np.as_ref().filter(|path| path.exists()) {
+        Some(path) => load_namespace(path, author),
+        None => Ok(Namespace::new(author)?),
     }
 }
 
