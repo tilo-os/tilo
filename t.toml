@@ -3991,7 +3991,7 @@ relay_cpus = ""
 
 # The OS image's acceptance scenarios in tilo-vm (scripts/vm-acceptance), in a
 # micro-VM on an x86-64 node with KVM: this tree's own dev image, on the disk
-# os-dev-gate-x86_64 installed it to (the disk the dev channel publishes), booted from a
+# os-dev-disk-x86_64 installed it to (the disk the dev channel publishes), booted from a
 # throwaway overlay in a libvirt guest by tilo-vm-binary-x86_64's tilo-vm
 # (tools/ci/vm-acceptance.sh).
 # `t dispatch vm-acceptance --input only=input --input swap=all` runs a selection;
@@ -4012,7 +4012,7 @@ isolation = "vm"
 git = true
 writable_sources = true
 run = "bash tools/ci/vm-acceptance.sh"
-needs = ["os-dev-gate-x86_64", "tilo-vm-binary-x86_64"]
+needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
 inputs = [
   "scripts/vm-acceptance/**",
   "tools/ci/vm-acceptance.sh",
@@ -4109,7 +4109,7 @@ isolation = "vm"
 git = true
 writable_sources = true
 run = "bash tools/ci/vm-acceptance.sh cohort"
-needs = ["os-dev-gate-x86_64", "tilo-vm-binary-x86_64", "vm-cohort-x86_64", "vm-cohort-verifier-x86_64"]
+needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64", "vm-cohort-x86_64", "vm-cohort-verifier-x86_64"]
 inputs = ["**"]
 outputs = ["/target/vm-acceptance/report/**"]
 cache = false

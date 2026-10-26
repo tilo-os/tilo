@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The OS image's acceptance scenarios in tilo-vm, as t's vm-acceptance checks
 # run them in a micro-VM on an x86-64 node with KVM (t.toml). The disk is this
-# tree's own dev image as os-dev-gate-x86_64 installed it (os/dev/build-image.sh,
+# tree's own dev image as os-dev-disk-x86_64 installed it (os/dev/build-image.sh,
 # the disk the dev channel publishes); each run boots a throwaway overlay of it.
 # tilo-vm is tilo-vm-binary-x86_64's. scripts/vm-acceptance/run.py then drives
 # the checks.
@@ -32,7 +32,7 @@ mode=${1:-}
 arch=x86_64
 work=/var/tmp/vm-acceptance
 report=${CARGO_TARGET_DIR:-/target}/vm-acceptance/report
-gate=/target/publish/os-dev-gate/$arch/disk
+gate=/target/publish/os-dev-disk/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 cohort=/target/vm-cohort
 verifier=/target/vm-cohort-verifier
@@ -67,7 +67,7 @@ mkdir -p "$work" "$report"
 target=$(git rev-parse HEAD)
 disk=$gate/disk.qcow2
 [[ -s $disk && -s $gate/revision && -s $gate/image-digest ]] \
-  || { echo "no installed dev disk in $gate: the check needs os-dev-gate-$arch" >&2; exit 1; }
+  || { echo "no installed dev disk in $gate: the check needs os-dev-disk-$arch" >&2; exit 1; }
 [[ -x $tilo_vm ]] || { echo "no $tilo_vm: the check needs tilo-vm-binary-$arch" >&2; exit 1; }
 commit=$(cat "$gate/revision")
 [[ $commit == "$target" ]] || { echo "the dev disk is of $commit, this tree is $target" >&2; exit 1; }
@@ -131,7 +131,7 @@ fi
 # tilo-vm keeps its run receipts under the tree's target/dev-runs.
 mkdir -p "$src/target/dev-runs"
 
-# The gate's disk stays as it left it, never booted: the run's disk is a qcow2
+# The installed disk stays as it is, never booted: the run's disk is a qcow2
 # overlay of it that the session user owns, with the provenance record beside it,
 # and tilo-vm boots a throwaway overlay of that, so R06 still times a cold boot.
 base=$disk
@@ -139,7 +139,7 @@ disk="$work/tilo-dev-${commit:0:9}.qcow2"
 qemu-img create -q -f qcow2 -F qcow2 -b "$base" "$disk"
 jq -n --arg commit "$commit" --arg subject "$(git log -1 --format=%s "$commit")" \
   --arg time "$(git log -1 --format=%cI "$commit")" --arg digest "$oci_digest" \
-  --arg built "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" --arg source "t os-dev-gate-$arch" \
+  --arg built "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" --arg source "t os-dev-disk-$arch" \
   '{commit:$commit, subject:$subject, commit_time:$time, oci_digest:$digest,
     built_at:$built, built_by:"t vm-acceptance", source:$source}' > "$disk.provenance.json"
 
