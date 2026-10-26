@@ -2515,6 +2515,12 @@ impl Widget for BrowserShell {
         ]
     }
 
+    /// The page adds no structure of its own: a change a window carries out
+    /// in place stays in place, and the rest of the desktop's layout is kept.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        ui::widget::StructureChange::of_children(self.children_mut())
+    }
+
     fn needs_redraw(&self) -> bool {
         self.drawn_minute.get() != minute()
             || self.picker.needs_animation_frame()

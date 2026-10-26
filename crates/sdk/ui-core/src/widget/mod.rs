@@ -867,6 +867,17 @@ impl StructureChange {
     pub fn join(self, other: Self) -> Self {
         self.max(other)
     }
+
+    /// Every one of `children`'s changes, joined: for a container that adds
+    /// no structure of its own, so a change a child carries out in place
+    /// ([`Self::Children`]) stays one. Each child's change is taken, none
+    /// skipped.
+    #[must_use]
+    pub fn of_children(children: Vec<&mut (dyn Widget + '_)>) -> Self {
+        children.into_iter().fold(Self::None, |change, child| {
+            change.join(child.take_structure_change())
+        })
+    }
 }
 
 /// Optional cross-device continuation capability for an app root.
@@ -2395,6 +2406,17 @@ pub trait Widget {
     /// this.
     fn take_structure_change(&mut self) -> StructureChange {
         StructureChange::of(self.take_structure_dirty())
+    }
+
+    /// This widget's own layout node while the widgets under it are laid
+    /// out again in place, in it, by the coming
+    /// [`Self::remount_children`]: it then names none of them through
+    /// [`Self::for_each_layout_child`], and the host lets go of every node
+    /// under this one, as their widgets may be gone. `None` (the default)
+    /// otherwise.
+    #[doc(hidden)]
+    fn relaid_layout_node(&self) -> Option<NodeId> {
+        None
     }
 
     /// Carry out a [`StructureChange::Children`] this widget or one under it
