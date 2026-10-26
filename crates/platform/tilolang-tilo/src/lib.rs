@@ -28,6 +28,7 @@ pub mod search;
 pub mod sink;
 pub mod store;
 pub mod surface;
+pub mod upgrade;
 
 pub use action::{Authorship, DynAction, DynEdit, register_actions};
 pub use effects::{HostEffect, OpenEffect, OpenPlan};
