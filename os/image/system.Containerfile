@@ -665,6 +665,9 @@ RUN systemctl enable greetd.service && \
        /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
     systemctl enable tilo-flatpak-defaults.service && \
+    # Fedora's remote-add starts with tilo-flatpak-defaults, off the greeter's path; enabled
+    # on its own, multi-user.target and so graphical.target would wait for it.
+    systemctl disable flatpak-add-fedora-repos.service && \
     systemctl enable tilo-cache-gc.timer && \
     systemctl --global enable tilo-cache-gc.timer && \
     systemctl --global enable tilo-app-update.timer && \
