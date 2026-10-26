@@ -441,11 +441,9 @@ fn the_published_surface_is_valid_and_offers_a_way_back_only_when_staged() {
     {
         let backend = FakeBackend::new();
         let (mut app, _doc) = app(&backend);
-        let handlers: HashSet<String> = op::HANDLERS
+        let handlers: HashSet<String> = crate::operation::OPERATION_TYPES
             .iter()
-            .copied()
-            .chain(["installer.online-accounts-control"])
-            .map(str::to_owned)
+            .map(|type_id| (*type_id).to_owned())
             .collect();
         for step in [
             Step::Keyboard,
@@ -587,33 +585,12 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         assert_eq!(by_row.status, reason);
         assert!(backend.power.lock().unwrap().is_empty());
     }
-    // Phase `the_host_door_reaches_the_same_handler_and_refuses_a_stale_target`.
+    // Phase `the_published_action_reaches_the_same_handler_and_refuses_a_stale_target`.
     {
         let backend = FakeBackend::new();
-        let (mut app, mut doc) = app(&backend);
-        let resources = app.publish();
-        let next = tilo_actions::door::resolve(
-            &resources,
-            &tilo_actions::ActionAddress::new(op::SESSION, "next"),
-        )
-        .unwrap();
-        let encoded = next.build_json(&serde_json::Map::new()).unwrap();
-        let started = ui::host_operation::start_operation(
-            &mut app,
-            &ui::host_operation::ResourceOperation::local(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        )
-        .unwrap();
-        assert!(matches!(
-            started,
-            Some(ui::host_operation::ResourceOperationStart::Completed(_))
-        ));
+        let (mut app, _doc) = app(&backend);
+        app.invoke_published("next@installer", &serde_json::Map::new())
+            .unwrap();
         assert_eq!(app.step, Step::Network);
 
         // A confirmed begin for a target the review no longer names is refused,
@@ -622,22 +599,10 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         app.selected_disk = Some(1);
         app.recovery_ack = true;
         *app.password.lock().unwrap() = SECRET.to_owned();
-        let stale = serde_json::to_vec(&Operation::BeginInstall {
+        let refused = app.apply(Operation::BeginInstall {
             target: "/dev/sda".into(),
             allocation: None,
-        })
-        .unwrap();
-        let refused = ui::host_operation::start_operation(
-            &mut app,
-            &ui::host_operation::ResourceOperation::local(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                op::OPERATION_TYPE,
-                &stale,
-            ),
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        );
+        });
         assert!(refused.is_err());
         assert!(backend.installs.lock().unwrap().is_empty());
     }

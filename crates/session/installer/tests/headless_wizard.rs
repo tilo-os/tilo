@@ -110,7 +110,11 @@ fn online_accounts_can_be_skipped_without_private_input() {
     let app = InstallerApp::with_disks(Vec::new())
         .with_backend(Arc::new(Fake::default()))
         .with_console(console.clone());
-    let mut driver = ui::headless::FrameHarness::new(ui::State::new(), Box::new(app), (1280, 800));
+    let mut driver = ui::headless::FrameHarness::new(
+        ui::State::new(),
+        Box::new(ui::widget::resource_effects::host(app)),
+        (1280, 800),
+    );
     let spec = ui::headless::parse_spec(
         r#"{"actions":[
           {"invoke":{"resource":"installer","action":"next"}},
@@ -150,7 +154,11 @@ fn the_whole_wizard_runs_headless_through_published_actions() {
     let app = InstallerApp::with_disks(Vec::new())
         .with_backend(backend.clone())
         .with_console(console.clone());
-    let mut driver = ui::headless::FrameHarness::new(ui::State::new(), Box::new(app), (1280, 800));
+    let mut driver = ui::headless::FrameHarness::new(
+        ui::State::new(),
+        Box::new(ui::widget::resource_effects::host(app)),
+        (1280, 800),
+    );
 
     // Saved scenario steps in the `--headless-drive` grammar: every step
     // names an action by address, and every refusal is asserted by code.

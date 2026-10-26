@@ -14,6 +14,7 @@ use tilo_actions::{
     ConfirmationPolicy, EncodedAction, OperationKind, ParamType, Resource, ResourcePresentation,
     ResultSpec, RiskLevel,
 };
+use ui::widget::resource_effects::EffectVocabulary;
 use zeroize::Zeroizing;
 
 use super::{
@@ -26,8 +27,9 @@ use super::{
 use crate::install::PowerAction;
 use crate::layouts;
 use crate::operation::{
-    ACCOUNT, KEYBOARD, MEDIA, NETWORK, OPERATION_TYPE, OPTIONS, Operation, POWER, PROVIDER,
-    RECOVERY, REVIEW, SESSION, STORAGE, disk_resource, region_resource,
+    ACCOUNT, KEYBOARD, MEDIA, NETWORK, ONLINE_ACCOUNT_OPERATION_TYPE, OPERATION_TYPE, OPTIONS,
+    OnlineControl, Operation, POWER, PROVIDER, RECOVERY, REVIEW, SESSION, STORAGE, disk_resource,
+    region_resource,
 };
 
 /// How long a copied recovery key stays on the clipboard: time to paste it
@@ -41,16 +43,7 @@ type Blocked = Option<(&'static str, String)>;
 // Only fixed controls cross the action door. Identity fields and requests stay
 // in AccountsForm's process-local queue, never in action parameters or history.
 const ONLINE_ACCOUNTS: &str = "installer.accounts";
-const ONLINE_OPERATION_TYPE: &str = crate::operation::ONLINE_ACCOUNT_OPERATION_TYPE;
-
-#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum OnlineControl {
-    Add,
-    Retry,
-    Cancel,
-    SkipOffline,
-}
+const ONLINE_OPERATION_TYPE: &str = ONLINE_ACCOUNT_OPERATION_TYPE;
 
 /// Keep guidance within publication limits without silently dropping it.
 fn with_guidance(mut resource: Resource, id: &str, guidance: &str) -> Resource {
@@ -320,10 +313,8 @@ impl InstallerApp {
         resource
     }
 
-    fn apply_online_control(&mut self, payload: &[u8]) -> Applied {
+    fn apply_online_control(&mut self, control: OnlineControl) -> Applied {
         self.require_step(Step::Accounts)?;
-        let control: OnlineControl = serde_json::from_slice(payload)
-            .map_err(|_| "Invalid online account control".to_string())?;
         match control {
             OnlineControl::Add | OnlineControl::Retry => self
                 .accounts_form
@@ -1140,14 +1131,19 @@ impl InstallerApp {
 
     /// Decode and apply one encoded installer operation.
     pub(super) fn apply_encoded(&mut self, encoded: &EncodedAction) -> Applied {
-        if encoded.type_id == ONLINE_OPERATION_TYPE {
-            return self.apply_online_control(&encoded.payload);
+        let effect = crate::operation::InstallerEffect::decode(&encoded.type_id, &encoded.payload)?;
+        self.answer(effect)
+    }
+
+    /// The one typed handler every door ends in. Kept here so the console, the
+    /// toolkit's effect host and the unattended driver share one match.
+    pub(crate) fn answer(&mut self, effect: crate::operation::InstallerEffect) -> Applied {
+        match effect {
+            crate::operation::InstallerEffect::Install(operation) => self.apply(operation),
+            crate::operation::InstallerEffect::Online(control) => {
+                self.apply_online_control(control)
+            }
         }
-        if encoded.type_id != OPERATION_TYPE {
-            return Err(format!("not an installer operation: {}", encoded.type_id));
-        }
-        let operation = Operation::decode(&encoded.payload)?;
-        self.apply(operation)
     }
 
     /// Apply one operation. Every door ends here, after resolution,
