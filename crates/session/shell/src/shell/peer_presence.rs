@@ -2601,13 +2601,20 @@ mod two_sessions {
         .expect("a broker on a temp socket")
     }
 
-    /// A session standing in for the host: governs a room and has named
-    /// everybody in it.
+    /// The root key of the person who owns the host's room.
+    fn owner_root() -> ed25519_dalek::SigningKey {
+        ed25519_dalek::SigningKey::from_bytes(&[0x0e; 32])
+    }
+
+    /// A session standing in for the host: governs a room, owned by the
+    /// person [`owner_root`] names, and has named everybody in it.
     fn host_naming(people: &[(&str, &str)]) -> (WorkspaceTree, RoomId) {
         let mut tree = WorkspaceTree::default();
         let ws = tree.create_hosted_workspace("Design review").0;
         let room = tree.room_of(ws).expect("a fresh workspace mints a room");
-        tree.own_workspaces_for_test(|_| OWNER.to_string());
+        let owner = crate::shell::state::person_id_of(owner_root().verifying_key().to_bytes())
+            .expect("a root names a person");
+        tree.own_workspaces_for_test(|_| owner.clone());
         let names: Vec<(String, &str)> = people
             .iter()
             .map(|(peer, called)| ((*peer).to_string(), *called))
@@ -2616,8 +2623,40 @@ mod two_sessions {
         (tree, room)
     }
 
-    /// A session that has joined `room`, holding the room's names and
-    /// policy as its admitted document carries them.
+    /// [`host_naming`], with `host` the host's own endpoint, which it calls
+    /// by its user id, as inviting does. That endpoint is the room's
+    /// governor, so the room's roster certifies it as its owner's device,
+    /// as every replica holds its authority's certificate.
+    fn host_governing(host: &str, people: &[(&str, &str)]) -> (WorkspaceTree, RoomId) {
+        let named: Vec<(&str, &str)> = std::iter::once((host, OWNER))
+            .chain(people.iter().copied())
+            .collect();
+        let (mut tree, room) = host_naming(&named);
+        let owner_key = owner_root();
+        let endpoint: iroh::EndpointId = host.parse().expect("an endpoint id");
+        let mut device_cert = tilo_user_identity::DeviceCert {
+            user_public_key: owner_key.verifying_key().to_bytes(),
+            device_public_key: *endpoint.as_bytes(),
+            device_label: "Host".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut device_cert, &owner_key).expect("signed");
+        tree.room_rosters.entry(room).or_default().insert(
+            host.to_owned(),
+            crate::shell::state::GovernedPeerIdentity {
+                device_cert,
+                revocations: Vec::new(),
+                delegate: None,
+            },
+        );
+        (tree, room)
+    }
+
+    /// A session that has joined `room`, holding the room's names, roster
+    /// and policy as its admitted document carries them.
     fn guest_joining(host: &WorkspaceTree, room: RoomId) -> WorkspaceTree {
         let mut tree = WorkspaceTree::default();
         let ws = tree.create_hosted_workspace("Mine").0;
@@ -2631,6 +2670,8 @@ mod two_sessions {
             .map(|(peer, called)| (peer.clone(), called.as_str()))
             .collect();
         tree.cache_admitted_peer_names_for_test(room, &names);
+        tree.room_rosters
+            .insert(room, host.room_peer_identities(room));
         let policy = host
             .desktop
             .workspaces
@@ -3428,7 +3469,7 @@ mod two_sessions {
         fn the_room_does_not_list_the_session_reading_it() {
             let guest_peer = peer_id(41);
             let host_peer = peer_id(42);
-            let (mut host_tree, room) = host_naming(&[(&guest_peer, "bob"), (&host_peer, OWNER)]);
+            let (mut host_tree, room) = host_governing(&host_peer, &[(&guest_peer, "bob")]);
             let mut guest_tree = guest_joining(&host_tree, room);
             looking_at_its_room(&mut host_tree);
             looking_at_its_room(&mut guest_tree);
@@ -3465,7 +3506,7 @@ mod two_sessions {
         fn a_named_peer_who_has_not_arrived_reads_as_invited() {
             let host_peer = peer_id(51);
             let guest_peer = peer_id(52);
-            let (host_tree, room) = host_naming(&[(&host_peer, OWNER)]);
+            let (host_tree, room) = host_governing(&host_peer, &[]);
             let mut guest_tree = guest_joining(&host_tree, room);
             looking_at_its_room(&mut guest_tree);
             let guest_handle = guest_tree.shared();
@@ -3826,7 +3867,7 @@ mod two_sessions {
         let governor = peer_id(81);
         let mallory = peer_id(82);
         // The host calls its own endpoint by its user id, as inviting does.
-        let (host_tree, room) = host_naming(&[(&governor, OWNER), (&mallory, "Mallory")]);
+        let (host_tree, room) = host_governing(&governor, &[(&mallory, "Mallory")]);
         let mut guest_tree = guest_joining(&host_tree, room);
         looking_at_its_room(&mut guest_tree);
         let guest_handle = guest_tree.shared();
