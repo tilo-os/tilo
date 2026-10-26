@@ -46,7 +46,7 @@ mod widget;
 use live_head::LiveHead;
 use shared_tree::{
     DocumentChildren, ItemChildren, NestedViews, PublishedChildren, RecordChildren, RowChildren,
-    SharedTreeCache,
+    SharedTreeCache, mark_document_jobs,
 };
 use typed::TypedRoot;
 pub(crate) use typed::{ResourceType, Typed};
@@ -1346,32 +1346,6 @@ pub fn with_surface<R: Resource, S: 'static, T>(
     }
     let root = root.downcast_mut::<ResourceRoot>()?;
     find::<S>(root.view_mut()).map(visit)
-}
-
-/// The document actions of `resource` and its children that can queue an
-/// outside consequence (a verb taking an outbox, every action of a record
-/// with a `queue`, and undo, redo and restore, which queue the compensation
-/// of one), published as jobs: the invocation answers when what it queued
-/// has settled. Every other document action is deterministic and applies
-/// where it is invoked, at once.
-fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
-    for spec in &mut resource.actions {
-        // Undo takes a field edit back, so its kind says document, but it is
-        // still invoked as a job: it names a path the invoked host resolves,
-        // and a job answers when that write has landed.
-        let queues = spec.contract.kind == tilo_actions::ActionKind::Outside
-            || spec.id == tilo_resource::FIELD_EDIT
-            || matches!(spec.id.as_str(), "undo" | "redo" | "restore");
-        if spec.kind == tilo_actions::OperationKind::Document && queues {
-            spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
-            if matches!(spec.contract.result, tilo_actions::ResultSpec::None) {
-                spec.contract.result = tilo_actions::ResultSpec::Job;
-            }
-        }
-    }
-    for child in &mut resource.children {
-        mark_document_jobs(child);
-    }
 }
 
 impl ui_core::widget::document_effects::DocumentEffects for ResourceRoot {
