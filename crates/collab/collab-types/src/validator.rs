@@ -462,12 +462,12 @@ impl ChannelState {
 ///
 /// Steps: 1. resolve `op.attestation_id`; 2. verify the attestation's own
 /// signature against an authorised signer; 3. verify the op's signature
-/// against the author; 4. `op.author == attestation.subject`; 5.
-/// `role_permits(role, kind, kind)`; 5a. capability overrides narrow
-/// or extend the role baseline (fail-closed, see [`crate::caps::decide_capability`]);
-/// 5b. if `Redact`, parse the payload and reject recursive redaction; 6.
-/// timestamp inside the attestation's validity window; 7. monotonic seq;
-/// 8. clearance gate; 9. redaction-aware filter for late arrivals.
+/// against the author; 4. `op.author == attestation.subject`; 5. every
+/// claimed change decided against the author's grants over the published
+/// tree (`tilo_action_policy`); 5b. if `Redact`, parse the payload and reject
+/// recursive redaction; 6. timestamp inside the attestation's validity
+/// window; 7. monotonic seq; 8. clearance gate; 9. redaction-aware filter for
+/// late arrivals.
 ///
 /// # Errors
 ///
@@ -501,8 +501,8 @@ pub fn validate_inbound_op(
 /// Validate an op whose author and role were established by a certified
 /// device join plus the live workspace roster. This is the production
 /// document path: certificate/admission validation happens at the broker
-/// boundary, while this function preserves the shared signature, role table,
-/// capability, freshness, replay, clearance, and redaction checks.
+/// boundary, while this function preserves the shared signature, grant,
+/// freshness, replay, clearance, and redaction checks.
 ///
 /// Unlike [`validate_inbound_op`], no channel role-attestation is resolved:
 /// `author` is the author's authority from the room's live policy. `max_clock_skew`
