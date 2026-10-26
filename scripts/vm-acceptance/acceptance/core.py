@@ -431,6 +431,62 @@ def session_log_mark(ctx) -> int:
     return int(digits[0]) if digits else 0
 
 
+# The compositor warns with this line, its phase timings attached, whenever the work
+# it does before a paint holds input up.
+PUMP_STALL = "pre-paint pump"
+
+
+def parse_cpu_ticks(stat: str) -> tuple[int, int] | None:
+    """(total, steal) jiffies of all CPUs from `/proc/stat`'s first line."""
+    for line in stat.splitlines():
+        parts = line.split()
+        if parts and parts[0] == "cpu":
+            values = [int(v) for v in parts[1:9] if v.isdigit()]
+            if len(values) < 8:
+                return None
+            return sum(values), values[7]
+    return None
+
+
+def cpu_ticks(ctx) -> tuple[int, int] | None:
+    """The guest's (total, steal) CPU jiffies now; `steal_percent` compares two."""
+    return parse_cpu_ticks(ctx.vm.exec("head -n 1 /proc/stat", check=False) or "")
+
+
+def steal_percent(before: tuple[int, int] | None, after: tuple[int, int] | None) -> float | None:
+    """The share of the guest's CPU time the host took (steal) between two readings."""
+    if not before or not after:
+        return None
+    total = after[0] - before[0]
+    if total <= 0:
+        return None
+    return round(100.0 * (after[1] - before[1]) / total, 1)
+
+
+def pump_lines_after(ctx, mark: int) -> list[str]:
+    """The compositor's pre-paint pump stall lines since session-log line `mark`."""
+    out = ctx.vm.exec(f'tail -n +{mark + 1} "{SESSION_LOG}" 2>/dev/null '
+                      f'| grep -a "{PUMP_STALL}"; true', check=False) or ""
+    return [line.strip() for line in out.splitlines() if PUMP_STALL in line]
+
+
+def frame_pacing_evidence(ctx, check_id: str, log_mark: int, cpu_before) -> str:
+    """What a failed frame-pacing scenario leaves to tell its stalls apart: the
+    compositor's per-phase pump breakdown for every pump that held input up since
+    `log_mark` (all of them in `<check_id>-pump.log`) and the share of the guest's CPU
+    the host took meanwhile. A sentence fragment for the failure message."""
+    steal = steal_percent(cpu_before, cpu_ticks(ctx))
+    lines = pump_lines_after(ctx, log_mark)
+    ctx.write(f"{check_id}-pump.log", "\n".join(lines) + "\n")
+    steal_text = "unreadable" if steal is None else f"{steal}%"
+    if not lines:
+        pumps = "no pre-paint pump stall line in the session log"
+    else:
+        shown = "; ".join(line[-320:] for line in lines[-3:])
+        pumps = f"{len(lines)} pre-paint pump stall line(s), the last: {shown}"
+    return f" [guest CPU steal over the scenario {steal_text}; {pumps}; {check_id}-pump.log has them all]"
+
+
 def switch_lines_after(ctx, mark: int) -> list[dict]:
     return parse_switch_lines(ctx.vm.exec(
         f'tail -n +{mark + 1} "{SESSION_LOG}" 2>/dev/null | grep -a "WORKSPACE-SWITCH"; true', check=False))
