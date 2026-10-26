@@ -1008,6 +1008,7 @@ people-panel-stop-following = Stop
 # The people overlay: the roster pinned out of the bar, floating over windows
 people-panel-pin = Keep on screen
 a11y-people-pin = Keep who is here on screen
+a11y-people-overlay = Who is here
 people-overlay-title = { $count ->
     [0] Just you
     [one] 1 here

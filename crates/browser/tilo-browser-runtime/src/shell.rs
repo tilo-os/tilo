@@ -2150,6 +2150,18 @@ impl Widget for BrowserShell {
         }
         changed |= self.follow_room_actions();
         changed |= self.take_person_card_ask();
+        // What a reader pressed on the pinned roster or the bar's people
+        // panel, as a press is.
+        for hit in self.pinned.take_pressed() {
+            self.apply_pinned_hit(hit);
+            changed = true;
+        }
+        if let Some(target) = self.pinned.take_panel_pressed()
+            && let Some(hit) = self.people.hit_for_target(&target)
+        {
+            self.apply_people_hit(hit);
+            changed = true;
+        }
         if self.tilo_menu.take_feedback() {
             self.open_feedback();
             changed = true;
@@ -2225,6 +2237,7 @@ impl Widget for BrowserShell {
         let tilo_menu = self.tilo_menu.build_layout(taffy, theme, map);
         let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
         let profile = self.profile.build_layout(taffy, theme, map);
+        let pinned = self.pinned.build_layout(taffy, theme, map);
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
@@ -2241,6 +2254,7 @@ impl Widget for BrowserShell {
                 tilo_menu,
                 workspace_menu,
                 profile,
+                pinned,
             ],
             map,
             self,
@@ -2259,6 +2273,7 @@ impl Widget for BrowserShell {
             tilo_menu,
             workspace_menu,
             profile,
+            pinned,
         ] = nodes[..]
         {
             self.backdrop.apply_layout(taffy, backdrop, inner);
@@ -2269,6 +2284,7 @@ impl Widget for BrowserShell {
             self.workspace_menu
                 .apply_layout(taffy, workspace_menu, inner);
             self.profile.apply_layout(taffy, profile, inner);
+            self.pinned.apply_layout(taffy, pinned, inner);
         }
     }
 
@@ -2300,8 +2316,11 @@ impl Widget for BrowserShell {
         self.draw_hints(scene, transform, text, theme);
         if self.people_open {
             self.draw_people(scene, transform, text, theme);
+            self.pinned
+                .set_panel(Some(self.people.accessibility_with_targets()));
         } else {
             self.people.clear();
+            self.pinned.set_panel(None);
         }
         // Over everything, while picking what to report.
         self.picker.draw(scene, transform, text, theme, self.rect);
@@ -2312,7 +2331,17 @@ impl Widget for BrowserShell {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let [_, bar, area, overview, tilo_menu, workspace_menu, profile] = nodes[..] else {
+        let [
+            _,
+            bar,
+            area,
+            overview,
+            tilo_menu,
+            workspace_menu,
+            profile,
+            _,
+        ] = nodes[..]
+        else {
             return;
         };
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -2457,6 +2486,7 @@ impl Widget for BrowserShell {
             &self.tilo_menu,
             &self.workspace_menu,
             &self.profile,
+            &self.pinned,
         ]
     }
 
@@ -2479,6 +2509,7 @@ impl Widget for BrowserShell {
             &mut self.tilo_menu,
             &mut self.workspace_menu,
             &mut self.profile,
+            &mut self.pinned,
         ]
     }
 

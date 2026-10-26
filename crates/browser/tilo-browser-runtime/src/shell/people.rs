@@ -196,6 +196,15 @@ pub(super) struct PagePeople {
     sending: Option<Sending>,
     /// A message that did not go: to whom, and why.
     failed_send: Option<(String, String)>,
+    /// The desktop it was last drawn over.
+    rect: Rect,
+    /// What assistive technology pressed since the host last looked.
+    pressed: Vec<PeopleHit>,
+    /// The bar's people panel as a reader finds it while it is open (the
+    /// host paints it), and the control pressed on it since the host last
+    /// looked, by its target.
+    panel: Option<ui::a11y::AccessNode>,
+    panel_pressed: Option<String>,
 }
 
 impl PagePeople {
@@ -214,7 +223,27 @@ impl PagePeople {
             abandoned: Vec::new(),
             sending: None,
             failed_send: None,
+            rect: Rect::ZERO,
+            pressed: Vec::new(),
+            panel: None,
+            panel_pressed: None,
         }
+    }
+
+    /// What the bar's people panel shows a reader now; `None` once closed.
+    pub(super) fn set_panel(&mut self, panel: Option<ui::a11y::AccessNode>) {
+        self.panel = panel;
+    }
+
+    /// The panel control a reader pressed since the last call, by target.
+    pub(super) fn take_panel_pressed(&mut self) -> Option<String> {
+        self.panel_pressed.take()
+    }
+
+    /// What assistive technology pressed on the overlay since the last
+    /// call, for the host to apply as it applies a press.
+    pub(super) fn take_pressed(&mut self) -> Vec<PeopleHit> {
+        std::mem::take(&mut self.pressed)
     }
 
     /// Hold the conversation with `peeked` open, by roster id (none when
@@ -478,6 +507,7 @@ impl PagePeople {
         frame: &Frame<'_>,
     ) {
         self.motion = theme.motion();
+        self.rect = frame.rect;
         let bar = f64::from(tilo_desktop::topbar::topbar_height(theme));
         let below_bar = Rect::new(
             frame.rect.x0,
@@ -647,8 +677,122 @@ impl PagePeople {
     }
 }
 
-/// The public key of the person on `row`: their roster id when it is one,
-/// else the room contact of that name.
+/// The overlay and the banner as assistive technology reads them. The
+/// host paints them and routes their pointer and keys itself; as a widget
+/// they only say what is there and take what a reader presses.
+impl ui::widget::Widget for PagePeople {
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _theme: &Theme,
+        map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        use ui::widget::TaffyTreeExt as _;
+        let style = ui::taffy::Style {
+            position: ui::taffy::Position::Absolute,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[], map, self)
+    }
+
+    fn apply_layout(
+        &mut self,
+        _taffy: &ui::taffy::TaffyTree<()>,
+        _node: ui::taffy::NodeId,
+        _origin: Point,
+    ) {
+    }
+
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &ui::presence::PresenceCtx,
+    ) {
+    }
+
+    fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut ui::widget::EventCtx<'_>) {}
+
+    fn children(&self) -> Vec<&dyn ui::widget::Widget> {
+        Vec::new()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn ui::widget::Widget + '_)> {
+        Vec::new()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        false
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    fn name(&self) -> &'static str {
+        "PeopleOverlay"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// The bar's people panel while open, the pinned roster (who is here,
+    /// each with their controls) and the banner of whom this view follows,
+    /// with its Stop.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+        let mut children: Vec<AccessNode> = self.panel.iter().cloned().collect();
+        if let Some(overlay) = self.made().filter(|overlay| overlay.is_visible()) {
+            children.push(
+                AccessNode::new(Role::Group)
+                    .with_hashed_key("people-overlay")
+                    .with_name(tilo_desktop_surface::i18n::t("a11y-people-overlay"))
+                    .with_children(overlay.accessibility_children()),
+            );
+        }
+        children.extend(self.banner.accessibility());
+        if children.is_empty() {
+            return None;
+        }
+        Some(AccessNode::new(Role::Group).with_children(children))
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ui::widget::ModelPath,
+    ) -> bool {
+        if target.starts_with("people:") {
+            if matches!(action, ui::a11y::Action::Activate) {
+                self.panel_pressed = Some(target.to_owned());
+            }
+            return self.panel.is_some();
+        }
+        if target == tilo_desktop::follow_banner::STOP_TARGET {
+            if matches!(action, ui::a11y::Action::Activate) {
+                self.stop_following(false);
+            }
+            return true;
+        }
+        let Some(overlay) = self.overlay.as_deref_mut() else {
+            return false;
+        };
+        let ours = overlay
+            .accessibility_children()
+            .iter()
+            .any(|node| node.action_target.as_deref() == Some(target));
+        if let Some(hit) = overlay.perform_semantic_action(action, target) {
+            self.pressed.push(hit);
+        }
+        ours
+    }
+}
+
 /// Someone is here whom the room's last list of people did not have: ask
 /// for it again, so Chat's direct conversations list them too. The native
 /// host hears of new members from the room itself; a page sees them here.
