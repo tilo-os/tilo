@@ -158,12 +158,13 @@ load() {
   podman pull -q "oci:$1"
 }
 
-# The image of the fragments' layers, loaded; its id. Composed into scratch, which is the
-# step's own disk, then loaded into podman's storage on the same disk.
+# The image of the fragments' layers, loaded; its id. A view of them in scratch, its blobs
+# links to the fragments' own (on the step's read-only outputs disk, which a copy would
+# duplicate onto the step's own), loaded into podman's storage.
 load_composition() {
   local dir
   dir=$(mktemp -d "$scratch/compose.XXXXXX")
-  python3 -I tools/ci/os/oci_layers.py compose "$dir" "$@" >&2
+  python3 -I tools/ci/os/oci_layers.py view "$dir" "$@" >&2
   load "$dir/oci"
 }
 
@@ -274,7 +275,7 @@ cmd_layer() {
     mapfile -t frags < <(fragments_below "$name")
     below=$scratch/below
     rm -rf "$below"
-    python3 -I tools/ci/os/oci_layers.py compose "$below" "${frags[@]}"
+    python3 -I tools/ci/os/oci_layers.py view "$below" "${frags[@]}"
     id=$(load "$below/oci")
     if [[ $parent == '${BASE_REF}' ]]; then
       podman tag "$id" localhost/tilo-base:pinned
@@ -298,8 +299,7 @@ cmd_layer() {
   build_target "$name" "$target" "$given"
   phase push
   built=$scratch/built
-  rm -rf "$built"
-  podman push -q --compression-format gzip --force-compression "$image" "oci:$built:tilo"
+  python3 -I tools/ci/os/oci_layers.py export "$image" "$below" "$built"
   phase take
   # Its key, kept with its layers: the digest of every file its piece reads.
   inputs=$scratch/inputs.json
@@ -307,6 +307,7 @@ cmd_layer() {
   python3 -I tools/ci/os/oci_layers.py inputs "${globs[@]}" > "$inputs"
   rm -rf "$out"
   python3 -I tools/ci/os/oci_layers.py take "$below" "$built" "$out" "$name" "$inputs"
+  rm -rf "$built"
   # Stages the actions above read beside the layers (the binaries' packing for the derived
   # state), from the same build's cache.
   phase also

@@ -12,13 +12,21 @@ A full OCI layout (index.json, blobs/) stands for the fragment of all its image'
 layers, so the pinned base is a fragment as it comes from the registry.
 
     oci_layers.py inputs GLOB...                     the inputs' digests, as JSON
+    oci_layers.py export IMAGE PARENT OUT            IMAGE from podman's store as the layout
+                                                     OUT, holding uncompressed only the
+                                                     layers it added over the layout PARENT
+                                                     (`-` for none), for `take` to compress
     oci_layers.py take PARENT BUILT OUT ACTION INPUTS
                                                      the layers the layout BUILT has over
                                                      the layout PARENT (`-` for none), as a
-                                                     fragment
+                                                     fragment, its uncompressed layers
+                                                     compressed
     oci_layers.py compose OUT FRAGMENT...            an image of the fragments' layers, in
                                                      order, as a layout in OUT/oci, its
                                                      digest in OUT/digest
+    oci_layers.py view OUT FRAGMENT...               the same, its blobs links to the
+                                                     fragments' own, for loading in place
+                                                     and never kept
     oci_layers.py index OUT LAYOUT...                one multi-architecture index of the
                                                      layouts' images, as a layout
     oci_layers.py attach LAYOUT DIGEST PAYLOAD SIG[,BUNDLE[,CERT]]...
@@ -47,16 +55,23 @@ import gzip
 import hashlib
 import io
 import json
+import multiprocessing
 import os
 import shutil
+import subprocess
 import sys
 import tarfile
+import zlib
+from concurrent.futures import ProcessPoolExecutor
 
 INDEX = "application/vnd.oci.image.index.v1+json"
 MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 CONFIG = "application/vnd.oci.image.config.v1+json"
 DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json"
 DOCKER_LIST = "application/vnd.docker.distribution.manifest.list.v2+json"
+LAYER_TAR = "application/vnd.oci.image.layer.v1.tar"
+LAYER_GZIP = LAYER_TAR + "+gzip"
+UNCOMPRESSED = {LAYER_TAR, "application/vnd.docker.image.rootfs.diff.tar"}
 ACTION = "org.tilo.layer.action"
 INPUTS = "org.tilo.layer.inputs"
 
@@ -103,15 +118,75 @@ def put_blob(root, data):
     return digest, len(data)
 
 
-def link_blob(src_root, dst_root, digest):
+def link_blob(src_root, dst_root, digest, symlink=False):
     src, dst = blob_path(src_root, digest), blob_path(dst_root, digest)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     if os.path.exists(dst):
+        return
+    if symlink:
+        os.symlink(os.path.realpath(src), dst)
         return
     try:
         os.link(src, dst)
     except OSError:
         shutil.copyfile(src, dst)
+
+
+def gzip_blob(src, dst_root, diff_id):
+    """The uncompressed layer SRC as a gzip blob in DST_ROOT: its digest and size. The same
+    tar gives the same bytes (no name or time in the header, one compression level), and it
+    must be the layer DIFF_ID names."""
+    raw, packed = hashlib.sha256(), hashlib.sha256()
+    tmp = os.path.join(dst_root, "blobs", "sha256", f".gzip-{os.getpid()}-{diff_id[7:19]}")
+    os.makedirs(os.path.dirname(tmp), exist_ok=True)
+    deflate = zlib.compressobj(6, zlib.DEFLATED, 31)
+    size = 0
+    with open(src, "rb") as f, open(tmp, "wb") as out:
+        for chunk in iter(lambda: f.read(4 << 20), b""):
+            raw.update(chunk)
+            data = deflate.compress(chunk)
+            packed.update(data)
+            out.write(data)
+            size += len(data)
+        data = deflate.flush()
+        packed.update(data)
+        out.write(data)
+        size += len(data)
+    if "sha256:" + raw.hexdigest() != diff_id:
+        os.unlink(tmp)
+        die(f"{src} is not the layer {diff_id}")
+    digest = "sha256:" + packed.hexdigest()
+    os.replace(tmp, blob_path(dst_root, digest))
+    return digest, size
+
+
+def _gzip_job(job):
+    return gzip_blob(*job)
+
+
+def cmd_placeholders(parent, out):
+    """An empty blob in OUT for every layer of PARENT, named by its diff id: what an export
+    with uncompressed layers (skopeo's --dest-oci-accept-uncompressed-layers) names those
+    layers, so it finds them present and writes none of them again. `take` reads none of
+    them: it takes only the layers above PARENT's."""
+    os.makedirs(os.path.join(out, "blobs", "sha256"), exist_ok=True)
+    if parent == "-":
+        return
+    for diff_id in image_of_layout(parent)[1]["rootfs"]["diff_ids"]:
+        path = blob_path(out, diff_id)
+        if not os.path.exists(path):
+            open(path, "wb").close()
+
+
+def cmd_export(image, parent, out):
+    """IMAGE from podman's store as the layout OUT with only the layers it added over PARENT,
+    uncompressed. Pushing the whole image compressed every layer below again, gigabytes,
+    only for `take` to keep the few on top; given placeholders of those, the export writes
+    only the new ones, which `take` compresses."""
+    shutil.rmtree(out, ignore_errors=True)
+    cmd_placeholders(parent, out)
+    subprocess.run(["skopeo", "copy", "--quiet", "--dest-oci-accept-uncompressed-layers",
+                    f"containers-storage:{image}", f"oci:{out}:tilo"], check=True)
 
 
 def canonical(obj):
@@ -187,11 +262,30 @@ def cmd_take(parent, built, out, action, inputs_file):
     with open(inputs_file) as f:
         inputs = json.load(f)
     os.makedirs(out, exist_ok=True)
-    layers = []
+    # A layer the parent has as well (an instruction that changed nothing gives the same empty
+    # layer again) is the parent's blob, which an export with placeholders never wrote.
+    p_layers = {}
+    if parent != "-":
+        p_manifest = image_of_layout(parent)[0]
+        p_layers = {d: l for l, d in zip(p_manifest["layers"], p_ids)}
+    layers, packing = [], []
     for layer, diff_id in zip(b_manifest["layers"][len(p_ids):], b_ids[len(p_ids):]):
-        link_blob(built, out, layer["digest"])
+        if diff_id in p_layers:
+            layer = p_layers[diff_id]
+            link_blob(parent, out, layer["digest"])
+        elif layer.get("mediaType", "") in UNCOMPRESSED:
+            packing.append((len(layers), (blob_path(built, layer["digest"]), out, diff_id)))
+        else:
+            link_blob(built, out, layer["digest"])
         layers.append({"mediaType": layer.get("mediaType", ""), "digest": layer["digest"],
                        "size": layer["size"], "diffID": diff_id})
+    # Uncompressed layers, compressed in parallel: the export wrote only these.
+    if packing:
+        # Forked, so the workers need not import this script again by name.
+        workers = min(len(packing), os.cpu_count() or 1)
+        with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("fork")) as pool:
+            for (i, _), (digest, size) in zip(packing, pool.map(_gzip_job, [j for _, j in packing])):
+                layers[i].update({"mediaType": LAYER_GZIP, "digest": digest, "size": size})
     frag = {"action": action, "inputs": inputs["inputs"], "inputsDigest": inputs["inputsDigest"],
             "layers": layers, "config": b_config}
     with open(os.path.join(out, "fragment.json"), "w") as f:
@@ -200,11 +294,13 @@ def cmd_take(parent, built, out, action, inputs_file):
     print(f"{action}: {len(layers)} layers, {size / 1048576:.1f} MiB, inputs {inputs['inputsDigest'][:19]}")
 
 
-def compose(out, fragments, epoch):
+def compose(out, fragments, epoch, symlink=False):
     """The image of the fragments' layers in order, as an OCI layout in OUT/oci; its manifest
     descriptor. The configuration is the topmost fragment's (its environment, labels,
     command), with the layers' diff_ids and one history entry per layer saying which action
-    made it."""
+    made it. SYMLINK links the blobs to the fragments' own rather than copying those it can't
+    hard-link (another filesystem, such as a step's read-only outputs): a view of them to load
+    in place, which lives no longer than they do."""
     frags = [load_fragment(f) for f in fragments]
     config = next((f["config"] for f in reversed(frags) if f.get("config")), None)
     if config is None:
@@ -219,7 +315,7 @@ def compose(out, fragments, epoch):
     layers, diff_ids, history = [], [], []
     for frag in frags:
         for layer in frag["layers"]:
-            link_blob(frag["root"], root, layer["digest"])
+            link_blob(frag["root"], root, layer["digest"], symlink)
             annotations = dict(layer.get("annotations") or {})
             if frag.get("inputsDigest"):
                 annotations[ACTION] = frag["action"]
@@ -404,10 +500,12 @@ def main(argv):
     cmd, args = argv[0], argv[1:]
     if cmd == "inputs":
         cmd_inputs(args)
+    elif cmd == "export" and len(args) == 3:
+        cmd_export(*args)
     elif cmd == "take" and len(args) == 5:
         cmd_take(*args)
-    elif cmd == "compose" and len(args) >= 2:
-        compose(args[0], args[1:], os.environ.get("SOURCE_DATE_EPOCH", "0"))
+    elif cmd in ("compose", "view") and len(args) >= 2:
+        compose(args[0], args[1:], os.environ.get("SOURCE_DATE_EPOCH", "0"), symlink=cmd == "view")
     elif cmd == "index" and len(args) >= 2:
         cmd_index(args[0], args[1:])
     elif cmd == "attach" and len(args) >= 4:
