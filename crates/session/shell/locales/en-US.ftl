@@ -225,6 +225,7 @@ keyboard-shortcut-invalid = That shortcut is not supported.
 # Shortcut guide (F1)
 guide-title = Keyboard shortcuts
 guide-reopen-hint = Select a navigation shortcut to change it
+guide-chord-row = Change this shortcut, bound to { $chord }
 guide-done = Done
 guide-press-new-shortcut = Press a new shortcut for “{ $action }” · Esc cancels
 guide-message-esc-cancels = { $message } · Esc cancels
