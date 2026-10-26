@@ -264,7 +264,8 @@ impl ShellOverlayHost {
             theme,
             &ui::widget::ButtonFace::new(done, &done_label)
                 .role(ui::widget::ButtonRole::Primary)
-                .focused(self.shortcut_guide_focus == Some(ShortcutGuideFocus::Done)),
+                .focused(self.shortcut_guide_focus == Some(ShortcutGuideFocus::Done))
+                .hovered(self.last_cursor.is_some_and(|point| done.contains(point))),
         );
 
         use crate::compositor::controller_nav::{FaceRole, face_button};

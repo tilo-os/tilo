@@ -138,6 +138,11 @@ pub struct DirectorySheet {
     rect: Rect,
     pose: Option<ui::motion::Pose>,
     targets: Vec<(Target, Rect)>,
+    /// What the pointer is over: a row lifts, and its button lifts with it.
+    hover: Option<Target>,
+    /// The row under the pointer, and where each row was last painted.
+    hover_row: Option<usize>,
+    row_rects: Vec<(usize, Rect)>,
 }
 
 /// The key a listing is joined and found again by.
@@ -373,11 +378,7 @@ impl DirectorySheet {
                 let Some(point) = cursor.map(|point| self.to_local(point)) else {
                     return DirectoryOutcome::consumed();
                 };
-                let hit = self
-                    .targets
-                    .iter()
-                    .find(|(_, rect)| rect.area() > 0.0 && rect.contains(point))
-                    .map(|(target, _)| target.clone());
+                let hit = self.target_at(point);
                 match hit {
                     Some(Target::Search) => {
                         // The field looks like a text field; clicking it
@@ -419,11 +420,35 @@ impl DirectorySheet {
             }
             WindowEvent::CursorMoved { .. } => {
                 self.field_pointer(event, cursor, modifiers);
+                // What the pointer is over lifts, as everywhere else in the
+                // shell: the rows and the buttons on them had no hover at
+                // all.
+                let local = cursor.map(|point| self.to_local(point));
+                self.hover = local.and_then(|point| self.target_at(point));
+                self.hover_row = local.and_then(|point| {
+                    self.row_rects
+                        .iter()
+                        .find(|(_, rect)| rect.contains(point))
+                        .map(|(index, _)| *index)
+                });
                 DirectoryOutcome::consumed()
             }
             WindowEvent::MouseInput { .. } => DirectoryOutcome::consumed(),
             _ => DirectoryOutcome::ignored(),
         }
+    }
+
+    /// The target under `point`, in the sheet's own space.
+    fn target_at(&self, point: Point) -> Option<Target> {
+        self.targets
+            .iter()
+            .find(|(_, rect)| rect.area() > 0.0 && rect.contains(point))
+            .map(|(target, _)| target.clone())
+    }
+
+    /// Whether the pointer is over `target`.
+    fn hovered(&self, target: &Target) -> bool {
+        self.hover.as_ref() == Some(target)
     }
 
     /// Let the painted search field take a pointer event and copy its
@@ -647,6 +672,7 @@ impl DirectorySheet {
     ) {
         self.appearing.follow(self.open, theme.motion());
         self.targets.clear();
+        self.row_rects.clear();
         if !self.visible() {
             self.rect = Rect::ZERO;
             self.pose = None;
@@ -767,14 +793,14 @@ impl DirectorySheet {
             transform,
             paint.text,
             theme,
-            &button_face(link, &link_label, false),
+            &button_face(link, &link_label, false).hovered(self.hovered(&Target::LinkOrCode)),
         );
         ui::widget::Button::paint(
             paint.scene,
             transform,
             paint.text,
             theme,
-            &button_face(close, &close_label, false),
+            &button_face(close, &close_label, false).hovered(self.hovered(&Target::Close)),
         );
         self.targets.push((Target::LinkOrCode, link));
         self.targets.push((Target::Close, close));
@@ -839,12 +865,15 @@ impl DirectorySheet {
             }
             let index = self.scroll.saturating_add(offset);
             let row = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + ROW_H);
-            if self.selected == Some(index) {
+            self.row_rects.push((index, row));
+            let chosen = self.selected == Some(index);
+            let hovered = self.hover_row == Some(index);
+            if chosen || hovered {
                 ui::chrome::shell::paint_row_selection(
                     paint.scene,
                     transform,
                     row,
-                    ui::chrome::SelectionState::active(true),
+                    ui::chrome::SelectionState::new(chosen, hovered, false),
                     ground,
                     theme,
                 );
@@ -885,10 +914,12 @@ impl DirectorySheet {
                 transform,
                 paint.text,
                 theme,
-                &button_face(button, &label, primary).disabled(
-                    (self.joining.is_some() && !self.is_joining(listing) && !listing.joined)
-                        || self.progress(listing) == Some(&JoinProgress::Joining),
-                ),
+                &button_face(button, &label, primary)
+                    .hovered(self.hovered(&Target::Row(index)))
+                    .disabled(
+                        (self.joining.is_some() && !self.is_joining(listing) && !listing.joined)
+                            || self.progress(listing) == Some(&JoinProgress::Joining),
+                    ),
             );
             self.targets.push((Target::Row(index), button));
             // Who is here now, before the button.
