@@ -44,6 +44,10 @@ enum Work {
     /// Ask a room's host whether it is public, for what its people see of
     /// this person ([`ShellNetwork::presence_visibility`]).
     Publication(crate::shell::state::RoomId),
+    /// Ask a room's governor to register a topology namespace to this
+    /// device ([`ShellNetwork::claim_namespace_now`]): it reads this
+    /// device's key material, which can wait on the disk.
+    ClaimNamespace(crate::shell::state::RoomId, u16),
 }
 
 #[derive(Default)]
@@ -130,6 +134,10 @@ impl ShellNetwork {
                             // Held by the network; nothing on screen waits on it.
                             Work::Publication(room) => {
                                 let _ = network.publication(room);
+                                false
+                            }
+                            Work::ClaimNamespace(room, salt) => {
+                                network.claim_namespace_now(room, salt);
                                 false
                             }
                         }));
@@ -329,7 +337,8 @@ impl ShellNetwork {
                 | Work::HostRooms(_)
                 | Work::SyncRound
                 | Work::Outbox(_)
-                | Work::Publication(_),
+                | Work::Publication(_)
+                | Work::ClaimNamespace(..),
             )) => Ok(()),
         }
     }
@@ -449,6 +458,19 @@ impl ShellNetwork {
             .worker
             .get()
             .is_some_and(|worker| worker.send(Work::Publication(room)).is_ok())
+    }
+
+    /// Claim topology namespace `salt` in `room` on the peer-sync worker:
+    /// whether there is one to do it.
+    pub(super) fn claim_namespace_off_loop(
+        &self,
+        room: crate::shell::state::RoomId,
+        salt: u16,
+    ) -> bool {
+        self.peer_sync_worker
+            .worker
+            .get()
+            .is_some_and(|worker| worker.send(Work::ClaimNamespace(room, salt)).is_ok())
     }
 
     /// Queue a sync round on the peer-sync worker: whether there is one to
