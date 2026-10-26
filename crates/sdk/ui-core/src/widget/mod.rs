@@ -3131,7 +3131,7 @@ pub use nav_list::{
 mod document_viewport;
 pub use document_viewport::{
     ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
-    DocumentViewport, PAN_SLOP, SmallContentAlign, ViewportState,
+    DocumentViewport, PAN_SLOP, SmallContentAlign, ViewportState, ViewportZoom,
 };
 mod floating_window;
 pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
