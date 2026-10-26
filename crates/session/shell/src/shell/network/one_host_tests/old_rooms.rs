@@ -1,9 +1,13 @@
-//! A device whose state file holds a workspace of the shell's former own
-//! engine (`tests/fixtures/shell-engine-workspace/state.json`, cut from a
-//! real laptop's state file) starts cleanly. Its workspace is the person's
-//! own: this device's host places its room as it places a new workspace,
-//! under the same room and workspace ids, with its windows and its files as
-//! they were.
+//! A workspace of this device's own that no host holds (one from the shell's
+//! former own engine, or one put back from the archive) is placed by this
+//! device's host as a new workspace is: under the same room and workspace
+//! ids, its windows, its apps' data and its files as they were, and its apps
+//! open their documents.
+//!
+//! The former engine's workspace comes from a real laptop's state file
+//! (`tests/fixtures/shell-engine-workspace/state.json`), loaded by the device
+//! that wrote it: its windows carry that device's salt. A device loading
+//! another device's state file is not a case the shell has.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -16,6 +20,9 @@ use crate::shell::state::RoomId;
 const FIXTURE: &str = "tests/fixtures/shell-engine-workspace/state.json";
 /// The workspace the fixture holds, kept by the former engine.
 const OLD_ROOM: &str = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
+/// The salt of the laptop the fixture was cut from: every id it minted
+/// carries it.
+const LAPTOP_SALT: u16 = 0xF276;
 
 /// The fixture's entry for `room` in a state file's workspace list.
 fn workspace_entry(state: &Path, room: &str) -> Option<serde_json::Value> {
@@ -49,10 +56,18 @@ fn a_device_with_a_former_engines_workspace_starts_and_its_host_places_it_as_it_
     std::fs::create_dir_all(&room_files).unwrap();
     let kept = room_files.join("notes.txt");
     std::fs::write(&kept, b"written before the one host").unwrap();
+    // And a record Notes kept there.
+    let note = room_files
+        .join("so.tilo.notes/.local/share/so.tilo.notes/rooms")
+        .join(OLD_ROOM)
+        .join("records/derived_default_tab_1/state.automerge");
+    std::fs::create_dir_all(note.parent().unwrap()).unwrap();
+    std::fs::write(&note, b"a note written before the one host").unwrap();
 
     // It boots from that file as a session does: its own rooms are claimed
     // for the person it acts as before the network starts.
-    let (mut tree, notice) = crate::shell::persist::load_or_default(&state);
+    let (mut tree, notice) =
+        crate::shell::persist::load_device_tree_or_default(&state, LAPTOP_SALT);
     assert!(notice.is_none(), "the state file reads cleanly: {notice:?}");
     tree.claim_own_unhosted_rooms(|_| ada.id());
     assert!(
@@ -63,7 +78,7 @@ fn a_device_with_a_former_engines_workspace_starts_and_its_host_places_it_as_it_
         &ada,
         "Ada's desktop",
         &device_dir,
-        0x0A51,
+        LAPTOP_SALT,
         DeviceCapabilities::primary(),
         &wakes,
         tree,
@@ -87,6 +102,11 @@ fn a_device_with_a_former_engines_workspace_starts_and_its_host_places_it_as_it_
     until(&[&device], "the old room to be held", || {
         device.tree.read().holds_room(old).then_some(())
     });
+    assert_eq!(
+        device.tree.read().documents_unavailable(old),
+        None,
+        "its apps open their documents"
+    );
     crate::shell::persist::wait_for_saves();
     let after = workspace_entry(&state, OLD_ROOM).expect("the old workspace stays");
     for field in ["id", "room", "name", "strips"] {
@@ -101,5 +121,100 @@ fn a_device_with_a_former_engines_workspace_starts_and_its_host_places_it_as_it_
         b"written before the one host",
         "the old room's files stay as they were"
     );
+    assert_eq!(
+        std::fs::read(&note).unwrap(),
+        b"a note written before the one host",
+        "its Notes records stay as they were"
+    );
+    drop(device);
+}
+
+/// A workspace made since rooms have hosts, whose room no host holds now (put
+/// back from the archive), is placed with every window it has.
+#[test]
+#[serial_test::serial]
+fn a_workspace_of_this_devices_own_no_host_holds_is_placed_with_every_window() {
+    use crate::shell::state::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+    const SALT: u16 = 0x0A51;
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let dir = scratch();
+    let wakes = Arc::new(Wakes::default());
+    let ada = Person::new(82);
+    let device_dir = dir.path().join("desktop");
+    std::fs::create_dir_all(&device_dir).unwrap();
+
+    let mut tree = crate::shell::state::WorkspaceTree::default();
+    tree.set_peer_salt(SALT);
+    let (local, room) = tree.create_hosted_workspace("Kept");
+    // Made and placed once, archived and put back: no host holds it now.
+    tree.pending_placements.remove(&room);
+    let tab = tree.mint_id();
+    let group = tree.mint_id();
+    let strip = Strip {
+        id: StripId(tree.mint_id()),
+        name: "Main".into(),
+        window_groups: vec![WindowGroup {
+            id: group,
+            tabs: vec![Tab {
+                id: tab,
+                title: "Notes".into(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.notes".into(),
+                    label: "Notes".into(),
+                    note: String::new(),
+                },
+                app_title: None,
+            }],
+            active_tab: tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    };
+    let workspace = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == local)
+        .unwrap();
+    workspace.strips.push(strip);
+    let before = workspace.strips.clone();
+    tree.claim_own_unhosted_rooms(|_| ada.id());
+    assert!(
+        tree.pending_placements.contains(&room),
+        "the workspace waits for this device's host"
+    );
+
+    let device = Device::start_with(
+        &ada,
+        "Ada's desktop",
+        &device_dir,
+        SALT,
+        DeviceCapabilities::primary(),
+        &wakes,
+        tree,
+    );
+    until(&[&device], "the workspace to be placed and held", || {
+        (device.hosted_rooms().contains(&room) && device.tree.read().holds_room(room)).then_some(())
+    });
+    let tree = device.tree.read();
+    assert_eq!(
+        tree.documents_unavailable(room),
+        None,
+        "its apps open their documents"
+    );
+    let after = &tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room() == room)
+        .expect("the workspace stays")
+        .strips;
+    assert_eq!(
+        serde_json::to_value(after).unwrap(),
+        serde_json::to_value(&before).unwrap(),
+        "every window it had is there"
+    );
+    drop(tree);
     drop(device);
 }
