@@ -241,7 +241,7 @@ pub(crate) fn change_resource_id(area: ChangeArea, path: &str) -> String {
     )
 }
 
-fn commit_resource_id(id: &str) -> String {
+pub(crate) fn commit_resource_id(id: &str) -> String {
     format!("git_client.commit:{id}")
 }
 
