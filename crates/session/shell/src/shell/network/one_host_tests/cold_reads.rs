@@ -64,23 +64,24 @@ impl Device {
     pub(crate) fn connect_app(
         &self,
         socket: &Path,
-        app: &str,
+        app: &'static str,
         room: RoomId,
     ) -> ui::collaboration::CollaborationManager {
+        self.app_launch(socket, app, room).connect()
+    }
+
+    /// What an app of `app` in `room` launched by this device's session
+    /// connects to its broker at `socket` with, to connect on the app's own
+    /// thread ([`AppLaunch::connect`]), as an app runs beside its session.
+    pub(crate) fn app_launch(&self, socket: &Path, app: &'static str, room: RoomId) -> AppLaunch {
         crate::shell::launcher::register_in_process_launch(app, &room.to_string());
-        let mut stream =
-            std::os::unix::net::UnixStream::connect(socket).expect("connect to the broker");
-        launcher::services::write_collab_handoff(&mut stream, app, &room.to_string())
-            .expect("hand the connection over as the launcher does");
-        ui::collaboration::CollaborationManager::for_route_fd_with_identity(
-            stream.into_raw_fd(),
+        AppLaunch {
+            socket: socket.to_path_buf(),
             app,
-            room.to_string().parse().expect("a room is a UUID"),
-            None,
-            Some(hex::encode(self.cert().device_public_key)),
-            self.endpoint_identity(room),
-        )
-        .expect("start the collaboration client")
+            room,
+            device: hex::encode(self.cert().device_public_key),
+            identity: self.endpoint_identity(room),
+        }
     }
 
     /// How many sealed writes of `app` this device's own host retains in
@@ -104,6 +105,35 @@ impl Device {
                     })
                     .count()
             })
+    }
+}
+
+/// An app's launch by a device's session, to connect from the app's own
+/// thread.
+pub(crate) struct AppLaunch {
+    socket: std::path::PathBuf,
+    app: &'static str,
+    room: RoomId,
+    device: String,
+    identity: CertifiedEndpointIdentity,
+}
+
+impl AppLaunch {
+    /// Connect to the broker as the launcher connects an app.
+    pub(crate) fn connect(self) -> ui::collaboration::CollaborationManager {
+        let mut stream =
+            std::os::unix::net::UnixStream::connect(&self.socket).expect("connect to the broker");
+        launcher::services::write_collab_handoff(&mut stream, self.app, &self.room.to_string())
+            .expect("hand the connection over as the launcher does");
+        ui::collaboration::CollaborationManager::for_route_fd_with_identity(
+            stream.into_raw_fd(),
+            self.app,
+            self.room.to_string().parse().expect("a room is a UUID"),
+            None,
+            Some(self.device),
+            self.identity,
+        )
+        .expect("start the collaboration client")
     }
 }
 
@@ -380,27 +410,69 @@ fn a_record_written_on_one_device_opens_in_full_on_another_device_of_the_person(
     let laptop_socket = dir.path().join("laptop-collab.sock");
     let laptop_broker = laptop.start_broker(&laptop_socket);
     until_broker_took(&[&desktop, &laptop], &laptop, CHAT);
-    let (mut app, owners) = open_cold(
-        &dir.path().join("laptop-chat"),
-        chat::definition(),
-        room,
-        &person,
-        laptop.connect_app(&laptop_socket, CHAT, room),
-    );
+    // The app runs on its own thread, as it runs in its own process beside
+    // the session: its open waits on the broker while both devices go on.
+    let launch = laptop.app_launch(&laptop_socket, CHAT, room);
+    let profile = dir.path().join("laptop-chat");
+    let (shown, seen) = std::sync::mpsc::channel();
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let app_thread = {
+        let done = Arc::clone(&done);
+        let person = person.clone();
+        std::thread::spawn(move || {
+            let (mut app, owners) = open_cold(
+                &profile,
+                chat::definition(),
+                room,
+                &person,
+                launch.connect(),
+            );
+            while !done.load(std::sync::atomic::Ordering::Acquire) {
+                app.pump_hosted_model();
+                let channels = chat_channels(&owners, room);
+                let full = channels
+                    .as_ref()
+                    .is_some_and(|channels| channels.iter().any(|id| id == "harbour"));
+                if shown.send(channels).is_err() || full {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        })
+    };
+    let mut last = None;
     let channels = until(
         &[&desktop, &laptop],
         "the chat in full in the laptop's cold app",
         || {
-            app.pump_hosted_model();
-            chat_channels(&owners, room)
-                .filter(|channels| channels.iter().any(|id| id == "harbour"))
+            for channels in seen.try_iter() {
+                last = Some(channels.clone());
+                if let Some(channels) =
+                    channels.filter(|channels| channels.iter().any(|id| id == "harbour"))
+                {
+                    return Some(Some(channels));
+                }
+            }
+            app_thread.is_finished().then_some(None)
         },
     );
+    done.store(true, std::sync::atomic::Ordering::Release);
+    let opened = app_thread.join();
+    let channels = channels.unwrap_or_else(|| {
+        panic!(
+            "the laptop's cold app did not open (MissingRecord: the broker decided the record \
+             was new before the host's replay landed; \"native initial history unavailable\": \
+             its read stayed pending, on keys or writes), after it showed {last:?}: {:?}",
+            opened.err().map(|panic| panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|said| (*said).to_owned())))
+        )
+    });
     assert!(
         channels.iter().any(|id| id == "harbour"),
         "the laptop's cold app shows the channel the desktop wrote last, found {channels:?}"
     );
-    drop(app);
     drop(laptop_broker);
     drop((desktop, laptop));
 }

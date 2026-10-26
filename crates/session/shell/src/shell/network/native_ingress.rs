@@ -1,5 +1,6 @@
 use super::{
-    InboundChannelGovernance, NeighbourMsg, NetCmd, RoomId, ShellNetwork, SystemTime, room_topic_id,
+    InboundChannelGovernance, NeighbourMsg, NetCmd, NetEvent, RoomId, ShellNetwork, SystemTime,
+    room_topic_id,
 };
 use crate::{network::actor::native_ingress, shell::native_workspace_owner::NativeWorkspaceOwner};
 impl ShellNetwork {
@@ -420,17 +421,81 @@ impl ShellNetwork {
         }
     }
 
-    /// Ask the host of `cluster_id`, a room whose records are sealed
-    /// channels, for the sealed writes it retains: a local app joined a
-    /// record this device holds none of (a record made on another device,
-    /// or before this session). They reach the broker as the host replays
-    /// them, which fans them out to the app and keeps them for its next
-    /// open. A room of any other kind is left alone.
-    pub(crate) fn request_sealed_history(&self, cluster_id: &str) {
-        if let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil())
-            && self.native_room_seals_records(room)
-        {
-            self.request_native_replay(room);
+    /// Ask `room`'s host, the room's records being sealed channels, to
+    /// replay the sealed writes it retains: an app opens a record this
+    /// device holds none of, made on another device or before this
+    /// session. The receiver is told once the broker took what the host
+    /// replayed (each write reaches it queued ahead of the replay's end),
+    /// so the open decides whether the record is new only then. Until the
+    /// host's session is up there is no replay and the open waits: deciding
+    /// earlier would have the app make a second record.
+    pub(crate) fn await_sealed_replay(&self, room: RoomId) -> tokio::sync::oneshot::Receiver<()> {
+        let (told, landed) = tokio::sync::oneshot::channel();
+        if let Ok(mut waiting) = self.sealed_replays.lock() {
+            waiting.entry(room_topic_id(room)).or_default().push(told);
+        }
+        self.request_native_replay(room);
+        landed
+    }
+
+    /// The collaboration broker's drain runs (`running`) or ended: the
+    /// network actor queues rooms' channel traffic for it while it runs
+    /// ([`Self::take_channel_traffic`]), and sends it to the frame loop
+    /// otherwise.
+    pub(crate) fn channel_drain_runs(&self, running: bool) {
+        let queue = running.then(|| std::sync::Arc::clone(&self.channel_queue));
+        // The drain's start must reach the actor; its end never waits on it.
+        let sent = match self.cmd_tx.try_send(NetCmd::ChannelQueue(queue)) {
+            Err(tokio::sync::mpsc::error::TrySendError::Full(command)) if running => self
+                .cmd_tx
+                .blocking_send(command)
+                .map_err(|error| error.to_string()),
+            sent => sent.map_err(|error| error.to_string()),
+        };
+        if let Err(error) = sent {
+            tracing::debug!(%error, "the network actor did not hear of the broker's drain");
+        }
+    }
+
+    /// Take the sealed writes and replay ends the network actor queued for
+    /// the broker ([`native_ingress::ChannelQueue`]): each write as the frame
+    /// loop takes channel traffic, into the broker's inbound documents. One
+    /// that is not channel traffic here goes to the frame loop's admission.
+    /// Returns the topics of the rooms whose host's replay ended.
+    pub(crate) fn take_channel_traffic(&self) -> Vec<u64> {
+        let mut replayed = Vec::new();
+        for traffic in self.channel_queue.take() {
+            match traffic {
+                native_ingress::ChannelTraffic::Sealed(input) => {
+                    if !self.dispatch_channel_traffic(&input) {
+                        let _ = self.event_tx.try_send(NetEvent::NativeInput(input));
+                    }
+                }
+                native_ingress::ChannelTraffic::Replayed(ws) => replayed.push(ws),
+            }
+        }
+        replayed
+    }
+
+    /// The broker took what the hosts of the rooms on `topics` replayed:
+    /// tell the opens waiting for it ([`Self::await_sealed_replay`]).
+    pub(crate) fn sealed_replays_taken(&self, topics: &[u64]) {
+        if topics.is_empty() {
+            return;
+        }
+        let told: Vec<_> = self
+            .sealed_replays
+            .lock()
+            .map(|mut waiting| {
+                topics
+                    .iter()
+                    .filter_map(|ws| waiting.remove(ws))
+                    .flatten()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for open in told {
+            let _ = open.send(());
         }
     }
 
