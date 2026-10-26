@@ -196,17 +196,22 @@ done: 41 threads archived · undo: undo task
 - **Asks** park the action. The person sees the pending action with its confirmation view. The
   agent sees `pending: asks bob (send)` and can wait or continue.
 
-## 7.1 Permission is not the agent's problem
+## 7.1 What the agent never carries
 
-- **What the agent sees, it may read.** Reads are already limited to the task.
-- **Every action it is shown, it may call.** The result is one of three:
-  - `done`: undoable;
-  - `preview`: bulk or destructive; `do!` runs it;
-  - `asks`: a request the person approves in Tilo. The agent continues and is told the outcome.
-- **Actions the task can't use are not shown.** Calling one by name returns a teaching error
-  with the person's own path.
-- **Anything that leaves the workspace is `asks`,** unless the person granted a standing
-  permission. `look` shows that permission on its task line.
+The platform carries everything that isn't the task itself. An agent never has to think about:
+
+| Concern | Why not |
+|---|---|
+| Where it is and what it may do | `look` says it; whatever it is shown, it may do or request |
+| Permission | an action runs, previews, or becomes the person's request; the result says which |
+| Staleness and sync | reads are current; `look` says if the workspace is offline |
+| Other people editing | actions merge; a rejection comes back with its reason |
+| File formats | `read` gives text with anchors for notes, PDFs, documents and video transcripts alike |
+| Size | counts come first, then a page; `more` continues |
+| Waiting | results arrive when settled; there is no polling |
+| Being careful | everything is undoable or previewed first |
+| Presentation | apps' views and `ui.*` already look right; an answer picks and composes them |
+| Formatting | dates, money and names are formatted for the person by the platform |
 
 ## 7.2 Blocks across apps
 
@@ -305,6 +310,14 @@ You never need to ask permission: what you are shown, you may do or request.
 **The primer is tested.** The acceptance transcripts in §12 start from this text and `look`
 only.
 
+## 11.2 Token efficiency
+
+The cost of a task is measured in tokens and calls, and every output format is judged by it:
+- one-line rows;
+- refs instead of repeated titles;
+- no echo of the request;
+- no boilerplate in errors beyond the valid alternatives.
+
 ## 12. What changes
 
 1. **The door:**
@@ -324,3 +337,7 @@ only.
 5. **Acceptance:** an agent given only `look` completes the YC-legal task in at most 6 requests
    with no failed call. The same holds for "tidy my todo list" and "what changed in the board
    meeting notes since Monday". The transcripts are kept as tests.
+6. **Real-world evals,** once Notes, Todo, Chat, Board and Mail run in tilolang:
+   - real agents on real tasks in a seeded workspace, from the primer only;
+   - measured in tokens, calls, failed calls and whether the result was right;
+   - the format and primer change by what the evals show, not before.
