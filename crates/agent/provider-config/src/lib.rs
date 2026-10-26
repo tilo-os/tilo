@@ -489,6 +489,13 @@ pub struct ProviderProfile {
 
 settings_store::read_through_json_value!(ProviderProfile);
 
+#[cfg(feature = "model")]
+impl tilo_resource::Identified for ProviderProfile {
+    fn id(&self) -> tilo_resource::Id {
+        tilo_resource::Id::from_raw(self.id.clone())
+    }
+}
+
 /// Request fields a profile may not strip: without them there is no request.
 pub const REQUIRED_PARAMS: &[&str] = &["model", "messages", "tools", "tool_choice"];
 
@@ -765,6 +772,10 @@ settings_store::read_through_json_value!(HostedProfiles);
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct ProviderConfig {
+    /// Each profile is stored under its own id, so two people changing
+    /// different providers, or different fields of one, both keep their
+    /// change. The file still holds a plain list of profiles.
+    #[cfg_attr(feature = "model", model(keyed))]
     pub profiles: Vec<ProviderProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
@@ -1212,28 +1223,48 @@ mod stored_fields {
     #[test]
     fn concurrent_edits_of_one_providers_different_fields_both_survive() {
         let base = two_profiles();
+        let id = base.profiles[0].id.clone();
         let mut ours = stored(&base).expect("the configuration writes");
         let mut theirs = ours.fork();
 
         edit(&mut ours, |config| {
-            config.profiles[0].label = "Anthropic (work)".into();
+            config
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == id)
+                .expect("the hosted provider")
+                .label = "Anthropic (work)".into();
         })
         .expect("one person's change writes");
         edit(&mut theirs, |config| {
-            config.profiles[0].enabled = false;
+            config
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == id)
+                .expect("the hosted provider")
+                .enabled = false;
         })
         .expect("the other person's change writes");
         ours.merge_incoming(&mut theirs).expect("the changes merge");
 
         let merged = held(&ours).expect("the merged configuration reads");
-        assert_eq!(merged.profiles[0].label, "Anthropic (work)");
+        let anthropic = merged
+            .profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .expect("the hosted provider remains");
+        assert_eq!(anthropic.label, "Anthropic (work)");
         assert!(
-            !merged.profiles[0].enabled,
+            !anthropic.enabled,
             "the field the first person did not touch keeps the second's change"
         );
         // The other provider is untouched by either.
-        assert_eq!(merged.profiles[1].label, "Local");
-        assert!(merged.profiles[1].enabled);
+        let local = merged
+            .profiles
+            .iter()
+            .find(|profile| profile.label == "Local")
+            .expect("the local provider remains");
+        assert!(local.enabled);
     }
 
     /// Two people changing two providers both keep their change: the list is
@@ -1241,47 +1272,78 @@ mod stored_fields {
     #[test]
     fn concurrent_edits_of_different_providers_both_survive() {
         let base = two_profiles();
+        let anthropic_id = base.profiles[0].id.clone();
+        let local_id = base.profiles[1].id.clone();
         let mut ours = stored(&base).expect("the configuration writes");
         let mut theirs = ours.fork();
 
         edit(&mut ours, |config| {
-            config.profiles[0].models[0].label = "Claude Opus".into();
+            config
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == anthropic_id)
+                .expect("the hosted provider")
+                .models[0]
+                .label = "Claude Opus".into();
         })
         .expect("one person's change writes");
         edit(&mut theirs, |config| {
-            config.profiles[1].endpoint = "http://127.0.0.1:9000/v1".into();
-            config.profiles[1].default_model = Some("llama".into());
+            let local = config
+                .profiles
+                .iter_mut()
+                .find(|profile| profile.id == local_id)
+                .expect("the local provider");
+            local.endpoint = "http://127.0.0.1:9000/v1".into();
+            local.default_model = Some("llama".into());
         })
         .expect("the other person's change writes");
         ours.merge_incoming(&mut theirs).expect("the changes merge");
 
         let merged = held(&ours).expect("the merged configuration reads");
-        assert_eq!(merged.profiles[0].models[0].label, "Claude Opus");
-        assert_eq!(merged.profiles[1].endpoint, "http://127.0.0.1:9000/v1");
-        assert_eq!(merged.profiles[1].default_model.as_deref(), Some("llama"));
+        let anthropic = merged
+            .profiles
+            .iter()
+            .find(|profile| profile.id == anthropic_id)
+            .expect("the hosted provider remains");
+        assert_eq!(anthropic.models[0].label, "Claude Opus");
+        let local = merged
+            .profiles
+            .iter()
+            .find(|profile| profile.id == local_id)
+            .expect("the local provider remains");
+        assert_eq!(local.endpoint, "http://127.0.0.1:9000/v1");
+        assert_eq!(local.default_model.as_deref(), Some("llama"));
     }
 
-    /// A provider's fields are stored one by one, not as one JSON string: a
-    /// document holds a label as a value of the profile's own map.
+    /// A provider's fields are stored one by one, not as one JSON string,
+    /// and each provider under its own id rather than at a position.
     #[test]
-    fn a_profile_is_stored_as_its_fields() {
+    fn a_profile_is_stored_as_its_fields_under_its_id() {
         let doc = stored(&two_profiles()).expect("the configuration writes");
         let Some((Value::Object(_), config)) = doc.get(&ROOT, CONFIG).ok().flatten() else {
             panic!("the configuration is a map");
         };
-        let Some((Value::Object(_), profiles)) = doc.get(&config, "profiles").ok().flatten() else {
-            panic!("the providers are a list");
+        let Some((Value::Object(ObjType::Map), profiles)) =
+            doc.get(&config, "profiles").ok().flatten()
+        else {
+            panic!("the providers are keyed");
         };
-        let Some((Value::Object(_), profile)) = doc.get(&profiles, 0).ok().flatten() else {
-            panic!("a provider is a map of its fields");
-        };
-        let label = match doc.get(&profile, "label").ok().flatten() {
-            Some((Value::Object(ObjType::Text), id)) => doc.text(&id).expect("the label reads"),
-            other => panic!(
-                "a provider's label is its own field, not part of one JSON string: {other:?}"
-            ),
-        };
-        assert_eq!(label, "Anthropic");
+        let mut labels = Vec::new();
+        for key in doc.keys(&profiles) {
+            let Some((Value::Object(_), profile)) = doc.get(&profiles, key.as_str()).ok().flatten()
+            else {
+                panic!("a provider is a map of its fields");
+            };
+            let label = match doc.get(&profile, "label").ok().flatten() {
+                Some((Value::Object(ObjType::Text), id)) => doc.text(&id).expect("the label reads"),
+                other => panic!(
+                    "a provider's label is its own field, not part of one JSON string: {other:?}"
+                ),
+            };
+            labels.push(label);
+        }
+        labels.sort();
+        assert_eq!(labels, ["Anthropic", "Local"]);
     }
 
     /// What settings store and read is unchanged: a provider is still the

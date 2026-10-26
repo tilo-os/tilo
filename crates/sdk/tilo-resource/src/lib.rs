@@ -163,7 +163,7 @@ pub use derived::{Bound, Derived};
 pub use effect::{Answers, Effect, EffectDecl, EffectOffload, NoEffect};
 pub use evolution::Unreadable;
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
-pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
+pub use keyed::{ById, Identified, ItemStorage, Items, Keyed, KeyedVecOf};
 pub use kind::{Kinds, ResourceKind};
 pub use map::Map;
 pub use model::{

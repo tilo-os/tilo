@@ -99,6 +99,8 @@ enum Desc {
     Option(&'static OptionDesc),
     /// A collection of items.
     Collection(&'static crate::collection::CollectionDesc),
+    /// A `Vec` stored under each item's id.
+    KeyedVec(&'static crate::keyed::KeyedVecDesc),
     /// An enum of unit variants.
     Unit(&'static UnitDesc),
     /// A value stored whole as JSON text.
@@ -123,6 +125,29 @@ impl ModelTable {
         match self.desc {
             Desc::Collection(collection) => Some(collection),
             _ => None,
+        }
+    }
+
+    pub(crate) const fn keyed_vec(&self) -> Option<&'static crate::keyed::KeyedVecDesc> {
+        match self.desc {
+            Desc::KeyedVec(keyed) => Some(keyed),
+            _ => None,
+        }
+    }
+
+    /// The table of a `Vec` stored under each item's id.
+    #[must_use]
+    pub const fn of_keyed_vec(
+        keyed: &'static crate::keyed::KeyedVecDesc,
+        checks: bool,
+        has_ops: bool,
+    ) -> Self {
+        Self {
+            ops: &crate::keyed::KEYED_VEC_OPS,
+            desc: Desc::KeyedVec(keyed),
+            checks,
+            has_ops,
+            scalar: false,
         }
     }
 
@@ -183,6 +208,9 @@ impl ModelTable {
             }
             if let Some(option) = table.option() {
                 return within(option.inner, target, depth.saturating_add(1));
+            }
+            if let Some(keyed) = table.keyed_vec() {
+                return within(keyed.item, target, depth.saturating_add(1));
             }
             table.record().is_some_and(|record| {
                 record.fields.iter().any(|field| {
