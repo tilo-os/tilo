@@ -10,4 +10,5 @@
 )]
 
 mod door;
+mod narrow;
 mod support;
