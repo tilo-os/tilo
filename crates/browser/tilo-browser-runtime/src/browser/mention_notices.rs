@@ -67,7 +67,7 @@ impl Desktop {
     /// open what they chose from a notice.
     pub(super) fn tell_mentions(&self) {
         self.open_chosen_mentions();
-        let Some(peer) = self.asks.peer else {
+        let Some(peer) = self.asks.peer() else {
             return;
         };
         let mut mentions = self.mentions.borrow_mut();
@@ -162,6 +162,8 @@ impl Desktop {
                 confirmation: None,
                 revision: None,
                 on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
             };
             // A refused open is the session's to report.
             drop(self.session.invoke(&self.caller(), request));
