@@ -79,8 +79,9 @@ mod tests {
 
     /// The workspace on screen and a second one after it, the second shown.
     /// The first one's room is placed on this device, whose native owner
-    /// is open: a workspace leaves with its room through that owner. The
-    /// room stays placed while the returned guard lives.
+    /// is open: a workspace leaves with its room through that owner. Both
+    /// are the person's who governs that room, and the chrome acts as that
+    /// person. The room stays placed while the returned guard lives.
     fn chrome_with_two_workspaces() -> (
         Chrome,
         crate::shell::state::WorkspaceId,
@@ -89,12 +90,13 @@ mod tests {
         use crate::shell::state::{Workspace, WorkspaceId};
         let chrome = chrome_with_room();
         let hosted = crate::shell::test_support::host_active_room(&chrome.borrow().tree_handle());
+        chrome.borrow_mut().act_as(hosted.person.clone());
         let second = WorkspaceId::new();
         {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
             let mut workspace = Workspace::new(second, "Second");
-            workspace.set_owner("shell-fixture");
+            workspace.set_owner(hosted.person.clone());
             tree.desktop.workspaces.push(workspace);
             tree.desktop.active = second;
         }
@@ -167,16 +169,14 @@ mod tests {
         )
         .expect("a confirmed deletion runs");
         assert_eq!(workspace_names(&chrome), [first.as_str()]);
+        let last = invoke_shell_action(
+            &chrome,
+            "workspace.delete",
+            &serde_json::json!({ "confirm": true }),
+        );
         assert!(
-            matches!(
-                invoke_shell_action(
-                    &chrome,
-                    "workspace.delete",
-                    &serde_json::json!({ "confirm": true }),
-                ),
-                Err(ActionError::Explained(_))
-            ),
-            "the last workspace stays, and the person is told why"
+            matches!(last, Err(ActionError::Explained(_))),
+            "the last workspace stays, and the person is told why: {last:?}"
         );
         assert_eq!(workspace_names(&chrome), [first.as_str()]);
     }
