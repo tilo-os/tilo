@@ -248,6 +248,7 @@ impl Fixture {
             Some(tree.clone()),
             Some(Arc::clone(hosted.device.net())),
             None,
+            None,
         );
         services.file_clipboard = Some(clipboard.clone());
         // This fixture enrolls its signed device explicitly through the broker's
