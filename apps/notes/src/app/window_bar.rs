@@ -17,10 +17,34 @@ const NEW_NOTE: &str = "new-note";
 const NOTE_ACTIONS: &str = "note-actions";
 
 impl NotesApp {
+    /// Whether this person may make a note in the notebook, as the room
+    /// decides it: someone who may only look (a Viewer, or a person an
+    /// item was shared with alone) is not offered New note.
+    pub(super) fn may_add_notes(&self) -> bool {
+        self.dispatcher.as_ref().is_none_or(|dispatcher| {
+            !dispatcher.is_past()
+                && dispatcher.may(&ui::tilo_actions::ActionNeed::of(
+                    ui::tilo_actions::ActionKind::Undoable,
+                ))
+        })
+    }
+
     /// The slots for the note shown (`title`, and the anchor `open` shows it
     /// at; `None`: no note is open).
-    fn window_toolbar(note: Option<(&str, String)>, sidebar_open: bool) -> WindowToolbar {
+    fn window_toolbar(
+        note: Option<(&str, String)>,
+        sidebar_open: bool,
+        adds_notes: bool,
+    ) -> WindowToolbar {
         let title = note.as_ref().map(|(title, _)| *title);
+        // New note is offered only to someone who may make one.
+        let new_note = adds_notes.then(|| ToolbarAction {
+            id: NEW_NOTE.into(),
+            icon: "plus".into(),
+            name: ui::i18n!("notes-affordance-new-note"),
+            enabled: true,
+            ..ToolbarAction::default()
+        });
         WindowToolbar {
             sidebar: Some(sidebar_open),
             navigation: None,
@@ -30,22 +54,16 @@ impl NotesApp {
                 anchor: Some(anchor),
                 ..ToolbarLocation::default()
             }),
-            actions: vec![
-                ToolbarAction {
-                    id: NEW_NOTE.into(),
-                    icon: "plus".into(),
-                    name: ui::i18n!("notes-affordance-new-note"),
-                    enabled: true,
-                    ..ToolbarAction::default()
-                },
-                ToolbarAction {
+            actions: new_note
+                .into_iter()
+                .chain([ToolbarAction {
                     id: NOTE_ACTIONS.into(),
                     icon: "more-horizontal".into(),
                     name: ui::i18n!("notes-affordance-note-actions"),
                     enabled: title.is_some(),
                     ..ToolbarAction::default()
-                },
-            ],
+                }])
+                .collect(),
             ..WindowToolbar::default()
         }
     }
@@ -56,15 +74,21 @@ impl NotesApp {
     /// whether anything changed.
     pub(super) fn sync_window_toolbar(&mut self) -> bool {
         let hosted = ui::window_toolbar::is_hosted();
+        let adds = self.may_add_notes();
         let mut changed = false;
-        if hosted != self.header_in_bar {
+        if hosted != self.header_in_bar || adds != self.offers_new_note {
             self.header_in_bar = hosted;
+            self.offers_new_note = adds;
             self.shell.set_sidebar_toggle_in_window_bar(hosted);
             let (tree_actions, actions) = if hosted {
                 (Vec::new(), Vec::new())
             } else {
                 (
-                    Self::page_tree_header_actions(&self.header),
+                    if adds {
+                        Self::page_tree_header_actions(&self.header)
+                    } else {
+                        Vec::new()
+                    },
                     Self::content_header_actions(&self.header),
                 )
             };
@@ -85,13 +109,13 @@ impl NotesApp {
         let title = self.main.title().map(str::to_owned);
         let anchor = self.main.page_id().map(crate::actions::page_resource_id);
         let open = self.shell.is_sidebar_open();
-        let key = (title.zip(anchor), open);
+        let key = (title.zip(anchor), open, adds);
         if self.declared_bar.as_ref() != Some(&key) {
             let note = key
                 .0
                 .as_ref()
                 .map(|(title, anchor)| (title.as_str(), anchor.clone()));
-            ui::window_toolbar::declare(Some(Self::window_toolbar(note, open)));
+            ui::window_toolbar::declare(Some(Self::window_toolbar(note, open, adds)));
             self.declared_bar = Some(key);
         }
         let header = Rc::clone(&self.header);
@@ -99,7 +123,7 @@ impl NotesApp {
             match event {
                 ToolbarEvent::ToggleSidebar => self.shell.toggle_sidebar(),
                 ToolbarEvent::Action { id } => match id.as_str() {
-                    NEW_NOTE => header.new_note.set(true),
+                    NEW_NOTE if adds => header.new_note.set(true),
                     NOTE_ACTIONS => header.note_menu.set(true),
                     _ => {}
                 },

@@ -78,10 +78,11 @@ impl EmptyLabels {
         }
     }
 
-    fn content(&self) -> EmptyStateContent<'_> {
+    /// The empty state, offering New note only to someone who may make one.
+    fn content(&self, adds: bool) -> EmptyStateContent<'_> {
         EmptyStateContent {
             icon: Some(Icon::FileText),
-            action_label: Some(&self.action),
+            action_label: adds.then_some(self.action.as_str()),
             ..EmptyStateContent::new(&self.title)
         }
     }
@@ -509,6 +510,8 @@ pub struct MainPanel {
     /// Rising edge set when the first-note action is pressed; the app drains
     /// it onto the same create action path as every other new-page affordance.
     empty_action_requested: bool,
+    /// The empty state offers New note: its person may make one.
+    empty_adds: bool,
     /// Focus belongs to the actionable empty state while there is no page to
     /// edit. It makes the CTA available to Tab, keyboard-only use and AT.
     empty_action_focused: bool,
@@ -580,6 +583,7 @@ impl MainPanel {
             local_author: None,
             empty_action_rect: Rect::ZERO,
             empty_action_requested: false,
+            empty_adds: true,
             empty_action_focused: false,
             metrics: Metrics::default(),
             layout_theme: Theme::dark(),
@@ -826,7 +830,18 @@ impl MainPanel {
 
     /// Drain a press of the first-note action in the empty state.
     pub fn take_empty_action(&mut self) -> bool {
-        std::mem::take(&mut self.empty_action_requested)
+        std::mem::take(&mut self.empty_action_requested) && self.empty_adds
+    }
+
+    /// Whether this person may make a note in the notebook, as the room
+    /// decides it.
+    fn adds_notes(&self) -> bool {
+        self.notebook.as_ref().is_none_or(|notebook| {
+            !notebook.is_past()
+                && notebook.may(&ui::tilo_actions::ActionNeed::of(
+                    ui::tilo_actions::ActionKind::Undoable,
+                ))
+        })
     }
 
     /// Update only the title (used by the sidebar's inline rename). Ignored
@@ -1798,6 +1813,11 @@ impl Widget for MainPanel {
             self.dirty = true;
         }
         self.rect = new_rect;
+        let adds = self.adds_notes();
+        if adds != self.empty_adds {
+            self.empty_adds = adds;
+            self.dirty = true;
+        }
         // Input can arrive before the first paint, including after a resize.
         self.empty_action_rect = if self.page_id.is_none() {
             ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
@@ -1805,7 +1825,7 @@ impl Widget for MainPanel {
                     text,
                     &self.layout_theme,
                     self.rect,
-                    &self.empty_labels.content(),
+                    &self.empty_labels.content(self.empty_adds),
                 )
                 .action
                 .unwrap_or(Rect::ZERO)
@@ -2202,7 +2222,7 @@ impl Widget for MainPanel {
             self.empty_action_rect = EmptyState::paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.rect,
-                &self.empty_labels.content(),
+                &self.empty_labels.content(self.empty_adds),
                 self.last_pointer,
             )
             .unwrap_or(Rect::ZERO);
@@ -2501,6 +2521,12 @@ impl Widget for MainPanel {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
+        if self.page_id.is_none() && !self.empty_adds {
+            // Nothing to press: the empty notebook says only that it is.
+            return Some(
+                AccessNode::new(Role::StaticText).with_name(ui::i18n!("notes-empty-title")),
+            );
+        }
         if self.page_id.is_none() {
             let button = AccessNode::new(Role::Button)
                 .with_name(ui::i18n!("notes-empty-action"))
