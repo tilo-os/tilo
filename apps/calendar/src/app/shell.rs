@@ -20,12 +20,13 @@ use vello::kurbo::Rect;
 use super::{Action, CalendarApp};
 use crate::model::{Id, ListSel, Priority, View};
 
-/// The smart lists, in the order the sidebar shows them.
+/// The smart lists, in the order the sidebar shows them, by the Fluent key
+/// each is named with.
 const SMART_LISTS: [(&str, ListSel, Icon); 4] = [
-    ("Inbox", ListSel::Inbox, Icon::Inbox),
-    ("Today", ListSel::Today, Icon::Star),
-    ("Upcoming", ListSel::Upcoming, Icon::Calendar),
-    ("Completed", ListSel::Completed, Icon::Check),
+    ("calendar-tasks-inbox", ListSel::Inbox, Icon::Inbox),
+    ("calendar-tasks-today", ListSel::Today, Icon::Star),
+    ("calendar-tasks-upcoming", ListSel::Upcoming, Icon::Calendar),
+    ("calendar-tasks-completed", ListSel::Completed, Icon::Check),
 ];
 
 const TASKS: &str = "tasks";
@@ -38,7 +39,7 @@ const CALENDAR: &str = "calendar:";
 const TASK: &str = "task:";
 
 /// The place id of a smart list or project.
-pub(super) fn list_place(list: &ListSel) -> String {
+pub(crate) fn list_place(list: &ListSel) -> String {
     match list {
         ListSel::Inbox => "list:inbox".into(),
         ListSel::Today => "list:today".into(),
@@ -68,15 +69,19 @@ fn count(n: usize) -> u32 {
 pub(crate) fn sidebar(places: &NavFeed, month: &DateFeed) -> Element {
     let list = NavList::new(Vec::new())
         .with_id("calendar.places")
-        .with_accessible_name("Calendar navigation")
+        .with_accessible_name(crate::resource::t("calendar-navigation"))
         .fed_by(places)
         .fed_actions(
             places,
-            vec![NavAction::new(OPEN, Icon::ChevronRight, "Open task")],
+            vec![NavAction::new(
+                OPEN,
+                Icon::ChevronRight,
+                crate::resource::t("calendar-open-task"),
+            )],
         );
     let picker = DatePicker::new(ui::clock::today())
         .navigator()
-        .with_accessible_name("Month")
+        .with_accessible_name(crate::resource::t("calendar-month"))
         .fed_by(month);
     // A chosen task list takes the foot of the sidebar; else the month.
     let shown = month.clone();
@@ -167,8 +172,8 @@ impl CalendarApp {
     fn lists_section(&self) -> NavSection {
         let items = SMART_LISTS
             .iter()
-            .map(|(label, list, icon)| {
-                let item = NavItem::new(list_place(list), *label)
+            .map(|(key, list, icon)| {
+                let item = NavItem::new(list_place(list), crate::resource::t(key))
                     .icon(*icon)
                     .without_actions();
                 let open = self.model.open_count(list, self.today);
@@ -210,7 +215,11 @@ impl CalendarApp {
                 }
             })
             .collect();
-        Some(NavSection::new("projects", "Projects", items))
+        Some(NavSection::new(
+            "projects",
+            crate::resource::t("calendar-projects"),
+            items,
+        ))
     }
 
     /// Each account folds; its action syncs; its calendars are checked rows.
@@ -232,7 +241,11 @@ impl CalendarApp {
                     .collect();
                 let section =
                     NavSection::new(format!("{ACCOUNT}{}", account.id), account.label(), items)
-                        .trailing_action(NavAction::new(SYNC, Icon::Refresh, "Sync"));
+                        .trailing_action(NavAction::new(
+                            SYNC,
+                            Icon::Refresh,
+                            crate::resource::t("calendar-sync"),
+                        ));
                 if account.collapsed {
                     section.collapsed()
                 } else {
@@ -264,8 +277,12 @@ impl CalendarApp {
             .collect();
         Some(
             NavSection::new(TASKS, self.model.list_title(&list), items)
-                .trailing_action(NavAction::new(CLOSE, Icon::X, "Close list"))
-                .empty_caption("No tasks"),
+                .trailing_action(NavAction::new(
+                    CLOSE,
+                    Icon::X,
+                    crate::resource::t("calendar-close-list"),
+                ))
+                .empty_caption(crate::resource::t("calendar-list-empty")),
         )
     }
 

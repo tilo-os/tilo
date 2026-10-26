@@ -72,6 +72,10 @@ calendar-calendar-deletes = Recorded how a delete on a calendar server went
 ## The Tasks screen
 
 calendar-tasks-title = Tasks
+calendar-view-month = Month
+calendar-view-week = Week
+calendar-view-day = Day
+calendar-view-agenda = Agenda
 calendar-tasks-new = New task
 calendar-tasks-entry = Add a task
 calendar-tasks-entry-name = New task title
@@ -80,7 +84,7 @@ calendar-tasks-empty-today = Nothing due today
 calendar-tasks-empty-upcoming = Nothing coming up
 calendar-tasks-empty-completed = No completed tasks
 calendar-tasks-empty-project = No tasks in { $list }
-calendar-tasks-empty-completed-hint = Tasks you check off appear here.
+calendar-tasks-empty-completed-hint = Nothing has been finished yet.
 calendar-tasks-empty-hint = Type a task in the field above and press Enter.
 calendar-tasks-priority-none = No priority
 calendar-tasks-priority-low = Low priority
@@ -99,6 +103,46 @@ calendar-tasks-inbox = Inbox
 calendar-tasks-today = Today
 calendar-tasks-upcoming = Upcoming
 calendar-tasks-completed = Completed
+
+## The sidebar and what the app names to assistive technology
+
+calendar-navigation = Calendar navigation
+calendar-month = Month
+calendar-projects = Projects
+calendar-sync = Sync
+calendar-open-task = Open task
+calendar-close-list = Close list
+calendar-list-empty = No tasks
+calendar-project = Project
+
+## What the window says of a sync, an import, an edit or a calendar
+## changed, each in the severity the place that raised it gives it.
+
+calendar-sync-running = Syncing calendars…
+calendar-sync-running-short = Syncing…
+calendar-sync-synced = Synced { $calendars } calendars, { $events } events.
+calendar-sync-offline = Offline. Changes sync when you reconnect.
+calendar-sync-conflict = 1 change also changed on the server; your version is safe and still queued.
+calendar-sync-failed = Sync failed
+calendar-sync-failed-hint = Sync failed. Check the account in Settings, then sync again.
+calendar-sync-error = Sync failed: { $reason }. Check the account in Settings, then sync again.
+calendar-sync-unreachable = Couldn't reach the calendar server
+calendar-sync-unavailable = Sync unavailable: { $reason }
+calendar-sync-no-accounts = No calendar accounts yet. Add one in Settings.
+calendar-account-gone = That calendar account is no longer configured
+calendar-invite-address-required = Enter a complete email address, such as name@example.com
+calendar-invite-already = { $email } is already invited
+calendar-invite-added = Added { $email }. Prepare the invitation in Mail to send it.
+calendar-invite-prepared = Invitation prepared for Mail. Review it there before sending.
+calendar-export-empty = Nothing to export yet
+calendar-exported = Exported { $events } events and { $tasks } tasks
+calendar-export-cancelled = Export cancelled
+calendar-move-event-failed = Couldn't move the event: { $reason }
+calendar-showing-all = Showing all calendars
+calendar-showing-calendar = Showing { $calendar }
+calendar-calendar-hidden = { $calendar } is hidden. Turn it on in the sidebar to show its events.
+calendar-visible = Calendar is now visible
+calendar-hidden = Calendar is now hidden
 
 ## A drag on an occurrence of a repeating event
 calendar-repeat-change = Change repeating event
