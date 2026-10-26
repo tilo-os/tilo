@@ -890,6 +890,33 @@ impl Widget for ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
+        // The shortcut guide's rows and its Done: a reader reaches exactly
+        // what the pointer and the keyboard reach.
+        if matches!(action, ui::a11y::Action::Activate) {
+            if let Some(index) = target
+                .strip_prefix("guide:chord:")
+                .and_then(|index| index.parse::<usize>().ok())
+                && let Some((action, _)) = self.shortcut_binding_rects.get(index).copied()
+            {
+                self.shortcut_rebind = Some(action);
+                self.shortcut_rebind_message = None;
+                self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(action));
+                self.bump_chrome();
+                return true;
+            }
+            if target == "guide:done" {
+                if let Some(chrome) = self.chrome.clone() {
+                    let mut st = chrome.borrow_mut();
+                    st.overlays.shortcut_help = false;
+                    st.bump();
+                }
+                self.shortcut_rebind = None;
+                self.shortcut_rebind_message = None;
+                self.shortcut_guide_focus = None;
+                self.bump_chrome();
+                return true;
+            }
+        }
         if target.starts_with("participant:") && target.ends_with(":chat") {
             if self.person_cursor_controls_suppressed() {
                 return true;

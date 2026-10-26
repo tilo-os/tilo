@@ -224,6 +224,7 @@ keyboard-shortcut-invalid = Dieses Tastenkürzel wird nicht unterstützt.
 # Tastaturhilfe (F1)
 guide-title = Tastenkürzel
 guide-reopen-hint = Wähle ein Navigationskürzel, um es zu ändern
+guide-chord-row = Diese Tastenkombination ändern, belegt mit { $chord }
 guide-done = Fertig
 guide-press-new-shortcut = Neues Tastenkürzel für „{ $action }“ drücken · Esc bricht ab
 guide-message-esc-cancels = { $message } · Esc bricht ab
