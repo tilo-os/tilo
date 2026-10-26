@@ -575,6 +575,7 @@ impl Workbench {
             steps: shortcut.steps,
             output: shortcut.output,
             triggers: shortcut.triggers,
+            step_timeout_secs: shortcut.step_timeout_secs,
         };
         let name = if shortcut.name.trim().is_empty() {
             String::from("Copy")

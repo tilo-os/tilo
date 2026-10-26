@@ -163,7 +163,7 @@ impl TubeApp {
 
     fn show_empty_home(&mut self) {
         self.model = TubeModel::default();
-        self.model.data_source.label = "offline — network unavailable".into();
+        self.model.data_source.label = "offline: network unavailable".into();
         self.model.route = Route::Home;
     }
 
