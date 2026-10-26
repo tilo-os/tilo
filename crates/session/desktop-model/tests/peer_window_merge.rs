@@ -4,7 +4,19 @@
 //! room-sync path actually runs, rather than against a helper written
 //! to agree with it.
 
-use tilo_desktop_model::projection::{ReplicatedGroup, ReplicatedTab, merge_group};
+use tilo_desktop_model::projection::{Fold, ReplicatedGroup, ReplicatedTab, merge_group};
+
+static NOTHING: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+
+/// Folding as a reader that writes none of the entries.
+fn viewer() -> Fold<'static> {
+    Fold {
+        authored: &|_| false,
+        removed: &NOTHING,
+        groups: &NOTHING,
+        tabs: &NOTHING,
+    }
+}
 use tilo_desktop_model::{AppKind, Tab, TileContent, WindowGroup, WindowWidth};
 
 const APP: &str = "so.tilo.word-processor";
@@ -59,7 +71,7 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
             tabs: vec![remote_tab(7, 4242)],
         };
         let mut changed = false;
-        let merged = merge_group(local, rep, &|_| false, &mut changed);
+        let merged = merge_group(local, rep, &viewer(), &mut changed);
         match &merged.tabs[0].tile {
             TileContent::PeerWindow {
                 app_id,
@@ -97,7 +109,7 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
             tabs: vec![remote_tab(7, 4242)],
         };
         let mut changed = false;
-        let merged = merge_group(local, rep, &|_| false, &mut changed);
+        let merged = merge_group(local, rep, &viewer(), &mut changed);
         match &merged.tabs[0].tile {
             TileContent::Foreign { app_id, surface_id } => {
                 assert_eq!(app_id, APP);
@@ -137,7 +149,7 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
             tabs: vec![rep_tab],
         };
         let mut changed = false;
-        let merged = merge_group(local, rep, &|_| false, &mut changed);
+        let merged = merge_group(local, rep, &viewer(), &mut changed);
         match &merged.tabs[0].tile {
             TileContent::PeerWindow { app_id, .. } => assert_eq!(app_id, "so.tilo.terminal"),
             other => panic!("expected the new app, got {other:?}"),

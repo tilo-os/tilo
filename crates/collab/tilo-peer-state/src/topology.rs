@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// The root entries topology admission reads.
-const TOPOLOGY_KEYS: [&str; 2] = ["contents", "contents_owners_v1"];
+const TOPOLOGY_KEYS: [&str; 3] = ["contents", "contents_owners_v1", "removed_v1"];
 
 /// Whether `after` puts anything into the room's topology that `before`
 /// does not hold as it is: an entry (strip, group or tab) that is new,
@@ -128,6 +128,19 @@ fn entries(value: &Value) -> Result<BTreeMap<(u64, u8), Value>, String> {
     }
     Ok(out)
 }
+/// The ids the room's removal record holds
+/// ([`tilo_desktop_model::projection::ROOM_REMOVED_KEY`]).
+fn removals(value: &Value) -> Result<std::collections::BTreeSet<u64>, String> {
+    let Some(value) = value.get("removed_v1") else {
+        return Ok(std::collections::BTreeSet::new());
+    };
+    value
+        .as_object()
+        .ok_or("invalid topology removal record")?
+        .keys()
+        .map(|id| u64::from_str_radix(id, 16).map_err(|_| "invalid topology removal id".into()))
+        .collect()
+}
 /// Registry writes require pinned governance authority. Registered owners alone
 /// may change their entries; a legacy room with no registry remains authority-owned.
 /// Record routes are stable identities: changing a live binding is never a rename.
@@ -152,21 +165,33 @@ pub fn validate(
             return Err("topology owner namespace cannot be rebound".into());
         }
     }
+    let owner_of = |id: u64| {
+        let salt = (id >> 48) as u16;
+        new_owners
+            .get(&salt)
+            .or_else(|| old_owners.get(&salt))
+            .map_or(authority, String::as_str)
+    };
+    // The pinned room governor republishes accepted multi-owner history in
+    // its durable checkpoint, including to governance-first/reconnecting peers.
+    let checkpoint = source == authority;
+    // A removal is its entry's owner's to record or take back, as the entry is.
+    let old_removed = removals(&before)?;
+    let new_removed = removals(&after)?;
+    if !checkpoint
+        && old_removed
+            .symmetric_difference(&new_removed)
+            .any(|id| source != owner_of(*id))
+    {
+        return Err("owned-content conflict: removal writer is not owner".into());
+    }
     let old = entries(&before)?;
     let new = entries(&after)?;
     for id in old.keys().chain(new.keys()) {
         if old.get(id) == new.get(id) {
             continue;
         }
-        let salt = (id.0 >> 48) as u16;
-        let owner = new_owners
-            .get(&salt)
-            .or_else(|| old_owners.get(&salt))
-            .map_or(authority, String::as_str);
-        // The pinned room governor republishes accepted multi-owner history in
-        // its durable checkpoint, including to governance-first/reconnecting peers.
-        let checkpoint = source == authority;
-        if !checkpoint && source != owner {
+        if !checkpoint && source != owner_of(id.0) {
             return Err("owned-content conflict: topology writer is not owner".into());
         }
         if id.1 == 2
@@ -241,6 +266,31 @@ mod tests {
         bad.put(strip, "name", "Stolen").unwrap();
         bad.commit();
         assert!(validate(Some(&after), &bad, &other, &authority).is_err());
+    }
+    /// A window's removal is recorded by the member that owns it, as its
+    /// entry is written: another member recording it is refused.
+    #[test]
+    fn only_a_windows_owner_records_its_removal() {
+        let authority = "aa".repeat(32);
+        let member = "bb".repeat(32);
+        let other = "cc".repeat(32);
+        let mut before = AutoCommit::new();
+        let owners = before
+            .put_object(ROOT, "contents_owners_v1", ObjType::Map)
+            .unwrap();
+        before.put(&owners, "0002", member.as_str()).unwrap();
+        before.put(&owners, "0003", other.as_str()).unwrap();
+        before.commit();
+        let mut after = before.clone();
+        let removed = after.put_object(ROOT, "removed_v1", ObjType::Map).unwrap();
+        after.put(&removed, "0002000000000007", 1_u64).unwrap();
+        after.commit();
+        assert!(validate(Some(&before), &after, &member, &authority).is_ok());
+        assert!(
+            validate(Some(&before), &after, &other, &authority)
+                .unwrap_err()
+                .contains("removal writer")
+        );
     }
     #[test]
     fn even_pinned_authority_cannot_rebind_a_live_record_route() {

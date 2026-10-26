@@ -17,9 +17,7 @@ use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 use tilo_sort::CompactSort as _;
 
 use crate::app::AppKind;
-use crate::ids::{
-    GroupId, RESERVED_SALT, RoomId, StripId, TabId, WorkspaceId, counter_of, peer_salt_of,
-};
+use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId, counter_of, peer_salt_of};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
@@ -32,6 +30,12 @@ pub const ROOM_ID_KEY: &str = "room";
 pub const ROOM_NAME_KEY: &str = "name";
 /// Key of the room owner's user id.
 pub const ROOM_OWNER_KEY: &str = "owner";
+/// Key of the room's removal record: the contents key of every strip, group
+/// or tab taken out of the workspace, written by whoever took it out. An
+/// entry missing from `contents` is gone only when this records it; a
+/// document that simply never carried it (a new room's first document, one
+/// a window has not been published to yet) takes nothing away.
+pub const ROOM_REMOVED_KEY: &str = "removed_v1";
 /// Key of the map from topology namespace (a peer salt as four hex digits)
 /// to the device key (64 hex digits) that owns it.
 pub const ROOM_CONTENTS_OWNERS_KEY: &str = "contents_owners_v1";
@@ -174,8 +178,10 @@ fn sweep_stale(
     containers: &[automerge::ObjId],
     live: &std::collections::HashSet<String>,
     mine: &impl Fn(u64) -> bool,
+    kept: &mut std::collections::HashSet<u64>,
 ) {
     use automerge::transaction::Transactable;
+    kept.extend(live.iter().filter_map(|key| contents_key_id(key)));
     for container in containers {
         let stale: Vec<String> = doc
             .keys(container)
@@ -685,6 +691,13 @@ pub fn project_owned_contents(
         peer_salt_of(id) == local_salt && share_floor.is_none_or(|floor| counter_of(id) >= floor)
     };
 
+    // What of ours the document held before: whatever of it this
+    // projection no longer keeps has left the workspace, and is recorded as
+    // removed.
+    let mut gone: Vec<u64> = content_ids(doc);
+    gone.retain(|id| mine(*id));
+    let mut kept: HashSet<u64> = HashSet::new();
+
     let contents_all = map_candidates(doc, &ROOT, ROOM_CONTENTS_KEY);
     let contents_id = winner_or_create(doc, &contents_all, &ROOT, ROOM_CONTENTS_KEY)?;
     let contents_all = or_created(contents_all, &contents_id);
@@ -729,10 +742,76 @@ pub fn project_owned_contents(
         // A strip whose groups cannot be written is skipped; the sweep
         // below still runs.
         let strip_all = or_created(strip_all, &strip_entry);
-        let _ = project_owned_groups_in(doc, &strip_all, strip, &mine);
+        let _ = project_owned_groups_in(doc, &strip_all, strip, &mine, &mut kept);
     }
-    sweep_stale(doc, &contents_all, &live_strips, &mine);
+    sweep_stale(doc, &contents_all, &live_strips, &mine, &mut kept);
+    gone.retain(|id| !kept.contains(id));
+    record_removals(doc, &gone, &kept)
+}
+
+/// Every strip, group and tab id in `doc`'s `contents`, joined across
+/// concurrent containers at every level.
+fn content_ids(doc: &AutoCommit) -> Vec<u64> {
+    let mut out = Vec::new();
+    let contents = map_candidates(doc, &automerge::ROOT, ROOM_CONTENTS_KEY);
+    for (strip, strip_copies) in joined_entries(doc, &contents) {
+        out.push(strip);
+        let groups = child_candidates(doc, &strip_copies, "groups");
+        for (group, group_copies) in joined_entries(doc, &groups) {
+            out.push(group);
+            let tabs = child_candidates(doc, &group_copies, "tabs");
+            out.extend(joined_entries(doc, &tabs).into_iter().map(|(tab, _)| tab));
+        }
+    }
+    out
+}
+
+/// Record `removed` in the room's removal record ([`ROOM_REMOVED_KEY`]),
+/// and take every id in `live` out of it: an entry published again is in
+/// the workspace again.
+fn record_removals(
+    doc: &mut AutoCommit,
+    removed: &[u64],
+    live: &std::collections::HashSet<u64>,
+) -> Result<(), automerge::AutomergeError> {
+    use automerge::{ROOT, transaction::Transactable as _};
+    let all = map_candidates(doc, &ROOT, ROOM_REMOVED_KEY);
+    if all.is_empty() && removed.is_empty() {
+        return Ok(());
+    }
+    for map in &all {
+        let revived: Vec<String> = doc
+            .keys(map)
+            .filter(|key| contents_key_id(key).is_some_and(|id| live.contains(&id)))
+            .collect();
+        for key in revived {
+            doc.delete(map, key.as_str())?;
+        }
+    }
+    if removed.is_empty() {
+        return Ok(());
+    }
+    let map = winner_or_create(doc, &all, &ROOT, ROOM_REMOVED_KEY)?;
+    for id in removed {
+        let key = contents_key(*id);
+        if doc.get(&map, key.as_str())?.is_none() {
+            doc.put(&map, key.as_str(), 1_u64)?;
+        }
+    }
     Ok(())
+}
+
+/// Every id the room's removal record ([`ROOM_REMOVED_KEY`]) holds, joined
+/// across concurrently created records.
+pub fn removed_of(doc: &AutoCommit) -> std::collections::BTreeSet<u64> {
+    map_candidates(doc, &automerge::ROOT, ROOM_REMOVED_KEY)
+        .iter()
+        .flat_map(|map| {
+            doc.keys(map)
+                .filter_map(|key| contents_key_id(&key))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Publish `strip`, at position `order`, as a strip kept while empty
@@ -767,31 +846,17 @@ pub fn retain_owned_strip(
     Ok(true)
 }
 
-/// [`project_owned_contents`]'s per-strip pass: get-or-create
-/// `strip_entry`'s `groups` map, project every group this machine owns
-/// (or owns a tab within), then sweep group keys this machine owns
-/// that no longer appear among `strip`'s groups.
-///
-/// # Errors
-///
-/// The document's error when a map this projection needs cannot be
-/// created.
-pub fn project_owned_groups(
-    doc: &mut AutoCommit,
-    strip_entry: &automerge::ObjId,
-    strip: &Strip,
-    mine: &impl Fn(u64) -> bool,
-) -> Result<(), automerge::AutomergeError> {
-    project_owned_groups_in(doc, std::slice::from_ref(strip_entry), strip, mine)
-}
-
-/// [`project_owned_groups`] over every candidate entry of one strip (the
-/// first is the one written to).
+/// [`project_owned_contents`]'s per-strip pass over every candidate entry
+/// of one strip (the first is the one written to): get-or-create its
+/// `groups` map, project every group this machine owns (or owns a tab
+/// within), then sweep group keys this machine owns that no longer appear
+/// among `strip`'s groups.
 fn project_owned_groups_in(
     doc: &mut AutoCommit,
     strip_entries: &[automerge::ObjId],
     strip: &Strip,
     mine: &impl Fn(u64) -> bool,
+    kept: &mut std::collections::HashSet<u64>,
 ) -> Result<(), automerge::AutomergeError> {
     use std::collections::HashSet;
 
@@ -827,37 +892,22 @@ fn project_owned_groups_in(
         }
 
         let group_copies = or_created(group_copies, &group_entry);
-        let _ = project_owned_tabs_in(doc, &group_copies, group, mine);
+        let _ = project_owned_tabs_in(doc, &group_copies, group, mine, kept);
     }
-    sweep_stale(doc, &groups_all, &live_groups, mine);
+    sweep_stale(doc, &groups_all, &live_groups, mine, kept);
     Ok(())
 }
 
-/// [`project_owned_groups`]'s per-group pass: get-or-create
-/// `group_entry`'s `tabs` map, project every tab this machine owns,
-/// then sweep tab keys this machine owns that no longer appear among
-/// `group`'s tabs.
-///
-/// # Errors
-///
-/// The document's error when a map this projection needs cannot be
-/// created.
-pub fn project_owned_tabs(
-    doc: &mut AutoCommit,
-    group_entry: &automerge::ObjId,
-    group: &WindowGroup,
-    mine: &impl Fn(u64) -> bool,
-) -> Result<(), automerge::AutomergeError> {
-    project_owned_tabs_in(doc, std::slice::from_ref(group_entry), group, mine)
-}
-
-/// [`project_owned_tabs`] over every candidate entry of one group (the
-/// first is the one written to).
+/// [`project_owned_groups_in`]'s per-group pass over every candidate entry
+/// of one group (the first is the one written to): get-or-create its `tabs`
+/// map, project every tab this machine owns, then sweep tab keys this
+/// machine owns that no longer appear among `group`'s tabs.
 fn project_owned_tabs_in(
     doc: &mut AutoCommit,
     group_entries: &[automerge::ObjId],
     group: &WindowGroup,
     mine: &impl Fn(u64) -> bool,
+    kept: &mut std::collections::HashSet<u64>,
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::{ScalarValue, transaction::Transactable};
     use std::collections::HashSet;
@@ -902,7 +952,7 @@ fn project_owned_tabs_in(
             }
         }
     }
-    sweep_stale(doc, &tabs_all, &live_tabs, mine);
+    sweep_stale(doc, &tabs_all, &live_tabs, mine, kept);
     Ok(())
 }
 
@@ -1025,16 +1075,95 @@ pub fn owned_contents_digest(doc: Option<&AutoCommit>, local_salt: u16) -> Vec<(
     out
 }
 
+/// What folding a room document reads besides one entry's own record: which
+/// entries this reader writes to the room itself, and where the document
+/// says the others are.
+pub struct Fold<'a> {
+    /// Whether this reader publishes the entry `id` itself: its record in the
+    /// document is downstream of this reader's tree, so the tree's copy wins
+    /// over it, and the tree's absence of it is a removal not projected yet.
+    pub authored: &'a dyn Fn(u64) -> bool,
+    /// The document's removal record ([`removed_of`]).
+    pub removed: &'a std::collections::BTreeSet<u64>,
+    /// Every group the document's `contents` places, in any strip.
+    pub groups: &'a std::collections::BTreeSet<u64>,
+    /// Every tab the document's `contents` places, in any group.
+    pub tabs: &'a std::collections::BTreeSet<u64>,
+}
+
+impl Fold<'_> {
+    /// Whether an entry of the tree that is missing from where the document
+    /// would hold it has left: the document records it removed, or places
+    /// it elsewhere among `placed`, and this reader is not the one that
+    /// writes it. An entry the document never carried stays, whoever minted
+    /// it.
+    fn gone(&self, id: u64, placed: &std::collections::BTreeSet<u64>) -> bool {
+        !(self.authored)(id) && (self.removed.contains(&id) || placed.contains(&id))
+    }
+
+    /// [`Self::gone`] for a strip, which no document places anywhere else.
+    fn strip_gone(&self, id: u64) -> bool {
+        !(self.authored)(id) && self.removed.contains(&id)
+    }
+
+    /// [`Self::gone`] for a group.
+    fn group_gone(&self, id: u64) -> bool {
+        self.gone(id, self.groups)
+    }
+
+    /// [`Self::gone`] for a tab.
+    fn tab_gone(&self, id: u64) -> bool {
+        self.gone(id, self.tabs)
+    }
+
+    /// `group` without what has left ([`Self::gone`]): its tabs, and the
+    /// group itself once it holds no other. `None` when nothing of it stays;
+    /// `changed` is set when anything went.
+    fn prune_group(&self, mut group: WindowGroup, changed: &mut bool) -> Option<WindowGroup> {
+        let before = group.tabs.len();
+        group.tabs.retain(|tab| !self.tab_gone(tab.id));
+        if group.tabs.len() != before {
+            *changed = true;
+            group
+                .focus_history
+                .retain(|id| group.tabs.iter().any(|tab| tab.id == *id));
+            if !group.tabs.iter().any(|tab| tab.id == group.active_tab)
+                && let Some(first) = group.tabs.first()
+            {
+                group.active_tab = first.id;
+            }
+        } else if group.tabs.is_empty() && !self.group_gone(group.id) {
+            return Some(group);
+        }
+        if group.tabs.is_empty() {
+            *changed = true;
+            return None;
+        }
+        Some(group)
+    }
+
+    /// [`Self::prune_group`] over every group of `strip`. Reports whether
+    /// anything went.
+    fn prune(&self, strip: &mut Strip) -> bool {
+        let mut changed = false;
+        strip.window_groups = std::mem::take(&mut strip.window_groups)
+            .into_iter()
+            .filter_map(|group| self.prune_group(group, &mut changed))
+            .collect();
+        changed
+    }
+}
+
 /// Reconcile one strip against what the room document says about it.
 pub fn merge_strip(
     mut local: Strip,
     rep: ReplicatedStrip,
-    is_local: &dyn Fn(u64) -> bool,
+    fold: &Fold<'_>,
     changed: &mut bool,
 ) -> Strip {
     // A name is only taken from the document for a strip we do not
-    // own; ours is ours to write.
-    if !is_local(local.id.raw())
+    // write; ours is ours to write.
+    if !(fold.authored)(local.id.raw())
         && let Some(name) = rep.name
         && local.name != name
     {
@@ -1053,15 +1182,25 @@ pub fn merge_strip(
         let gid = group.id;
         match by_group.remove(&gid) {
             Some(rep) => {
-                let order = if is_local(gid) { i as u64 } else { rep.order };
-                out.push((order, gid, merge_group(group, rep, is_local, changed)));
+                let order = if (fold.authored)(gid) {
+                    i as u64
+                } else {
+                    rep.order
+                };
+                out.push((order, gid, merge_group(group, rep, fold, changed)));
             }
-            None if is_local(gid) => out.push((i as u64, gid, group)),
-            None => *changed = true,
+            // Not here in the document: kept unless it has left, with
+            // whatever of it has not.
+            None => {
+                if let Some(group) = fold.prune_group(group, changed) {
+                    out.push((i as u64, gid, group));
+                }
+            }
         }
     }
     for (gid, rep) in by_group {
-        if is_local(gid) {
+        // Ours and not here: closed or moved here, and not projected yet.
+        if (fold.authored)(gid) {
             continue;
         }
         out.push((rep.order, gid, hydrate_group(rep)));
@@ -1083,7 +1222,7 @@ pub fn merge_strip(
 pub fn merge_group(
     mut local: WindowGroup,
     rep: ReplicatedGroup,
-    is_local: &dyn Fn(u64) -> bool,
+    fold: &Fold<'_>,
     changed: &mut bool,
 ) -> WindowGroup {
     // Geometry and maximization remain exactly as this device last set
@@ -1096,11 +1235,12 @@ pub fn merge_group(
     let mut out: Vec<(u64, u64, Tab)> = Vec::new();
     for (i, tab) in std::mem::take(&mut local.tabs).into_iter().enumerate() {
         let tid = tab.id;
+        let authored = (fold.authored)(tid);
         match by_tab.remove(&tid) {
             Some(rep) => {
-                let order = if is_local(tid) { i as u64 } else { rep.order };
+                let order = if authored { i as u64 } else { rep.order };
                 let mut tab = tab;
-                if !is_local(tid) {
+                if !authored {
                     if tab.title != rep.title {
                         tab.title.clone_from(&rep.title);
                         *changed = true;
@@ -1119,12 +1259,12 @@ pub fn merge_group(
                 }
                 out.push((order, tid, tab));
             }
-            None if is_local(tid) => out.push((i as u64, tid, tab)),
-            None => *changed = true,
+            None if fold.tab_gone(tid) => *changed = true,
+            None => out.push((i as u64, tid, tab)),
         }
     }
     for (tid, rep) in by_tab {
-        if is_local(tid) {
+        if (fold.authored)(tid) {
             continue;
         }
         out.push((rep.order, tid, hydrate_tab(rep)));
@@ -1341,24 +1481,27 @@ pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
 /// Who is folding a room document into their tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reader {
-    /// A peer that publishes into the room under this salt: entries carrying
-    /// it are its own, never overwritten or dropped by the document, and so
-    /// are entries in no namespace (salt `0`) or the reserved one, which no
-    /// member publishes.
-    /// Salt `0` has no id space, so an owner under it merges nothing.
+    /// A peer that publishes into the room under this salt: the entries it
+    /// writes there are its own, never overwritten by the document, and an
+    /// entry of its own the document holds but its tree does not was closed
+    /// here and is not projected yet.
     Owner(u16),
-    /// A read-only viewer owns no topology namespace (not even salt `0`):
-    /// the document is the whole truth about the room's windows.
+    /// A read-only viewer publishes nothing: the document is the whole truth
+    /// about the room's windows.
     Viewer,
 }
 
-/// Fold the room document's `contents` into the cached workspace
-/// addressing `room`, reporting whether anything changed. Entries
-/// this machine owns are never overwritten, dropped or brought back —
-/// the document is downstream of the cache, so reading one back could
-/// only revert an unprojected local change (a window closed here would
-/// reopen); a peer's entries are taken from the document and dropped
-/// when absent.
+/// Fold the room document `doc`'s contents into the cached workspace
+/// addressing `room`, reporting whether anything changed.
+///
+/// What the workspace holds is the document's to say, whoever minted it: an
+/// entry the document carries is taken in, and one it does not stays unless
+/// the document records it removed ([`removed_of`]) or places it elsewhere.
+/// A document that never carried an entry, such as a room's first one,
+/// takes nothing away. Entries this reader writes itself
+/// ([`Reader::Owner`]) are never overwritten or brought back: the document
+/// is downstream of the cache for them, so reading one back could only
+/// revert an unprojected local change.
 ///
 /// `active_tab` is never read from the document: it stays put unless
 /// gone, and a group arriving from a peer opens on its
@@ -1368,26 +1511,33 @@ pub enum Reader {
 pub fn merge_room_contents(
     desktop: &mut DesktopTree,
     room: RoomId,
-    replicated: Vec<ReplicatedStrip>,
+    doc: &AutoCommit,
     reader: Reader,
 ) -> bool {
-    let local_salt = match reader {
-        Reader::Owner(0) => return false,
-        Reader::Owner(salt) => Some(salt),
-        Reader::Viewer => None,
-    };
-    // Only an id in another device's namespace is another member's, for the
-    // document to bring and take away. One in no namespace (salt `0`,
-    // minted before this device had a salt) or in the reserved one (a
-    // Lounge strip version 3 derived) is no member's to publish, since the
-    // projection writes only its owner's salt; it is held here alone, and a
-    // document that lacks it never says it is gone.
-    let is_local = |id: u64| {
-        local_salt.is_some_and(|salt| [0, RESERVED_SALT, salt].contains(&peer_salt_of(id)))
+    let authored = |id: u64| match reader {
+        Reader::Owner(salt) => peer_salt_of(id) == salt,
+        Reader::Viewer => false,
     };
 
     let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room() == room) else {
         return false;
+    };
+    let replicated = contents_of(doc);
+    let removed = removed_of(doc);
+    let groups: std::collections::BTreeSet<u64> = replicated
+        .iter()
+        .flat_map(|strip| strip.groups.iter().map(|group| group.id))
+        .collect();
+    let tabs: std::collections::BTreeSet<u64> = replicated
+        .iter()
+        .flat_map(|strip| &strip.groups)
+        .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
+        .collect();
+    let fold = Fold {
+        authored: &authored,
+        removed: &removed,
+        groups: &groups,
+        tabs: &tabs,
     };
     let mut changed = false;
     let prior_strip_order: Vec<StripId> = ws.strips.iter().map(|strip| strip.id).collect();
@@ -1398,10 +1548,10 @@ pub fn merge_room_contents(
     // same document, and merging a document again changes nothing. Every
     // strip the document carries stands at the position it was published
     // at, `(order, id)`, ours included (it is where our last projection put
-    // it, and no command reorders strips); and a strip the document does not carry (ours, not published yet)
-    // goes back to the index it stood at. Mixing our cache's indices with
-    // published positions instead re-sorted the strips on every merge of
-    // an unchanged document, and each re-sort re-projected our positions
+    // it, and no command reorders strips); and a strip the document does not
+    // carry goes back to the index it stood at. Mixing our cache's indices
+    // with published positions instead re-sorted the strips on every merge
+    // of an unchanged document, and each re-sort re-projected our positions
     // for the others to re-sort again.
     let mut published: Vec<(u64, u64, Strip)> = Vec::new();
     let mut kept: Vec<(usize, Strip)> = Vec::new();
@@ -1410,34 +1560,31 @@ pub fn merge_room_contents(
     // snapshot, since `ws.strips` is about to be overwritten with the
     // merged result.
     let mut vanished: Vec<StripId> = Vec::new();
-    for (i, strip) in std::mem::take(&mut ws.strips).into_iter().enumerate() {
+    for (i, mut strip) in std::mem::take(&mut ws.strips).into_iter().enumerate() {
         let sid = strip.id.raw();
         match by_strip.remove(&sid) {
-            // Ours and simply not published: the document has no say over
-            // it.
-            None if is_local(sid) => kept.push((i, strip)),
-            // A foreign strip no longer being merged in goes, but for the
-            // windows of ours in it: they are ours to publish, and the
-            // document lost them only with the strip.
+            // Not in the document: it stays, with whatever of it has not
+            // left; a strip that has left stays only while it still holds
+            // windows that have not.
             None => {
-                if let Some((strip, dropped)) = keep_own_windows(strip, &is_local) {
-                    changed |= dropped;
-                    kept.push((i, strip));
-                } else {
+                changed |= fold.prune(&mut strip);
+                if fold.strip_gone(sid) && strip.window_groups.is_empty() {
                     changed = true;
                     vanished.push(StripId::from(sid));
+                } else {
+                    kept.push((i, strip));
                 }
             }
             Some(rep) => {
                 let order = rep.order;
-                let merged = merge_strip(strip, rep, &is_local, &mut changed);
+                let merged = merge_strip(strip, rep, &fold, &mut changed);
                 published.push((order, sid, merged));
             }
         }
     }
     for (sid, rep) in by_strip {
         // Ours and gone from the cache: closed here and not projected yet.
-        if is_local(sid) {
+        if authored(sid) {
             continue;
         }
         let order = rep.order;
@@ -1476,34 +1623,6 @@ pub fn merge_room_contents(
         desktop.active_group.remove(&strip);
     }
     changed
-}
-
-/// `strip`, a peer's, cut down to the windows of ours it holds: the groups
-/// we own and our tabs in the others. `None` when it holds none; otherwise
-/// whether anything was cut.
-fn keep_own_windows(mut strip: Strip, is_local: &dyn Fn(u64) -> bool) -> Option<(Strip, bool)> {
-    let before: usize = strip
-        .window_groups
-        .iter()
-        .map(|group| group.tabs.len())
-        .sum();
-    strip.window_groups.retain_mut(|group| {
-        if !is_local(group.id) {
-            group.tabs.retain(|tab| is_local(tab.id));
-            if let Some(first) = group.tabs.first()
-                && !group.tabs.iter().any(|tab| tab.id == group.active_tab)
-            {
-                group.active_tab = first.id;
-            }
-        }
-        !group.tabs.is_empty()
-    });
-    let after: usize = strip
-        .window_groups
-        .iter()
-        .map(|group| group.tabs.len())
-        .sum();
-    (after > 0).then_some((strip, after != before))
 }
 
 /// The room a candidate document says it describes, when it names a valid
@@ -1585,7 +1704,7 @@ pub fn apply_admitted_room(
     let presets = workspace_presets_of(doc);
     let reprofiled = workspace.presets != presets;
     workspace.presets = presets;
-    let changed = merge_room_contents(tree, room, contents_of(doc), Reader::Viewer);
+    let changed = merge_room_contents(tree, room, doc, Reader::Viewer);
     Ok(changed || renamed || reshortcut || reprofiled)
 }
 
@@ -1981,23 +2100,13 @@ mod tests {
                 .map(|s| s.name.clone())
                 .collect()
         };
-        assert!(merge_room_contents(
-            &mut a,
-            room,
-            contents_of(&doc),
-            Reader::Owner(A)
-        ));
-        assert!(merge_room_contents(
-            &mut b,
-            room,
-            contents_of(&doc),
-            Reader::Owner(B)
-        ));
+        assert!(merge_room_contents(&mut a, room, &doc, Reader::Owner(A)));
+        assert!(merge_room_contents(&mut b, room, &doc, Reader::Owner(B)));
         assert_eq!(names(&a), names(&b), "one order for every member");
         assert_eq!(names(&a).len(), 3);
         for (tree, salt) in [(&mut a, A), (&mut b, B)] {
             assert!(
-                !merge_room_contents(tree, room, contents_of(&doc), Reader::Owner(salt)),
+                !merge_room_contents(tree, room, &doc, Reader::Owner(salt)),
                 "merging the same document again changes nothing"
             );
         }
@@ -2026,12 +2135,7 @@ mod tests {
         )
         .expect("projected");
 
-        assert!(merge_room_contents(
-            &mut b,
-            room,
-            contents_of(&doc),
-            Reader::Owner(B)
-        ));
+        assert!(merge_room_contents(&mut b, room, &doc, Reader::Owner(B)));
         let strips = &b.workspaces[0].strips;
         assert!(
             strips
@@ -2052,46 +2156,206 @@ mod tests {
         );
     }
 
-    /// Windows restored from before this device had an id salt carry no
-    /// namespace, and a used version 3 Lounge the reserved one; no member
-    /// publishes either: a room document that does not show them leaves them
-    /// where they are, so the workspace never reads as empty while they are
-    /// open.
+    /// Every tab id in the room's workspace in `tree`.
+    fn tab_ids(tree: &crate::tree::DesktopTree) -> Vec<u64> {
+        tree.workspaces[0]
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect()
+    }
+
+    /// A workspace's windows are its own whoever minted them: a document
+    /// that does not carry them (a room's first one, one a peer published
+    /// other windows to) takes none away, for a member under any salt and
+    /// for a viewer.
     #[test]
-    fn windows_no_member_publishes_stay_when_the_room_does_not_show_them() {
-        for unowned in [0, RESERVED_SALT] {
-            unowned_windows_stay(unowned);
+    fn windows_minted_under_any_salt_survive_a_merge() {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        for minted in [0, 1, A, B, 0x0A51, 0xF276, crate::ids::RESERVED_SALT] {
+            for reader in [Reader::Owner(B), Reader::Owner(0x0A51), Reader::Viewer] {
+                let room = RoomId::new();
+                let mut restored = Strip::new(StripId(compose_id(minted, 1)), "Main");
+                restored
+                    .window_groups
+                    .push(canvas_group(minted, 4, "Notes"));
+                restored
+                    .window_groups
+                    .push(canvas_group(minted, 5, "Canvas"));
+                let mut tree = room_desktop(room, 1, vec![restored]);
+                let held = tab_ids(&tree);
+
+                let mut other = Strip::new(StripId(compose_id(A, 100)), "Theirs");
+                other.window_groups.push(canvas_group(A, 110, "Sketch"));
+                other.window_groups.push(canvas_group(A, 111, "Closed"));
+                let mut published = AutoCommit::new();
+                project_owned_contents(
+                    &mut published,
+                    std::slice::from_ref(&other),
+                    A,
+                    None,
+                    EmptyStrips::Skip,
+                )
+                .expect("projected");
+                // A takes one of its own windows out: the document records
+                // a removal, of A's window only.
+                other.window_groups.truncate(1);
+                project_owned_contents(&mut published, &[other], A, None, EmptyStrips::Skip)
+                    .expect("projected");
+
+                for document in [AutoCommit::new(), published] {
+                    merge_room_contents(&mut tree, room, &document, reader);
+                    let now = tab_ids(&tree);
+                    for id in &held {
+                        assert!(
+                            now.contains(id),
+                            "window {id:#x} minted under {minted:#x} stays for {reader:?}: {now:x?}"
+                        );
+                    }
+                }
+            }
         }
     }
 
-    fn unowned_windows_stay(unowned: u16) {
+    /// Two devices that mint while apart never name two windows alike, and a
+    /// room both publish into holds every window of both, for each of them.
+    #[test]
+    fn two_devices_minting_offline_never_collide() {
+        let salts = [
+            crate::ids::device_salt(0x0A51),
+            crate::ids::device_salt(0xF276),
+        ];
+        let room = RoomId::new();
+        let mut trees: Vec<crate::tree::DesktopTree> = Vec::new();
+        let mut minted: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+        let mut total = 0_usize;
+        for (device, salt) in salts.into_iter().enumerate() {
+            let mut ids = crate::ids::IdMinter::new(salt);
+            let mut strip = Strip::new(StripId(ids.mint()), "Main");
+            for n in 0..200 {
+                let mut group = canvas_group(0, 0, &format!("window {n}"));
+                group.id = ids.mint();
+                group.tabs[0].id = ids.mint();
+                group.active_tab = group.tabs[0].id;
+                strip.window_groups.push(group);
+            }
+            let tree = room_desktop(room, device as u64 + 1, vec![strip]);
+            for strip in &tree.workspaces[0].strips {
+                minted.insert(strip.id.raw());
+                for group in &strip.window_groups {
+                    minted.insert(group.id);
+                    minted.extend(group.tabs.iter().map(|tab| tab.id));
+                }
+            }
+            total += 1 + 200 * 2;
+            trees.push(tree);
+        }
+        assert_eq!(minted.len(), total, "no id was minted twice");
+
+        // Each publishes into its own copy of the room while apart; the
+        // copies then meet.
+        let mut docs: Vec<AutoCommit> = trees
+            .iter()
+            .zip(salts)
+            .map(|(tree, salt)| {
+                let mut doc = AutoCommit::new();
+                project_owned_contents(
+                    &mut doc,
+                    &tree.workspaces[0].strips,
+                    salt,
+                    None,
+                    EmptyStrips::Skip,
+                )
+                .expect("projected");
+                doc
+            })
+            .collect();
+        let mut theirs = docs.pop().expect("two documents");
+        let mut joined = docs.pop().expect("two documents");
+        joined.merge_incoming(&mut theirs).expect("merged");
+        let windows: std::collections::BTreeSet<u64> = trees.iter().flat_map(tab_ids).collect();
+        for (tree, salt) in trees.iter_mut().zip(salts) {
+            merge_room_contents(tree, room, &joined, Reader::Owner(salt));
+            let held: std::collections::BTreeSet<u64> = tab_ids(tree).into_iter().collect();
+            assert_eq!(held, windows, "device {salt:#x} holds every window of both");
+        }
+    }
+
+    /// A window taken out of the workspace stays out: merging the document
+    /// that records it gone, again and again, from a tree that still held
+    /// it or from one restored from before, never brings it back.
+    #[test]
+    fn a_window_removed_in_the_workspace_stays_removed_after_a_merge() {
         const A: u16 = 0x1111;
         const B: u16 = 0x2222;
         let room = RoomId::new();
-        let mut restored = Strip::new(StripId(compose_id(unowned, 1)), "Main");
-        restored
-            .window_groups
-            .push(canvas_group(unowned, 4, "Notes"));
-        let mut b = room_desktop(room, 1, vec![restored.clone()]);
-        let mut other = Strip::new(StripId(compose_id(A, 1)), "Theirs");
-        other.window_groups.push(canvas_group(A, 10, "Sketch"));
+        let mut strip = Strip::new(StripId(compose_id(A, 1)), "Main");
+        strip.window_groups.push(canvas_group(A, 10, "Notes"));
+        strip.window_groups.push(canvas_group(A, 11, "Terminal"));
+        let mut a = room_desktop(room, 1, vec![strip]);
         let mut doc = AutoCommit::new();
-        project_owned_contents(&mut doc, &[other], A, None, EmptyStrips::Skip).expect("projected");
+        project_owned_contents(
+            &mut doc,
+            &a.workspaces[0].strips,
+            A,
+            None,
+            EmptyStrips::Skip,
+        )
+        .expect("projected");
 
-        for document in [AutoCommit::new(), doc] {
-            merge_room_contents(&mut b, room, contents_of(&document), Reader::Owner(B));
-            let workspace = &b.workspaces[0];
-            assert!(workspace.has_windows(), "the restored window stays");
-            assert!(
-                workspace.strips.iter().any(|strip| strip.id == restored.id
-                    && strip.window_groups.iter().any(|group| group
-                        .tabs
-                        .iter()
-                        .any(|tab| tab.id == compose_id(unowned, 4)))),
-                "the restored Notes tab under salt {unowned:#x} stays in its strip: {:?}",
-                workspace.strips
-            );
+        let mut b = room_desktop(room, 2, vec![Strip::new(StripId(compose_id(B, 1)), "Mine")]);
+        merge_room_contents(&mut b, room, &doc, Reader::Owner(B));
+        assert!(tab_ids(&b).contains(&compose_id(A, 10)));
+        // A device restored from a state file saved now, and a viewer, both
+        // still holding the window once it goes.
+        let restored = b.clone();
+        let mut viewer = a.clone();
+
+        a.workspaces[0].strips[0]
+            .window_groups
+            .retain(|group| group.id != compose_id(A, 10));
+        project_owned_contents(
+            &mut doc,
+            &a.workspaces[0].strips,
+            A,
+            None,
+            EmptyStrips::Skip,
+        )
+        .expect("projected");
+        assert!(removed_of(&doc).contains(&compose_id(A, 10)));
+
+        for (tree, reader) in [
+            (&mut b, Reader::Owner(B)),
+            (&mut restored.clone(), Reader::Owner(B)),
+            (&mut restored.clone(), Reader::Owner(0x0A51)),
+            (&mut viewer, Reader::Viewer),
+        ] {
+            for _ in 0..2 {
+                merge_room_contents(tree, room, &doc, reader);
+                let held = tab_ids(tree);
+                assert!(
+                    !held.contains(&compose_id(A, 10)),
+                    "the removed window stays removed for {reader:?}: {held:x?}"
+                );
+                assert!(held.contains(&compose_id(A, 11)), "the other one stays");
+            }
         }
+
+        // B publishing its own windows writes nothing of A's back.
+        project_owned_contents(
+            &mut doc,
+            &b.workspaces[0].strips,
+            B,
+            None,
+            EmptyStrips::Skip,
+        )
+        .expect("projected");
+        let mut late = restored;
+        merge_room_contents(&mut late, room, &doc, Reader::Owner(B));
+        assert!(!tab_ids(&late).contains(&compose_id(A, 10)));
     }
 
     #[test]
@@ -2136,7 +2400,7 @@ mod tests {
                 .map(|group| group.id)
                 .collect()
         };
-        merge_room_contents(&mut a, room, contents_of(&doc), Reader::Owner(A));
+        merge_room_contents(&mut a, room, &doc, Reader::Owner(A));
         assert_eq!(
             windows(&a),
             vec![compose_id(B, 20)],
@@ -2153,11 +2417,13 @@ mod tests {
         let mut strip = Strip::new(StripId(compose_id(A, 1)), "Main");
         strip.window_groups.push(canvas_group(A, 10, "Notes"));
         strip.window_groups.push(canvas_group(B, 20, "Notes, B"));
-        let mut b = room_desktop(room, 2, vec![strip]);
+        let mut b = room_desktop(room, 2, vec![strip.clone()]);
 
-        // A's document no longer has the strip at all.
-        let doc = AutoCommit::new();
-        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        // A published the strip, then took it away with its own window.
+        let mut doc = AutoCommit::new();
+        project_owned_contents(&mut doc, &[strip], A, None, EmptyStrips::Skip).expect("projected");
+        project_owned_contents(&mut doc, &[], A, None, EmptyStrips::Skip).expect("projected");
+        merge_room_contents(&mut b, room, &doc, Reader::Owner(B));
         let strips = &b.workspaces[0].strips;
         assert_eq!(strips.len(), 1, "the strip stays while it holds B's window");
         assert_eq!(
@@ -2220,7 +2486,7 @@ mod tests {
             .expect("the tab is in the room");
         assert_eq!(replicated.title, "Build");
         assert_eq!(replicated.app_title.as_deref(), Some("~/src"));
-        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        merge_room_contents(&mut b, room, &doc, Reader::Owner(B));
         let arrived = find_tab(&b);
         assert_eq!(arrived.title, "Build");
         assert_eq!(arrived.app_title.as_deref(), Some("~/src"));
@@ -2229,7 +2495,7 @@ mod tests {
         let tab = &mut a.workspaces[0].strips[0].window_groups[0].tabs[0];
         tab.set_window_title("cargo test");
         project(&mut doc, &a);
-        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        merge_room_contents(&mut b, room, &doc, Reader::Owner(B));
         assert_eq!(find_tab(&b).title, "Build");
         assert_eq!(find_tab(&b).app_title.as_deref(), Some("cargo test"));
 
@@ -2244,7 +2510,7 @@ mod tests {
                 .all(|t| t.app_title.is_none()),
             "a cleared name leaves nothing behind in the room"
         );
-        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        merge_room_contents(&mut b, room, &doc, Reader::Owner(B));
         let cleared = find_tab(&b);
         assert_eq!(cleared.title, "cargo test");
         assert_eq!(cleared.app_title, None);

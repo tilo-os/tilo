@@ -297,7 +297,7 @@ fn two_peers_projecting_into_empty_documents_both_survive_the_merge() {
         assert!(!tilo_desktop_model::projection::merge_room_contents(
             &mut owner,
             room,
-            contents_of(&a),
+            &a,
             Reader::Owner(ALICE),
         ));
     }

@@ -134,12 +134,28 @@ fn a_device_with_a_former_engines_workspace_starts_and_its_host_places_it_as_it_
 #[test]
 #[serial_test::serial]
 fn a_workspace_of_this_devices_own_no_host_holds_is_placed_with_every_window() {
+    placed_with_every_window(None, 82);
+}
+
+/// The same workspace keeps every window when its windows' ids were minted
+/// under another salt than the one this device runs under: an id names a
+/// window, it does not say whose workspace holds it.
+#[test]
+#[serial_test::serial]
+fn a_workspace_whose_windows_another_salt_minted_is_placed_with_every_window() {
+    placed_with_every_window(Some(LAPTOP_SALT), 83);
+}
+
+/// Place a workspace of this device's own (running under salt `0x0A51`)
+/// holding one window, its ids minted under `minted` (this device's own
+/// salt when `None`), and assert it is placed with that window.
+fn placed_with_every_window(minted: Option<u16>, person: u8) {
     use crate::shell::state::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
     const SALT: u16 = 0x0A51;
     let _home = tilo_test_env::TestHome::new().unwrap();
     let dir = scratch();
     let wakes = Arc::new(Wakes::default());
-    let ada = Person::new(82);
+    let ada = Person::new(person);
     let device_dir = dir.path().join("desktop");
     std::fs::create_dir_all(&device_dir).unwrap();
 
@@ -148,10 +164,15 @@ fn a_workspace_of_this_devices_own_no_host_holds_is_placed_with_every_window() {
     let (local, room) = tree.create_hosted_workspace("Kept");
     // Made and placed once, archived and put back: no host holds it now.
     tree.pending_placements.remove(&room);
-    let tab = tree.mint_id();
-    let group = tree.mint_id();
+    let mut other = minted.map(tilo_desktop_model::ids::IdMinter::new);
+    let mut mint = |tree: &crate::shell::state::WorkspaceTree| match other.as_mut() {
+        Some(other) => other.mint(),
+        None => tree.mint_id(),
+    };
+    let tab = mint(&tree);
+    let group = mint(&tree);
     let strip = Strip {
-        id: StripId(tree.mint_id()),
+        id: StripId(mint(&tree)),
         name: "Main".into(),
         window_groups: vec![WindowGroup {
             id: group,

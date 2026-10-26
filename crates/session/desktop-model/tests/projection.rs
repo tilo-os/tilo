@@ -191,7 +191,7 @@ fn projection_detects_rewrites_and_merges_peer_windows() {
         assert!(merge_room_contents(
             &mut alice,
             room(),
-            contents_of(&bob_doc),
+            &bob_doc,
             Reader::Owner(ALICE)
         ));
         let strips = &alice.workspaces[0].strips;
@@ -211,12 +211,7 @@ fn projection_detects_rewrites_and_merges_peer_windows() {
         );
 
         assert!(
-            !merge_room_contents(
-                &mut alice,
-                room(),
-                contents_of(&bob_doc),
-                Reader::Owner(ALICE)
-            ),
+            !merge_room_contents(&mut alice, room(), &bob_doc, Reader::Owner(ALICE)),
             "merging the same document again changes nothing"
         );
     }

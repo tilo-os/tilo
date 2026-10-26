@@ -1871,9 +1871,6 @@ impl WorkspaceTree {
     /// whether anything changed.
     fn merge_room_contents(&mut self, room: RoomId) -> bool {
         let local_salt = self.local_salt();
-        if local_salt == 0 {
-            return false;
-        }
         let Some(doc) = self.room_docs.get(&room) else {
             return false;
         };
@@ -1900,7 +1897,7 @@ impl WorkspaceTree {
             projection::merge_room_contents(
                 &mut self.desktop,
                 room,
-                projection::contents_of(doc),
+                doc,
                 projection::Reader::Owner(local_salt),
             )
         };

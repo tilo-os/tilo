@@ -24,7 +24,7 @@ fn project_retained(doc: &mut AutoCommit, strips: &[Strip], salt: u16) {
 }
 
 fn merge(tree: &mut DesktopTree, room: RoomId, doc: &AutoCommit, salt: u16) -> bool {
-    merge_room_contents(tree, room, contents_of(doc), Reader::Owner(salt))
+    merge_room_contents(tree, room, doc, Reader::Owner(salt))
 }
 
 fn strip(salt: u64, counter: u64, label: &str) -> Strip {
