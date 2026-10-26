@@ -3634,7 +3634,16 @@ impl ActorState {
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
         self.tally.note(match &event {
             HostEvent::Message { msg, .. } => msg.kind(),
-            HostEvent::NativeInput(_) => "HostNativeInput",
+            HostEvent::NativeInput(input) => match input.message() {
+                NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some() => {
+                    if input.retained() {
+                        "HostSealedReplay"
+                    } else {
+                        "HostSealedLive"
+                    }
+                }
+                _ => "HostNativeInput",
+            },
             HostEvent::Ready => "HostReady",
             HostEvent::Live { .. } => "HostLive",
             HostEvent::Member { .. } => "HostMember",

@@ -1221,9 +1221,10 @@ impl Device {
             |host| {
                 let workspace = tilo_relay::room_workspace_id(&room_id).unwrap();
                 let runtime = net.runtime_handle().unwrap();
-                match runtime.block_on(host.room_records().retained(workspace)) {
-                    Ok(bodies) => format!("{} bodies, {} note writes", bodies.len(), {
-                        bodies
+                let retained = runtime.block_on(host.room_records().retained(workspace));
+                match retained {
+                    Ok(bodies) => {
+                        let authors: Vec<String> = bodies
                             .iter()
                             .filter(|body| {
                                 matches!(
@@ -1232,8 +1233,10 @@ impl Device {
                                         if app_id == NOTES
                                 )
                             })
-                            .count()
-                    }),
+                            .map(|body| hex::encode(&body.author[..2]))
+                            .collect();
+                        format!("{} bodies, note writes by {authors:?}", bodies.len())
+                    }
                     Err(error) => error,
                 }
             },
@@ -1243,20 +1246,24 @@ impl Device {
             let counts = tally.snapshot();
             let count = |kind| counts.get(kind).copied().unwrap_or(0);
             format!(
-                "governor {}, other host {}; host inputs {}, ready {}, closed {}",
+                "governor {}, other host {}; host inputs {}, sealed writes replayed {}, \
+                 live {}; ready {}, closed {}",
                 count("NativeGovernorDial"),
                 count("NativeHostDial"),
                 count("HostNativeInput"),
+                count("HostSealedReplay"),
+                count("HostSealedLive"),
                 count("HostReady"),
                 count("HostClosed"),
             )
         });
         format!(
-            "{}: owner {owner}; holds the room {holds}, sealed {sealed}; note channel {access}; \
+            "{} ({}): owner {owner}; holds the room {holds}, sealed {sealed}; note channel {access}; \
              note {text:?} ({heads} heads, {missing} changes missing, {writes} writes opened, \
              {waiting} waiting); own host retains {retained}; tabs {tabs:?}; \
              sessions {}",
             self.label,
+            hex::encode(&self.key().verifying_key().to_bytes()[..2]),
             dials.unwrap_or_default()
         )
     }
@@ -1298,10 +1305,11 @@ pub(crate) fn until_caught_up<T>(
     probe: impl FnMut() -> Option<T>,
 ) -> T {
     until_or_say(devices, what, probe, || {
-        devices
-            .iter()
-            .map(|device| format!("\n  {}", device.catch_up(room)))
-            .collect()
+        devices.iter().fold(String::new(), |mut said, device| {
+            said.push_str("\n  ");
+            said.push_str(&device.catch_up(room));
+            said
+        })
     })
 }
 
