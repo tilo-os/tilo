@@ -19,7 +19,10 @@ async fn native_cold_code_body_is_admitted_before_local_rendering() {
     Box::pin(super::actual_exchange(false, true, None)).await;
 }
 
-pub(super) fn governor(directory: &Path) -> TestGovernor {
+/// The governor of a room holding the Code record, created and first
+/// written by the source device; with `workspace_emoji`, also the
+/// workspace's emoji record, which that device governs.
+pub(super) fn governor(directory: &Path, workspace_emoji: bool) -> TestGovernor {
     let key = ed25519_dalek::SigningKey::from_bytes(&[0xC1; 32]);
     let identity_key = ed25519_dalek::SigningKey::from_bytes(&[0xC2; 32]);
     let certificate = tilo_joined_room::testing::certificate(&identity_key, &key, "Code source");
@@ -54,6 +57,9 @@ pub(super) fn governor(directory: &Path) -> TestGovernor {
             now,
         )
         .unwrap();
+    if workspace_emoji {
+        create_workspace_emoji(&owner, &certificate, &key, now);
+    }
     owner.reconcile_outgoing(room, &key, now).unwrap();
     // Export a covered, signed cut from the actual native creator. Its
     // initial full snapshots need the matching canonical governance coverage.
@@ -99,6 +105,27 @@ pub(super) fn governor(directory: &Path) -> TestGovernor {
     host.capabilities.can_act_as_host = true;
     tilo_user_identity::sign_device_cert(&mut host, &identity_key).unwrap();
     governor.with_delivery_host(host, host_key).unwrap()
+}
+
+/// Create the workspace's emoji record in the room, empty and signed by the
+/// governing `certificate`, as the room's governor does for the first window
+/// that opens it; each window's genesis of it then reaches it as that
+/// member's own change.
+fn create_workspace_emoji(
+    owner: &NativeWorkspaceOwner,
+    certificate: &DeviceCert,
+    key: &ed25519_dalek::SigningKey,
+    now: SystemTime,
+) {
+    use tilo_app::tilo_workspace_emoji::{KIND, OWNER};
+    let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+    let record = collab_types::workspace_record_id(KIND);
+    let route = ApplicationRecord::declared(OWNER, &record, KIND, &[KIND.into()]).unwrap();
+    assert!(
+        owner
+            .prepare_application_record(room, certificate, key, &route, now)
+            .unwrap()
+    );
 }
 
 #[track_caller]
@@ -206,6 +233,8 @@ fn mount_cold_component(owner: &NativeWorkspaceOwner, identity: &HostIdentity, p
 
 pub(super) struct MountedCode {
     pub app: ui::App,
+    /// The records every app of the room opens, where the window opens them.
+    pub workspace: ui::record::workspace::WorkspaceRecords,
     _broker: crate::shell::collab_broker::BrokerHandle,
     _runtime: tempfile::TempDir,
 }
@@ -263,15 +292,9 @@ pub(super) fn mount_with_network_and_reads(
             .contains("committed read requires launcher custody")
     );
     let manager = connect_manager(&socket, identity, true).unwrap();
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        ui::font_catalog::checkout_root(),
-        "en-US",
-    );
-    let inputs = ui::application::ComponentRunnerInputs {
-        theme: ui::Theme::default(),
-        text_renderer: ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
-    };
+    let inputs = runner_inputs();
     let factories = Cell::new(0_usize);
+    let workspace = RefCell::new(None);
     let admitted = capture(owner, &identity.device_cert);
     let before = admitted.revision;
     let expected_body = body(&AutoCommit::load(&admitted.bytes).unwrap());
@@ -312,6 +335,7 @@ pub(super) fn mount_with_network_and_reads(
                 })
                 .unwrap();
             factories.set(factories.get().saturating_add(1));
+            *workspace.borrow_mut() = context.workspace_records().cloned();
             code_editor::definition().instantiate(context, target, restore)
         },
     )
@@ -328,8 +352,24 @@ pub(super) fn mount_with_network_and_reads(
     );
     MountedCode {
         app,
+        workspace: workspace
+            .into_inner()
+            .expect("the window's host opens the room's workspace records"),
         _broker: broker,
         _runtime: runtime,
+    }
+}
+
+/// What the mounted window's component runs with: the default theme and
+/// the checkout's fonts.
+fn runner_inputs() -> ui::application::ComponentRunnerInputs {
+    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+        ui::font_catalog::checkout_root(),
+        "en-US",
+    );
+    ui::application::ComponentRunnerInputs {
+        theme: ui::Theme::default(),
+        text_renderer: ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
     }
 }
 
