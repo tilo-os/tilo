@@ -273,7 +273,7 @@ mod tests {
     /// serves neither.
     #[test]
     fn the_bridge_context_names_what_the_host_serves() {
-        let (_, cert) = crate::rooms::tests::governor();
+        let (_, cert) = crate::rooms::fixtures::governor();
         assert_eq!(Served::default().context("lounge", &cert), None);
         let served = Served {
             avatars_url: Some("https://rooms.example/avatars".into()),
