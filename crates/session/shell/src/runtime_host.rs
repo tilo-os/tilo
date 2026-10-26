@@ -143,6 +143,11 @@ impl Session {
         let media = tilo_runtime::profile::MediaHost::start(&root.join("content"), &blob_socket)?;
         stage("starting this device's network and room host");
         let mut peer_sync = PeerSync::start(&tree, root)?;
+        if admission_owner.is_some() {
+            // Admission gives the identity read-only: the workspace is
+            // hosted under the identity it selects, writing only the profile.
+            peer_sync.network.hold_identity_selection_as_given();
+        }
         // No frame loop waits here: open the owner before the broker, whose
         // services otherwise answer that it is still opening until it is.
         stage("opening the workspace owner");
