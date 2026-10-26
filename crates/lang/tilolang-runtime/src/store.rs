@@ -6,6 +6,8 @@
 //! ([`Txn`]) and the operations are methods of the store, and the store speaks in
 //! mutations and field values, not documents.
 
+use std::rc::Rc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
@@ -181,12 +183,86 @@ pub fn doc_of(resource: &str) -> &str {
     resource.split_once('/').map_or(resource, |(doc, _)| doc)
 }
 
+/// The items of a collection, in order: what [`Store::listing`] hands out, shared, so a view
+/// reads a collection's length or one item without copying its items.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Listing {
+    pub items: Vec<ItemId>,
+}
+
+impl Listing {
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn get(&self, index: usize) -> Option<&ItemId> {
+        self.items.get(index)
+    }
+}
+
+/// One step of a change to a collection's items, at an index of the listing as the steps
+/// before it left it. A move is a removal and an insertion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Splice {
+    Insert {
+        at: usize,
+        item: ItemId,
+    },
+    /// `item` is the one that was at `at`: a reader checks it before applying the step.
+    Remove {
+        at: usize,
+        item: ItemId,
+    },
+}
+
+/// How a collection's listing changed: the steps, in order, from the listing as the store held
+/// it before the change to the listing after it.
+///
+/// A reader that keeps something per item (the rows of a list, the published children of a
+/// resource) applies the steps instead of comparing every item. It checks them as it goes (a
+/// removal names the item it removes, an insertion must not find its item already there) and
+/// its length against the listing's at the end, and rebuilds from the listing when they do not
+/// fit: what it holds was not the listing the steps start from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListingChange {
+    /// The collection: its resource and field.
+    pub key: FieldKey,
+    pub splices: Vec<Splice>,
+}
+
 /// Which fields of which document changed. An empty field list means "unknown: every field of
 /// every resource of the document may have changed".
+///
+/// A collection whose items changed is named in `fields` like any field; when the store could
+/// say how, `listings` holds the steps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangeSummary {
     pub doc: DocId,
     pub fields: Vec<FieldKey>,
+    pub listings: Vec<ListingChange>,
+}
+
+impl ChangeSummary {
+    /// Every field of `doc` may have changed.
+    pub fn whole(doc: impl Into<DocId>) -> Self {
+        Self {
+            doc: doc.into(),
+            fields: Vec::new(),
+            listings: Vec::new(),
+        }
+    }
+
+    /// The steps that changed the collection `key`, when the store could say.
+    pub fn listing(&self, key: &FieldKey) -> Option<&[Splice]> {
+        self.listings
+            .iter()
+            .find(|change| change.key == *key)
+            .map(|change| change.splices.as_slice())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -249,6 +325,23 @@ pub trait Store {
     ///
     /// `NotFound` for a missing target; `Invalid` when the stored shape does not fit the kind.
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError>;
+
+    /// The items of the collection `field` of `at`, in order, shared: a view reads the length
+    /// or one item of a large collection through this without copying the others. A store that
+    /// keeps what it read hands out what it keeps.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::read`], and `Invalid` for a field that is not a collection.
+    fn listing(&self, at: &ResourceRef, field: &FieldSpec) -> Result<Rc<Listing>, StoreError> {
+        match self.read(at, field)? {
+            FieldValue::Items(items) => Ok(Rc::new(Listing { items })),
+            other => Err(StoreError::Invalid(format!(
+                "field {} is not a collection: {other:?}",
+                field.id
+            ))),
+        }
+    }
 
     /// The notes of a document's changes, oldest first.
     ///
