@@ -15,8 +15,8 @@ from acceptance.checks.window import (  # noqa: E402
     _judge_keyboard_flight,
     judge_switch_lines,
 )
-from acceptance.core import (Unobservable, _parse_trace, frame_stats, parse_switch_lines,  # noqa: E402
-                             transition_stats)
+from acceptance.core import (Unobservable, _parse_trace, frame_stats, parse_cpu_ticks,  # noqa: E402
+                             parse_switch_lines, steal_percent, transition_stats)
 
 HEADER = ("seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,submit_us,testctl_us,"
           "clients_us,sleep_us,painted,present_async,input_latency_us,input_retirement_latency_us,"
@@ -277,3 +277,18 @@ class DemandLatenessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StealTest(unittest.TestCase):
+    STAT = "cpu  100 0 50 800 10 0 5 35 0 0\ncpu0 50 0 25 400 5 0 2 18 0 0\n"
+
+    def test_reads_total_and_steal_from_the_all_cpus_line(self):
+        self.assertEqual(parse_cpu_ticks(self.STAT), (1000, 35))
+
+    def test_no_cpu_line_reads_as_unknown(self):
+        self.assertIsNone(parse_cpu_ticks("intr 1 2 3\n"))
+
+    def test_steal_is_the_share_of_the_cpu_time_between_two_readings(self):
+        self.assertEqual(steal_percent((1000, 35), (1400, 135)), 25.0)
+        self.assertIsNone(steal_percent(None, (1400, 135)))
+        self.assertIsNone(steal_percent((1000, 35), (1000, 35)))
