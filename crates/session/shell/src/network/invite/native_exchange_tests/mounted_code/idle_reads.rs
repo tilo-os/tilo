@@ -20,12 +20,6 @@ use tilo_action_broker::services::{
 /// How long the app is left alone before and while it is measured.
 const SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 const WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
-/// Opens the reader may still make over [`WINDOW`]: it confirms its read
-/// with one Open every 30 s, however idle (ui-core's `AWAIT_KEEPALIVE`, the
-/// bound on how long a wedged owner goes unnoticed), and where that falls
-/// depends on when the app mounted, not on the window. The 200 ms polling
-/// this test guards against makes 25 in the same window.
-const KEEPALIVE_OPENS_IN_WINDOW: usize = 1;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_idle_shared_document_asks_its_owner_nothing() {
@@ -271,7 +265,7 @@ pub(super) async fn run(device: &Device, mounted: &mut Mounted, announced: bool)
         broker_wakeups,
     );
     assert!(
-        idle_captures <= KEEPALIVE_OPENS_IN_WINDOW,
+        idle_captures == 0,
         "an idle shared document was captured {idle_captures} times in {WINDOW:?} ({idle_checks} cheap checks): is its reader polling again?"
     );
     assert_eq!(
