@@ -180,3 +180,7 @@ notes-status-counts = { $notes ->
     [one] 1 word
    *[other] { $words } words
 }
+
+notes-outline = Outline
+notes-outline-empty = No headings
+notes-outline-untitled = Untitled heading

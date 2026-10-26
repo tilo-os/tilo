@@ -179,3 +179,7 @@ notes-status-counts = { $notes ->
     [one] 1 Wort
    *[other] { $words } Wörter
 }
+
+notes-outline = Gliederung
+notes-outline-empty = Keine Überschriften
+notes-outline-untitled = Unbenannte Überschrift
