@@ -12873,15 +12873,26 @@ pub fn run() {
             .host_mut()
             .dictation_surface_mut()
             .needs_original_field();
-        // A shell password prompt takes the keyboard over any window: its
-        // field takes the input method even while an application keeps
-        // focus beneath.
-        let shell_field = (!session.is_locked()
-            && (state.client_input.keyboard_focus().is_none()
-                || frame_builder.host().shell_prompt_up())
-            && (!receipts_only || speech_field_needed))
-            .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
-            .flatten();
+        // Which field the seat's input method serves, and as what. While the
+        // session is locked that is the lock screen's own password field and
+        // nothing else — the one case a field must be served despite the
+        // session being locked, because a password in a composed script cannot
+        // be typed at all otherwise. `field_owner` is that decision, written
+        // and tested on its own.
+        let session_locked = session.is_locked();
+        let owner = crate::compositor::shell_text_input::field_owner(
+            session_locked,
+            state.client_input.keyboard_focus().is_some(),
+            session_locked.then(|| lock.ime_field()).flatten(),
+            frame_builder.host().shell_prompt_up(),
+            receipts_only,
+            speech_field_needed,
+            frame_builder.focused_ime_field(test_control_ctx.focus),
+            test_control_ctx.focus.map(u64::from),
+            frame_builder.host().palette_visible(),
+        );
+        let shell_field = owner.as_ref().map(|(field, _)| field.clone());
+        let owner_id = owner.map(|(_, id)| id);
         if shell_field.is_some() && shell_text_input.is_none() {
             match crate::compositor::shell_text_input::ShellTextInput::connect(&mut state) {
                 Ok(proxy) => shell_text_input = Some(proxy),
@@ -12891,15 +12902,7 @@ pub fn run() {
             }
         }
         if let Some(proxy) = shell_text_input.as_mut() {
-            let identity = if frame_builder.host().palette_visible() {
-                Some(crate::compositor::shell_text_input::NativeFieldId::Palette)
-            } else if frame_builder.host().shell_prompt_up() {
-                Some(crate::compositor::shell_text_input::NativeFieldId::Prompt)
-            } else {
-                test_control_ctx.focus.map(|node| {
-                    crate::compositor::shell_text_input::NativeFieldId::Widget(u64::from(node))
-                })
-            };
+            let identity = owner_id.clone();
             let typed = proxy.sync_for_field(&mut state, shell_field, identity);
             let keys = state.take_shell_field_keys();
             // Text carries the keyboard's modifiers; a virtual keyboard's key
@@ -12910,13 +12913,20 @@ pub fn run() {
                 .chain(keys.iter().map(|(event, modifiers)| (event, *modifiers)))
                 .collect::<Vec<_>>();
             for (event, modifiers) in &delivered {
-                frame_builder.dispatch_event(
-                    event,
-                    modifiers,
-                    &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
-                    &test_control_ctx.root_obj,
-                    &mut test_control_ctx.focus,
-                );
+                if session_locked {
+                    // While locked, the field that took the input method is the
+                    // lock screen's, so that is where its text goes — through
+                    // the same entry point every physical key uses.
+                    let _ = lock.handle_event(event, modifiers);
+                } else {
+                    frame_builder.dispatch_event(
+                        event,
+                        modifiers,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
+                        &test_control_ctx.root_obj,
+                        &mut test_control_ctx.focus,
+                    );
+                }
             }
             if !delivered.is_empty() {
                 injected_redraw_pending = true;
