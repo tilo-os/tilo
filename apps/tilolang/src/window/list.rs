@@ -427,6 +427,15 @@ fn icon(node: &UiNode, name: &str) -> Option<Icon> {
 }
 
 /// The row of one item.
+/// Whether the selection being made comes from a click or a tap the person just made, rather
+/// than the keyboard or an assistive technology.
+fn by_hand() -> bool {
+    matches!(
+        ui::motion::recent_input(ui::time::now()),
+        Some(ui::tokens::MotionSource::Pointer | ui::tokens::MotionSource::Gesture)
+    )
+}
+
 fn row(data: &RowData, requests: &Requests, sink: &EventSink) -> Element {
     let title = data
         .row
@@ -607,11 +616,17 @@ impl ListPane {
         })
         .filling()
         .selection_follows_focus()
-        // Moving through the list shows the item without bringing it to the front of a narrow
-        // window; activating it does.
+        // A click or a tap on a row opens its item: a narrow window pushes it in front, as
+        // selecting an entry of an overview does (HIG §1b). Moving through the list with the
+        // keyboard shows the item without bringing it to the front; Enter does.
         .on_select(move |key, selected| {
             if selected {
-                selecting.borrow_mut().push(Request::Select(key));
+                let request = if by_hand() {
+                    Request::Activate(key)
+                } else {
+                    Request::Select(key)
+                };
+                selecting.borrow_mut().push(request);
             }
         })
         .on_activate(move |key| activating.borrow_mut().push(Request::Activate(key)))

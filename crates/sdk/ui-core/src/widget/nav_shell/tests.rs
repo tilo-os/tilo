@@ -1983,3 +1983,66 @@ fn a_focused_sidebar_resize_edge_follows_the_arrow_keys_until_a_press() {
     settle(&mut h, 1400, 800);
     assert_eq!(geometry(&h).sidebar_column.width(), wider);
 }
+
+/// Whether the content of a narrow mail window is still sliding in one frame
+/// after `push` brought it to the front.
+fn slides_after_push(push: impl FnOnce(&mut NavShell)) -> bool {
+    let mut h = harness(mail_shell(), 560, 800, Theme::dark());
+    settle(&mut h, 560, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    push(h.root_mut::<NavShell>());
+    h.relayout_at((560, 800)).expect("the push lays out");
+    let shell = h.root::<NavShell>();
+    assert_eq!(shell.front_pane(), NavPane::Content);
+    let moving = shell.inputs.borrow().push.is_moving(crate::time::now());
+    assert_eq!(
+        moving,
+        shell.needs_animation_frame(),
+        "the shell asks for frames exactly while the push moves"
+    );
+    moving
+}
+
+/// A push follows the input that asked for it (HIG §9.7): a click or a tap
+/// the person just made slides the content in; a key, an agent's action, or a
+/// show nobody visibly caused lands it on the next frame.
+#[test]
+fn a_push_slides_for_a_click_or_a_tap_and_lands_at_once_otherwise() {
+    use crate::tokens::MotionSource;
+    // Nothing the person did: a restore, a sync, a script.
+    assert!(
+        !slides_after_push(|shell| shell.show(NavPane::Content)),
+        "a show nobody caused lands at once"
+    );
+    for (source, slides) in [
+        (MotionSource::Pointer, true),
+        (MotionSource::Gesture, true),
+        (MotionSource::Keyboard, false),
+        (MotionSource::Action, false),
+    ] {
+        let moving = slides_after_push(|shell| {
+            crate::motion::note_source(source);
+            shell.show(NavPane::Content);
+        });
+        assert_eq!(moving, slides, "a push after {source:?}");
+    }
+}
+
+/// A host that knows where an open came from says so: a search hit or an
+/// agent's `open` lands at once even right after a click elsewhere, and a
+/// person's click slides even when nothing was noted on this thread.
+#[test]
+fn a_push_from_a_known_origin_moves_as_that_origin_does() {
+    use crate::tokens::MotionSource;
+    assert!(
+        !slides_after_push(|shell| {
+            crate::motion::note_source(MotionSource::Pointer);
+            shell.show_from(NavPane::Content, MotionSource::Action);
+        }),
+        "an agent's open lands at once"
+    );
+    assert!(
+        slides_after_push(|shell| shell.show_from(NavPane::Content, MotionSource::Pointer)),
+        "a person's click slides the content in"
+    );
+}
