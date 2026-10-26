@@ -252,6 +252,29 @@ selection core:
 - Selection: shift+arrows, drag-select, word-wise (ctrl+arrows), select-all.
 - Clipboard: Ctrl+C / X / V.
 - Collaborative multi-cursor.
+- **Emoji by default**: typing `:name:` offers the catalogue's matching emoji and
+  accepting replaces the token with the character.
+- **Mentions by default**: typing `@name` offers the people and agents in the
+  room, and accepting replaces the token with the name it will resolve to.
+
+Both come from the field. The catalogue is the toolkit's, so every app has the
+emoji picker and custom emoji without linking a catalogue crate; an app with
+workspace emoji *adds* to it, it does not provide it. One inline candidate list
+serves both triggers: arrows move, Enter or Tab accepts, Escape dismisses.
+
+A field that should not offer them says so, once, at the field — and the reason
+is visible there:
+
+| Field | Setting | Why |
+|---|---|---|
+| a message, note, document body, task, description | *(default)* | people write emoji and names in prose |
+| a search or filter field | plain (UTF-8 only) | the query is matched, not written |
+| a password, a secret, a one-time code | plain | nothing may insert into it, and nothing may echo it |
+| a code editor, a terminal, a hex view, SQL, a URL | plain | `:` and `@` are syntax there, not an invitation |
+
+"Plain" is not a degraded field: it is a field where completion is *wrong*
+rather than unavailable. Never disable one of the two and leave the other on
+without saying why.
 
 If an app hand-rolls text editing, it will get these wrong — use the shared core.
 
