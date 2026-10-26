@@ -237,7 +237,7 @@ pub fn resolve(
             host,
             sandbox: sandbox_user_apps(),
         });
-    let guard = spawn_system_bus_proxy(uid);
+    let guard = spawn_system_bus_proxy();
     if let Some(guard) = &guard {
         plan.sockets.push(SocketBind {
             host: guard.socket_path().to_path_buf(),
@@ -255,12 +255,15 @@ pub fn resolve(
     Some((plan, guard))
 }
 
-fn spawn_system_bus_proxy(uid: u32) -> Option<DBusProxyGuard> {
+fn spawn_system_bus_proxy() -> Option<DBusProxyGuard> {
     let Some(binary) = dbus_proxy::find_proxy_binary() else {
         tracing::warn!("xdg-dbus-proxy unavailable; the system bus stays unavailable");
         return None;
     };
-    let socket = dbus_proxy::system_proxy_socket_path(uid, std::process::id());
+    let socket = dbus_proxy::system_proxy_socket_path(
+        &dbus_proxy::session_runtime_dir(),
+        std::process::id(),
+    );
     match dbus_proxy::spawn_filtered_proxy(
         &binary,
         &system_bus_address(),

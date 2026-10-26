@@ -151,8 +151,8 @@ pub const SANDBOX_GATE_PATH: &str = "/run/tilo/net/gate.sock";
 
 /// Host-side path the gate listens on. Mirrors
 /// [`crate::dbus_proxy::proxy_socket_path`] — one per launcher process.
-pub fn gate_socket_path(uid: u32, launcher_pid: u32) -> PathBuf {
-    PathBuf::from(format!("/run/user/{uid}/tilo/net/{launcher_pid}.sock"))
+pub fn gate_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
+    runtime.join(format!("tilo/net/{launcher_pid}.sock"))
 }
 
 /// What outbound access an app ends up with, after the packager's
@@ -1547,7 +1547,7 @@ mod tests {
         {
             // 108 bytes including the NUL. A path over the limit cannot be
             // connected to, and the failure surfaces far from its cause.
-            let p = gate_socket_path(1000, 4_194_304);
+            let p = gate_socket_path(Path::new("/run/user/1000"), 4_194_304);
             assert!(
                 p.as_os_str().len() < 100,
                 "gate socket path {p:?} is too long for sun_path"
