@@ -372,8 +372,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   the chat list runs again for `messages.last()`, which builds the same 10k references
   (22 ms). A collection read as a value is a list of every item's reference; reading the end of
   one, or a listing kept across an insert, needs collections that the runtime reads lazily and
-  a cache that applies an insert to what it listed. Memory at 10k: see the measurement after the
-  actions split below.
+  a cache that applies an insert to what it listed.
 - **An action is a type bound to a target.** `tilo-actions` splits what an action is
   (`ActionType`: id, label, description, params, contract, kind, operation type, builder,
   classifiers) from what it acts on (`Target`). An `ActionSpec` is an `Arc<ActionType>` and a
@@ -388,3 +387,10 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   item is the view (1.9 KB per row even unrendered), the room and the mirror (1.5 KB), search
   (0.4 KB), the published resources themselves (a 24-byte spec per action) and what the
   allocator keeps after the first read.
+- **Both together** (the split, the store's read cache, card previews and republication at its
+  depth; release, aarch64, laptop, 20 samples, p95). Open at 10k: notes 52 ms, todo 67, chat
+  31, board 131; a conversation of 10k messages 57 (p50 31). Memory at 10k: notes 128 MiB,
+  todo 129, chat 114, board 230; at 1k 14, 13, 12 and 25. Keystroke p95 0.4 to 0.8 ms and
+  peer edit 0.2 to 0.5 ms at 10k; a keystroke in a 10k draft 1.4 ms, a peer's message in it
+  90 ms; no idle wakeups. Against the split alone, notes, todo and chat hold 9 to 16 MiB more
+  at 10k and the board 97 MiB less; where that sits is not measured yet.
