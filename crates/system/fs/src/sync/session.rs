@@ -971,6 +971,13 @@ impl SessionPool {
     }
 }
 
+/// A peer answered a session request with `Denied`. Unlike a transport
+/// failure, this is an explicit authorization refusal and a fresh joiner must
+/// not continue with an empty local projection.
+#[derive(Debug, thiserror::Error)]
+#[error("session request denied")]
+pub(super) struct SessionDenied;
+
 impl Session {
     /// Whether the connection is gone (the pool then opens a new one).
     pub(super) fn is_closed(&self) -> bool {
@@ -1003,7 +1010,7 @@ impl Session {
         self.heard();
         match frame {
             SessionFrameV1::Done => Ok(None),
-            SessionFrameV1::Denied => Err(anyhow!("session request denied")),
+            SessionFrameV1::Denied => Err(anyhow::Error::new(SessionDenied)),
             SessionFrameV1::Error(code) => Err(anyhow!("session request failed: {code:?}")),
             frame => Ok(Some(frame)),
         }

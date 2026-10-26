@@ -2260,6 +2260,7 @@ fn partial_supersession_keeps_transaction_participants_that_were_not_later_chang
 
 #[allow(
     clippy::too_many_lines,
+    clippy::significant_drop_tightening,
     reason = "one end-to-end replacement scenario keeps its signed transaction, later per-record operation, restart and log-only rebuild assertions together"
 )]
 fn partial_supersession_after_atomic_replacement_case(later: LaterParticipantChange) {
@@ -2399,7 +2400,7 @@ fn partial_supersession_after_atomic_replacement_case(later: LaterParticipantCha
                 actor: log.actor,
                 observed_at_ms: 2,
             },
-            transaction_victim_version.clone(),
+            transaction_victim_version,
             ContentHash([2; 32]),
         ),
     ];
@@ -2465,11 +2466,11 @@ fn partial_supersession_after_atomic_replacement_case(later: LaterParticipantCha
         assert!(namespace.ino_for_record_id(victim_record).is_none());
     }
 
-    let mut source_sequence = 6;
+    let mut source_sequence: u64 = 6;
     let mut later_revision = None;
     match later {
         LaterParticipantChange::RenameSource => {
-            source_sequence += 1;
+            source_sequence = source_sequence.saturating_add(1);
             log.apply(
                 source_record,
                 &[log.envelope(
@@ -2508,7 +2509,7 @@ fn partial_supersession_after_atomic_replacement_case(later: LaterParticipantCha
             );
         }
         LaterParticipantChange::RenameAndEditSource => {
-            source_sequence += 1;
+            source_sequence = source_sequence.saturating_add(1);
             log.apply(
                 source_record,
                 &[log.envelope(
@@ -2529,7 +2530,7 @@ fn partial_supersession_after_atomic_replacement_case(later: LaterParticipantCha
             let (mut version, revision, metadata) =
                 file_version(source_record, log.actor, 21, [9; 32], 9);
             version.parents = vec![transaction_source_version.id];
-            source_sequence += 1;
+            source_sequence = source_sequence.saturating_add(1);
             log.apply(
                 source_record,
                 &[log.envelope(
@@ -2538,7 +2539,7 @@ fn partial_supersession_after_atomic_replacement_case(later: LaterParticipantCha
                     RecordOperationV1::AppendVersion(version),
                 )],
             );
-            source_sequence += 1;
+            source_sequence = source_sequence.saturating_add(1);
             log.apply(
                 source_record,
                 &[log.envelope(
@@ -2547,7 +2548,7 @@ fn partial_supersession_after_atomic_replacement_case(later: LaterParticipantCha
                     RecordOperationV1::SetContentRevision(revision),
                 )],
             );
-            source_sequence += 1;
+            source_sequence = source_sequence.saturating_add(1);
             log.apply(
                 source_record,
                 &[log.envelope(

@@ -1572,17 +1572,14 @@ async fn replica_workspace(
     for peer in &bootstrap {
         hydrator.add_peer(peer.clone());
     }
-    let namespace = Arc::new(Mutex::new(
-        open_namespace_mount(
-            endpoint.id().to_string(),
-            namespace_path.as_deref(),
-            &endpoint,
-            &bootstrap,
-            &transport_identity,
-            (ticket.workspace_id(), &Some(acl.clone())),
-        )
-        .await?,
-    ));
+    let namespace = Arc::new(Mutex::new(open_namespace_mount(
+        endpoint.id().to_string(),
+        namespace_path.as_deref(),
+        &endpoint,
+        &bootstrap,
+        &transport_identity,
+        (ticket.workspace_id(), &Some(acl.clone())),
+    )?));
     // A home peer is a real record replica, not merely a namespace/blob
     // cache. Keep the signed record repository and its materialized projection
     // exactly as a normal mounted collaborator does, so replacements,
@@ -1918,8 +1915,7 @@ async fn serve(
                         ticket.workspace_id(),
                         &acl.as_ref().map(|(handle, _)| handle.clone()),
                     ),
-                )
-                .await?,
+                )?,
                 !np.as_ref().is_some_and(|path| path.exists()),
             )
         }
@@ -2487,8 +2483,7 @@ async fn mount(
             ticket.workspace_id(),
             &acl.as_ref().map(|(handle, _)| handle.clone()),
         ),
-    )
-    .await?;
+    )?;
     let namespace = Arc::new(Mutex::new(ns_value));
 
     let workspace_id = ticket.workspace_id();
@@ -3618,7 +3613,7 @@ async fn final_flush(
 /// Open a local namespace projection. Signed records are the durable truth:
 /// a joiner rebuilds the tree from the record log after its first record
 /// pull, so this never downloads or merges a second whole-tree document.
-async fn open_namespace_mount(
+fn open_namespace_mount(
     author: String,
     np: Option<&Path>,
     _endpoint: &iroh::endpoint::Endpoint,
