@@ -1537,15 +1537,24 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void PageClick(double x,double y) {
     if(!browser_)return;auto host=browser_->GetHost();const double zoom=std::pow(1.2,host->GetZoomLevel());
     CefMouseEvent event;event.x=static_cast<int>(std::lround(x*zoom));event.y=static_cast<int>(std::lround(y*zoom));event.modifiers=key_modifiers_;
+    // The move and the click reach the page on separate turns: a point inside a
+    // frame is routed to that frame only once the move that found it has been
+    // handled, so sending both at once clicks the page and nothing in it.
     host->SendMouseMoveEvent(event,false);
-    event.modifiers|=EVENTFLAG_LEFT_MOUSE_BUTTON;host->SendMouseClickEvent(event,MBT_LEFT,false,1);
-    event.modifiers&=~EVENTFLAG_LEFT_MOUSE_BUTTON;host->SendMouseClickEvent(event,MBT_LEFT,true,1);
+    CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<CefBrowserHost> h,CefMouseEvent e) {
+      e.modifiers|=EVENTFLAG_LEFT_MOUSE_BUTTON;h->SendMouseClickEvent(e,MBT_LEFT,false,1);
+      e.modifiers&=~EVENTFLAG_LEFT_MOUSE_BUTTON;h->SendMouseClickEvent(e,MBT_LEFT,true,1);
+    },host,event));
   }
   // One pointer step of a gesture: where a person's hand put the pointer.
   // A press that starts dragging a page element hands the drag to
   // StartDragging below, which the gesture's own moves then carry; the page
   // stays the target, so a drop lands where the hand let go.
   void PagePointer(CefRefPtr<CefDictionaryValue> step) {
+    // A step reaches the page on a later turn than the one that read it, so
+    // the step is kept as this host's own copy: CEF owns the dictionary only
+    // for the callback that handed it over.
+    step=step->Copy(true);
     if(!browser_)return;auto host=browser_->GetHost();const double zoom=std::pow(1.2,host->GetZoomLevel());
     // A pointer reaches the page only when the view is the one being used, just
     // as a key does: an app's window can be open without being focused, and its
@@ -2431,12 +2440,16 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
         const auto kind=step->GetString("kind").ToString();
         if(kind!="move" && kind!="down" && kind!="up")return false;
         if(step->HasKey("element") && (step->GetType("element")!=VTYPE_STRING || step->GetString("element").empty() || step->GetString("element").length()>64))return false;
+        // A step names a frame the outline printed, or none at all.
+        if(step->HasKey("frame") && (step->GetType("frame")!=VTYPE_STRING || step->GetString("frame").empty() || step->GetString("frame").length()>16))return false;
       }
     }
     if((action=="reader")!=d->HasKey("enabled") || (d->HasKey("enabled") && !type("enabled",VTYPE_BOOL)))return false;
     if(d->HasKey("element") ? !type("element",VTYPE_STRING) || d->GetString("element").empty() || d->GetString("element").length()>64
                             : !elementless)return false;
     for(const char* flag:{"cross_origin","secret"})if(d->HasKey(flag) && !type(flag,VTYPE_BOOL))return false;
+    // A frame is named as the outline printed it, or not at all.
+    if(d->HasKey("frame") && (!type("frame",VTYPE_STRING) || d->GetString("frame").empty() || d->GetString("frame").length()>16))return false;
     if(action=="at" && (!number("x") || !number("y") || Number(d,"x")<0 || Number(d,"y")<0 || Number(d,"x")>100000 || Number(d,"y")>100000))return false;
     if(action=="settle" && (!type("quiet_ms",VTYPE_INT) || !type("timeout_ms",VTYPE_INT) || d->GetInt("quiet_ms")<50 ||
        d->GetInt("timeout_ms")<d->GetInt("quiet_ms") || d->GetInt("timeout_ms")>20000))return false;

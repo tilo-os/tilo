@@ -1319,6 +1319,15 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         }
     }
 
+    /// The content is laid out open or closed (so reopening finds its
+    /// nodes), so the layout walk reaches it either way.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        if self.options.is_none() {
+            visitor(&self.content);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.open && self.options.is_none() {
             vec![&mut self.content]

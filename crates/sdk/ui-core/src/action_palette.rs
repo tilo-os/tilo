@@ -501,6 +501,7 @@ impl ActionPalette {
                     })
             })
             == Some(tilo_actions::RiskLevel::Destructive);
+        let undoable = self.can_be_undone(&pending);
         self.present_confirmation(
             pending,
             &label,
@@ -508,6 +509,13 @@ impl ActionPalette {
             asked.as_deref(),
             destructive,
         );
+        if let Some(state) = self.confirm.as_mut() {
+            state.skippable = undoable;
+            if undoable && let Some(said) = self.search_announcement.as_mut() {
+                said.push(' ');
+                said.push_str(confirm::SHIFT_SKIPS);
+            }
+        }
     }
 
     /// The person went ahead with what the palette asked: queue it with the
@@ -751,6 +759,12 @@ impl ActionPalette {
         self.pending_dispatch = None;
         self.refusal = None;
         self.queue_or_confirm(pending.clone(), pending.confirmation);
+    }
+
+    /// Whether what was just asked for went ahead unasked (Shift held over
+    /// something Undo takes back): the host runs it now, as if confirmed.
+    pub(crate) fn went_ahead(&self) -> bool {
+        self.confirm.is_none() && self.pending_dispatch.is_some()
     }
 
     pub(crate) fn ordinary_request(&self) -> Option<&crate::bound_dispatch::OrdinaryConfirmation> {
@@ -3052,7 +3066,33 @@ impl ActionPalette {
             self.open = false;
             return;
         }
+        // The person held Shift as they asked for something Undo takes
+        // back: it goes ahead unasked, as if they had confirmed it.
+        if crate::widget::shift_skips_confirmation(self.can_be_undone(&pending)) {
+            pending.confirmation_evidence = confirmation_evidence(&pending.confirmation);
+            self.pending_dispatch = Some(pending);
+            self.open = false;
+            return;
+        }
         self.ask_confirmation(pending);
+    }
+
+    /// Whether Undo takes `pending` back, by its action's contract: what
+    /// lets Shift skip its question, and the question say so.
+    fn can_be_undone(&self, pending: &PendingOperation) -> bool {
+        if matches!(pending.confirmation, ConfirmationPolicy::Phrase { .. }) {
+            return false;
+        }
+        match &pending.ordinary {
+            Some(request) => request.can_be_undone(),
+            None => self
+                .authority_for(&pending.address, pending.bound.as_ref())
+                .and_then(|resources| {
+                    tilo_actions::door::resolve(&resources, &pending.address)
+                        .map(|spec| spec.contract.can_be_undone())
+                })
+                .unwrap_or(false),
+        }
     }
 
     /// Say over the window that an invocation the person made did not run,

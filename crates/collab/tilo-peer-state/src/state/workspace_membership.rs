@@ -158,6 +158,9 @@ impl PeerWorkspaceMut<'_> {
         if let Some(outcome) = self.peer.apply_bot_command(caller, command, key, now) {
             return outcome;
         }
+        if let Some(outcome) = self.peer.apply_app_command(caller, command, key, now) {
+            return outcome;
+        }
         if matches!(
             command,
             WorkspaceMembershipCommand::Grant { .. } | WorkspaceMembershipCommand::Revoke { .. }
@@ -220,7 +223,9 @@ impl PeerWorkspaceMut<'_> {
             | WorkspaceMembershipCommand::SetBotAppearance { .. }
             | WorkspaceMembershipCommand::AdoptBot(_)
             | WorkspaceMembershipCommand::RequestBot(_)
-            | WorkspaceMembershipCommand::WithdrawBotRequest { .. } => {
+            | WorkspaceMembershipCommand::WithdrawBotRequest { .. }
+            | WorkspaceMembershipCommand::InstallApp(_)
+            | WorkspaceMembershipCommand::UninstallApp { .. } => {
                 return Err("a command entered the agent membership branch".into());
             }
         };

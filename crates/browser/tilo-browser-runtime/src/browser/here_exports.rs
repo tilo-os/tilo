@@ -118,6 +118,38 @@ pub fn desktop_set_person_photo(
     })
 }
 
+/// The accounts elsewhere `user`'s (root key, hex) profile names, as JSON
+/// `[{service, handle}]`: their card says "Linked to @handle on Discord".
+///
+/// # Errors
+///
+/// Rejects malformed JSON or a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_person_links(id: u64, user: &str, linked: &str) -> Result<(), JsValue> {
+    let linked: Vec<tilo_app::linked_accounts::ProfileLink> =
+        serde_json::from_str(linked).map_err(error)?;
+    // Only what a card says: the pictures are the profile's own.
+    let linked = linked
+        .into_iter()
+        .take(4)
+        .map(|link| tilo_app::linked_accounts::ProfileLink {
+            picture: None,
+            ..link
+        })
+        .collect();
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        if desktop.here.borrow_mut().set_linked(user, linked) {
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
+    })
+}
+
 /// The host's answer to `/here` (`peer.here`): each person's line.
 ///
 /// # Errors

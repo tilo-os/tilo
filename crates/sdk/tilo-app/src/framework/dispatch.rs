@@ -1488,6 +1488,60 @@ impl<R: Resource> Dispatcher<R> {
         applied
     }
 
+    /// [`Self::submit_gesture`] of a choice the person picked that is
+    /// confirmed before it goes ahead, though Undo would take it back:
+    /// Delete in a message's context menu. The host asks with the same
+    /// question it asks for any confirmation; holding Shift skips it, and
+    /// the choice applies at once as the person's gesture, if and only if
+    /// Undo takes it back ([`ui_core::widget::shift_skips_confirmation`]).
+    /// What Undo cannot take back is asked, Shift or not.
+    ///
+    /// A control the person presses is its own confirmation
+    /// ([`Self::submit_gesture`]); this is for a choice made from a list of
+    /// them, where a slip of the pointer picks the neighbour.
+    ///
+    /// # Errors
+    /// As [`Self::submit_gesture`].
+    pub fn submit_confirming(
+        &self,
+        edits: &mut Edits<'_>,
+        submit: impl Submit<R>,
+    ) -> Result<(), ActionError> {
+        if !self.gesture_is_own() {
+            return self.submit_now(edits, submit);
+        }
+        let invoke = submit.into_invoke().map_err(ActionError::Refused)?;
+        if invoke.is_group() {
+            return self.group_now(edits, &invoke);
+        }
+        let action = invoke
+            .build(tilo_resource::origin_now_ms())
+            .map_err(ActionError::Refused)?;
+        if asks(&action) {
+            // The contract asks already: the door's question, which Shift
+            // skips there for what Undo takes back.
+            return self.ask_first(invoke, &action);
+        }
+        let undoable = tilo_actions::undo_takes_back(
+            tilo_actions::Action::action_kind(&action),
+            tilo_actions::Action::change_kind(&action),
+            tilo_actions::Action::irreversible(&action),
+        );
+        if ui_core::widget::shift_skips_confirmation(undoable) {
+            return self.submit_gesture(edits, invoke);
+        }
+        if let Some(reason) = self.core.unreadable() {
+            return Err(ActionError::Refused(reason));
+        }
+        if !self.may_apply(&action) {
+            return Err(self.not_allowed(&action));
+        }
+        let before = self.core.asking.replace(Origin::PersonConfirming);
+        self.submit_invoke(invoke);
+        self.core.asking.set(before);
+        Ok(())
+    }
+
     fn ask_first(&self, invoke: Invoke<R>, action: &R::Action) -> Result<(), ActionError> {
         if let Some(reason) = self.core.unreadable() {
             return Err(ActionError::Refused(reason));

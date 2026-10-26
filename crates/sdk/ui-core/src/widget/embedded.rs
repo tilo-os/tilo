@@ -162,10 +162,14 @@ impl<W: Widget + 'static> Embedded<W> {
         let rebuilt = self.root.is_none()
             || structure_dirty
             || self.layout_theme.as_ref().is_none_or(|laid| laid != theme);
+        // A widget about to be drawn anew is laid out again too: what it
+        // paints (a hovered handle, an open menu) it places while laid out,
+        // and a repaint no longer asks for a measure of its own.
         if !rebuilt
             && let Some((laid, height)) = self.laid
             && laid == rect
             && !self.widget.layout_needs_measure()
+            && !self.widget.needs_redraw()
         {
             return height;
         }

@@ -10886,8 +10886,12 @@ struct ScenePhases {
 }
 
 impl ScenePhases {
-    /// A scene build slower than this is reported.
-    const REPORT_AFTER: std::time::Duration = std::time::Duration::from_millis(50);
+    /// A scene build slower than this is reported: one frame at 60 Hz, past
+    /// which the build alone misses the frame.
+    const REPORT_AFTER: std::time::Duration = std::time::Duration::from_millis(16);
+    /// At most one report this often, so a machine slow at every frame
+    /// still logs a sample of them rather than every one.
+    const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
     fn start() -> Self {
         let now = std::time::Instant::now();
@@ -10907,13 +10911,26 @@ impl ScenePhases {
     }
 
     fn report(&self) {
+        thread_local! {
+            static LAST_REPORT: std::cell::Cell<Option<std::time::Instant>> =
+                const { std::cell::Cell::new(None) };
+        }
+        let sections = crate::shell::overlay_host::take_section_spans();
         let total = self.started.elapsed();
-        if total < Self::REPORT_AFTER {
+        if total < Self::REPORT_AFTER
+            || LAST_REPORT
+                .with(std::cell::Cell::get)
+                .is_some_and(|last| last.elapsed() < Self::REPORT_EVERY)
+        {
             return;
         }
+        LAST_REPORT.with(|last| last.set(Some(std::time::Instant::now())));
+        // The section draws are inside `scene/draw-sections`; named apart,
+        // the line says which part of the desktop the time went to.
         let split = self
             .spans
             .iter()
+            .chain(sections.iter())
             .map(|(phase, took)| format!("{phase}={took:?}"))
             .collect::<Vec<_>>()
             .join(" ");

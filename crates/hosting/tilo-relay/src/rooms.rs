@@ -25,6 +25,7 @@ mod admin;
 mod admissions;
 #[cfg(feature = "agents")]
 mod agent_members;
+pub mod app_files;
 #[cfg(feature = "agents")]
 mod applications;
 mod authority;

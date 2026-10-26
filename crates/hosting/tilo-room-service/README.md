@@ -428,8 +428,8 @@ issued for someone else), and a host set up again: its stale link refused,
 the offer to join it again declined and then accepted (one join, the same
 person, the old host's state left untouched beside the new host's). It
 starts `run.py` from prebuilt binaries and a bundle and writes
-`summary.json` and `summary.md`; the `Browser / authentication` workflow
-runs it nightly and on demand.
+`summary.json` and `summary.md`; t's `browser-auth-e2e/auth` check runs it
+on release candidates and on demand (`t test browser-auth-e2e/auth`).
 
 `dev/limits-e2e.py` checks the persistent room's enabled limits and what
 it keeps, over plain HTTP with no browser or bundle: on scratch state with
@@ -440,7 +440,7 @@ gets in once an unused seat's hold ends, the caps and refusal counters on
 `/metrics`; then it restarts the service and checks the room, its spectator
 person, the guest ledger and each address's join window survive, and
 that SIGTERM stops the service and its relay within 20 seconds (eu1's
-grace period). The same workflow runs it before the browser check.
+grace period). t runs it as `browser-auth-e2e/limits`.
 
 `dev/owner-key-e2e.py` checks a throwaway room's owner routes the same way:
 it creates a room as a page does, then checks that nothing a guest link
@@ -448,7 +448,8 @@ shows (the room's host, its uuid, the link without its ticket), a wrong key
 or the uuid with the right key mints an invitation or opens the member
 stream, each refused as no such room and spending no guest slot; that the
 answer's `invitations` and `events` URLs work as given; and that an invitee
-still redeems their ticket at the room's uuid. It runs with `limits-e2e.py`.
+still redeems their ticket at the room's uuid. t runs it as
+`browser-auth-e2e/owner-key`; `browser-auth-e2e` runs all three.
 
 ```sh
 python3 crates/hosting/tilo-room-service/dev/limits-e2e.py \

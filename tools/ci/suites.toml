@@ -136,6 +136,7 @@ suites = [
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/rollback_luks_device.sh",
   "os/tests/firstboot_user_selinux.sh",
+  "os/tests/boot_selinux_domains.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/esp_generator.sh",
   "os/tests/deployment_dual_esp.sh",
@@ -887,7 +888,10 @@ package = "tilo-relay"
 # The room's bot runner is tested with the Discord bridge's program as it
 # ships, the import it plans resuming after the room refused part of a run.
 inputs = ["apps/discord/bridge/program.json"]
-readers = ["crates/hosting/tilo-relay/src/room_bots/tests.rs"]
+readers = [
+  "crates/hosting/tilo-relay/src/room_bots/tests.rs",
+  "crates/hosting/tilo-relay/tests/governed_rooms/app_push.rs",
+]
 
 [[cargo]]
 package = "tilo-esp-write"

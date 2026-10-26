@@ -435,7 +435,7 @@ fn stats(zone: &Zone) -> StatGroup {
     let (allow, deny) = zone.rule_counts();
     let now = ui::time::wall();
     let tile = |label: &str, value: usize, measure: &str| {
-        let fact = Measured::measured(
+        let fact = Measured::known(
             Measure::new(measure),
             value.to_string(),
             "this configuration",
@@ -813,7 +813,7 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
         );
     };
     let now = ui::time::wall();
-    let dropped = Measured::measured(
+    let dropped = Measured::known(
         Measure::new("Packets dropped"),
         report.total.to_string(),
         "system journal",

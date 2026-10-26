@@ -1145,6 +1145,9 @@ mod revocations;
 #[path = "governed_rooms/hard_stops.rs"]
 mod hard_stops;
 
+#[path = "governed_rooms/app_push.rs"]
+mod app_push;
+
 #[cfg(feature = "agents")]
 #[path = "governed_rooms/member_files.rs"]
 mod member_files;
