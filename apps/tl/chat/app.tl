@@ -120,10 +120,8 @@ fn last_author(c: Conversation) -> Option<Principal> {
 /// A conversation's window: its messages, the latest at the foot, above the composer.
 view thread(c: Conversation) {
     page {
-        stack(gap: .section) {
-            for m in c.messages {
-                message(m)
-            }
+        list(c.messages) { m ->
+            message(m)
         }
         composer {
             row {
