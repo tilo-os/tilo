@@ -19,6 +19,8 @@ serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+# The document-media handoff it reads is the launcher's, from one contract.
+service-handoff = { version = "0.1.0", path = "../service-handoff", features = ["tokio"] }
 
 [target.'cfg(unix)'.dependencies]
 uuid.workspace = true

@@ -947,6 +947,7 @@ doc = false
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial2-0_2_37" = { package = "serial2", version = "^0.2.37", default-features = false, features = [] }
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
+"service-handoff" = { path = "../../../crates/runtime/service-handoff", default-features = false, features = ["default", "tokio"] }
 "settings" = { path = "../../../apps/settings", default-features = false, features = [] }
 "settings-core" = { path = "../../../apps/settings-core", default-features = false, features = [] }
 "settings-rare" = { path = "../../../apps/settings-rare", default-features = false, features = [] }
@@ -2101,6 +2102,7 @@ doc = false
 "serdect-0_2_0" = { package = "serdect", version = "^0.2.0", default-features = false, features = ["alloc", "default"] }
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial_test_derive-3_4_0" = { package = "serial_test_derive", version = "^3.4.0", default-features = false, features = ["async", "default"] }
+"service-handoff" = { path = "../../../crates/runtime/service-handoff", default-features = false, features = ["default"] }
 "sha1-0_10_6" = { package = "sha1", version = "^0.10.6", default-features = false, features = ["default", "oid", "std"] }
 "sha1-0_11_0" = { package = "sha1", version = "^0.11.0", default-features = false, features = ["alloc", "default", "oid"] }
 "sha1_smol-1_0_1" = { package = "sha1_smol", version = "^1.0.1", default-features = false, features = [] }
@@ -3284,6 +3286,7 @@ doc = false
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial2-0_2_37" = { package = "serial2", version = "^0.2.37", default-features = false, features = [] }
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
+"service-handoff" = { path = "../../../crates/runtime/service-handoff", default-features = false, features = ["default", "tokio"] }
 "settings" = { path = "../../../apps/settings", default-features = false, features = [] }
 "settings-core" = { path = "../../../apps/settings-core", default-features = false, features = [] }
 "settings-rare" = { path = "../../../apps/settings-rare", default-features = false, features = [] }
@@ -4437,6 +4440,7 @@ doc = false
 "serdect-0_2_0" = { package = "serdect", version = "^0.2.0", default-features = false, features = ["alloc", "default"] }
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial_test_derive-3_4_0" = { package = "serial_test_derive", version = "^3.4.0", default-features = false, features = ["async", "default"] }
+"service-handoff" = { path = "../../../crates/runtime/service-handoff", default-features = false, features = ["default"] }
 "sha1-0_10_6" = { package = "sha1", version = "^0.10.6", default-features = false, features = ["default", "oid", "std"] }
 "sha1-0_11_0" = { package = "sha1", version = "^0.11.0", default-features = false, features = ["alloc", "default", "oid"] }
 "sha1_smol-1_0_1" = { package = "sha1_smol", version = "^1.0.1", default-features = false, features = [] }

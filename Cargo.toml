@@ -370,6 +370,7 @@ members = [
     "crates/runtime/runtime-identity",
     "crates/runtime/tilo-identity-client",
     "crates/runtime/runtime-portal",
+    "crates/runtime/service-handoff",
     "crates/runtime/os-search",
     "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity-host",

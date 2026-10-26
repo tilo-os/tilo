@@ -129,7 +129,7 @@ fn child_selection(case: &str) {
     let http = provider_client().unwrap();
     let response = tilo_rt::block_on(async {
         let mut gateway = tokio::net::UnixStream::from_std(gateway).unwrap();
-        let Ok(handoff) = read_handoff(&mut gateway).await else {
+        let Ok(app_id) = read_handoff(&mut gateway).await else {
             assert_eq!(case, "unknown-app");
             return None;
         };
@@ -137,7 +137,7 @@ fn child_selection(case: &str) {
         match serde_json::from_slice::<Frame<Request>>(&frame) {
             Ok(frame) => {
                 assert_eq!(frame.version, RPC_VERSION);
-                Some(handle(&handoff.app_id, frame.value, &http).await)
+                Some(handle(&app_id, frame.value, &http).await)
             }
             Err(error) => {
                 assert!(

@@ -43,6 +43,9 @@ NATIVE_TEST_FEATURES = {
     # The rest compile their tests only with a feature their default build
     # leaves to the dependents that want it; each costs a few small crates.
     "wire-frame": ("tokio", "postcard"),
+    # The service handoffs' async readers; the blocking half, which the
+    # launcher writes with, is tested without it.
+    "service-handoff": ("tokio",),
     "accounts": ("person",),
     "bounded-zip": ("epub",),
     "settings-store": ("watch",),

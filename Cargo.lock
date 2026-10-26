@@ -592,6 +592,7 @@ dependencies = [
  "sd-notify",
  "serde",
  "serde_json",
+ "service-handoff",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-app-package",
@@ -604,7 +605,6 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "wire-frame",
  "workspace-hack",
 ]
 
@@ -8223,6 +8223,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "service-handoff",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
@@ -14533,6 +14534,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "service-handoff"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
 name = "settings"
 version = "0.1.0"
 dependencies = [
@@ -18223,6 +18236,7 @@ dependencies = [
  "runtime-portal",
  "serde",
  "serde_json",
+ "service-handoff",
  "tempfile",
  "tilo-advisory-lock",
  "tilo-paths",
@@ -18843,6 +18857,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "service-handoff",
  "settings-store",
  "sha2 0.11.0",
  "tempfile",
@@ -22265,6 +22280,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "service-handoff",
  "sha2 0.11.0",
  "strsim",
  "tempfile",
@@ -25574,6 +25590,7 @@ dependencies = [
  "serial2",
  "serial_test",
  "serial_test_derive",
+ "service-handoff",
  "settings",
  "settings-core",
  "settings-rare",

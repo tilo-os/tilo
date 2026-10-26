@@ -39,7 +39,15 @@ use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-use wire_frame::Framing;
+use service_handoff::{
+    APP_HOST, BLOB_CHILD_FD, BLOBS, COLLAB, COMPAT, Handoff, MODEL_GATEWAY, USH,
+};
+pub use service_handoff::{
+    APP_HOST_LAUNCH_MAGIC, APP_HOST_SERVICE, BLOB_HANDOFF_MAGIC, BLOB_SERVICE, BLOB_SOCKET_ENV,
+    COLLAB_LAUNCH_FRAMING, COLLAB_LAUNCH_MAGIC, COLLAB_LAUNCH_PROTOCOL_VERSION, COLLAB_SERVICE,
+    COMPAT_HANDOFF_FRAMING, COMPAT_SERVICE, DEFAULT_BLOB_SOCKET, MODEL_GATEWAY_SERVICE,
+    USH_LAUNCH_MAGIC, USH_SERVICE,
+};
 
 use crate::manifest::ServiceReq;
 
@@ -47,18 +55,6 @@ use crate::manifest::ServiceReq;
 /// (70) from sysexits.h.
 pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 
-/// Manifest name of the CRDT fan-out service (`[sandbox.services] collab`).
-///
-/// This constant is the single point that decides where the collab
-/// socket lives, with two owners on opposite sides of a namespace
-/// boundary: the compositor *binds* [`socket_for`] of this name, and
-/// the launcher *connects* it. They were once two independently-written
-/// path expressions, so the compositor bound a socket nobody dialled
-/// and every app quietly ran with collaboration off. Route both sides
-/// through here — see
-/// `collab_service_socket_is_the_path_the_compositor_binds` in the
-/// compositor for the test that fails if they drift apart again.
-pub const COLLAB_SERVICE: &str = "collab";
 pub const IDENTITY_SERVICE: &str = "identity";
 pub const SHELL_UI_SERVICE: &str = "shell-ui";
 /// Version of the launcher-written shell-UI authentication envelope.
@@ -70,42 +66,11 @@ pub const SHELL_UI_LAUNCH_PROTOCOL: u16 = 1;
 /// launched into a room is handed a connection naming itself and the room.
 pub const CHOOSER_SERVICE: &str = "chooser";
 const CHOOSER_PROTOCOL: u16 = 1;
-pub const COMPAT_SERVICE: &str = "compat";
 /// The system interface: the image-owned grant through which the device's
 /// control panel reaches the system services it drives
 /// ([`crate::system_authority`]). Declared like a service so a package names
 /// the version it was built against, but it has no socket.
 pub const SYSTEM_SERVICE: &str = "system";
-/// Hosted model planning is performed by this per-user, desktop-owned
-/// gateway. The launcher authenticates the consuming package before handing
-/// it the connected descriptor, so a same-UID process cannot manufacture a
-/// Settings credential operation by merely connecting to the socket.
-pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
-pub const APP_HOST_SERVICE: &str = "app-host";
-/// The shell runtime's supervisor. Its connection is stamped with the app id
-/// before the app holds it, so the supervisor knows which app is asking —
-/// the device's own shell is answered for Terminal and nobody else.
-pub const USH_SERVICE: &str = "ush";
-/// Prefix of the `ush` handoff; the supervisor reads it before any request.
-pub const USH_LAUNCH_MAGIC: [u8; 4] = *b"QUS1";
-/// After [`USH_LAUNCH_MAGIC`]: a little-endian `u32` length, then
-/// `{"protocol":1,"app_id":"…"}`.
-const USH_HANDOFF_FRAMING: Framing = Framing::little_endian(1024).reject_empty();
-/// Document media. Not declared by manifests: every app is handed a
-/// capability scoped to itself and its room, so a document's images live in
-/// the device content store rather than in the app's sandbox.
-pub const BLOB_SERVICE: &str = "blobs";
-/// The filesystem daemon's document-media socket (`runtime_fs::blobs`).
-pub const DEFAULT_BLOB_SOCKET: &str = "/run/tilo/fs-blobs.sock";
-/// Overrides [`DEFAULT_BLOB_SOCKET`] for sessions whose daemon runs elsewhere.
-pub const BLOB_SOCKET_ENV: &str = "TILO_FS_BLOB_SOCKET";
-/// Prefix of the handoff that fixes the connection's scope before the app
-/// holds the descriptor; the daemon reads it before any Cap'n Proto.
-pub const BLOB_HANDOFF_MAGIC: [u8; 4] = *b"QBL1";
-const BLOB_HANDOFF_PROTOCOL: u16 = 1;
-const BLOB_HANDOFF_FRAMING: Framing = Framing::little_endian(4096).reject_empty();
-/// In-sandbox descriptor slot of the automatic document-media service.
-const BLOB_CHILD_FD: i32 = 30;
 /// Slot of the automatic identity service.
 const IDENTITY_CHILD_FD: i32 = 31;
 /// Slot of the automatic chooser service.
@@ -197,30 +162,6 @@ const BROWSER_APP_ID: &str = "so.tilo.browser";
 /// answers it which language packs are offered and installs one, nothing
 /// else.
 const SETTINGS_APP_ID: &str = "so.tilo.settings";
-pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
-/// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON
-/// handoff.
-const APP_HOST_HANDOFF_FRAMING: Framing = Framing::big_endian(1024).reject_empty();
-const COMPAT_PROTOCOL_VERSION: u16 = 1;
-/// The compatibility service's handoff: a little-endian `u32` length, then
-/// JSON.
-pub const COMPAT_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024).reject_empty();
-/// The model gateway's handoff: a little-endian `u32` length, then JSON.
-const MODEL_GATEWAY_HANDOFF_FRAMING: Framing = Framing::little_endian(4 * 1024);
-/// Length-prefixed launcher handoff consumed before Cap'n Proto starts on a
-/// collaboration descriptor. The broker binds it to `SO_PEERCRED` and a
-/// compositor-created one-shot launch record.
-pub const COLLAB_LAUNCH_PROTOCOL_VERSION: u16 = 1;
-/// Prefix that separates a launcher-authenticated connection from a raw
-/// Cap'n Proto diagnostic client. It is deliberately not an authority: the
-/// broker still verifies the peer process against the compositor's one-shot
-/// record before it accepts the following frame.
-pub const COLLAB_LAUNCH_MAGIC: [u8; 4] = *b"QCL1";
-/// After [`COLLAB_LAUNCH_MAGIC`]: a little-endian `u32` length, then the JSON
-/// handoff. It is deliberately tiny: it only binds a socket to the shell's
-/// already-created process record, while the certificate the app presents
-/// still decides workspace membership and delegated-agent authority.
-pub const COLLAB_LAUNCH_FRAMING: Framing = Framing::little_endian(1024).reject_empty();
 
 /// One resolved service handoff: the launcher's own end of the
 /// connection, plus the in-sandbox fd number the app should find it at.
@@ -610,12 +551,7 @@ pub fn resolve_blob_bind(
 }
 
 fn blob_scope_component(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-        && !value.bytes().all(|byte| byte == b'.')
+    service_handoff::valid_scope_component(value)
 }
 
 fn resolve_blob_bind_at(
@@ -673,16 +609,13 @@ fn resolve_blob_bind_at(
 }
 
 fn write_blob_handoff(stream: &mut UnixStream, app_id: &str, room: &str) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(&serde_json::json!({
-        "protocol": BLOB_HANDOFF_PROTOCOL,
-        "principal": "app",
-        "room": room,
-        "app_id": app_id,
-    }))
-    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    stream.write_all(&BLOB_HANDOFF_MAGIC)?;
-    BLOB_HANDOFF_FRAMING.write(stream, &bytes)?;
-    stream.flush()
+    BLOBS.write(
+        stream,
+        &Handoff::Blob(service_handoff::BlobScope::App {
+            room: room.to_owned(),
+            app_id: app_id.to_owned(),
+        }),
+    )
 }
 
 /// Create `$XDG_RUNTIME_DIR/tilo/services/` if it does not exist.
@@ -849,27 +782,11 @@ fn authenticate_service(
 }
 
 fn write_ush_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(&serde_json::json!({
-        "protocol": 1,
-        "app_id": app_id,
-    }))
-    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let frame = USH_HANDOFF_FRAMING.encode(&bytes)?;
-    stream.write_all(&USH_LAUNCH_MAGIC)?;
-    stream.write_all(&frame)?;
-    stream.flush()
+    USH.write(stream, &Handoff::app(app_id))
 }
 
 fn write_app_host_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(&serde_json::json!({
-        "protocol": 1,
-        "app_id": app_id,
-    }))
-    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let frame = APP_HOST_HANDOFF_FRAMING.encode(&bytes)?;
-    stream.write_all(&APP_HOST_LAUNCH_MAGIC)?;
-    stream.write_all(&frame)?;
-    stream.flush()
+    APP_HOST.write(stream, &Handoff::app(app_id))
 }
 
 fn resolve_service_binds_inner(
@@ -979,17 +896,7 @@ pub fn write_collab_handoff(
     app_id: &str,
     workspace_id: &str,
 ) -> std::io::Result<()> {
-    let value = serde_json::json!({
-        "protocol": COLLAB_LAUNCH_PROTOCOL_VERSION,
-        "app_id": app_id,
-        "workspace_id": workspace_id,
-    });
-    let bytes = serde_json::to_vec(&value)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let frame = COLLAB_LAUNCH_FRAMING.encode(&bytes)?;
-    stream.write_all(&COLLAB_LAUNCH_MAGIC)?;
-    stream.write_all(&frame)?;
-    stream.flush()
+    COLLAB.write(stream, &Handoff::room(app_id, workspace_id))
 }
 
 /// Request exact executing-task custody on the existing collaboration socket.
@@ -1004,18 +911,10 @@ pub fn write_collab_executing_handoff(
     #[cfg(not(target_os = "linux"))]
     return write_collab_handoff(stream, app_id, workspace_id);
     #[cfg(target_os = "linux")]
-    {
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "protocol": COLLAB_LAUNCH_PROTOCOL_VERSION,
-            "app_id": app_id,
-            "workspace_id": workspace_id,
-            "executing_peer": true,
-        }))
-        .map_err(std::io::Error::other)?;
-        stream.write_all(&COLLAB_LAUNCH_MAGIC)?;
-        COLLAB_LAUNCH_FRAMING.write(stream, &bytes)?;
-        stream.flush()
-    }
+    COLLAB.write(
+        stream,
+        &Handoff::room(app_id, workspace_id).with_executing_peer(),
+    )
 }
 
 fn write_compat_handoff(
@@ -1023,25 +922,11 @@ fn write_compat_handoff(
     app_id: &str,
     workspace_id: &str,
 ) -> std::io::Result<()> {
-    let value = serde_json::json!({
-        "protocol": COMPAT_PROTOCOL_VERSION,
-        "app_id": app_id,
-        "workspace_id": workspace_id,
-    });
-    let bytes = serde_json::to_vec(&value)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    COMPAT_HANDOFF_FRAMING.write(stream, &bytes)?;
-    stream.flush()
+    COMPAT.write(stream, &Handoff::room(app_id, workspace_id))
 }
 
 fn write_model_gateway_handoff(stream: &mut UnixStream, app_id: &str) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(&serde_json::json!({
-        "protocol": 1,
-        "app_id": app_id,
-    }))
-    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    MODEL_GATEWAY_HANDOFF_FRAMING.write(stream, &bytes)?;
-    stream.flush()
+    MODEL_GATEWAY.write(stream, &Handoff::app(app_id))
 }
 
 /// Convert resolved services into `ServiceBind`s consumable by the
