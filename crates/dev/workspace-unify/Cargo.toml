@@ -1242,7 +1242,7 @@ doc = false
 "tilo-subject" = { path = "../../../crates/platform/tilo-subject", default-features = false, features = [] }
 "tilo-system-info" = { path = "../../../crates/platform/tilo-system-info", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = ["udisks"] }
-"tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = [] }
+"tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document"] }
 "tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = ["default", "video"] }
 "tilo-tray-host" = { path = "../../../crates/session/tray-host", default-features = false, features = [] }
 "tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
