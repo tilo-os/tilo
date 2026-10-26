@@ -339,32 +339,21 @@ impl ViewStorage {
     }
 
     pub(crate) fn record_resources(&self) -> Vec<tilo_actions::Resource> {
-        self.record_resources_unless(&|_, _| false)
-            .into_iter()
-            .flatten()
-            .collect()
-    }
-
-    /// [`Self::record_resources`], one entry per record of
-    /// [`Self::records_key`] in its order, `None` for each whose id and
-    /// revision `kept` says the caller already holds as published: a record
-    /// that did not move is not published again.
-    pub(crate) fn record_resources_unless(
-        &self,
-        kept: &dyn Fn(&str, u64) -> bool,
-    ) -> Vec<Option<tilo_actions::Resource>> {
-        let publish =
-            |door: &Rc<dyn RecordDoor>| (!kept(door.id(), door.revision())).then(|| door.publish());
         let mut resources = self
             .person
             .as_ref()
-            .map(|person| person.resources_unless(kept))
+            .map(super::person::PersonState::resources)
             .unwrap_or_default();
-        resources.extend(self.section_doors.borrow().iter().map(publish));
-        resources.extend(self.chains.doors().iter().map(publish));
+        resources.extend(
+            self.section_doors
+                .borrow()
+                .iter()
+                .map(|door| door.publish()),
+        );
+        resources.extend(self.chains.doors().iter().map(|door| door.publish()));
         let kept_by = self.kept_by.borrow();
         if !kept_by.is_empty() {
-            for resource in resources.iter_mut().flatten() {
+            for resource in &mut resources {
                 if let Some(provider) = kept_by.get(resource.id.as_str()) {
                     run_by(resource, provider);
                 }

@@ -60,8 +60,6 @@ pub(super) struct NestedViews {
 pub(super) struct RecordChildren {
     document: SharedChildren,
     records: Vec<(String, u64)>,
-    /// Each of `records` as published, in their order.
-    published: Vec<SharedResource>,
     i18n: u64,
     opens: bool,
     children: SharedChildren,
@@ -444,10 +442,7 @@ impl ResourceRoot {
     /// `document` followed by the records kept beside the resource, as the
     /// publication carries them (with `open` on their items when a view
     /// `opens` them). The same children while neither moved, so what reads
-    /// the forest skips them as seen. A record that did not move is the very
-    /// node it was however the document's children moved, and is not
-    /// published again: a post in a long Chat channel publishes its channel
-    /// once, not once per publication the post asks for.
+    /// the forest skips them as seen.
     fn with_record_children(&self, document: SharedChildren, opens: bool) -> SharedChildren {
         let records = self.storage.records_key();
         if records.is_empty() {
@@ -455,56 +450,34 @@ impl ResourceRoot {
         }
         let i18n = ui_core::i18n::I18nManager::revision();
         let mut kept = self.record_children.borrow_mut();
-        let last = kept
-            .as_ref()
-            .filter(|last| last.i18n == i18n && last.opens == opens);
-        if let Some(last) =
-            last.filter(|last| last.document.ptr_eq(&document) && last.records == records)
-        {
-            return last.children.clone();
+        if let Some(kept) = kept.as_ref().filter(|kept| {
+            kept.document.ptr_eq(&document)
+                && kept.records == records
+                && kept.i18n == i18n
+                && kept.opens == opens
+        }) {
+            return kept.children.clone();
         }
-        let before: HashMap<(&str, u64), &SharedResource> = last
-            .map(|last| {
-                last.records
-                    .iter()
-                    .map(|(id, revision)| (id.as_str(), *revision))
-                    .zip(&last.published)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let fresh = self
-            .storage
-            .record_resources_unless(&|id, revision| before.contains_key(&(id, revision)));
-        let (records, published): (Vec<(String, u64)>, Vec<SharedResource>) = records
-            .into_iter()
-            .zip(fresh)
-            .filter_map(|((id, revision), fresh)| {
-                let published = match fresh {
-                    Some(mut record) => {
-                        let _profile =
-                            tilo_resource::profiling::Phase::start("framework.record_republished");
-                        if opens {
-                            offer_item_open(self.resource.item_of, &mut record);
-                        }
-                        SharedResource::from_resource(record)
-                    }
-                    None => (*before.get(&(id.as_str(), revision))?).clone(),
-                };
-                Some(((id, revision), published))
-            })
-            .unzip();
-        drop(before);
         let children = SharedChildren::new(
             document
                 .iter()
                 .cloned()
-                .chain(published.iter().cloned())
+                .chain(
+                    self.storage
+                        .record_resources()
+                        .into_iter()
+                        .map(|mut record| {
+                            if opens {
+                                offer_item_open(self.resource.item_of, &mut record);
+                            }
+                            SharedResource::from_resource(record)
+                        }),
+                )
                 .collect(),
         );
         *kept = Some(RecordChildren {
             document,
             records,
-            published,
             i18n,
             opens,
             children: children.clone(),

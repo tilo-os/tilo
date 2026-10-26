@@ -629,30 +629,15 @@ impl PersonState {
     /// redo of each, which the palette and agents reach like the app's own
     /// history.
     pub(crate) fn resources(&self) -> Vec<tilo_actions::Resource> {
-        self.resources_unless(&|_, _| false)
-            .into_iter()
-            .flatten()
-            .collect()
-    }
-
-    /// [`Self::resources`], in the same order, leaving out (as `None`) each
-    /// record whose door id and revision `kept` says the caller already
-    /// holds as published.
-    pub(crate) fn resources_unless(
-        &self,
-        kept: &dyn Fn(&str, u64) -> bool,
-    ) -> Vec<Option<tilo_actions::Resource>> {
         self.published
             .borrow()
             .iter()
             .map(|published| {
-                (!kept(published.door.id(), published.door.revision())).then(|| {
-                    published
-                        .door
-                        .publish()
-                        .with_action(history_spec(&published.id, &published.label, true))
-                        .with_action(history_spec(&published.id, &published.label, false))
-                })
+                published
+                    .door
+                    .publish()
+                    .with_action(history_spec(&published.id, &published.label, true))
+                    .with_action(history_spec(&published.id, &published.label, false))
             })
             .collect()
     }
