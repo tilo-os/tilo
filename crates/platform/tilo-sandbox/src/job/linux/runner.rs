@@ -42,12 +42,13 @@ enum Step {
     Exec,
     Ids,
     Init,
+    Mounts,
 }
 
 impl Step {
     fn from_u32(n: u32) -> Option<Self> {
         use Step::{
-            Caps, Cwd, Exec, Fork, Hostname, Ids, Init, Landlock, LandlockRule, Loopback,
+            Caps, Cwd, Exec, Fork, Hostname, Ids, Init, Landlock, LandlockRule, Loopback, Mounts,
             NoNewPrivs, Op, Pivot, PivotStage, Private, Seccomp, Stage,
         };
         [
@@ -68,6 +69,7 @@ impl Step {
             Exec,
             Ids,
             Init,
+            Mounts,
         ]
         .into_iter()
         .find(|s| *s as u32 == n)
@@ -327,6 +329,25 @@ impl Child<'_> {
         }
     }
 
+    /// Take a mount namespace of the job's own: a copy of the worker's,
+    /// which [`Child::build_root`] then leaves for the job's root.
+    ///
+    /// The init makes it here, after its `execve`, rather than `clone3`
+    /// before it: the dynamic loader opens itself and every library by path,
+    /// and opened inside the copy, their mappings would keep the whole copy
+    /// alive for as long as the job runs. The copy can't be taken apart (a
+    /// new user namespace locks its mounts together), so every filesystem
+    /// mounted when the job started would stay mounted in it, and a dataset
+    /// unmounted meanwhile could not be destroyed (`EBUSY`). Mapped before
+    /// the copy exists, they hold the worker's own mounts, as any process
+    /// of the worker's does, and the copy is freed when the init detaches
+    /// it. From here on the init opens nothing it keeps.
+    fn own_mounts(&self) {
+        // SAFETY: unshare with a constant; this process is single-threaded.
+        let rc = unsafe { libc::unshare(libc::CLONE_NEWNS) };
+        self.check(libc::c_long::from(rc), Step::Mounts, 0);
+    }
+
     /// Make the staging root, run every mount operation, pivot into the new
     /// root.
     fn build_root(&self) {
@@ -375,6 +396,19 @@ impl Child<'_> {
             let rc = unsafe { run_op(op, self.control.trees_at) };
             if rc < 0 && op.fatal() {
                 self.fail(Step::Op, i, errno());
+            }
+        }
+        // The idmapped trees are attached: the command must not inherit
+        // them (the init closes them as it starts reaping).
+        for op in &plan.ops {
+            if let Op::Attach { tree, .. } = op
+                && let Some(fd) = RawFd::try_from(*tree)
+                    .ok()
+                    .and_then(|t| self.control.trees_at.checked_add(t))
+            {
+                // SAFETY: sets a flag on a descriptor number this process
+                // holds; a wrong number fails harmlessly.
+                unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) };
             }
         }
         // SAFETY: the new root is a mount point (bind or tmpfs above);
@@ -623,6 +657,7 @@ impl Child<'_> {
         // the job.
         unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) };
         Self::reset_signals();
+        self.own_mounts();
         self.become_ids();
         self.build_root();
         self.name_and_network();
@@ -1098,6 +1133,7 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
             .ops
             .get(index)
             .map_or_else(|| "building the root".to_owned(), Op::describe),
+        Some(Step::Mounts) => "making the job's mount namespace".into(),
         Some(Step::Private) => "making the mount tree private".into(),
         Some(Step::Stage | Step::PivotStage) => "staging the new root".into(),
         Some(Step::Pivot) => "entering the new root".into(),
@@ -1257,13 +1293,16 @@ fn plan_layout(
 
 /// The clone3 flags and arguments, plus where the pidfd is stored. The
 /// child shares this process's memory, on `stack`, until its `execve`.
+///
+/// No new mount namespace: the init makes its own once it runs (see
+/// [`Child::own_mounts`]), so that the program and the libraries it maps
+/// come from the worker's mounts rather than from the job's copy of them.
 fn clone_args(cgroup: Option<RawFd>, pidfd: &mut RawFd, stack: &Stack) -> sys::CloneArgs {
     let bits = |f: libc::c_int| u64::from(f.unsigned_abs());
     let mut flags = bits(
         libc::CLONE_VM
             | libc::CLONE_VFORK
             | libc::CLONE_NEWUSER
-            | libc::CLONE_NEWNS
             | libc::CLONE_NEWPID
             | libc::CLONE_NEWNET
             | libc::CLONE_NEWIPC

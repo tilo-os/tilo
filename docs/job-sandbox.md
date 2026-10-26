@@ -56,16 +56,28 @@ and denial of service through kernel locks that no cgroup accounts.
 
 ```text
 worker (t / ush)                       caller's namespaces, its own cgroup leaf
- └─ job init (pid 1)                   clone3 → new user, mount, pid, net, ipc, uts, cgroup ns,
+ └─ job init (pid 1)                   clone3 → new user, pid, net, ipc, uts, cgroup ns,
      │                                 born inside the job's cgroup (CLONE_INTO_CGROUP),
-     │                                 then execve of the worker's program as `tilo-job-init`
+     │                                 then execve of the worker's program as `tilo-job-init`,
+     │                                 which makes its own mount ns
      └─ the command                    fork + execve; everything it starts stays in the job
 ```
 
 The library calls `clone3` from the worker with `CLONE_INTO_CGROUP`,
-`CLONE_PIDFD` and `CLONE_NEW{USER,NS,PID,NET,IPC,UTS,CGROUP}`. The child is born
+`CLONE_PIDFD` and `CLONE_NEW{USER,PID,NET,IPC,UTS,CGROUP}`. The child is born
 inside the job's cgroup, so no instruction of the job ever runs outside its
 limits. The worker keeps the pidfd and waits on it without touching `SIGCHLD`.
+
+The mount namespace is the one the init makes itself (`unshare(CLONE_NEWNS)`),
+once it runs. A new mount namespace is a copy of the worker's mounts, and with
+a new user namespace those mounts are locked together: the init's last
+`umount2(MNT_DETACH)` detaches the copy but can't take it apart. The dynamic
+loader opens itself and every library by path, so a namespace made by `clone3`
+would have them mapped from the copy, which then stays alive, with every
+filesystem mounted when the job started, until the job ends: a dataset
+unmounted from the worker meanwhile can't be destroyed (`EBUSY`). Made after
+the `execve`, the copy holds nothing of the init's and is freed as soon as it is
+detached.
 
 The child is not a copy of the worker. A fork of a worker whose heap is tens of
 GiB copies its page tables on every job start, and its init would keep, for the
@@ -87,7 +99,7 @@ prepared by the worker. In order, the init:
    the caller's setup hook. t's hook attaches pasta to the job's network
    namespace and installs its nftables. If the worker closes the pipe instead,
    the init exits.
-2. Makes `/` private (`MS_REC|MS_PRIVATE`), then builds the new root on a
+2. Makes its mount namespace and `/` private (`MS_REC|MS_PRIVATE`), then builds the new root on a
    tmpfs. The root is either an image's unpacked root filesystem, bound
    read-only, or the host's `/usr` and `/etc` bound read-only with
    `/bin`→`usr/bin` style links.
