@@ -130,11 +130,8 @@ async fn native_stop_retry() {
 #[tokio::test(flavor = "current_thread")]
 async fn queued_normal_requests_survive_unmatched_cancellation() {
     let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
-    HANDOFF_FRAMING
-        .write_async(
-            &mut client,
-            &serde_json::to_vec(&serde_json::json!({"protocol":1,"app_id":AGENT_APP})).unwrap(),
-        )
+    service_handoff::MODEL_GATEWAY
+        .write_async(&mut client, &service_handoff::Handoff::app(AGENT_APP))
         .await
         .unwrap();
     let http = provider_client().unwrap();

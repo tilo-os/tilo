@@ -1,0 +1,31 @@
+[package]
+name = "service-handoff"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The launcher's handoff on every service connection: one table of magic, framing and protocol numbers, and one typed bounded envelope both ends read."
+
+[lib]
+name = "service_handoff"
+path = "src/lib.rs"
+
+[features]
+default = []
+# The async readers and writers the tokio services use. The launcher writes
+# every handoff synchronously before it forks and needs none of it.
+tokio = ["dep:tokio", "wire-frame/tokio"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "rt"] }
+
+[lints]
+workspace = true

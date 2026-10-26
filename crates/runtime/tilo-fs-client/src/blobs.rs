@@ -9,23 +9,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use capnp_rpc::rpc_twoparty_capnp;
-use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt as _;
-use wire_frame::Framing;
+
+use service_handoff::{BLOBS, Handoff, HandoffError, valid_scope_component};
 
 pub use crate::blobs_capnp::{
     ReadStatus as WireReadStatus, blob_upload, document_blobs, public_content, session_blobs,
 };
 
-/// Where the root filesystem daemon listens for document-media connections.
-/// Group-connectable by the signed-in device user only, and never bound into
-/// an app sandbox.
-pub const DEFAULT_BLOB_SOCKET: &str = "/run/tilo/fs-blobs.sock";
-/// Launcher service name; the app finds its descriptor in `TILO_SVC_BLOBS_FD`.
-pub const BLOB_SERVICE: &str = "blobs";
-/// Prefix of the handoff frame that precedes Cap'n Proto on every connection.
-pub const BLOB_HANDOFF_MAGIC: [u8; 4] = *b"QBL1";
-pub const BLOB_HANDOFF_PROTOCOL: u16 = 1;
+/// The launcher service name; the app finds its descriptor in
+/// `TILO_SVC_BLOBS_FD`. The handoff itself — its magic, framing, protocol
+/// number and envelope — is the one `service_handoff` contract both this end
+/// and the launcher compile.
+pub use service_handoff::{
+    BLOB_HANDOFF_MAGIC, BLOB_HANDOFF_PROTOCOL, BLOB_SERVICE, DEFAULT_BLOB_SOCKET,
+};
 /// Largest payload one `put` message carries; larger content uses `upload`.
 pub const MAX_PUT_CHUNK: usize = 4 * 1024 * 1024;
 /// Largest range one `get` answers.
@@ -48,10 +45,7 @@ pub const UPLOAD_PIECE: usize = 64 * 1024;
 /// Pieces of one upload that may wait for the backend before the uploader's
 /// next `write` is held back.
 pub const UPLOAD_PIECES_IN_FLIGHT: usize = 4;
-const HANDOFF_FRAMING: Framing = Framing::little_endian(4096).reject_empty();
-const MAX_SCOPE_COMPONENT: usize = 128;
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Who a connection acts for, fixed by the handoff frame before the first RPC.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BlobPrincipal {
@@ -72,7 +66,9 @@ pub struct BlobScope {
 impl BlobScope {
     /// Validate and build a scope. Both parts must be a single path-safe
     /// component (`[A-Za-z0-9._-]`, not only dots, at most 128 bytes): they
-    /// key the daemon's index and must not be able to alias one another.
+    /// key the daemon's index and must not be able to alias one another. The
+    /// rule is the handoff contract's, so the launcher refuses the same
+    /// scopes it would.
     ///
     /// # Errors
     ///
@@ -94,15 +90,6 @@ impl BlobScope {
     pub fn app(&self) -> &str {
         &self.app
     }
-}
-
-fn valid_scope_component(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_SCOPE_COMPONENT
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-        && !value.bytes().all(|byte| byte == b'.')
 }
 
 /// True for a lowercase 64-character hex BLAKE3 digest, the only hash form
@@ -178,47 +165,27 @@ impl From<capnp::Error> for BlobError {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HandoffFrame {
-    protocol: u16,
-    principal: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    room: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    app_id: Option<String>,
-}
-
 /// Write the handoff that fixes a new connection's principal: the magic, a
 /// little-endian `u32` length and a JSON object
 /// `{"protocol":1,"principal":"app","room":…,"app_id":…}` or
-/// `{"protocol":1,"principal":"session"}`. The launcher writes the same bytes.
+/// `{"protocol":1,"principal":"session"}`. The launcher writes the same bytes
+/// through the same `service_handoff::BLOBS` contract.
 ///
 /// # Errors
 ///
 /// Returns an I/O error when the frame cannot be written.
 pub fn write_handoff(stream: &mut impl io::Write, principal: &BlobPrincipal) -> io::Result<()> {
-    let frame = match principal {
-        BlobPrincipal::App(scope) => HandoffFrame {
-            protocol: BLOB_HANDOFF_PROTOCOL,
-            principal: "app".into(),
-            room: Some(scope.room.clone()),
-            app_id: Some(scope.app.clone()),
+    let scope = match principal {
+        BlobPrincipal::App(scope) => service_handoff::BlobScope::App {
+            room: scope.room.clone(),
+            app_id: scope.app.clone(),
         },
-        BlobPrincipal::Session => HandoffFrame {
-            protocol: BLOB_HANDOFF_PROTOCOL,
-            principal: "session".into(),
-            room: None,
-            app_id: None,
-        },
+        BlobPrincipal::Session => service_handoff::BlobScope::Session,
     };
-    let bytes = serde_json::to_vec(&frame).map_err(io::Error::other)?;
-    stream.write_all(&BLOB_HANDOFF_MAGIC)?;
-    HANDOFF_FRAMING.write(stream, &bytes)?;
-    stream.flush()
+    BLOBS.write(stream, &Handoff::Blob(scope))
 }
 
-/// Read and validate a handoff frame (server side).
+/// Read and validate a handoff (server side).
 ///
 /// # Errors
 ///
@@ -228,26 +195,25 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     let invalid = |message: &str| io::Error::new(io::ErrorKind::InvalidData, message.to_owned());
-    let mut magic = [0_u8; 4];
-    reader.read_exact(&mut magic).await?;
-    if magic != BLOB_HANDOFF_MAGIC {
-        return Err(invalid("not a document-media handoff"));
-    }
-    let bytes = HANDOFF_FRAMING
-        .read_async(reader)
-        .await?
-        .ok_or(io::ErrorKind::UnexpectedEof)?;
-    let frame: HandoffFrame =
-        serde_json::from_slice(&bytes).map_err(|_| invalid("malformed document-media handoff"))?;
-    if frame.protocol != BLOB_HANDOFF_PROTOCOL {
-        return Err(invalid("unsupported document-media handoff protocol"));
-    }
-    match (frame.principal.as_str(), frame.room, frame.app_id) {
-        ("app", Some(room), Some(app)) => BlobScope::new(room, app)
-            .map(BlobPrincipal::App)
-            .map_err(|_| invalid("document-media handoff names an invalid scope")),
-        ("session", None, None) => Ok(BlobPrincipal::Session),
-        _ => Err(invalid("document-media handoff names an unknown principal")),
+    match BLOBS.read_async(reader).await {
+        Ok(Handoff::Blob(service_handoff::BlobScope::App { room, app_id })) => {
+            BlobScope::new(room, app_id)
+                .map(BlobPrincipal::App)
+                .map_err(|_| invalid("document-media handoff names an invalid scope"))
+        }
+        Ok(Handoff::Blob(service_handoff::BlobScope::Session)) => Ok(BlobPrincipal::Session),
+        Ok(_) => Err(invalid("document-media handoff names an unknown principal")),
+        Err(HandoffError::NotHandoff { .. } | HandoffError::Marker) => {
+            Err(invalid("not a document-media handoff"))
+        }
+        Err(HandoffError::Protocol { .. }) => {
+            Err(invalid("unsupported document-media handoff protocol"))
+        }
+        Err(HandoffError::Malformed) => Err(invalid("malformed document-media handoff")),
+        Err(HandoffError::Principal) => {
+            Err(invalid("document-media handoff names an unknown principal"))
+        }
+        Err(error) => Err(error.into()),
     }
 }
 

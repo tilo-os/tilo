@@ -69,8 +69,6 @@ enum Action {
     },
 }
 
-/// The launcher's handoff: a little-endian `u32` length, then JSON.
-const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(4096);
 const SETTINGS_APP: &str = "so.tilo.settings";
 const AGENT_APP: &str = "so.tilo.agent";
 const CHAT_APP: &str = "so.tilo.chat";
@@ -105,12 +103,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 /// Writes one intermediate streaming frame and reports whether the client is
 /// still there.
 type Emit<'a> = &'a mut (dyn FnMut(&Response) -> bool + Send);
-
-#[derive(serde::Deserialize)]
-struct Handoff {
-    protocol: u16,
-    app_id: String,
-}
 
 pub fn main() {
     let cli = Cli::parse();
@@ -348,7 +340,7 @@ async fn serve_connection_within(
     http: &reqwest::Client,
     handoff: Duration,
 ) {
-    let Ok(Ok(handoff)) = tokio::time::timeout(handoff, read_handoff(&mut stream)).await else {
+    let Ok(Ok(app_id)) = tokio::time::timeout(handoff, read_handoff(&mut stream)).await else {
         return;
     };
     let (mut reader, mut writer) = stream.into_split();
@@ -413,7 +405,7 @@ async fn serve_connection_within(
                 serde_json::to_vec(event)
                     .is_ok_and(|body| events.try_send(Zeroizing::new(body)).is_ok())
             };
-            handle_streaming(&handoff.app_id, request, http, &mut emit).await
+            handle_streaming(&app_id, request, http, &mut emit).await
         };
         // Dropping handling immediately drops the provider future. Writes are
         // outside select, so cancellation never truncates a response frame.
@@ -500,28 +492,41 @@ async fn read_request_frame(
         .map_err(|_| ())?
 }
 
-async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<Handoff, String> {
-    let body = match HANDOFF_FRAMING.read_async(stream).await {
-        Ok(Some(body)) => body,
-        Ok(None) => return Err("missing launcher authentication".into()),
-        Err(wire_frame::FrameError::TooLarge(_)) => {
-            return Err("oversized launcher authentication".into());
+async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<String, String> {
+    use service_handoff::{Handoff, HandoffError, MODEL_GATEWAY};
+    let authenticated = match MODEL_GATEWAY.read_async(stream).await {
+        Ok(Handoff::App { app_id }) => Ok(app_id),
+        Ok(_)
+        | Err(
+            HandoffError::Io(_)
+            | HandoffError::Malformed
+            | HandoffError::Envelope
+            | HandoffError::Principal,
+        ) => Err("invalid launcher authentication"),
+        Err(HandoffError::Missing | HandoffError::NotHandoff { .. }) => {
+            Err("missing launcher authentication")
         }
-        Err(_) => return Err("truncated launcher authentication".into()),
+        Err(HandoffError::Frame(wire_frame::FrameError::TooLarge(_))) => {
+            Err("oversized launcher authentication")
+        }
+        Err(HandoffError::Frame(_) | HandoffError::Marker) => {
+            Err("truncated launcher authentication")
+        }
+        Err(HandoffError::Protocol { .. }) => {
+            Err("launcher is not authorized for the model gateway")
+        }
     };
-    let handoff: Handoff =
-        serde_json::from_slice(&body).map_err(|_| "invalid launcher authentication".to_string())?;
-    if handoff.protocol != 1
-        || (!crate::caller::provider_admin_app(&handoff.app_id)
-            && handoff.app_id != AGENT_APP
-            && handoff.app_id != CHAT_APP
-            && handoff.app_id != FEEDBACK_APP
-            && handoff.app_id != PHOTOS_APP
-            && handoff.app_id != CANVAS_APP)
+    let app_id = authenticated.map_err(str::to_owned)?;
+    if !crate::caller::provider_admin_app(&app_id)
+        && app_id != AGENT_APP
+        && app_id != CHAT_APP
+        && app_id != FEEDBACK_APP
+        && app_id != PHOTOS_APP
+        && app_id != CANVAS_APP
     {
         return Err("launcher is not authorized for the model gateway".into());
     }
-    Ok(handoff)
+    Ok(app_id)
 }
 
 #[cfg(test)]
@@ -3275,11 +3280,11 @@ mod tests {
                 .unwrap();
             gateway.set_nonblocking(true).unwrap();
             let runtime = tilo_rt::daemon("gateway-test").workers(1).build().unwrap();
-            let handoff = runtime.block_on(async {
+            let app_id = runtime.block_on(async {
                 let mut gateway = tokio::net::UnixStream::from_std(gateway).unwrap();
                 read_handoff(&mut gateway).await
             });
-            assert_eq!(handoff.unwrap().app_id, AGENT_APP);
+            assert_eq!(app_id.unwrap(), AGENT_APP);
         }
 
         // Phase: local_vision_input_is_closed_and_bounded.

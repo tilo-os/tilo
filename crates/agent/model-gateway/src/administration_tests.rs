@@ -69,11 +69,8 @@ impl Transport for Http {
 }
 fn fd(app: &str) -> (FdTransport, tokio::task::JoinHandle<()>) {
     let (mut original, peer) = UnixStream::pair().unwrap();
-    HANDOFF_FRAMING
-        .write(
-            &mut original,
-            &serde_json::to_vec(&serde_json::json!({"protocol":1,"app_id":app})).unwrap(),
-        )
+    service_handoff::MODEL_GATEWAY
+        .write(&mut original, &service_handoff::Handoff::app(app))
         .unwrap();
     let transport = FdTransport::new(original.as_fd()).unwrap();
     peer.set_nonblocking(true).unwrap();
@@ -442,11 +439,8 @@ async fn signed_metadata_stays_owned_by_provisioner(admin: &dyn ProviderAdmin) {
 
 async fn mutation_stop_waits_for_commit() {
     let (mut client, peer) = tokio::net::UnixStream::pair().unwrap();
-    HANDOFF_FRAMING
-        .write_async(
-            &mut client,
-            &serde_json::to_vec(&serde_json::json!({"protocol":1,"app_id":SETTINGS_APP})).unwrap(),
-        )
+    service_handoff::MODEL_GATEWAY
+        .write_async(&mut client, &service_handoff::Handoff::app(SETTINGS_APP))
         .await
         .unwrap();
     let server = tokio::spawn(async move {

@@ -160,10 +160,10 @@ impl HostPolicy {
 pub const TERMINAL_APP_ID: &str = "so.tilo.terminal";
 
 /// The preamble `tilo-launcher` writes on a sandboxed app's `ush` connection
-/// before handing the descriptor over.
-pub const LAUNCH_MAGIC: [u8; 4] = *b"QUS1";
-/// The handoff's JSON is bounded: it names one app id.
-const MAX_HANDOFF_BYTES: u32 = 1024;
+/// before handing the descriptor over: `QUS1`, a little-endian `u32` length,
+/// then `{"protocol":1,"app_id":"…"}`. The bytes are
+/// `service_handoff::USH`'s, which the launcher writes.
+pub use service_handoff::USH_LAUNCH_MAGIC as LAUNCH_MAGIC;
 
 /// Who is on the other end of a service connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,59 +185,28 @@ impl Caller {
     }
 }
 
-/// The launcher's handoff: `QUS1`, a little-endian `u32` length, then
-/// `{"protocol":1,"app_id":"…"}`.
-#[derive(Debug, serde::Deserialize)]
-struct Handoff {
-    protocol: u16,
-    app_id: String,
-}
-
+/// The launcher's handoff, as `service_handoff::USH` frames it.
 pub fn encode_handoff(app_id: &str) -> std::io::Result<Vec<u8>> {
-    let json = serde_json::to_vec(&serde_json::json!({ "protocol": 1, "app_id": app_id }))
-        .map_err(std::io::Error::other)?;
-    let len = u32::try_from(json.len())
-        .ok()
-        .filter(|len| *len > 0 && *len <= MAX_HANDOFF_BYTES)
-        .ok_or_else(|| std::io::Error::other("ush handoff is out of bounds"))?;
-    let mut out = Vec::with_capacity(json.len().saturating_add(8));
-    out.extend_from_slice(&LAUNCH_MAGIC);
-    out.extend_from_slice(&len.to_le_bytes());
-    out.extend_from_slice(&json);
-    Ok(out)
+    service_handoff::USH
+        .encode(&service_handoff::Handoff::app(app_id))
+        .map_err(std::io::Error::from)
 }
 
 /// Read who is calling from the head of a connection. Returns the caller and
 /// the bytes already consumed that belong to the request (a connection
 /// without a handoff starts directly with its JSON line).
 pub fn read_caller(stream: &mut impl Read) -> std::io::Result<(Caller, Vec<u8>)> {
-    // One byte first: a request is JSON and never starts with the magic's
-    // first byte, so a short request (`{}`) is never waited on for more.
-    let mut first = [0u8; 1];
-    if stream.read(&mut first)? == 0 {
-        return Ok((Caller::Session, Vec::new()));
+    use service_handoff::{Handoff, HandoffError, USH};
+    match USH.read(stream) {
+        Ok(Handoff::App { app_id }) => Ok((Caller::App(app_id), Vec::new())),
+        Ok(_) => Err(std::io::Error::other("ush handoff is not understood")),
+        Err(HandoffError::Missing) => Ok((Caller::Session, Vec::new())),
+        // One byte is enough to tell a request from a handoff: a request is
+        // JSON and never starts with the magic's first byte, so the byte read
+        // here is the request's.
+        Err(HandoffError::NotHandoff { carried }) => Ok((Caller::Session, carried)),
+        Err(error) => Err(error.into()),
     }
-    if first != LAUNCH_MAGIC[..1] {
-        return Ok((Caller::Session, first.to_vec()));
-    }
-    let mut rest = [0u8; 3];
-    stream.read_exact(&mut rest)?;
-    if rest != LAUNCH_MAGIC[1..] {
-        return Err(std::io::Error::other("ush handoff is not understood"));
-    }
-    let mut len = [0u8; 4];
-    stream.read_exact(&mut len)?;
-    let len = u32::from_le_bytes(len);
-    if len == 0 || len > MAX_HANDOFF_BYTES {
-        return Err(std::io::Error::other("ush handoff is out of bounds"));
-    }
-    let mut json = vec![0u8; len as usize];
-    stream.read_exact(&mut json)?;
-    let handoff: Handoff = serde_json::from_slice(&json).map_err(std::io::Error::other)?;
-    if handoff.protocol != 1 || handoff.app_id.is_empty() {
-        return Err(std::io::Error::other("ush handoff is not understood"));
-    }
-    Ok((Caller::App(handoff.app_id), Vec::new()))
 }
 
 /// Who asked for a session, as the Terminal reports it.
@@ -578,6 +547,17 @@ mod tests {
 
     #[test]
     fn the_launcher_handoff_names_the_app_and_a_bare_request_is_the_session() {
+        struct Trickle(Vec<u8>);
+        impl Read for Trickle {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let Some(byte) = self.0.first().copied() else {
+                    return Ok(0);
+                };
+                self.0.remove(0);
+                buf[0] = byte;
+                Ok(1)
+            }
+        }
         let mut wire = encode_handoff("so.tilo.terminal").unwrap();
         wire.extend_from_slice(b"{\"op\":\"open-session\"}\n");
         let mut reader = std::io::Cursor::new(wire);
@@ -596,6 +576,19 @@ mod tests {
         let mut forged = LAUNCH_MAGIC.to_vec();
         forged.extend_from_slice(&u32::MAX.to_le_bytes());
         assert!(read_caller(&mut std::io::Cursor::new(forged)).is_err());
+
+        let mut wrong_version = LAUNCH_MAGIC.to_vec();
+        let envelope = br#"{"protocol":2,"app_id":"so.tilo.terminal"}"#;
+        wrong_version.extend_from_slice(&u32::try_from(envelope.len()).unwrap().to_le_bytes());
+        wrong_version.extend_from_slice(envelope);
+        assert!(read_caller(&mut std::io::Cursor::new(wrong_version)).is_err());
+
+        // The handoff may arrive a byte at a time: the caller is the app only
+        // once the whole marker and envelope have been read.
+        let wire = encode_handoff("so.tilo.terminal").unwrap();
+        let (caller, carried) = read_caller(&mut Trickle(wire)).unwrap();
+        assert_eq!(caller, Caller::App("so.tilo.terminal".into()));
+        assert!(carried.is_empty());
     }
 
     #[test]

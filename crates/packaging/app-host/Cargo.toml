@@ -31,7 +31,7 @@ service = [
     "dep:app-cli",
     "dep:install",
     "dep:runtime-bundle",
-    "dep:wire-frame",
+    "dep:service-handoff",
     "dep:clap",
     "dep:anyhow",
     "dep:tracing",
@@ -70,7 +70,9 @@ capnp-rpc.workspace = true
 
 # Async runtime + transport.
 tokio = { workspace = true, features = ["macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
-wire-frame = { path = "../../system/wire-frame", features = ["tokio"], optional = true }
+# The launcher handoff this socket reads, from the one contract both ends
+# compile.
+service-handoff = { path = "../../runtime/service-handoff", features = ["tokio"], optional = true }
 
 # Daemon plumbing.
 clap = { workspace = true, optional = true }
