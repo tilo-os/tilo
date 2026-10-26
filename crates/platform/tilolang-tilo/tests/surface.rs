@@ -45,6 +45,34 @@ fn the_surface_names_a_kind_per_type_and_a_verb_per_action() {
     assert!(counter.verb("edit-text").is_some() && counter.verb("edit-flag").is_some());
 }
 
+/// A package's root is created by the host on its own, as a committed change of its own: the
+/// package's surface publishes the verb that change names, or every receiver (and the identity
+/// service signing it) refuses the app's first change in a real session.
+#[test]
+fn the_root_the_host_creates_names_a_verb_the_surface_publishes() {
+    let (replica, packages) = Replica::new("ada", AutoCommit::new(), &[(COUNTER, "")]);
+    let meta = &packages[0].meta;
+    let first = replica.host.next_ticket();
+    replica.host.root_of(&meta.app).unwrap();
+    let committed = replica.host.take_committed_from(first);
+    assert!(!committed.is_empty(), "creating the root commits a change");
+    let surfaces = package_surfaces(meta);
+    for entry in committed {
+        let action = &entry.action;
+        let surface = surfaces
+            .iter()
+            .find(|surface| surface.kind == action.kind)
+            .unwrap_or_else(|| panic!("no surface of kind {}", action.kind));
+        assert_eq!(
+            surface.verb(&action.action_id).map(|verb| verb.0),
+            Some(ActionKind::Undoable),
+            "{} publishes no {}",
+            action.kind,
+            action.action_id
+        );
+    }
+}
+
 #[test]
 fn collection_fields_are_listed_below_their_item() {
     let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
