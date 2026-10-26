@@ -712,3 +712,43 @@ fn append_journal_recovery_turns_nonterminal_writes_uncertain_and_goes_on_workin
         "a transition made durable after recovery stands"
     );
 }
+
+#[test]
+fn append_journal_next_transition_recovers_without_restart() {
+    let (_dir, root, mut journal) = fresh();
+    let k = key(&journal, 26);
+    assert!(journal.admit(k.clone(), intent("draft"), 1).unwrap());
+    journal.unconfirmed_next = true;
+    assert!(journal.update(&k, succeeded(&k, "maybe"), false).is_err());
+    assert!(journal.failed(), "the store may hold it");
+    // No `recover` call and no restart: the next transition recovers the
+    // journal it finds failed, then is staged on the recovered store.
+    let later = key(&journal, 27);
+    assert!(
+        journal.admit(later.clone(), intent("draft"), 2).unwrap(),
+        "the next admission recovers the journal and is made"
+    );
+    assert!(!journal.failed());
+    assert_eq!(
+        journal.lookup(&k).unwrap().unwrap().update,
+        succeeded(&k, "maybe"),
+        "recovery read back the terminal the store holds"
+    );
+    journal
+        .update(&later, succeeded(&later, "after"), false)
+        .unwrap();
+    assert_eq!(
+        journal.lookup(&later).unwrap().unwrap().update,
+        succeeded(&later, "after")
+    );
+    drop(journal);
+    let journal = InvocationJournal::open(&root).unwrap();
+    assert_eq!(
+        journal.lookup(&k).unwrap().unwrap().update,
+        succeeded(&k, "maybe")
+    );
+    assert_eq!(
+        journal.lookup(&later).unwrap().unwrap().update,
+        succeeded(&later, "after")
+    );
+}

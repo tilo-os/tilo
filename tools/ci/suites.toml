@@ -159,6 +159,7 @@ suites = [
   "os/tests/test_no_ui_toolkits.py",
   "os/tests/test_no_python_runtime.py",
   "os/tests/test_flatpak_defaults.py",
+  "os/tests/test_authselect_unchanged.py",
   "os/tests/test_hardlink_identical.py",
   "os/tests/test_seed_env_runtime.py",
   "os/tests/test_boot_unit_ordering.py",
@@ -554,8 +555,11 @@ suites = [
   "scripts/vm-acceptance/test_device_fidelity.py",
   "scripts/vm-acceptance/test_session_restart.py",
   "scripts/vm-acceptance/test_session_guard.py",
+  "scripts/vm-acceptance/test_skip.py",
   "scripts/vm-acceptance/test_ui.py",
   "scripts/vm-acceptance/test_vm_actions.py",
+  "scripts/vm-acceptance/test_basics.py",
+  "scripts/vm-acceptance/test_report.py",
 ]
 
 [[group]]
@@ -1060,6 +1064,12 @@ package = "greeter"
 # input where the boot assessment reads it.
 inputs = ["os/usr/share/wayland-sessions/*.desktop", "os/usr/libexec/tilo-boot-health", "os/usr/libexec/tilo-cage-session"]
 readers = ["crates/session/greeter/src/greeter_app.rs", "crates/session/greeter/src/seat_input.rs"]
+
+[[cargo]]
+package = "pam-tilo"
+# The conversation tests run the PAM services the image ships.
+inputs = ["os/etc/pam.d/tilo-auth", "os/etc/pam.d/greetd", "os/etc/pam.d/tilo-unlock", "os/etc/pam.d/polkit-1", "os/etc/pam.d/sudo"]
+readers = ["crates/system/pam-tilo/tests/conversation.rs"]
 
 [[cargo]]
 package = "launcher"
@@ -1834,7 +1844,7 @@ reason = "runs inside a booted guest as its device admin, after first login; t's
 
 [[unrequired]]
 suite = "os/tests/live-update-check.sh"
-reason = "runs inside a booted dev VM as root and stages an update; t's os-acceptance-<arch> runs it"
+reason = "runs inside a booted dev VM as root and stages an update; t's os-dev-gate-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/input-hotplug-check.sh"

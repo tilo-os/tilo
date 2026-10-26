@@ -4,6 +4,8 @@
 use super::*;
 use ui::webview::WebViewEngine;
 
+use crate::downloads::DownloadStatus;
+
 #[test]
 fn a_navigation_while_a_page_loads_replaces_it() {
     struct Events(
@@ -917,4 +919,127 @@ fn answering_a_pages_question_says_what_happens_next() {
         message.contains("read-page"),
         "and what to do next: {message}"
     );
+}
+
+/// A completed download reads as bounded text (or names its type and size),
+/// and an offered download is saved or discarded through its own row.
+#[test]
+fn downloads_read_and_answer_their_offer_through_resource_actions() {
+    // Phase `a_completed_download_reads_as_text`.
+    {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine, true);
+        let dir = std::env::temp_dir().join(format!("tilo-read-download-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = dir.join("receipt.txt");
+        std::fs::write(&text, "Examplia Gov receipt\nReceipt code: REC-778812\n").unwrap();
+        let binary = dir.join("archive.bin");
+        std::fs::write(&binary, [0xff_u8, 0xfe, 0x00, 0x01]).unwrap();
+
+        widget.downloads.requested(
+            "read-text".into(),
+            "https://example.test/receipt.txt".into(),
+            "receipt.txt",
+        );
+        widget.downloads.finished("read-text", text);
+        widget.downloads.requested(
+            "read-binary".into(),
+            "https://example.test/archive.bin".into(),
+            "archive.bin",
+        );
+        widget.downloads.finished("read-binary", binary);
+
+        let row = widget
+            .resource_by_id("browser.downloads/read-text")
+            .expect("completed download row");
+        assert!(
+            row.actions
+                .iter()
+                .any(|action| action.id == "read-download"),
+            "a completed download offers reading its file"
+        );
+
+        let read = widget
+            .admit(
+                ui::tilo_actions::InvocationId::new(),
+                BrowserOperation::ReadDownload {
+                    id: "read-text".into(),
+                },
+            )
+            .expect("the file reads");
+        let ui::framework::Effected::Done(output) = read else {
+            panic!("reading a download finishes at once");
+        };
+        let answered = output.value.expect("an answer");
+        let answered = answered.as_str().expect("text");
+        assert!(
+            answered.contains("REC-778812"),
+            "read the receipt: {answered}"
+        );
+
+        let not_text = widget
+            .admit(
+                ui::tilo_actions::InvocationId::new(),
+                BrowserOperation::ReadDownload {
+                    id: "read-binary".into(),
+                },
+            )
+            .expect("the binary download answers too");
+        let ui::framework::Effected::Done(output) = not_text else {
+            panic!("a non-text download still answers");
+        };
+        let answered = output.value.expect("an answer");
+        let answered = answered.as_str().expect("text");
+        assert!(
+            answered.contains("not UTF-8 text"),
+            "a binary file names its type and size: {answered}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // Phase `an_offered_download_is_saved_or_discarded_through_its_row`.
+    {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        // The engine offers a file: a row appears and asks the person.
+        engine.push_event(WebViewEvent::NativeDownloadRequested {
+            id: 1,
+            url: "https://example.test/receipt.txt".into(),
+            name: "receipt.txt".into(),
+        });
+        widget.apply_engine_events();
+        let entry = widget
+            .downloads
+            .entries()
+            .iter()
+            .find(|entry| entry.suggested_name == "receipt.txt")
+            .cloned()
+            .expect("the offer became a row");
+        assert_eq!(entry.status, DownloadStatus::AwaitingDestination);
+        let row = widget
+            .resource_by_id(&entry.resource_id())
+            .expect("offered download row");
+        let actions: Vec<&str> = row
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert!(actions.contains(&"save-download"), "{actions:?}");
+        assert!(actions.contains(&"discard-download"), "{actions:?}");
+
+        // Keeping it answers the engine's question, which continues.
+        widget
+            .admit(
+                ui::tilo_actions::InvocationId::new(),
+                BrowserOperation::AnswerDownload {
+                    id: entry.id,
+                    allow: true,
+                },
+            )
+            .expect("the offer is kept");
+        assert!(engine.commands().iter().any(|command| matches!(
+            command,
+            WebViewCommand::DownloadDecision { id: 1, allow: true }
+        )));
+    }
 }

@@ -37,7 +37,7 @@ impl Guard {
         *hmac_sha256(self.key.as_slice(), secret.as_bytes())
     }
 
-    fn forget_expired(&mut self, now: Instant) {
+    pub fn forget_expired(&mut self, now: Instant) {
         self.wrong.retain(|_, entries| {
             entries.retain(|(_, at)| now.saturating_duration_since(*at) < REMEMBERED_FOR);
             !entries.is_empty()
@@ -68,6 +68,15 @@ impl Guard {
 
     pub fn succeeded(&mut self, uid: u32) {
         self.wrong.remove(&uid);
+    }
+
+    /// When the oldest remembered entry is due to be forgotten.
+    pub fn next_expiry(&self) -> Option<Instant> {
+        self.wrong
+            .values()
+            .flatten()
+            .filter_map(|(_, at)| at.checked_add(REMEMBERED_FOR))
+            .min()
     }
 }
 
@@ -100,6 +109,24 @@ mod tests {
             )
         );
         assert!(!guard.already_wrong(1000, &typo, start + REMEMBERED_FOR));
+    }
+
+    #[test]
+    fn expired_entries_leave_memory_and_the_next_expiry_follows_the_oldest() {
+        let mut guard = Guard::new().unwrap();
+        let start = Instant::now();
+        assert_eq!(guard.next_expiry(), None);
+        guard.remember_wrong(1000, &Secret::new("1"), start);
+        let later = start + Duration::from_secs(60);
+        guard.remember_wrong(1001, &Secret::new("2"), later);
+        assert_eq!(guard.next_expiry(), Some(start + REMEMBERED_FOR));
+
+        guard.forget_expired(start + REMEMBERED_FOR);
+        assert!(!guard.wrong.contains_key(&1000));
+        assert_eq!(guard.next_expiry(), Some(later + REMEMBERED_FOR));
+        guard.forget_expired(later + REMEMBERED_FOR);
+        assert!(guard.wrong.is_empty());
+        assert_eq!(guard.next_expiry(), None);
     }
 
     #[test]

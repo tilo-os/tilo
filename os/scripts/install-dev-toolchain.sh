@@ -74,7 +74,7 @@ case "${1:-}" in
     rpm -qa --qf "$query" | sort > /run/tilo-dev-before
     LD_PRELOAD=/run/tilo-build-clock.so dnf install -y --setopt=reposdir=/repo \
       --setopt=install_weak_deps=False \
-      chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils
+      chromium gnome-text-editor featherpad qt6-qtwayland alacritty glx-utils xterm
     rpm -qa --qf "$query" | sort > /run/tilo-dev-after
     comm -13 /run/tilo-dev-before /run/tilo-dev-after > /run/tilo-dev-added
     [ -s /run/tilo-dev-added ]

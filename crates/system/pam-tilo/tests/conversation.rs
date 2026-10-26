@@ -25,6 +25,7 @@ const PAM_MAXTRIES: c_int = 11;
 const PAM_AUTHTOK_ERR: c_int = 20;
 const PAM_PROMPT_ECHO_OFF: c_int = 1;
 const PAM_ERROR_MSG: c_int = 3;
+const PAM_TEXT_INFO: c_int = 4;
 
 #[repr(C)]
 struct PamMessage {
@@ -95,6 +96,7 @@ struct Person {
     answers: VecDeque<String>,
     prompts: Vec<String>,
     errors: Vec<String>,
+    infos: Vec<String>,
 }
 
 extern "C" fn converse(
@@ -126,6 +128,7 @@ extern "C" fn converse(
                 }
             }
             PAM_ERROR_MSG => person.errors.push(text),
+            PAM_TEXT_INFO => person.infos.push(text),
             _ => {}
         }
     }
@@ -203,12 +206,36 @@ fn run(
     answers: &[&str],
     phase: fn(&Libpam) -> Phase,
 ) -> Outcome {
+    run_service(
+        dir,
+        socket,
+        &[("test", lines)],
+        "test",
+        user,
+        answers,
+        phase,
+    )
+}
+
+/// Run one PAM phase of `service`, with every file of `files` in the
+/// configuration directory.
+fn run_service(
+    dir: &Path,
+    socket: &Path,
+    files: &[(&str, &str)],
+    service: &str,
+    user: &str,
+    answers: &[&str],
+    phase: fn(&Libpam) -> Phase,
+) -> Outcome {
     let confdir = dir.join("pam.d");
     std::fs::create_dir_all(&confdir).unwrap();
-    let stack = lines
-        .replace("@MODULE@", &module().display().to_string())
-        .replace("@SOCKET@", &socket.display().to_string());
-    std::fs::write(confdir.join("test"), stack).unwrap();
+    for (name, lines) in files {
+        let stack = lines
+            .replace("@MODULE@", &module().display().to_string())
+            .replace("@SOCKET@", &socket.display().to_string());
+        std::fs::write(confdir.join(name), stack).unwrap();
+    }
 
     let pam = libpam();
     let person = Mutex::new(Person {
@@ -219,7 +246,7 @@ fn run(
         conv: converse,
         appdata_ptr: std::ptr::from_ref(&person).cast_mut().cast(),
     };
-    let service = c"test";
+    let service = CString::new(service).unwrap();
     let user = CString::new(user).unwrap();
     let confdir_c = CString::new(confdir.display().to_string()).unwrap();
     let mut handle: *mut c_void = std::ptr::null_mut();
@@ -391,7 +418,7 @@ fn someone_the_daemon_does_not_know_is_left_to_the_rest_of_the_stack() {
 }
 
 const GREETER: &str = "\
-auth sufficient @MODULE@ socket=@SOCKET@ boot_sign_in
+auth sufficient @MODULE@ socket=@SOCKET@ boot_sign_in=test
 auth [success=done authinfo_unavail=ignore ignore=ignore default=die] @MODULE@ socket=@SOCKET@
 ";
 
@@ -504,4 +531,177 @@ fn someone_still_on_the_old_password_changes_it_in_the_rest_of_the_stack() {
     let out = run(dir.path(), &daemon.socket, PASSWORD, "ada", &[], chauthtok);
     assert_eq!(out.status, PAM_SUCCESS);
     assert!(out.person.prompts.is_empty());
+}
+
+/// The services the image ships, as libpam reads them from /etc/pam.d.
+const SHIPPED: [(&str, &str); 5] = [
+    (
+        "tilo-auth",
+        include_str!("../../../../os/etc/pam.d/tilo-auth"),
+    ),
+    ("greetd", include_str!("../../../../os/etc/pam.d/greetd")),
+    (
+        "tilo-unlock",
+        include_str!("../../../../os/etc/pam.d/tilo-unlock"),
+    ),
+    (
+        "polkit-1",
+        include_str!("../../../../os/etc/pam.d/polkit-1"),
+    ),
+    ("sudo", include_str!("../../../../os/etc/pam.d/sudo")),
+];
+
+/// The surfaces that authenticate a person.
+const SURFACES: [&str; 4] = ["greetd", "tilo-unlock", "polkit-1", "sudo"];
+
+/// What authselect makes of password-auth and system-auth on the image:
+/// `pam_tilo`'s answer is final, and nothing behind it accepts anyone here.
+const DISTRO_AUTH: &str = "\
+auth [success=done authinfo_unavail=ignore ignore=ignore default=die] @MODULE@ socket=@SOCKET@
+auth required pam_deny.so
+account required pam_permit.so
+password required pam_permit.so
+session required pam_permit.so
+";
+
+/// The shipped services with this build's module and the test daemon's
+/// socket, and fprintd's module replaced by one that only says it was asked.
+fn shipped() -> Vec<(&'static str, String)> {
+    let mut files: Vec<(&'static str, String)> = SHIPPED
+        .iter()
+        .map(|(name, text)| {
+            let text = text
+                .replace("pam_tilo.so", "@MODULE@ socket=@SOCKET@")
+                .replace("pam_fprintd.so", "pam_echo.so fingerprint-offered");
+            (*name, text)
+        })
+        .collect();
+    files.push(("password-auth", DISTRO_AUTH.to_owned()));
+    files.push(("system-auth", DISTRO_AUTH.to_owned()));
+    files
+}
+
+fn run_shipped(dir: &Path, socket: &Path, service: &str, answers: &[&str]) -> Outcome {
+    let files = shipped();
+    let files: Vec<(&str, &str)> = files.iter().map(|(n, t)| (*n, t.as_str())).collect();
+    run_service(dir, socket, &files, service, "ada", answers, authenticate)
+}
+
+/// A daemon for a person whose key is or is not held, with no boot sign-in
+/// waiting, who types the right secret.
+fn signed_in(held: bool) -> impl Fn(&Value) -> Value + Send + Sync + 'static {
+    move |request| match request["op"].as_str() {
+        Some("key-held") => json!({"ok": true, "key_held": held}),
+        Some("claim-boot-sign-in") => json!({"ok": false, "error": "no-boot-sign-in"}),
+        Some("verify") => json!({"ok": true}),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+fn ops(daemon: &Daemon) -> Vec<String> {
+    daemon
+        .requests()
+        .iter()
+        .map(|r| r["op"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn every_surface_takes_its_authentication_from_the_one_service() {
+    for surface in SURFACES {
+        let text = SHIPPED.iter().find(|(name, _)| *name == surface).unwrap().1;
+        for line in text.lines().map(str::trim) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let Some(phase) = fields.first().map(|f| f.trim_start_matches('-')) else {
+                continue;
+            };
+            if !matches!(phase, "auth" | "account" | "password") {
+                continue;
+            }
+            // The keyring hook only reads the secret tilo-auth accepted.
+            if fields[1..] == ["optional", "pam_gnome_keyring.so"] {
+                continue;
+            }
+            assert!(
+                matches!(fields[1], "substack" | "include") && fields[2] == "tilo-auth",
+                "{surface}: `{line}` decides who signs in outside tilo-auth"
+            );
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(dir.path(), signed_in(false));
+        let out = run_shipped(dir.path(), &daemon.socket, surface, &["123456"]);
+        assert_eq!(out.status, PAM_SUCCESS, "{surface}");
+        assert_eq!(
+            daemon.requests().last().unwrap(),
+            &json!({"op": "verify", "user": "ada", "secret": "123456"}),
+            "{surface}"
+        );
+    }
+}
+
+#[test]
+fn the_lock_screen_offers_a_fingerprint_while_the_key_is_held() {
+    for surface in ["tilo-unlock", "polkit-1", "sudo"] {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(dir.path(), signed_in(true));
+        let out = run_shipped(dir.path(), &daemon.socket, surface, &["123456"]);
+        assert_eq!(out.status, PAM_SUCCESS, "{surface}");
+        assert_eq!(out.person.infos, ["fingerprint-offered"], "{surface}");
+        // The stand-in reads as a matching finger, so no secret is asked.
+        assert!(
+            out.person.prompts.is_empty(),
+            "{surface}: {:?}",
+            out.person.prompts
+        );
+        assert_eq!(ops(&daemon), ["key-held"], "{surface}");
+    }
+}
+
+#[test]
+fn no_fingerprint_at_the_greeter_after_boot_or_once_the_key_is_gone() {
+    for surface in ["greetd", "tilo-unlock", "polkit-1", "sudo"] {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(dir.path(), signed_in(false));
+        let out = run_shipped(dir.path(), &daemon.socket, surface, &["123456"]);
+        assert_eq!(out.status, PAM_SUCCESS, "{surface}");
+        assert!(
+            out.person.infos.is_empty(),
+            "{surface}: {:?}",
+            out.person.infos
+        );
+        let expected: &[&str] = if surface == "greetd" {
+            &["claim-boot-sign-in", "key-held", "verify"]
+        } else {
+            &["key-held", "verify"]
+        };
+        assert_eq!(ops(&daemon), expected, "{surface}");
+    }
+}
+
+#[test]
+fn without_the_daemon_no_fingerprint_is_offered() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_shipped(
+        dir.path(),
+        &dir.path().join("no-daemon"),
+        "tilo-unlock",
+        &["x"],
+    );
+    assert!(out.person.infos.is_empty(), "{:?}", out.person.infos);
+    assert_ne!(out.status, PAM_SUCCESS);
+}
+
+#[test]
+fn the_boot_sign_in_belongs_to_the_greeter_alone() {
+    for surface in ["tilo-unlock", "polkit-1", "sudo"] {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon = Daemon::start(dir.path(), signed_in(false));
+        let out = run_shipped(dir.path(), &daemon.socket, surface, &["123456"]);
+        assert_eq!(out.status, PAM_SUCCESS, "{surface}");
+        assert!(
+            !ops(&daemon).iter().any(|op| op == "claim-boot-sign-in"),
+            "{surface} may not start a session from the boot sign-in"
+        );
+    }
 }

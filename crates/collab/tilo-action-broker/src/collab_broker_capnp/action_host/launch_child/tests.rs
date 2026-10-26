@@ -902,3 +902,79 @@ fn child_identity_is_stable_and_framed() {
         child_id(InvocationId::new(), "room", "app")
     );
 }
+
+/// The durable launch barrier re-verifies the original certified caller and
+/// then re-derives its owner. A delegation the admission can no longer back
+/// is refused there: it is never downgraded to the person themselves.
+#[test]
+fn check_launch_origin_refuses_a_delegation_the_admission_cannot_back() {
+    let fixture = Fixture::new_certified(HostServices::default());
+    fixture
+        .state
+        .check_launch_origin(&fixture.caller, Some(&fixture.origin), &fixture.room)
+        .expect("the undelegated origin crosses the barrier");
+    let InvocationCaller::Certified {
+        caller,
+        foreign_restriction,
+    } = &fixture.origin
+    else {
+        panic!("certified fixture");
+    };
+    assert_eq!(
+        caller.owner().unwrap(),
+        InvocationOwner::Certified {
+            root: caller.admitted.verified.user_public_key,
+            device: caller.admitted.verified.device_public_key,
+        },
+        "the person's own caller is owned by them"
+    );
+    // The person's device handed this session to an agent: the barrier admits
+    // that caller and keeps its delegation.
+    let delegated = caller.clone().delegated_to("mcp-7");
+    assert!(matches!(
+        delegated.owner().unwrap(),
+        InvocationOwner::AuthenticatedLocal { agent: Some(ref agent), .. }
+            if agent == "mcp-7"
+    ));
+    let delegated_origin = InvocationCaller::Certified {
+        caller: Box::new(delegated.clone()),
+        foreign_restriction: *foreign_restriction,
+    };
+    // The connection the barrier serves is the agent's own, which is the
+    // delegation the admission carries.
+    let agent_caller = fixture.caller.clone().delegated_to("mcp-7");
+    fixture
+        .state
+        .check_launch_origin(&agent_caller, Some(&delegated_origin), &fixture.room)
+        .expect("a backed delegation crosses the barrier");
+    // The same delegated caller whose admission cannot name its agent is
+    // refused, never re-owned as the person.
+    let mut keyless = delegated;
+    keyless.admitted.certificate = None;
+    fixture
+        .state
+        .check_launch_origin(
+            &agent_caller,
+            Some(&InvocationCaller::Certified {
+                caller: Box::new(keyless),
+                foreign_restriction: *foreign_restriction,
+            }),
+            &fixture.room,
+        )
+        .expect_err("a delegation the admission cannot back is refused");
+    // So is a caller whose admission carries another agent's delegation than
+    // the one it claims.
+    let mut elsewheres = caller.clone().delegated_to("mcp-7");
+    elsewheres.admitted = elsewheres.admitted.clone().delegated_to(Some("mcp-8"));
+    fixture
+        .state
+        .check_launch_origin(
+            &agent_caller,
+            Some(&InvocationCaller::Certified {
+                caller: Box::new(elsewheres),
+                foreign_restriction: *foreign_restriction,
+            }),
+            &fixture.room,
+        )
+        .expect_err("a mismatched delegation is refused");
+}

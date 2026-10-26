@@ -312,7 +312,7 @@ def _launch_evidence(ctx, check_id: str, log_lines: int, card) -> str:
     still = core.target_map(ctx.vm.targets()).get("launchpad:notes")
     said = ctx.vm.exec(
         f'tail -n +{log_lines + 1} "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
-        '| grep -aiE "launchpad|notes|launch|refused|app tab request|placeholder|spawn" '
+        '| grep -aiE "launchpad|notes|launch|refused|app tab request|placeholder|spawn|touch contact routed" '
         '| tail -n 80 | cut -c1-400', check=False) or "the session log said nothing about it"
     ctx.write(f"{check_id}-launch-evidence.log", json.dumps(
         {"tiles": tiles, "overlays": chrome.get("overlays"), "notices": notices,
@@ -864,10 +864,11 @@ def typing(ctx, res):
     res.metrics["seconds_to_shell"] = ready
     if ready is None:
         ctx.write("W17-ush.txt", core.ush_diagnostics(ctx))
-        said = core.ush_environment_refusal(ctx) or core.ush_journal_tail(ctx)
+        refusal = core.ush_environment_refusal(ctx)
+        said = (f"the shell runtime refused it: {refusal}" if refusal else core.ush_evidence(ctx))
         raise CheckFailed(f"no shell ran in the new Terminal within {core.TERMINAL_SHELL_S} s, "
                           "so nothing could read the keys "
-                          + (f"(the shell runtime last said: {said})" if said else
+                          + (f"({said})" if said else
                              "(W17-ush.txt shows the shell runtime)"))
     ctx.settle(1.0)
     probe = f"acc-kbd-{int(time.time())}"

@@ -23,7 +23,7 @@ import tomllib
 from pathlib import Path
 
 from .. import app_startup, core, gpu, records, session_unit
-from ..core import CheckFailed, Unobservable, check
+from ..core import CheckFailed, Skipped, Unobservable, check
 from ..vm import VmError, wait_until
 from .apps import _close, _lifecycle
 from .resources import shell_anon_mib, slope
@@ -362,6 +362,9 @@ def files_start(ctx, res):
 
 @check("R05", "resources", "App windows render on the machine's GPU, not on a CPU fallback")
 def gpu_adapters(ctx, res):
+    if ctx.facts.get("software_rendering"):
+        raise Skipped("needs a GPU render node; this run renders in software")
+
     def read():
         out = ctx.vm.exec(gpu.PROBE, timeout=90, check=False)
         health_text, log = gpu.split_probe(out)
@@ -628,6 +631,15 @@ def every_launch(ctx, res):
     if not startups:
         raise Unobservable("no app logged an APP-STARTUP line in the session's logs")
     problems = app_startup.over_budget(startups) + app_startup.history_over_budget(opens)
+    # A failed check keeps no files, so the slowest late launch's own phases go into the
+    # failure text: which marks the first frame waited on, and whether the window named
+    # its adapter (a launch with no adapter line is judged on the hardware budget).
+    late = [s for s in startups if s["total_ms"] > app_startup.budget_ms(s["app"], s["renderer"])]
+    if late:
+        slowest = max(late, key=lambda s: s["total_ms"])
+        unnamed = (f" ({slowest['app']} logged no `tilo-gpu: window adapter` line before it)"
+                   if slowest["renderer"] == "unknown" else "")
+        problems.append(f"slowest late launch{unnamed}: {slowest['line'][:900]}")
     if "so.tilo.notes" not in apps:
         problems.append("so.tilo.notes logged no APP-STARTUP line")
     if problems:

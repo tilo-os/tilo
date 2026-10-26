@@ -117,7 +117,7 @@ token is missing or lacks package read access. "No dev disk is published"
 means CI has not published one (or that tag). "Has no qcow2 disk for
 <arch>" means the tag exists but your architecture's lane has not published
 yet, or failed: each architecture publishes on its own. `t dispatch
-publish-os-dev-<arch> --ref main` publishes main's (or ask someone who may
+publish-os-dev-disk-<arch> --ref main` publishes main's (or ask someone who may
 dispatch t), or ask a human for a shared VM
 (`tilo-vm vm use <name>`); `tilo-vm guide platforms` has the details. An
 interrupted download resumes when you rerun the command.

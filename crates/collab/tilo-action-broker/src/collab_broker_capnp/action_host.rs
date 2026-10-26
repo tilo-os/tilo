@@ -2115,7 +2115,7 @@ impl CapnpBrokerState {
 
     /// Recheck the original signed custody while an asynchronous launch waits.
     /// The numeric dispatcher checks it again when capturing the actual offer.
-    fn check_launch_origin(
+    pub(super) fn check_launch_origin(
         &self,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
@@ -2147,9 +2147,15 @@ impl CapnpBrokerState {
                     self.verify_action_caller(&original.room, &original.presentation)
                 }
                 .map_err(refusal)?;
-                if current.owner() != original.owner() {
-                    return Err(ActionHostError::NotPermitted);
-                }
+                // The barrier re-verifies the original person and device, and
+                // refuses a delegated caller whose admission can no longer
+                // name its owner instead of dropping the delegation.
+                original
+                    .reverified(&current)
+                    .map_err(|_| ActionHostError::NotPermitted)?;
+                original
+                    .owner()
+                    .map_err(|_| ActionHostError::NotPermitted)?;
                 if caller.device_public_key().is_none() {
                     self.current_native_person(
                         room,
