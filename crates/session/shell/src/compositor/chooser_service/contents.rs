@@ -7,7 +7,7 @@ use std::fs::{File, Metadata};
 use std::io::Read as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
@@ -18,11 +18,17 @@ use tilo_dialogs::shell::{
 const LEASE: Duration = Duration::from_secs(60);
 const CHOOSE_DEADLINE: Duration = Duration::from_secs(300);
 const MAX_PENDING: usize = 4;
+/// How long the lease thread of a connection holding no file sleeps before it looks
+/// whether the connection is gone: a closed one wakes it at once, a dropped one does not.
+const IDLE_RECHECK: Duration = Duration::from_secs(300);
 
 #[derive(Default)]
 pub(super) struct ConnectionGrants {
     closed: AtomicBool,
     state: Mutex<State>,
+    /// Wakes [`ConnectionGrants::maintain`]'s thread when a file is granted or the
+    /// connection closes; otherwise it sleeps until the next lease ends.
+    changed: Condvar,
 }
 #[derive(Default)]
 struct State {
@@ -75,22 +81,43 @@ impl ConnectionGrants {
         if let Ok(mut state) = self.state.lock() {
             state.files.clear();
         }
+        self.changed.notify_all();
     }
+    /// Release each selected file when its lease ends. The thread sleeps until the
+    /// earliest lease ends, or, holding none, until a file is granted or the connection
+    /// closes: an open app with nothing chosen costs no wakeups.
     pub(super) fn maintain(self: &Arc<Self>) -> std::io::Result<()> {
         let weak = Arc::downgrade(self);
         std::thread::Builder::new()
             .name("tilo-picker-leases".into())
             .spawn(move || {
                 loop {
-                    std::thread::sleep(Duration::from_millis(100));
                     let Some(connection) = weak.upgrade() else {
                         break;
                     };
                     if connection.closed.load(Ordering::Acquire) {
                         break;
                     }
-                    if let Ok(mut state) = connection.state.lock() {
-                        state.files.retain(|_, file| file.expires > Instant::now());
+                    let Ok(mut state) = connection.state.lock() else {
+                        break;
+                    };
+                    let now = Instant::now();
+                    state.files.retain(|_, file| file.expires > now);
+                    // The connection is held only while waiting, so a dropped one ends
+                    // the thread at its next wake; closing wakes it at once.
+                    let next = state.files.values().map(|file| file.expires).min();
+                    let woken = match next {
+                        Some(expires) => connection
+                            .changed
+                            .wait_timeout(state, expires.saturating_duration_since(now))
+                            .map(|(state, _)| state),
+                        None => connection
+                            .changed
+                            .wait_timeout(state, IDLE_RECHECK)
+                            .map(|(state, _)| state),
+                    };
+                    if woken.is_err() {
+                        break;
                     }
                 }
             })
@@ -342,6 +369,8 @@ fn grant_paths(
     for file in selected {
         state.files.insert(file.grant.token.clone(), file);
     }
+    drop(state);
+    connection.changed.notify_all();
     Reply::ContentsGranted { id, grants }
 }
 fn read(
