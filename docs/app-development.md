@@ -950,6 +950,13 @@ tilo-app push --room … --identity … \
   member reads it, and anyone can see which version runs and whose build it
   is. A build that is not a registry release is recorded as a dev build
   (`--published` says otherwise).
+- The push hands the `.tapp` itself to the room's host first
+  (`upload-app-file`, in pieces); the room's version names the file's
+  BLAKE3 hash, and the host refuses a version naming a file it does not
+  have. Every member's desktop that runs another build of the app asks the
+  room for that hash, as it asks for any content a record references,
+  checks the bytes hash to it, and updates the app from them with
+  `app update --from`, bound to the version's package root and publisher.
 - A change made with another version of the app than the room runs is held,
   never merged and never refused: once its author runs the room's version,
   the same changes go out naming that version's surface and are decided
@@ -972,9 +979,11 @@ Iteration time is the build plus a round trip to the room's host. A native
 build of one app is that app alone. The web desktop is one module today:
 every web app is linked into it and split out of it afterwards, so a web
 build relinks the whole desktop, and a running page cannot load a newer
-module for one app. Desktops do not yet fetch and switch to the room's
-version on their own: until they do, a member on another version keeps
-reading the room, and their changes to that app wait until they run it.
+module for one app, so a browser in the room keeps its version until the
+page loads a desktop build that carries the room's. A native desktop
+installs the room's version but does not yet restart the app's open
+windows: they run it from their next start, and until then their changes
+to that app wait, held, as a member's on another version do.
 
 ### Android
 
