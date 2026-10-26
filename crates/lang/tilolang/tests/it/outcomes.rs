@@ -1,5 +1,5 @@
-//! Outcomes (convergence design 1.1): action parameter defaults, evaluated when the action is
-//! invoked without the argument.
+//! Outcomes and deltas (convergence design 1.1): action parameter defaults, evaluated when the
+//! action is invoked without the argument, and the register writes the compiler refuses.
 
 use crate::common::{compile, validate};
 
@@ -162,6 +162,78 @@ fn a_label_reads_a_defaulted_parameter_but_not_one_without_a_default() {
         "action retitle(item: Todo, title: Text) (label: if title == \"\" { \"Clear\" } else { \"Rename\" }) {\n    item.title = title\n}",
     );
     assert_eq!(codes_of(&given), vec!["E090"]);
+}
+
+// A register written from itself means "recompute where it is applied": two people ticking the
+// same item at once cancel out. The error names both ways to say what was meant.
+#[test]
+fn a_register_written_from_itself_is_refused_with_both_fixes() {
+    let d = diagnostics(&body(
+        "action toggle(item: Todo) {\n    item.done = not item.done\n}",
+    ));
+    assert_eq!(d.len(), 1, "{d:#?}");
+    assert_eq!(d[0].code, "E039");
+    let m = &d[0].message;
+    assert!(m.contains("item.done = not item.done"), "{m}");
+    assert!(
+        m.contains("done: Bool = not item.done"),
+        "names the outcome fix: {m}"
+    );
+    assert!(m.contains("merge counter"), "names the delta fix: {m}");
+    let n = "type C {\n    n: Int\n    f: Float\n    m: Int\n}\n";
+    for write in [
+        "c.n = c.n + 1",
+        "c.n = c.n - 2",
+        "c.n = 3 + c.n",
+        "c.f = c.f - 0.5",
+    ] {
+        let d = diagnostics(&format!(
+            "app t.x \"X\"\n{n}action a(c: C) {{\n    {write}\n}}\n"
+        ));
+        assert_eq!(
+            d.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(),
+            vec!["E039"],
+            "{write}"
+        );
+        assert!(
+            d[0].message.contains("merge counter") && d[0].message.contains("default"),
+            "{}",
+            d[0].message
+        );
+    }
+}
+
+#[test]
+fn the_check_follows_the_value_through_lets() {
+    for b in [
+        "let flipped = not item.done\n    item.done = flipped",
+        "let was = item.done\n    item.done = not was",
+        "let it = item\n    it.done = not item.done",
+        "let it = item\n    let was = it.done\n    item.done = not was",
+    ] {
+        let src = body(&format!("action a(item: Todo) {{\n    {b}\n}}"));
+        assert_eq!(codes_of(&src), vec!["E039"], "{b}");
+    }
+    let looped = "type L {\n    items: Collection<Todo>\n}\naction all(l: L) {\n    for item in l.items {\n        item.done = not item.done\n    }\n}";
+    assert_eq!(codes_of(&body(looped)), vec!["E039"]);
+}
+
+#[test]
+fn other_computations_from_a_register_are_legitimate_replays() {
+    let fine = [
+        "fn tidy(t: Text) -> Text {\n    t\n}\ntype T {\n    tag: Text merge register\n    n: Int\n    m: Int\n    c: Int merge counter\n}\naction a(t: T) {\n    t.tag = tidy(t.tag)\n    t.n = t.n * 2\n    t.n = t.m + 1\n    t.c += 1\n}",
+        "action a(item: Todo, other: Todo) {\n    item.done = not other.done\n}",
+        "action a(item: Todo, done: Bool = not item.done) {\n    item.done = done\n}",
+        "action a(item: Todo) {\n    let d = not item.done\n    d = true\n    item.done = d\n}",
+        "action a(item: Todo) {\n    item.done = item.done\n}",
+    ];
+    for src in fine {
+        assert!(
+            codes_of(&body(src)).is_empty(),
+            "{src}: {:?}",
+            codes_of(&body(src))
+        );
+    }
 }
 
 fn codes_of(src: &str) -> Vec<String> {

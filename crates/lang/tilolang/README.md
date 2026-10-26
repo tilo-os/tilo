@@ -143,6 +143,10 @@ action check(item: Todo, done: Bool = not item.done) (label: if done { "Check" }
 }
 ```
 
+A register written from itself (`item.done = not item.done`, `c.n = c.n + 1`) is an error
+(E039): it is computed again wherever the change is applied. Take the outcome as a parameter
+with a default, as above, or make the field a counter for a delta.
+
 **Views.** A view body is UI statements: primitive and view calls (with child blocks), `for`,
 `if`/`else if`/`else`, `match` (each arm one UI call or a block) and `let`. Options of UI
 primitives are the primitives' own enums, written as dot literals; lengths keep their units and

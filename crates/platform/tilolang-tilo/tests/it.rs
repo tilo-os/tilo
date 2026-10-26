@@ -14,6 +14,7 @@ mod collab;
 mod fixtures;
 mod incremental;
 mod outbox;
+mod outcomes;
 mod records;
 mod scenarios;
 mod surface;
