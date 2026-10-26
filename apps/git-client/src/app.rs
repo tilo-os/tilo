@@ -234,6 +234,8 @@ enum Hit {
     BackToCommit,
     /// Keep one side of a conflicted file.
     ResolveConflict(crate::repo::ConflictSide),
+    /// The conflicted file's own sentence: what keeping each side costs.
+    ConflictNote,
     Panel(PanelHit),
     OpenPath,
     /// Choose the repository's folder with the system's file chooser.
@@ -361,6 +363,10 @@ pub struct GitClientApp {
     file_selection: Option<usize>,
     /// Which local branch of the branches page is under the keyboard.
     branch_selection: Option<usize>,
+    /// What keeping each side of the conflicted file under review would
+    /// discard, and which file it was read for. Read once per conflict: the
+    /// choice is worth naming, not re-reading every frame.
+    conflict_cost: Option<(String, Option<crate::repo::ConflictCost>)>,
     /// What the last action did, said once: a branch switched, a stash made,
     /// a push sent. Only failures used to be reported, so work that
     /// succeeded looked like work that had not happened.
@@ -522,6 +528,7 @@ impl GitClientApp {
             commit_diffs: HashMap::new(),
             file_selection: None,
             branch_selection: None,
+            conflict_cost: None,
             notice: None,
             confirm: None,
             confirm_layout: None,
@@ -1517,8 +1524,8 @@ impl GitClientApp {
 
     /// The selected file's diff, or one sentence when there is none.
     fn paint_diff(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
-        let body = if self.selected_conflict().is_some() {
-            let (below, hits) = Self::paint_conflict_actions(ctx, body, self.pointer);
+        let body = if let Some(file) = self.selected_conflict() {
+            let (below, hits) = self.paint_conflict_actions(ctx, body, &file, self.pointer);
             for (rect, hit) in hits {
                 self.push_target(rect, hit);
             }
@@ -1809,6 +1816,8 @@ impl GitClientApp {
                 self.diff_hscroll = 0.0;
             }
             Hit::ResolveConflict(side) => self.resolve_conflict(side),
+            // The note is read, never pressed.
+            Hit::ConflictNote => {}
             Hit::Panel(panel) => self.activate_panel(panel),
             Hit::OpenPath => self.set_focus(Some(Field::Open)),
             Hit::OpenRepository => self.open_repo_from_input(),
@@ -2312,6 +2321,19 @@ impl GitClientApp {
                 }
                 Hit::BackToCommit => {
                     button("git.back-to-commit".into(), rect, t("git-back-to-commit"))
+                }
+                Hit::ConflictNote => {
+                    let note = self.conflict_sentence();
+                    out.push((
+                        "git.conflict.note".into(),
+                        rect,
+                        AccessNode::new(Role::StaticText)
+                            .with_name(&note)
+                            .with_value(&note)
+                            .with_bounds(rect),
+                        None,
+                    ));
+                    continue;
                 }
                 Hit::ResolveConflict(side) => {
                     let (target, name) = match side {
@@ -3652,6 +3674,9 @@ impl GitClientApp {
                 }
                 self.diff_scroll = 0.0;
             }
+            // The file a merge left conflicted, open, so the capture shows
+            // the choice it waits on and what each side costs.
+            Some("conflict") => self.test_select_conflicted_file(),
             // The narrow window's list column, revealed over its scrim
             // rather than the closed default a fresh narrow window opens to.
             Some("narrow") => self.drawer.snap(true),
