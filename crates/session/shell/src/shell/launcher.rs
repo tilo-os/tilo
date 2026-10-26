@@ -5778,6 +5778,16 @@ pub(crate) fn attribute_unresolved_host_window(surface_id: u64, app_id: &str) {
 /// The compositor observed a toplevel. Record it against the launch that
 /// owns the window, including when the announced id is not the desktop id.
 pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
+    // A window that names no application (an X11 client without a class, such as
+    // glxgears, shows as `anon-<id>`) still proves its launch opened when the
+    // kernel-authenticated launch identity of its connection names the launch: its
+    // later exit is then not "crashed before opening".
+    let attributed = lock(&LaunchSession::current().surfaces)
+        .get(&surface_id)
+        .cloned();
+    if let Some(key) = attributed {
+        note_launch_presented(&key);
+    }
     if app_id.trim().is_empty() || app_id.starts_with("anon-") {
         return;
     }
@@ -7126,6 +7136,24 @@ mod tests {
             memory_end_of(&clean, Some(Cause::Kernel)),
             None,
             "a helper the kernel ended earlier does not make a clean exit a crash"
+        );
+    }
+
+    #[test]
+    fn an_authenticated_window_without_an_app_id_proves_its_launch_opened() {
+        clear_launched_for_test();
+        // glxgears' X11 window names no class, so the compositor sees `anon-<id>`;
+        // its connection's launch identity still names the launch.
+        attribute_surface_launch(7 << 32 | 0x9, "glxgears");
+        record_host_window_open(7 << 32 | 0x9, "anon-73014444068");
+        assert!(
+            take_launch_presented("glxgears"),
+            "its exit after the window was up is not a crash before opening"
+        );
+        record_host_window_open(7 << 32 | 0xa, "anon-73014444069");
+        assert!(
+            !take_launch_presented("glxgears"),
+            "an anonymous window no launch owns proves nothing"
         );
     }
 
