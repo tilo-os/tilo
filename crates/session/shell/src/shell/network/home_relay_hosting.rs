@@ -9,6 +9,7 @@ use tilo_actions::remote::home_relay_hosting::{HomeRelayHosting, HostedWorkspace
 
 use super::{ShellNetwork, personal_continuity_topic_id, room_topic_id};
 use crate::shell::state::RoomId;
+use std::sync::Arc;
 
 impl ShellNetwork {
     /// The person's home relay and every workspace this device's host
@@ -30,12 +31,15 @@ impl ShellNetwork {
         let Some(host) = self.room_host() else {
             return Ok(HomeRelayHosting::default());
         };
-        let runtime = self.runtime_handle()?;
         let mut relay = None;
         let mut hosted = Vec::new();
         for (room, name) in workspaces {
             // A room another host governs is not this device's to choose for.
-            let Ok(hosts) = runtime.block_on(host.rooms().hosts(&room.to_string())) else {
+            let asked = {
+                let (host, room) = (Arc::clone(&host), room.to_string());
+                self.wait_on(async move { host.rooms().hosts(&room).await })?
+            };
+            let Ok(hosts) = asked else {
                 continue;
             };
             if relay.is_none() {

@@ -242,7 +242,6 @@ impl ShellNetwork {
     /// asked too. A site out of reach is left out quietly, as long as any
     /// answered. Blocks on the sites: call it off the frame loop.
     pub(crate) fn directory(&self, typed: Option<&str>) -> Result<Vec<DirectoryListing>, String> {
-        let runtime = self.runtime_handle()?;
         let mut sites = Vec::new();
         if let Some(typed) = typed.map(str::trim).filter(|typed| !typed.is_empty()) {
             sites.push(hosted_sites::site_entry(typed).map_err(|error| error.to_string())?);
@@ -254,12 +253,22 @@ impl ShellNetwork {
         let mut failures = Vec::new();
         let mut directories = std::collections::BTreeSet::new();
         for site in &sites {
-            match runtime.block_on(hosted_sites::read_site(site)) {
+            let read = {
+                let site = site.clone();
+                self.wait_on(async move { hosted_sites::read_site(&site).await })?
+            };
+            match read {
                 Ok(read) => {
                     let mut listed = Vec::new();
                     if let Some(directory) = &read.directory {
                         directories.insert(directory.to_string());
-                        match runtime.block_on(hosted_sites::fetch_directory(directory)) {
+                        let fetched = {
+                            let directory = directory.clone();
+                            self.wait_on(
+                                async move { hosted_sites::fetch_directory(&directory).await },
+                            )?
+                        };
+                        match fetched {
                             Ok(page) => listed = listings_of(page, directory, Some(site)),
                             Err(error) => failures.push(error.to_string()),
                         }
@@ -285,7 +294,11 @@ impl ShellNetwork {
             if !directories.insert(directory.to_string()) {
                 continue;
             }
-            if let Ok(page) = runtime.block_on(hosted_sites::fetch_directory(&directory)) {
+            let fetched = {
+                let directory = directory.clone();
+                self.wait_on(async move { hosted_sites::fetch_directory(&directory).await })?
+            };
+            if let Ok(page) = fetched {
                 listings.extend(listings_of(page, &directory, None));
             }
         }
@@ -341,9 +354,8 @@ impl ShellNetwork {
             .filter(|site| site.path().contains("/directory/"))
             .ok_or("only a workspace joined from a directory can be reported to its host")?;
         let (user, _) = self.site_person().map_err(|error| error.to_string())?;
-        let runtime = self.runtime_handle()?;
-        runtime
-            .block_on(hosted_sites::report_at_door(&door, user, reason))
+        let reason = reason.to_owned();
+        self.wait_on(async move { hosted_sites::report_at_door(&door, user, &reason).await })?
             .map_err(|error| error.to_string())
     }
 
