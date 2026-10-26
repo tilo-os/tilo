@@ -64,7 +64,7 @@ impl Core {
 
     fn state_get(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let key = self.state_key(a.h(0)?, a.h(1)?)?;
-        let fallback = self.val(a.h(2)?)?;
+        let fallback = self.val_whole(a.h(2)?)?;
         let (value, generation) = {
             let states = self.view_states.borrow();
             (
@@ -106,7 +106,7 @@ impl Core {
 
     fn act_set(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let key = self.state_key(a.h(0)?, a.h(1)?)?;
-        let value = self.val(a.h(2)?)?;
+        let value = self.val_whole(a.h(2)?)?;
         let author = Some(self.module_of_frame()?);
         self.ret_h(Value::Action(ActionRef {
             action: SET_ACTION.to_owned(),

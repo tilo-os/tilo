@@ -149,6 +149,32 @@ mod shared {
     }
 }
 
+/// A collection field read in a view: the field, not its items. A view reads what it uses of it
+/// (its length, an item, its first or last) through the store's listing, item by item, and its
+/// boundary depends on exactly that; nothing builds a reference per item. Two compare equal when
+/// they are the same field of the same resource, whatever it holds: what a view read of it is
+/// tracked as the view's own reads.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CollRef {
+    #[serde(with = "shared")]
+    pub target: Rc<ResourceRef>,
+    pub field: FieldId,
+    /// The type of its items.
+    pub item: TypeId,
+    /// The module whose code read it: the author of the references to its items.
+    pub author: Option<ModuleHash>,
+}
+
+impl CollRef {
+    /// A reference to the item `id` of the collection.
+    pub fn item_ref(&self, id: &str) -> Value {
+        Value::Ref(RefValue {
+            target: Rc::new(self.target.item(&self.field, id, self.item.clone())),
+            author: self.author.clone(),
+        })
+    }
+}
+
 /// A value of the language.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Value {
@@ -158,6 +184,10 @@ pub enum Value {
     Bool(bool),
     Text(String),
     List(Vec<Value>),
+    /// A collection field read in a view, read item by item (see [`CollRef`]). Wherever its
+    /// items are needed as values (stored, sorted, put in a list) it is read whole into a
+    /// [`Value::List`] first; it never goes into another value.
+    Coll(Rc<CollRef>),
     Tuple(Vec<Value>),
     Opt(Option<Box<Value>>),
     /// A value of an enum (declared, or the built-in `Result`).
@@ -220,6 +250,7 @@ impl Value {
             Self::Bool(_) => "bool",
             Self::Text(_) => "text",
             Self::List(_) => "list",
+            Self::Coll(_) => "collection",
             Self::Tuple(_) => "tuple",
             Self::Opt(_) => "option",
             Self::Enum(_) => "enum value",
@@ -282,7 +313,7 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         }
         Value::Principal(p) => tagged("principal", Json::String(p.0.clone())),
         Value::Error(msg) => tagged("error", Json::String(msg.clone())),
-        Value::Node(_) | Value::Rec(_) => {
+        Value::Node(_) | Value::Rec(_) | Value::Coll(_) => {
             return Err(format!("a {} cannot be stored", v.kind_name()));
         }
     })

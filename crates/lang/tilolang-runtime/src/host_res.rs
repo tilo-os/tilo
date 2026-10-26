@@ -19,7 +19,7 @@ use crate::meta::{FieldKind, Ty};
 use crate::num::{counter_to_float, float_to_counter, to_usize};
 use crate::registry::{FieldInfo, TypeInfo};
 use crate::store::{Applied, FieldSpec, FieldValue, Mutation, Scalar, Txn};
-use crate::value::{RecordInit, RefValue, ResourceRef, Value, from_json, to_json};
+use crate::value::{CollRef, RecordInit, RefValue, ResourceRef, Value, from_json, to_json};
 
 /// Everything a mutation import needs to know before it touches the store.
 struct MutCtx {
@@ -409,7 +409,19 @@ impl Core {
                 Value::Text(field) => field_in(&info, field)?,
                 other => return trap(format!("expected text, got {}", other.kind_name())),
             };
-            let author = &frames.top()?.module;
+            let top = frames.top()?;
+            let author = &top.module;
+            // A view reads a collection item by item, as it uses it (`colls`): the field is
+            // read when one of its items, its length or an end is.
+            if f.kind == FieldKind::Collection && matches!(top.kind, FrameKind::View(_)) {
+                let item = self.item_type(&f.ty)?;
+                return Ok(Value::Coll(Rc::new(CollRef {
+                    target: Rc::clone(target),
+                    field: f.id.clone(),
+                    item: item.id.clone(),
+                    author: Some(author.clone()),
+                })));
+            }
             let value = self.read_value(target, f, Some(author))?;
             (value, (target.id_string(), f.id.clone()))
         };
@@ -617,7 +629,7 @@ impl Core {
             Imp::ResSetI => self.res_set(a.h(0)?, a.h(1)?, &Value::Int(a.long(2)?)),
             Imp::ResSetF => self.res_set(a.h(0)?, a.h(1)?, &Value::Float(a.float(2)?)),
             Imp::ResSetH | Imp::ResTextSet => {
-                let v = self.val(a.h(2)?)?;
+                let v = self.val_whole(a.h(2)?)?;
                 self.res_set(a.h(0)?, a.h(1)?, &v)
             }
             Imp::ResAddI => self.res_add(a.h(0)?, a.h(1)?, Ok(a.long(2)?)),
@@ -683,7 +695,7 @@ impl Core {
                 if ctx.field.kind != FieldKind::Set {
                     return trap(format!("field `{}` is not a set", ctx.field.name));
                 }
-                let key = key_of(&unboxed(self.val(a.h(2)?)?))?;
+                let key = key_of(&unboxed(self.val_whole(a.h(2)?)?))?;
                 let field = ctx.field.id.clone();
                 let m = if imp == Imp::SetAdd {
                     Mutation::SetAdd { field, key }
@@ -702,7 +714,7 @@ impl Core {
                 let field = ctx.field.id.clone();
                 let m = if imp == Imp::MapPut {
                     let elem = inner_ty(&ctx.field.ty).cloned().unwrap_or(Ty::Text);
-                    let value = to_scalar(&unboxed(self.val(a.h(3)?)?), &elem)?;
+                    let value = to_scalar(&unboxed(self.val_whole(a.h(3)?)?), &elem)?;
                     Mutation::MapPut { field, key, value }
                 } else {
                     Mutation::MapRemove { field, key }
@@ -764,7 +776,7 @@ impl Core {
         let v = match imp {
             Imp::RecSetI => Value::Int(a.long(2)?),
             Imp::RecSetF => Value::Float(a.float(2)?),
-            _ => self.val(a.h(2)?)?,
+            _ => self.val_whole(a.h(2)?)?,
         };
         let ty = self.with_val(rec_h, |r| match r {
             Value::Rec(rec) => Ok(rec.ty.clone()),
