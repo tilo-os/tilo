@@ -1934,6 +1934,43 @@ impl CapnpBrokerState {
             .map(|offer| offered_action(app, offer))
     }
 
+    /// Take the destination a task's own admission names, as its launch
+    /// reads it now, so the launch below is admitted against that.
+    fn refresh_destination(
+        native: Option<&super::native_task_execution::NativeLaunch>,
+        state: &CapnpBrokerState,
+        destination: &mut LaunchDestination,
+        app_id: &mut String,
+    ) {
+        if let Some(native) = native
+            && let Ok(wanted) = native.destination(state)
+        {
+            app_id.clone_from(&wanted.app_id);
+            *destination = wanted;
+        }
+    }
+
+    /// Deliver `request` to the live publisher `peer_id` at its own address.
+    ///
+    /// A task's delivery carries the run's own custody, which only the task
+    /// admission the activation already holds can give, so it goes through
+    /// the instance rather than the anonymous door.
+    async fn deliver_to_publisher(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        request: &InvokeRequest,
+        native: Option<&super::native_task_execution::NativeLaunch>,
+        peer_id: u64,
+    ) -> Result<u64, ActionHostError> {
+        if let Some(native) = native {
+            return native.deliver(self, peer_id).await.map_err(refusal);
+        }
+        let mut delivered = request.clone();
+        delivered.target.provider = peer_id.to_string();
+        self.start_job(caller, origin, &delivered, request).await
+    }
+
     /// Launch `app_id` unless it already publishes the action, then deliver
     /// the invocation to the connection that does, through the same
     /// admission a live action takes.
@@ -1986,26 +2023,19 @@ impl CapnpBrokerState {
             // its own answer to the operation arrives through the running
             // instance, so waiting for that operation here would launch a
             // second one beside the first.
-            if let Some(native) = native
-                && native.bootstrap
-            {
-                if let Some(peer_id) = native.ready(self) {
-                    return native.deliver(self, peer_id).await.map_err(refusal);
+            if let Some(activation) = native.filter(|native| native.bootstrap) {
+                if let Some(peer_id) = activation.ready(self) {
+                    return activation.deliver(self, peer_id).await.map_err(refusal);
                 }
             } else if let Some(peer_id) =
                 self.ready_publisher(&app_id, &room, destination.record.as_deref(), address)
             {
-                let mut delivered = request.clone();
-                delivered.target.provider = peer_id.to_string();
-                return self.start_job(caller, origin, &delivered, request).await;
+                return self
+                    .deliver_to_publisher(caller, origin, request, native, peer_id)
+                    .await;
             }
             if !launched {
-                if let Some(native) = native
-                    && let Ok(wanted) = native.destination(self)
-                {
-                    app_id = wanted.app_id.clone();
-                    *destination = wanted;
-                }
+                Self::refresh_destination(native, self, destination, &mut app_id);
                 {
                     let mut permit = Some(tokio::select! {
                         biased;

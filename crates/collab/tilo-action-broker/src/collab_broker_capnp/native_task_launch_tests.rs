@@ -120,7 +120,9 @@ fn permission(f: &Fixture, allow: bool) {
     put_grant(
         f,
         Grant::new(
-            format!("cold-writer-{}", if allow { "allow" } else { "deny" }),
+            // One id, so restoring the permission replaces the refusal
+            // instead of standing beside it.
+            "cold-writer-scope",
             Subject::agent("scribe"),
             TreePath::room(room().to_string()).app(WRITER),
             KindSet::READ.union(KindSet::UNDOABLE),

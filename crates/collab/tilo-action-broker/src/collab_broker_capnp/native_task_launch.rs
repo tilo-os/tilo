@@ -3,7 +3,7 @@
 use super::action_host::LaunchDestination;
 use super::{
     CapnpBrokerState, InvocationKey, InvocationOwner, PendingTaskRun, PublishedAction,
-    durable_local_invocation::LocalCaller,
+    PublishedSurface, durable_local_invocation::LocalCaller,
 };
 use crate::services::{LaunchPlace, NativeTaskActionRequirement};
 use std::sync::{Arc, atomic::Ordering};
@@ -190,6 +190,21 @@ impl NativeLaunch {
             })
             .map(|surface| surface.peer_id)
             .min()
+    }
+
+    /// What the instance at `peer` publishes for this activation's action,
+    /// as the broker now holds it.
+    fn fresh_action(
+        &self,
+        state: &CapnpBrokerState,
+        peer: u64,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        state
+            .surfaces
+            .lock()
+            .ok()?
+            .get(&peer)
+            .and_then(|surface| surface.action_projection(&self.resource, &self.action))
     }
 
     fn launch_key(&self, state: &CapnpBrokerState) -> Result<InvocationKey, String> {
@@ -380,6 +395,68 @@ impl NativeLaunch {
         Ok(())
     }
 
+    /// Whether an activation has a receipt: the journal records one once it
+    /// has started its application, so a second look finds it.
+    fn receipt(&self, state: &CapnpBrokerState) -> Result<u64, String> {
+        let key = self.launch_key(state)?;
+        let guard = state
+            .journal
+            .lock()
+            .map_err(|_| "launch journal unavailable")?;
+        let journal = guard
+            .as_ref()
+            .map_err(Clone::clone)?
+            .as_ref()
+            .ok_or("launch journal absent")?;
+        let id = journal
+            .lookup(&key)?
+            .map(|record| record.wire_id)
+            .ok_or("host activation receipt absent")?;
+        drop(guard);
+        Ok(id)
+    }
+
+    /// Start the application the activation names and, while its receipt is
+    /// fresh, hand it the run's action through the instance's own
+    /// connection: never an anonymous call, which an agent may not make where
+    /// the tracker runs tasks.
+    async fn activate(&self, state: &Arc<CapnpBrokerState>, peer: u64) -> Result<u64, String> {
+        let caller = Caller::local_agent(&self.run.agent_id).in_room(&self.run.cluster_id);
+        let destination = self.destination(state)?;
+        let place = state.launch_place(&caller, &self.run.cluster_id, None);
+        let (launch, launching) = (self.clone(), Arc::clone(state));
+        tokio::task::spawn_blocking(move || launch.launch(&launching, &destination, &place))
+            .await
+            .map_err(|error| format!("host activation worker stopped: {error}"))??;
+        let id = self.receipt(state)?;
+        state.launchable.note_view(
+            &self.run.cluster_id,
+            &format!("agent:{}", self.run.agent_id),
+            &self.app,
+        );
+        // A receipt means an earlier activation already handed the action
+        // over, so only a fresh one delivers here.
+        if id == 0
+            && let Some(offered) = self.fresh_action(state, peer)
+        {
+            let job = state.admit_task_action(
+                &self.run,
+                &self.lease,
+                runtime_collab::TaskAction {
+                    peer_id: peer,
+                    provider: &self.provider,
+                    resource: &self.resource,
+                    action: &self.action,
+                    argument: self.argument.as_deref(),
+                },
+                (Some(&(self.caller.clone(), self.invocation)), (false, None)),
+                offered,
+            )?;
+            job.start(state).await?;
+        }
+        Ok(id)
+    }
+
     pub(super) async fn deliver(
         &self,
         state: &Arc<CapnpBrokerState>,
@@ -387,34 +464,7 @@ impl NativeLaunch {
     ) -> Result<u64, String> {
         self.check(state)?;
         if self.bootstrap {
-            let caller = Caller::local_agent(&self.run.agent_id).in_room(&self.run.cluster_id);
-            let destination = self.destination(state)?;
-            let place = state.launch_place(&caller, &self.run.cluster_id, None);
-            let (launch, launching) = (self.clone(), Arc::clone(state));
-            tokio::task::spawn_blocking(move || launch.launch(&launching, &destination, &place))
-                .await
-                .map_err(|error| format!("host activation worker stopped: {error}"))??;
-            let key = self.launch_key(state)?;
-            let guard = state
-                .journal
-                .lock()
-                .map_err(|_| "launch journal unavailable")?;
-            let journal = guard
-                .as_ref()
-                .map_err(Clone::clone)?
-                .as_ref()
-                .ok_or("launch journal absent")?;
-            let id = journal
-                .lookup(&key)?
-                .map(|record| record.wire_id)
-                .ok_or("host activation receipt absent")?;
-            drop(guard);
-            state.launchable.note_view(
-                &self.run.cluster_id,
-                &format!("agent:{}", self.run.agent_id),
-                &self.app,
-            );
-            return Ok(id);
+            return self.activate(state, peer).await;
         }
         let offered = state
             .surfaces
