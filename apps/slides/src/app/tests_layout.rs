@@ -9,6 +9,7 @@
     reason = "exact geometry and values the editor computes, not measurements"
 )]
 
+use ui::winit::keyboard::ModifiersState;
 use winit::event::MouseScrollDelta;
 
 use super::bench::{Bench, deck_of};
@@ -646,14 +647,24 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
             let rail = app.rail_rect();
             app.last_mouse = Point::new(rail.center().x, rail.center().y);
             let mut handled = false;
-            app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
+            app.on_wheel(
+                MouseScrollDelta::LineDelta(0.0, -3.0),
+                1.0,
+                ModifiersState::empty(),
+                &mut handled,
+            );
             assert!(handled, "wheel over the rail is handled");
             assert!(app.rail_scroll > 0.0, "wheel over the rail scrolls it");
 
             // Overscroll clamps to the maximum, so every thumbnail stays reachable.
             for _ in 0..40 {
                 let mut h = false;
-                app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
+                app.on_wheel(
+                    MouseScrollDelta::LineDelta(0.0, -20.0),
+                    1.0,
+                    ModifiersState::empty(),
+                    &mut h,
+                );
             }
             assert!(
                 (app.rail_scroll - max_scroll).abs() < 1.0,
@@ -664,7 +675,12 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
             app.rail_scroll = 0.0;
             app.last_mouse = Point::new(app.rect.x1 - 80.0, app.rect.center().y);
             let mut h2 = false;
-            app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut h2);
+            app.on_wheel(
+                MouseScrollDelta::LineDelta(0.0, -3.0),
+                1.0,
+                ModifiersState::empty(),
+                &mut h2,
+            );
             assert_eq!(
                 app.rail_scroll, 0.0,
                 "wheel over the canvas leaves the rail alone"
@@ -687,7 +703,12 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
             );
 
             let mut handled = false;
-            app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
+            app.on_wheel(
+                MouseScrollDelta::LineDelta(0.0, -3.0),
+                1.0,
+                ModifiersState::empty(),
+                &mut handled,
+            );
             assert!(
                 handled && app.overview.scroll() > 0.0,
                 "wheel scrolls the overview"
@@ -696,7 +717,12 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
             // Scroll to the very end and confirm the last slide's card is on-screen.
             for _ in 0..60 {
                 let mut h = false;
-                app.on_wheel(MouseScrollDelta::LineDelta(0.0, -20.0), 1.0, &mut h);
+                app.on_wheel(
+                    MouseScrollDelta::LineDelta(0.0, -20.0),
+                    1.0,
+                    ModifiersState::empty(),
+                    &mut h,
+                );
             }
             assert!(
                 (app.overview.scroll() - max_scroll).abs() < 1.0,
@@ -735,6 +761,62 @@ fn wheel_and_scrollbar_scroll_rail_and_overview() {
             );
         });
     }
+}
+
+/// The slide zooms and pans: fitted it fills the pane and has nowhere to go,
+/// and a zoom the person chose draws it larger, moves it by the wheel, and
+/// stops at its own edges.
+#[test]
+fn the_slide_zooms_and_pans_without_losing_its_edges() {
+    let mut bench = layout_bench();
+    bench.with(|app| {
+        let _tr = measure(app, f64::from(super::bench::WINDOW.0), 1.0);
+        let fitted = app.compute_chrome();
+        assert!(app.slide_zoom.is_fit(), "the editor opens fitted");
+        let pane = fitted.slide_dest;
+        assert!(
+            !app.pan_slide(0.0, 40.0),
+            "a fitted slide has nowhere to move, so the wheel is not consumed"
+        );
+
+        // One step in draws the slide larger than it stood.
+        app.zoom_slide(1.0);
+        let zoomed = app.compute_chrome();
+        assert!(!app.slide_zoom.is_fit(), "a step in pins the zoom");
+        assert!(
+            zoomed.scale > fitted.scale,
+            "the slide is drawn larger: {:.3} against {:.3}",
+            zoomed.scale,
+            fitted.scale
+        );
+        assert!(zoomed.slide_dest.width() >= pane.width() - 0.5 || zoomed.scale > 1.0);
+
+        // At a zoom the pane cannot hold, the wheel moves it, and no further
+        // than its own overflow.
+        app.zoom_slide_to(Some(2.0));
+        assert!(app.pan_slide(0.0, 30.0), "a zoomed slide moves");
+        assert!(app.slide_pan.1 > 0.0);
+        assert!(app.pan_slide(0.0, 1.0e6), "the far pan runs to the edge");
+        assert!(!app.pan_slide(0.0, 1.0e6), "at the edge it stops");
+        let (avail_w, avail_h) = app.slide_pane.get();
+        let SlideZoom::Pinned(scale) = app.slide_zoom else {
+            panic!("a pinned zoom");
+        };
+        let reach_y = ((SLIDE_H * scale - avail_h) / 2.0).max(0.0);
+        assert!(
+            (app.slide_pan.1 - reach_y).abs() < 0.01,
+            "the slide stops with its edge at the pane's: {:.1} against {:.1}",
+            app.slide_pan.1,
+            reach_y
+        );
+        let _ = avail_w;
+
+        // Fitting again brings the whole slide back, where it stood.
+        app.zoom_slide_to_fit();
+        assert!(app.slide_zoom.is_fit());
+        assert_eq!(app.slide_pan, (0.0, 0.0));
+        assert_eq!(app.compute_chrome().scale, fitted.scale);
+    });
 }
 
 /// The 2x inspector scrolls instead of overflowing; a fitting 1x inspector stays inert.
@@ -877,19 +959,21 @@ fn inspector_scrolls_only_when_it_overflows() {
         app.inspector_scroll.set_offset_y(0.0);
         app.last_mouse = inspector.center();
         let mut handled = false;
-        app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, ModifiersState::empty(), &mut handled);
         assert!(handled, "wheel over the inspector is consumed");
         assert!(app.inspector_scroll.offset_y() > 0.0, "and scrolls it");
         app.inspector_scroll.scroll_by(0.0, 1.0e6);
         let mut handled = false;
-        app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, ModifiersState::empty(), &mut handled);
         assert!(!handled, "a wheel past the end is not consumed");
-        // Over the canvas the panel never scrolls.
+        // Over the canvas the panel never scrolls: the wheel there is the
+        // slide's own (it moves a zoomed slide, and does nothing at fit).
         app.inspector_scroll.set_offset_y(0.0);
         app.last_mouse = scrolled.slide_dest.center();
         let mut handled = false;
-        app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
-        assert!(!handled && app.inspector_scroll.offset_y() == 0.0);
+        app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, ModifiersState::empty(), &mut handled);
+        assert!(app.inspector_scroll.offset_y() == 0.0);
+        assert!(!handled, "a fitted slide has nowhere to move");
         });
     }
 
@@ -928,7 +1012,12 @@ fn inspector_scrolls_only_when_it_overflows() {
             );
             app.last_mouse = chrome.inspector.center();
             let mut handled = false;
-            app.on_wheel(MouseScrollDelta::LineDelta(0.0, -3.0), 1.0, &mut handled);
+            app.on_wheel(
+                MouseScrollDelta::LineDelta(0.0, -3.0),
+                1.0,
+                ModifiersState::empty(),
+                &mut handled,
+            );
             assert!(!handled && app.inspector_scroll.offset_y() == 0.0);
         });
     }
