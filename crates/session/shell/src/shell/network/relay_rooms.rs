@@ -738,10 +738,10 @@ impl ShellNetwork {
         )
     }
 
-    /// Whether the host governing `room` for `caller` is this device's own:
-    /// the room is served here, or its host is this device's endpoint.
-    fn local_host_governs(&self, room: RoomId, caller: &tilo_user_identity::DeviceCert) -> bool {
-        self.hosted_here(room) || caller.device_public_key == *self.local_peer_id.as_bytes()
+    /// Whether `host`, the host governing `room`, is this device's own: the
+    /// room is served here, or its host is this device's endpoint.
+    fn local_host_governs(&self, room: RoomId, host: iroh::EndpointId) -> bool {
+        self.hosted_here(room) || host == self.local_peer_id
     }
 
     /// Have the host governing `room` let `app` author the room's records,
@@ -767,7 +767,7 @@ impl ShellNetwork {
         // whichever route this device's view of it came by: a room served
         // here never waits on the network, and answers even after the
         // in-process session with it ended.
-        if self.local_host_governs(room, caller) {
+        if self.local_host_governs(room, host) {
             return Some(
                 self.local_host_action_awaited(
                     room_topic_id(room),
