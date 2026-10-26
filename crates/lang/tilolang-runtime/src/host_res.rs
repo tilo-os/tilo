@@ -385,7 +385,7 @@ impl Core {
         let author = self.module_of_frame()?;
         let v = self.journaled_read(|| Ok(self.read_value(&r.target, &f, Some(&author))?))?;
         if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
-            vs.reads.push((r.target.doc, f.id));
+            vs.reads.push((r.target.id_string(), f.id));
         }
         Ok(v)
     }
@@ -694,7 +694,7 @@ impl Core {
             return trap("a map reads as a list of entries");
         };
         if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
-            vs.reads.push((res.target.doc, info.id));
+            vs.reads.push((res.target.id_string(), info.id));
         }
         let pairs = entries.into_iter().filter_map(|entry| match entry {
             Value::Tuple(mut kv) if kv.len() == 2 => {

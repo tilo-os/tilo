@@ -14,8 +14,10 @@
 //! `g` (gap `len` at the end), and holds its ops in order. A Fenwick tree
 //! over blocks of [`BLOCK`] gaps counts the ops spliced into each, so the
 //! ops before a built op or a gap are O(log n) to count and a splice
-//! O(log n) to record. Ops that leave the document (a rolled back
-//! transaction) or a renumbering of actors drop the index, as does a gap
+//! O(log n) to record, and so is taking such an op out again (a rolled
+//! back transaction), and a renumbering of the actors renames the ops it
+//! holds (a new actor sorting before others). Any other op leaving the
+//! document, or an actor whose ops it holds going, drops the index, as does a gap
 //! growing past [`MAX_GAP`] or more ops spliced in than a quarter of those
 //! built; the next apply rebuilds it. It costs about 8 bytes per built op.
 //!
@@ -25,9 +27,11 @@
 //! building per slab), an apply builds it if the `id_ctr` column spans at
 //! least [`MIN_SLABS`] slabs and at least half as many counters are lower
 //! than the one before them. A document typed in order has next to none
-//! and packs thousands of ops into a slab; an import or a load searches
-//! little. Those keep nothing more. A document found not worth it is looked
-//! at again once it has grown by an eighth.
+//! and packs thousands of ops into a slab; an import searches little. Those
+//! keep nothing more. A document found not worth it is looked at again once
+//! it has grown by an eighth. TILO(op-id-index-load): a document loaded is
+//! looked at once at load, searched or not: a replica that loaded it keeps
+//! taking changes into it, and its first should not pay for the build.
 //!
 //! A position the index gives is only a candidate: the caller reads the id
 //! there, and searches the column as before if it is not the op asked for.
@@ -184,11 +188,48 @@ impl OpIdIndex {
         }));
     }
 
-    /// Forget where ops are; the next apply builds anew if this was built.
-    pub(crate) fn clear(&mut self) {
-        if matches!(self.state, State::Built(_)) {
+    /// TILO(op-id-index-actors): an actor was inserted at `idx`, so every
+    /// actor from `idx` on moved up by one. The ops stay where they are; the
+    /// index follows the renumbering rather than being built again.
+    pub(crate) fn actor_inserted(&mut self, idx: usize) {
+        let State::Built(built) = &mut self.state else {
+            return;
+        };
+        if idx > built.by_actor.len() {
+            built.by_actor.resize_with(idx, Vec::new);
+        }
+        built.by_actor.insert(idx, Vec::new());
+        built.renumber(|id| Some(id.with_new_actor(idx)));
+    }
+
+    /// TILO(op-id-index-actors): the actor at `idx` was removed, so every
+    /// actor after it moved down by one. Only an actor no indexed op names
+    /// can go (as a transaction's actor that wrote nothing); otherwise the
+    /// index is dropped.
+    pub(crate) fn actor_removed(&mut self, idx: usize) {
+        let State::Built(built) = &mut self.state else {
+            return;
+        };
+        let names_ops = built.by_actor.get(idx).is_some_and(|ops| !ops.is_empty())
+            || built.recent.keys().any(|id| id.actor() == idx);
+        if names_ops {
+            self.state = State::Dropped;
+            return;
+        }
+        if idx < built.by_actor.len() {
+            built.by_actor.remove(idx);
+        }
+        if built.renumber(|id| id.without_actor(idx)).is_none() {
             self.state = State::Dropped;
         }
+    }
+
+    /// TILO(op-id-index-load): whether a document just loaded is to be
+    /// indexed now, rather than at the first apply once searches were slow:
+    /// a loaded document is one a replica keeps taking changes into, and
+    /// its first remote change should not pay for the build.
+    pub(crate) fn wants_counters_at_load(&self, slabs: usize) -> bool {
+        slabs >= MIN_SLABS && matches!(self.state, State::Unknown)
     }
 
     /// `ids` (in order) were spliced in at `at`.
@@ -198,6 +239,18 @@ impl OpIdIndex {
         };
         let ids: Vec<OpId> = ids.collect();
         if !ids.is_empty() && built.insert(at, &ids).is_none() {
+            self.state = State::Dropped;
+        }
+    }
+
+    /// The op `id` left the document. One spliced in since the build (as
+    /// every op of a transaction being rolled back is) leaves its gap; any
+    /// other drops the index.
+    pub(crate) fn removed(&mut self, id: OpId) {
+        let State::Built(built) = &mut self.state else {
+            return;
+        };
+        if built.remove(id).is_none() {
             self.state = State::Dropped;
         }
     }
@@ -295,6 +348,39 @@ impl Built {
         None
     }
 
+    /// Rename the ops spliced in since the build after a renumbering of the
+    /// actors; `None` if one no longer has an actor.
+    fn renumber(&mut self, rename: impl Fn(OpId) -> Option<OpId>) -> Option<()> {
+        let mut recent = SmallHashMap::default();
+        for (&id, &gap) in self.recent.iter() {
+            recent.insert(rename(id)?, gap);
+        }
+        self.recent = recent;
+        for held in self.gaps.values_mut() {
+            for id in held.iter_mut() {
+                *id = rename(*id)?;
+            }
+        }
+        Some(())
+    }
+
+    fn remove(&mut self, id: OpId) -> Option<()> {
+        let gap = self.recent.remove(&id)?;
+        let held = self.gaps.get_mut(&gap)?;
+        let offset = held.iter().rposition(|&o| o == id)?;
+        held.remove(offset);
+        if held.is_empty() {
+            self.gaps.remove(&gap);
+        }
+        let mut i = gap as usize / BLOCK + 1;
+        while i < self.blocks.len() {
+            let node = self.blocks.get_mut(i)?;
+            *node = node.checked_sub(1)?;
+            i += i & i.wrapping_neg();
+        }
+        Some(())
+    }
+
     fn insert(&mut self, at: usize, ids: &[OpId]) -> Option<()> {
         let (gap, offset) = self.gap_at(at)?;
         let held = self.gaps.entry(gap).or_default();
@@ -381,6 +467,49 @@ mod tests {
     }
 
     #[test]
+    fn a_new_actor_renumbers_the_index_rather_than_dropping_it() {
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        let mut next = 1u64;
+        let mut doc: Vec<OpId> = (0..400)
+            .map(|_| {
+                next += 1;
+                OpId::new(next, rng.below(3))
+            })
+            .collect();
+        let mut index = OpIdIndex::default();
+        index.build(doc.len(), doc.iter().copied());
+        // Ops spliced in since the build, of every actor.
+        for _ in 0..20 {
+            next += 1;
+            let id = OpId::new(next, rng.below(3));
+            let at = rng.below(doc.len() + 1);
+            doc.insert(at, id);
+            index.inserted(at, std::iter::once(id));
+        }
+        // An actor sorting between the first and the second arrives.
+        index.actor_inserted(1);
+        for id in &mut doc {
+            *id = id.with_new_actor(1);
+        }
+        assert!(index.is_built());
+        check(&index, &doc, next + 1);
+        // Its ops are found like any other's.
+        next += 1;
+        let theirs = OpId::new(next, 1);
+        doc.insert(7, theirs);
+        index.inserted(7, std::iter::once(theirs));
+        check(&index, &doc, next + 1);
+        // An actor without ops leaves the index as it was.
+        index.actor_inserted(4);
+        index.actor_removed(4);
+        assert!(index.is_built());
+        check(&index, &doc, next + 1);
+        // One whose ops the index holds drops it.
+        index.actor_removed(1);
+        assert!(!index.is_built());
+    }
+
+    #[test]
     fn only_slow_searches_through_scattered_counters_are_indexed() {
         let index = OpIdIndex::default();
         // Searches worth a build, but too few slabs to be slow.
@@ -405,10 +534,55 @@ mod tests {
         assert!(index.decide(1_000, MIN_SLABS, scattered));
         index.build(1_000, (1..=1_000).map(|c| OpId::new(c, 0)));
         assert!(index.is_built());
-        // Dropped, it is built again without waiting for searches.
-        index.clear();
+        // Dropped (an actor whose ops it holds went), it is built again without waiting for
+        // searches.
+        index.actor_removed(0);
         assert!(!index.is_built());
         assert!(index.wants_counters(1_000, MIN_SLABS));
+    }
+
+    #[test]
+    fn taking_back_spliced_ops_keeps_the_index() {
+        for seed in 1..40u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+            let mut next = 1u64;
+            let mut doc: Vec<OpId> = (0..300)
+                .map(|_| {
+                    next += 1;
+                    OpId::new(next, rng.below(3))
+                })
+                .collect();
+            let mut index = OpIdIndex::default();
+            index.build(doc.len(), doc.iter().copied());
+            let first_built = doc[0];
+            for _ in 0..60 {
+                // A transaction: a few ops spliced in anywhere, then taken
+                // back newest first, as `Transaction::rollback` does.
+                let mut spliced = Vec::new();
+                for _ in 0..1 + rng.below(6) {
+                    next += 1;
+                    let id = OpId::new(next, 3);
+                    let at = rng.below(doc.len() + 1);
+                    doc.insert(at, id);
+                    index.inserted(at, std::iter::once(id));
+                    spliced.push(id);
+                }
+                if rng.below(3) == 0 {
+                    // Committed: they stay.
+                    continue;
+                }
+                for id in spliced.into_iter().rev() {
+                    let at = doc.iter().position(|&o| o == id).unwrap();
+                    doc.remove(at);
+                    index.removed(id);
+                }
+                assert!(index.is_built());
+                check(&index, &doc, next + 1);
+            }
+            // A built op leaving drops the index.
+            index.removed(first_built);
+            assert!(!index.is_built());
+        }
     }
 
     #[test]

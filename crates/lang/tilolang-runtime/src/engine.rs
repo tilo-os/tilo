@@ -1,6 +1,8 @@
 //! The wasm engine. The only module that names wasmi.
 //!
-//! * Compiled modules are cached by the content hash of their bytes.
+//! * One wasmi engine per process: every runtime (every room's host, the surface, a block)
+//!   compiles into it, and a module is compiled once per process, cached by the content hash of
+//!   its bytes. Each runtime keeps its own instances (and so its own stores and limits).
 //! * Each module normally has one instance. A call that arrives while the module's
 //!   instance is already running (a flow in a module invoking an action of the same module)
 //!   gets a second instance from the same compiled module, which costs microseconds; guests
@@ -10,14 +12,16 @@
 //! * Imports reach the host through the [`Host`] trait; the engine knows nothing of the ABI
 //!   beyond the signatures in [`crate::abi`].
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use wasmi::errors::HostError;
 use wasmi::{
-    Caller, Config, Extern, FuncType, Instance, Linker, Module, Store, StoreLimits,
-    StoreLimitsBuilder, TrapCode, Val, ValType,
+    Caller, CompilationMode, Config, Extern, Func, FuncType, Instance, Linker, Module, Store,
+    StoreLimits, StoreLimitsBuilder, TrapCode, Val, ValType,
 };
 
 use crate::abi::{self, IMPORTS};
@@ -86,14 +90,78 @@ impl Default for EngineLimits {
     }
 }
 
+/// How the process's engine turns wasm into what it runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Translation {
+    /// Validate a module when it is compiled, translate each function on its first call.
+    #[default]
+    Lazy,
+    /// Validate and translate every function when the module is compiled.
+    Eager,
+}
+
+/// The process's engine and the modules compiled into it.
+struct Shared {
+    engine: wasmi::Engine,
+    translation: Translation,
+    modules: Mutex<HashMap<ModuleHash, Module>>,
+}
+
+static SHARED: OnceLock<Shared> = OnceLock::new();
+
+fn shared() -> &'static Shared {
+    SHARED.get_or_init(|| Shared::new(Translation::default()))
+}
+
+impl Shared {
+    fn new(translation: Translation) -> Self {
+        let mut cfg = Config::default();
+        cfg.consume_fuel(true);
+        cfg.compilation_mode(match translation {
+            Translation::Lazy => CompilationMode::LazyTranslation,
+            Translation::Eager => CompilationMode::Eager,
+        });
+        Self {
+            engine: wasmi::Engine::new(&cfg),
+            translation,
+            modules: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+/// Choose how the process's engine translates, before any runtime exists. Returns the choice in
+/// effect: once the engine is made it stays as it was made.
+pub fn set_translation(translation: Translation) -> Translation {
+    SHARED.get_or_init(|| Shared::new(translation)).translation
+}
+
+/// Where the time of the calls into wasm went, while a profile is on
+/// ([`Engine::profile`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EngineProfile {
+    /// Calls into a module.
+    pub calls: u64,
+    /// Time inside those calls, imports included.
+    pub in_calls: Duration,
+    /// Of that, time in the host's imports.
+    pub in_imports: Duration,
+    /// Imports called.
+    pub imports: u64,
+    /// Time compiling modules (only modules new to the process are compiled).
+    pub compiling: Duration,
+}
+
 struct Slot {
     host: Option<Rc<dyn Host>>,
     limits: StoreLimits,
+    profile: Option<Rc<Cell<EngineProfile>>>,
 }
 
 struct Pooled {
     store: Store<Slot>,
     instance: Instance,
+    /// Export handles and result types, resolved on first use.
+    funcs: HashMap<String, (Func, Vec<ValType>)>,
 }
 
 struct Compiled {
@@ -121,12 +189,13 @@ impl std::fmt::Display for TrapMessage {
 }
 impl HostError for TrapMessage {}
 
-/// Compiles, caches and calls modules.
+/// One runtime's view of the process's engine: its instances of the modules it loaded, and
+/// its limits.
 pub struct Engine {
-    inner: wasmi::Engine,
     linker: Linker<Slot>,
     limits: EngineLimits,
     modules: RefCell<HashMap<ModuleHash, Compiled>>,
+    profile: RefCell<Option<Rc<Cell<EngineProfile>>>>,
 }
 
 fn val_type(c: u8) -> ValType {
@@ -172,7 +241,15 @@ fn run_import(
     let args = params.iter().map(to_wasm).collect::<Result<Vec<_>, _>>()?;
     let memory = caller.get_export("memory").and_then(Extern::into_memory);
     let bytes: &[u8] = memory.as_ref().map_or(&[][..], |m| m.data(caller));
-    match host.import(id, bytes, &args) {
+    let started = caller.data().profile.as_ref().map(|_| Instant::now());
+    let result = host.import(id, bytes, &args);
+    if let (Some(profile), Some(started)) = (&caller.data().profile, started) {
+        let mut p = profile.get();
+        p.imports = p.imports.saturating_add(1);
+        p.in_imports = p.in_imports.saturating_add(started.elapsed());
+        profile.set(p);
+    }
+    match result {
         Ok(out) => {
             if let (Some(slot), Some(w)) = (results.first_mut(), out) {
                 *slot = from_wasm(w);
@@ -205,10 +282,7 @@ impl Engine {
     ///
     /// Fails only if the import table is inconsistent, which is a bug.
     pub fn new(limits: EngineLimits) -> Result<Self, String> {
-        let mut cfg = Config::default();
-        cfg.consume_fuel(true);
-        let engine = wasmi::Engine::new(&cfg);
-        let mut linker = Linker::<Slot>::new(&engine);
+        let mut linker = Linker::<Slot>::new(&shared().engine);
         for (id, (_, name, params, result)) in IMPORTS.iter().enumerate() {
             linker
                 .func_new(
@@ -222,11 +296,30 @@ impl Engine {
                 .map_err(|e| format!("defining import {name}: {e}"))?;
         }
         Ok(Self {
-            inner: engine,
             linker,
             limits,
             modules: RefCell::new(HashMap::new()),
+            profile: RefCell::new(None),
         })
+    }
+
+    /// Start counting where the time of calls goes (or stop, with `false`); see
+    /// [`Self::profiled`].
+    pub fn profile(&self, on: bool) {
+        *self.profile.borrow_mut() = on.then(|| Rc::new(Cell::new(EngineProfile::default())));
+    }
+
+    /// What the profile counted since it started.
+    pub fn profiled(&self) -> Option<EngineProfile> {
+        self.profile.borrow().as_ref().map(|p| p.get())
+    }
+
+    fn count(&self, f: impl FnOnce(&mut EngineProfile)) {
+        if let Some(profile) = self.profile.borrow().as_ref() {
+            let mut p = profile.get();
+            f(&mut p);
+            profile.set(p);
+        }
     }
 
     /// Compile (or fetch from the cache) the module with these bytes.
@@ -239,7 +332,27 @@ impl Engine {
         if self.modules.borrow().contains_key(&hash) {
             return Ok(hash);
         }
-        let module = Module::new(&self.inner, bytes).map_err(|e| CallError::Link(e.to_string()))?;
+        let process = shared();
+        let known = process
+            .modules
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&hash)
+            .cloned();
+        let module = if let Some(module) = known {
+            module
+        } else {
+            let started = Instant::now();
+            let module =
+                Module::new(&process.engine, bytes).map_err(|e| CallError::Link(e.to_string()))?;
+            self.count(|p| p.compiling = p.compiling.saturating_add(started.elapsed()));
+            process
+                .modules
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(hash.clone(), module.clone());
+            module
+        };
         let first = self.instantiate(&module)?;
         self.modules.borrow_mut().insert(
             hash.clone(),
@@ -271,7 +384,14 @@ impl Engine {
             .memory_size(self.limits.max_memory_bytes)
             .trap_on_grow_failure(true)
             .build();
-        let mut store = Store::new(&self.inner, Slot { host: None, limits });
+        let mut store = Store::new(
+            &shared().engine,
+            Slot {
+                host: None,
+                limits,
+                profile: None,
+            },
+        );
         store.limiter(|slot| &mut slot.limits);
         store
             .set_fuel(self.limits.fuel_per_call)
@@ -280,7 +400,11 @@ impl Engine {
             .linker
             .instantiate_and_start(&mut store, module)
             .map_err(|e| CallError::Link(e.to_string()))?;
-        Ok(Pooled { store, instance })
+        Ok(Pooled {
+            store,
+            instance,
+            funcs: HashMap::new(),
+        })
     }
 
     fn checkout(&self, module: &ModuleHash) -> Result<(Module, Pooled), CallError> {
@@ -311,9 +435,19 @@ impl Engine {
         host: Rc<dyn Host>,
     ) -> Result<Option<Wasm>, CallError> {
         let (_, mut pooled) = self.checkout(module)?;
+        let profile = self.profile.borrow().clone();
+        let started = profile.as_ref().map(|_| Instant::now());
         pooled.store.data_mut().host = Some(host);
+        pooled.store.data_mut().profile.clone_from(&profile);
         let outcome = self.run(&mut pooled, export, args);
         pooled.store.data_mut().host = None;
+        pooled.store.data_mut().profile = None;
+        if let Some(started) = started {
+            self.count(|p| {
+                p.calls = p.calls.saturating_add(1);
+                p.in_calls = p.in_calls.saturating_add(started.elapsed());
+            });
+        }
         if outcome.is_ok()
             && let Some(c) = self.modules.borrow_mut().get_mut(module)
         {
@@ -332,17 +466,21 @@ impl Engine {
             .store
             .set_fuel(self.limits.fuel_per_call)
             .map_err(|e| CallError::Link(e.to_string()))?;
-        let func = pooled
-            .instance
-            .get_func(&pooled.store, export)
-            .ok_or_else(|| CallError::NoExport(export.to_owned()))?;
+        let (func, results) = if let Some(found) = pooled.funcs.get(export) {
+            found.clone()
+        } else {
+            let func = pooled
+                .instance
+                .get_func(&pooled.store, export)
+                .ok_or_else(|| CallError::NoExport(export.to_owned()))?;
+            let results = func.ty(&pooled.store).results().to_vec();
+            pooled
+                .funcs
+                .insert(export.to_owned(), (func, results.clone()));
+            (func, results)
+        };
         let inputs: Vec<Val> = args.iter().copied().map(from_wasm).collect();
-        let mut outputs: Vec<Val> = func
-            .ty(&pooled.store)
-            .results()
-            .iter()
-            .map(|t| Val::default(*t))
-            .collect();
+        let mut outputs: Vec<Val> = results.iter().map(|t| Val::default(*t)).collect();
         func.call(&mut pooled.store, &inputs, &mut outputs)
             .map_err(|e| classify(&e))?;
         outputs

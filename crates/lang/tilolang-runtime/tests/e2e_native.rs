@@ -117,7 +117,7 @@ view detail(n: Note) {
     #[test]
     fn a_list_holds_one_item_per_resource_keyed_by_it_with_its_row() {
         let (rt, app, nb) = setup();
-        let view = rt
+        let mut view = rt
             .open_view(&me(), &app.view("notebook"), vec![Value::resource(&nb)])
             .unwrap();
         let tree = view.tree();
@@ -128,18 +128,35 @@ view detail(n: Note) {
             Value::text(app.meta().types[0].id.clone())
         );
         assert_eq!(text_prop(l, "empty"), "No notes yet");
-        assert_eq!(l.children.len(), 3, "{}", dump(tree));
-        for item in &l.children {
+        let key = l.key.clone();
+        assert_eq!(view.list_len(&key), Some(3), "{}", dump(tree));
+        assert!(
+            of_kind(tree, "item").is_empty(),
+            "no row renders before the host shows it: {}",
+            dump(tree)
+        );
+        let mut items = Vec::new();
+        for i in 0..3 {
+            let row_key = view.row_key(&key, i).expect("a row");
+            let row = view.row(&key, i).unwrap().expect("shown").clone();
+            assert_eq!(row.key, row_key);
+            let [item] = row.children.as_slice() else {
+                panic!("a shown row holds its item: {}", dump(&row));
+            };
             assert_eq!(item.kind, "item");
             let Value::Ref(r) = &item.props["item"] else {
                 panic!("an item carries its resource: {}", dump(item));
             };
-            assert_eq!(item.key, format!("{}/{}", l.key, r.target.id_string()));
+            assert!(
+                row_key.ends_with(&format!("/{}", r.target.id_string())),
+                "a row is keyed by its resource: {row_key}"
+            );
             assert_eq!(item.children.len(), 1);
             assert_eq!(item.children[0].kind, "list_row");
+            items.push(item.clone());
         }
-        assert_eq!(titles(tree), ["Q3 plan", "Groceries", "Ideas"]);
-        let row = &l.children[0].children[0];
+        assert_eq!(titles(view.tree()), ["Q3 plan", "Groceries", "Ideas"]);
+        let row = &items[0].children[0];
         assert_eq!(view.bound_value(&row.key), Some(Value::Bool(true)));
     }
 
@@ -158,6 +175,8 @@ view detail(n: Note) {
             assert!(l.events.contains_key(event), "{event}: {}", dump(l));
         }
         let key = l.key.clone();
+        // Rows are read here as a host that draws every row does.
+        view.set_lazy_rows(false).unwrap();
         view.fire(&key, "filter.pinned").unwrap();
         view.poll_patches().unwrap();
         let l = list(view.tree());
@@ -179,9 +198,10 @@ view detail(n: Note) {
     #[test]
     fn a_list_without_an_item_block_shows_the_types_row_view() {
         let (rt, app, nb) = setup();
-        let view = rt
+        let mut view = rt
             .open_view(&me(), &app.view("rows"), vec![Value::resource(&nb)])
             .unwrap();
+        view.set_lazy_rows(false).unwrap();
         let l = list(view.tree());
         assert_eq!(l.children.len(), 3);
         let rows = of_kind(&l.children[0], "list_row");

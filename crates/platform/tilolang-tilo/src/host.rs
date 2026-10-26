@@ -531,6 +531,19 @@ impl Host {
         self.load_module(&bundle.wasm, bundle.meta.clone(), bundle.ids.clone())
     }
 
+    /// Load a package from its compiled module alone, with the metadata the module embeds, and
+    /// trust it: how a launcher starts a built-in package compiled when Tilo was built, so that
+    /// launching compiles no tilolang. The package has no ids lock to write back.
+    ///
+    /// # Errors
+    /// The module embeds no metadata, or does not load.
+    pub fn load_wasm(&self, wasm: &[u8]) -> Result<Package, HostError> {
+        let meta = PackageMeta::from_wasm(wasm).ok_or_else(|| {
+            HostError::Compile("the module embeds no tilolang metadata".to_owned())
+        })?;
+        self.load_module(wasm, meta, String::new())
+    }
+
     /// Load a compiled module with its metadata and trust it; see [`Self::load_compiled`].
     ///
     /// # Errors
@@ -683,16 +696,11 @@ impl Host {
     /// The resource kind and label of a published record.
     #[must_use]
     pub fn label_of(&self, doc: &str) -> String {
-        self.inner
-            .store
-            .record(doc)
-            .ok()
-            .and_then(|record| {
-                let mut text = Vec::new();
-                tilo_resource::Model::collect_text(&record, &mut text);
-                text.into_iter().next()
-            })
-            .unwrap_or_else(|| doc.to_owned())
+        let store = &self.inner.store;
+        let ty = store.resource_type(doc).unwrap_or_default();
+        store
+            .first_text(&ResourceRef::root(doc, ty))
+            .map_or_else(|| doc.to_owned(), |(text, _)| text)
     }
 
     /// Whether the type `ty` is registered (a package of it was loaded here).

@@ -102,9 +102,8 @@ mod cases {
 
     /// The resource of the list item whose row has this title.
     fn item_titled(view: &ViewInstance, title: &str) -> ResourceRef {
-        list(view)
-            .children
-            .iter()
+        of_kind(list(view), "item")
+            .into_iter()
             .find(|item| {
                 of_kind(item, "list_row")
                     .iter()
@@ -123,6 +122,8 @@ mod cases {
         let mut list =
             n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
                 .unwrap();
+        // These checks read the whole tree, as a host that draws every row does.
+        list.set_lazy_rows(false).unwrap();
         assert_eq!(
             list.tree().kind,
             "list",
@@ -189,6 +190,8 @@ mod cases {
         let mut view =
             n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
                 .unwrap();
+        // These checks read the whole tree, as a host that draws every row does.
+        view.set_lazy_rows(false).unwrap();
         for width in [90.0, 20.0] {
             view.set_space("", Space::from_rem(width, 40.0));
             view.poll_patches().unwrap();
@@ -214,6 +217,8 @@ mod cases {
         let mut view =
             n.rt.open_view(&me(), &n.app.view("notebook"), vec![Value::resource(&n.nb)])
                 .unwrap();
+        // These checks read the whole tree, as a host that draws every row does.
+        view.set_lazy_rows(false).unwrap();
         let key = list(&view).key.clone();
         assert_eq!(titles(&view), ["b", "a"]);
         assert_eq!(list(&view).props["filter.count.pinned"], Value::Int(1));

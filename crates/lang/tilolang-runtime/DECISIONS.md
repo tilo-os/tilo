@@ -41,11 +41,13 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   the view's module declares the resource's type) and returns `NeedsApproval` on Ask.
 - **Outbox.** `outside` queues an entry on the document of the action's first resource argument;
   only the `"post"` capability exists, and only an action classed `outside` may call it.
-- **Reactivity.** Local commits notify with the exact fields; sync notifies the whole document.
-  A view re-runs when a field it read, or a `space` value it read, changed.
+- **Reactivity.** Commits and syncs notify with the exact fields that changed (a `FieldKey` is
+  the resource, an item path included, and the field id); a notification with no fields means
+  the whole document. A boundary re-runs when a field it read, or a `space` value it read,
+  changed; no other boundary runs. See "Performance by default" below.
 - **`space`.** Read through `space_i` (classes, flags, enums as ints) and `space_f` (width and
-  height in rem). In v1 nested view calls are inlined by the compiler and inherit the root's
-  space, so `set_space` consults only the root boundary.
+  height in rem). Every view call is a boundary, and each is offered the root's space, so
+  `set_space` consults only the root boundary.
 - **Projection** needs the store to read fields, so it is `Runtime::project(value)`, not a free
   function of `(value, meta)`.
 - **Text diff.** Prefix and suffix trimmed, then LCS while the middle is under about a million
@@ -129,7 +131,7 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 
 ## Gaps in the design
 
-- Compiled blocks stay in the engine for the runtime's life: no eviction.
+- Compiled modules and blocks stay in the process's module cache: no eviction.
 - Two replicas can approve the same suggestion at once: each runs the action before the
   other's state change arrives, so it runs twice. Exactly-once needs a claim that merges
   (for example a register the approver sets before running, resolved deterministically).
@@ -187,9 +189,143 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   into a `ViewEvent::Open { target, view }` the host takes with `ViewInstance::poll_events`.
   Neither goes through the authority or into a journal.
 - **`open(r)` on the platform, for now.** Until the workspace window model lands, the host app
-  shows the opened window in place, through the default view of `r`'s type, with a back button
-  that returns to the view it was opened from (`apps/tilolang/src/page.rs`). Opening never
-  creates a second window for a resource: there are no windows yet, only that trail.
+  shows the opened window as the next column of its shell, through the default view of `r`'s
+  type: beside the root's list, or in place of the root's content with Back; a narrow window
+  pushes it (`apps/tilolang/src/window.rs`). Opening never creates a second window for a
+  resource: there are no windows yet.
 - **Roots.** The host opens `roots[0]` of a package through its default view, over the per-room
   resource of that type (`tilolang_tilo::host::Package::main`), replacing the old `view main`
   convention.
+
+## Performance by default (native-apps.md §4)
+
+What a host relies on. A tilolang app that misses a budget is a bug in the runtime.
+
+- **Every view call is a boundary.** The compiler emits each view call as a `view:` stub; the
+  runtime keeps one memo per call (its arguments, the fields and `space` values it read, its
+  subtree). A change re-runs the boundaries that read it, and a boundary whose arguments and
+  reads are unchanged keeps its subtree without running. Every row of a UI `for` is a
+  boundary keyed by its item, whatever its body (below). `ViewInstance::stats()` counts renders, boundaries and unrendered rows.
+- **Loop rows.** The compiler lowers a UI `for` (and nothing else) to one node of kind
+  `for:<app>:<view>` with the props `items` (the list), `each` (the parameter the item goes to),
+  `suffix` (the key suffix of the rows around it, for anchored keys), `arg.<name>` (what the body
+  captures) and the sizing props of a one-node body (`fill`, `min`, `max`, `aspect`, `span`,
+  `at`, hoisted when they do not use the item). A body that is one call of the app's own view
+  with plain arguments calls it directly; any other body becomes a view of its own,
+  `<view>~row<n>`, taking the item, the captures and `$key`. The runtime puts one `fragment`
+  per item in the loop's place among its parent's children, keyed `<loop key>/<item key>`
+  (the item's resource id, else its index), each a boundary (lazy in a `list`) with the loop's
+  sizing props. Hosts see fragments, never the loop node.
+- **Patch stream.** `ViewInstance::poll_patches()` returns the patches that turn the last tree
+  into the new one, in the order they apply, empty when nothing changed (an idle view costs
+  nothing: no runtime timer, no polling of its own). Patches address nodes by path, the keys from
+  the root down to the node (`parent` for structural patches): `SetRoot(node)`,
+  `Insert{parent, index, node}`, `Remove{parent, key}`, `Move{parent, key, to}`,
+  `SetProp{path, name, value}` (`None` removes it), `SetBinding`, `SetEvent`, `SetAnchor`.
+  Keys are stable across renders, so a host keeps a key-to-widget map and applies each patch to
+  one widget. `ViewInstance::tree()` is always the tree after the last patch, for a host that
+  rebuilds instead.
+- **Virtual lists.** A `list { for ... }` whose rows are view calls renders no row until the host
+  shows it. The list node always has one keyed child per row; a row not shown is an empty
+  `fragment`. `list_len(list)` and `row_key(list, i)` cost nothing; `row(list, i)` renders the
+  row if needed and returns it (the host draws what is returned: showing a row is not patched).
+  From then on changes to a shown row come as patches, and rows inserted, removed or moved come
+  as patches on the list. `hide_rows(list, keep)` forgets rows outside `keep` and returns the
+  patches that empty them; a forgotten row no longer runs. Showing and hiding cost the rows
+  concerned, not the list's length. A host that draws the whole tree calls
+  `set_lazy_rows(false)` before its first poll and reads `tree()` after it.
+- **The native host** (`apps/tilolang`). The list column of a `list` frame is a `VirtualList`
+  over the list's row keys: it asks for the rows it shows (visible and overscan) with
+  `row(list, i)` and forgets the rest with `hide_rows`. A poll's patches are sorted by where
+  they show: rows inserted, removed or moved are the list's model changes; a change inside a
+  shown row reads that row again and rebuilds it alone; anything else reconciles the columns
+  from `tree()` by key. A list inside a page or a card is drawn whole, its rows rendered as
+  they appear. What the room publishes (`Publications`) and what search finds (`SearchIndex`)
+  are kept by the live window and updated from the store's changes, read off the frame the
+  first time.
+- **Store changes for the host.** `TiloStore::watch()` gives a cursor; `Watch::take()` returns the
+  `Changes` since the last take: changed fields per document, documents changed anywhere
+  (`whole`), or `everything` after the mirror was copied anew. Planning an action (a trial run
+  that is rolled back) tells nobody: its notifications are dropped with its writes.
+  `TiloStore::stats()` counts incremental and full syncs; a full sync happens only when the
+  mirror held a change of its own when the record moved, and should stay at 0.
+- **Search and publication are incremental.** `SearchIndex::new(&host)` then
+  `update(&host) -> SearchDelta { upserted, removed }` each frame, `hits()` for the index;
+  `Publications::new(&host)` then `update(&host, &planner) -> Vec<DocId>` (the documents whose
+  published tree changed) and `trees()`. Both consume a `Watch`, so a frame costs what changed.
+  A record that appears (every record, on the first frame) is read whole off the frame: from a
+  `TiloStore::snapshot()` (one copy of the mirror, shared by every reader until the mirror
+  changes) on a thread of its own. Until it ends, `update` returns nothing and takes no changes;
+  `set_waker(waker)` gives them the window's redraw request to call when it ends, and the next
+  `update` takes the result in. `is_reading()` / `is_building()` say whether that is under way;
+  `settle(&host, ..)` waits for it, for a host without frames and for tests. An action without
+  parameters is published deferred (`ActionSpec::deferred`): planned when it runs, so publishing
+  plans nothing. A record's label (its first text, fields in id order, items in order) is read
+  again only when a change is at or before what names it. These replace re-indexing and
+  re-publishing every record per frame (`search::refresh` and `published()` in the window), which
+  cost 322 ms and 393 ms at 10k items.
+- **No needless commit.** The host commits the room record when the executor wrote something.
+  An empty `commit()` on automerge used to add and remove the actor (6.6 ms at 10k items); the
+  vendored patch makes it free, but the call is still not needed.
+- **One engine per process.** All runtimes share one `wasmi::Engine` and a module cache keyed by
+  the module hash, so a package loaded again (a second window, a reload of unchanged code)
+  compiles nothing. Each runtime keeps its own linker, limits and instance pools; an instance
+  caches its export functions and their result types, so a call looks nothing up by name.
+  `set_translation(Lazy|Eager)` picks how modules are translated, once, before the first
+  runtime. `Engine::profile(true)` (via `Runtime::engine()`) counts calls, time in wasm, time
+  in the host's imports and compile time.
+- **No compiling at launch.** `Host::load_wasm(bytes)` loads a package from its module alone,
+  with the metadata the module embeds; a launcher ships built-in packages compiled with Tilo.
+  Compiling a package's source takes 0.8 to 1.5 ms (notes, chat; release, aarch64),
+  so this saves little time; it removes the compiler from the launch path. wasmi cannot
+  serialize translated code, so there is no on-disk cache, and none is needed (below).
+- **Engine: wasmi, lazy translation.** Measured with `tilolang bench --profile` (release,
+  aarch64, a notes list of 10k items, 20 samples). Time inside wasm, imports excluded, is 28 ms of
+  a 2035 ms open (search 454 ms, publication 1429 ms, imports 773 ms) and 0.013 to 0.017 ms of
+  a 0.55 ms keystroke (imports 0.10 ms); a peer edit has 0.007 ms of wasm in 0.46 ms. Compiling
+  the module is 0.10 ms lazy and 0.17 ms eager; lazy and eager give the same open (2035 vs
+  2034 ms) and keystroke (0.54 vs 0.55 ms). Even an engine that ran guest code in no time would
+  take at most 1.4% off open and 3% off a keystroke, while every budget the guest's share
+  touches is met with wasmi; wasmtime AOT would add a compiler and code cache to the platform
+  for that. The time is in the host (store reads behind imports, search, publication), which is
+  where the work goes. Revisit when a profile shows guest time as the larger share.
+- **Finding a node.** `ViewInstance::edit`/`press`/`fire` find a node in its boundary when its
+  key carries one; any other node (the root view's own, an anchored one) by walking the tree
+  once, after which where it was is kept and checked before use. Typing into an input of a view
+  that also shows 10k rows went from 0.4 ms of lookup per keystroke to none.
+- **Bench and budgets.** `tilolang bench <package> [--sizes] [--samples] [--idle SECONDS]
+  [--translation lazy|eager] [--profile]` prints one JSON record per scenario and size: open,
+  keystroke, peer edit, scroll (packages with a virtual list), idle wakeups and patches, and the
+  cost of re-indexing and re-publishing everything for comparison, and how long compiling the
+  package's source takes. Records are `tools/perf/record.py`'s JSON.
+  Seeding follows the package's root: its collection, or the roots of the packages it refers to
+  (a board); a root with neither has one size, of no items. `keystroke` types into an item's
+  title in the item's window, or, when items have no window, into the main window's first text
+  input (a conversation's draft, when the window edits no title); a package with no text input
+  gets `press` (its first button). `peer_edit` retitles an
+  item, or bumps the root's counter. `memory_anon` is measured in a process of its own that loads
+  the saved room and opens it, as an app process does (the bench's own process keeps what
+  seeding allocated). `cargo test --release -p tilolang-tilo --test budgets` holds section 4.1 of
+  the design on the apps in `apps/tl`: notes and chat at 10k (open p95 300 ms, keystroke and
+  peer p95 2 ms, scroll p50 1 ms, no idle wakeups) and memory at 1k (60 MiB); todo and the
+  board on every budget but open; and the counter.
+- **Where it stands** (release, aarch64, 10k items, 20 samples, p95; the runtime's share, the
+  bench drives no window). notes: open 280 ms, keystroke 0.58 ms, peer edit 0.40 ms, scroll p50
+  0.23 ms, idle 0 wakeups; ready (search and publication done) 689 ms. chat: open 50 ms,
+  keystroke 0.51, peer 0.34, scroll p50 0.29. todo: open 497 ms, keystroke 0.52, peer 0.37,
+  scroll p50 0.17. board (notes, todo and chat of 10k each): open 1265 ms, keystroke 0.92, peer
+  0.70. Memory at 1k: notes 19 MiB, chat 20, todo 17, board 51. counter: open 0.28 ms, press
+  0.12, peer 0.07. The first change of a window costs 5 to 7 ms: automerge renumbers its
+  columns for the new actor (about 2 ms per document at 400k ops), inherent to its sorted actor
+  table.
+- **Not met yet.** Open at 10k for todo (497 ms) and the board (1265 ms); where their time goes
+  is not measured yet. The board's lists sit inside cards, which the host draws whole. Memory at
+  10k: notes' process holds 175 MiB, todo's 147, chat's 168, the board's 487. Per item, measured
+  on a notes list: the published tree 4.2 KB, nearly all `ActionSpec`s (about 1.7 KB each, 700
+  bytes of it inline, its contract 360; an item carries `open` and its type's actions), the
+  view 1.9 KB per row even unrendered, the room and the mirror 1.5 KB, search 0.4 KB; the rest
+  is what the allocator keeps after the first read. The spec's size is `tilo-actions`'s and
+  native apps pay it too: sharing the per-type parts of a spec among the resources that carry
+  it is the fix. In the host, a change outside the list column's rows reconciles the column by
+  key from `tree()` and lays the window out again; applying such patches to single widgets
+  needs the toolkit's containers to take a child in place.

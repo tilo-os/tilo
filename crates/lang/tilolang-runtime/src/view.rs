@@ -1,6 +1,6 @@
 //! View trees and their keyed diff (implementation design 4.5, views).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::handles::Retained;
 use crate::ids::{FieldId, ModuleHash};
@@ -52,6 +52,19 @@ pub struct UiNode {
 }
 
 impl UiNode {
+    /// A node of `kind` with `key` and nothing else.
+    pub fn empty(kind: &str, key: &str) -> Self {
+        Self {
+            kind: kind.to_owned(),
+            key: key.to_owned(),
+            props: BTreeMap::new(),
+            binding: None,
+            events: BTreeMap::new(),
+            anchor: None,
+            children: Vec::new(),
+        }
+    }
+
     /// The node whose key is `key`, searching the whole tree. `None` when absent or when more
     /// than one node has the key. A `/`-joined path of keys from the root also works.
     pub fn find(&self, key: &str) -> Option<&Self> {
@@ -210,6 +223,34 @@ fn diff_node(
     diff_children(old, new, path, same_event, out);
 }
 
+/// The patches that turn `old`, the only child of the node at `parent` (keys from the root),
+/// into `new`.
+pub fn diff_at(
+    parent: &[String],
+    old: &UiNode,
+    new: &UiNode,
+    same_event: EventEq<'_>,
+    out: &mut Vec<Patch>,
+) {
+    if old.kind == new.kind && old.key == new.key {
+        let mut path = parent.to_vec();
+        path.push(new.key.clone());
+        diff_node(old, new, &path, same_event, out);
+        return;
+    }
+    out.push(Patch::Remove {
+        parent: parent.to_vec(),
+        key: old.key.clone(),
+    });
+    out.push(Patch::Insert {
+        parent: parent.to_vec(),
+        index: 0,
+        node: new.clone(),
+    });
+}
+
+/// The children's patches, in linear time: removals first, then each new child in order is
+/// either already in place, moved there, or inserted there.
 fn diff_children(
     old: &UiNode,
     new: &UiNode,
@@ -217,15 +258,19 @@ fn diff_children(
     same_event: EventEq<'_>,
     out: &mut Vec<Patch>,
 ) {
-    let survives = |o: &UiNode| {
-        new.children
-            .iter()
-            .any(|n| n.key == o.key && n.kind == o.kind)
-    };
-    let mut current: Vec<&str> = Vec::new();
+    if old.children.is_empty() && new.children.is_empty() {
+        return;
+    }
+    let fresh: HashMap<(&str, &str), usize> = new
+        .children
+        .iter()
+        .enumerate()
+        .map(|(i, n)| ((n.key.as_str(), n.kind.as_str()), i))
+        .collect();
+    let mut current: Vec<&UiNode> = Vec::with_capacity(old.children.len());
     for o in &old.children {
-        if survives(o) {
-            current.push(&o.key);
+        if fresh.contains_key(&(o.key.as_str(), o.kind.as_str())) {
+            current.push(o);
         } else {
             out.push(Patch::Remove {
                 parent: path.to_vec(),
@@ -233,31 +278,38 @@ fn diff_children(
             });
         }
     }
+    let survivors: HashMap<&str, &UiNode> = current.iter().map(|o| (o.key.as_str(), *o)).collect();
+    // Survivors moved ahead of their turn, which the walk over `current` then skips.
+    let mut moved: HashSet<&str> = HashSet::new();
+    let mut j = 0;
     for (i, n) in new.children.iter().enumerate() {
-        let existing = current.iter().position(|k| *k == n.key);
-        let Some(pos) = existing else {
+        while current
+            .get(j)
+            .is_some_and(|c| moved.contains(c.key.as_str()))
+        {
+            j = j.saturating_add(1);
+        }
+        let Some(o) = survivors.get(n.key.as_str()) else {
             out.push(Patch::Insert {
                 parent: path.to_vec(),
                 index: i,
                 node: n.clone(),
             });
-            current.insert(i.min(current.len()), &n.key);
             continue;
         };
-        if pos != i {
+        if current.get(j).is_some_and(|c| c.key == n.key) {
+            j = j.saturating_add(1);
+        } else {
             out.push(Patch::Move {
                 parent: path.to_vec(),
                 key: n.key.clone(),
                 to: i,
             });
-            current.remove(pos);
-            current.insert(i.min(current.len()), &n.key);
+            moved.insert(n.key.as_str());
         }
-        if let Some(o) = old.children.iter().find(|o| o.key == n.key) {
-            let mut child_path = path.to_vec();
-            child_path.push(n.key.clone());
-            diff_node(o, n, &child_path, same_event, out);
-        }
+        let mut child_path = path.to_vec();
+        child_path.push(n.key.clone());
+        diff_node(o, n, &child_path, same_event, out);
     }
 }
 

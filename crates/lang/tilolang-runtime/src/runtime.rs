@@ -540,6 +540,11 @@ impl Runtime {
         self.core.engine.cached_modules()
     }
 
+    /// This runtime's engine: its instances, its limits and its profile.
+    pub fn engine(&self) -> &crate::engine::Engine {
+        &self.core.engine
+    }
+
     /// Hash of a module's bytes, the id [`Runtime::load_package`] returns for it.
     pub fn module_hash(wasm: &[u8]) -> ModuleHash {
         ModuleHash::of_bytes(wasm)

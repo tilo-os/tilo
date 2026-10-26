@@ -12,7 +12,9 @@
 
 mod collab;
 mod fixtures;
+mod incremental;
 mod outbox;
 mod records;
 mod scenarios;
 mod surface;
+mod sync;

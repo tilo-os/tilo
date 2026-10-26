@@ -5,23 +5,30 @@
 //! activating a row brings that column to the front of a narrow window. Every action on an
 //! item is on its row's context menu, the first destructive one (else the first) on its swipe.
 //!
-//! The rows come from a [`ListModel`]: its length and keys, and each row when the list draws it.
-//! A model that evaluates rows lazily asks for them in `request_range`; the model here holds the
-//! rows the view evaluated.
+//! The rows come from a [`ListModel`], [`Rows`]: the keys of every row of the view's list, and
+//! the rows the list shows, which the view renders when the list asks for them
+//! (`request_range`: the visible rows and the overscan) and forgets when they scroll away. A
+//! list of ten thousand notes costs the rows on screen. The view's changes reach the list as
+//! they are: a row inserted, removed or moved is that change of the model, and a row the view
+//! changed is read again and rebuilt alone.
 
-use std::collections::{HashMap, HashSet};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::Rc;
 
-use tilolang_tilo::runtime::{ResourceRef, UiNode, Value};
+use tilolang_tilo::host::Host;
+use tilolang_tilo::runtime::{Patch, ResourceRef, UiNode, Value, ViewInstance};
 use ui::icons::Icon;
 use ui::vello::kurbo::Point;
 use ui::widget::virtual_list::ListModelChange;
 use ui::widget::{
     AppModel, ContextMenuArea, Decorator, Element, EmptyState, ListModel, ListRow, MenuEntry,
-    ModelPath, VirtualList, Widget,
+    ModelPath, StructureChange, VirtualList, Widget,
 };
 
 use super::{Request, Requests};
+use crate::names::Names;
 use crate::reconcile::{EventSink, UiEvent};
 
 /// An action a row offers on its item.
@@ -46,7 +53,8 @@ pub struct RowAction {
 /// One row of a list: the item, and the `row(...)` the view made for it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RowData {
-    /// The view's key of the item.
+    /// The view's key of the row: the list's row of this item, the same however often it is
+    /// shown.
     pub key: String,
     pub item: ResourceRef,
     /// The title when the view made no row for the item.
@@ -62,33 +70,230 @@ pub struct RowData {
     pub presence: Option<String>,
 }
 
-/// The rows of a list, by key.
+/// The participants other than this window's at each resource of the package (by its id), as
+/// presence last reported them.
+pub type Peers = Rc<RefCell<HashMap<String, String>>>;
+
+/// Where the rows of a list come from: the view whose `list` it is, which renders a row when
+/// the list shows it, and what a row shows of the room.
+pub struct RowSource {
+    pub view: Rc<RefCell<ViewInstance>>,
+    /// The key of the `list` node.
+    pub list: String,
+    pub host: Host,
+    /// The resource the view shows: the owner of the list's items, whose actions on an item
+    /// its row offers too.
+    pub owner: ResourceRef,
+    pub peers: Peers,
+    pub names: Names,
+}
+
+impl RowSource {
+    /// What `row` (a row of the list, as the view rendered it) shows.
+    fn data(&self, view: &ViewInstance, row: &UiNode) -> Option<RowData> {
+        let item = find_kind(row, "item")?;
+        let Some(Value::Ref(reference)) = item.props.get("item") else {
+            return None;
+        };
+        let target = reference.target.clone();
+        let list_row = find_kind(item, "list_row").cloned();
+        let checked = list_row
+            .as_ref()
+            .filter(|node| node.binding.is_some())
+            .and_then(|node| match view.bound_value(&node.key) {
+                Some(Value::Bool(flag)) => Some(flag),
+                Some(Value::Int(number)) => Some(number != 0),
+                _ => None,
+            });
+        let avatar = list_row
+            .as_ref()
+            .and_then(|node| match node.props.get("avatar") {
+                Some(Value::Principal(who)) => Some((self.names.label(&who.0), who.0.clone())),
+                _ => None,
+            });
+        Some(RowData {
+            key: row.key.clone(),
+            label: super::describe::title_of(&self.host, &target),
+            actions: super::describe::offered_in(&self.host, &target, &self.owner),
+            presence: self.peers.borrow().get(&target.id_string()).cloned(),
+            item: target,
+            row: list_row,
+            checked,
+            avatar,
+        })
+    }
+}
+
+/// The first node of `kind` at or under `node`.
+fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
+    if node.kind == kind {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| find_kind(child, kind))
+}
+
+/// The rows of a list: every row's key, in order, as the view's list holds them, and the rows
+/// the list shows, rendered by the view when the list asks for them.
 #[derive(Default)]
 pub struct Rows {
-    rows: Vec<RowData>,
-    index: HashMap<String, usize>,
+    source: Option<Rc<RowSource>>,
+    /// Shared, so the order is copied cheaply when the list needs it before and after a change.
+    keys: Vec<Rc<str>>,
+    /// Where each key is, built when first asked after the keys changed.
+    index: RefCell<Option<HashMap<Rc<str>, usize>>>,
+    /// The rows shown, by key.
+    shown: RefCell<HashMap<String, RowData>>,
 }
 
 impl Rows {
+    /// The rows of `source`'s list, none of them shown yet.
+    #[must_use]
+    pub fn of(source: Rc<RowSource>) -> Self {
+        let keys = {
+            let view = source.view.borrow();
+            let len = view.list_len(&source.list).unwrap_or(0);
+            (0..len)
+                .filter_map(|index| view.row_key(&source.list, index))
+                .map(Rc::from)
+                .collect()
+        };
+        Self {
+            source: Some(source),
+            keys,
+            index: RefCell::new(None),
+            shown: RefCell::default(),
+        }
+    }
+
+    /// Rows that are given rather than read from a view: for tests of the list's chrome.
+    #[cfg(test)]
     #[must_use]
     pub fn new(rows: Vec<RowData>) -> Self {
-        let index = rows
+        Self {
+            source: None,
+            keys: rows.iter().map(|row| Rc::from(row.key.as_str())).collect(),
+            index: RefCell::new(None),
+            shown: RefCell::new(rows.into_iter().map(|row| (row.key.clone(), row)).collect()),
+        }
+    }
+
+    /// Whether these are the rows of `source`'s list.
+    fn reads(&self, source: &RowSource) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(|own| Rc::ptr_eq(&own.view, &source.view) && own.list == source.list)
+    }
+
+    /// The row of `key`, when the list shows it.
+    #[must_use]
+    pub fn find(&self, key: &str) -> Option<RowData> {
+        self.shown.borrow().get(key).cloned()
+    }
+
+    /// The rows shown, in the list's order.
+    #[cfg(test)]
+    #[must_use]
+    pub fn shown(&self) -> Vec<RowData> {
+        let shown = self.shown.borrow();
+        self.keys
             .iter()
-            .enumerate()
-            .map(|(at, row)| (row.key.clone(), at))
-            .collect();
-        Self { rows, index }
+            .filter_map(|key| shown.get(&**key).cloned())
+            .collect()
     }
 
+    /// The row of the item `target`, whether or not it is shown: the rows of a list are keyed
+    /// by their loop and their item's id (`<loop>/<id>`).
     #[must_use]
-    pub fn row(&self, index: usize) -> Option<&RowData> {
-        self.rows.get(index)
+    pub fn key_of(&self, target: &ResourceRef) -> Option<String> {
+        // The loop's key is what a shown row's key has before its item's id (an id holds `/`
+        // itself); with no row shown, the loop's key holds none.
+        let prefix = self
+            .shown
+            .borrow()
+            .values()
+            .find_map(|row| {
+                row.key
+                    .strip_suffix(&row.item.id_string())
+                    .map(str::to_owned)
+            })
+            .or_else(|| {
+                let (prefix, _) = self.keys.first()?.split_once('/')?;
+                Some(format!("{prefix}/"))
+            })?;
+        let key = format!("{prefix}{}", target.id_string());
+        self.index_of(&key).map(|_| key)
     }
 
-    /// The row of `key`.
-    #[must_use]
-    pub fn find(&self, key: &str) -> Option<&RowData> {
-        self.index.get(key).and_then(|at| self.rows.get(*at))
+    /// Apply the view's changes of the list's own children, in order: rows inserted, removed
+    /// and moved. Returns them as the list widget takes them, each against the order the ones
+    /// before it left.
+    pub fn apply(&mut self, patches: &[Patch]) -> Vec<ListModelChange<String>> {
+        let mut out = Vec::new();
+        for patch in patches {
+            match patch {
+                Patch::Insert { index, node, .. } => {
+                    let index = (*index).min(self.keys.len());
+                    self.keys.insert(index, Rc::from(node.key.as_str()));
+                    out.push(ListModelChange::RowsInserted { index, count: 1 });
+                }
+                Patch::Remove { key, .. } => {
+                    if let Some(index) = self.keys.iter().position(|k| **k == **key) {
+                        self.keys.remove(index);
+                        self.shown.borrow_mut().remove(key);
+                        out.push(ListModelChange::RowsRemoved { index, count: 1 });
+                    }
+                }
+                Patch::Move { key, to, .. } => {
+                    if let Some(from) = self.keys.iter().position(|k| **k == **key) {
+                        let moved = self.keys.remove(from);
+                        let to = (*to).min(self.keys.len());
+                        self.keys.insert(to, moved);
+                        out.push(ListModelChange::RowsMoved { from, to, count: 1 });
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !out.is_empty() {
+            *self.index.borrow_mut() = None;
+        }
+        out
+    }
+
+    /// Read the shown rows of `keys` again from the view. Returns the keys whose row shows
+    /// something else now.
+    pub fn refresh(&self, keys: impl IntoIterator<Item = String>) -> Vec<String> {
+        let Some(source) = &self.source else {
+            return Vec::new();
+        };
+        let Ok(view) = source.view.try_borrow() else {
+            return Vec::new();
+        };
+        let mut shown = self.shown.borrow_mut();
+        keys.into_iter()
+            .filter(|key| {
+                let Some(old) = shown.get(key) else {
+                    return false;
+                };
+                let Some(new) = view.find(key).and_then(|row| source.data(&view, row)) else {
+                    return false;
+                };
+                let changed = *old != new;
+                if changed {
+                    shown.insert(key.clone(), new);
+                }
+                changed
+            })
+            .collect()
+    }
+
+    /// Read every shown row again: what is bound to its checkbox, who is at its item, what the
+    /// participants are called. Returns the keys whose row shows something else now.
+    pub fn refresh_shown(&self) -> Vec<String> {
+        let keys: Vec<String> = self.shown.borrow().keys().cloned().collect();
+        self.refresh(keys)
     }
 }
 
@@ -96,59 +301,76 @@ impl ListModel for Rows {
     type Key = String;
 
     fn len(&self) -> usize {
-        self.rows.len()
+        self.keys.len()
     }
 
     fn key_at(&self, index: usize) -> Option<String> {
-        self.rows.get(index).map(|row| row.key.clone())
+        self.keys.get(index).map(ToString::to_string)
     }
 
     fn index_of(&self, key: &String) -> Option<usize> {
-        self.index.get(key).copied()
+        self.index
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                self.keys
+                    .iter()
+                    .enumerate()
+                    .map(|(at, key)| (Rc::clone(key), at))
+                    .collect()
+            })
+            .get(key.as_str())
+            .copied()
     }
-}
 
-/// What turns `old` into `new`, one row at a time, each change against the order the ones
-/// before it left: the rows that went, the rows that came or moved, and the rows that stayed
-/// and changed.
-#[must_use]
-pub fn changes(old: &[RowData], new: &[RowData]) -> Vec<ListModelChange<String>> {
-    let mut out = Vec::new();
-    let kept: HashSet<&str> = new.iter().map(|row| row.key.as_str()).collect();
-    let mut order: Vec<&str> = old.iter().map(|row| row.key.as_str()).collect();
-    for index in (0..order.len()).rev() {
-        if order.get(index).is_some_and(|key| !kept.contains(key)) {
-            order.remove(index);
-            out.push(ListModelChange::RowsRemoved { index, count: 1 });
+    /// The view renders the rows in `range` it has not shown yet, and forgets those it showed
+    /// outside it.
+    fn request_range(&mut self, range: Range<usize>) {
+        let Some(source) = self.source.clone() else {
+            return;
+        };
+        let Ok(mut view) = source.view.try_borrow_mut() else {
+            return;
+        };
+        let mut shown = self.shown.borrow_mut();
+        for patch in view.hide_rows(&source.list, range.clone()) {
+            if let Patch::Remove { parent, .. } = patch
+                && let Some(row) = parent.last()
+            {
+                shown.remove(row);
+            }
+        }
+        for index in range {
+            let Some(key) = self.keys.get(index) else {
+                break;
+            };
+            if shown.contains_key(&**key) {
+                continue;
+            }
+            let row = match view.row(&source.list, index) {
+                Ok(Some(row)) => row.clone(),
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::warn!(%error, "a row of the list did not render");
+                    continue;
+                }
+            };
+            if let Some(data) = source.data(&view, &row) {
+                shown.insert(key.to_string(), data);
+            }
         }
     }
-    for (index, row) in new.iter().enumerate() {
-        if order.get(index) == Some(&row.key.as_str()) {
-            continue;
-        }
-        if let Some(from) = order.iter().position(|key| *key == row.key) {
-            let key = order.remove(from);
-            order.insert(index, key);
-            out.push(ListModelChange::RowsMoved {
-                from,
-                to: index,
-                count: 1,
-            });
-        } else {
-            order.insert(index, row.key.as_str());
-            out.push(ListModelChange::RowsInserted { index, count: 1 });
-        }
+
+    fn label(&self, index: usize) -> Option<String> {
+        let key = self.keys.get(index)?;
+        let shown = self.shown.borrow();
+        let data = shown.get(&**key)?;
+        Some(
+            data.row
+                .as_ref()
+                .and_then(|node| text(node, "title"))
+                .unwrap_or_else(|| data.label.clone()),
+        )
     }
-    let before: HashMap<&str, &RowData> = old.iter().map(|row| (row.key.as_str(), row)).collect();
-    let changed: Vec<String> = new
-        .iter()
-        .filter(|row| before.get(row.key.as_str()).is_some_and(|was| *was != *row))
-        .map(|row| row.key.clone())
-        .collect();
-    if !changed.is_empty() {
-        out.push(ListModelChange::RowsChanged { keys: changed });
-    }
-    out
 }
 
 fn text(node: &UiNode, name: &str) -> Option<String> {
@@ -262,7 +484,7 @@ fn row_menu(list: &dyn Widget, at: Option<Point>, requests: &Requests) -> Vec<Me
         .iter()
         .map(|action| {
             let requests = Rc::clone(requests);
-            let invoke = invoke_request(data, action);
+            let invoke = invoke_request(&data, action);
             let run = move || requests.borrow_mut().push(invoke.clone());
             let entry = if action.destructive {
                 MenuEntry::destructive(action.label.clone(), run)
@@ -310,11 +532,15 @@ pub struct ListPane {
     requests: Requests,
     sink: EventSink,
     body: Body,
-    pub(crate) rows: Vec<RowData>,
+    /// The rows while the list is empty: the empty state shows instead of the list, and the
+    /// list is built with them when the first row comes.
+    waiting: Option<Rows>,
     pub(crate) empty: Empty,
     name: String,
     /// The item shown in the next column.
     pub(crate) selected: Option<String>,
+    /// Whether the rows are to be read anew.
+    stale: bool,
     structure_dirty: bool,
 }
 
@@ -325,10 +551,11 @@ impl ListPane {
             requests: Rc::clone(requests),
             sink: Rc::clone(sink),
             body: Body::Empty(Box::new(EmptyState::new(""))),
-            rows: Vec::new(),
+            waiting: Some(Rows::default()),
             empty: Empty::default(),
             name,
             selected: None,
+            stale: false,
             structure_dirty: true,
         }
     }
@@ -338,26 +565,25 @@ impl ListPane {
         let sink = Rc::clone(&self.sink);
         let selecting = Rc::clone(&self.requests);
         let activating = Rc::clone(&self.requests);
-        let list =
-            VirtualList::with_selection_delegate(rows, 56.0, move |rows, index, key, _, _| {
-                rows.row(index).map_or_else(
-                    || Box::new(ListRow::new(key.clone(), "")) as Element,
-                    |data| row(data, &requests, &sink),
-                )
-            })
-            .filling()
-            .selection_follows_focus()
-            // Moving through the list shows the item without bringing it to the front of a narrow
-            // window; activating it does.
-            .on_select(move |key, selected| {
-                if selected {
-                    selecting.borrow_mut().push(Request::Select(key));
-                }
-            })
-            .on_activate(move |key| activating.borrow_mut().push(Request::Activate(key)))
-            .with_id("tilolang.list")
-            .with_accessible_name(self.name.clone())
-            .with_semantic_key(Clone::clone);
+        let list = VirtualList::with_selection_delegate(rows, 56.0, move |rows, _, key, _, _| {
+            rows.find(key).map_or_else(
+                || Box::new(ListRow::new(key.clone(), "")) as Element,
+                |data| row(&data, &requests, &sink),
+            )
+        })
+        .filling()
+        .selection_follows_focus()
+        // Moving through the list shows the item without bringing it to the front of a narrow
+        // window; activating it does.
+        .on_select(move |key, selected| {
+            if selected {
+                selecting.borrow_mut().push(Request::Select(key));
+            }
+        })
+        .on_activate(move |key| activating.borrow_mut().push(Request::Activate(key)))
+        .with_id("tilolang.list")
+        .with_accessible_name(self.name.clone())
+        .with_semantic_key(Clone::clone);
         let menu = Rc::clone(&self.requests);
         ContextMenuArea::over_content(Box::new(list), move |list, at| row_menu(list, at, &menu))
     }
@@ -372,6 +598,22 @@ impl ListPane {
             .and_then(|list| list.downcast_mut::<VirtualList<Rows>>())
     }
 
+    fn virtual_list_ref(&self) -> Option<&VirtualList<Rows>> {
+        let Body::List(area) = &self.body else {
+            return None;
+        };
+        area.content()
+            .as_any()
+            .and_then(|list| list.downcast_ref::<VirtualList<Rows>>())
+    }
+
+    /// The rows, wherever they are.
+    fn rows(&self) -> Option<&Rows> {
+        self.virtual_list_ref()
+            .map(VirtualList::model)
+            .or(self.waiting.as_ref())
+    }
+
     fn empty_state(empty: &Empty) -> EmptyState {
         let state = EmptyState::new(empty.sentence.clone());
         let state = match empty.icon {
@@ -384,29 +626,121 @@ impl ListPane {
         }
     }
 
-    /// Show `rows`, or `empty` when there are none.
-    pub fn show(&mut self, rows: Vec<RowData>, empty: Empty) {
+    /// Show the rows of `source`'s list, unless they are already the ones shown.
+    pub fn read(&mut self, source: &Rc<RowSource>) {
+        if !self.stale && self.rows().is_some_and(|rows| rows.reads(source)) {
+            return;
+        }
+        self.stale = false;
+        self.show(Rows::of(Rc::clone(source)));
+    }
+
+    /// Read the rows anew at the next [`Self::read`]: the view replaced its list as a whole.
+    pub fn forget(&mut self) {
+        self.stale = true;
+    }
+
+    /// Show `rows`: the list, or the empty state when there are none.
+    fn show(&mut self, rows: Rows) {
         if rows.is_empty() {
-            let rebuild = !matches!(self.body, Body::Empty(_)) || self.empty != empty;
-            if rebuild {
-                self.body = Body::Empty(Box::new(Self::empty_state(&empty)));
-                self.structure_dirty = true;
-            }
-        } else if matches!(self.body, Body::List(_)) {
-            let changes = changes(&self.rows, &rows);
-            if !changes.is_empty() {
-                let next = Rows::new(rows.clone());
-                if let Some(list) = self.virtual_list() {
-                    list.update_model_changes(&changes, move |model| *model = next);
-                }
-            }
+            self.body = Body::Empty(Box::new(Self::empty_state(&self.empty)));
+            self.waiting = Some(rows);
         } else {
-            self.body = Body::List(Box::new(self.list(Rows::new(rows.clone()))));
-            self.structure_dirty = true;
+            self.body = Body::List(Box::new(self.list(rows)));
+            self.waiting = None;
             self.select_shown();
         }
-        self.rows = rows;
+        self.structure_dirty = true;
+    }
+
+    /// What the list says when it has no rows.
+    pub fn set_empty(&mut self, empty: Empty) {
+        if self.empty == empty {
+            return;
+        }
+        if let Body::Empty(_) = self.body {
+            self.body = Body::Empty(Box::new(Self::empty_state(&empty)));
+            self.structure_dirty = true;
+        }
         self.empty = empty;
+    }
+
+    /// The view inserted, removed or moved rows of the list (`structure`, in order) and changed
+    /// the rows of `rows` (by key).
+    pub fn changed(&mut self, structure: &[Patch], rows: Vec<String>) {
+        if let Some(mut rows) = self.waiting.take() {
+            rows.apply(structure);
+            if rows.is_empty() {
+                self.waiting = Some(rows);
+            } else {
+                self.show(rows);
+            }
+            return;
+        }
+        let Some(list) = self.virtual_list() else {
+            return;
+        };
+        if !structure.is_empty() {
+            // The changes are only known once applied, so the model applies them on a copy of
+            // its order first.
+            let mut keys = list.model().keys.clone();
+            let changes = apply_keys(&mut keys, structure);
+            list.update_model_changes(&changes, |rows| {
+                rows.apply(structure);
+            });
+        }
+        let refreshed = list.model().refresh(rows);
+        if !refreshed.is_empty() {
+            list.invalidate_rows(refreshed);
+        }
+        if list.model().is_empty() {
+            let rows = list.update_model(std::mem::take);
+            self.show(rows);
+        }
+    }
+
+    /// Read every shown row again, after what they show of the room moved: a bound checkbox's
+    /// field, who is at an item, a participant's name.
+    pub fn refresh_shown(&mut self) {
+        if let Some(list) = self.virtual_list() {
+            let refreshed = list.model().refresh_shown();
+            if !refreshed.is_empty() {
+                list.invalidate_rows(refreshed);
+            }
+        }
+    }
+
+    /// The row of `key`, when the list shows it.
+    #[must_use]
+    pub fn find(&self, key: &str) -> Option<RowData> {
+        self.rows().and_then(|rows| rows.find(key))
+    }
+
+    /// The row of the item `target`, shown or not.
+    #[must_use]
+    pub fn key_of(&self, target: &ResourceRef) -> Option<String> {
+        self.rows().and_then(|rows| rows.key_of(target))
+    }
+
+    /// How many rows the list has.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows().map_or(0, ListModel::len)
+    }
+
+    /// The rows the list shows, in order.
+    #[cfg(test)]
+    #[must_use]
+    pub fn shown(&self) -> Vec<RowData> {
+        self.rows().map(Rows::shown).unwrap_or_default()
+    }
+
+    /// Show the rows of `range`, as the list does when they scroll into view.
+    #[cfg(test)]
+    pub fn show_rows(&mut self, range: Range<usize>) {
+        if let Some(list) = self.virtual_list() {
+            list.update_model(|rows| rows.request_range(range));
+        }
     }
 
     /// Show `key` as the selected row: the item the next column shows.
@@ -446,6 +780,18 @@ impl ListPane {
     }
 }
 
+/// `structure` applied to `keys`: the changes the list widget takes, as [`Rows::apply`] makes
+/// them.
+fn apply_keys(keys: &mut Vec<Rc<str>>, structure: &[Patch]) -> Vec<ListModelChange<String>> {
+    let mut rows = Rows {
+        keys: std::mem::take(keys),
+        ..Rows::default()
+    };
+    let changes = rows.apply(structure);
+    *keys = rows.keys;
+    changes
+}
+
 impl Decorator for ListPane {
     type Inner = dyn Widget;
 
@@ -474,6 +820,14 @@ impl Decorator for ListPane {
         self.inner_mut().take_structure_dirty() | own
     }
 
+    /// A body swapped (the list for the empty state) is a rebuild; anything else is what the
+    /// body says of itself, so rows a scroll mounts stay described.
+    fn take_structure_change(&mut self) -> StructureChange {
+        let own = std::mem::take(&mut self.structure_dirty);
+        let inner = self.inner_mut().take_structure_change();
+        if own { StructureChange::Rebuild } else { inner }
+    }
+
     fn name(&self) -> &'static str {
         "TilolangList"
     }
@@ -498,13 +852,24 @@ mod tests {
         }
     }
 
-    /// Replay `changes` on the keys of `old`, as the list applies them.
+    fn node(key: &str) -> UiNode {
+        UiNode {
+            kind: "fragment".to_owned(),
+            key: key.to_owned(),
+            props: std::collections::BTreeMap::new(),
+            binding: None,
+            events: std::collections::BTreeMap::new(),
+            anchor: None,
+            children: Vec::new(),
+        }
+    }
+
+    /// Replay `changes` on `keys`, as the list applies them.
     fn replay(
-        old: &[RowData],
-        new: &[RowData],
+        mut keys: Vec<String>,
+        new: &[String],
         changes: &[ListModelChange<String>],
     ) -> Vec<String> {
-        let mut keys: Vec<String> = old.iter().map(|row| row.key.clone()).collect();
         for change in changes {
             match change {
                 ListModelChange::RowsRemoved { index, count } => {
@@ -513,7 +878,7 @@ mod tests {
                     }
                 }
                 ListModelChange::RowsInserted { index, .. } => {
-                    keys.insert(*index, new[*index].key.clone());
+                    keys.insert(*index, new[*index].clone());
                 }
                 ListModelChange::RowsMoved { from, to, .. } => {
                     let key = keys.remove(*from);
@@ -526,28 +891,38 @@ mod tests {
     }
 
     #[test]
-    fn the_changes_of_a_list_turn_the_old_rows_into_the_new_ones() {
-        let old = vec![
-            data("a", "A"),
-            data("b", "B"),
-            data("c", "C"),
-            data("d", "D"),
-        ];
-        let new = vec![
-            data("n", "N"),
-            data("c", "C"),
-            data("a", "A2"),
-            data("d", "D"),
-        ];
-        let changes = changes(&old, &new);
-        assert_eq!(
-            replay(&old, &new, &changes),
-            vec!["n", "c", "a", "d"],
-            "{changes:?}"
-        );
-        assert!(changes.contains(&ListModelChange::RowsChanged {
-            keys: vec!["a".to_owned()]
-        }));
+    fn the_views_patches_of_a_list_are_the_changes_of_its_rows() {
+        let keys =
+            |list: &[&str]| -> Vec<String> { list.iter().map(|k| (*k).to_owned()).collect() };
+        let shared = |list: &[String]| -> Vec<Rc<str>> {
+            list.iter().map(|k| Rc::from(k.as_str())).collect()
+        };
+        let old = keys(&["a", "b", "c", "d"]);
+        let mut rows = Rows {
+            keys: shared(&old),
+            ..Rows::default()
+        };
+        let parent = vec!["list".to_owned()];
+        let changes = rows.apply(&[
+            Patch::Remove {
+                parent: parent.clone(),
+                key: "b".to_owned(),
+            },
+            Patch::Insert {
+                parent: parent.clone(),
+                index: 0,
+                node: node("n"),
+            },
+            Patch::Move {
+                parent,
+                key: "c".to_owned(),
+                to: 1,
+            },
+        ]);
+        let new = keys(&["n", "c", "a", "d"]);
+        assert_eq!(rows.keys, shared(&new));
+        assert_eq!(replay(old, &new, &changes), new, "{changes:?}");
+        assert_eq!(rows.index_of(&"a".to_owned()), Some(2));
     }
 
     fn action(label: &str, destructive: bool) -> RowAction {
@@ -586,7 +961,7 @@ mod tests {
         );
 
         let mut pane = ListPane::new(&requests, &sink, "Notes".to_owned());
-        pane.show(rows, Empty::default());
+        pane.show(Rows::new(rows));
         assert!(pane.virtual_list().expect("rows").reveal(&"b".to_owned()));
         let Body::List(area) = &mut pane.body else {
             panic!("rows show a list");
@@ -613,8 +988,34 @@ mod tests {
     }
 
     #[test]
-    fn an_unchanged_list_has_no_changes() {
-        let rows = vec![data("a", "A"), data("b", "B")];
-        assert!(changes(&rows, &rows).is_empty());
+    fn a_list_whose_last_row_goes_shows_its_empty_state() {
+        let requests: Requests = Rc::default();
+        let sink: EventSink = Rc::default();
+        let mut pane = ListPane::new(&requests, &sink, "Notes".to_owned());
+        pane.show(Rows::new(vec![data("a", "A")]));
+        assert!(matches!(pane.body, Body::List(_)));
+        Decorator::take_structure_change(&mut pane);
+        pane.changed(
+            &[Patch::Remove {
+                parent: vec!["list".to_owned()],
+                key: "a".to_owned(),
+            }],
+            Vec::new(),
+        );
+        assert!(matches!(pane.body, Body::Empty(_)));
+        assert_eq!(
+            Decorator::take_structure_change(&mut pane),
+            StructureChange::Rebuild
+        );
+        pane.changed(
+            &[Patch::Insert {
+                parent: vec!["list".to_owned()],
+                index: 0,
+                node: node("b"),
+            }],
+            Vec::new(),
+        );
+        assert!(matches!(pane.body, Body::List(_)));
+        assert_eq!(pane.len(), 1);
     }
 }

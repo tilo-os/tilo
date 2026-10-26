@@ -87,15 +87,15 @@ impl Room {
         self.window.update(&self.doc, &root);
     }
 
-    fn resources(&self) -> Vec<ui::tilo_actions::Resource> {
-        crate::resource::published(&self.window.current_host().expect("the host started"))
+    fn resources() -> Vec<ui::tilo_actions::Resource> {
+        crate::resource::published()
     }
 
     /// Hand every pending invocation to the door and apply what it builds.
     fn door(&mut self) {
         while let Some((invocation, origin)) = self.window.take_attributed_control_invocation() {
             let invoker = origin.map_or_else(|| ActionInvoker::actor("ada".to_owned()), |_| task());
-            let resources = self.resources();
+            let resources = Self::resources();
             let result = (|| -> Result<(), String> {
                 let address = ui::tilo_actions::door::published(
                     &resources,
@@ -137,8 +137,8 @@ impl Room {
         self.frame();
     }
 
-    fn surveyed(&self) -> Vec<ui::tilo_actions::door::ActionDescriptor> {
-        ui::tilo_actions::door::survey(&self.resources())
+    fn surveyed() -> Vec<ui::tilo_actions::door::ActionDescriptor> {
+        ui::tilo_actions::door::survey(&Self::resources())
     }
 
     fn agent_invokes(
@@ -159,13 +159,12 @@ impl Room {
         arguments: &Json,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
         use ui::framework::{Effected, HostDelivery as _};
-        let descriptor = self
-            .surveyed()
+        let descriptor = Self::surveyed()
             .into_iter()
             .find(|d| d.address.resource == resource && d.address.action == action)
             .ok_or_else(|| format!("{resource}/{action} is not published"))?;
         let encoded = ui::tilo_actions::door::encode_json(
-            &self.resources(),
+            &Self::resources(),
             &descriptor.address,
             &arguments.as_object().cloned().unwrap_or_default(),
         )
@@ -196,7 +195,7 @@ impl Room {
         action: &str,
         arguments: &Json,
     ) -> Result<(), String> {
-        let resources = self.resources();
+        let resources = Self::resources();
         let address = ui::tilo_actions::door::published(&resources, resource, action)
             .ok_or_else(|| format!("{resource}/{action} is not published"))?;
         let invoker = who
@@ -241,10 +240,16 @@ impl Room {
         shell.content_mut::<ListPane>().expect("a list column")
     }
 
+    /// The rows of the list, every one shown, as a list tall enough for all of them shows them.
+    fn shown(&mut self) -> Vec<RowData> {
+        let list = self.list();
+        list.show_rows(0..list.len());
+        list.shown()
+    }
+
     /// The keys and titles of the rows the list shows.
     fn rows(&mut self) -> Vec<(String, String)> {
-        self.list()
-            .rows
+        self.shown()
             .iter()
             .map(|row| {
                 let title = row
@@ -368,11 +373,7 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
     let mut room = Room::seeded("notes");
     let (key, title) = room.rows().remove(0);
     room.ask(Request::Activate(key.clone()));
-    let detail = room
-        .window
-        .detail_tree()
-        .expect("the note is shown")
-        .clone();
+    let detail = room.window.detail_tree().expect("the note is shown");
     assert!(
         first_input(&detail).is_some(),
         "the note's editor: {detail:#?}"
@@ -426,7 +427,7 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
         "the action inserted a note"
     );
     assert_eq!(room.rows().len(), 1);
-    let made = room.list().rows[0].item.clone();
+    let made = room.shown()[0].item.clone();
     assert_eq!(
         room.window.detail_target(),
         Some(&made),
@@ -442,7 +443,7 @@ fn a_filter_case_from_the_sidebar_narrows_the_list_and_titles_it() {
         .window
         .root
         .as_ref()
-        .map(|lane| frame_of(&lane.tree).unwrap().key.clone())
+        .and_then(|lane| lane.list.clone())
         .unwrap();
     room.ask(Request::Fire {
         key,
@@ -464,13 +465,7 @@ fn a_destructive_row_action_runs_through_the_door_and_offers_undo() {
     let mut room = Room::seeded("notes");
     let before = room.rows().len();
     let key = room.rows()[0].0.clone();
-    let row = room
-        .list()
-        .rows
-        .iter()
-        .find(|row| row.key == key)
-        .cloned()
-        .unwrap();
+    let row = room.shown().into_iter().find(|row| row.key == key).unwrap();
     let delete = row
         .actions
         .iter()
@@ -531,8 +526,9 @@ fn every_package_opens_into_one_frame_of_the_native_shell() {
 
 #[test]
 fn the_published_tree_has_the_host_and_every_record() {
-    let room = Room::seeded("notes");
-    let resources = room.resources();
+    // The live window publishes its room while it lives.
+    let _room = Room::seeded("notes");
+    let resources = Room::resources();
     let kinds: Vec<&str> = resources.iter().map(|r| r.kind.as_str()).collect();
     assert!(kinds.contains(&"tl.host"), "{kinds:?}");
     assert!(
@@ -546,8 +542,7 @@ fn the_published_tree_has_the_host_and_every_record() {
 #[test]
 fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
     let mut room = Room::seeded("letters");
-    let host_actions: Vec<String> = room
-        .surveyed()
+    let host_actions: Vec<String> = Room::surveyed()
         .into_iter()
         .filter(|d| d.address.resource == HOST)
         .map(|d| d.address.action)
@@ -555,7 +550,7 @@ fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
     for wanted in ["run-block", "run-flow", "catalogue"] {
         assert!(host_actions.iter().any(|a| a == wanted), "{host_actions:?}");
     }
-    let resources = room.resources();
+    let resources = Room::resources();
     let violations = ui::tilo_actions::validate_surface(
         &resources,
         &ActionRegistry::with(register_actions),
@@ -590,7 +585,7 @@ fn a_view_block_a_value_block_and_a_bad_block_answer_an_agent() {
 #[test]
 fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
     let mut room = Room::seeded("notes");
-    let survey = room.surveyed();
+    let survey = Room::surveyed();
     let pin = survey
         .iter()
         .find(|d| d.resource_kind == "tl.so.tilo.lang.notes.Note" && d.action_label == "Pin")
@@ -607,8 +602,7 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
 
     // A draft's send reaches outside: asked of an agent, it is recorded as a suggestion.
     let mut desk = Room::seeded("letters");
-    let send = desk
-        .surveyed()
+    let send = Room::surveyed()
         .into_iter()
         .find(|d| d.resource_kind == "tl.so.tilo.lang.letters.Draft" && d.action_label == "Send")
         .expect("a draft publishes its send");
@@ -707,7 +701,7 @@ fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
     let host = room.window.current_host().unwrap();
     let to = crate::reconcile::display(&host.runtime().read(&draft, "to").unwrap());
     let send = node_with(
-        room.window.detail_tree().unwrap(),
+        &room.window.detail_tree().unwrap(),
         "button",
         "label",
         "Send",
@@ -890,8 +884,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
 #[test]
 fn search_finds_chat_messages_and_a_hit_opens_their_conversation() {
     let mut room = Room::seeded("chat");
-    let host = room.window.current_host().unwrap();
-    let entries = crate::resource::search_entries(&host);
+    let entries = crate::resource::search_entries();
     let hit = entries
         .iter()
         .find(|entry| entry.title.contains("meet at the station"))
@@ -919,8 +912,7 @@ fn search_finds_chat_messages_and_a_hit_opens_their_conversation() {
 #[test]
 fn search_entries_find_notes_and_open_the_window_at_the_note() {
     let mut room = Room::seeded("notes");
-    let host = room.window.current_host().unwrap();
-    let entries = crate::resource::search_entries(&host);
+    let entries = crate::resource::search_entries();
     assert!(!entries.is_empty());
     let first = &entries[0];
     assert_eq!(first.group.as_deref(), Some("Notes"), "{first:?}");
@@ -944,7 +936,7 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
         "{:?}",
         labels(&offered)
     );
-    let frame = frame_of(room.window.root_tree().unwrap()).unwrap().clone();
+    let frame = frame_of(&room.window.root_tree().unwrap()).unwrap().clone();
     let header = outside(&offered, &frame);
     assert!(
         !labels(&header).contains(&"Increment".to_owned())
@@ -967,7 +959,7 @@ fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
     let room = Room::seeded("board");
     let tree = room.window.root_tree().unwrap();
     let mut cards = Vec::new();
-    walk(tree, &mut cards);
+    walk(&tree, &mut cards);
     assert_eq!(cards.len(), 3, "the todo list, the notebook and the chats");
     assert!(
         room.items_of("so.tilo.lang.todo", "items") >= 12,
@@ -991,11 +983,10 @@ fn a_scenario_that_returns_a_resource_shows_it_beside_the_list() {
     assert_eq!(describe::title_of(&host, &shown), "Q3 plan");
     let selected = room.list().selected.clone();
     let row = room
-        .list()
-        .rows
-        .iter()
+        .shown()
+        .into_iter()
         .find(|row| row.item == shown)
-        .map(|row| row.key.clone());
+        .map(|row| row.key);
     assert_eq!(selected, row, "and its row is the selected one");
 }
 
@@ -1014,9 +1005,58 @@ fn a_document_that_edits_its_title_shows_it_as_its_own_and_the_header_does_not_r
         "the note's title is its own, not the header's"
     );
     let host = room.window.current_host().unwrap();
-    let mut page = content_page(room.window.detail_tree().and_then(frame_of).unwrap());
+    let tree = room.window.detail_tree().unwrap();
+    let mut page = content_page(frame_of(&tree).unwrap());
     assert!(
         mark_field_roles(&host, &mut page),
         "the editor binds the title"
     );
+}
+
+#[test]
+fn the_list_renders_only_the_rows_it_shows() {
+    let mut room = Room::seeded("notes");
+    let rendered = |room: &Room| -> Vec<String> {
+        let tree = room.window.root_tree().unwrap();
+        frame_of(&tree)
+            .unwrap()
+            .children
+            .iter()
+            .filter(|row| !row.children.is_empty())
+            .map(|row| row.key.clone())
+            .collect()
+    };
+    let len = room.list().len();
+    let first = rendered(&room);
+    assert!(
+        !first.is_empty() && first.len() < len,
+        "the list asked for the rows it shows, {} of {len}",
+        first.len()
+    );
+    room.list().show_rows(len - 2..len);
+    let shown: Vec<String> = room.list().shown().into_iter().map(|row| row.key).collect();
+    assert_eq!(
+        rendered(&room),
+        shown,
+        "the rows scrolled away are forgotten"
+    );
+    assert_eq!(shown.len(), 2);
+}
+
+#[test]
+fn a_change_to_an_item_reaches_its_shown_row() {
+    let mut room = Room::seeded("notes");
+    let (key, _) = room.rows().remove(0);
+    room.ask(Request::Activate(key.clone()));
+    let detail = room.window.detail_tree().expect("the note is shown");
+    let input = first_input(&detail).expect("the note's title").key.clone();
+    room.window
+        .act(true, UiEvent::Edit(input, "Renamed".to_owned()));
+    room.settle();
+    let title = room
+        .list()
+        .find(&key)
+        .and_then(|row| row.row)
+        .and_then(|row| row.props.get("title").map(crate::reconcile::display));
+    assert_eq!(title.as_deref(), Some("Renamed"));
 }

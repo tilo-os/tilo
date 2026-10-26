@@ -36,8 +36,8 @@ use crate::flow::Journal;
 use crate::ids::{DocId, FieldId, RunId, TypeId};
 use crate::meta::FieldKind;
 use crate::store::{
-    Applied, ChangeNote, ChangeSummary, FieldSpec, FieldValue, Mutation, NewRecord, OutboxEntry,
-    Scalar, Store, StoreError, SubId, Txn,
+    Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Mutation, NewRecord,
+    OutboxEntry, Scalar, Store, StoreError, SubId, Txn,
 };
 use crate::textdiff;
 use crate::value::ResourceRef;
@@ -65,7 +65,7 @@ struct Subscription {
 
 #[derive(Default)]
 struct TxnState {
-    touched: BTreeMap<DocId, BTreeSet<FieldId>>,
+    touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
 }
 
 struct Inner {
@@ -627,7 +627,7 @@ impl Store for AmStore {
             .get_mut(&txn.0)
             .map(|t| t.touched.entry(at.doc.clone()).or_default());
         if let (Some(set), Some(field)) = (fields, field_of(m)) {
-            set.insert(field.clone());
+            set.insert(FieldKey::new(at, field.clone()));
         }
         inner.apply_mutation(at, m)
     }
