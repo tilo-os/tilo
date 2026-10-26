@@ -93,6 +93,7 @@ pub mod resource;
 mod share_grants;
 mod shared_resources;
 mod sidebar;
+mod timeline;
 pub mod transcript;
 mod window_bar;
 

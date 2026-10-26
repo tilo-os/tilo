@@ -943,6 +943,11 @@ pub struct ChatApp {
     /// Where each message shown last frame drew its own texts, by message
     /// id: what its accessible row's children are read and picked by.
     pub(crate) painted_messages: HashMap<Id, PaintedMessage>,
+    /// The conversation's rows, measured and painted, kept between frames.
+    pub(crate) timeline: std::cell::RefCell<crate::timeline::Timeline>,
+    /// Counts each load of [`Self::messages`], so what is kept of them knows
+    /// when to look again.
+    pub(crate) messages_revision: u64,
     /// A video call was started: the camera turns on once the call is live.
     pub(crate) camera_on_live: bool,
 
@@ -1217,6 +1222,8 @@ impl ChatApp {
             call_pictures: ui::call_pictures::CallPictures::new(),
             picture_tiles: std::cell::RefCell::new(Vec::new()),
             painted_messages: HashMap::new(),
+            timeline: std::cell::RefCell::default(),
+            messages_revision: 0,
             camera_on_live: false,
             media_error: None,
             canonical_dirty: true,
@@ -3116,6 +3123,7 @@ impl ChatApp {
             .map(|channel| (channel.id.clone(), chat.message_rows(&held, &channel.id)))
             .collect();
         self.note_mentions(&per_channel);
+        self.messages_revision += 1;
         self.messages = per_channel
             .iter()
             .find(|(id, _)| *id == self.active_channel)
