@@ -1019,10 +1019,10 @@ rule, and two physical backings:
   `(record, first..last sequence, digest of the envelopes)`) and written with it
   in one redb transaction. File history is derived from these signed
   `AppendVersion`, `AppendConflict` and `ResolveConflict` operations; its query
-  index is rebuilt from the log and its checkpoint names the log digest. The
-  namespace that places its records is persisted after the record write. After
-  a crash either the whole changeset is in the log or none of it, and the epoch
-  is captured again.
+  index is rebuilt from those accepted operations whenever a mount opens, and
+  it keeps no second persistent copy. The namespace that places its records is
+  persisted after the record write. After a crash either the whole changeset
+  is in the log or none of it, and the epoch is captured again.
 - Peers see nothing of a changeset before it is durable: its namespace deltas
   are broadcast afterwards, and every namespace exchange (both directions, both
   protocols) waits on the repository's publication gate while a changeset is
@@ -2050,9 +2050,9 @@ One `HistorySource` over every record kind. [R5, R6]
   (`docs/history-experience.md`).
 - **One store.** File history is the signed record operation log itself. The
   former global JSON file (`history.rs`) is read only as a legacy import; the
-  live query index is derived and its checkpoint is a cache keyed by the
-  signed-log digest. Other record kinds keep their own signed change history in
-  the same derived index.
+  live query index is derived from the signed log on open and keeps no
+  persistent cache of its own. Other record kinds keep their own signed change
+  history in the same derived index.
 - **Retention.** Per room, with a person override:
   - keep every version for 24 h;
   - then hourly for 7 days;

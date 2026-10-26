@@ -1118,6 +1118,102 @@ fn synced_files_and_renames_survive_a_daemon_crash() {
     restarted.stop();
 }
 
+/// A replacement rename committed through the coordinator is durable in the
+/// signed record log. Killing the daemon after the rename is acknowledged
+/// leaves no history query cache; each restart state (missing, corrupt, stale
+/// old cache) must rebuild the same namespace and history from the log alone.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_committed_transaction_rebuilds_history_without_a_query_cache() {
+    if std::env::var("TILO_FS_FUSE_REQUIRED").as_deref() != Ok("1") {
+        eprintln!(
+            "skipping the transaction history-cache restart outside the dedicated mandatory FUSE job"
+        );
+        return;
+    }
+    let solo = SoloHost::new();
+    let mount = &solo.mount;
+    let mut host = solo.start();
+    let source = mount.join("source.bin");
+    let destination = mount.join("destination.bin");
+    std::fs::write(&source, b"source bytes through the coordinator").unwrap();
+    std::fs::write(&destination, b"victim bytes").unwrap();
+    let source_id = get_xattr(&source, fs_protocol::RECORD_ID_XATTR).unwrap();
+    let victim_id = get_xattr(&destination, fs_protocol::RECORD_ID_XATTR).unwrap();
+    assert_ne!(source_id, victim_id);
+
+    // A POSIX replacement rename is one signed transaction: the source gets
+    // its rename version and the destination its tombstone before the mount
+    // acknowledges the rename.
+    std::fs::rename(&source, &destination).unwrap();
+    assert!(!source.exists());
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"source bytes through the coordinator"
+    );
+    let committed_history = || -> Option<(Vec<u8>, u64)> {
+        let record_id = get_xattr(&destination, fs_protocol::RECORD_ID_XATTR).ok()?;
+        let history = fs_protocol::HistoryProjectionV1::parse_xattr(
+            &get_xattr(&destination, fs_protocol::HISTORY_XATTR).ok()?,
+        )
+        .ok()?;
+        (record_id == source_id).then_some((record_id, history.total_versions))
+    };
+    let (_, committed_versions) = wait_for_process(
+        &mut host,
+        "the replacement transaction's derived history",
+        &committed_history,
+    );
+    assert!(
+        committed_versions >= 2,
+        "the rename must be in the derived history, not only the namespace"
+    );
+    let before = show_tree(mount);
+
+    signal(&host, libc::SIGKILL);
+    tilo_test_env::wait_for("the daemon to die after the committed transaction", || {
+        host.child.try_wait().unwrap()
+    });
+    host.stop();
+
+    let cache = solo.cache.join("file-history.index.json");
+    let stale = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1,
+        "workspace_id": uuid::Uuid::nil(),
+        "source_digest": vec![0_u8; 32],
+        "document": {"schema_version": 1, "records": []},
+    }))
+    .unwrap();
+    for state in ["missing", "corrupt", "stale"] {
+        match state {
+            "missing" => {
+                if cache.exists() {
+                    std::fs::remove_file(&cache).unwrap();
+                }
+            }
+            "stale" => std::fs::write(&cache, &stale).unwrap(),
+            _ => std::fs::write(&cache, b"{\"truncated\":").unwrap(),
+        }
+        let mut restarted = solo.start();
+        let (_, rebuilt_versions) = wait_for_process(
+            &mut restarted,
+            "the restarted transaction history",
+            &committed_history,
+        );
+        let after = show_tree(mount);
+        let output = restarted.logs.lock().unwrap().join("\n");
+        assert_eq!(
+            rebuilt_versions, committed_versions,
+            "the {state} cache must not change the history rebuilt from the signed log:\n{output}"
+        );
+        assert_eq!(
+            after, before,
+            "the {state} cache must not change the acknowledged tree:\n{output}"
+        );
+        restarted.stop();
+    }
+}
+
 /// Voluntary wakeups per second an idle `fs serve` may make across all of
 /// its threads. An idle thread blocks once and stays blocked, so
 /// each voluntary switch is a timer or a poll that fired. Preemptions are

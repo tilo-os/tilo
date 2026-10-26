@@ -5,8 +5,8 @@
 //! [`crate::record_repository`]. It owns no durable authority of its own: the
 //! signed `AppendVersion`, `AppendConflict` and `ResolveConflict` operations
 //! are the history, and every accepted projection is folded into this index.
-//! The index is rebuilt from the repository on open, with an optional
-//! checkpoint cache keyed by the log digest. Both rebuild and fold validate
+//! The index is rebuilt from the repository's verified projections on open;
+//! it keeps no persistent copy of its own. Both rebuild and fold validate
 //! ancestry, immutable identity and conflict references, so corrupt or
 //! cross-record projections cannot become an eviction or restore root.
 
@@ -28,7 +28,6 @@ use uuid::Uuid;
 mod read_query;
 
 const HISTORY_SCHEMA_VERSION: u16 = 1;
-const HISTORY_CHECKPOINT_SCHEMA_VERSION: u16 = 1;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HistoryDocument {
@@ -52,24 +51,12 @@ struct RecordState {
     conflicts: BTreeMap<Uuid, FileConflictV1>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct HistoryState {
     records: BTreeMap<FileRecordId, RecordState>,
     /// The record owning each version id; ids are unique workspace-wide, so
     /// collision checks are a lookup instead of a scan of every record.
     version_owner: HashMap<FileVersionId, FileRecordId>,
-}
-
-/// A derived-index cache. It is accepted only when it names the exact signed
-/// log digest it was folded from, and every document field is fully
-/// validated again on load.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HistoryCheckpoint {
-    schema_version: u16,
-    workspace_id: Uuid,
-    source_digest: [u8; 32],
-    document: HistoryDocument,
 }
 
 /// One entry in a legacy `history.json.log`, read only for import. Every
@@ -133,13 +120,12 @@ impl RecordHistorySnapshot {
 /// The signed record operation log is the durable source. A legacy
 /// `history.json` (and its `.log`) from an earlier release is read once as a
 /// read-only import for records the signed repository does not know; it is
-/// never written, compacted or treated as authority. The checkpoint beside it
-/// caches this derived state and is ignored unless it names the repository's
-/// current log digest.
+/// never written, compacted or treated as authority. The index has no
+/// persistent cache: a cache from an earlier release is neither read nor
+/// written, so it can never pin or replace accepted history.
 pub struct FileHistoryStore {
-    /// The legacy read-only document path, also the cache's location anchor.
+    /// The legacy read-only document path, also the import anchor.
     legacy_path: Option<PathBuf>,
-    checkpoint_path: Option<PathBuf>,
     state: Mutex<HistoryState>,
     /// Set once this index was replaced by a complete repository fold.
     derived: Mutex<bool>,
@@ -459,37 +445,34 @@ impl FileHistoryStore {
     ///
     /// A `history.json` (and `history.json.log`) written by an earlier
     /// release is imported read-only for records the signed record repository
-    /// does not know. Nothing is written back to it. The checkpoint cache
-    /// lives beside it and is only used once a repository fold names its
-    /// workspace and exact log digest.
+    /// does not know. Nothing is written back to it. No persistent cache is
+    /// read: a checkpoint from an earlier release cannot pin or replace the
+    /// repository's accepted history.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, HistoryError> {
         let legacy_path = path.into();
-        let checkpoint_path = checkpoint_path_for(&legacy_path);
         let state = import_legacy(&legacy_path)?;
         Ok(Self {
             legacy_path: Some(legacy_path),
-            checkpoint_path: Some(checkpoint_path),
             state: Mutex::new(state),
             derived: Mutex::new(false),
         })
     }
 
-    /// A derived index with no legacy import and no checkpoint cache.
+    /// A derived index with no legacy import and no persistent cache.
     #[must_use]
     pub fn in_memory() -> Self {
         Self {
             legacy_path: None,
-            checkpoint_path: None,
             state: Mutex::new(HistoryState::default()),
             derived: Mutex::new(false),
         }
     }
 
     /// Replace this index with the complete history of `workspace_id` as the
-    /// signed repository projects it. A checkpoint is used only when it names
-    /// the exact current log digest; otherwise the index is rebuilt from the
-    /// verified repository projections. Repeat calls are no-ops: later folds
-    /// keep the index current.
+    /// signed repository projects it. The repository is the only source: the
+    /// fold takes one repository lock, clones each record-bound projection
+    /// once and validates it like a live fold. Repeat calls are no-ops: later
+    /// folds keep the index current.
     ///
     /// # Errors
     ///
@@ -509,24 +492,7 @@ impl FileHistoryStore {
                 return Ok(());
             }
         }
-        let digest = repository.history_digest();
-        let state = if let Some(state) = self.load_checkpoint(workspace_id, digest)? {
-            state
-        } else {
-            let state = self.build_from_repository(repository, workspace_id)?;
-            if let Err(error) = self.write_checkpoint(workspace_id, digest, &state) {
-                // The cache is an optimization; the repository rebuild is
-                // complete and authoritative, so a read-only cache dir does
-                // not make this mount unavailable.
-                eprintln!(
-                    "could not write the derived history checkpoint {}: {error}",
-                    self.checkpoint_path
-                        .as_ref()
-                        .map_or_else(String::new, |path| path.display().to_string())
-                );
-            }
-            state
-        };
+        let state = self.build_from_repository(repository, workspace_id)?;
         *self.state.lock().map_err(|_| HistoryError::StatePoisoned)? = state;
         *self
             .derived
@@ -541,12 +507,9 @@ impl FileHistoryStore {
         workspace_id: Uuid,
     ) -> Result<HistoryState, HistoryError> {
         let mut state = HistoryState::default();
-        let keys = repository.reconciliation_keys(workspace_id);
         let mut known = BTreeSet::new();
-        for key in keys {
-            let lease = repository.projection_lease(key)?;
-            install_projection(&mut state, key.record_id, &lease.snapshot)?;
-            drop(lease);
+        for (key, snapshot) in repository.history_projections(workspace_id)? {
+            install_projection(&mut state, key.record_id, &snapshot)?;
             known.insert(key.record_id);
         }
         if let Some(path) = &self.legacy_path {
@@ -559,57 +522,6 @@ impl FileHistoryStore {
             }
         }
         Ok(state)
-    }
-
-    fn load_checkpoint(
-        &self,
-        workspace_id: Uuid,
-        digest: [u8; 32],
-    ) -> Result<Option<HistoryState>, HistoryError> {
-        let Some(path) = &self.checkpoint_path else {
-            return Ok(None);
-        };
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let checkpoint: HistoryCheckpoint = match serde_json::from_slice(&bytes) {
-            Ok(checkpoint) => checkpoint,
-            // A torn cache write is not history damage: the repository fold
-            // replaces it.
-            Err(_) => return Ok(None),
-        };
-        if checkpoint.schema_version != HISTORY_CHECKPOINT_SCHEMA_VERSION
-            || checkpoint.workspace_id != workspace_id
-            || checkpoint.source_digest != digest
-        {
-            return Ok(None);
-        }
-        match document_state(checkpoint.document) {
-            Ok(state) => Ok(Some(state)),
-            Err(_) => Ok(None),
-        }
-    }
-
-    fn write_checkpoint(
-        &self,
-        workspace_id: Uuid,
-        digest: [u8; 32],
-        state: &HistoryState,
-    ) -> Result<(), HistoryError> {
-        let Some(path) = &self.checkpoint_path else {
-            return Ok(());
-        };
-        let checkpoint = HistoryCheckpoint {
-            schema_version: HISTORY_CHECKPOINT_SCHEMA_VERSION,
-            workspace_id,
-            source_digest: digest,
-            document: history_document(state),
-        };
-        let bytes = serde_json::to_vec(&checkpoint)?;
-        tilo_files::native::atomic::write_creating_parent(path, &bytes)?;
-        Ok(())
     }
 
     /// Fold one immutable version into the derived index. Returns `false` for
@@ -816,21 +728,38 @@ fn log_path_for(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// The derived checkpoint cache lies beside the legacy document, never in it:
-/// `history.json` → `history.index.json`.
-fn checkpoint_path_for(path: &Path) -> PathBuf {
-    let mut name = path
-        .file_stem()
-        .map(std::ffi::OsStr::to_os_string)
-        .unwrap_or_default();
-    name.push(".index.json");
-    path.with_file_name(name)
-}
-
-/// Import any legacy document and log read-only. Nothing here writes.
+/// Import any legacy document and log read-only. A damaged primary is
+/// recovered from the newest retained generation that passes the same
+/// document validation, with the damaged bytes preserved as evidence. A
+/// missing document remains empty, and damage with no valid generation keeps
+/// the primary untouched and fails closed.
 fn import_legacy(path: &Path) -> Result<HistoryState, HistoryError> {
     let mut state = match crate::durable_backup::read_primary(path)? {
-        Some(bytes) => decode_document(&bytes)?,
+        Some(bytes) => match decode_document(&bytes) {
+            Ok(state) => state,
+            Err(primary_error) => {
+                let outcome = match crate::durable_backup::read_or_recover(path, |bytes| {
+                    decode_document(bytes).is_ok()
+                }) {
+                    Ok(Some(outcome)) => outcome,
+                    Ok(None) => return Err(primary_error),
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                        return Err(primary_error);
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                if let Some(recovery) = &outcome.recovery {
+                    eprintln!(
+                        "RECOVERED damaged history {} from {}; evidence {}; receipt {}",
+                        path.display(),
+                        recovery.backup_path.display(),
+                        recovery.damaged_evidence_path.display(),
+                        recovery.receipt_path.display()
+                    );
+                }
+                decode_document(&outcome.bytes)?
+            }
+        },
         None => HistoryState::default(),
     };
     replay_legacy_log(&log_path_for(path), &mut state)?;
@@ -907,6 +836,7 @@ fn merge_record(
     Ok(())
 }
 
+#[cfg(test)]
 fn history_document(state: &HistoryState) -> HistoryDocument {
     HistoryDocument {
         schema_version: HISTORY_SCHEMA_VERSION,
@@ -1337,7 +1267,7 @@ mod tests {
     }
 
     #[test]
-    fn checkpointed_query_index_rebuilds_from_the_signed_log_and_keeps_legacy_only_records() {
+    fn derived_query_index_rebuilds_from_the_signed_log_and_keeps_legacy_only_records() {
         let (dir, repository, workspace_id, key, actor, signing_key, versions) =
             repository_with_signed_history();
         let record_id = key.record_id;
@@ -1363,8 +1293,6 @@ mod tests {
             vec![extra],
             "a record the signed repository does not know keeps its legacy read view"
         );
-        let checkpoint = checkpoint_path_for(&path);
-        assert!(checkpoint.exists(), "a complete fold leaves a cache");
         assert_eq!(
             std::fs::read(&path).unwrap(),
             legacy_bytes,
@@ -1374,17 +1302,13 @@ mod tests {
             !log_path_for(&path).exists(),
             "the derived index owns no second history log"
         );
-        let cached: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
-        assert_eq!(cached["schema_version"], 1);
-        assert_eq!(cached["workspace_id"], serde_json::json!(workspace_id));
-        assert_eq!(
-            cached["source_digest"],
-            serde_json::json!(repository.history_digest())
+        assert!(
+            !dir.path().join("history.index.json").exists(),
+            "the derived index owns no persistent cache"
         );
 
-        // A new signed version after the checkpoint is picked up by a fresh
-        // fold; the stale checkpoint cannot pin the index.
+        // A new signed version after the first fold is picked up by the next
+        // fresh fold; no cache can pin the index to the older log.
         let later = signed_version(
             record_id,
             vec![versions[2].id],
@@ -1411,18 +1335,89 @@ mod tests {
             restarted.snapshot(record_id).unwrap().versions.last(),
             Some(&later)
         );
+    }
 
-        // A damaged checkpoint is a cache miss, never history damage: the
-        // signed repository rebuild replaces it.
-        std::fs::write(&checkpoint, b"{\"truncated\":").unwrap();
-        let repaired = FileHistoryStore::open(&path).unwrap();
-        repaired
-            .rebuild_from_repository(&repository, workspace_id)
-            .unwrap();
-        assert_eq!(
-            repaired.snapshot(record_id).unwrap().versions.last(),
-            Some(&later)
+    #[test]
+    fn stale_corrupt_or_missing_query_cache_never_replaces_accepted_history() {
+        let (dir, repository, workspace_id, key, _actor, _signing_key, versions) =
+            repository_with_signed_history();
+        let record_id = key.record_id;
+        let path = dir.path().join("history.json");
+        let cache = dir.path().join("history.index.json");
+        let stale = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "workspace_id": workspace_id,
+            "source_digest": vec![0_u8; 32],
+            "document": history_document(&HistoryState::default()),
+        }))
+        .unwrap();
+
+        for state in ["stale", "corrupt", "missing"] {
+            match state {
+                "stale" => std::fs::write(&cache, &stale).unwrap(),
+                "corrupt" => std::fs::write(&cache, b"{\"truncated\":").unwrap(),
+                "missing" => {
+                    if cache.exists() {
+                        std::fs::remove_file(&cache).unwrap();
+                    }
+                }
+                _ => unreachable!(),
+            }
+            let store = FileHistoryStore::open(&path).unwrap();
+            store
+                .rebuild_from_repository(&repository, workspace_id)
+                .unwrap();
+            let snapshot = store.snapshot(record_id).unwrap();
+            assert_eq!(
+                snapshot.versions, versions,
+                "the {state} cache must not replace accepted history"
+            );
+            assert_eq!(snapshot.conflicts.len(), 1);
+            if state == "stale" {
+                assert_eq!(
+                    std::fs::read(&cache).unwrap(),
+                    stale,
+                    "an old cache file is left untouched evidence, never rewritten"
+                );
+            }
+        }
+        assert!(
+            !cache.exists(),
+            "a missing cache stays absent: the repository fold owns no cache write"
         );
-        assert!(checkpoint.exists());
+    }
+
+    #[test]
+    fn damaged_legacy_document_recovers_its_newest_valid_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let record = FileRecordId::new();
+        let root = version(record, vec![], FileProvenance::Create, 1);
+        let mut first = HistoryState::default();
+        let candidate = stage_versions(&first, std::slice::from_ref(&root)).unwrap();
+        install_versions(&mut first, candidate);
+        let first_bytes = serde_json::to_vec(&history_document(&first)).unwrap();
+        let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
+        let mut second = first.clone();
+        let candidate = stage_versions(&second, std::slice::from_ref(&edit)).unwrap();
+        install_versions(&mut second, candidate);
+        let second_bytes = serde_json::to_vec(&history_document(&second)).unwrap();
+        crate::durable_backup::write(&path, &first_bytes, |bytes| decode_document(bytes).is_ok())
+            .unwrap();
+        crate::durable_backup::write(&path, &second_bytes, |bytes| decode_document(bytes).is_ok())
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), second_bytes);
+
+        // The primary is torn; the newest retained valid generation (the
+        // first document) is recovered with evidence, as before this index
+        // became derived.
+        std::fs::write(&path, b"damaged").unwrap();
+        let store = FileHistoryStore::open(&path).unwrap();
+        assert_eq!(
+            store.snapshot(record).unwrap().versions,
+            vec![root],
+            "the valid legacy backup is recovered, not discarded"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), first_bytes);
     }
 }

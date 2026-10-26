@@ -305,10 +305,6 @@ pub struct RepositoryState {
     /// [`RecordRepository::written_since`] finds what changed since a
     /// reader last looked without snapshotting every record.
     write_generation: std::sync::atomic::AtomicU64,
-    /// A chain over every durable signed envelope in log order. The derived
-    /// history query index names it in its checkpoint, so a cache is accepted
-    /// only for the exact log it was folded from.
-    history_digest: Mutex<[u8; 32]>,
     /// Announces each move of `write_generation`, so an exact-share host can
     /// hold a recipient's change await open instead of being polled
     /// ([`RecordRepository::subscribe_writes`]).
@@ -677,9 +673,7 @@ impl RecordRepository {
             })
             .collect();
         let count = ops.len();
-        let history_digest = history_digest_after(self.history_digest(), &ops)?;
         let first = self.log.append(&ops, changeset.map(AsRef::as_ref))?;
-        *self.history_digest.lock_recover() = history_digest;
         drop(ops);
         let generation = self.next_write_generation();
         let mut next = first;
@@ -713,7 +707,7 @@ impl RecordRepository {
         keys: &[RecordRepositoryKey],
         changeset: Option<&Arc<SignedChangesetV1>>,
     ) -> Result<(), RecordRepositoryError> {
-        let (first, history_digest) = {
+        let first = {
             let ops: Vec<(Uuid, &RecordEnvelopeV1)> = keys
                 .iter()
                 .filter_map(|key| records.get(key).map(|record| (key, record)))
@@ -729,11 +723,8 @@ impl RecordRepository {
             if ops.is_empty() && changeset.is_none() {
                 return Ok(());
             }
-            let history_digest = history_digest_after(self.history_digest(), &ops)?;
-            let first = self.log.append(&ops, changeset.map(AsRef::as_ref))?;
-            (first, history_digest)
+            self.log.append(&ops, changeset.map(AsRef::as_ref))?
         };
-        *self.history_digest.lock_recover() = history_digest;
         let generation = self.next_write_generation();
         let mut next = first;
         for key in keys {
@@ -1087,9 +1078,7 @@ impl RecordRepository {
     fn load(root: PathBuf) -> Result<RepositoryState, RecordRepositoryError> {
         let log = RecordLog::open(&root.join(LOG_FILE))?;
         let mut records = Records::new();
-        let mut history_digest = *blake3::hash(b"tilo.fs.record-history.v1").as_bytes();
         log.replay_ops(|position, workspace_id, envelope| {
-            history_digest = history_digest_step(history_digest, &envelope)?;
             let key = RecordRepositoryKey {
                 workspace_id,
                 record_id: envelope.record_id,
@@ -1129,7 +1118,6 @@ impl RecordRepository {
             gate: tokio::sync::RwLock::new(()),
             max_versions: std::sync::atomic::AtomicUsize::new(MAX_RECORD_VERSIONS),
             write_generation: std::sync::atomic::AtomicU64::new(0),
-            history_digest: Mutex::new(history_digest),
             writes: tokio::sync::watch::Sender::new(0),
             #[cfg(test)]
             concurrent_head_checks: std::sync::atomic::AtomicU64::new(0),
@@ -1186,14 +1174,6 @@ impl RecordRepository {
     /// Returns an error when the log cannot be read.
     pub fn logged_operations(&self) -> Result<u64, RecordRepositoryError> {
         Ok(self.log.op_count()?)
-    }
-
-    /// The exact signed-log digest a derived history checkpoint must name.
-    /// It advances only with a durable envelope append, never with a
-    /// projection or an in-memory change.
-    #[must_use]
-    pub(crate) fn history_digest(&self) -> [u8; 32] {
-        *self.history_digest.lock_recover()
     }
 
     /// Apply an already-signed envelope through the supplied live authorizer,
@@ -1967,6 +1947,23 @@ impl RecordRepository {
             .collect()
     }
 
+    /// Every verified projection of one workspace in one pass. Callers build
+    /// a derived index from this; taking the records lock once keeps a
+    /// startup fold from re-locking per record, and the repository remains
+    /// the only source of the projections.
+    pub(crate) fn history_projections(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<Vec<(RecordRepositoryKey, RecordSnapshot)>, RecordRepositoryError> {
+        let records = self.lock_records()?;
+        records
+            .keys()
+            .copied()
+            .filter(|key| key.workspace_id == workspace_id)
+            .map(|key| Ok((key, projected_snapshot(&records, key, None)?)))
+            .collect()
+    }
+
     /// The current content revision of every record of one workspace that
     /// has one, in one pass and without cloning envelopes.
     pub(crate) fn current_content_revisions(
@@ -2690,29 +2687,6 @@ fn envelope_prefix_digest<'a>(
         digest.update(&bytes);
     }
     Ok(*digest.finalize().as_bytes())
-}
-
-fn history_digest_step(
-    current: [u8; 32],
-    envelope: &RecordEnvelopeV1,
-) -> Result<[u8; 32], RecordRepositoryError> {
-    let bytes = envelope.canonical_bytes()?;
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&current);
-    hasher.update(&(bytes.len() as u64).to_be_bytes());
-    hasher.update(&bytes);
-    Ok(*hasher.finalize().as_bytes())
-}
-
-fn history_digest_after(
-    current: [u8; 32],
-    ops: &[(Uuid, &RecordEnvelopeV1)],
-) -> Result<[u8; 32], RecordRepositoryError> {
-    let mut digest = current;
-    for (_, envelope) in ops {
-        digest = history_digest_step(digest, envelope)?;
-    }
-    Ok(digest)
 }
 
 #[derive(Debug, Error)]
