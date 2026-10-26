@@ -8091,6 +8091,9 @@ fn power_notification_to_incoming(
     crate::notifications::IncomingNotification {
         dbus_id: bridge.alloc_id(),
         app_name: crate::shell::i18n::t("notification-app-power"),
+        app_icon: None,
+        desktop_entry: None,
+        image_data: None,
         summary: n.summary,
         body: n.body,
         actions: Vec::new(),

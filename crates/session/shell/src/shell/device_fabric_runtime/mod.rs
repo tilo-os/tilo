@@ -1906,6 +1906,9 @@ impl DeviceFabricRuntime {
                 .push_incoming(crate::notifications::IncomingNotification {
                     dbus_id: self.notification_bridge.alloc_id(),
                     app_name: crate::shell::i18n::t("device-wake-app-name"),
+                    app_icon: None,
+                    desktop_entry: None,
+                    image_data: None,
                     summary,
                     body,
                     actions: Vec::new(),

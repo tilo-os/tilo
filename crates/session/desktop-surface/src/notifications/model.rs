@@ -206,6 +206,10 @@ pub struct Notification {
     /// Sending application's display name; rendered as a caption above the
     /// title when present.
     pub app_name: Option<String>,
+    /// The sending application's own artwork, resolved from a launcher-
+    /// verified app id (or a lower-trust icon hint when there is none). The
+    /// leading glyph is the fallback. Never persisted.
+    pub app_image: Option<ui::icons::AppImage>,
     /// Launcher-attributed id. Unlike a sender-supplied name, this is not
     /// controlled by the notification sender and is the only key policy and
     /// grouping may use.
@@ -253,6 +257,7 @@ impl Notification {
             scheduled_target: None,
             from: None,
             app_name: None,
+            app_image: None,
             app_id: None,
             source_workspace: None,
             actions: Vec::new(),
