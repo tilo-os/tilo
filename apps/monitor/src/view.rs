@@ -312,7 +312,7 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
             }
             let now = ui::time::wall();
             let fact = match metrics.sampled_at {
-                Some(at) => Measured::measured(
+                Some(at) => Measured::known(
                     Measure::new(stat.measure()),
                     "1 sample",
                     "this device",
@@ -344,7 +344,7 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
                         })
                         .priority(3),
                         Fact::text(metrics.history_period()).priority(2),
-                        Fact::text(scale.clone()).priority(1),
+                        Fact::text(scale).priority(1),
                     ]))),
             ) as Element
         })

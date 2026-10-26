@@ -851,10 +851,6 @@ impl Rooms {
     ///
     /// [`WorkspaceMembershipCommand::RequestBot`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RequestBot
     /// [`WorkspaceMembershipCommand::WithdrawBotRequest`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::WithdrawBotRequest
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the room remains locked through the committed and published administration decision"
-    )]
     pub async fn ask_for_bot(
         &self,
         room: &str,
@@ -872,6 +868,81 @@ impl Rooms {
                 ));
             }
         };
+        self.govern_as_member(room, member, request_id, command, gate, "bot.request")
+            .await
+    }
+
+    /// Choose the version of an app `room` runs for every member, or take
+    /// the choice back ([`WorkspaceMembershipCommand::InstallApp`],
+    /// [`WorkspaceMembershipCommand::UninstallApp`]), as a member the room
+    /// lets install apps. The choice is a governed change every member
+    /// reads ([`Self::app_versions`]); each is to run it, and a
+    /// change made with another version waits until its author has.
+    ///
+    /// # Errors
+    /// Refuses another command, a malformed release, and a member the room
+    /// does not let install apps.
+    ///
+    /// [`WorkspaceMembershipCommand::InstallApp`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::InstallApp
+    /// [`WorkspaceMembershipCommand::UninstallApp`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::UninstallApp
+    pub async fn govern_app(
+        &self,
+        room: &str,
+        member: &DeviceCert,
+        request_id: [u8; 32],
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+        if !matches!(
+            command,
+            Command::InstallApp(_) | Command::UninstallApp { .. }
+        ) {
+            return Err(CollaborationError::new(
+                "only installing or uninstalling an app version governs an app",
+            ));
+        }
+        self.govern_as_member(
+            room,
+            member,
+            request_id,
+            command,
+            governance::INSTALL_APP,
+            "app.version",
+        )
+        .await
+    }
+
+    /// The app versions `room` runs, as its governance records them now.
+    pub async fn app_versions(
+        &self,
+        room: &str,
+    ) -> Result<Vec<tilo_peer_state::InstalledApp>, CollaborationError> {
+        Ok(self
+            .room(room)
+            .await?
+            .lock()
+            .await
+            .peer()
+            .governance()
+            .app_versions())
+    }
+
+    /// Apply `command` to `room` as `member`, whom the room must allow the
+    /// governance action `gate`, and publish it; `tag` names the request
+    /// kind in its digest.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room remains locked through the committed and published administration decision"
+    )]
+    async fn govern_as_member(
+        &self,
+        room: &str,
+        member: &DeviceCert,
+        request_id: [u8; 32],
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+        gate: &'static str,
+        tag: &'static str,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
         command.validate()?;
         let now = tilo_clock::unix_now_ns();
         let room = self.room(room).await?;
@@ -885,7 +956,7 @@ impl Rooms {
         self.administer(
             &mut room,
             request_id,
-            request_digest(&("bot.request", &command))?,
+            request_digest(&(tag, &command))?,
             |peer| {
                 peer.workspace_mut().apply_workspace_membership_command(
                     member,

@@ -5323,19 +5323,21 @@ impl Widget for GroupRow {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // `fold` rather than `any`: must not short-circuit, every child
-        // has to clear its own flag too.
-        let own = std::mem::take(&mut self.structure_dirty);
-        #[allow(
-            clippy::unnecessary_fold,
-            reason = "all child dirty flags must be drained without short-circuiting"
-        )]
-        let children = self
-            .groups
+        self.take_structure_change().rebuilds()
+    }
+    /// A change a window carries out in place stays in place; the row's own
+    /// changes rebuild. Every window's flag is drained, none skipped.
+    fn take_structure_change(&mut self) -> super::StructureChange {
+        let own = super::StructureChange::of(std::mem::take(&mut self.structure_dirty));
+        self.groups.iter_mut().fold(own, |change, group| {
+            change.join(group.take_structure_change())
+        })
+    }
+    /// Every window is in the row's layout, shown or not.
+    fn remount_children(&mut self, remount: &mut super::Remount<'_>) -> bool {
+        self.groups
             .iter_mut()
-            .map(super::Widget::take_structure_dirty)
-            .fold(false, |acc, d| acc || d);
-        own || children
+            .all(|group| group.remount_children(remount))
     }
 }
 

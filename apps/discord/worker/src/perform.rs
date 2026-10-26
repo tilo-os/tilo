@@ -887,7 +887,15 @@ impl Performer {
     }
 
     async fn fetch_asset(&self, op: FetchAssetOp) -> OpResult {
-        let url = Url::parse(&op.url).map_err(|_| OpError::Refused("not a URL".into()))?;
+        // A path is on the CDN this worker talks to: the bridge names a
+        // linked account's avatar without knowing where Discord serves it.
+        let url = if op.url.starts_with("avatars/") && !op.url.contains("..") {
+            let base = self.ctx.config.cdn_base.as_str().trim_end_matches('/');
+            Url::parse(&format!("{base}/{}", op.url))
+        } else {
+            Url::parse(&op.url)
+        }
+        .map_err(|_| OpError::Refused("not a URL".into()))?;
         if self.ctx.config.egress.check(&url, Purpose::Cdn).is_err() {
             return Err(OpError::Refused("only Discord's CDN is fetched".into()));
         }
@@ -926,6 +934,26 @@ impl Performer {
             })?;
         let blob = blake3::hash(&bytes).to_hex().to_string();
         let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if op.inline {
+            // A picture a record keeps as it is: only an image type a
+            // profile may carry.
+            let kind = content_type.split(';').next().unwrap_or_default().trim();
+            if !matches!(kind, "image/png" | "image/jpeg" | "image/webp") {
+                return Err(OpError::Refused(format!("not a picture: {kind}")));
+            }
+            use base64::Engine as _;
+            let data_url = format!(
+                "data:{kind};base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(&bytes)
+            );
+            return Ok(DiscordResult::Asset {
+                blob,
+                size,
+                content_type,
+                attachment: None,
+                data_url: Some(data_url),
+            });
+        }
         let _ = self.ctx.out.send(FromWorker::Blob {
             bytes: Bytes(bytes.to_vec()),
         });
@@ -939,6 +967,7 @@ impl Performer {
             size,
             content_type,
             attachment,
+            data_url: None,
         })
     }
 }

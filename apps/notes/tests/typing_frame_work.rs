@@ -1,7 +1,8 @@
 //! What typing into a note costs the layout tree when Notes runs in windows
 //! of the desktop surface the browser desktop hosts apps in: a keystroke
-//! rebuilds no layout tree at all, and re-measures the editor it edits and
-//! its ancestors, not every window's widgets.
+//! rebuilds no layout tree at all, re-measures the editor it edits and its
+//! ancestors, not every window's widgets, and does so in one frame at most;
+//! a focused editor at rest measures nothing.
 
 use crate::component_support::{self, NotebookFixture};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
@@ -77,13 +78,17 @@ fn notes_windows(
     harness
 }
 
-/// The frames a host draws after an input, until it is at rest or `limit`.
-fn settle(harness: &mut FrameHarness, limit: usize) {
+/// The frames a host draws after an input, until it is at rest or `limit`;
+/// how many of them solved the layout.
+fn settle(harness: &mut FrameHarness, limit: usize) -> usize {
+    let mut measured = 0;
     for _ in 0..limit {
         if !harness.poll_frame().unwrap() {
             break;
         }
+        measured += usize::from(harness.last_relayout().measured);
     }
+    measured
 }
 
 #[test]
@@ -121,9 +126,19 @@ fn keystrokes_rebuild_nothing(open: Option<fn(&NotebookFixture) -> notes::PageId
         settle(&mut harness, 4);
         let rebuilt = harness.rebuilt_frames();
         for key in "typing".chars() {
+            // The key's own frame, if it drew one, then those it asks for.
+            let frames = harness.relayout_frames();
             harness.key(&key.to_string());
-            settle(&mut harness, 4);
+            let mut measured = usize::from(
+                harness.relayout_frames() != frames && harness.last_relayout().measured,
+            );
             let stats = harness.last_relayout();
+            measured += settle(&mut harness, 10);
+            assert!(
+                measured <= 1,
+                "a keystroke solved the layout in {measured} frames, asked by {:?}",
+                harness.layout_measure_requesters()
+            );
             assert!(
                 !stats.rebuilt,
                 "a keystroke rebuilt the layout tree: {stats:?}"
@@ -141,5 +156,20 @@ fn keystrokes_rebuild_nothing(open: Option<fn(&NotebookFixture) -> notes::PageId
             rebuilt,
             "no frame of six keystrokes rebuilt the layout tree"
         );
+        // At rest with the caret in the editor, the frames that still come
+        // (a caret blink, a timer) repaint at most; none of them measures.
+        let start = ui::time::now();
+        for step in 1..=8u64 {
+            let at = start + ui::time::Duration::from_millis(step * 400);
+            ui::time::testing::with_monotonic_time(at, || {
+                let measured = settle(&mut harness, 4);
+                assert_eq!(
+                    measured,
+                    0,
+                    "a focused editor at rest solved the layout, asked by {:?}",
+                    harness.layout_measure_requesters()
+                );
+            });
+        }
     });
 }

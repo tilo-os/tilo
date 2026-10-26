@@ -97,6 +97,7 @@ profile-section-linked = Linked accounts
 profile-link = Connect { $service }
 profile-unlink = Unlink
 profile-linked-as = Linked as { $account }
+profile-linked-to = Linked to { $handle } on { $service }
 profile-link-offer = Link { $service } { $account } to { $name }?
 profile-link-offer-why = What you write in { $service } will show as you here, and as you there.
 profile-link-accept = Link

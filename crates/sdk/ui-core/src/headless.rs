@@ -552,6 +552,9 @@ pub struct FrameHarness {
     last_relayout: RelayoutStats,
     /// Completed relayout frames since construction.
     relayout_frames: u64,
+    /// Layout nodes built since construction: every node of each rebuilt
+    /// tree, and those a change carried out in place mounted.
+    layout_nodes_built: u64,
     /// Retained (non-rebuilt) frames completed since construction, used by
     /// the opt-in geometry check.
     retained_frames: u64,
@@ -1169,10 +1172,15 @@ impl FrameHarness {
         {
             return false;
         }
+        let mapped = self.node_map.len();
         let mut remount =
             crate::widget::Remount::new(&mut self.taffy, &self.theme, &mut self.node_map);
         let applied = self.root.remount_children(&mut remount);
         let (mounted, unmounted) = remount.finish();
+        let built = (self.node_map.len() + unmounted.len()).saturating_sub(mapped);
+        self.layout_nodes_built = self
+            .layout_nodes_built
+            .saturating_add(u64::try_from(built).unwrap_or(u64::MAX));
         // The rows it mounted are checked against the live tree at once, as
         // a build's are, so the next structure check finds the maps live.
         self.admit_layout_maps();
@@ -1813,6 +1821,7 @@ impl FrameHarness {
             full_relayout_override: None,
             last_relayout: RelayoutStats::default(),
             relayout_frames: 0,
+            layout_nodes_built: 0,
             retained_frames: 0,
             retained_geometry_check_every: 0,
             verifying_geometry: false,
@@ -3575,7 +3584,7 @@ impl FrameHarness {
             self.owner_service_layout_retired
                 .then(|| CompositionFocus::capture_live(self.root.as_ref()))
                 .flatten()
-        } else if structure_changed {
+        } else if structure_changed || self.remount {
             CompositionFocus::capture_live(self.root.as_ref())
         } else {
             // SAFETY: no structural mutation since these maps were admitted.
@@ -3784,6 +3793,17 @@ impl FrameHarness {
             let in_place = self.remount && !structure && (!rebuild || remount_only);
             let remounted = in_place && self.remount_in_place();
             stats.remounted |= remounted;
+            // Focus inside widgets laid out again in place goes back to the
+            // control it was on, as after a rebuild.
+            if remounted
+                && let Some(focus) = &focus
+                && self
+                    .focused
+                    .is_none_or(|node| !self.node_map.contains_key(&node))
+            {
+                // SAFETY: the remount just admitted every mounted widget.
+                self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
+            }
             if structure || (rebuild && !remount_only) || (in_place && !remounted) {
                 self.remount = false;
                 rebuilt_this_pass = true;
@@ -3829,6 +3849,9 @@ impl FrameHarness {
                         .build_layout(&mut self.taffy, &self.theme, &mut self.node_map)
                 };
                 self.admit_layout_maps();
+                self.layout_nodes_built = self
+                    .layout_nodes_built
+                    .saturating_add(u64::try_from(self.node_map.len()).unwrap_or(u64::MAX));
                 // Newly composed controls need sync. If it replaces delegates,
                 // discard these raw maps without admitting or measuring them.
                 self.root.sync(&self.state.doc, &self.state.root);
@@ -7893,6 +7916,18 @@ impl FrameHarness {
         target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
         intent: &tilo_actions::ControlInvocation,
     ) {
+        self.ask_person(target, intent, false);
+    }
+
+    /// Ask the person before `intent` goes ahead: as the door asked
+    /// ([`Self::open_ordinary_confirmation`]), or, `confirming`, as the app
+    /// asked for a pick of theirs, as the window's host does.
+    fn ask_person(
+        &mut self,
+        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        intent: &tilo_actions::ControlInvocation,
+        confirming: bool,
+    ) {
         let request = crate::bound_dispatch::OrdinaryConfirmation::prepare(
             self.root.as_ref(),
             &self.state.doc,
@@ -7902,6 +7937,7 @@ impl FrameHarness {
             crate::bound_dispatch::ControlContinuationArguments::Json(intent.arguments.clone()),
         );
         let request = match request {
+            Ok(request) if confirming => request.confirming(),
             Ok(request) => request.asking_first(),
             Err(error) => {
                 self.refuse_visibly(&error);
@@ -7921,7 +7957,11 @@ impl FrameHarness {
             self.text.font_system.locale().to_owned(),
         ));
         palette.activate_ordinary(request);
+        let went_ahead = palette.went_ahead();
         self.action_palette = Some(palette);
+        if went_ahead {
+            self.finish_action_palette_input();
+        }
     }
 
     /// Keep why an invocation the person made did not run, and say it over
@@ -8110,6 +8150,14 @@ impl FrameHarness {
         on_behalf_of: Option<tilo_actions::InvocationId>,
         origin: crate::bound_dispatch::Origin,
     ) {
+        if origin == crate::bound_dispatch::Origin::PersonConfirming && on_behalf_of.is_none() {
+            self.ask_person(
+                crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(target),
+                intent,
+                true,
+            );
+            return;
+        }
         let invocation = tilo_actions::InvocationId::new();
         // An edit a job started for someone else submitted is theirs, as far
         // as they were admitted.
@@ -8146,7 +8194,7 @@ impl FrameHarness {
             .map_err(crate::bound_dispatch::BoundActionError::into_door);
         drop(answering);
         drop(scopes);
-        if origin == crate::bound_dispatch::Origin::Person {
+        if origin.is_persons() {
             crate::pick::note_invocation(&target.address, result.is_ok());
         }
         self.note_continuation(on_behalf_of, &result);
@@ -8174,7 +8222,7 @@ impl FrameHarness {
             // Only what the person asked for is refused over the window; the
             // app hears of its own invocation's refusal through the feedback
             // above.
-            Err(error) if acting.is_none() && origin == crate::bound_dispatch::Origin::Person => {
+            Err(error) if acting.is_none() && origin.is_persons() => {
                 tracing::warn!(code = error.code(), %error, "headless: bound control refused");
                 self.refuse_visibly(&error);
             }

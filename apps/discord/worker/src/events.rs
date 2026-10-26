@@ -553,6 +553,7 @@ impl Guild {
             banned: kind == "GUILD_BAN_ADD",
             left: kind == "GUILD_MEMBER_REMOVE",
             user: UserName::of_member(data),
+            avatar: opt_text(&data["user"]["avatar"]),
         };
         Some(Emit::new(
             source::MEMBER_CHANGED,

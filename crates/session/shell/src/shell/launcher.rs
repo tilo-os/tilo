@@ -771,6 +771,65 @@ fn request_stop_host_scope(desktop_id: &str, pid: u32) {
 #[cfg(test)]
 fn request_stop_host_scope(_desktop_id: &str, _pid: u32) {}
 
+/// Packages whose launches were ended to start again on a newer build, and
+/// until when their ends count as that.
+static RESTARTING_ON_NEW_BUILD: std::sync::LazyLock<Mutex<HashMap<String, Instant>>> =
+    std::sync::LazyLock::new(Mutex::default);
+
+/// How long after a restart was asked an end of the app's launch counts as
+/// it.
+const RESTART_ON_NEW_BUILD_WITHIN: Duration = Duration::from_secs(30);
+
+/// End every launch of `package_id` so its windows start again, in place,
+/// on the build now installed: the windows that go with the launches are
+/// kept, as for an app ended for memory, and put back where they were once
+/// each launch has ended ([`restarting_on_new_build`]). Whether any launch
+/// was running.
+pub(crate) fn restart_on_new_build(package_id: &str) -> bool {
+    let pids: Vec<u32> = {
+        let Ok(mut map) = LAUNCHED_PROCESSES.lock() else {
+            return false;
+        };
+        map.retain(|pid, launch| {
+            proc_stat(*pid).is_some_and(|(_, start)| start == launch.start_time)
+        });
+        map.iter()
+            .filter(|(_, launch)| launch.package_id.eq_ignore_ascii_case(package_id))
+            .map(|(pid, _)| *pid)
+            .collect()
+    };
+    if pids.is_empty() {
+        return false;
+    }
+    lock(&RESTARTING_ON_NEW_BUILD).insert(
+        package_id.to_owned(),
+        Instant::now() + RESTART_ON_NEW_BUILD_WITHIN,
+    );
+    #[cfg(any(test, target_os = "linux"))]
+    for pid in pids {
+        terminate_process_tree(pid);
+    }
+    true
+}
+
+/// Whether `package_id`'s launch ended because [`restart_on_new_build`]
+/// ended it: its lost windows are to be put back, not reported.
+pub(crate) fn restarting_on_new_build(package_id: &str) -> bool {
+    let mut restarting = lock(&RESTARTING_ON_NEW_BUILD);
+    restarting.retain(|_, until| *until > Instant::now());
+    restarting.contains_key(package_id)
+}
+
+/// Mark `package_id` as restarting on a new build, as
+/// [`restart_on_new_build`] does, without a process to end.
+#[cfg(test)]
+pub(crate) fn mark_restarting_for_test(package_id: &str) {
+    lock(&RESTARTING_ON_NEW_BUILD).insert(
+        package_id.to_owned(),
+        Instant::now() + RESTART_ON_NEW_BUILD_WITHIN,
+    );
+}
+
 #[cfg(any(test, target_os = "linux"))]
 fn terminate_process_tree(root: u32) {
     let pids = descendant_and_session_pids(root);

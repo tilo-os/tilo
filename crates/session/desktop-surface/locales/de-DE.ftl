@@ -109,6 +109,7 @@ profile-section-linked = Verknüpfte Konten
 profile-link = Mit { $service } verbinden
 profile-unlink = Trennen
 profile-linked-as = Verknüpft als { $account }
+profile-linked-to = Verknüpft mit { $handle } auf { $service }
 profile-link-offer = { $service } { $account } mit { $name } verknüpfen?
 profile-link-offer-why = Was du in { $service } schreibst, erscheint hier als du, und dort ebenso.
 profile-link-accept = Verknüpfen

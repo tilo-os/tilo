@@ -2177,6 +2177,9 @@ pub(crate) struct OrdinaryConfirmation {
     /// Why the person is asked when the action declares no confirmation of
     /// its own: the room's grants ask first ([`Self::asking_first`]).
     asked: Option<String>,
+    /// Asked because the app asked for the person's pick to be confirmed
+    /// ([`Self::confirming`]).
+    confirming: bool,
 }
 
 fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
