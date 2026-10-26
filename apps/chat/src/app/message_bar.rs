@@ -192,6 +192,18 @@ impl ChatApp {
         self.menu = Some(self.context_menu(MenuTarget::Message(msg), anchor, items));
     }
 
+    /// Open `msg`'s whole menu from its bar's More `button`: under it, its
+    /// trailing edge on the button's, and above it where there is no room
+    /// below, as a menu from a button at the end of a row opens.
+    pub(crate) fn open_message_menu_from(&mut self, msg: Id, button: Rect) {
+        self.open_message_menu(msg, Point::new(button.x1, button.y1));
+        let bounds = self.menu_bounds();
+        if let Some(menu) = self.menu.as_mut() {
+            menu.widget.set_align(ui::widget::PanelAlign::Trailing);
+            menu.widget.reanchor(button, bounds);
+        }
+    }
+
     /// Paint the bar over the message it shows for, at the top trailing
     /// corner of its row, and record its buttons.
     pub(crate) fn draw_message_bar(

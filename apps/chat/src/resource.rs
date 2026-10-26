@@ -245,6 +245,22 @@ impl ResourceApp for ChatShell {
             }
             input.relayout();
         }
+        if name == Some("msgmenu") {
+            // The hovered message's bar is up; click its More as a person
+            // does, so the menu opens where that click opens it.
+            input.relayout();
+            let more = input
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some("More"))
+                .and_then(|(_, node)| node.bounds())
+                .ok_or("the message's bar shows no More button")?;
+            input.click_at(
+                f64::midpoint(more.x0, more.x1),
+                f64::midpoint(more.y0, more.y1),
+            );
+            input.relayout();
+        }
         if name == Some("mention") {
             input.type_text("Could you take a look, @a");
             for _ in 0..3 {
