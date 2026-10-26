@@ -72,7 +72,7 @@ fn accessibility_exposes_project_and_active_document_context() {
     assert!(
         node.name
             .as_deref()
-            .is_some_and(|name| name.starts_with("Code — "))
+            .is_some_and(|name| name.starts_with("Code: "))
     );
     assert_eq!(node.value.as_deref(), Some("main.rs"));
     assert!(
@@ -1579,4 +1579,33 @@ fn missing_code_help_says_so_and_keeps_why_behind_a_click() {
         "the system's words stay behind Copy details: {body}"
     );
     assert!(answers.contains(&CodeHelpAnswer::CopyDetails));
+}
+
+/// The editor's text size is the person's: a zoom step grows the code and
+/// its line numbers, is kept in their settings, and reset goes back to the
+/// theme's own size.
+#[test]
+fn the_editor_text_zooms_and_remembers_its_size() {
+    use ui::content_zoom::{ContentZoom as _, ZoomStep};
+    let mut sample = synced_sample();
+    let before = sample.editor(|app| app.editor.text_zoom());
+    let factor = sample
+        .editor(|app| app.zoom_content(ZoomStep::In))
+        .expect("the editor's text takes the zoom");
+    assert!(factor > before, "the code grew: {before} -> {factor}");
+    let stored = sample.editor(|app| {
+        app.settings
+            .as_ref()
+            .expect("the editor is mounted with its settings")
+            .get()
+            .editor_zoom
+    });
+    assert!(
+        (stored - factor).abs() < f32::EPSILON,
+        "the chosen size is remembered"
+    );
+    let reset = sample
+        .editor(|app| app.zoom_content(ZoomStep::Reset))
+        .expect("reset is the editor's own size");
+    assert!((reset - 1.0).abs() < 1e-6);
 }
