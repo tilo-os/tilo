@@ -46,12 +46,13 @@ use crate::canvas::{self, MapPalette, MapView};
 use crate::draw;
 use crate::endpoint_editor::GEOCODER;
 use crate::endpoint_editor::{Endpoint, EndpointEditor, EndpointEffect, EndpointFrame};
+use crate::failure;
 use crate::geo::{self, Projection};
 use crate::map_controls::{ColumnMetrics, MapControlAction, MapControls};
 use crate::map_info_sheet::{MapInfo, MapInfoSheet};
 use crate::model::{LatLon, MapModel, Panel, Place, TransitMode, TransitTimeMode, TravelMode};
 use crate::net::{self, NetMsg};
-use crate::offline_panel::{OFFLINE_AREAS_REFUSED, OfflineAction, OfflineFrame, OfflinePanel};
+use crate::offline_panel::{OfflineAction, OfflineFrame, OfflinePanel, areas_refused};
 use crate::place_search::PlaceSearch;
 use crate::sample::{self, Basemap};
 use crate::tiles::{GeoBounds, TileFault, TileId, TileLayer, TileStyle};
@@ -121,6 +122,8 @@ enum Hit {
     Transit,
     ToggleSave,
     ClearRoute,
+    /// Look at the next route the service offered for this trip.
+    NextRoute,
     /// Fetch the device's real location (portal / `GeoClue`) and use it as origin.
     UseMyLocation,
     /// Set the Transit depart/arrive anchor.
@@ -1432,7 +1435,7 @@ impl MapsApp {
             return;
         }
         self.locating = true;
-        self.model.status = "Locating…".to_string();
+        self.model.status = failure::t("maps-locating");
         if self.online {
             self.location_rx = Some(location::request_location());
         }
@@ -1503,7 +1506,7 @@ impl MapsApp {
         if self.online {
             let tx = self.net_tx.clone();
             spawn_net(async move {
-                let r = net::route(origin, dest, mode).await;
+                let r = net::routes(origin, dest, mode).await;
                 let _ = tx.send(NetMsg::Route(r));
             });
         }
@@ -1591,6 +1594,49 @@ impl MapsApp {
                 place.saved = saved;
             }
         }
+    }
+
+    /// Show the next route the service offered for this trip: the one after
+    /// the route shown, or the first again when it was the last. The choice is
+    /// a plan like any other, so it is taken in the workspace and framed.
+    fn next_route(&mut self) {
+        if self.model.route_alternatives.len() < 2 {
+            return;
+        }
+        let shown = self
+            .model
+            .route
+            .as_ref()
+            .and_then(|route| {
+                self.model.route_alternatives.iter().position(|offered| {
+                    offered.duration_s == route.duration_s && offered.distance_m == route.distance_m
+                })
+            })
+            .unwrap_or(0);
+        let next = (shown + 1) % self.model.route_alternatives.len();
+        let route = self.model.route_alternatives[next].clone();
+        self.model.route = Some(route.clone());
+        self.perform(Workspace::ACCEPT_ROUTE.with(workspace::AcceptRoute {
+            route,
+            origin: self.model.origin,
+            origin_name: self.model.origin_name.clone(),
+            dest: self.model.dest,
+            dest_name: self.model.dest_name.clone(),
+            mode: self.model.mode,
+        }));
+        self.fit_route();
+        self.model.status = failure::t_args(
+            "maps-route-number",
+            &[
+                ("number", i64::try_from(next + 1).unwrap_or(1).into()),
+                (
+                    "count",
+                    i64::try_from(self.model.route_alternatives.len())
+                        .unwrap_or(1)
+                        .into(),
+                ),
+            ],
+        );
     }
 
     fn clear_route(&mut self) {
@@ -1986,10 +2032,23 @@ impl MapsApp {
                                 self.model.selected = Some(first.id.clone());
                             }
                             self.model.results = ranked.clone();
-                            self.model.status = format!("{} results for “{}”", ranked.len(), query);
+                            self.model.status = failure::t_args(
+                                "maps-search-results",
+                                &[
+                                    ("count", i64::try_from(ranked.len()).unwrap_or(0).into()),
+                                    ("query", query.clone().into()),
+                                ],
+                            );
                         }
-                        Ok(_) => self.model.status = format!("No results for “{query}”"),
-                        Err(e) => self.model.status = format!("Search failed: {e}"),
+                        Ok(_) => {
+                            self.model.status = failure::t_args(
+                                "maps-search-no-results",
+                                &[("query", query.clone().into())],
+                            );
+                        }
+                        Err(e) => {
+                            self.model.status = failure::say(failure::SEARCH, &e.to_string());
+                        }
                     }
                 }
                 NetMsg::PaletteSearch { query, results } => {
@@ -2031,7 +2090,17 @@ impl MapsApp {
                     }
                 }
                 NetMsg::Route(r) => match r {
-                    Ok(route) => {
+                    Ok(routes) => {
+                        let Some(route) = routes.first().cloned() else {
+                            self.model.status =
+                                failure::say(failure::ROUTE, "the service offered no route");
+                            return;
+                        };
+                        // Every route the service offered, this one first: the
+                        // person can look at another without retyping the
+                        // destination.
+                        self.model.route_alternatives = routes;
+
                         self.model.route = Some(route.clone());
                         self.perform(Workspace::ACCEPT_ROUTE.with(workspace::AcceptRoute {
                             route,
@@ -2042,10 +2111,13 @@ impl MapsApp {
                             mode: self.model.mode,
                         }));
                         self.fit_route();
-                        self.model.status = "Route updated".to_string();
+                        self.model.status = failure::t("maps-route-updated");
                     }
                     Err(e) => {
-                        self.model.status = format!("Routing failed (offline estimate shown): {e}");
+                        self.model.status = format!(
+                            "{} The offline estimate is shown.",
+                            failure::say(failure::ROUTE, &e.to_string())
+                        );
                     }
                 },
                 NetMsg::Transit(t) => match t {
@@ -2063,10 +2135,12 @@ impl MapsApp {
                         // Frame the map on the itinerary now that we have real
                         // leg geometry (the same courtesy the road route gets).
                         self.fit_current();
-                        self.model.status = "Departures updated".to_string();
+                        self.model.status = failure::t("maps-departures-updated");
                     }
-                    Ok(_) => self.model.status = "No transit options found".to_string(),
-                    Err(e) => self.model.status = format!("Transit lookup failed: {e}"),
+                    Ok(_) => self.model.status = failure::t("maps-no-transit"),
+                    Err(e) => {
+                        self.model.status = failure::say(failure::TRANSIT, &e.to_string());
+                    }
                 },
                 NetMsg::Pois { generation, pois } => {
                     // Ignore a stale reply for a viewport we've since panned off.
@@ -2086,8 +2160,7 @@ impl MapsApp {
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!("maps: nearby places failed: {e}");
-                                self.model.status = "Nearby places couldn't be loaded".into();
+                                self.model.status = failure::say(failure::NEARBY, &e.to_string());
                             }
                         }
                     }
@@ -2159,7 +2232,8 @@ impl MapsApp {
                 }
             }
             LocationOutcome::Unavailable(reason) => {
-                self.model.status = format!("Location unavailable — {reason}");
+                self.model.status =
+                    format!("{} — {reason}", failure::t("maps-location-unavailable"));
                 if let Some(reply) = self.location_reply.take() {
                     reply.finish(Err(reason));
                 }
@@ -2263,6 +2337,7 @@ impl MapsApp {
             Hit::Transit => self.enter_transit(),
             Hit::ToggleSave => self.toggle_save_selected(),
             Hit::ClearRoute => self.clear_route(),
+            Hit::NextRoute => self.next_route(),
             Hit::UseMyLocation => self.use_my_location(),
             Hit::TransitTimeMode(m) => {
                 let mut value = self.model.transit_time;
@@ -2318,7 +2393,7 @@ impl MapsApp {
             OfflineAction::Close => self.offline_panel.close(),
             OfflineAction::ZoomDelta(delta) => self.offline_panel.adjust_zoom(delta),
             OfflineAction::Download if !self.tiles.allows_prefetch() => {
-                self.model.status = OFFLINE_AREAS_REFUSED.to_string();
+                self.model.status = areas_refused();
             }
             OfflineAction::Download => {
                 let request = self.offline_panel.download_request(
@@ -2337,9 +2412,24 @@ impl MapsApp {
                     request.name.clone(),
                 );
                 self.model.status = request.name.map_or_else(
-                    || format!("Downloading {count} tiles for offline use…"),
-                    |name| format!("Downloading {count} tiles for {name}…"),
+                    || {
+                        failure::t_args(
+                            "maps-offline-downloading",
+                            &[("count", i64::from(count).into())],
+                        )
+                    },
+                    |name| {
+                        failure::t_args(
+                            "maps-offline-downloading-named",
+                            &[("count", i64::from(count).into()), ("name", name.into())],
+                        )
+                    },
                 );
+            }
+            OfflineAction::StopDownload => {
+                if self.tiles.stop_download() {
+                    self.model.status = failure::t("maps-offline-stopped");
+                }
             }
             OfflineAction::DeleteRegion(id) => {
                 if let Err(error) = self.delete_region(&id) {
@@ -3790,13 +3880,13 @@ impl MapsApp {
         // To. This leaves room for the itinerary instead of a third field row.
         let small_h = ButtonFace::height(ControlSize::Small, theme);
         let (loc_label, loc_hit) = if self.locating {
-            ("Locating…", None)
+            (failure::t("maps-locating"), None)
         } else {
-            ("Use my location", Some(Hit::UseMyLocation))
+            (failure::t("maps-use-my-location"), Some(Hit::UseMyLocation))
         };
         self.text_button(
             &mut PaintCtx::new(scene, t, tr, theme),
-            ButtonFace::icon_only(loc, Icon::LocateFixed, loc_label)
+            ButtonFace::icon_only(loc, Icon::LocateFixed, &loc_label)
                 .role(ButtonRole::Plain)
                 .disabled(self.locating),
             loc,
@@ -3843,7 +3933,7 @@ impl MapsApp {
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
             draw::text_clip(
                 &mut ctx,
-                "Choose a destination to see the route.",
+                &failure::t("maps-route-choose-destination"),
                 Point::new(x, y),
                 &body,
                 theme.text_dim,
@@ -3877,6 +3967,40 @@ impl MapsApp {
             clear,
             Some(Hit::ClearRoute),
         );
+        // Another route, when the service offered one: the trip's own number
+        // says which of them is shown.
+        if self.model.route_alternatives.len() > 1 {
+            let shown = self
+                .model
+                .route
+                .as_ref()
+                .and_then(|current| {
+                    self.model.route_alternatives.iter().position(|offered| {
+                        offered.duration_s == current.duration_s
+                            && offered.distance_m == current.distance_m
+                    })
+                })
+                .unwrap_or(0);
+            let label = format!(
+                "Route {} of {}",
+                shown + 1,
+                self.model.route_alternatives.len()
+            );
+            let face = ButtonFace::new(Rect::ZERO, &label)
+                .role(ButtonRole::Plain)
+                .control_size(ControlSize::Small);
+            let width = face.intrinsic_width(tr, theme);
+            let row_y = clear_y - s2 - small_h;
+            let rect = Rect::new(right - width, row_y, right, row_y + small_h);
+            self.text_button(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                ButtonFace::new(rect, &label)
+                    .role(ButtonRole::Plain)
+                    .control_size(ControlSize::Small),
+                rect,
+                Some(Hit::NextRoute),
+            );
+        }
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
         draw::text(
             &mut ctx,
@@ -4473,6 +4597,12 @@ impl MapsApp {
             Hit::ClearRoute => (
                 "Clear route".to_string(),
                 "maps.route.clear".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::NextRoute => (
+                "Another route".to_string(),
+                "maps.route.another".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),

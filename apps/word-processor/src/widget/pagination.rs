@@ -979,6 +979,9 @@ impl WordProcessorWidget {
         // is magnified by `zoom`, so the visible window covers `fg.canvas.height() /
         // zoom` of content — divide by zoom so the overflow (and thus max scroll)
         // grows when zoomed in and shrinks when zoomed out.
+        // What the status band says and what one key pages by.
+        self.pages = num_pages;
+        self.page_pitch = fg.page_pitch;
         self.scroll_viewport = fg.canvas.height() / self.zoom.factor();
         self.max_scroll =
             (extent + 2.0 * PAGE_TOP - fg.canvas.height() / self.zoom.factor()).max(0.0);

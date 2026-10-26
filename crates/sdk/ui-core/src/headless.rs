@@ -11161,6 +11161,40 @@ mod tests {
         until: std::rc::Rc<std::cell::Cell<Option<crate::time::Instant>>>,
     }
 
+    /// Animates until it has been drawn `frames` times, so the number of draws
+    /// the capture runs — not the wall clock — says whether it settled.
+    struct CountedFrames {
+        frames: usize,
+        drawn: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Widget for CountedFrames {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.widget_leaf(Style::default(), node_map, self)
+        }
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+            self.drawn.set(self.drawn.get() + 1);
+        }
+        fn needs_animation_frame(&self) -> bool {
+            self.drawn.get() < self.frames
+        }
+        fn name(&self) -> &str {
+            "CountedFrames"
+        }
+    }
+
     impl Entrance {
         fn new() -> (
             Self,
@@ -11227,6 +11261,39 @@ mod tests {
             let bounds = row.bounds().unwrap();
             assert!(bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width));
         }
+    }
+
+    /// A written capture is the window a person sees a moment after it
+    /// opened, so an entrance still running is waited out before the frame is
+    /// taken. Without this, `--shots` and `--responsive-matrix` write whatever
+    /// the first draw happened to show: a scroll thumb mid-fade, or a page
+    /// still drawn from the bitmap of the width it had a moment ago, which is
+    /// a difference about the capture and reads as a layout difference to
+    /// `tools/ci/capture_parity.py`.
+    #[cfg(feature = "native")]
+    #[test]
+    fn writing_a_shot_runs_the_animation_out_first() {
+        let drawn = std::rc::Rc::new(std::cell::Cell::new(0));
+        let widget = CountedFrames {
+            frames: 3,
+            drawn: std::rc::Rc::clone(&drawn),
+        };
+        let mut harness = FrameHarness::new(State::new(), Box::new(widget), (200, 100));
+        assert!(
+            harness.frame_schedule().needs_animation_frame,
+            "the animation is running before the capture"
+        );
+        let temp = tempfile::tempdir().expect("temporary output root");
+        harness.write_shot(&temp.path().join("shot.png"), false);
+        assert!(
+            drawn.get() >= 3,
+            "the capture ran the animation out ({} draw(s))",
+            drawn.get()
+        );
+        assert!(
+            !harness.frame_schedule().needs_animation_frame,
+            "the written frame is a settled one"
+        );
     }
 
     #[test]

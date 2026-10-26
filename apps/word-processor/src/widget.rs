@@ -1092,6 +1092,11 @@ pub struct WordProcessorWidget {
     scroll_y: f64,
     scroll_viewport: f64,
     max_scroll: f64,
+    /// How many pages the document has, as the last pass paginated it.
+    pages: usize,
+    /// The distance from one page's top to the next's, in screen px: one page
+    /// down is this far.
+    page_pitch: f64,
     /// How much of the canvas the window's search covers from its top, in
     /// content px: the document scrolls that far before its start, so a
     /// match near the start can be shown clear of the search's options.
@@ -1405,6 +1410,8 @@ impl WordProcessorWidget {
             scroll_y: 0.0,
             scroll_viewport: 0.0,
             max_scroll: 0.0,
+            pages: 1,
+            page_pitch: 0.0,
             find_inset: 0.0,
             find_cover: None,
             sheet: crate::styles::StyleSheet::default(),

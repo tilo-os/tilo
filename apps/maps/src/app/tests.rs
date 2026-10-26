@@ -729,7 +729,7 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
         tap_offline(&mut a, OfflineAction::Download);
         assert_eq!(a.tiles.progress().total, 0, "nothing was queued");
         assert_eq!(a.model.regions.len(), before, "no region was recorded");
-        assert_eq!(a.model.status, OFFLINE_AREAS_REFUSED);
+        assert_eq!(a.model.status, crate::offline_panel::areas_refused());
     }
 
     // Phase `offline_zoom_delta_clamps`.
@@ -2062,7 +2062,7 @@ fn directions_modes_and_route_replies_recompute_the_route() {
                 from: origin,
                 to: dest,
             };
-            tx.send(NetMsg::Route(Ok(route))).unwrap();
+            tx.send(NetMsg::Route(Ok(vec![route]))).unwrap();
             dense.len()
         });
         let dense_len = worker.join().expect("worker thread completes");
