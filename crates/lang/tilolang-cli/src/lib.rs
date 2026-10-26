@@ -1,8 +1,10 @@
-//! The tilolang tool: what `tilolang build` and `tilolang run` do. Every other command is the
-//! compiler's ([`tilolang::cli`]).
+//! The tilolang tool: what `tilolang build`, `tilolang run` and `tilolang dev` do. Every other
+//! command is the compiler's ([`tilolang::cli`]).
 
+pub mod dev;
 pub mod package;
 pub mod run;
+mod session;
 
 use std::path::{Path, PathBuf};
 

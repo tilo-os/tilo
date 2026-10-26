@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use tilolang_cli::dev::{self, DevOptions};
 use tilolang_cli::package::{self, BuildOptions};
 use tilolang_cli::run::{self, RunOptions};
 
@@ -16,9 +17,17 @@ usage:
   tilolang run [DIR] [--search DIR]... [--peers N] [--headless] [--software] [--state DIR]
                [--repo DIR]
       build the package, install it into a locally built nested Tilo session
-      (dist/dev/nested-session-build.sh target/nested-session) and open it there; every .tl edit
-      rebuilds and reinstalls it. --peers N runs N sessions in one workspace; --software
-      renders with lavapipe only and never opens this machine's GPU.
+      (dist/dev/nested-session-build.sh target/nested-session) and open it there; from then on
+      as `tilolang dev`. --peers N runs N sessions in one workspace; --software renders with
+      lavapipe only and never opens this machine's GPU.
+  tilolang dev [DIR] --session SESSION [--search DIR]... [--runtime BIN]
+               [--runtime-identity FILE] [--repo DIR]
+      develop the package in a running nested session (SESSION: its --ready file, runtime
+      directory or control socket): every saved .tl file is compiled, installed and taken over
+      by the running app with its state; a compile error is printed and the app keeps running.
+      --runtime BIN runs the apps on a tilolang runtime binary of your own build
+      (cargo build -p tilolang-app), and a new build of it restarts them on it. See
+      docs/tilolang-dev.md.
   tilolang check|fmt|ids ...
       the compiler's commands (tilolangc --help)";
 
@@ -28,6 +37,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("build") => build(rest),
         Some("run") => run_command(rest),
+        Some("dev") => dev_command(rest),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -124,4 +134,36 @@ fn run_command(args: &[String]) -> Result<(), String> {
         }
     }
     run::run(&options)
+}
+
+fn dev_command(args: &[String]) -> Result<(), String> {
+    let mut dir = PathBuf::from(".");
+    let mut search = Vec::new();
+    let mut session = None;
+    let mut runtime = None;
+    let mut runtime_identity = None;
+    let mut repo = None;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--search" => search.push(value(&mut iter, arg)?.into()),
+            "--session" => session = Some(PathBuf::from(value(&mut iter, arg)?)),
+            "--runtime" => runtime = Some(PathBuf::from(value(&mut iter, arg)?)),
+            "--runtime-identity" => runtime_identity = Some(PathBuf::from(value(&mut iter, arg)?)),
+            "--repo" => repo = Some(PathBuf::from(value(&mut iter, arg)?)),
+            flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n{USAGE}")),
+            named => dir = named.into(),
+        }
+    }
+    let session = session.ok_or_else(|| {
+        format!("tilolang dev needs --session (or start one with `tilolang run`)\n{USAGE}")
+    })?;
+    dev::dev(&DevOptions {
+        dir,
+        search,
+        session,
+        runtime,
+        runtime_identity,
+        repo,
+    })
 }
