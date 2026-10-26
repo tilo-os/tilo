@@ -615,7 +615,11 @@ async function keepSigned({origin, identity, path, field, label, json, now, fetc
 /** The record of root `rootPublicKeyHex` at `path` from the first of
  * `origins` that keeps one `accept` takes, or `null`. A host answers
  * `{[field]: record}`, with `null` when it keeps none. */
+// The record from the first of `origins` that keeps one; `null` when a host
+// answered and none keeps one, `undefined` when no host answered at all, so
+// a caller can tell "has none" from "could not ask".
 async function fetchKept(path, field, rootPublicKeyHex, origins, accept, fetcher) {
+  let answered = false;
   for (const origin of origins) {
     try {
       const response = await fetcher(new URL(path, origin).href, {
@@ -623,12 +627,13 @@ async function fetchKept(path, field, rootPublicKeyHex, origins, accept, fetcher
       });
       if (!response.ok) continue;
       const record = (await response.json())?.[field] ?? null;
+      answered = true;
       if (record !== null && accept(record)) return record;
     } catch {
       // An unreachable host: ask the next.
     }
   }
-  return null;
+  return answered ? null : undefined;
 }
 
 /**
@@ -646,7 +651,8 @@ export async function publishEnvelope({origin, identity = currentIdentity(), env
 }
 
 /** The envelope of root `rootPublicKeyHex` from the first of `origins` that
- * keeps it, or `null`. */
+ * keeps it; `null` when they answered without one, `undefined` when none
+ * answered. */
 export async function fetchEnvelope(rootPublicKeyHex, origins, {fetch: fetcher = (...args) => globalThis.fetch(...args)} = {}) {
   return fetchKept('/peer/v1/envelope/fetch', 'envelope', rootPublicKeyHex, origins, envelope => envelope?.root_public_key === rootPublicKeyHex, fetcher);
 }
@@ -676,7 +682,8 @@ export async function publishProfile({origin, identity = currentIdentity(), disp
 }
 
 /** The profile (`{version, user_public_key, display_name, photo?}`) of root
- * `rootPublicKeyHex` from the first of `origins` that keeps it, or `null`.
+ * `rootPublicKeyHex` from the first of `origins` that keeps it; `null` when
+ * they answered without one, `undefined` when none answered.
  * Hosts check the root's signature before keeping one. */
 export async function fetchProfile(rootPublicKeyHex, origins, {fetch: fetcher = (...args) => globalThis.fetch(...args)} = {}) {
   return fetchKept('/peer/v1/profile/fetch', 'profile', rootPublicKeyHex, origins,

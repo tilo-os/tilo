@@ -408,11 +408,12 @@ export function createIdentityActions({
  * it is the newest name any of the person's devices chose, so it is applied
  * here (`apply(name)`). Without one, a device holding the root (`identity`)
  * publishes the name it chose here (`chosen`), if any, to every origin.
- * Resolves to the name applied, or `null`.
+ * `onKept(profile)` hears a kept profile, `onNone()` that the hosts answered
+ * and keep none. Resolves to the name applied, or `null`.
  */
 export async function syncProfile({
   userPublicKey, origins, identity = null, chosen = null, apply, find = fetchProfile, publish = publishProfile,
-  onKept = () => {}, onError = error => console.warn('identity:', error),
+  onKept = () => {}, onNone = () => {}, onError = error => console.warn('identity:', error),
 }) {
   if (!userPublicKey) return null;
   const unique = [...new Set(origins)];
@@ -423,6 +424,9 @@ export async function syncProfile({
     if (kept.display_name !== chosen) apply(kept.display_name);
     return kept.display_name;
   }
+  // Their hosts answered and keep none: nothing kept to keep apart from
+  // what this device publishes (a linked account's picture, say).
+  if (kept === null) onNone();
   if (chosen && identity?.userPublicKey === userPublicKey && identity.sign && !identity.locked) {
     const results = await Promise.allSettled(unique.map(origin => publish({origin, identity, displayName: chosen})));
     for (const result of results) if (result.status === 'rejected') onError(result.reason);
