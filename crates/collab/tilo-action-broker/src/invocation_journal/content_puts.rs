@@ -35,7 +35,7 @@ impl InvocationJournal {
         &mut self,
         record: &ContentPutRecord,
     ) -> Result<Durable, String> {
-        self.check()?;
+        self.ready()?;
         let mut line = serde_json::to_vec(record).map_err(|error| error.to_string())?;
         line.push(b'\n');
         self.stage(

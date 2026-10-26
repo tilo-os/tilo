@@ -142,6 +142,27 @@ class TerminalWithoutShellTests(unittest.TestCase):
         self.assertIsNone(res.metrics["seconds_to_shell"])
 
 
+    def test_no_shell_without_a_refusal_quotes_the_runtime_session_log_and_guests(self):
+        evidence = ("journal: ush: serving guests|ush: importing the default runtime for its first use|\n"
+                    "session log: \n"
+                    "guests: 4242 61 00:00:40 /usr/libexec/tilo-ush run --host-root /|\n")
+        ctx = SimpleNamespace(
+            vm=SimpleNamespace(control=lambda *args: None,
+                               exec=lambda script, **k: evidence if "guests:" in script else "Started."),
+            shot=lambda name: None, write=lambda name, text: None)
+        res = SimpleNamespace(metrics={})
+        with patch.object(apps, "_lifecycle", return_value=(1, {}, 0)), \
+                patch.object(core, "terminal_shells", return_value=set()), \
+                patch.object(core, "wait_new_terminal_shell", return_value=None), \
+                patch.object(core, "ush_diagnostics", return_value=""):
+            with self.assertRaises(apps.CheckFailed) as failed:
+                apps.terminal(ctx, res)
+        said = str(failed.exception)
+        self.assertIn("importing the default runtime for its first use", said)
+        self.assertIn("4242 61 00:00:40 /usr/libexec/tilo-ush run", said)
+        self.assertNotIn("session log:", said, "an empty part is left out")
+
+
 class ParseProcsTests(unittest.TestCase):
     def test_rows_keep_parent_session_cgroup_and_command(self):
         parsed = procs(TERMINAL)

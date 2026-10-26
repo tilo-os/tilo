@@ -641,3 +641,73 @@ fn app_opener_pointer_press_waits_and_drag_cancel_keeps_native_search_closed() {
         "Escape closes native Search after a completed click"
     );
 }
+
+fn launchpad_card(widget: &dyn Widget, slug: &str) -> Option<Rect> {
+    if let Some(pad) = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<tilo_desktop::launchpad::CollaborationLaunchpad>())
+    {
+        let id = format!("launchpad:{slug}");
+        return pad
+            .targets()
+            .into_iter()
+            .find(|(target, _)| *target == id)
+            .map(|(_, rect)| rect);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| launchpad_card(child, slug))
+}
+
+/// A finger tapping an app card opens its app, as a click does: the raw
+/// contact is left to the compositor's touch-to-pointer translation (no
+/// chrome takes it), which turns the tap into a click on the card.
+#[test]
+fn a_touch_tap_on_an_app_card_opens_its_app() {
+    use winit::event::{Touch, TouchPhase};
+    let tree = WorkspaceTree::bootstrap_default();
+    let (mut host, _) = build_tilo_overlay_host_with_chrome(&tree);
+    let apps = FakeApplications::install(&mut host, 0);
+    let mut doc = AutoCommit::new();
+    let theme = Theme::dark().with_reduce_motion(true);
+    let (taffy, node) = launchpad_journey_layout(&mut host, &theme);
+    launchpad_journey_paint(&mut host, &theme, "touch-idle");
+    let card = launchpad_card(host.content.as_ref(), "notes")
+        .expect("the empty workspace offers a Notes card")
+        .center();
+    let finger = |phase| Touch {
+        device_id: winit::event::DeviceId::dummy(),
+        phase,
+        location: winit::dpi::PhysicalPosition::new(card.x, card.y),
+        force: None,
+        id: 3,
+    };
+    let mut pointer = crate::compositor::touch_pointer::TouchPointer::default();
+    for phase in [TouchPhase::Started, TouchPhase::Ended] {
+        let touch = finger(phase);
+        let raw = ui::testing::Dispatch::new()
+            .doc(&mut doc)
+            .layout(&taffy, node)
+            .send(&mut host, &WindowEvent::Touch(touch));
+        host.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        // Where a contact begins decides its route (`touch_pointer::touch_route`).
+        assert!(
+            phase != TouchPhase::Started || !raw.handled,
+            "the chrome took a tap on the Notes card raw, so it never becomes a click"
+        );
+        let route = if raw.handled {
+            crate::compositor::touch_pointer::TouchRoute::Raw
+        } else {
+            crate::compositor::touch_pointer::TouchRoute::for_cursor(None)
+        };
+        for event in pointer.events(&touch, || route) {
+            launchpad_journey_deliver(&mut host, &mut doc, &event, &taffy, node);
+        }
+    }
+    assert_eq!(
+        *apps.opened.borrow(),
+        ["so.tilo.notes"],
+        "a tap on the Notes card opens Notes"
+    );
+}

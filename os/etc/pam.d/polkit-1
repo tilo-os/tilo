@@ -1,0 +1,9 @@
+#%PAM-1.0
+# polkit's authentication agent helper (polkit-agent-helper-1), which pkexec,
+# run0 and every other polkit prompt authenticate through. Who may confirm,
+# and with what, is tilo-auth's (os/etc/pam.d/tilo-auth); the session phase is
+# Fedora's, as in /usr/lib/pam.d/polkit-1.
+auth       substack     tilo-auth
+account    include      tilo-auth
+password   substack     tilo-auth
+session    include      system-auth

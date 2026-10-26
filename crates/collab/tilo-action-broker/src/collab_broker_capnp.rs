@@ -166,476 +166,8 @@ fn invocation_target_peer(requested: u64, current_connection: u64) -> u64 {
 mod realtime_service_boundary_tests;
 
 #[cfg(test)]
-mod device_continuity_service_boundary_tests {
-    use super::*;
-    use crate::services::{
-        NearbyTransferRequestContext, NearbyTransferServices, WifiContinuityServices,
-    };
-
-    #[derive(Default)]
-    struct RecordingWifi {
-        calls: Mutex<Vec<runtime_collab::WifiContinuityCommand>>,
-    }
-
-    impl WifiContinuityServices for RecordingWifi {
-        fn command(
-            &self,
-            command: runtime_collab::WifiContinuityCommand,
-        ) -> runtime_collab::WifiContinuityReply {
-            self.calls.lock().expect("calls").push(command);
-            runtime_collab::WifiContinuityReply::NotFound
-        }
-    }
-
-    struct RecordingNearby {
-        reply: runtime_collab::NearbyTransferReply,
-        calls: Mutex<
-            Vec<(
-                NearbyTransferRequestContext,
-                runtime_collab::NearbyTransferCommand,
-            )>,
-        >,
-    }
-
-    impl RecordingNearby {
-        fn answering(reply: runtime_collab::NearbyTransferReply) -> Self {
-            Self {
-                reply,
-                calls: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
-    impl NearbyTransferServices for RecordingNearby {
-        fn command(
-            &self,
-            context: &NearbyTransferRequestContext,
-            command: runtime_collab::NearbyTransferCommand,
-        ) -> Result<runtime_collab::NearbyTransferReply, String> {
-            self.calls
-                .lock()
-                .expect("calls")
-                .push((context.clone(), command));
-            Ok(self.reply.clone())
-        }
-
-        fn disconnect(&self, _peer_id: u64) {}
-
-        fn changed(
-            &self,
-            context: &NearbyTransferRequestContext,
-            after: u64,
-        ) -> Option<crate::services::NearbyTransferChange> {
-            self.calls.lock().expect("calls").push((
-                context.clone(),
-                runtime_collab::NearbyTransferCommand::Snapshot,
-            ));
-            Some(Box::pin(std::future::ready(after.wrapping_add(1))))
-        }
-    }
-
-    /// A host that answers commands but cannot say when its state changes.
-    struct UnannouncedNearby;
-
-    impl NearbyTransferServices for UnannouncedNearby {
-        fn command(
-            &self,
-            _context: &NearbyTransferRequestContext,
-            _command: runtime_collab::NearbyTransferCommand,
-        ) -> Result<runtime_collab::NearbyTransferReply, String> {
-            Ok(runtime_collab::NearbyTransferReply::Accepted)
-        }
-
-        fn disconnect(&self, _peer_id: u64) {}
-    }
-
-    fn lookup() -> Vec<u8> {
-        serde_json::to_vec(&runtime_collab::WifiContinuityCommand::Lookup {
-            ssid: "home".into(),
-            security: runtime_collab::PortableWifiSecurity::Wpa2,
-        })
-        .expect("encode lookup")
-    }
-
-    fn snapshot() -> Vec<u8> {
-        serde_json::to_vec(&runtime_collab::NearbyTransferCommand::Snapshot)
-            .expect("encode snapshot")
-    }
-
-    fn files_context() -> NearbyTransferRequestContext {
-        NearbyTransferRequestContext::authenticated(
-            41,
-            NEARBY_TRANSFER_APP_ID,
-            "workspace-7",
-            CrdtRoute::app(NEARBY_TRANSFER_APP_ID, "workspace-7").channel_key(),
-            Some("local-person".into()),
-        )
-    }
-
-    #[test]
-    fn network_wake_uses_only_the_certified_settings_capability() {
-        let service = Arc::new(RecordingWifi::default());
-        let services = HostServices {
-            wifi_continuity: Some(service.clone()),
-            ..Default::default()
-        };
-        let command = runtime_collab::WifiContinuityCommand::NetworkWake {
-            profile_uuid: "11111111-1111-4111-8111-111111111111".into(),
-            enabled: Some(true),
-        };
-        let wire = serde_json::to_vec(&command).unwrap();
-        delegate_wifi_continuity_command(
-            &services,
-            WIFI_CONTINUITY_APP_ID,
-            WIFI_CONTINUITY_APP_ID,
-            &wire,
-        )
-        .unwrap();
-        assert_eq!(service.calls.lock().unwrap().as_slice(), [command]);
-        assert!(
-            delegate_wifi_continuity_command(
-                &services,
-                "so.tilo.browser",
-                WIFI_CONTINUITY_APP_ID,
-                &wire
-            )
-            .is_err()
-        );
-        assert!(
-            delegate_wifi_continuity_command(
-                &services,
-                WIFI_CONTINUITY_APP_ID,
-                "so.tilo.browser",
-                &wire
-            )
-            .is_err()
-        );
-        assert!(
-            delegate_wifi_continuity_command(
-                &services,
-                WIFI_CONTINUITY_APP_ID,
-                WIFI_CONTINUITY_APP_ID,
-                br#"{"command":"network-wake","profile_uuid":"--injection","enabled":true}"#
-            )
-            .is_err()
-        );
-        assert_eq!(service.calls.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn wifi_continuity_delegates_only_the_certified_settings_route() {
-        let service = Arc::new(RecordingWifi::default());
-        let services = HostServices {
-            wifi_continuity: Some(service.clone()),
-            ..Default::default()
-        };
-        let reply = delegate_wifi_continuity_command(
-            &services,
-            WIFI_CONTINUITY_APP_ID,
-            WIFI_CONTINUITY_APP_ID,
-            &lookup(),
-        )
-        .expect("certified Settings delegates");
-        assert_eq!(
-            reply,
-            serde_json::to_vec(&runtime_collab::WifiContinuityReply::NotFound).expect("reply")
-        );
-        assert_eq!(service.calls.lock().expect("calls").len(), 1);
-
-        let other_app = delegate_wifi_continuity_command(
-            &services,
-            "so.tilo.browser",
-            "so.tilo.browser",
-            &lookup(),
-        )
-        .expect_err("only Settings carries Wi-Fi credentials");
-        assert!(other_app.to_string().contains("certified Settings"));
-        let spoofed = delegate_wifi_continuity_command(
-            &services,
-            WIFI_CONTINUITY_APP_ID,
-            "so.tilo.browser",
-            &lookup(),
-        )
-        .expect_err("caller claim cannot override certified route");
-        assert!(spoofed.to_string().contains("certified connection route"));
-        let oversized = delegate_wifi_continuity_command(
-            &services,
-            WIFI_CONTINUITY_APP_ID,
-            WIFI_CONTINUITY_APP_ID,
-            &vec![b' '; runtime_collab::MAX_WIFI_CONTINUITY_WIRE_BYTES + 1],
-        )
-        .expect_err("oversized command refused");
-        assert!(oversized.to_string().contains("protocol bound"));
-        assert_eq!(service.calls.lock().expect("calls").len(), 1);
-    }
-
-    #[test]
-    fn wifi_continuity_is_unavailable_without_a_host_service() {
-        let unsupported = delegate_wifi_continuity_command(
-            &HostServices::default(),
-            WIFI_CONTINUITY_APP_ID,
-            WIFI_CONTINUITY_APP_ID,
-            &lookup(),
-        )
-        .expect_err("host without Wi-Fi fails explicitly");
-        assert!(unsupported.to_string().contains("unsupported by this host"));
-    }
-
-    #[test]
-    fn nearby_transfer_delegates_only_the_certified_files_route() {
-        let service = Arc::new(RecordingNearby::answering(
-            runtime_collab::NearbyTransferReply::Accepted,
-        ));
-        let services = HostServices {
-            nearby_transfer: Some(service.clone()),
-            ..Default::default()
-        };
-        let context = files_context();
-        let reply = delegate_nearby_transfer_command(
-            &services,
-            &context,
-            NEARBY_TRANSFER_APP_ID,
-            &snapshot(),
-        )
-        .expect("certified Files delegates");
-        assert_eq!(
-            reply,
-            serde_json::to_vec(&runtime_collab::NearbyTransferReply::Accepted).expect("reply")
-        );
-        assert_eq!(
-            service.calls.lock().expect("calls").as_slice(),
-            &[(context, runtime_collab::NearbyTransferCommand::Snapshot)]
-        );
-
-        let other_app = NearbyTransferRequestContext::authenticated(
-            41,
-            "so.tilo.browser",
-            "workspace-7",
-            CrdtRoute::app("so.tilo.browser", "workspace-7").channel_key(),
-            Some("local-person".into()),
-        );
-        let refused =
-            delegate_nearby_transfer_command(&services, &other_app, "so.tilo.browser", &snapshot())
-                .expect_err("only Files sends to nearby devices");
-        assert!(refused.to_string().contains("certified Files"));
-        let spoofed = delegate_nearby_transfer_command(
-            &services,
-            &files_context(),
-            "so.tilo.browser",
-            &snapshot(),
-        )
-        .expect_err("caller claim cannot override certified route");
-        assert!(spoofed.to_string().contains("certified connection route"));
-        let invalid = delegate_nearby_transfer_command(
-            &services,
-            &files_context(),
-            NEARBY_TRANSFER_APP_ID,
-            br#"{"command":"send"}"#,
-        );
-        assert!(invalid.is_err(), "malformed command refused");
-        assert_eq!(service.calls.lock().expect("calls").len(), 1);
-    }
-
-    #[test]
-    fn airdrop_delegation_seals_person_and_rejects_application_trust_claims() {
-        use runtime_collab::{NearbyTransferCommand as Command, NearbyTransferReply as Reply};
-        let service = Arc::new(RecordingNearby::answering(Reply::Accepted));
-        let services = HostServices {
-            nearby_transfer: Some(service.clone()),
-            ..Default::default()
-        };
-        let context = files_context();
-        let command = Command::SendAirDrop {
-            source_path: b"/approved/report".to_vec(),
-            address: "127.0.0.1".into(),
-            port: 443,
-        };
-        let json = serde_json::to_vec(&command).unwrap();
-        delegate_nearby_transfer_command(&services, &context, NEARBY_TRANSFER_APP_ID, &json)
-            .unwrap();
-        let calls = service.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].0.person(), Some("local-person"));
-        assert_eq!(calls[0].1, command);
-        drop(calls);
-        let mut spoof = serde_json::from_slice::<serde_json::Value>(&json).unwrap();
-        for key in ["person", "certificate_sha256", "verified", "remember"] {
-            spoof[key] = "app claim".into();
-            assert!(
-                delegate_nearby_transfer_command(
-                    &services,
-                    &context,
-                    NEARBY_TRANSFER_APP_ID,
-                    &serde_json::to_vec(&spoof).unwrap()
-                )
-                .is_err()
-            );
-            spoof.as_object_mut().unwrap().remove(key);
-        }
-        assert_eq!(
-            service.calls.lock().unwrap().len(),
-            1,
-            "spoofed authority never reaches the service"
-        );
-    }
-
-    #[test]
-    fn nearby_transfer_refuses_an_unbounded_host_reply() {
-        let service = Arc::new(RecordingNearby::answering(
-            runtime_collab::NearbyTransferReply::Rejected {
-                reason: String::new(),
-            },
-        ));
-        let services = HostServices {
-            nearby_transfer: Some(service),
-            ..Default::default()
-        };
-        let error = delegate_nearby_transfer_command(
-            &services,
-            &files_context(),
-            NEARBY_TRANSFER_APP_ID,
-            &snapshot(),
-        )
-        .expect_err("invalid reply never reaches the app");
-        assert!(error.to_string().contains("invalid bounded reply"));
-    }
-
-    #[test]
-    fn only_the_certified_files_route_waits_for_nearby_changes() {
-        let service = Arc::new(RecordingNearby::answering(
-            runtime_collab::NearbyTransferReply::Accepted,
-        ));
-        let services = HostServices {
-            nearby_transfer: Some(service.clone()),
-            ..Default::default()
-        };
-        let change = nearby_transfer_change(&services, &files_context(), 4)
-            .expect("Files waits on its own route");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("runtime");
-        assert_eq!(runtime.block_on(change), 5, "the host's next change");
-        assert_eq!(
-            service.calls.lock().expect("calls")[0].0,
-            files_context(),
-            "the host learns which connection waits, for its handles"
-        );
-
-        for (app, workspace) in [
-            ("so.tilo.browser", "workspace-7"),
-            (NEARBY_TRANSFER_APP_ID, ""),
-        ] {
-            let context = NearbyTransferRequestContext::authenticated(
-                41,
-                app,
-                workspace,
-                CrdtRoute::app(app, workspace).channel_key(),
-                Some("local-person".into()),
-            );
-            let refused = nearby_transfer_change(&services, &context, 0)
-                .err()
-                .expect("only the certified Files route in a workspace waits");
-            assert!(refused.to_string().contains("certified Files"));
-        }
-        assert_eq!(
-            service.calls.lock().expect("calls").len(),
-            1,
-            "a refused route never reaches the host"
-        );
-        for services in [
-            HostServices::default(),
-            HostServices {
-                nearby_transfer: Some(Arc::new(UnannouncedNearby)),
-                ..Default::default()
-            },
-        ] {
-            let unannounced = nearby_transfer_change(&services, &files_context(), 0)
-                .err()
-                .expect("a host that cannot announce changes says so");
-            assert_eq!(unannounced.kind, capnp::ErrorKind::Unimplemented);
-        }
-    }
-
-    /// Speaker groups that record each wait and answer it with the next
-    /// revision, or (`announces: false`) cannot say when they change.
-    struct WaitingSpeakers {
-        announces: bool,
-        waits: Mutex<Vec<u64>>,
-    }
-
-    impl crate::services::SpeakerServices for WaitingSpeakers {
-        fn command(
-            &self,
-            _command: runtime_collab::SpeakerCommand,
-        ) -> runtime_collab::SpeakerReply {
-            runtime_collab::SpeakerReply::Done { group: None }
-        }
-
-        fn changed(&self, after: u64) -> Option<crate::services::SpeakerChange> {
-            self.waits.lock().expect("waits").push(after);
-            self.announces
-                .then(|| Box::pin(std::future::ready(after.wrapping_add(1))) as _)
-        }
-    }
-
-    #[test]
-    fn only_the_certified_settings_route_waits_for_speaker_changes() {
-        let service = Arc::new(WaitingSpeakers {
-            announces: true,
-            waits: Mutex::new(Vec::new()),
-        });
-        let services = HostServices {
-            speakers: Some(service.clone()),
-            ..Default::default()
-        };
-        let change =
-            speaker_change(&services, "so.tilo.settings", 4).expect("Settings waits on its route");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("runtime");
-        assert_eq!(runtime.block_on(change), 5, "the host's next change");
-
-        for app in [NEARBY_TRANSFER_APP_ID, "so.tilo.browser", ""] {
-            let refused = speaker_change(&services, app, 0)
-                .err()
-                .expect("only the certified Settings route waits");
-            assert!(refused.to_string().contains("certified Settings"));
-        }
-        assert_eq!(
-            *service.waits.lock().expect("waits"),
-            [4],
-            "a refused route never reaches the host"
-        );
-
-        for services in [
-            HostServices::default(),
-            HostServices {
-                speakers: Some(Arc::new(WaitingSpeakers {
-                    announces: false,
-                    waits: Mutex::new(Vec::new()),
-                })),
-                ..Default::default()
-            },
-        ] {
-            let unannounced = speaker_change(&services, "so.tilo.settings", 0)
-                .err()
-                .expect("a host that cannot announce changes says so");
-            assert_eq!(unannounced.kind, capnp::ErrorKind::Unimplemented);
-        }
-    }
-
-    #[test]
-    fn nearby_transfer_is_unavailable_without_a_host_service() {
-        let unsupported = delegate_nearby_transfer_command(
-            &HostServices::default(),
-            &files_context(),
-            NEARBY_TRANSFER_APP_ID,
-            &snapshot(),
-        )
-        .expect_err("host without nearby radios fails explicitly");
-        assert!(unsupported.to_string().contains("unsupported by this host"));
-    }
-}
+#[path = "collab_broker_capnp/device_continuity_service_boundary_tests.rs"]
+mod device_continuity_service_boundary_tests;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1085,10 +617,79 @@ impl AdmittedJoinIdentity {
     /// This admission handed to `agent` by the person's own device, if any.
     fn delegated_to(mut self, agent: Option<&str>) -> Self {
         if let Some(agent) = agent {
-            self.agent_id = Some(agent.to_owned());
+            // The delegation names an agent, never its actor spelling.
+            self.agent_id = Some(delegated_agent_name(agent).to_owned());
             self.session_delegated = true;
+        } else {
+            // A fresh admission to the person themselves: no earlier caller's
+            // delegation may survive into it.
+            self.agent_id = None;
+            self.session_delegated = false;
         }
         self
+    }
+
+    /// The durable owner of an invocation this admitted identity invokes:
+    /// [`InvocationOwner::AuthenticatedLocal`] naming the agent this session
+    /// was handed to, or no agent for the person themselves. Both doors that
+    /// admit a certified or local identity derive their owner here, so an
+    /// invocation's durable owner, its receipt actor and every later
+    /// validation name the same effective actor.
+    fn invocation_owner(&self) -> Result<InvocationOwner, String> {
+        let cert = self
+            .certificate
+            .as_ref()
+            .ok_or("admitted caller certificate missing")?;
+        let owner = InvocationOwner::AuthenticatedLocal {
+            root: cert.user_public_key,
+            device: cert.device_public_key,
+            agent: self.agent_id.clone(),
+        };
+        owner.validate()?;
+        Ok(owner)
+    }
+
+    /// The durable owner of an invocation from a certified caller
+    /// ([`VerifiedActionCaller`]).
+    ///
+    /// A session the person's own device handed to an agent is owned exactly
+    /// as the local door owns that same admitted identity
+    /// ([`Self::invocation_owner`]): [`InvocationOwner::AuthenticatedLocal`]
+    /// naming the agent, so the durable owner, the receipt actor and every
+    /// later validation agree on who acted. A plain certified person keeps
+    /// [`InvocationOwner::Certified`], which is how their invocations have
+    /// always been owned.
+    ///
+    /// A delegated session whose admission cannot name its owner (an
+    /// admission made without a retained certificate, as a network door's
+    /// can be) is refused here: falling back to [`InvocationOwner::Certified`]
+    /// would silently drop the delegation the person's device granted.
+    fn delegated_invocation_owner(
+        &self,
+        delegated: Option<&str>,
+    ) -> Result<InvocationOwner, String> {
+        if let Some(agent) = delegated {
+            // The person and device this admission proves, and the delegation
+            // this caller says the person handed it.
+            self.invocation_owner()?;
+            if self.agent_id.as_deref() != Some(delegated_agent_name(agent)) {
+                return Err("admitted caller does not carry its delegation".into());
+            }
+            return self.invocation_owner();
+        }
+        if self.agent_id.is_some() || self.session_delegated {
+            return Err("admitted caller carries another agent's delegation".into());
+        }
+        Ok(self.person_owner())
+    }
+
+    /// The owner of an invocation by the certified person themselves, never
+    /// an agent acting for them.
+    fn person_owner(&self) -> InvocationOwner {
+        InvocationOwner::Certified {
+            root: self.verified.user_public_key,
+            device: self.verified.device_public_key,
+        }
     }
 
     fn broker_actor(&self) -> BrokerActor {
@@ -1927,17 +1528,68 @@ impl VerifiedActionCaller {
     /// `agent`: it acts for the person with the delegation a device gives
     /// its agents.
     fn delegated_to(mut self, agent: &str) -> Self {
-        self.delegated = Some(agent.to_owned());
+        self.delegated = Some(delegated_agent_name(agent).to_owned());
         self.native_projection_verified = false;
         self.admitted = self.admitted.delegated_to(self.delegated.as_deref());
         self
     }
 
-    fn owner(&self) -> InvocationOwner {
-        InvocationOwner::Certified {
-            root: self.admitted.verified.user_public_key,
-            device: self.admitted.verified.device_public_key,
+    /// Who durably owns what this caller invokes.
+    ///
+    /// A plain certified person is owned as [`InvocationOwner::Certified`].
+    /// A session the person's own device handed to an agent (an MCP client,
+    /// [`Self::delegated_to`]) is owned exactly as the local door owns the
+    /// same admitted identity ([`durable_local_invocation::LocalCaller::owner_of`]):
+    /// [`InvocationOwner::AuthenticatedLocal`] naming that agent, so the
+    /// durable owner, the receipt actor and every later validation agree on
+    /// who acted. Keeping only `Certified` here dropped the delegation, and
+    /// the agent's own terminal update then looked like a stranger's.
+    fn owner(&self) -> Result<InvocationOwner, String> {
+        self.admitted
+            .delegated_invocation_owner(self.delegated.as_deref())
+    }
+
+    /// What a fresh verification of this caller proves: `current` (the
+    /// presentation or signed evidence verified again, without a delegation)
+    /// certifies the same person from the same device as the admission this
+    /// caller carries.
+    ///
+    /// This cannot detect a changed session delegation: the delegation is
+    /// never part of the presentation or the signed evidence, it is this
+    /// caller's own, so it is not compared here. It proves the person and
+    /// their device, and nothing else; the caller's delegation still decides
+    /// what the invocation is owned by ([`Self::owner`]) and what it is
+    /// permitted as.
+    /// # Errors
+    /// The live admission proves another person or device, or no longer
+    /// carries exactly the delegation this caller's invocation is owned by.
+    fn reverified(&self, current: &Self) -> Result<(), String> {
+        let (owner, current) = (self.owner()?, current.owner()?);
+        match (same_root_and_device(&owner), same_root_and_device(&current)) {
+            (Some(owner), Some(current)) if owner == current => Ok(()),
+            _ => Err("certified caller changed".into()),
         }
+    }
+}
+
+/// The agent a delegation names: an actor string (`agent:mcp-7`) names the
+/// same agent as its bare name (`mcp-7`). Delegations are normalized here, at
+/// the one point every one of them passes, so the durable owner and every
+/// later comparison see one spelling.
+fn delegated_agent_name(agent: &str) -> &str {
+    agent.strip_prefix("agent:").unwrap_or(agent)
+}
+
+/// The person and device an owner names, for an owner that retains an
+/// authenticated one. An owner confined to an actor string names no device,
+/// so it never matches.
+fn same_root_and_device(owner: &InvocationOwner) -> Option<([u8; 32], [u8; 32])> {
+    match owner {
+        InvocationOwner::Certified { root, device }
+        | InvocationOwner::AuthenticatedLocal { root, device, .. } => Some((*root, *device)),
+        InvocationOwner::Local { .. }
+        | InvocationOwner::Enrolled { .. }
+        | InvocationOwner::NativeTask { .. } => None,
     }
 }
 
@@ -2240,17 +1892,17 @@ impl CapnpBrokerState {
         if self.durable_owner_required {
             self.owner_health()?;
         }
-        self.journal
+        match &mut *self
+            .journal
             .lock()
             .map_err(|_| "invocation journal unavailable")?
-            .as_ref()
-            .map_err(Clone::clone)?
-            .as_ref()
-            .ok_or_else(|| "durable admission unavailable".to_string())
-            .and_then(|journal| {
-                journal.check()?;
-                Ok(journal.host())
-            })
+        {
+            // An invocation starts on a journal that recovered from any
+            // failed barrier, never on one that waits for a restart.
+            Ok(Some(journal)) => journal.ready().map(|()| journal.host()),
+            Ok(None) => Err("durable admission unavailable".to_string()),
+            Err(error) => Err(error.clone()),
+        }
     }
 
     pub(crate) fn verify_action_caller(
@@ -2314,7 +1966,7 @@ impl CapnpBrokerState {
         }
     }
 
-    fn current_action_caller(
+    pub(crate) fn current_action_caller(
         &self,
         caller: &VerifiedActionCaller,
     ) -> Result<AdmittedJoinIdentity, String> {
@@ -2339,13 +1991,22 @@ impl CapnpBrokerState {
         } else {
             self.verify_action_caller(&caller.room, &caller.presentation)?
         };
-        if current.owner() != caller.owner() {
-            return Err("certified caller changed".into());
-        }
+        // The fresh verification re-establishes the person and device; the
+        // session delegation this caller carries is the one the person's own
+        // device handed over, here re-applied exactly as the dispatch does.
+        // A caller whose proven person or device changed is refused, and a
+        // delegated caller whose admission can no longer name its owner is
+        // refused rather than downgraded, while its own recheck passes.
+        caller.reverified(&current)?;
+        caller.owner()?;
         Ok(current.admitted.delegated_to(caller.delegated.as_deref()))
     }
 
-    fn caller_key(
+    #[expect(
+        private_interfaces,
+        reason = "the journal key is the broker's own handle, reachable crate-wide only for tests"
+    )]
+    pub(crate) fn caller_key(
         &self,
         caller: &VerifiedActionCaller,
         invocation: tilo_actions::InvocationId,
@@ -2353,7 +2014,7 @@ impl CapnpBrokerState {
         Ok(InvocationKey {
             room: caller.room.clone(),
             host: self.invocation_host()?,
-            owner: caller.owner(),
+            owner: caller.owner()?,
             invocation,
         })
     }
@@ -5942,9 +5603,9 @@ impl CapnpBrokerState {
         } = provenance;
         let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
         let owner = match durable {
-            Some(context) => context.owner(),
+            Some(context) => context.owner()?,
             None => match &origin {
-                Some(InvocationCaller::Certified { caller, .. }) => caller.owner(),
+                Some(InvocationCaller::Certified { caller, .. }) => caller.owner()?,
                 Some(InvocationCaller::NativePerson { certificate, .. }) => {
                     InvocationOwner::AuthenticatedLocal {
                         root: certificate.user_public_key,
@@ -20005,6 +19666,207 @@ pub mod tests {
             write!(file, "{}", before + 1).unwrap();
             file.sync_all().unwrap();
             std::fs::File::open(root).unwrap().sync_all().unwrap();
+        }
+
+        /// Status, retry and the effect barrier re-verify the caller's own
+        /// custody. A delegated caller's recheck must pass while it stays the
+        /// same person on the same device, and every other continuation — the
+        /// person without that delegation, or another agent — must be refused
+        /// by the same sites.
+        #[tokio::test(flavor = "current_thread")]
+        async fn a_delegated_callers_continuation_passes_reverification_and_others_do_not() {
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let root = tempfile::tempdir().unwrap();
+                    let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+                    let caller = caller.delegated_to("mcp-7");
+                    let person = fixture
+                        .state
+                        .verify_action_caller(
+                            &fixture.cluster_id,
+                            &certified_join(
+                                &fixture.cluster_id,
+                                &SigningKey::from_bytes(&[51; 32]),
+                                &SigningKey::from_bytes(&[52; 32]),
+                            )
+                            .encode()
+                            .unwrap(),
+                        )
+                        .unwrap();
+                    let other_agent = person.clone().delegated_to("mcp-8");
+                    let started = fixture
+                        .state
+                        .start_verified_invocation(&caller, &request, None)
+                        .unwrap();
+                    assert_eq!(
+                        started.key.owner,
+                        InvocationOwner::AuthenticatedLocal {
+                            root: caller.admitted.verified.user_public_key,
+                            device: caller.admitted.verified.device_public_key,
+                            agent: Some("mcp-7".into()),
+                        },
+                        "the durable owner names the delegated agent"
+                    );
+                    let delivered = fixture.take_invocation_identity().unwrap();
+                    // Status: the agent's own recheck passes; the person's
+                    // continuation and another agent's are refused.
+                    assert_eq!(
+                        fixture
+                            .state
+                            .verified_invocation_status(&caller, request.invocation)
+                            .unwrap()
+                            .map(|record| record.key.owner),
+                        Some(started.key.owner.clone())
+                    );
+                    // The person themselves, without this delegation, is
+                    // refused: the admission no longer carries the delegation
+                    // its invocation is owned by, never downgraded to them.
+                    let person_key = fixture
+                        .state
+                        .caller_key(&person, request.invocation)
+                        .unwrap();
+                    assert_eq!(
+                        person_key.owner,
+                        InvocationOwner::Certified {
+                            root: person.admitted.verified.user_public_key,
+                            device: person.admitted.verified.device_public_key,
+                        }
+                    );
+                    assert_ne!(person_key, started.key);
+                    // Another agent reaches its own key, and that key is not
+                    // this invocation's: it never observes or retries it.
+                    let other_key = fixture
+                        .state
+                        .caller_key(&other_agent, request.invocation)
+                        .unwrap();
+                    assert_ne!(other_key, started.key);
+                    assert!(
+                        fixture
+                            .state
+                            .verified_invocation_status(&other_agent, request.invocation)
+                            .unwrap()
+                            .is_none(),
+                        "another agent never observes this agent's invocation"
+                    );
+                    // A retry under another agent's admission is a different
+                    // invocation: it never joins this one's record or delivery.
+                    let retried =
+                        fixture
+                            .state
+                            .start_verified_invocation(&other_agent, &request, None);
+                    if let Ok(retried) = &retried {
+                        assert_ne!(retried.key, started.key);
+                    }
+                    assert!(fixture.invocation_rx.try_recv().is_err());
+                    // Retry: the same request under the agent's custody is the
+                    // same admission, never a second delivery.
+                    let retry = fixture
+                        .state
+                        .start_verified_invocation(&caller, &request, None)
+                        .unwrap();
+                    assert_eq!(retry.key.owner, started.key.owner);
+                    assert!(fixture.invocation_rx.try_recv().is_err());
+                    // The effect barrier: the agent completes its own invocation.
+                    effect(root.path());
+                    fixture
+                        .complete_invocation(
+                            delivered.0,
+                            &tilo_actions::InvocationUpdate::Succeeded {
+                                invocation: request.invocation,
+                                output: tilo_actions::ActionOutput::default(),
+                            },
+                        )
+                        .await
+                        .unwrap();
+                    assert!(matches!(
+                        fixture
+                            .state
+                            .verified_invocation_status(&caller, request.invocation)
+                            .unwrap()
+                            .expect("the agent observes its own terminal")
+                            .update,
+                        tilo_actions::InvocationUpdate::Succeeded { invocation, .. }
+                            if invocation == request.invocation
+                    ));
+                    assert_eq!(
+                        std::fs::read_to_string(root.path().join("effect-counter")).unwrap(),
+                        "1"
+                    );
+                })
+                .await;
+        }
+
+        /// A caller the door admits without a retained certificate (a network
+        /// door's admission can be) cannot name the agent it was delegated
+        /// to. Status, retry and the effect barrier must refuse it rather than
+        /// silently re-own its invocation as the person's.
+        #[tokio::test(flavor = "current_thread")]
+        async fn a_delegated_caller_whose_admission_cannot_name_its_agent_is_refused() {
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let root = tempfile::tempdir().unwrap();
+                    let (mut fixture, caller, request) = durable_fixture(root.path(), None);
+                    let mut keyless = caller.clone().delegated_to("mcp-7");
+                    assert_eq!(
+                        caller.owner().unwrap(),
+                        InvocationOwner::Certified {
+                            root: caller.admitted.verified.user_public_key,
+                            device: caller.admitted.verified.device_public_key,
+                        }
+                    );
+                    assert!(matches!(
+                        keyless.owner().unwrap(),
+                        InvocationOwner::AuthenticatedLocal { agent: Some(ref agent), .. }
+                            if agent == "mcp-7"
+                    ));
+                    keyless.admitted.certificate = None;
+                    assert_eq!(
+                        keyless.owner().unwrap_err(),
+                        "admitted caller certificate missing"
+                    );
+                    assert_eq!(
+                        fixture
+                            .state
+                            .start_verified_invocation(&keyless, &request, None)
+                            .unwrap_err(),
+                        "admitted caller certificate missing"
+                    );
+                    assert!(fixture.invocation_rx.try_recv().is_err());
+                    // The effect barrier: it re-verifies the original caller,
+                    // and that re-verification checks the same owner. A
+                    // delegation the admission cannot back is refused, never
+                    // downgraded to the person.
+                    let person = caller.admitted.clone();
+                    assert!(matches!(
+                        fixture
+                            .state
+                            .caller_key(&keyless, request.invocation),
+                        Err(ref reason) if reason == "admitted caller certificate missing"
+                    ));
+                    for admission in [
+                        person
+                            .clone()
+                            .delegated_to(Some("mcp-7"))
+                            .delegated_to(Some("mcp-8")),
+                        person.clone().delegated_to(None),
+                    ] {
+                        let mut mismatched = keyless.clone();
+                        mismatched.admitted = admission;
+                        assert_eq!(
+                            mismatched.owner().unwrap_err(),
+                            "admitted caller does not carry its delegation"
+                        );
+                    }
+                    // The person themselves never inherits a delegation.
+                    assert_eq!(
+                        caller.owner().unwrap(),
+                        InvocationOwner::Certified {
+                            root: person.verified.user_public_key,
+                            device: person.verified.device_public_key,
+                        }
+                    );
+                })
+                .await;
         }
 
         #[tokio::test(flavor = "current_thread")]

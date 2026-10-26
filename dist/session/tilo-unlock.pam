@@ -1,0 +1,13 @@
+#%PAM-1.0
+# Tilo session-unlock PAM stack for the Tilo session installed on another
+# distribution, installed as /etc/pam.d/tilo-unlock. Those hosts have no
+# tilo-authd, so the lock screen checks what the host's own login checks: a
+# fingerprint through fprintd where its module is installed, then the host's
+# password-auth. Tilo OS ships os/etc/pam.d/tilo-unlock instead, which defers
+# to its one sign-in service.
+#
+# Used by `tilo-unlock-helper` for the auth and account phases only.
+-auth      sufficient   pam_fprintd.so
+auth       substack     password-auth
+
+account    include      password-auth

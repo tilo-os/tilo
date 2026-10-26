@@ -2260,6 +2260,7 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-session-recovery \
     os/usr/libexec/tilo-cage-session \
     os/usr/libexec/tilo-clock-floor \
+    os/usr/libexec/tilo-authselect-unchanged \
     /usr/libexec/
 # The graphical-session user target. (`systemctl --global enable` further down
 # resolves each unit file at build time, so a unit that was never copied in
@@ -2281,20 +2282,23 @@ COPY --from=remote-capture-files / /
 COPY os/etc/greetd/config.toml /etc/greetd/config.toml
 COPY --from=virtio-gallivm-cpu /virtio-gallivm-cpu.so /usr/lib/tilo/virtio-gallivm-cpu.so
 
-# PAM stack for the greetd auth service (the boot sign-in first, tolerant
-# pam_fprintd so a fingerprint can satisfy login; falls back to password-auth,
-# and starts / unlocks the user's Secret Service for the authenticated session).
-# PAM stack for in-session unlock (tilo-unlock-helper). Auth + account only.
-# tilo-auth-legacy: the old password database alone, which tilo-authd checks
-# once per person before moving them onto their user key.
+# tilo-auth is the one sign-in service: the greeter (greetd), the lock screen
+# (tilo-unlock), polkit (polkit-1, over Fedora's /usr/lib/pam.d copy) and sudo
+# take their auth, account and password phases from it and keep their own
+# session phase. tilo-auth-legacy: the old password database alone, which
+# tilo-authd checks once per person before moving them onto their user key.
 COPY \
+    os/etc/pam.d/tilo-auth \
     os/etc/pam.d/greetd \
     os/etc/pam.d/tilo-unlock \
+    os/etc/pam.d/polkit-1 \
+    os/etc/pam.d/sudo \
     os/etc/pam.d/tilo-auth-legacy \
     /etc/pam.d/
-# One check for every PAM service: system-auth and password-auth, which the
-# greeter, the lock screen, polkit, sudo, su and passwd all include, ask
-# tilo-authd (pam_tilo) before the old password hash. A custom authselect
+# One check for every PAM service: system-auth and password-auth, which
+# tilo-auth, su and passwd all include, ask tilo-authd (pam_tilo) before the
+# old password hash. Neither may offer a fingerprint of its own: tilo-auth
+# offers it only while the person's key is held. A custom authselect
 # profile over the configured one, with its features, so authselect keeps
 # owning the files; an image whose base has no authselect configuration fails
 # here rather than shipping a stack that skips the daemon.
@@ -2306,7 +2310,8 @@ RUN --mount=type=bind,source=os/scripts/authselect-tilo.py,target=/run/authselec
     && python3 /run/authselect-tilo.py /etc/authselect/custom/tilo \
     && authselect select custom/tilo $features --force \
     && grep -q pam_tilo.so /etc/pam.d/system-auth \
-    && grep -q pam_tilo.so /etc/pam.d/password-auth
+    && grep -q pam_tilo.so /etc/pam.d/password-auth \
+    && ! grep -q pam_fprintd /etc/pam.d/system-auth /etc/pam.d/password-auth
 
 # polkit rule authorising the greeter's Reboot / Shut down buttons. Lets the
 # `greetd` user issue org.freedesktop.login1.{reboot,power-off} via logind
@@ -2662,7 +2667,13 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # NetworkManager are system services/timers. joycond is not enabled here:
 # 72-joycond.rules pulls it in when a Joy-Con appears, so it stays off the
 # boot path and off machines that never see one.
-RUN systemctl enable greetd.service && \
+# authselect-apply-changes skips a boot on which nothing it applies from changed, instead
+# of holding the greeter for a run that changes nothing (tilo-authselect-unchanged). Its
+# drop-in is installed by this RUN rather than a COPY of its own: the layer budget.
+RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.service.d/10-tilo-skip-unchanged.conf,target=/run/tilo-authselect-skip-unchanged.conf,ro \
+    install -D -m 0644 /run/tilo-authselect-skip-unchanged.conf \
+      /usr/lib/systemd/system/authselect-apply-changes.service.d/10-tilo-skip-unchanged.conf && \
+    systemctl enable greetd.service && \
     systemctl disable NetworkManager.service firewalld.service chronyd.service && \
     # Fedora's presets start these at boot, ordered before multi-user.target or
     # graphical.target. They start on demand instead: ModemManager and

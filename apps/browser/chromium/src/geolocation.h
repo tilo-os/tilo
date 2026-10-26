@@ -18,7 +18,8 @@ struct Position {
   double latitude = 0, longitude = 0, accuracy = 0;
 };
 // The person's own location from the platform, when this machine will say:
-// macOS answers through Location Services. A build running offscreen, headless
+// macOS answers through Location Services; Linux has no source yet and answers
+// nothing. A build running offscreen, headless
 // or under a test account has no authorization, and the answer is nothing.
 void SystemPosition(std::function<void(std::optional<Position>)> answer);
 // The fixed position a development or test session asks for, from

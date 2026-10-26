@@ -246,6 +246,14 @@ pub trait CollabTransport: Send {
         None
     }
 
+    /// Ask `channel`'s reader for the whole committed read, as an owner being
+    /// built does. Whether the ask was taken.
+    #[cfg(any(test, feature = "test-support"))]
+    fn controlled_request_whole_read_for_test(&self, channel: &str) -> bool {
+        let _ = channel;
+        false
+    }
+
     /// Hand one native media command for `channel` to the transport's media
     /// side channel. Returns whether it was admitted.
     fn send_native_media(

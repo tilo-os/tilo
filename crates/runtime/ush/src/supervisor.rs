@@ -745,6 +745,7 @@ pub fn serve(socket: &Path, store: &Store, host_root: &Path) -> anyhow::Result<(
         tilo_files::native::private::bind_socket(socket)?
     };
     tracing::info!(socket = %socket.display(), "ush: serving guests");
+    crate::runtime_import::start(store);
 
     for conn in listener.incoming() {
         let Ok(stream) = conn else { continue };

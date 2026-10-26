@@ -550,6 +550,8 @@ def main() -> int:
             facts["provenance"]["swap"] = swapped
         time.sleep(5)
         facts["renderer"], facts["display"] = renderer(vm, without_3d=created and not args.gl)
+        # A VM this run created without --gl renders in software: no GPU for R05 to judge.
+        facts["software_rendering"] = created and not args.gl
         meta["renderer"], meta["display"] = facts["renderer"], facts["display"]
         config = {"budgets": BUDGETS, "outputs": outputs, "idle_seconds": args.idle_seconds, "locale": "en"}
         ctx = Context(vm, out, config)
@@ -562,6 +564,7 @@ def main() -> int:
         german = de
         main_ids = [i for i in ORDER + list(DE_PASS) if i in selected and (i not in DE_PASS or not german)]
         for cid in main_ids:
+            core.keep_awake(ctx)
             r = core.run_check(ctx, by_id[cid])
             results.append(r)
             print(f"{r.id} {r.status.upper():4} {r.seconds:6.1f}s  {r.title}" + (f"\n      {r.detail}" if r.detail else ""),
@@ -575,6 +578,7 @@ def main() -> int:
             except VmError as exc:
                 ctx.facts["locale_de:why"] = f"the session could not be restarted in German: {exc.reason()}"
             for cid in de_ids:
+                core.keep_awake(ctx)
                 r = core.run_check(ctx, by_id[cid])
                 results.append(r)
                 print(f"{r.id} {r.status.upper():4} {r.seconds:6.1f}s  {r.title}" + (f"\n      {r.detail}" if r.detail else ""),
@@ -611,8 +615,10 @@ def main() -> int:
                 # No file: the comparison then reports every KPI of the run as missing.
                 print(f"records: none written: {exc}", file=sys.stderr)
     expected = sum(r.status == "xfail" for r in results)
+    skipped = sum(r.status == "skip" for r in results)
     print(f"\n{doc['overall'].upper()}: {sum(r.status == 'pass' for r in results)}/{len(results)} checks pass"
-          + (f", {expected} expected failure(s)" if expected else ""))
+          + (f", {expected} expected failure(s)" if expected else "")
+          + (f", {skipped} skipped" if skipped else ""))
     print(f"report: {out / 'report.md'}")
     return 0 if doc["overall"] == "pass" else 1
 

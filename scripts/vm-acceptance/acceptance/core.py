@@ -34,6 +34,12 @@ class Unobservable(CheckFailed):
     """The check could not observe its subject. Reported as a failure, never a skip."""
 
 
+class Skipped(Exception):
+    """The run lacks what the check needs (a GPU for a GPU check on a software-rendered VM),
+    named in the reason. Reported as `skip`: never a pass, listed in the summary and with
+    the failures, and it does not fail the run, since nothing about the subject was seen."""
+
+
 class ExpectedFailure(CheckFailed):
     """The subject is known to be broken or missing in this image, and the reason is named.
 
@@ -98,6 +104,33 @@ def _calibrated(func, why: str):
     return run
 
 
+# The session locks after 5 minutes without a person's input (Settings' default), and the
+# harness drives most checks through the control socket, which is no person's input: R01 to
+# R03 alone run that long, and the idle lock then fired inside R03 (its compositor memory
+# taken over the lock overlay, the session left locked). A lone Shift press, real input that
+# no binding takes, restarts the person's idle period before a check once the last one is
+# this old; the settle keeps its handling out of the check's own idle windows.
+AWAKE_EVERY_S = 120
+AWAKE_SETTLE_S = 2.0
+
+
+def keep_awake(ctx) -> None:
+    """Press Shift on the slot's seat when the last press is `AWAKE_EVERY_S` old (or there was
+    none), so no check meets the idle dim, blank or lock it is not about. run.py calls it
+    before each check."""
+    now = time.monotonic()
+    last = ctx.facts.get("awake_at")
+    if last is not None and now - last < AWAKE_EVERY_S:
+        return
+    try:
+        ctx.vm.key("shift")
+    except VmError as exc:
+        ctx.facts["awake_failed"] = exc.reason()
+        return
+    ctx.facts["awake_at"] = now
+    time.sleep(AWAKE_SETTLE_S)
+
+
 def run_check(ctx, chk: Check) -> Result:
     res = Result(chk.id, chk.area, chk.title)
     started = time.monotonic()
@@ -114,6 +147,8 @@ def run_check(ctx, chk: Check) -> Result:
         res.status = "pass"
     except ExpectedFailure as exc:
         res.status, res.detail = "xfail", _join(res.detail, f"expected failure: {exc}")
+    except Skipped as exc:
+        res.status, res.detail = "skip", _join(res.detail, f"skipped: {exc}")
     except Unobservable as exc:
         res.status, res.unobservable, res.detail = "fail", True, _join(res.detail, str(exc))
     except CheckFailed as exc:
@@ -124,6 +159,7 @@ def run_check(ctx, chk: Check) -> Result:
         res.detail = _join(res.detail, f"{type(exc).__name__}: {exc}")
         (ctx.out / "errors").mkdir(exist_ok=True)
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
+        res.evidence.append(f"errors/{chk.id}.txt")
     leave_running(ctx, chk, res)
     leave_unlocked(ctx, chk, res)
     leave_no_dialog(ctx, chk, res)
@@ -1210,16 +1246,25 @@ def ush_environment_refusal(ctx) -> str | None:
     return environment_refusal(journal)
 
 
-def ush_journal_tail(ctx, lines: int = 4) -> str | None:
-    """The last `lines` lines the slot's `tilo-ush` logged, joined with " | ", or None: what a
-    Terminal with no shell, and no refusal to quote, can still say in its detail."""
+_USH_EVIDENCE = r'''set +e
+echo "journal: $(journalctl --user -u tilo-ush.service --no-pager -o cat -n 200 2>&1 | grep -v '^$' | tail -n 4 | tr '\n' '|' | cut -c1-900)"
+echo "session log: $(grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo/session-logs" 2>/dev/null | grep -v APP-STARTUP | tail -n 3 | tr '\n' '|' | cut -c1-900)"
+echo "guests: $(ps -u "$(id -u)" -o pid=,etimes=,time=,args= 2>/dev/null | grep -E 'tilo-ush (run|guest-init)' | grep -v grep | cut -c1-160 | tr '\n' '|')"
+'''
+
+
+def ush_evidence(ctx) -> str | None:
+    """What a Terminal with no shell can say in its detail, since a failed run publishes no
+    report data: the shell runtime's last journal lines (its runtime import's start and
+    duration among them), the session log's last lines about it or Terminal, and the guest
+    processes still running with their age and CPU time. None when nothing could be read."""
     try:
-        journal = ctx.vm.exec("journalctl --user -u tilo-ush.service --no-pager -o cat -n 200 2>&1",
-                              timeout=60, check=False)
+        text = ctx.vm.exec(_USH_EVIDENCE, timeout=60, check=False)
     except VmError:
         return None
-    said = [_ANSI.sub("", line).strip() for line in journal.splitlines() if line.strip()]
-    return " | ".join(said[-lines:]) or None
+    lines = [_ANSI.sub("", line).strip() for line in text.splitlines()
+             if line.strip() and not line.rstrip().endswith(":")]
+    return "; ".join(lines) or None
 
 
 def ush_diagnostics(ctx) -> str:

@@ -333,6 +333,31 @@ pub enum BrowserEffect {
         #[param("The download's id")]
         id: String,
     },
+    /// Read downloaded file
+    ///
+    /// Answers with the completed download's text, bounded; a file that is
+    /// not UTF-8 text answers only its type and size.
+    #[effect(row, returns, idempotent, audience = "agents", untrusted)]
+    ReadDownload {
+        #[param("The download's id")]
+        id: String,
+    },
+    /// Keep the download
+    ///
+    /// Saves the file the page offered, answering where it went.
+    #[effect(row, returns)]
+    SaveDownload {
+        #[param("The download's id")]
+        id: String,
+    },
+    /// Discard the download
+    ///
+    /// Refuses the file the page offered, which is not saved.
+    #[effect(row, returns, destructive)]
+    DiscardDownload {
+        #[param("The download's id")]
+        id: String,
+    },
     /// Zoom in
     ///
     /// Makes the page larger on this device; answers the page's size.
@@ -774,6 +799,9 @@ impl BrowserEffect {
             Self::RetryDownload { id } => BrowserOperation::RetryDownload { id },
             Self::OpenDownload { id } => BrowserOperation::OpenDownload { id },
             Self::RevealDownload { id } => BrowserOperation::RevealDownload { id },
+            Self::ReadDownload { id } => BrowserOperation::ReadDownload { id },
+            Self::SaveDownload { id } => BrowserOperation::AnswerDownload { id, allow: true },
+            Self::DiscardDownload { id } => BrowserOperation::AnswerDownload { id, allow: false },
             Self::AcceptPageDialog { dialog, text } => BrowserOperation::AnswerPageDialog {
                 dialog,
                 accept: true,
@@ -1021,6 +1049,15 @@ pub enum BrowserOperation {
         id: String,
     },
     RevealDownload {
+        id: String,
+    },
+    /// Answer the page's offer to download `id`: save it when `allow`.
+    AnswerDownload {
+        id: String,
+        allow: bool,
+    },
+    /// Read a completed download's file, bounded and as text.
+    ReadDownload {
         id: String,
     },
     Page(PageRequest),

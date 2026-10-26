@@ -54,16 +54,18 @@ when t has room (and on `t dispatch ... --ref main`). An image is published once
   layer cached by its inputs, so a change to an app or the shell rebuilds only the
   compile and image layers);
 - a board image fits its size budget (`os-board-size-<board>`);
-- `os-dev-gate-<arch>` installed the dev image onto a disk, booted it under KVM to a
-  greeter that takes input with `boot-complete.target` reached, and staged and
-  live-applied a newer image on it.
+- `os-dev-gate-<arch>` took it as a device does: the dev disk published last booted
+  under KVM, staged the image and applied it live, restarted into it to a greeter that
+  takes input with its boot assessment passed, and staged and live-applied a newer
+  image from there.
 
 That is all the dev channel waits for. A device falls back by itself from an image
 that does not boot, so a bad dev image costs a reboot, not data, as long as each
 image boots and takes the update that fixes it: exactly what the gate proves. The
 heavy acceptance suite (`os-acceptance-<arch>`: paired devices, the desktop's
 journeys, the splash) gates stable releases and runs on main when t has room,
-telling the commit that broke it.
+telling the commit that broke it; the dev disk `tilo-vm vm create` takes
+(`publish-os-dev-disk-<arch>`) is published once it passed on that disk.
 
 ## Your own build on your device
 

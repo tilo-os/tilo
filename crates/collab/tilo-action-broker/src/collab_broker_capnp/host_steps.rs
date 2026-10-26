@@ -553,7 +553,7 @@ pub(super) mod signed_test_support {
 
         fn owner(&self) -> super::super::InvocationOwner {
             match &self.origin {
-                InvocationCaller::Certified { caller, .. } => caller.owner(),
+                InvocationCaller::Certified { caller, .. } => caller.owner().unwrap(),
                 InvocationCaller::Local { admitted, .. } => {
                     let certificate = admitted.certificate.as_ref().unwrap();
                     super::super::InvocationOwner::AuthenticatedLocal {

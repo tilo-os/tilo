@@ -1,5 +1,14 @@
 #include "host.h"
 #include "include/base/cef_compiler_specific.h"
+#include "geolocation.h"
+namespace tilo {
+// Linux has no location source wired into the engine yet, so a site that is
+// allowed a position hears that none is available, unless the session gives
+// a fixed one (TILO_GEOLOCATION).
+void SystemPosition(std::function<void(std::optional<Position>)> answer) {
+  answer(std::nullopt);
+}
+}
 // Every Chromium subprocess forked by the zygote returns through this frame
 // when it exits, and Chromium gives each forked child a fresh stack canary
 // (`--change-stack-guard-on-fork`). A canary pushed here before the fork no

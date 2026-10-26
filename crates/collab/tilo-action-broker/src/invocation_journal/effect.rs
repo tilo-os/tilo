@@ -176,7 +176,7 @@ impl InvocationJournal {
         update: InvocationUpdate,
         request: &OwnerCommitRequest,
     ) -> Result<(PreparedEffect, Durable), String> {
-        self.check()?;
+        self.ready()?;
         let prepared = PreparedEffect::new(update, request)?;
         let (at, record) = self
             .record_mut(key)
@@ -205,7 +205,7 @@ impl InvocationJournal {
         key: &InvocationKey,
         prepared: &PreparedEffect,
     ) -> Result<(DurableInvocation, Durable), String> {
-        self.check()?;
+        self.ready()?;
         let (at, record) = self
             .record_mut(key)
             .map_err(|_| "unknown prepared invocation")?;
