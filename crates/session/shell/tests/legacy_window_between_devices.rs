@@ -675,14 +675,9 @@ async fn an_encoded_backlog_preserves_the_viewers_reference_chain() {
     let mut view = PeerView::new_with_metrics(SURFACE, viewer_peer, PeerSurfaceMetrics::default());
     view.restart_stream(codec, Some((WIDTH, HEIGHT)));
     let (mut frames, timestamps) = record_encoded_units(&session);
-    host_cmd
-        .send(NetCmd::PublishSurfaceTo {
-            ws: WS,
-            msg: session.stream_start_msg(),
-            viewers: vec![viewer_peer],
-        })
-        .await
-        .unwrap();
+    // The backlog is about one live route: the recorded units go once the
+    // host has reached the viewer, not while its first dial may still fail.
+    start_reaches_viewer(&host_cmd, &mut viewer_events, &session, viewer_peer).await;
     host_cmd
         .send(NetCmd::PublishSurfaceTo {
             ws: WS,
@@ -970,6 +965,49 @@ fn record_encoded_units(session: &SharedFlatpakSession) -> (Vec<NeighbourMsg>, V
         })
         .collect();
     (frames, timestamps)
+}
+
+/// Announce `session`'s stream to `viewer` until the announcement reaches
+/// it. A delivered announcement leaves the host holding its route to the
+/// viewer, which the stream's units then take; one sent while that route is
+/// still being dialled may be lost, as any unit on the way may be.
+async fn start_reaches_viewer(
+    host_cmd: &mpsc::Sender<NetCmd>,
+    viewer_events: &mut mpsc::Receiver<NetEvent>,
+    session: &SharedFlatpakSession,
+    viewer: u64,
+) {
+    tilo_test_env::within("the stream start reached the viewer", async {
+        loop {
+            host_cmd
+                .send(NetCmd::PublishSurfaceTo {
+                    ws: WS,
+                    msg: session.stream_start_msg(),
+                    viewers: vec![viewer],
+                })
+                .await
+                .expect("announce the stream");
+            let arrived = tokio::time::timeout(Duration::from_millis(500), async {
+                while let Some(event) = viewer_events.recv().await {
+                    if matches!(
+                        event,
+                        NetEvent::Msg {
+                            msg: NeighbourMsg::SurfaceStreamStart { .. },
+                            ..
+                        }
+                    ) {
+                        return;
+                    }
+                }
+                panic!("viewer event channel closed");
+            })
+            .await;
+            if arrived.is_ok() {
+                return;
+            }
+        }
+    })
+    .await;
 }
 
 async fn next_surface_frame(events: &mut mpsc::Receiver<NetEvent>) -> (Vec<u8>, u64, u64) {

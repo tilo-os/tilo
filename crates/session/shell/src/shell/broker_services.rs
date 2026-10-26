@@ -1392,7 +1392,9 @@ impl NativeShortcutLibrary {
         actor: String,
         change: tilo_action_broker::automation::ShortcutChange,
     ) -> Result<(), String> {
+        use crate::network::actor::room_governance::trace;
         use tilo_action_broker::automation::ShortcutChange;
+        trace::note(|| format!("shortcut commit in {room} by {actor}"));
         let unavailable = tree.read().documents_unavailable(room);
         if let Some(reason) = unavailable {
             return Err(super::i18n::t(reason));
@@ -1427,9 +1429,11 @@ impl NativeShortcutLibrary {
                 .save_shortcut_at_host(room, change.clone())
                 .await
             {
+                trace::note(|| format!("shortcut commit in {room}: {committed:?}"));
                 return committed;
             }
         }
+        trace::note(|| format!("shortcut commit in {room}: no host governs it"));
         // No host governs the room: this device does, or it holds a room a
         // device governed before rooms had hosts, which takes no shortcuts.
         let governs = owner.with_current(room, |view| Ok(view.device() == view.governor()))?;
@@ -1468,14 +1472,21 @@ impl ShortcutLibraryServices for NativeShortcutLibrary {
         Box::pin(async move {
             let room =
                 super::state::RoomId::parse(&request.room).ok_or("invalid workspace room")?;
-            Self::commit(
+            let committed = Self::commit(
                 tree.clone(),
                 network,
                 room,
                 request.actor.clone(),
                 request.change,
             )
-            .await?;
+            .await;
+            crate::network::actor::room_governance::trace::note(|| {
+                format!(
+                    "shortcut store {:?} in {room}: {committed:?}",
+                    request.invocation
+                )
+            });
+            committed?;
             let mut tree = tree.write();
             if let Some(workspace_id) = tree
                 .desktop

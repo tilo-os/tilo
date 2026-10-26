@@ -95,6 +95,7 @@ pub fn room_revocations(doc: &AutoCommit) -> RevocationList {
 }
 
 /// Nanoseconds since the Unix epoch at `secs` seconds.
+#[cfg(test)]
 pub(crate) const fn ns_at(secs: u64) -> u64 {
     secs.saturating_mul(1_000_000_000)
 }
