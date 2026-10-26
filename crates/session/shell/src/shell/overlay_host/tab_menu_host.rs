@@ -124,6 +124,32 @@ impl ShellOverlayHost {
                     .filter(|workspace| workspace.id != home.id)
                     .map(|workspace| (workspace.id, workspace.name.clone()))
                     .collect();
+                // The other displays, in the order a person reads them:
+                // the menu is the discoverable "where can this go?" list,
+                // and the second panel on the desk belongs in it.
+                let here = tree.desktop.outputs.display_of(target.group);
+                let order = tree.desktop.outputs.reading_order();
+                facts.displays = order
+                    .iter()
+                    .filter(|id| Some(**id) != here)
+                    .enumerate()
+                    .map(|(index, id)| {
+                        // Numbered by where it stands among the displays
+                        // this window is not on, as the display settings
+                        // name one it cannot identify.
+                        let number = order
+                            .iter()
+                            .position(|candidate| candidate == id)
+                            .map_or(index + 1, |place| place + 1);
+                        (
+                            *id,
+                            crate::shell::i18n::t_args(
+                                "display-identify-unnamed",
+                                &[("number", number.into())],
+                            ),
+                        )
+                    })
+                    .collect();
             }
         }
         window_menu_rows(&facts, &self.shortcut_config)
@@ -402,6 +428,19 @@ impl ShellOverlayHost {
             }
             WindowMenuAction::MoveToWorkspace(workspace) => {
                 self.move_to_workspace_from_menu(target, workspace)
+            }
+            WindowMenuAction::MoveToDisplay(display) => {
+                let moved = self.chrome.as_ref().is_some_and(|chrome| {
+                    chrome
+                        .borrow()
+                        .tree_mut()
+                        .move_group_to_display(target.group, display)
+                });
+                if moved {
+                    self.reframe_desktop();
+                    self.bump_chrome();
+                }
+                moved
             }
             WindowMenuAction::Width(width) => {
                 let changed = self.set_group_width(target.group, width);

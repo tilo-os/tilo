@@ -30,6 +30,8 @@ pub enum WindowMenuAction {
     /// Take the window's tab into another workspace (through the consent
     /// sheet when a client window crosses the sandbox boundary).
     MoveToWorkspace(WorkspaceId),
+    /// Show the window on another display, as the Super+Shift chord does.
+    MoveToDisplay(u32),
     /// Give the window a preset share of its strip.
     Width(WindowWidth),
     /// Give every window in the strip the same share.
@@ -57,6 +59,8 @@ pub enum WindowMenuAction {
 
 const MOVE_TO_STRIP_KEY: &str = "tabmenu:move-to-strip";
 const MOVE_TO_WORKSPACE_KEY: &str = "tabmenu:move-to-workspace";
+/// Moving the window to a display: the menu's list of where it can stand.
+const MOVE_TO_DISPLAY_KEY: &str = "tabmenu:move-to-display";
 const WIDTH_KEY: &str = "tabmenu:width";
 
 impl WindowMenuAction {
@@ -72,6 +76,7 @@ impl WindowMenuAction {
             Self::MoveToWorkspace(workspace) => {
                 format!("{MOVE_TO_WORKSPACE_KEY}:{}", workspace.raw())
             }
+            Self::MoveToDisplay(display) => format!("{MOVE_TO_DISPLAY_KEY}:{display}"),
             Self::Width(WindowWidth::Narrow) => "tabmenu:width:narrow".into(),
             Self::Width(WindowWidth::Normal) => "tabmenu:width:normal".into(),
             Self::Width(WindowWidth::Wide) => "tabmenu:width:wide".into(),
@@ -106,6 +111,12 @@ impl WindowMenuAction {
                 .parse()
                 .ok()
                 .map(|raw| Self::MoveToWorkspace(WorkspaceId(raw)));
+        }
+        if let Some(raw) = key
+            .strip_prefix(MOVE_TO_DISPLAY_KEY)
+            .and_then(|rest| rest.strip_prefix(':'))
+        {
+            return raw.parse().ok().map(Self::MoveToDisplay);
         }
         if let Some(raw) = key
             .strip_prefix(WIDTH_KEY)
@@ -150,6 +161,8 @@ pub struct WindowMenuFacts {
     pub strips: Vec<(StripId, String)>,
     /// The other workspaces the window could move to, by name.
     pub workspaces: Vec<(WorkspaceId, String)>,
+    /// The other displays the window could be shown on, by name.
+    pub displays: Vec<(u32, String)>,
     /// The tab shows a host window this device may name
     /// ([`crate::shell::tab_binding::may_rename_tab`]).
     pub renamable: bool,
@@ -263,8 +276,8 @@ fn places<'a>(
 }
 
 /// Move to strip and Move to workspace, each a nested menu of places.
-fn move_rows(facts: &WindowMenuFacts) -> [WindowMenuRow; 2] {
-    [
+fn move_rows(facts: &WindowMenuFacts) -> Vec<WindowMenuRow> {
+    vec![
         places(
             MOVE_TO_STRIP_KEY,
             t("shell-window-menu-move-to-strip"),
@@ -282,6 +295,15 @@ fn move_rows(facts: &WindowMenuFacts) -> [WindowMenuRow; 2] {
                 .workspaces
                 .iter()
                 .map(|(id, name)| (WindowMenuAction::MoveToWorkspace(*id), name)),
+        ),
+        places(
+            MOVE_TO_DISPLAY_KEY,
+            t("shell-window-menu-move-to-display"),
+            Icon::Monitor,
+            facts
+                .displays
+                .iter()
+                .map(|(id, name)| (WindowMenuAction::MoveToDisplay(*id), name)),
         ),
     ]
 }
@@ -534,11 +556,57 @@ mod tests {
             workspaces: vec![(WorkspaceId(9), "Studio".into())],
             renamable: false,
             attention: false,
+            displays: Vec::new(),
         }
     }
 
     fn labels(rows: &[WindowMenuRow]) -> Vec<&str> {
         rows.iter().filter_map(WindowMenuRow::label).collect()
+    }
+
+    /// The menu lists the other displays the window could stand on, by the
+    /// number the display settings use for one they cannot name, and each
+    /// row is addressable the way every menu row is.
+    #[test]
+    fn the_window_menu_lists_the_other_displays() {
+        let config = ShortcutConfig::default();
+        let two = WindowMenuFacts {
+            displays: vec![(2, "Display 2".into()), (3, "Display 3".into())],
+            ..facts(1)
+        };
+        let rows = window_menu_rows(&two, &config);
+        let display = rows
+            .iter()
+            .find(|row| row.label() == Some("Move to display"))
+            .expect("a Move to display submenu");
+        let actions = display.actions();
+        assert_eq!(
+            actions,
+            [
+                WindowMenuAction::MoveToDisplay(2),
+                WindowMenuAction::MoveToDisplay(3)
+            ]
+        );
+        let labels: Vec<&str> = match display {
+            WindowMenuRow::Submenu { entries, .. } => {
+                entries.iter().map(|entry| entry.label.as_str()).collect()
+            }
+            _ => panic!("Move to display is a submenu"),
+        };
+        assert_eq!(labels, ["Display 2", "Display 3"]);
+        assert_eq!(
+            WindowMenuAction::from_semantic_key(&actions[1].semantic_key()),
+            Some(WindowMenuAction::MoveToDisplay(3)),
+            "a row's stable address resolves back to it"
+        );
+        // One display: the row stays, disabled, so the menu reads the same
+        // for every window.
+        let alone = window_menu_rows(&facts(1), &config);
+        let display = alone
+            .iter()
+            .find(|row| row.label() == Some("Move to display"))
+            .expect("the row stays");
+        assert!(display.actions().is_empty());
     }
 
     #[test]
@@ -614,6 +682,7 @@ mod tests {
                 "Maximize",
                 "Move to strip",
                 "Move to workspace",
+                "Move to display",
                 "Width",
                 "New tab",
                 "Split right",

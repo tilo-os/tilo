@@ -1185,6 +1185,7 @@ shell-window-menu-width-normal = Normal
 shell-window-menu-width-wide = Breit
 shell-window-menu-width-equal = Alle angleichen
 shell-window-menu-move-to-strip = In Leiste verschieben
+shell-window-menu-move-to-display = Auf Bildschirm verschieben
 shell-window-menu-move-to-workspace = In Arbeitsbereich verschieben
 shell-window-menu-new-tab = Neuer Tab
 shell-window-menu-rename-tab = Tab umbenennen

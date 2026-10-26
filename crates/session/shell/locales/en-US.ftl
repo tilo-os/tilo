@@ -1187,6 +1187,7 @@ shell-window-menu-width-normal = Normal
 shell-window-menu-width-wide = Wide
 shell-window-menu-width-equal = Equalise all
 shell-window-menu-move-to-strip = Move to strip
+shell-window-menu-move-to-display = Move to display
 shell-window-menu-move-to-workspace = Move to workspace
 shell-window-menu-new-tab = New tab
 shell-window-menu-rename-tab = Rename tab
