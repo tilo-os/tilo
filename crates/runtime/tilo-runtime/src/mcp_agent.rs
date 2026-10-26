@@ -1103,8 +1103,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Ok(AppRef::Installed { app_id, opens })
             }
             Err(error) if error.contains("names several") => Err(error),
+            // The name is no app's and no tail of one: a word an agent
+            // guessed (`host` for the Browser, `so.tilo.browser`) is the
+            // likeliest cause, so the running apps are named as they are to
+            // be addressed.
             Err(_) => Err(format!(
-                "no app {name}: running {}; installed {}",
+                "no app {name}; name a running app by its id or last part, e.g. {}. Running {}; installed {}",
+                running
+                    .iter()
+                    .filter_map(|(_, app)| app["app_id"].as_str())
+                    .next()
+                    .unwrap_or("<app_id>"),
                 list_or_none(&app_names(
                     &running
                         .iter()
