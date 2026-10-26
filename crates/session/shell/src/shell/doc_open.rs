@@ -621,12 +621,13 @@ pub fn open_with_app(path: &Path, chrome: &Chrome, app_id: &str) -> Result<Opene
 pub fn set_personal_default(path: &Path, app_id: &str) -> Result<(), String> {
     let candidates = launcher::resource_candidates();
     let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
-    let mut personal = desktop_policy::PersonalDefaults::load();
+    let mut personal = desktop_policy_host::load_personal_defaults();
     let mut last_error = None;
     for kind in resource_kinds(path) {
         match personal.set(kind, app_id.to_string(), &resolver) {
             Ok(()) => {
-                personal.save().map_err(|error| error.to_string())?;
+                desktop_policy_host::save_personal_defaults(&personal)
+                    .map_err(|error| error.to_string())?;
                 launcher::publish_host_mimeapps();
                 return Ok(());
             }

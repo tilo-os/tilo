@@ -418,6 +418,7 @@ members = [
     "crates/system/cloud-source-icloud",
     "crates/system/desktop-entry",
     "crates/system/desktop-policy",
+    "crates/system/desktop-policy-host",
     "crates/system/documents",
     "crates/system/content",
     "crates/system/content-device",

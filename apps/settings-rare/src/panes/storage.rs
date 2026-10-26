@@ -13,7 +13,7 @@ mod residency;
 
 pub use residency::{DeviceResidency, Fleet};
 
-use desktop_policy::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
+use desktop_policy_host::{CleanupPreview, StorageCategory, StorageRoots, StorageSnapshot};
 use os_actions::{BackupsRoute, DisksRoute, ToolIntent};
 use runtime_fs::storage::{
     CachePolicy, DEFAULT_STORAGE_SOCKET, EvictionReport, EvictionSelection, ResidencySummary,
@@ -331,11 +331,11 @@ impl StorageScan {
     /// replica among them.
     fn of(roots: &StorageRoots, disk: Option<&std::path::Path>) -> Self {
         Self {
-            snapshot: desktop_policy::scan_storage(roots),
+            snapshot: desktop_policy_host::scan_storage(roots),
             cleanup: roots
                 .app_cache
                 .as_deref()
-                .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok()),
+                .and_then(|p| desktop_policy_host::preview_cache_cleanup(p).ok()),
             capacity: disk.and_then(|path| os_actions::disk_capacity(path).ok()),
         }
     }
@@ -416,7 +416,7 @@ impl StorageDevice for DeviceStorage {
     fn clean_up(&self, preview: &CleanupPreview) -> Result<(), String> {
         crate::device_read::off_ui_thread();
         let selected: Vec<usize> = (0..preview.items.len()).collect();
-        desktop_policy::apply_cleanup(preview, &selected)
+        desktop_policy_host::apply_cleanup(preview, &selected)
             .map(drop)
             .map_err(|error| error.to_string())
     }
@@ -1583,7 +1583,7 @@ mod tests {
             }
             StorageScan {
                 snapshot: StorageSnapshot {
-                    entries: vec![desktop_policy::StorageEntry {
+                    entries: vec![desktop_policy_host::StorageEntry {
                         category: StorageCategory::InstalledApps,
                         owner: STALLED_APP.into(),
                         path: "/nonexistent/stalled".into(),

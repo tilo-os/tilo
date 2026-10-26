@@ -3578,14 +3578,24 @@ dependencies = [
 name = "desktop-policy"
 version = "0.1.0"
 dependencies = [
- "package-store",
  "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "desktop-policy-host"
+version = "0.1.0"
+dependencies = [
+ "desktop-policy",
+ "package-store",
  "serde_json",
  "settings-store",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-files",
  "tilo-paths",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -13516,6 +13526,7 @@ dependencies = [
  "agent-provider-config",
  "collab-types",
  "desktop-policy",
+ "desktop-policy-host",
  "os-actions",
  "registry-types",
  "roxmltree 0.21.1",
@@ -14658,7 +14669,7 @@ dependencies = [
  "agent-provider-config",
  "async-imap",
  "bounded-command",
- "desktop-policy",
+ "desktop-policy-host",
  "hex",
  "os-actions",
  "provider-settings-ui",
@@ -14931,6 +14942,7 @@ dependencies = [
  "compat-service",
  "console-control",
  "desktop-policy",
+ "desktop-policy-host",
  "durable-store",
  "ed25519-dalek 3.0.0",
  "emoji",
@@ -24880,6 +24892,7 @@ dependencies = [
  "derive_utils",
  "des",
  "desktop-policy",
+ "desktop-policy-host",
  "diatomic-waker",
  "diffmerge",
  "digest 0.10.7",

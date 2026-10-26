@@ -27,7 +27,7 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
-desktop-policy = { path = "../../crates/system/desktop-policy" }
+desktop-policy-host = { path = "../../crates/system/desktop-policy-host" }
 # The Tilo action model: every setting mutation is a serializable, replayable
 # `SettingsAction` the on-screen controls and the Ctrl+K palette both dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }

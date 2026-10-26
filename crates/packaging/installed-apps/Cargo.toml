@@ -12,7 +12,7 @@ description = "The applications a session can launch: installed packages read th
 # link the sandbox launcher.
 
 [dependencies]
-desktop-policy = { path = "../../system/desktop-policy", default-features = false }
+desktop-policy = { path = "../../system/desktop-policy" }
 package-store = { path = "../package-store" }
 tilo-app-package = { path = "../tilo-app-package" }
 workspace-hack = { version = "0.1" }

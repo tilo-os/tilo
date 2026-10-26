@@ -2400,10 +2400,10 @@ pub fn handler_for_resource_with_policy(
 ) -> Option<(ResourceHandler, desktop_policy::defaults::SelectionSource)> {
     let apps = gui_apps();
     let hosts = crate::shell::host_apps::host_apps();
-    let chain = desktop_policy::mimeapps::session_chain();
+    let chain = desktop_policy_host::mimeapps::session_chain();
     let mut candidates = default_app_candidates_from(&apps);
     candidates.extend(host_app_candidates(&hosts, &chain));
-    let personal = desktop_policy::PersonalDefaults::load();
+    let personal = desktop_policy_host::load_personal_defaults();
     let selected = desktop_policy::DefaultAppResolver::new(&candidates)
         .with_system_defaults(&chain)
         .resolve(resource, user_id, &personal, workspace);
@@ -2466,21 +2466,21 @@ pub fn host_app_candidates(
 pub fn publish_host_mimeapps() {
     let apps = gui_apps();
     let hosts = crate::shell::host_apps::host_apps();
-    let chain = desktop_policy::mimeapps::session_chain();
+    let chain = desktop_policy_host::mimeapps::session_chain();
     let mut candidates = default_app_candidates_from(&apps);
     candidates.extend(host_app_candidates(&hosts, &chain));
     publish_host_defaults(&resolved_host_defaults(
         &candidates,
         &chain,
-        &desktop_policy::PersonalDefaults::load(),
+        &desktop_policy_host::load_personal_defaults(),
     ));
 }
 
 fn publish_host_defaults(list: &desktop_policy::MimeAppsList) {
-    let Some(path) = desktop_policy::mimeapps::published_list_path() else {
+    let Some(path) = desktop_policy_host::mimeapps::published_list_path() else {
         return;
     };
-    if let Err(error) = desktop_policy::mimeapps::publish(&path, list) {
+    if let Err(error) = desktop_policy_host::mimeapps::publish(&path, list) {
         tracing::warn!(%error, path = %path.display(), "could not publish host default applications");
     }
 }
@@ -2532,7 +2532,7 @@ pub fn package_for_resource_with_policy(
 ) -> Option<(InstalledApp, desktop_policy::defaults::SelectionSource)> {
     let apps = gui_apps();
     let candidates = default_app_candidates_from(&apps);
-    let personal = desktop_policy::PersonalDefaults::load();
+    let personal = desktop_policy_host::load_personal_defaults();
     let selected = desktop_policy::DefaultAppResolver::new(&candidates)
         .resolve(resource, user_id, &personal, workspace)?;
     apps.into_iter()
@@ -2545,7 +2545,7 @@ pub fn package_for_resource_with_policy(
 /// may offer and a personal default may name.
 pub fn resource_candidates() -> Vec<desktop_policy::AppCandidate> {
     let hosts = crate::shell::host_apps::host_apps();
-    let chain = desktop_policy::mimeapps::session_chain();
+    let chain = desktop_policy_host::mimeapps::session_chain();
     let mut candidates = default_app_candidates_from(&gui_apps());
     candidates.extend(host_app_candidates(&hosts, &chain));
     candidates

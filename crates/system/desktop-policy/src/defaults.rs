@@ -386,33 +386,6 @@ impl PersonalDefaults {
         Ok(())
     }
 
-    /// The person's defaults, from their settings: the
-    /// [`PERSONAL_DEFAULTS_SECTION`] section, which follows them to each of
-    /// their devices.
-    #[cfg(feature = "host-storage")]
-    pub fn load() -> Self {
-        Self::from_section(&settings_store::load_section(PERSONAL_DEFAULTS_SECTION))
-    }
-
-    /// Write these defaults to the person's settings.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DefaultAppError::Persist`] if the settings could not be
-    /// written.
-    #[cfg(feature = "host-storage")]
-    pub fn save(&self) -> Result<(), DefaultAppError> {
-        let serde_json::Value::Object(section) =
-            serde_json::to_value(self).map_err(|e| DefaultAppError::Persist(e.to_string()))?
-        else {
-            return Err(DefaultAppError::Persist(
-                "defaults are not an object".into(),
-            ));
-        };
-        settings_store::update_section(PERSONAL_DEFAULTS_SECTION, section)
-            .map_err(|e| DefaultAppError::Persist(e.to_string()))
-    }
-
     /// The defaults a settings section holds; missing or malformed reads as
     /// none chosen.
     pub fn from_section(section: &serde_json::Map<String, serde_json::Value>) -> Self {

@@ -216,6 +216,7 @@ grandfathered = [
 ]
 
 [shell_dependencies.added]
+"desktop-policy-host" = "Reading and writing the person's default apps and publishing the host mimeapps list, carved out of desktop-policy so the desktop model's copy stays free of host storage; the shell called the same functions before, and the crate brings only package-store, tilo-files, settings-store and tilo-paths, which the shell already depends on"
 "tilo-device-vpn" = "Routing a device's traffic through another device of the same person: the shell owns the iroh endpoint, so it accepts the tunnel ALPN and drives the client and exit; built with only the tunnel feature (wire format, packet loop, typed helper protocol), which brings iroh, tokio and serde that the shell already depends on, and none of the privileged helper"
 "settings-sections" = "The person's settings sections as resource models, carved out of the Settings app: the session keeps them as records and serves their field edits and verbs to the palette, agents and scripts whether or not Settings is open; it brings settings-store, tilo-wallpapers, tilo-accessibility-settings and tilo-app, which the shell already depends on, and tilo-locale, which itself brings only tilo-app and serde"
 "tasks" = "Runs of issues assigned to an agent (broker_services::tracker_runs) come from the tracker record, read with the Tasks app's own model as the shell already reads Notes, Code and Word records; it brings only tilo-document, tilo-rich-text and tilo-app, which the shell already depends on"

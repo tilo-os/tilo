@@ -247,7 +247,8 @@ doc = false
 "deranged-0_5_6" = { package = "deranged", version = "^0.5.6", default-features = false, features = ["default", "powerfmt", "serde"] }
 "derive_more-2_1_1" = { package = "derive_more", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "std", "try_from", "try_into"] }
 "des-0_9_0" = { package = "des", version = "^0.9.0", default-features = false, features = [] }
-"desktop-policy" = { path = "../../../crates/system/desktop-policy", default-features = false, features = ["default", "host-storage"] }
+"desktop-policy" = { path = "../../../crates/system/desktop-policy", default-features = false, features = [] }
+"desktop-policy-host" = { path = "../../../crates/system/desktop-policy-host", default-features = false, features = [] }
 "diatomic-waker-0_2_3" = { package = "diatomic-waker", version = "^0.2.3", default-features = false, features = ["alloc", "default"] }
 "diffmerge" = { path = "../../../apps/diffmerge", default-features = false, features = [] }
 "digest-0_10_7" = { package = "digest", version = "^0.10.7", default-features = false, features = ["alloc", "block-buffer", "const-oid", "core-api", "default", "mac", "oid", "std", "subtle"] }
@@ -2601,7 +2602,7 @@ doc = false
 "deranged-0_5_6" = { package = "deranged", version = "^0.5.6", default-features = false, features = ["default", "powerfmt", "serde"] }
 "derive_more-2_1_1" = { package = "derive_more", version = "^2.1.1", default-features = false, features = ["add", "add_assign", "debug", "default", "deref", "deref_mut", "display", "from", "from_str", "into", "into_iterator", "std", "try_from", "try_into"] }
 "des-0_9_0" = { package = "des", version = "^0.9.0", default-features = false, features = [] }
-"desktop-policy" = { path = "../../../crates/system/desktop-policy", default-features = false, features = ["default", "host-storage"] }
+"desktop-policy" = { path = "../../../crates/system/desktop-policy" }
 "diatomic-waker-0_2_3" = { package = "diatomic-waker", version = "^0.2.3", default-features = false, features = ["alloc", "default"] }
 "diffmerge" = { path = "../../../apps/diffmerge", default-features = false, features = [] }
 "digest-0_10_7" = { package = "digest", version = "^0.10.7", default-features = false, features = ["alloc", "block-buffer", "const-oid", "core-api", "default", "mac", "oid", "std", "subtle"] }

@@ -4,11 +4,13 @@
 //! per-person workspace override is the person's explicit escape hatch. The
 //! resolver composes those three layers; callers must not reimplement the
 //! precedence rules in UI code.
+//!
+//! This crate is the vocabulary and the resolver only, which the desktop model
+//! embeds; reading and writing them on the host, and the storage scanner, are
+//! `desktop-policy-host`'s.
 
 pub mod defaults;
 pub mod mimeapps;
-#[cfg(all(feature = "host-storage", not(target_arch = "wasm32")))]
-pub mod storage;
 
 pub use defaults::{
     AppCandidate, DefaultAppError, DefaultAppResolver, DefaultAppSelection,
@@ -16,9 +18,3 @@ pub use defaults::{
     WorkspaceDefaultPolicy, WorkspaceDefaults,
 };
 pub use mimeapps::{MimeAppsChain, MimeAppsList, host_app_id, host_desktop_id};
-#[cfg(all(feature = "host-storage", not(target_arch = "wasm32")))]
-pub use storage::{
-    CleanupError, CleanupItem, CleanupKind, CleanupPreview, CleanupReport, StorageCategory,
-    StorageEntry, StorageRoots, StorageSnapshot, apply_cleanup, preview_cache_cleanup,
-    scan_storage,
-};

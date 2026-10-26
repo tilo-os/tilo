@@ -8,31 +8,10 @@ repository.workspace = true
 homepage.workspace = true
 description = "Canonical desktop policy shared by the Tilo launcher, Settings and workspace chrome."
 
-[features]
-# Reading and writing personal defaults on the host filesystem, and the
-# storage scanner. Without it the crate is the pure policy vocabulary and
-# resolver, which the desktop model embeds.
-default = ["host-storage"]
-host-storage = [
-    "dep:tilo-files",
-    "dep:package-store",
-    "dep:tilo-paths",
-    "dep:settings-store",
-]
-
 [dependencies]
-tilo-paths = { workspace = true, optional = true }
-# Which packages are installed and where their trees are.
-package-store = { version = "0.1.0", path = "../../packaging/package-store", optional = true }
-tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
-# A person's default apps are a section of their settings.
-settings-store = { version = "0.1.0", path = "../settings-store", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true

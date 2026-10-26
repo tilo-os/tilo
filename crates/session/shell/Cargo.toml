@@ -108,6 +108,7 @@ tilo-secret-vault = { path = "../../system/secret-vault" }
 tilo-tts = { path = "../../system/tts" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 desktop-policy = { path = "../../system/desktop-policy" }
+desktop-policy-host = { path = "../../system/desktop-policy-host" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-search = { path = "../desktop-search" }

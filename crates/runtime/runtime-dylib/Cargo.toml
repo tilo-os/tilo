@@ -53,6 +53,7 @@ tilo-app = { path = "../../sdk/tilo-app" }
 # apps that configure the desktop.
 settings-store = { path = "../../system/settings-store" }
 desktop-policy = { path = "../../system/desktop-policy" }
+desktop-policy-host = { path = "../../system/desktop-policy-host" }
 tilo-desktop-entry = { path = "../../system/desktop-entry" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }

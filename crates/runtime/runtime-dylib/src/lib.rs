@@ -37,6 +37,7 @@ pub use cli;
 pub use collab_types;
 pub use desktop_entry;
 pub use desktop_policy;
+pub use desktop_policy_host;
 pub use media;
 pub use os_actions;
 pub use registry_types;
