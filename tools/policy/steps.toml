@@ -165,6 +165,13 @@ inputs = ["crates/session/**/*.rs", "apps/**/*.rs", "tools/policy/primitives_bas
 pre_push = true
 
 [[step]]
+name = "breakpoints"
+label = "Surfaces take their breakpoint from the rect they are laid out in"
+run = "python3 tools/policy/check_breakpoints.py"
+inputs = ["crates/session/**/*.rs", "apps/**/*.rs", "tools/policy/breakpoint_baseline.txt"]
+pre_push = true
+
+[[step]]
 name = "app-toolbars"
 label = "Apps put their controls, search included, in the window bar's slots"
 run = "python3 tools/policy/check_app_toolbars.py"

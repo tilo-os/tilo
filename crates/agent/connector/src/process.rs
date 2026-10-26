@@ -139,6 +139,16 @@ impl ConnectorProcess {
         Ok(Self { shared, supervisor })
     }
 
+    /// Keep `bytes` in the host's content store this connector reads, for
+    /// an op that names them in its `attach` list (a picture the room
+    /// holds in a record rather than as content). Their BLAKE3 hex hash.
+    ///
+    /// # Errors
+    /// The store refused or failed, as a message for the host's log.
+    pub fn keep(&self, bytes: &[u8]) -> Result<String, String> {
+        self.shared.blobs.store(bytes)
+    }
+
     /// Perform one queued op: an outbox entry's value, `{"op": <the op the
     /// worker performs>, "publish": [..], "attach": [..]}`. The blob lists
     /// are the host's business, so only the inner op reaches the worker.
@@ -188,6 +198,34 @@ impl ConnectorProcess {
                 Err(PerformError::Unavailable("timed out".into()))
             }
         }
+    }
+
+    /// Append an event the host itself observed for this connector (one
+    /// the service told the host directly, such as a sign-in on its consent
+    /// page that came back to the host), as if the worker had reported it:
+    /// the bots listening to `source` get it the same way, deduplicated by
+    /// `id`.
+    ///
+    /// # Errors
+    /// The event log could not keep it.
+    pub async fn emit(
+        &self,
+        source: &str,
+        id: &str,
+        payload: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let now = tilo_clock::unix_now_ms_i64();
+        let appended = self
+            .shared
+            .events
+            .lock()
+            .await
+            .append(source, id, now, now, payload)
+            .map_err(|error| error.to_string())?;
+        if let Some(seq) = appended {
+            self.shared.seq.send_replace(seq);
+        }
+        Ok(())
     }
 
     #[must_use]

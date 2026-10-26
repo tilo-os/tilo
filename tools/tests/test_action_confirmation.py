@@ -20,7 +20,8 @@ class ActionConfirmationTests(unittest.TestCase):
     def test_refuses_a_typed_phrase_on_an_undoable_action(self):
         source = """
         fn remove(app: &App) -> ActionSpec {
-            let mut delete = ActionSpec::operation("remove", "Remove").reversible();
+            let mut delete = ActionSpec::operation("remove", "Remove")
+                .of_kind(ActionKind::Undoable);
             delete.contract.confirmation = ConfirmationPolicy::Phrase {
                 phrase: app.name.clone(),
             };
@@ -35,7 +36,7 @@ class ActionConfirmationTests(unittest.TestCase):
         source = """
         fn contract() -> ActionContract {
             ActionContract {
-                reversible: true,
+                kind: ActionKind::Undoable,
                 confirmation: ConfirmationPolicy::Phrase { phrase: name.into() },
                 ..ActionContract::default()
             }
@@ -43,6 +44,49 @@ class ActionConfirmationTests(unittest.TestCase):
         """
         errors = check.check_source("apps/x/src/actions.rs", source)
         self.assertTrue(any("Undo takes back" in error for error in errors), errors)
+
+    def test_sees_an_undoable_kind_set_through_the_builder(self):
+        source = """
+        fn note() -> ActionSpec {
+            let mut spec = ActionSpec::operation("answer", "Answer");
+            spec.kind = ActionKind::Undoable;
+            spec.contract.confirmation = ConfirmationPolicy::Phrase {
+                phrase: spec.label.clone(),
+            };
+            spec
+        }
+        """
+        errors = check.check_source("apps/x/src/actions.rs", source)
+        self.assertTrue(any("Undo takes back" in error for error in errors), errors)
+
+    def test_ignores_an_undoable_binding_later_named_outside(self):
+        source = """
+        fn mail() -> ActionSpec {
+            let mut spec = ActionSpec::operation("send", "Send");
+            spec.kind = ActionKind::Undoable;
+            spec.kind = ActionKind::Outside;
+            spec.contract.confirmation = ConfirmationPolicy::Phrase {
+                phrase: spec.label.clone(),
+            };
+            spec
+        }
+        """
+        errors = check.check_source("apps/x/src/actions.rs", source)
+        self.assertEqual(errors, [])
+
+    def test_allows_a_phrase_on_an_action_that_reaches_outside(self):
+        source = """
+        fn mail() -> ActionSpec {
+            let mut spec = ActionSpec::operation("send", "Send")
+                .of_kind(ActionKind::Outside);
+            spec.contract.confirmation = ConfirmationPolicy::Phrase {
+                phrase: spec.label.clone(),
+            };
+            spec
+        }
+        """
+        errors = check.check_source("apps/x/src/actions.rs", source)
+        self.assertEqual(errors, [])
 
     def test_refuses_generic_words_and_any_confirm_literal(self):
         source = """

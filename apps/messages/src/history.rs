@@ -7,7 +7,11 @@ use tilo_contact_directory::routing;
 use tilo_messaging::{Delivery, Direction, HistoryClient, HistoryPage};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected};
-use ui::widget::{Card, Column, Element, ModelView, Text};
+use ui::i18n::ArgValue;
+use ui::widget::{
+    Column, ConversationLine, ConversationList, DeliveryState, DeliveryStep, Element, ModelView,
+    Text,
+};
 
 use crate::view::{Choice, Selection, Sources, choices};
 use crate::{CATALOG, Messages, MessagesEffect};
@@ -179,11 +183,13 @@ impl HistoryView {
         selection: &Selection,
         choice: Option<&Choice>,
         hint: &str,
+        author: &str,
     ) -> Element {
         let sources = sources.clone();
         let selected = selection.clone();
         let choice = choice.cloned();
         let hint = hint.to_owned();
+        let author = author.to_owned();
         Box::new(ModelView::from_state_by(
             &self.state,
             |state| (state.generation, state.loading, state.page.is_some()),
@@ -199,7 +205,7 @@ impl HistoryView {
                     .as_ref()
                     .filter(|page| Some(&page.route) == route.as_ref())
                 {
-                    body = history_rows(body, page);
+                    body = body.push(history_lines(page, &author));
                 } else {
                     body = body.push(super::view::empty(&hint, "messages-transport-unavailable"));
                 }
@@ -233,44 +239,54 @@ pub(crate) fn current_route(
     })
 }
 
-fn history_rows(mut body: Column, page: &HistoryPage) -> Column {
-    if page.messages.is_empty() {
-        return body.push(Box::new(Text::new("messages-no-history")));
-    }
-    for message in &page.messages {
-        let text = message.text.clone();
-        let direction = match message.direction {
-            Direction::Incoming => "messages-incoming",
-            Direction::Outgoing => "messages-outgoing",
-        };
-        let mut content = Column::new()
-            .with_intrinsic_height()
-            .push(Box::new(
-                Text::new(direction)
-                    .with_role(ui::tokens::TextRole::Caption)
-                    .dimmed(),
-            ))
-            .push(Box::new(
-                Text::dynamic(move || text.to_string()).with_role(ui::tokens::TextRole::Body),
-            ));
-        if let Some(delivery) = message.delivery {
-            let key = match delivery {
-                Delivery::Submitted => "messages-submitted",
-                Delivery::ServerAcknowledged => "messages-server-acknowledged",
-                Delivery::RecipientDelivered => "messages-delivered",
-                Delivery::RecipientRead => "messages-read",
-                Delivery::Uncertain => "messages-uncertain",
+/// The conversation, as the shared message list draws it: a divider wherever
+/// the day changes, the time on every line, and the transport's delivery state
+/// in the one vocabulary both messaging apps speak.
+///
+/// The list is the toolkit's, not this app's: what Messages decides here is
+/// which side a line is on and what the transport said, never where a day
+/// starts or how a time reads.
+fn history_lines(page: &HistoryPage, author: &str) -> Element {
+    let lines: Vec<ConversationLine> = page
+        .messages
+        .iter()
+        .map(|message| {
+            let at_ms = i64::try_from(message.timestamp_ms).unwrap_or(i64::MAX);
+            let body = message.text.to_string();
+            let line = match message.direction {
+                Direction::Incoming => {
+                    ConversationLine::incoming(message.id.clone(), at_ms, author, body)
+                }
+                Direction::Outgoing => ConversationLine::outgoing(message.id.clone(), at_ms, body),
             };
-            content = content.push(Box::new(
-                Text::new(key)
-                    .with_role(ui::tokens::TextRole::Caption)
-                    .dimmed(),
-            ));
-        }
-        body = body.push(Box::new(Card::new(Box::new(content))));
-    }
-    if page.more {
-        body = body.push(Box::new(Text::new("messages-more-history")));
-    }
-    body
+            match message.delivery {
+                Some(delivery) => line.with_delivery(delivery_state(delivery)),
+                None => line,
+            }
+        })
+        .collect();
+    let name = CATALOG.t_args(
+        "messages-conversation-with",
+        &[("person", ArgValue::Text(author.into()))],
+    );
+    Box::new(ConversationList::new(lines).with_accessible_name(name))
+}
+
+/// What the transport reported, in the shared vocabulary: the words, the glyph
+/// and the tone are the same ones Chat shows.
+fn delivery_state(delivery: Delivery) -> DeliveryState {
+    DeliveryState::of_step(match delivery {
+        Delivery::Submitted => DeliveryStep::Submitted,
+        Delivery::ServerAcknowledged => DeliveryStep::Acknowledged,
+        Delivery::RecipientDelivered => DeliveryStep::Delivered,
+        Delivery::RecipientRead => DeliveryStep::Read,
+        Delivery::Uncertain => DeliveryStep::Uncertain,
+    })
+}
+
+/// What one message's delivery state says: the shared vocabulary's key, the
+/// same one Chat renders.
+#[cfg(test)]
+pub(crate) fn delivery_key(delivery: Delivery) -> &'static str {
+    delivery_state(delivery).key()
 }

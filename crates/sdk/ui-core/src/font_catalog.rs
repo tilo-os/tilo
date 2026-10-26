@@ -104,11 +104,17 @@ pub(crate) fn catalog_in_memory(locale: &str) -> Option<FontSystem> {
 /// build's verified artifact catalog, so a binary run from a checkout sets text in
 /// the faces the product ships.
 pub(crate) fn catalog_roots() -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("fonts")))
+    let mut roots: Vec<PathBuf> = crate::host::environment()
+        .paths
+        .font_catalog
+        .clone()
         .into_iter()
         .collect();
+    roots.extend(
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("fonts"))),
+    );
     // Launcher owns this fixed read-only mount in the app's private namespace.
     // Each retained SDK can carry its own catalog without replacing OS fonts.
     roots.push(PathBuf::from("/run/tilo-fonts"));
@@ -116,8 +122,56 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
     roots.push(
         PathBuf::from("/usr/share/tilo/font-catalogs").join(tilo_font_catalog::manifest_sha256()),
     );
+    // A build materializes the pinned catalog into the machine's font cache
+    // (`tools/font-catalog.py`) and bakes *that* path in. A binary built on
+    // another machine therefore names a directory this one does not have, and
+    // every frame it renders is set in the host's faces — nearly right, and
+    // wrong in a way only a screenshot review notices. The cache is keyed by
+    // what it was prepared from, so any prepared catalog whose manifest is
+    // this build's is the catalog this build expects.
+    // A build materializes the pinned catalog into the machine's font cache
+    // (`tools/font-catalog.py`) and bakes *that* path in, so a binary built on
+    // another machine names a directory this one does not have. The cache is
+    // keyed by what it was prepared from; any catalog in it that this build
+    // can read is the catalog this build expects.
+    let paths = &crate::host::environment().paths;
+    for cache in paths.font_artifact_cache.iter().cloned().chain(
+        paths
+            .cache_dir()
+            .map(|cache| cache.join("tilo/test-env/font-artifacts")),
+    ) {
+        roots.extend(tilo_font_catalog::prepared_catalogs(&cache));
+    }
     roots.push(checkout_root());
     roots
+}
+
+/// The root a capture would set text from, without reading a font: the roots
+/// [`bundled_font_system`] tries, checked for a manifest this build pins. A
+/// run whose answer is `None` would render every frame in the host's faces,
+/// which is not the product, so a capture asks this before it draws anything.
+#[cfg(feature = "native")]
+pub(crate) fn catalog_root() -> Option<PathBuf> {
+    tilo_font_catalog::find_root(catalog_roots())
+}
+
+/// Why no root holds this build's catalog, naming the places that were
+/// tried: the message a capture fails with, so the answer is one line away
+/// rather than a review of frames set in the wrong typeface.
+#[cfg(feature = "native")]
+pub(crate) fn catalog_missing_message() -> String {
+    let roots: Vec<String> = catalog_roots()
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect();
+    format!(
+        "no font catalog for this build. Tried: {}. A binary built on another machine names \
+         that machine's checkout, so it finds none of this one's. Point {} at a prepared \
+         catalog: `python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts \
+         --scope fixtures` prints one.",
+        roots.join(", "),
+        tilo_font_catalog::OVERRIDE_ENV,
+    )
 }
 
 /// Load the product catalog from the first of `roots` that holds one this

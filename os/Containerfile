@@ -698,16 +698,20 @@ RUN --mount=type=bind,source=os/scripts/verify-runtime-bundle-closure.sh,target=
 # ui::webview::chromium::runtime::RUNTIME_VERSION (scripts/browser/
 # test_engine_runtime.py keeps the two equal). Release builds sign it with the
 # runtime publisher key; other builds with a key made for this build alone.
+# The engine is the `chromium-engine` build context's chromium-engine/: the compiled
+# tree where the compile built it, else the engine's own build (os-chromium-<arch>),
+# which a compile keeping its build directory leaves out (os/dev/build-image.sh).
 ARG TILO_BROWSER_RUNTIME_PUBLISHER=""
 ARG CHROMIUM_RUNTIME_VERSION
 RUN --mount=type=secret,id=browser_runtime_identity \
+    --mount=type=bind,from=chromium-engine,source=/,target=/run/tilo-chromium,ro \
     : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
          pinned="$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \
               /build/crates/sdk/ui-core/src/webview/chromium/runtime.rs)" \
          && test -n "$pinned" \
          && test "$pinned" = "${CHROMIUM_RUNTIME_VERSION}" \
-         && test -x /out/chromium-engine/chromium/tilo-chromium-host \
+         && test -x /run/tilo-chromium/chromium-engine/chromium/tilo-chromium-host \
          && if [ -n "$TILO_BROWSER_RUNTIME_PUBLISHER" ]; then \
               test -s /run/secrets/browser_runtime_identity \
               && actual="$(/out/tilo-runtime-bundle key pubkey \
@@ -720,7 +724,7 @@ RUN --mount=type=secret,id=browser_runtime_identity \
             fi \
          && /out/tilo-runtime-bundle build \
               --version "${CHROMIUM_RUNTIME_VERSION}" --arch "$(uname -m)" --from / \
-              --include /out/chromium-engine/chromium \
+              --include /run/tilo-chromium/chromium-engine/chromium \
               --identity "$identity" \
               --out "/usr/lib/tilo-runtime/${CHROMIUM_RUNTIME_VERSION}" \
          && /out/tilo-runtime-bundle key pubkey \
@@ -937,7 +941,7 @@ FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
 COPY os/usr/libexec/tilo-session os/usr/libexec/tilo-image-trust-staged \
-    os/usr/libexec/tilo-verified-update \
+    os/usr/libexec/tilo-verified-update os/usr/libexec/tilo-update-channel \
     /tilo-components/usr/libexec/
 COPY os/external-assets/github-assets.tsv /tilo-components/external-assets/
 COPY os/usr/lib/systemd/user/tilo-ush.service \
@@ -2670,6 +2674,9 @@ RUN systemctl enable greetd.service && \
        /etc/systemd/system/multi-user.target.wants/virtqemud.service && \
     systemctl enable tilo-device-key-init.service && \
     systemctl enable tilo-flatpak-defaults.service && \
+    # Fedora's remote-add starts with tilo-flatpak-defaults, off the greeter's path; enabled
+    # on its own, multi-user.target and so graphical.target would wait for it.
+    systemctl disable flatpak-add-fedora-repos.service && \
     systemctl enable tilo-cache-gc.timer && \
     systemctl --global enable tilo-cache-gc.timer && \
     systemctl --global enable tilo-app-update.timer && \
@@ -2731,6 +2738,17 @@ RUN systemctl enable greetd.service && \
 # passes its own `--image-policy`. Unlike the pcrlock and prune masks,
 # these units must exist: a missing unit is a build failure, not a skip. The
 # unsealed dev image unmasks systemd-sysext for its development layers.
+# systemd defines NvPCRs (TPM NV indices extended like PCRs: "hardware" for
+# the product ID, "cryptsetup" for crypttab's tpm2-measure-keyslot-nvpcr=)
+# and anchors each one on every boot with a secret it keeps as a TPM-sealed
+# credential in /var/lib/systemd/nvpcr and in the ESP's loader/credentials.
+# Nothing in Tilo extends, reads or seals to an NvPCR (the encrypted root's
+# policy is tilo-rollback's signed PCR 11 flow). Left on, systemd-tpm2-setup
+# fails on every boot after the first, because the ESP is mounted read-only
+# and the copy for the initrd cannot be written, and each boot spends TPM
+# sessions anchoring them. Masking the definitions turns the whole mechanism
+# off; systemd-pcrproduct, which only extends the "hardware" NvPCR, goes with
+# them.
 RUN for u in \
         NetworkManager-wait-online.service \
         systemd-networkd-wait-online.service \
@@ -2753,7 +2771,13 @@ RUN for u in \
  && systemctl mask systemd-sysext.service systemd-confext.service systemd-sysext.socket \
  && for u in systemd-sysext.service systemd-confext.service systemd-sysext.socket; do \
       test "$(readlink "/etc/systemd/system/$u")" = /dev/null; \
-    done
+    done \
+ && mkdir -p /etc/nvpcr \
+ && for f in /usr/lib/nvpcr/*.nvpcr; do ln -sfn /dev/null "/etc/nvpcr/${f##*/}"; done \
+ && systemctl mask systemd-pcrproduct.service \
+ && test "$(readlink /etc/nvpcr/hardware.nvpcr)" = /dev/null \
+ && test "$(readlink /etc/nvpcr/cryptsetup.nvpcr)" = /dev/null \
+ && test "$(readlink /etc/systemd/system/systemd-pcrproduct.service)" = /dev/null
 
 # C5 firewall policy. Default to the desktop zone (FedoraWorkstation), whose
 # 1025-65535 UDP range covers Iroh's ephemeral QUIC endpoint. Invites carry

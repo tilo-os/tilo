@@ -92,13 +92,18 @@ pub mod governance {
     pub const RESUME_BOT: &str = "resume-bot";
     /// Become a bot's installer, after reviewing its grant.
     pub const ADOPT_BOT: &str = "adopt-bot";
+    /// Choose the version of an app every member of the room runs: a
+    /// registry release, or a developer's own signed build. Every member's
+    /// desktop is to run it, and changes made with another version wait
+    /// until their author runs this one.
+    pub const INSTALL_APP: &str = "install-app";
     /// Start, end, restart or moderate one of the room's calls. A call is
     /// room governance (who may speak, who is denied), so no preset below
     /// the owner's holds it: the owner, and members the room grants it, run
     /// calls, and any member joins an active one.
     pub const CALL: &str = "call";
 
-    pub const ALL: [&str; 20] = [
+    pub const ALL: [&str; 21] = [
         INVITE,
         ADD_MEMBER,
         REMOVE_MEMBER,
@@ -118,6 +123,7 @@ pub mod governance {
         PAUSE_BOT,
         RESUME_BOT,
         ADOPT_BOT,
+        INSTALL_APP,
         CALL,
     ];
 
@@ -125,7 +131,13 @@ pub mod governance {
     /// person's own grants must allow them: an Ask there is no authority the
     /// person's confirmation could supply. Pausing is not among them, so a
     /// moderator can stop a misbehaving bot without being able to widen it.
-    pub const PRIVILEGED: [&str; 4] = [INSTALL_BOT, UNINSTALL_BOT, SET_BOT_APPEARANCE, ADOPT_BOT];
+    pub const PRIVILEGED: [&str; 5] = [
+        INSTALL_BOT,
+        UNINSTALL_BOT,
+        SET_BOT_APPEARANCE,
+        ADOPT_BOT,
+        INSTALL_APP,
+    ];
 
     #[must_use]
     pub fn is_privileged(action: &str) -> bool {

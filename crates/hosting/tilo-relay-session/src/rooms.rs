@@ -29,6 +29,7 @@
 //! These are postcard wire formats between separately updated hosts and
 //! desktops: field and variant order are the wire, so append only.
 
+pub mod govern;
 pub mod private;
 
 use std::time::Duration;

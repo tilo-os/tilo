@@ -24,6 +24,48 @@ function domOffset(value,index){
   }
   return value.length;
 }
+/**
+ * The tree a status's `semanticsPatch` makes of `tree`, the one this page
+ * holds as number `sequence` (`ui::headless::write_inspection_patch` says
+ * what the operations mean). Undefined when the patch was made for another
+ * tree: the page then asks for the whole one. Only the nodes the patch
+ * touches and their ancestors are new objects; every other node is the one
+ * `tree` had, so the mirror can tell it is unchanged by identity alone.
+ */
+export function applySemanticsPatch(tree,sequence,patch){
+  if(!tree||sequence===undefined||sequence!==patch?.base)return undefined;
+  const fresh=new Set();
+  const copy=value=>{
+    if(value===null||typeof value!=='object'||fresh.has(value))return value;
+    const next=Array.isArray(value)?[...value]:{...value};fresh.add(next);return next;
+  };
+  const next=copy(tree);
+  next.viewport=patch.viewport;next.keyboard_focus_owner=patch.keyboard_focus_owner;
+  for(const op of patch.ops??[]){
+    const path=op.p;
+    // The slot holding the node: `holder[slot]`, every holder on the way a copy.
+    let holder=next,slot=path[0];
+    for(const step of path.slice(1)){
+      const node=copy(holder[slot]);holder[slot]=node;
+      if(step==='s'){holder=node;slot='semantics';}
+      else{node.children=copy(node.children);holder=node.children;slot=step;}
+    }
+    if('full' in op){holder[slot]=op.full;continue;}
+    const node=copy(holder[slot]);holder[slot]=node;
+    if('own' in op){
+      // A retained widget's semantics, like every node's children, are
+      // patched apart from its own fields.
+      const children=node.children,semantics=node.semantics,widget=!path.includes('s');
+      for(const key of Object.keys(node))delete node[key];
+      Object.assign(node,op.own,{children});
+      if(widget)node.semantics=semantics;
+    }else if('splice' in op){
+      const [at,removed,added]=op.splice;
+      node.children=copy(node.children);node.children.splice(at,removed,...added);
+    }
+  }
+  return next;
+}
 export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
   const elements=new Map();
   const recoverySurfaces=new Set();
@@ -269,9 +311,13 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
   function place(element){
     const rect=element.tiloRect,parent=element.parentNode?.tiloRect;
     const x=rect[0]*scale[0],y=rect[1]*scale[1],px=parent?parent[0]*scale[0]:0,py=parent?parent[1]*scale[1]:0;
+    const left=x-px,top=y-py,width=Math.max(0,rect[2]*scale[0]),height=Math.max(0,rect[3]*scale[1]);
+    const placed=element.tiloPlaced;
+    if(placed&&placed[0]===left&&placed[1]===top&&placed[2]===width&&placed[3]===height)return;
+    element.tiloPlaced=[left,top,width,height];
     const style=element.style;
-    style.left=`${x-px}px`;style.top=`${y-py}px`;
-    style.width=`${Math.max(0,rect[2]*scale[0])}px`;style.height=`${Math.max(0,rect[3]*scale[1])}px`;
+    style.left=`${left}px`;style.top=`${top}px`;
+    style.width=`${width}px`;style.height=`${height}px`;
   }
   function layout(cssSize,frameSize){
     const next=[0,1].map(axis=>cssSize?.[axis]>0&&frameSize?.[axis]>0?cssSize[axis]/frameSize[axis]:1);
@@ -324,6 +370,10 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       const bounds=node.bounds;
       element.tiloRect=bounds?[bounds.x0,bounds.y0,bounds.x1-bounds.x0,bounds.y1-bounds.y0]:enclosing??[0,0,0,0];
       place(element);
+      // A node a patch left alone is the very object the element last
+      // showed (applySemanticsPatch keeps it), so it says nothing new.
+      const changed=element.tiloNode!==node;element.tiloNode=node;
+      if(changed){
       const role=node.role&&typeof node.role==='object'?(node.role.Heading?'heading':undefined):roles[node.role];
       if(role)element.setAttribute('role',role);else element.removeAttribute('role');
       const level=node.role?.Heading?.level;
@@ -338,6 +388,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       element.disabled=Boolean(node.state?.disabled);
       element.readOnly=Boolean(node.state?.read_only);
       if(node.live)element.setAttribute('aria-live',node.live.toLowerCase());else element.removeAttribute('aria-live');
+      }
       const value=node.state?.protected?'':node.value??'';
       if(editable){
         const state=element.tiloState;
@@ -356,7 +407,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
           [element.scrollLeft,element.scrollTop]=scroll;
         }
       }
-      else if(!node.children?.length)element.textContent=value||node.name||'';
+      else if(changed&&!node.children?.length)element.textContent=value||node.name||'';
       (node.children??[]).forEach((child,i)=>semantic(child,owner,element,`${index}/${i}`,identity,[...ancestry,key],ownerPath,element.tiloRect));
     }
     function walk(node,parent,ancestry=[]){

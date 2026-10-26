@@ -1321,6 +1321,7 @@ impl BotAsk {
                 entry: entry.clone(),
                 version: version.clone(),
                 inputs: std::collections::BTreeMap::new(),
+                program: None,
             }),
             Self::Remove { entry } => WorkspaceMembershipCommand::WithdrawBotRequest {
                 entry: entry.clone(),

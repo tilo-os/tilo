@@ -872,6 +872,10 @@ pub struct FilesPreferences {
     pub zoom: i32,
     /// Whether dotfiles are listed.
     pub hidden: bool,
+    /// The width of each column the person set by dragging its edge, by
+    /// column key, in whole pixels. A column never resized keeps the width
+    /// the list gives it.
+    pub widths: std::collections::BTreeMap<String, u32>,
 }
 
 impl Default for FilesPreferences {
@@ -882,6 +886,7 @@ impl Default for FilesPreferences {
             order: "ascending".into(),
             zoom: 0,
             hidden: false,
+            widths: std::collections::BTreeMap::new(),
         }
     }
 }

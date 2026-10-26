@@ -1452,7 +1452,6 @@ fn restore_operation(session: uuid::Uuid) -> ActionSpec {
     .expect("history restore serializes")
     .of_kind(tilo_actions::ActionKind::Undoable)
     .destructive()
-    .reversible()
 }
 
 pub(crate) fn encode_entry(id: HistoryEntryId) -> String {

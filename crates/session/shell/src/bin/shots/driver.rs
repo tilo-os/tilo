@@ -635,42 +635,58 @@ impl ShellDriver {
                 None,
             );
             let lock_player = now_playing_fixture::shots_player();
+            // The prompt as the lock controller leaves it in each state.
+            let prompt = shell::compositor::lock_controller::LockPrompt::new();
+            let typed = |prompt: &shell::compositor::lock_controller::LockPrompt| {
+                if let Some(field) = prompt.borrow_mut().field_mut(ui::widget::FieldRole::Secret) {
+                    field.set_text("password");
+                }
+            };
+            match state {
+                LockVisualState::Password => typed(&prompt),
+                LockVisualState::Verifying => {
+                    prompt
+                        .borrow_mut()
+                        .set_busy(Some(shell::shell::i18n::t("lock-screen-verifying")));
+                }
+                LockVisualState::Error => {
+                    prompt
+                        .borrow_mut()
+                        .reject(shell::compositor::lock_controller::refusal_line(
+                            shell::compositor::lock_auth::INCORRECT_MSG,
+                        ));
+                }
+                LockVisualState::Default
+                | LockVisualState::Notifications
+                | LockVisualState::NowPlaying => {}
+            }
+            let base = shell::compositor::lock_screen::LockView {
+                clock: "12:34",
+                date: "Monday, 7 September",
+                prompt: Some(&prompt),
+                // A phone-sized display is used by touch: the lock screen
+                // shows its keyboard and touch-sized controls.
+                keyboard: (self.fb.scene_size().0 < 600.0)
+                    .then(ui::passcode_keyboard::PasscodeKeyboard::default),
+                ..Default::default()
+            };
             let view = match state {
-                LockVisualState::Default => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
-                    ..Default::default()
-                },
-                LockVisualState::Password => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
-                    password_len: 8,
-                    ..Default::default()
-                },
+                LockVisualState::Default | LockVisualState::Password => base,
                 LockVisualState::Verifying => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
-                    password_len: 8,
                     verifying: true,
-                    ..Default::default()
+                    ..base
                 },
                 LockVisualState::Error => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
                     error: Some(shell::compositor::lock_auth::INCORRECT_MSG),
-                    ..Default::default()
+                    ..base
                 },
                 LockVisualState::Notifications => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
                     notification_count: 3,
-                    ..Default::default()
+                    ..base
                 },
                 LockVisualState::NowPlaying => shell::compositor::lock_screen::LockView {
-                    clock: "12:34",
-                    date: "Monday, 7 September",
                     now_playing: Some(&lock_player),
-                    ..Default::default()
+                    ..base
                 },
             };
             let theme = self.fb.theme().clone();

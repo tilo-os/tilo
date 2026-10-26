@@ -103,6 +103,18 @@ const ANALYSIS_QUEUE_LIMIT: usize = 2;
 /// One bounded materialized library page. This is intentionally independent
 /// of the number of cards that happen to fit in a particular window.
 const LIBRARY_PAGE_SIZE: usize = 24;
+
+/// How many seconds a photograph is shown before the slide show moves on:
+/// enough to look at it, and short enough that a room does not wait. It is the
+/// content's own pace, not a motion's, so it is a number of seconds and not a
+/// duration constant: a slide show dwell is a preference waiting to be a
+/// setting, and a duration here reads as animation timing to anyone scanning.
+const SLIDE_SHOW_SECONDS: u64 = 5;
+
+/// The levels the open photograph zooms through, from smaller than its frame
+/// to eight times it, with its own size (fitted to the frame) where `Ctrl+0`
+/// returns. A photograph's scale is the picture's, never the window's text.
+const PHOTO_ZOOM_LEVELS: [f32; 10] = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0];
 /// People, places, and albums are projected one bounded page at a time. The
 /// backing vectors retain the full collection so “Browse all” is real rather
 /// than a prettier name for truncation.
@@ -223,6 +235,14 @@ enum Hit {
     PlacesList,
     PlacesZoomIn,
     PlacesZoomOut,
+    /// Zoom the open photograph (its own size is `Ctrl+0`, never the map's).
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    /// Show the photograph full screen, and leave.
+    Present,
+    /// Run the slide show, and stop it.
+    SlideShow,
     Selection(SelectionHit),
     PeopleHidden,
     PreviousPage,
@@ -527,6 +547,15 @@ pub struct PhotosApp {
     rect: Rect,
     canvas_rect: Rect,
     status_rect: Rect,
+    /// Whether the open photograph has the screen (`FullscreenProvider`):
+    /// showing photographs to a room is what full screen is for.
+    presenting: bool,
+    /// When the slide show moves on, while it runs; `None` when it is off.
+    /// The window wakes at that instant (`Widget::next_wake_deadline`).
+    slide_show: Option<ui::time::Instant>,
+    /// The open photograph's zoom, over the toolkit's model: one set of steps
+    /// and one percentage for every app whose content has a size of its own.
+    viewer_zoom: ui::content_zoom::ZoomModel,
     /// Portal channel while a file chooser is open.
     picker: Option<ui::portal::PortalChannel>,
     /// The chooser that delivers chosen files' contents, where files have no
@@ -946,6 +975,9 @@ impl PhotosApp {
             rect: Rect::ZERO,
             canvas_rect: Rect::ZERO,
             status_rect: Rect::ZERO,
+            presenting: false,
+            slide_show: None,
+            viewer_zoom: ui::content_zoom::ZoomModel::stepping(PHOTO_ZOOM_LEVELS, 1.0),
             picker: None,
             contents_picker: None,
             directory_picker: None,

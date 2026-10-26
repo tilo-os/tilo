@@ -390,6 +390,7 @@ fn greeter(channel: &str) -> installed::InstalledBot {
             .unwrap(),
         inputs: serde_json::Map::new(),
         installed_at_ms: 1,
+        release: String::new(),
     }
 }
 
@@ -695,6 +696,7 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
             .unwrap(),
         inputs: serde_json::Map::new(),
         installed_at_ms: 1,
+        release: String::new(),
     };
     let mut runner = member_runner(
         &rooms,
@@ -1250,6 +1252,7 @@ pub(super) fn discord_bridge() -> installed::InstalledBot {
         program: include_str!("../../../../../apps/discord/bridge/program.json").to_owned(),
         inputs: serde_json::Map::new(),
         installed_at_ms: 1,
+        release: String::new(),
     }
 }
 
@@ -1475,7 +1478,7 @@ async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().unwrap().clone();
+    let rooms = relay.rooms().clone();
     let (room, _) = chat_room(&rooms, &cert).await;
     let file = scratch.path().join("discord-bridge.json");
     let entry = file.to_str().unwrap();
@@ -1525,4 +1528,120 @@ async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
         .await
         .unwrap();
     assert_eq!(again, after);
+}
+
+/// A developer pushes their bot's program into a running room, then a
+/// changed one: the room's host runs each as soon as the room asks for it,
+/// without restarting, and the second is the same bot (its installation and
+/// what it read up to) running the new program under its new grants.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its room stay live for the whole test"
+)]
+async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
+    use tilo_peer_state::workspace_membership::{BotRequest, WorkspaceMembershipCommand};
+    const ENTRY: &str = "dev.ada.greeter";
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
+    let (room, general) = chat_room(&rooms, &cert).await;
+    let first = greeter(general.as_str()).program;
+    let second = first.replace("welcome!", "welcome, again!");
+    assert_ne!(first, second);
+    let follower = requested::Follower {
+        rooms: rooms.clone(),
+        room: room.clone(),
+        host: cert.clone(),
+        root: owner_root(),
+        state: scratch.path().join("host"),
+        operator: std::collections::BTreeSet::new(),
+        connectors: None,
+    };
+    let push = |version: &str, program: &str| {
+        let command = WorkspaceMembershipCommand::RequestBot(BotRequest {
+            entry: ENTRY.into(),
+            version: version.into(),
+            inputs: std::collections::BTreeMap::new(),
+            program: Some(program.to_owned()),
+        });
+        let rooms = rooms.clone();
+        let (room, cert) = (room.clone(), cert.clone());
+        let id = *blake3::hash(program.as_bytes()).as_bytes();
+        async move { rooms.ask_for_bot(&room, &cert, id, command).await.unwrap() }
+    };
+    let row_program = |installation: String| {
+        let rooms = rooms.clone();
+        let room = room.clone();
+        async move {
+            rooms
+                .installed_bot(&room, &installation)
+                .await
+                .unwrap()
+                .expect("the bot is on the room's roster")
+                .installation
+                .program
+        }
+    };
+    // Ada posts until the bot answers with `text`: a runner that just
+    // started answers only what is posted after its first look.
+    let answered = |text: &'static str| {
+        let (rooms, room, cert, general) =
+            (rooms.clone(), room.clone(), cert.clone(), general.clone());
+        async move {
+            tilo_test_env::within(format!("the bot answers {text}"), async {
+                loop {
+                    ada_says(&rooms, &room, &cert, general.as_str(), "hello").await;
+                    for _ in 0..20 {
+                        if posts(&rooms, &room)
+                            .await
+                            .iter()
+                            .any(|post| post.text == text)
+                        {
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                }
+            })
+            .await;
+        }
+    };
+    let welcomes = |rooms: Rooms, room: String| async move {
+        posts(&rooms, &room)
+            .await
+            .iter()
+            .filter(|post| post.text == "welcome!")
+            .count()
+    };
+
+    let mut followed = requested::Followed::default();
+    push("0.1.0-dev.1", &first).await;
+    follower.follow_requests(&mut followed).await;
+    let (installation, _) = followed.running(ENTRY).expect("the pushed bot runs");
+    let installation = installation.to_owned();
+    assert_eq!(
+        row_program(installation.clone()).await,
+        tilo_automation::program::program_hash(first.as_bytes())
+    );
+    answered("welcome!").await;
+    let first_answers = welcomes(rooms.clone(), room.clone()).await;
+
+    push("0.1.0-dev.2", &second).await;
+    follower.follow_requests(&mut followed).await;
+    let (now, release) = followed.running(ENTRY).expect("the bot still runs");
+    assert_eq!(now, installation, "the same bot, not a new one");
+    assert!(release.starts_with("0.1.0-dev.2#"), "{release}");
+    assert_eq!(
+        row_program(installation.clone()).await,
+        tilo_automation::program::program_hash(second.as_bytes()),
+        "the room's row names the program it runs now"
+    );
+    answered("welcome, again!").await;
+    assert_eq!(
+        welcomes(rooms.clone(), room.clone()).await,
+        first_answers,
+        "the first program answers nothing once replaced"
+    );
 }

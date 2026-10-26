@@ -531,6 +531,28 @@ impl<R: FileRow> FileTable<R> {
         }
     }
 
+    /// The column widths the person set by dragging an edge, by column key:
+    /// what a host keeps so a resized column is where they left it next
+    /// time.
+    #[must_use]
+    pub fn column_widths(&self) -> Vec<(String, f32)> {
+        self.table
+            .as_ref()
+            .map(|table| table.resized_widths())
+            .unwrap_or_default()
+    }
+
+    /// Lay the columns out at the widths the person set last time. Widths
+    /// for columns this table does not show are ignored.
+    pub fn set_column_widths(&mut self, widths: impl IntoIterator<Item = (String, f32)>) {
+        let Some(table) = self.table.as_mut() else {
+            return;
+        };
+        for (key, px) in widths {
+            table.set_column_width(&key, px);
+        }
+    }
+
     /// The rows as the table holds them, in display order.
     pub fn rows(&self) -> Vec<&R> {
         self.table

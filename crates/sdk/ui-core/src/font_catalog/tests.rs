@@ -2,6 +2,27 @@ use super::*;
 use cosmic_text::fontdb::{Query, Style, Weight};
 use cosmic_text::{Attrs, Buffer, Family, Metrics, Shaping};
 
+/// The probe a capture asks before it draws: it must answer about the roots it
+/// says it searched, and a run that cannot find a catalog must learn how to
+/// point one at itself.
+#[test]
+#[cfg(feature = "native")]
+fn the_catalog_probe_answers_about_the_roots_it_searched() {
+    let roots = catalog_roots();
+    assert!(!roots.is_empty(), "a run always has somewhere to look");
+    if let Some(root) = catalog_root() {
+        assert!(
+            roots.contains(&root),
+            "the catalog came from outside the searched roots: {}",
+            root.display()
+        );
+    }
+    assert!(
+        catalog_missing_message().contains(tilo_font_catalog::OVERRIDE_ENV),
+        "a run with no catalog must be told how to name one"
+    );
+}
+
 fn fixture() -> FontCatalog {
     FontCatalog::controlled_fixture(crate::font_catalog::checkout_root(), "en-US")
 }

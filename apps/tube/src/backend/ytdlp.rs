@@ -603,15 +603,21 @@ impl YtBackend for YtDlpBackend {
         Ok(BackendResult::Videos(videos_from_entries(&v, "Trending")))
     }
 
-    fn resolve_playback_source(&self, id: &str) -> Result<PlaybackSource, BackendError> {
+    fn resolve_playback_source(
+        &self,
+        id: &str,
+        max_height: Option<u32>,
+    ) -> Result<PlaybackSource, BackendError> {
         // Let yt-dlp's format selector pick a single playable stream — a
         // progressive muxed https format (audio+video in one URL) when available,
         // else the best mp4/whatever — so only that one format's `nsig` is
-        // deciphered (~2s). GStreamer negotiates the codec regardless.
-        const SELECTOR: &str = "best[protocol^=https][vcodec!=none][acodec!=none]/best[ext=mp4][protocol^=https]/best[protocol^=https]/best";
+        // deciphered (~2s). GStreamer negotiates the codec regardless. The
+        // height the person chose caps the preferred formats first, then falls
+        // back to anything playable rather than refusing to play.
+        let selector = format_selector(max_height);
         let url = format!("https://www.youtube.com/watch?v={id}");
         let v = self.run_print(
-            Some(SELECTOR),
+            Some(&selector),
             &[
                 "url",
                 "width",
@@ -634,9 +640,43 @@ impl YtBackend for YtDlpBackend {
     }
 }
 
+/// The yt-dlp format selector for a request no larger than `max_height`
+/// (`None` asks for the best available). A format under the cap that carries
+/// picture and sound in one file comes first, then the same cap without the
+/// muxed requirement, then anything playable at all: a person who chose 480p
+/// on a metered connection must not silently get 720p, and a video with no
+/// small format must still play.
+fn format_selector(max_height: Option<u32>) -> String {
+    const MUXED: &str = "best[protocol^=https][vcodec!=none][acodec!=none]";
+    const FALLBACK: &str = "best[protocol^=https][vcodec!=none][acodec!=none]/best[ext=mp4][protocol^=https]/best[protocol^=https]/best";
+    match max_height {
+        None => FALLBACK.to_string(),
+        Some(height) => format!(
+            "{MUXED}[height<={height}]/best[ext=mp4][protocol^=https][height<={height}]/best[height<={height}]/{FALLBACK}"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quality_choice_caps_the_formats_before_anything_else() {
+        assert_eq!(
+            format_selector(None),
+            "best[protocol^=https][vcodec!=none][acodec!=none]/best[ext=mp4][protocol^=https]/best[protocol^=https]/best"
+        );
+        let capped = format_selector(Some(480));
+        assert!(
+            capped.starts_with("best[protocol^=https][vcodec!=none][acodec!=none][height<=480]/"),
+            "the capped muxed format is tried first: {capped}"
+        );
+        assert!(
+            capped.ends_with("best[protocol^=https]/best"),
+            "a source with nothing that small still plays: {capped}"
+        );
+    }
 
     #[test]
     fn search_entries_map_to_videos_and_channel_images() {

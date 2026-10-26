@@ -75,7 +75,7 @@ never relies on a swapchain image retaining pixels.
 - [Development VM](dev-vms.md): the Linux OS, services, DRM and virtual input.
 - [Installed Linux session](host-session.md): host login, locking and real
   outputs.
-- [Boards and kernels](hardware.md): firmware, physical drivers and boot
+- [Devices and boards](devices.md): firmware, physical drivers and boot
   changes.
 - [Headless testing](../headless-testing.md): scripted compositor checks and
   images.

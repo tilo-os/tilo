@@ -134,6 +134,25 @@ pub fn current_code(account: &Account) -> String {
     code_at(account, unix_now())
 }
 
+/// Why this device's clock may generate codes every server rejects, when it
+/// What to tell a person whose codes are being rejected, when the machine says
+/// its clock is not synchronised. The question is the platform's: a device whose
+/// clock is minutes out produces codes nothing accepts, and nothing in an
+/// authenticator can tell. `None` when the clock is synchronised, and when the
+/// platform cannot say either way: a warning nobody can act on is noise.
+pub fn clock_drift_warning() -> Option<&'static str> {
+    if cfg!(test) || ui::time::wall_frozen() {
+        return None;
+    }
+    match ui::time::is_synchronised() {
+        Some(false) => Some(
+            "This device\u{2019}s clock is not synchronised; codes may be rejected. \
+             Turn on automatic time, then try again.",
+        ),
+        Some(true) | None => None,
+    }
+}
+
 /// Group a code for readability: 6 digits → "123 456", 8 → "1234 5678",
 /// otherwise split in the middle. Masked placeholder strings pass
 /// through grouped the same way.

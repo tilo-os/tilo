@@ -2676,6 +2676,10 @@ fn hosted_behaviour_app(create: crate::application::ComponentFactory) -> App {
 #[path = "responsive_nav_publication_tests.rs"]
 mod responsive_nav_publication_tests;
 
+#[cfg(unix)]
+#[path = "own_invocation_order_tests.rs"]
+mod own_invocation_order_tests;
+
 fn hosted_behaviour(
     create: crate::application::ComponentFactory,
 ) -> crate::application::ComponentBehaviour {

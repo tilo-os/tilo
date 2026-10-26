@@ -114,6 +114,8 @@ impl super::App {
                 crate::bound_dispatch::can_merge_remote_owned_document(store, checkout).ok()
             });
             serde_json::json!({
+                "app": entry.route.app_id,
+                "record": entry.route.record,
                 "owners": entry.owners.len(),
                 "merge_ready": merge_ready,
                 "pending_remote": !entry.pending.is_empty(),

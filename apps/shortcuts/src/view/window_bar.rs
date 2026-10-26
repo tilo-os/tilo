@@ -16,6 +16,7 @@ use crate::model::Workbench;
 pub(crate) const NEW_SHORTCUT: &str = "new-shortcut";
 pub(crate) const RELOAD: &str = "reload";
 pub(crate) const EDIT: &str = "edit-shortcut";
+pub(crate) const DUPLICATE: &str = "duplicate-shortcut";
 pub(crate) const DELETE: &str = "delete-shortcut";
 pub(crate) const REVIEW: &str = "review-save";
 pub(crate) const DISCARD: &str = "discard-draft";
@@ -85,6 +86,11 @@ impl ShortcutsWindow {
         match open {
             Open::Saved(_) => {
                 actions.push(ToolbarAction::new(EDIT, "pencil", lookup("shortcuts-edit")));
+                actions.push(ToolbarAction::new(
+                    DUPLICATE,
+                    "copy",
+                    lookup("shortcuts-duplicate"),
+                ));
                 actions.push(
                     ToolbarAction::new(DELETE, "trash-2", lookup("shortcuts-delete")).in_menu(),
                 );
@@ -95,6 +101,11 @@ impl ShortcutsWindow {
                     ToolbarAction::new(REVIEW, "check", lookup("shortcuts-review"))
                         .enabled(savable),
                 );
+                actions.push(ToolbarAction::new(
+                    DUPLICATE,
+                    "copy",
+                    lookup("shortcuts-duplicate"),
+                ));
                 actions.push(
                     ToolbarAction::new(DISCARD, "trash-2", lookup("shortcuts-discard-button"))
                         .in_menu(),
@@ -140,6 +151,20 @@ impl ShortcutsWindow {
                 }
             }
             (DELETE, Open::Saved(id)) => ui.dispatcher.effect(&DoorEffect::Delete { shortcut: id }),
+            (DUPLICATE, Open::Draft(id)) => {
+                ui.dispatcher.submit(Workbench::DUPLICATE_DRAFT.with(id))
+            }
+            (DUPLICATE, Open::Saved(id)) => {
+                let shortcut = ui.door.with(|door| {
+                    door.library
+                        .ready()
+                        .and_then(|library| library.iter().find(|s| s.id == id).cloned())
+                });
+                if let Some(json) = shortcut.and_then(|s| serde_json::to_value(s).ok()) {
+                    ui.dispatcher
+                        .submit(Workbench::DUPLICATE_SHORTCUT.with(json));
+                }
+            }
             (REVIEW, Open::Draft(_)) => {
                 if ui.editor.with(|input| save_blocker(input).is_none()) {
                     ui.sheet.set(true);

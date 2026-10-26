@@ -555,9 +555,22 @@ impl Facts {
     }
 }
 
-/// Paint the selected commit into `area`, scrolled by `scroll`. Returns the
-/// height of everything, for clamping the scroll.
-pub fn paint_detail(ctx: &mut PaintCtx<'_>, area: Rect, commit: &Commit, scroll: f64) -> f64 {
+/// What one detail paint produced.
+pub struct DetailDraw {
+    /// Height of everything, for clamping the scroll.
+    pub height: f64,
+    /// The changed-file rows, top to bottom, at their painted places: what
+    /// the pointer and the keyboard choose to see that file's diff.
+    pub file_rows: Vec<Rect>,
+}
+
+/// Paint the selected commit into `area`, scrolled by `scroll`.
+pub fn paint_detail(
+    ctx: &mut PaintCtx<'_>,
+    area: Rect,
+    commit: &Commit,
+    scroll: f64,
+) -> DetailDraw {
     let theme = ctx.theme;
     let s = &theme.tokens.spacing;
     let gutter = f64::from(s.s6);
@@ -639,16 +652,23 @@ pub fn paint_detail(ctx: &mut PaintCtx<'_>, area: Rect, commit: &Commit, scroll:
     }
 
     // The files it changed.
-    if !commit.files.is_empty() {
-        y = paint_files(ctx, commit, Rect::new(x, y, x + width, area.y1), y);
-    }
+    let file_rows = if commit.files.is_empty() {
+        Vec::new()
+    } else {
+        let (next, rows) = paint_files(ctx, commit, Rect::new(x, y, x + width, area.y1), y);
+        y = next;
+        rows
+    };
     ctx.scene.pop_layer();
-    y - top + gutter
+    DetailDraw {
+        height: y - top + gutter,
+        file_rows,
+    }
 }
 
 /// The "Changed files" group: a `Subheading` with its count over one row
-/// per file. Returns the `y` under it.
-fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> f64 {
+/// per file. Returns the `y` under it and each row's rect.
+fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> (f64, Vec<Rect>) {
     let theme = ctx.theme;
     let s = &theme.tokens.spacing;
     let pad = ui::chrome::row_bleed(theme);
@@ -694,6 +714,7 @@ fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> f
     // column's other text.
     let mut y = band.y1 + f64::from(s.s2);
     let count = commit.files.len();
+    let mut rows = Vec::with_capacity(count);
     for (i, file) in commit.files.iter().enumerate() {
         let counts = line_counts(file.additions, file.deletions);
         let dir = file.dir();
@@ -712,9 +733,10 @@ fn paint_files(ctx: &mut PaintCtx<'_>, commit: &Commit, lane: Rect, y: f64) -> f
         let h = face.height(ctx.text, theme);
         let rect = Rect::new(lane.x0 - pad, y, lane.x1 + pad, y + h);
         face.paint(ctx, rect);
+        rows.push(rect);
         y += h;
     }
-    y
+    (y, rows)
 }
 
 #[cfg(test)]

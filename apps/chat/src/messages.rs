@@ -389,6 +389,34 @@ impl ChatPart {
         Ok(())
     }
 
+    /// Change what a shared window lets people do.
+    ///
+    /// Switch a window you share live between `view` and `edit`, in place:
+    /// the room grants what the new access gives from then on, and takes
+    /// back what the old one gave.
+    #[action(item = messages)]
+    pub fn set_share_access(
+        &mut self,
+        cx: &mut ActionCx,
+        message: &Id,
+        #[param("What the people who open it may do now: view or edit")] access: ShareAccess,
+    ) -> Result<(), Refusal> {
+        let row = self
+            .messages
+            .get_mut(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        own(cx, row)?;
+        let share = row
+            .share
+            .as_mut()
+            .ok_or_else(|| Refusal::new("the message shares no window"))?;
+        if share.ended {
+            return Err(Refusal::new("the window is no longer shared"));
+        }
+        share.access = access;
+        Ok(())
+    }
+
     /// Say whether a shared window is open.
     ///
     /// Its sharer's Chat says so when they close the window or open it
@@ -823,6 +851,21 @@ impl Chained for ChatPart {
         }
         Ok(())
     }
+
+    /// The channel a post goes to, as everyone in the room sees it named
+    /// (`#general`). A direct conversation is never named.
+    fn place(action: &Self::Action, chat: &Chat) -> Option<String> {
+        let channel = match &action.operation {
+            ChatPartAction::Post(post) => &post.message.channel,
+            ChatPartAction::PostFile(post) => &post.channel,
+            ChatPartAction::ShareResource(share) => &share.channel,
+            ChatPartAction::ShareWindow(share) => &share.channel,
+            _ => return None,
+        };
+        let channel = chat.channels.get(channel)?;
+        let name = channel.name.trim().trim_start_matches('#');
+        (channel.conversation_with.is_none() && !name.is_empty()).then(|| format!("#{name}"))
+    }
 }
 
 impl ChatPart {
@@ -833,6 +876,7 @@ impl ChatPart {
             | ChatPartAction::RemoveMessage(chat_part::RemoveMessage { message })
             | ChatPartAction::Pin(chat_part::Pin { message, .. })
             | ChatPartAction::StopSharing(chat_part::StopSharing { message })
+            | ChatPartAction::SetShareAccess(chat_part::SetShareAccess { message, .. })
             | ChatPartAction::ShareOpen(chat_part::ShareOpen { message, .. }) => {
                 Some(message.clone())
             }

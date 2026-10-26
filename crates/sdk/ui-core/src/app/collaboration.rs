@@ -607,9 +607,12 @@ impl App {
         if any {
             self.invalidate_widget_resource_cache();
         }
-        let action_surface_needs_publication = self.collaboration.manager.is_connected()
+        // Held own invocations wait for the publication this pump makes once
+        // the route is ready, or for the refusal once the connection is gone.
+        let action_surface_needs_publication = (self.collaboration.manager.is_connected()
             && (self.actions.last_published_actions.is_none()
-                || self.actions.action_directory_snapshot.is_none());
+                || self.actions.action_directory_snapshot.is_none()))
+            || !self.actions.held_own_invocations.is_empty();
         // The broker refused the last surface: republish it now, not on the
         // next unrelated change.
         let refused_surface = self.collaboration.manager.take_action_surface_failed();

@@ -310,6 +310,17 @@ impl PhotosApp {
             Hit::PlacesList => self.places_list_mode = !self.places_list_mode,
             Hit::PlacesZoomIn => self.zoom_places_by(1.0),
             Hit::PlacesZoomOut => self.zoom_places_by(-1.0),
+            Hit::ZoomIn => {
+                self.zoom_photo(ui::content_zoom::ZoomStep::In);
+            }
+            Hit::ZoomOut => {
+                self.zoom_photo(ui::content_zoom::ZoomStep::Out);
+            }
+            Hit::ZoomReset => {
+                self.zoom_photo(ui::content_zoom::ZoomStep::Reset);
+            }
+            Hit::Present => self.toggle_presentation(),
+            Hit::SlideShow => self.toggle_slide_show(),
             Hit::Selection(hit) => self.handle_selection_hit(hit),
         }
     }

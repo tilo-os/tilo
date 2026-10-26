@@ -2689,6 +2689,18 @@ impl ChromeState {
         reopened
     }
 
+    /// Put `lost`, the windows of an app ended to start again on a newer
+    /// build, back where they were, relaunched as the out-of-memory notice's
+    /// Reopen does. Returns how many came back.
+    pub(crate) fn reopen_on_new_build(
+        &mut self,
+        lost: Vec<crate::shell::closed_tabs::ClosedTab>,
+    ) -> usize {
+        lost.into_iter()
+            .filter_map(|entry| self.restore_closed_tab(entry))
+            .count()
+    }
+
     /// Ask the person about a new device asking to be them, once: what it
     /// is, when and from where it asked, and the code it shows, with
     /// Approve and Decline (see [`Self::device_asking_actions`]).

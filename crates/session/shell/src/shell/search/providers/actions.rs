@@ -423,7 +423,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         "shortcut-help.toggle" | "overview.toggle" => {
             contract = ActionContract::view();
             contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
         "workspace.create" | "workspace.rename" | "strip.create" | "strip.rename"
@@ -485,7 +484,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "group.close"
         | "tab.reopen" => {
             contract.kind = ActionKind::Undoable;
-            contract.reversible = true;
         }
         // Clearing notifications is undone by bringing them back while the
         // undo lasts.
@@ -497,7 +495,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "appearance.language" => {
             contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
         }
         QS_BRIGHTNESS_ID | QS_VOLUME_ID | QS_WIFI_ID | QS_POWER_ID | QS_VPN_ID
         | QS_BLUETOOTH_ID | QS_AIRPLANE_ID => {
@@ -518,7 +515,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         id if id.starts_with("navigation.axis.") || WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
             contract = ActionContract::view();
             contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
         }
         // Layout, and the order of the person's workspaces, undone by the
         // opposite move.
@@ -527,7 +523,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         {
             contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
         }
         _ => {}
     }
@@ -3113,8 +3108,6 @@ fn display_layout_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
         kind: tilo_actions::ActionKind::Undoable,
         retry: tilo_actions::RetryPolicy::Idempotent,
-        // An unconfirmed layout restores itself; Revert undoes it at once.
-        reversible: true,
         ..tilo_actions::ActionContract::default()
     }
 }
@@ -3123,7 +3116,6 @@ fn quick_settings_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
         kind: tilo_actions::ActionKind::Undoable,
         retry: tilo_actions::RetryPolicy::Idempotent,
-        reversible: false,
         ..tilo_actions::ActionContract::default()
     }
 }
@@ -8103,7 +8095,7 @@ mod tests {
                     tilo_actions::ActionKind::Undoable,
                     "{id} rearranges the shared desk"
                 );
-                assert!(contract.reversible);
+                assert!(contract.can_be_undone());
                 assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
             }
         }
@@ -8187,7 +8179,12 @@ mod tests {
                         .any(|parameter| parameter.name == "confirm")
                 );
             }
-            assert!(!quick_settings_contract().reversible);
+            // A setting applied on the device itself is undone by undoing
+            // the change, never by the workspace's own undo.
+            assert_eq!(
+                quick_settings_contract().kind,
+                tilo_actions::ActionKind::Undoable
+            );
             assert_eq!(
                 shell_action_kind("agent.invite"),
                 tilo_actions::OperationKind::Document

@@ -60,6 +60,52 @@ AGENT = b'''<!doctype html><title>Agent</title>
 '''
 
 
+CANVAS = b'''<!doctype html><title>Sign</title>
+<canvas id="c" width="500" height="150" aria-label="Signature pad" style="border:1px solid #000"></canvas>
+<button type="button" id="s">Submit signature</button><p id="m"></p>
+<script>let ink=0,down=false;const x=document.getElementById("c").getContext("2d");
+const c=document.getElementById("c");
+c.onpointerdown=e=>{down=true;x.beginPath();x.moveTo(e.offsetX,e.offsetY)};
+c.onpointermove=e=>{if(down){x.lineTo(e.offsetX,e.offsetY);x.stroke();ink++}};
+window.onpointerup=()=>down=false;
+window.strokes=()=>ink;
+document.getElementById("s").onclick=()=>{document.getElementById("m").textContent=ink<5?"Draw your signature first":"Signature received"};
+</script>'''
+
+
+GESTURES = b'''<!doctype html><title>Gestures</title>
+<style>.menu{position:relative;display:inline-block}
+.menu ul{display:none;position:absolute;background:#fff;list-style:none;padding:8px;margin:0}
+.menu:hover ul{display:block}
+li{border:1px solid #000;padding:8px;margin:4px;list-style:none}</style>
+<h1>Gestures</h1>
+<nav class="menu"><span id="trigger" style="padding:8px;display:inline-block;border:1px solid #000">Licences menu</span>
+<ul><li><a href="#" onclick="opened(\'fishing\');return false">Fishing licence</a></li></ul></nav>
+<ol id="l"><li draggable="true">Riverton office</li><li draggable="true">Porthaven office</li><li draggable="true">Central office</li></ol>
+<canvas id="c" width="400" height="150" style="border:2px solid #000" aria-label="Signature pad"></canvas>
+<button type="button" id="s" onclick="submitSignature()">Submit signature</button>
+<button type="button" id="save" onclick="saveOrder()">Save order</button>
+<p id="m"></p>
+<script>
+let ink = 0, down = false;
+const pad = document.getElementById('c'), ctx = pad.getContext('2d');
+pad.onpointerdown = e => { down = true; ctx.beginPath(); ctx.moveTo(e.offsetX, e.offsetY); };
+pad.onpointermove = e => { if (!down) return; ctx.lineTo(e.offsetX, e.offsetY); ctx.stroke(); ink++; };
+pad.onpointerup = () => { down = false; };
+window.drawn = () => ink;
+window.opened = name => { document.getElementById('m').textContent = 'opened ' + name; };
+window.order = () => [...document.getElementById('l').children].map(x => x.textContent).join(' > ');
+window.saveOrder = () => { document.getElementById('m').textContent = 'saved ' + order(); };
+window.submitSignature = () => { document.getElementById('m').textContent = ink < 5 ? 'Draw your signature first' : 'Signature received'; };
+let held;
+document.querySelectorAll('#l li').forEach(li => {
+  li.ondragstart = () => { held = li; };
+  li.ondragover = e => e.preventDefault();
+  li.ondrop = e => { e.preventDefault(); if (held !== li) document.getElementById('l').insertBefore(held, li.nextSibling); };
+});
+</script>'''
+
+
 PARAGRAPH = ('Reading on a screen is easiest when the line is short, the type is calm and nothing '
              'else competes for attention. ') * 3
 ARTICLE = f'''<!doctype html><title>The long read</title>
@@ -100,12 +146,76 @@ pad.onpointerup = () => { drawing = false; document.getElementById('status').tex
 </script>'''
 
 
+FRAMED = b'''<!doctype html><title>Framed</title>
+<h1>Framed page</h1>
+<iframe src="/widget" title="Payment form" style="width:600px;height:240px;border:0"></iframe>
+<button id="outside">Outside the frame</button>
+'''
+
+
+# A frame holding a frame: the outer one is frame 1, the inner one frame 1.1.
+NESTED = b'''<!doctype html><title>Nested</title>
+<h1>Nested frames</h1>
+<iframe src="/outer" title="Outer frame" style="width:600px;height:400px;border:0"></iframe>
+'''
+
+
+OUTER = b'''<!doctype html><title>Outer</title>
+<p>Outer document</p>
+<iframe src="/widget" title="Payment form" style="width:560px;height:240px;border:0"></iframe>
+'''
+
+
+LATE = b'''<!doctype html><title>Late frame</title>
+<h1>Late page</h1>
+<p>The frame is made by script, after the page has loaded.</p>
+<script>setTimeout(() => {
+  const fr = document.createElement('iframe');
+  fr.title = 'Late payment form';
+  fr.src = '/widget-late';
+  fr.style.cssText = 'width:600px;height:240px;border:0';
+  document.body.append(fr);
+}, 300);</script>
+'''
+
+
+# The frame's first document moves on to the form by itself, so the frame the
+# page attached is navigated again before an action can name it.
+WIDGET_LATE = b'''<!doctype html><title>Connecting</title>
+<p id="state">Connecting to the payment service</p>
+<script>setTimeout(() => location.replace('/widget'), 200);</script>
+'''
+
+
+WIDGET = b'''<!doctype html><title>Payment details</title>
+<form action="/done" method="get">
+  <label>IBAN <input name="iban"></label>
+  <label>Account holder <input name="holder"></label>
+  <button>Save bank details</button>
+</form>
+<canvas id="pad" width="200" height="120" style="width:100px;height:60px"></canvas>
+<p id="pressed"></p>
+<script>
+pad.onpointerdown = e => {
+  const left = pad.getBoundingClientRect().left, top = pad.getBoundingClientRect().top;
+  document.getElementById('pressed').textContent =
+    'pressed ' + Math.round(left + e.offsetX) + ',' + Math.round(top + e.offsetY);
+};
+</script>
+'''
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
             else LATER if path == '/later' \
             else GESTURE if path == '/gesture' \
+            else CANVAS if path == '/canvas' \
+            else GESTURES if path == '/gestures' \
+            else FRAMED if path == '/framed' else WIDGET if path == '/widget' \
+            else LATE if path == '/late' else WIDGET_LATE if path == '/widget-late' \
+            else NESTED if path == '/nested' else OUTER if path == '/outer' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -184,6 +294,106 @@ class PageActions(unittest.TestCase):
         self.assertNotIn('hunter2', again)
         self.assertEqual(self.main_world('typeof globalThis.__tiloPage'), 'undefined',
                          'page script must not reach the automation world')
+
+    def test_a_frame_is_named_by_the_outline_and_operated_in_its_own_document(self):
+        self.h.navigate(self.url + '/framed')
+        outline = self.outline()
+        # The frame is one line of the page, naming the id an action takes to
+        # run in it and the address it would reach.
+        self.assertRegex(outline, r'iframe "Payment form" \[frame=1\] src="http://127\.0\.0\.1:\d+/widget"')
+        # Inside the frame the outline is the frame's own document, and the
+        # page around it is not part of it.
+        inside = self.ok('outline', frame='1')
+        self.assertRegex(inside['outline'], r'textbox "IBAN" \[ref=d\d+e\d+\]')
+        self.assertNotIn('Outside the frame', inside['outline'])
+        iban = self.ref(inside['outline'], 'textbox "IBAN"')
+        self.ok('fill', element=iban, text='EX89370400440532013000', frame='1')
+        self.assertIn('value="EX89370400440532013000"', self.ok('outline', frame='1')['outline'])
+        # A frame's element belongs to the frame: the main document cannot name it.
+        wrong = self.page('click', element=iban)
+        self.assertEqual((wrong['ok'], wrong['code']), (False, 'stale_element'), wrong)
+        # A frame id the outline never printed is refused, not read as the page.
+        invented = self.page('outline', frame='7')
+        self.assertEqual((invented['ok'], invented['code']), (False, 'no_frame'), invented)
+
+    def test_a_frame_of_a_frame_is_numbered_inside_the_frame_that_holds_it(self):
+        self.h.navigate(self.url + '/nested')
+        # Each document numbers the frames it holds, so the page's frame is 1
+        # and the frame inside it is 1.1 wherever it sits in the page's numbering.
+        self.assertRegex(self.outline(), r'iframe "Outer frame" \[frame=1\]')
+        outer = self.ok('outline', frame='1')['outline']
+        self.assertNotIn('Nested frames', outer, 'the frame reads its own document alone')
+        self.assertRegex(outer, r'iframe "Payment form" \[frame=1\]')
+        # A frame of a frame is named by both numbers, joined: the same id the
+        # page printed to reach its own frame, then the one inside it.
+        inner = self.ok('outline', frame='1.1')['outline']
+        self.assertRegex(inner, r'textbox "IBAN" \[ref=d\d+e\d+\]')
+        self.assertNotIn('Outer document', inner, 'the inner frame reads its own document alone')
+        iban = self.ref(inner, 'textbox "IBAN"')
+        self.ok('fill', element=iban, text='EX89370400440532013000', frame='1.1')
+        self.assertIn('value="EX89370400440532013000"', self.ok('outline', frame='1.1')['outline'])
+        # The outer frame holds no IBAN of its own: the dotted id is the address.
+        held = self.page('fill', element=iban, text='EX11', frame='1')
+        self.assertEqual((held['ok'], held['code']), (False, 'stale_element'), held)
+
+    def test_a_frame_the_page_adds_later_is_named_and_operated_in(self):
+        self.h.navigate(self.url + '/late')
+        # The frame is made by script once the page is up, so it is in no frame
+        # tree a read of the page already made; its own document then moves on
+        # to the form by itself. Every read of the page from here on must print
+        # an id an action can run in, and that frame must be reachable by it.
+        deadline = time.monotonic() + HANG_BOUND
+        while 'iframe' not in (outline := self.outline()):
+            self.assertLess(time.monotonic(), deadline, 'the late frame never appeared')
+            time.sleep(0.2)
+        numbers = re.findall(r'iframe "Late payment form" \[frame=([\d.]+)\]', outline)
+        self.assertEqual(len(numbers), 1, outline)
+        frame = numbers[0]
+        # The frame's first document leaves for the form by itself, and the read
+        # follows it: the id names the frame, never one document of it.
+        while 'IBAN' not in (inside := self.ok('outline', frame=frame))['outline']:
+            self.assertLess(time.monotonic(), deadline, 'the frame never reached its form')
+            time.sleep(0.1)
+        self.assertRegex(inside['outline'], r'textbox "IBAN" \[ref=d\d+e\d+\]')
+        iban = self.ref(inside['outline'], 'textbox "IBAN"')
+        self.ok('fill', element=iban, text='EX89370400440532013000', frame=frame)
+        self.assertIn('value="EX89370400440532013000"', self.ok('outline', frame=frame)['outline'])
+        holder = self.ref(inside['outline'], 'textbox "Account holder"')
+        self.ok('fill', element=holder, text='Maria Fischer', frame=frame)
+        save = self.ref(inside['outline'], 'button "Save bank details"')
+        self.ok('click', element=save, frame=frame)
+        self.assertNotIn('Save bank details', self.ok('outline', frame=frame)['outline'])
+
+    def test_a_click_inside_a_frame_is_a_click_in_the_page(self):
+        self.h.navigate(self.url + '/framed')
+        inside = self.ok('outline', frame='1')
+        button = self.ref(inside['outline'], 'button "Save bank details"')
+        self.ok('click', element=button, frame='1')
+        # The frame's widget submitted the form: reading the frame again shows
+        # the page it reached. The page around it did not move, so nothing is
+        # reported as a page navigation.
+        self.assertNotIn('Save bank details', self.ok('outline', frame='1')['outline'])
+
+    def test_a_pointer_step_in_a_frame_lands_where_the_frame_sits(self):
+        self.h.navigate(self.url + '/framed')
+        inside = self.ok('outline', frame='1')
+        pad = self.ref(inside['outline'], 'canvas')
+        # A step naming an element of a frame is placed by the box the frame
+        # gives it, moved by where the frame sits in the page, as a click in
+        # that frame is: the press reaches the frame's own element, never the
+        # page above it.
+        self.pointer([dict(kind='move', element=pad, frame='1', x=5, y=5),
+                      dict(kind='down', element=pad, frame='1', x=5, y=5),
+                      dict(kind='up', element=pad, frame='1', x=5, y=5)])
+        pressed = self.main_world('(frame => frame && frame.contentDocument'
+                                  '.getElementById("pressed").textContent)'
+                                  '(document.querySelector("iframe"))')
+        # The canvas's own box starts 8 by 29 into the frame's document, which
+        # starts at the frame's own client origin, so a point 5 by 5 into the
+        # canvas is 13 by 34 of the view, as the frame's own element reads it.
+        self.assertEqual(pressed, 'pressed 13,34', 'the press reached the frame\'s own element')
+        wrong = self.page('pointer', button='left', steps=[dict(kind='down', element=pad, frame='2', x=5, y=5)])
+        self.assertEqual((wrong['ok'], wrong['code']), (False, 'no_frame'), wrong)
 
     def test_reader_view_shows_the_article_alone_and_puts_the_page_back(self):
         self.h.navigate(self.url + '/article')
@@ -296,6 +506,67 @@ class PageActions(unittest.TestCase):
         self.assertEqual((hit['data']['ref'], hit['data']['interactive']), (add, True), hit)
         empty = self.ok('at', x=990, y=790)
         self.assertFalse(empty['data']['interactive'], empty)
+
+    def test_a_hover_reveals_a_menu_and_a_click_then_opens_it(self):
+        self.h.navigate(self.url + '/gestures')
+        outline = self.outline()
+        self.assertNotIn('Fishing licence', outline, 'the menu starts closed')
+        # A trigger a hover reveals something under is named by ref: the rule
+        # that opens the menu is what a gesture has to address.
+        trigger = self.ref(outline, '(?:hint|hoverable) "Licences menu"')
+        hovered = self.ok('hover', element=trigger)
+        self.assertTrue(hovered['data']['changed'], hovered)
+        self.assertIn('+ - list', hovered['outline'], hovered)
+        self.assertIn('Fishing licence', self.outline())
+        self.ok('click', element=self.ref(self.outline(), 'link "Fishing licence"'))
+        self.assertIn('text "opened fishing"', self.outline())
+        # A hover keeps the button up: it reveals a menu, it does not press.
+        self.assertEqual(self.main_world('drawn()'), 0)
+
+    def test_a_drag_reorders_a_draggable_list(self):
+        self.h.navigate(self.url + '/gestures')
+        outline = self.outline()
+        first = self.ref(outline, 'draggable "Riverton office"')
+        third = self.ref(outline, 'draggable "Central office"')
+        dragged = self.ok('drag', element=first, to=third, steps=6)
+        self.assertEqual(self.main_world('order()'), 'Porthaven office > Central office > Riverton office', dragged)
+        self.assertIn('Dragged', dragged['message'], dragged)
+
+    def test_a_path_draws_on_a_canvas_whose_page_starts_the_line(self):
+        # A pad that begins its stroke on pointerdown only draws if the page is
+        # the one the pointer is working: an unfocused view drops the moves.
+        self.h.navigate(self.url + '/canvas')
+        canvas = self.ref(self.outline(), 'canvas "Signature pad"')
+        points = [[50, 100], [80, 40], [110, 110], [140, 45], [170, 105], [200, 60], [240, 100]]
+        drawn = self.ok('path', element=canvas, points=points)
+        self.assertEqual(self.main_world('strokes()'), len(points), drawn)
+
+    def test_a_click_still_lands_after_a_drag(self):
+        # A drag leaves the engine's own drag behind it; the click that follows
+        # has to reach the page as any click does.
+        self.h.navigate(self.url + '/gestures')
+        outline = self.outline()
+        first = self.ref(outline, 'draggable "Riverton office"')
+        third = self.ref(outline, 'draggable "Central office"')
+        self.ok('drag', element=first, to=third, steps=6)
+        save = self.ref(self.outline(), 'button "Save order"')
+        clicked = self.ok('click', element=save)
+        self.assertEqual(self.main_world("document.getElementById('m').textContent"),
+                         'saved Porthaven office > Central office > Riverton office', clicked)
+
+    def test_a_pointer_path_draws_on_a_canvas(self):
+        self.h.navigate(self.url + '/gestures')
+        outline = self.outline()
+        self.assertIn('canvas "Signature pad" 400x150', outline)
+        pad = self.ref(outline, 'canvas "Signature pad"')
+        points = [[20, 110], [40, 60], [60, 100], [80, 50], [100, 105], [120, 70], [140, 95]]
+        drawn = self.ok('path', element=pad, points=points)
+        # Every point after the press is a move the page strokes; the reply
+        # names how many it drew so an agent can tell ink landed.
+        self.assertEqual(drawn['data']['drew'], len(points), drawn)
+        self.assertEqual(self.main_world('drawn()'), len(points), drawn)
+        self.ok('click', element=self.ref(self.outline(), 'button "Submit signature"'))
+        self.assertIn('text "Signature received"', self.outline())
 
     def test_console_and_network_reach_the_agent_and_not_the_page(self):
         self.h.navigate(self.url + '/agent')

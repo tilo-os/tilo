@@ -214,6 +214,7 @@ fn pass() -> Vec<Step> {
                 ("chat", plan_step("read", "")),
                 ("context", input("context")),
                 ("room", input("room")),
+                ("emoji", input("emoji")),
             ],
         ),
         each(
@@ -338,6 +339,39 @@ fn pass() -> Vec<Step> {
             "overwrites",
             vec![guild("set-overwrite", "set-overwrite", &[("op", item(""))])],
         ),
+        // Deletes before uploads: a picture replaced under one name frees
+        // its slot first.
+        each(
+            "delete_emojis",
+            vec![
+                guild("delete-emoji", "delete-emoji", &[("op", item(""))]),
+                guild(
+                    "settle-deleted-emoji",
+                    "settle-emoji",
+                    &[
+                        ("tilo", item("tilo")),
+                        ("result", plan_step("delete-emoji", "")),
+                        ("deleted", Binding::Literal(json!(true))),
+                    ],
+                ),
+            ],
+        ),
+        each(
+            "apply_emojis",
+            vec![
+                guild("apply-emoji", "apply-emoji", &[("op", item("op"))]),
+                guild(
+                    "settle-emoji",
+                    "settle-emoji",
+                    &[
+                        ("tilo", item("op/tilo")),
+                        ("result", plan_step("apply-emoji", "")),
+                        ("picture", item("picture")),
+                        ("was", item("was")),
+                    ],
+                ),
+            ],
+        ),
         each(
             "member_roles",
             vec![guild(
@@ -424,17 +458,49 @@ fn pass() -> Vec<Step> {
             )],
         ),
         each(
-            "complete_links",
+            "offers",
             vec![guild(
-                "complete-link",
-                "complete-link",
+                "offer-link",
+                "offer-link",
                 &[
+                    ("check", item("check")),
                     ("discord_user", item("discord_user")),
-                    ("person", item("person")),
-                    ("code_sha256", item("code_sha256")),
                     ("user_name", item("user_name")),
                     ("display_name", item("display_name")),
+                    ("avatar", item("avatar")),
+                    ("interaction", item("interaction")),
                 ],
+            )],
+        ),
+        each(
+            "sign_in_offers",
+            vec![guild(
+                "offer-sign-in",
+                "offer-sign-in",
+                &[
+                    ("check", item("check")),
+                    ("discord_user", item("discord_user")),
+                    ("user_name", item("user_name")),
+                    ("display_name", item("display_name")),
+                    ("avatar", item("avatar")),
+                    ("state_sha256", item("state_sha256")),
+                ],
+            )],
+        ),
+        each(
+            "sign_ins",
+            vec![guild(
+                "set-sign-in",
+                "set-sign-in",
+                &[("page", item("page"))],
+            )],
+        ),
+        each(
+            "answers",
+            vec![guild(
+                "answer-interaction",
+                "answer-interaction",
+                &[("op", item(""))],
             )],
         ),
         each(
@@ -454,8 +520,24 @@ fn pass() -> Vec<Step> {
                     ("discord_user", item("discord_user")),
                     ("user_name", item("user_name")),
                     ("display_name", item("display_name")),
+                    ("avatar", item("avatar")),
                 ],
             )],
+        ),
+        each(
+            "photos",
+            vec![
+                guild("fetch-photo", "fetch-asset", &[("op", item("op"))]),
+                guild(
+                    "set-link-photo",
+                    "set-link-photo",
+                    &[
+                        ("discord_user", item("discord_user")),
+                        ("avatar", item("avatar")),
+                        ("photo", plan_step("fetch-photo", "/data_url")),
+                    ],
+                ),
+            ],
         ),
         each("import_categories", {
             let mut body = vec![chat(
@@ -578,9 +660,16 @@ fn triggers() -> Vec<TriggerSpec> {
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
+        // The workspace's emoji, which the bridge uploads to the server.
+        TriggerSpec::RecordChanged {
+            kind: discord::bridge::EMOJI_KIND.into(),
+            actions: Vec::new(),
+            fields: Vec::new(),
+            by: ActorFilter::Anyone,
+        },
         TriggerSpec::RecordChanged {
             kind: KIND.into(),
-            actions: vec!["block-persona".to_owned()],
+            actions: vec!["block-persona".to_owned(), "complete-link".to_owned()],
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
@@ -602,6 +691,7 @@ fn program() -> Shortcut {
         |name: &'static str, ty, about: &'static str| ActionParam::required(name, ty, about);
     Shortcut {
         id: "discord-bridge".into(),
+        step_timeout_secs: None,
         name: "Discord Bridge".into(),
         inputs: vec![
             param("event", ParamType::Object, "What fired"),
@@ -616,6 +706,13 @@ fn program() -> Shortcut {
                 "room",
                 ParamType::Object,
                 "The room's members with their roles: members [{person, role}]",
+            ),
+            // The host binds it on each firing from the room's workspace
+            // emoji, keeping each picture where the worker can upload it.
+            ActionParam::optional(
+                "emoji",
+                ParamType::Object,
+                "The workspace's emoji: emoji [{name, picture}]",
             ),
         ],
         steps: vec![
@@ -834,6 +931,7 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
             chat: &json!({}),
             context: &discord::outbound::Context::default(),
             room: &Value::Null,
+            emoji: None,
         },
         &firing.inputs["event"],
     );

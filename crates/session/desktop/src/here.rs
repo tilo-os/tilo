@@ -185,6 +185,9 @@ pub struct HereState {
     notice: Option<crate::chrome::WaveNotice>,
     /// Whose view this page follows: their publisher.
     following: Option<String>,
+    /// Each person's accounts elsewhere as their profile names them, by
+    /// their root key (lower-case hex).
+    linked: HashMap<String, Vec<tilo_app::linked_accounts::ProfileLink>>,
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
@@ -255,6 +258,34 @@ impl HereState {
     /// Someone's picture changed: what shows them is drawn again.
     pub fn photos_changed(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// The accounts elsewhere `user`'s profile names now. Whether that
+    /// changed anything.
+    pub fn set_linked(
+        &mut self,
+        user: &str,
+        linked: Vec<tilo_app::linked_accounts::ProfileLink>,
+    ) -> bool {
+        let user = user.to_ascii_lowercase();
+        if self.linked.get(&user).map_or(&[][..], Vec::as_slice) == linked.as_slice() {
+            return false;
+        }
+        if linked.is_empty() {
+            self.linked.remove(&user);
+        } else {
+            self.linked.insert(user, linked);
+        }
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+
+    /// The accounts elsewhere `user`'s profile names.
+    #[must_use]
+    pub fn linked_of(&self, user: &str) -> &[tilo_app::linked_accounts::ProfileLink] {
+        self.linked
+            .get(&user.to_ascii_lowercase())
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Who joined since the last call, by the name everyone here sees: a

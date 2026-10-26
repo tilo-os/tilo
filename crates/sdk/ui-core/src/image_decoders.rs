@@ -74,10 +74,13 @@ mod linked {
     pub(crate) fn decoders_in() -> bool {
         true
     }
+
+    /// Linked decoders are always in: nothing waits for them.
+    pub(crate) fn wake_when_in(_window: crate::wake::WakeHandle) {}
 }
 
 #[cfg(not(feature = "lazy-image-decode"))]
-pub(crate) use linked::{decoders, decoders_in};
+pub(crate) use linked::{decoders, decoders_in, wake_when_in};
 
 #[cfg(feature = "lazy-image-decode")]
 mod fetched {
@@ -95,6 +98,18 @@ mod fetched {
     /// Whether the decoders are in, without fetching them.
     pub(crate) fn decoders_in() -> bool {
         DECODERS.generation() > 0
+    }
+
+    /// Wake `window` once the decoders are in (or their fetch failed): work
+    /// it does once a frame that found them missing then runs again.
+    pub(crate) fn wake_when_in(window: crate::wake::WakeHandle) {
+        struct Window(crate::wake::WakeHandle);
+        impl std::task::Wake for Window {
+            fn wake(self: std::sync::Arc<Self>) {
+                self.0.wake();
+            }
+        }
+        DECODERS.wake_on_arrival(std::task::Waker::from(std::sync::Arc::new(Window(window))));
     }
 
     /// How the program fetches the decoders' code: `load` starts the fetch
@@ -116,6 +131,6 @@ mod fetched {
 }
 
 #[cfg(feature = "lazy-image-decode")]
-pub(crate) use fetched::{decoders, decoders_in};
+pub(crate) use fetched::{decoders, decoders_in, wake_when_in};
 #[cfg(feature = "lazy-image-decode")]
 pub use fetched::{defer_image_decoders, image_decoders_load_failed, install_image_decoders};

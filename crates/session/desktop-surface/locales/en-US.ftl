@@ -29,7 +29,7 @@ topbar-bell-silenced = { $unread ->
     [one] Notifications silenced, 1 unread
    *[other] Notifications silenced, { $unread } unread
 }
-topbar-show-collaborators = Show collaborators
+topbar-show-collaborators = Everyone here
 topbar-viewer-can-control = can control { $targets }
 topbar-viewer-view-only = view only { $targets }
 topbar-viewer-entry = { $name } ({ $kind ->
@@ -94,9 +94,16 @@ profile-add-your-name = Add your name
 profile-section-identity = Your identity
 profile-section-devices = Devices
 profile-section-linked = Linked accounts
-profile-link = Link { $service } account
+profile-link = Connect { $service }
 profile-unlink = Unlink
-profile-copy = Copy
+profile-linked-as = Linked as { $account }
+profile-linked-to = Linked to { $handle } on { $service }
+profile-link-offer = Link { $service } { $account } to { $name }?
+profile-link-offer-why = What you write in { $service } will show as you here, and as you there.
+profile-link-accept = Link
+profile-link-decline = Cancel
+profile-connecting = Opening { $service }…
+profile-looking = Checking your { $service } link…
 profile-sharing = Share what you're doing
 profile-sharing-auto = Automatically
 profile-sharing-manual = My words
@@ -1002,6 +1009,7 @@ people-panel-stop-following = Stop
 # The people overlay: the roster pinned out of the bar, floating over windows
 people-panel-pin = Keep on screen
 a11y-people-pin = Keep who is here on screen
+a11y-people-overlay = Who is here
 people-overlay-title = { $count ->
     [0] Just you
     [one] 1 here

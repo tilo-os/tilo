@@ -282,6 +282,9 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
             .is_err()
     );
     let replacement = named(&a, "Page title")[0].clone();
+    // New note as it was offered while the person could still make one.
+    let create = named(&a, "New note")[0].clone();
+    let create_rect = semantic_rect(&a, "new-note");
     *f.authority.borrow_mut() =
         ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
             .at_unix_time(100);
@@ -299,10 +302,14 @@ fn title_route_obeys_remote_refresh_replacement_and_revoked_authority() {
         .records
         .read(&checkout.id, |doc| read::list_pages(doc).len())
         .unwrap();
-    let create = named(&a, "New note")[0].clone();
-    perform(&mut a, &create, &Action::Activate);
-    let rect = semantic_rect(&a, "new-note");
-    a.click_at(rect.center().x, rect.center().y);
+    // Someone who may only look is not offered New note, and a press on
+    // where it stood, or on the stale control, makes nothing.
+    assert!(
+        named(&a, "New note").is_empty(),
+        "a Viewer is offered no New note"
+    );
+    let _ = a.perform_semantic_named(&create.0, create.1.as_deref(), &Action::Activate);
+    a.click_at(create_rect.center().x, create_rect.center().y);
     assert_eq!(
         f.records
             .read(&checkout.id, |doc| read::list_pages(doc).len())
@@ -320,14 +327,21 @@ fn revoked_authority_rejects_empty_notes_semantic_and_pointer_creation() {
     let component = component(&f, 14, ui::application::LaunchTarget::New);
     let checkout = component.record().clone();
     let mut a = FrameHarness::from_component(component, (1000, 700), runner_inputs()).unwrap();
+    // New note as it was offered while the person could still make one.
+    let offered = named(&a, "New note");
+    let rect = semantic_rect(&a, "new-note");
     *f.authority.borrow_mut() =
         ui::permissions::PermissionContext::member(&f.author.0, ui::permissions::Role::Viewer)
             .at_unix_time(100);
-    for route in named(&a, "New note") {
-        perform(&mut a, &route, &Action::Activate);
+    // A stale press, by assistive technology or the pointer, makes nothing.
+    for route in offered {
+        let _ = a.perform_semantic_named(&route.0, route.1.as_deref(), &Action::Activate);
     }
-    let rect = semantic_rect(&a, "new-note");
     a.click_at(rect.center().x, rect.center().y);
+    assert!(
+        named(&a, "New note").is_empty(),
+        "a Viewer is offered no New note"
+    );
     assert_eq!(
         f.records
             .read(&checkout.id, |doc| read::list_pages(doc).len())

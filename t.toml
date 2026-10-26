@@ -8,15 +8,14 @@
 # images and their boots, VM, micro-VM and FUSE suites, the whole-workspace nightly-* and
 # weekly-* sets, the perf runs, size budgets, certification, the full web and SDK suites,
 # Android, the goldens, development signing. Those say `on = ["stable", "dispatch"]` and `default
-# = false`; `t test <name>` runs one for a working tree, `t dispatch <name>` on a branch. The one
-# heavy schedule on main's head is the nightly development OS: its dev images and board images
-# (publish-os-dev-*, publish-os-board-*), which development VMs and boards update from, each
-# published only once its gates pass. Everything else on a schedule is cheap and watches
-# something outside the tree (certificate expiry, live third-party services, loop devices,
-# mirrors, extension manifests). A few checks also say `idle`: main's newest head runs them when
-# CI has room left, at the lowest priority, and t bisects their failures like a default check's.
-# Their runs and bisection probes wait behind all other work and restart whenever pre-empted, so a
-# check should say it only if a run is cheap and its inputs change rarely (release-trust).
+# = false`; `t test <name>` runs one for a working tree, `t dispatch <name>` on a branch.
+# Everything on a schedule is cheap and watches something outside the tree (certificate expiry,
+# live third-party services, loop devices, mirrors, extension manifests). Some checks also say
+# `idle`: main's newest head runs them when CI has room left, at the lowest priority, and t
+# bisects their failures like a default check's. Their runs and bisection probes wait behind all
+# other work and restart whenever pre-empted. The dev channel is published that way: main's dev
+# and board images (publish-os-dev-*, publish-os-board-*), which development devices update
+# from, each once os-dev-gate-* has booted it and applied an update on it.
 # Publishing steps stay on main where something consumes main's development tags (the builder pin
 # below, the CI images, the mirrors); those only a release or a person uses (the services'
 # development tags, the release rehearsal and tools) are dispatched. Most of the extensive checks
@@ -715,6 +714,14 @@ requirement = { cores = 1, memory = "2GiB" }
 run = "python3 tools/policy/findings.py python3 tools/policy/check_primitives.py"
 hints = { builds = false }
 inputs = ["crates/session/**/*.rs", "apps/**/*.rs", "tools/policy/primitives_baseline.txt", "tools/policy/check_primitives.py", "tools/policy/findings.py", "tools/policy/rust_source.py"]
+
+[[check]]
+name = "policy/breakpoints"
+requires = ["arch=any"]
+requirement = { cores = 1, memory = "2GiB" }
+run = "python3 tools/policy/findings.py python3 tools/policy/check_breakpoints.py"
+hints = { builds = false }
+inputs = ["crates/session/**/*.rs", "apps/**/*.rs", "tools/policy/breakpoint_baseline.txt", "tools/policy/check_breakpoints.py", "tools/policy/findings.py", "tools/policy/rust_source.py"]
 
 [[check]]
 name = "policy/app-toolbars"
@@ -1808,7 +1815,7 @@ image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
 requirement = { cores = 1, memory = "1GiB" }
-inputs = [".cargo/**", ".containerignore", "Cargo.lock", "Cargo.toml", "apps", "crates", "crates/dev/tilo-vmd/data/72-vkms-seat.rules", "crates/dev/tilo-vmd/data/73-uinput-seat.rules", "crates/dev/tilo-vmd/data/tilo-vm-community.toml", "crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service", "crates/dev/tilo-vmd/data/tilo-vm-restore.service", "crates/dev/tilo-vmd/data/tilo-vm-session@.service", "crates/dev/tilo-vmd/data/tilo-vm-vkms.conf", "crates/session/install-profile-model/locales.txt", "dist", "docs/developers/tasks/**", "docs/recovery.md", "docs/security/boot-chain.md", "docs/security/repair-mode.md", "docs/security/rollback.md", "docs/windows-presentation.md", "docs/windows-vm.md", "examples", "keys/cosign.pub", "keys/extensions.pub", "keys/release/**", "keys/tpm2-pcr-signing.public.pem", "os/**", "os/tests/containerfile_sources.sh", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/install-xwayland-satellite.sh", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "tools/with-test-environment.sh", "vendor", "vendor/zlink-macros/**"]
+inputs = [".cargo/**", ".containerignore", "Cargo.lock", "Cargo.toml", "apps", "crates", "crates/dev/tilo-vmd/data/72-vkms-seat.rules", "crates/dev/tilo-vmd/data/73-uinput-seat.rules", "crates/dev/tilo-vmd/data/tilo-vm-community.toml", "crates/dev/tilo-vmd/data/tilo-vm-reconcile-image.service", "crates/dev/tilo-vmd/data/tilo-vm-restore.service", "crates/dev/tilo-vmd/data/tilo-vm-session@.service", "crates/dev/tilo-vmd/data/tilo-vm-vkms.conf", "crates/session/install-profile-model/locales.txt", "dist", "docs/developers/tasks/**", "docs/recovery.md", "docs/security/boot-chain.md", "docs/security/repair-mode.md", "docs/security/rollback.md", "docs/windows-presentation.md", "docs/windows-vm.md", "examples", "keys/cosign-dev.pub", "keys/cosign.pub", "keys/extensions.pub", "keys/release/**", "keys/tpm2-pcr-signing.public.pem", "os/**", "os/tests/containerfile_sources.sh", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/install-xwayland-satellite.sh", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/suites.py", "tools/ci/suites.toml", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "tools/with-test-environment.sh", "vendor", "vendor/zlink-macros/**"]
 
 [[check]]
 name = "suite-workspace-release"
@@ -3285,54 +3292,88 @@ cost = "heavy"
 on = ["stable", "dispatch"]
 default = false
 
-# Getting in, end to end, on the stack the web entry and room service images
-# ship: crates/hosting/tilo-room-service/dev/auth-e2e.mjs starts them with
-# dev/run.py and drives headless Chrome through a person's first visit, reloads,
-# tabs, a damaged link, a stolen invitation, a revoked device, a guest's open
-# page the host forgot, a host that forgot its room, a stale link, a pruned
-# membership and a removed member. Before it,
-# dev/limits-e2e.py checks the persistent room's limits and what it keeps across
-# a restart over plain HTTP, and dev/owner-key-e2e.py that only a throwaway
-# room's creator mints its invitations and watches its members. Release
-# binaries with the images' flags. The bundle
-# records the commit it was built from, so a committed tree must match it
-# exactly; a working tree with changes runs as a development build.
+# Getting in, end to end, on the stack the web entry and room service images ship: their
+# programs (room-service-binaries) and desktop bundle (web-desktop-bundle), each a check of its own
+# that a commit changing none of what it reads takes from the last build. Each script is a check
+# of its own as well, so one runs alone (`t test browser-auth-e2e/auth`) and a change reruns only
+# those it reaches; `browser-auth-e2e` runs them all:
+# - browser-auth-e2e/limits (dev/limits-e2e.py): the persistent room's limits and what it keeps
+#   across a restart, over plain HTTP;
+# - browser-auth-e2e/owner-key (dev/owner-key-e2e.py): only a throwaway room's creator mints its
+#   invitations and watches its members;
+# - browser-auth-e2e/auth (crates/hosting/tilo-room-service/dev/auth-e2e.mjs): starts the stack
+#   with dev/run.py and drives headless Chrome through a person's first visit, reloads, tabs, a
+#   damaged link, a stolen invitation, a revoked device, a guest's open page the host forgot, a
+#   host that forgot its room, a stale link, a pruned membership and a removed member. The bundle
+#   records the commit it was built from, so a committed tree must match it exactly; a working
+#   tree with changes runs as a development build.
+# Their summaries and a screenshot of each page auth-e2e checks: `t outputs browser-auth-e2e`.
 [[check]]
 name = "browser-auth-e2e"
+run = "true"
+needs = ["browser-auth-e2e/limits", "browser-auth-e2e/owner-key", "browser-auth-e2e/auth"]
+outputs = ["/target/limits-e2e/**", "/target/owner-key-e2e/**", "/target/auth-e2e/**"]
+requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
+hints = { builds = false }
+on = ["stable", "dispatch"]
+cost = "seconds"
+default = false
+
+[[check]]
+name = "browser-auth-e2e/limits"
 run = """
-export TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts
-python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
-cargo build --locked --release -p tilo-relay --features agents --bin tilo-relay
-cargo build --locked --release -p tilo-room-service
-bin=$CARGO_TARGET_DIR/release
+bin=/target/publish/room-service/bin
 python3 crates/hosting/tilo-room-service/dev/limits-e2e.py \
-  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out "$TMPDIR/limits-e2e"
+  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out /target/limits-e2e
+"""
+needs = ["room-service-binaries"]
+inputs = ["crates/hosting/tilo-room-service/dev/limits-e2e.py"]
+outputs = ["/target/limits-e2e/**"]
+requires = ["arch=x86_64"]
+hints = { builds = false }
+cost = "minutes"
+default = false
+
+[[check]]
+name = "browser-auth-e2e/owner-key"
+run = """
+bin=/target/publish/room-service/bin
 python3 crates/hosting/tilo-room-service/dev/owner-key-e2e.py \
-  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out "$TMPDIR/owner-key-e2e"
-cp -r scripts/moq-browser "$TMPDIR/moq-browser"
-TILO_MOQ_BROWSER_DIR=$TMPDIR/moq-browser crates/browser/tilo-browser-runtime/scripts/build.sh "$TMPDIR/auth-bundle" --bundle desktop
+  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out /target/owner-key-e2e
+"""
+needs = ["room-service-binaries"]
+inputs = ["crates/hosting/tilo-room-service/dev/owner-key-e2e.py"]
+outputs = ["/target/owner-key-e2e/**"]
+requires = ["arch=x86_64"]
+hints = { builds = false }
+cost = "minutes"
+default = false
+
+[[check]]
+name = "browser-auth-e2e/auth"
+run = """
+export TILO_FONT_ASSET_CACHE=/target/font-artifacts
 bash tools/ci/ensure-browser-dependencies.sh
 npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
 export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
 if [ -z "$(git status --porcelain)" ]; then revision=(--expect-revision "$(git rev-parse HEAD)"); else revision=(--allow-dev); fi
-rm -rf "$CARGO_TARGET_DIR/auth-e2e"
-node crates/hosting/tilo-room-service/dev/auth-e2e.mjs --bundle "$TMPDIR/auth-bundle" \
-  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out "$CARGO_TARGET_DIR/auth-e2e" "${revision[@]}"
+bin=/target/publish/room-service/bin
+node crates/hosting/tilo-room-service/dev/auth-e2e.mjs --bundle /target/publish/web-desktop/bundle \
+  --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out /target/auth-e2e "${revision[@]}"
 """
-env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets" }
-needs = ["test-assets"]
-inputs = ["apps/**", "crates/**", "vendor/**", "scripts/moq-browser/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "Cargo.toml", "Cargo.lock"]
-# The summary and a screenshot of each page it checks (`t outputs browser-auth-e2e`).
+needs = ["room-service-binaries", "web-desktop-bundle"]
+inputs = ["crates/hosting/tilo-room-service/dev/auth-e2e.mjs", "crates/hosting/tilo-room-service/dev/run.py", "crates/browser/tilo-browser-runtime/container/**", "crates/sdk/ui-core/assets/fonts/**", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py"]
 outputs = ["/target/auth-e2e/**"]
 git = true
 requires = ["arch=x86_64"]
-on = ["stable", "dispatch"]
+hints = { builds = false }
 timeout_secs = 9000
 cost = "heavy"
 default = false
 
 # Whose windows are whose on a room's shared desktop, end to end, on the
-# stack browser-auth-e2e runs: crates/hosting/tilo-room-service/dev/
+# stack browser-auth-e2e/auth runs: crates/hosting/tilo-room-service/dev/
 # shared-desktop-e2e.mjs has two guests and one of the room's moderators open,
 # hover, drag and close each other's windows in headless Chrome, and
 # photographs what each sees. `t outputs browser-shared-desktop-e2e` runs it
@@ -3340,30 +3381,25 @@ default = false
 [[check]]
 name = "browser-shared-desktop-e2e"
 run = """
-export TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts
-python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
-cargo build --locked --release -p tilo-relay --features agents --bin tilo-relay
-cargo build --locked --release -p tilo-room-service
-bin=$CARGO_TARGET_DIR/release
-cp -r scripts/moq-browser "$TMPDIR/moq-browser"
-TILO_MOQ_BROWSER_DIR=$TMPDIR/moq-browser crates/browser/tilo-browser-runtime/scripts/build.sh "$TMPDIR/desktop-bundle" --bundle desktop
+export TILO_FONT_ASSET_CACHE=/target/font-artifacts
 bash tools/ci/ensure-browser-dependencies.sh
 npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
 export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
 if [ -z "$(git status --porcelain)" ]; then revision=(--expect-revision "$(git rev-parse HEAD)"); else revision=(--allow-dev); fi
+bin=/target/publish/room-service/bin
 rm -rf /target/shared-desktop-e2e
 # The screenshots are what this is for: a failed check is in summary.json
 # beside them, and the outputs are kept whatever happened.
-node crates/hosting/tilo-room-service/dev/shared-desktop-e2e.mjs --bundle "$TMPDIR/desktop-bundle" \
+node crates/hosting/tilo-room-service/dev/shared-desktop-e2e.mjs --bundle /target/publish/web-desktop/bundle \
   --relay-bin "$bin/tilo-relay" --room-service-bin "$bin/tilo-room-service" --out /target/shared-desktop-e2e "${revision[@]}" \
   || echo "shared-desktop-e2e: exited $? (see summary.json)"
 """
-env = { CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16", TILO_TEST_ASSET_SEED = "/target/test-assets" }
-needs = ["test-assets"]
-inputs = ["apps/**", "crates/**", "vendor/**", "scripts/moq-browser/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "Cargo.toml", "Cargo.lock"]
+needs = ["room-service-binaries", "web-desktop-bundle"]
+inputs = ["crates/hosting/tilo-room-service/dev/shared-desktop-e2e.mjs", "crates/hosting/tilo-room-service/dev/auth-e2e.mjs", "crates/hosting/tilo-room-service/dev/run.py", "crates/browser/tilo-browser-runtime/container/**", "crates/sdk/ui-core/assets/fonts/**", "scripts/perf/browser_qualification.mjs", "tools/web/chrome.mjs", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py"]
 git = true
 requires = ["arch=x86_64"]
-requirement = { cores = 8, memory = "32GiB" }
+requirement = { cores = 8, memory = "16GiB" }
+hints = { builds = false }
 on = ["dispatch"]
 cache = false
 outputs = ["/target/shared-desktop-e2e/**"]
@@ -4216,16 +4252,16 @@ requires = ["arch=any"]
 on = ["main"]
 
 # The browser desktop bundle (crates/browser/tilo-web-desktop: every web app compiled to wasm,
-# release, split into modules) that the room service's and the web entry's images serve. One
-# build per commit (the bundle records it) that both image contexts take as an output, so neither
-# compiles the apps to wasm again and the room service's native build runs beside it.
+# release, split into modules) that the room service's and the web entry's images serve and the
+# browser end-to-end checks drive. web-desktop-wasm compiles its modules, keyed by what that
+# compile reads (not by commit, and not by the crates' web/ pages), so a commit that changes
+# none of it takes the last build; web-desktop-bundle assembles this commit's pages around them,
+# once per commit (the bundle records it), and both image contexts take it as an output, so
+# neither compiles the apps to wasm again and the room service's native build runs beside it.
 [[check]]
-name = "web-desktop-bundle"
-run = "bash tools/ci/publish/web-desktop-bundle.sh /target/publish/web-desktop/bundle"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "Cargo.lock", "crates/**", "apps/**", "tools/web/**", "scripts/moq-browser/**", "tools/font-catalog.py"]
-outputs = ["/target/publish/web-desktop/bundle/**"]
-# The release bundle records the commit it was built from (git rev-parse, git status).
-git = true
+name = "web-desktop-wasm"
+run = "bash tools/ci/publish/web-desktop-bundle.sh wasm /target/publish/web-desktop/wasm"
+outputs = ["/target/publish/web-desktop/wasm/**"]
 # A command check gets no jobserver from t, so cargo would keep .cargo/config.toml's floor of 4
 # jobs on the 8 cores this check reserves.
 env = { CARGO_BUILD_JOBS = "8" }
@@ -4233,18 +4269,35 @@ requires = ["arch=x86_64"]
 cost = "heavy"
 requirement = { cores = 8, memory = "24GiB" }
 default = false
+# BEGIN generated by tools/ci/t_toml.py: web-desktop-wasm-reads
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "tools/font-catalog.py", "tools/web/generate_web_desktop.py", "tools/web/crate_source.py", "tools/web/wasm-split/**", "apps/*/tilo-app.toml", "apps/*/Cargo.toml", "apps/*/search/*.ftl", "crates/agent/agent-participant/Cargo.toml", "crates/agent/agent-participant/src/web_apps.rs", "crates/session/desktop-search/src/catalog.rs", "Cargo.toml", "Cargo.lock", "apps/activity/**", "apps/api-tester/**", "apps/calculator/**", "apps/calendar/**", "apps/camera/**", "apps/canvas/**", "apps/chat/**", "apps/chip-design/**", "apps/clocks/**", "apps/contacts/**", "apps/diffmerge/**", "apps/ebook/**", "apps/feeds/**", "apps/hex-editor/**", "apps/maps/**", "apps/messages/**", "apps/model-providers/**", "apps/moderation-model/**", "apps/music/**", "apps/notes/**", "apps/passwords/**", "apps/pdf-viewer/**", "apps/photos/**", "apps/poker/**", "apps/scratchpad/**", "apps/sheets/**", "apps/shortcuts/**", "apps/slides/**", "apps/snippets/**", "apps/speed-test/**", "apps/tasks/**", "apps/themes/**", "apps/totp/**", "apps/tube/**", "apps/typst-editor/**", "apps/video-editor/**", "apps/video-player/**", "apps/weather/**", "apps/word-processor/**", "crates/agent/model-client/**", "crates/agent/provider-config/**", "crates/browser/browser-continuity-core/**", "crates/browser/paint-stream/**", "crates/browser/tilo-browser-compute/[!w]*", "crates/browser/tilo-browser-compute/w", "crates/browser/tilo-browser-compute/w[!e]*", "crates/browser/tilo-browser-compute/we", "crates/browser/tilo-browser-compute/we[!b]*", "crates/browser/tilo-browser-compute/web[!/]*", "crates/browser/tilo-browser-peer/**", "crates/browser/tilo-browser-runtime/[!w]*", "crates/browser/tilo-browser-runtime/w", "crates/browser/tilo-browser-runtime/w[!e]*", "crates/browser/tilo-browser-runtime/we", "crates/browser/tilo-browser-runtime/we[!b]*", "crates/browser/tilo-browser-runtime/web[!/]*", "crates/browser/tilo-web-desktop/**", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/feedback-review/**", "crates/collab/feedback/**", "crates/collab/neighbour-wire/**", "crates/collab/reference/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/dev/headless-schema/**", "crates/dev/ui-graph/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-automerge/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc-pdf/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-document/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/media/ocr/**", "crates/media/segment/**", "crates/media/thumbnail/**", "crates/media/vision/**", "crates/media/wet-media/**", "crates/packaging/registry-types/**", "crates/platform/tilo-agent-models/**", "crates/platform/tilo-capture/**", "crates/platform/tilo-clipboard/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-contact-directory/**", "crates/platform/tilo-dialogs/**", "crates/platform/tilo-files/**", "crates/platform/tilo-image-codec/**", "crates/platform/tilo-invidious/**", "crates/platform/tilo-locale/**", "crates/platform/tilo-location/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-media/**", "crates/platform/tilo-messaging/**", "crates/platform/tilo-mime/**", "crates/platform/tilo-net/**", "crates/platform/tilo-notify/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-pdf/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-presentation/**", "crates/platform/tilo-process/**", "crates/platform/tilo-render-protocol/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-secrets/**", "crates/platform/tilo-sort/**", "crates/platform/tilo-subject/**", "crates/platform/tilo-typst-fonts/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-workspace-emoji/**", "crates/runtime/cli/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-portal/**", "crates/sdk/font-catalog/**", "crates/sdk/provider-settings-ui/**", "crates/sdk/search/**", "crates/sdk/tilo-app/**", "crates/sdk/tilo-history/**", "crates/sdk/tilo-host/**", "crates/sdk/tilo-page-raster/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/sdk/tilo-rich-text/**", "crates/sdk/ui-core/**", "crates/sdk/ui-paint/**", "crates/session/desktop-model/**", "crates/session/desktop-search/**", "crates/session/desktop-surface/**", "crates/session/desktop/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/app-state/**", "crates/system/bounded-command/**", "crates/system/cloud-source/**", "crates/system/content-device/**", "crates/system/content-types/**", "crates/system/content/**", "crates/system/desktop-policy/**", "crates/system/durable-store/**", "crates/system/fs-protocol/**", "crates/system/secret-vault/**", "crates/system/settings-store/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/tts/**", "crates/system/wire-frame/**", "crates/text/emoji-catalogue/**", "crates/text/emoji/**", "crates/text/highlight-grammars/**", "crates/text/highlight/**", "crates/text/pim-lines/**", "crates/text/spellcheck/**", "crates/workspace-hack/**", "vendor/automerge/**", "vendor/cosmic-text/**", "vendor/pulldown-cmark/**", "vendor/regex-syntax/**", "vendor/serde_json/**", "vendor/vello/**", "vendor/vello_encoding/**", "vendor/vello_shaders/**", "vendor/wgpu-hal/**", "vendor/wgpu/**", "vendor/winit/**", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "tools/test-assets-build.rs"]
+# END generated
+
+[[check]]
+name = "web-desktop-bundle"
+run = "bash tools/ci/publish/web-desktop-bundle.sh bundle /target/publish/web-desktop/bundle /target/publish/web-desktop/wasm"
+needs = ["web-desktop-wasm"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh", "crates/browser/tilo-browser-runtime/web/**", "crates/browser/tilo-browser-compute/scripts/build.sh", "crates/browser/tilo-browser-compute/web/**", "crates/sdk/ui-core/assets/fonts/**", "scripts/moq-browser/**", "tools/font-catalog.py"]
+outputs = ["/target/publish/web-desktop/bundle/**"]
+# The release bundle records the commit it was built from (git rev-parse, git status).
+git = true
+requires = ["arch=x86_64"]
+cost = "minutes"
+requirement = { cores = 2, memory = "4GiB" }
+hints = { builds = false }
+default = false
 
 # The room service image's programs (tools/ci/publish/room-service-binaries.sh): tilo-relay with
 # its agents, which link every web app, tilo-room-service and the Discord worker, release with
-# thin LTO, in one cargo build beside web-desktop-bundle. Keyed by the packages it builds (not by
-# commit), so a commit that changes none of them takes the last build.
+# thin LTO, in one cargo build beside web-desktop-bundle; the browser end-to-end checks run them
+# too. Keyed by what that build reads (not by commit, and not by the room service's scripts and
+# pages), so a commit that changes none of it takes the last build.
 [[check]]
 name = "room-service-binaries"
 run = "bash tools/ci/publish/room-service-binaries.sh /target/publish/room-service/bin"
-# Besides the packages' own files, what their build scripts and embedded assets read outside them.
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/room-service-binaries.sh", "Cargo.lock", "Cargo.toml", ".cargo/**", "apps/*/surface.toml", "apps/*/tilo-app.toml", "apps/*.rs", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py", "tools/test-assets.py", "tools/test-assets-build.rs"]
-cargo_packages = ["tilo-relay", "tilo-room-service", "discord-worker"]
-cargo_dev_dependencies = false
+# BEGIN generated by tools/ci/t_toml.py: room-service-binaries-reads
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/room-service-binaries.sh", ".cargo/**", "apps/*/surface.toml", "apps/*/tilo-app.toml", "apps/*.rs", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py", "tools/test-assets.py", "tools/test-assets-build.rs", "Cargo.toml", "Cargo.lock", "apps/activity/**", "apps/agent/**", "apps/api-tester/**", "apps/calculator/**", "apps/calendar/**", "apps/camera/**", "apps/canvas/**", "apps/chat/**", "apps/chip-design/**", "apps/clocks/**", "apps/contacts/**", "apps/diffmerge/**", "apps/discord-model/**", "apps/discord/**", "apps/discord/worker/**", "apps/ebook/**", "apps/feeds/**", "apps/hex-editor/**", "apps/mail/**", "apps/maps/**", "apps/messages/**", "apps/model-providers/**", "apps/moderation-model/**", "apps/music/**", "apps/notes/**", "apps/passwords/**", "apps/pdf-viewer/**", "apps/photos/**", "apps/poker/**", "apps/scratchpad/**", "apps/sheets/**", "apps/shortcuts/**", "apps/slides/**", "apps/snippets/**", "apps/speed-test/**", "apps/tasks/**", "apps/themes/**", "apps/totp/**", "apps/tube/**", "apps/typst-editor/**", "apps/video-editor/**", "apps/video-player/**", "apps/weather/**", "apps/word-processor/**", "crates/agent/agent-participant/**", "crates/agent/connector/**", "crates/agent/model-client/**", "crates/agent/model-gateway/**", "crates/agent/provider-config/**", "crates/browser/browser-continuity-core/**", "crates/browser/browser-continuity/**", "crates/browser/paint-stream/**", "crates/browser/tilo-browser-peer/**", "crates/collab/action-policy/**", "crates/collab/actions/**", "crates/collab/automation/**", "crates/collab/channel-crypto/**", "crates/collab/collab-types/**", "crates/collab/feedback-review/**", "crates/collab/feedback/**", "crates/collab/moderation/**", "crates/collab/neighbour-wire/**", "crates/collab/reference/**", "crates/collab/threshold-identity/**", "crates/collab/tilo-governor/**", "crates/collab/tilo-identity-ceremony/**", "crates/collab/tilo-peer-state/**", "crates/collab/tilo-unlock-protocol/**", "crates/collab/tilo-user-identity/**", "crates/collab/workspace-join/**", "crates/dev/headless-schema/**", "crates/dev/ui-graph/**", "crates/doc/bounded-zip/**", "crates/doc/tilo-automerge-isolate/**", "crates/doc/tilo-automerge/**", "crates/doc/tilo-doc-codecs/**", "crates/doc/tilo-doc-pdf/**", "crates/doc/tilo-doc/**", "crates/doc/tilo-document/**", "crates/hosting/tilo-delivery-protocol/**", "crates/hosting/tilo-moq/**", "crates/hosting/tilo-relay-client/**", "crates/hosting/tilo-relay-protocol/**", "crates/hosting/tilo-relay-session/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-store/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-room-service/[!Rcdgw]*", "crates/hosting/tilo-room-service/R", "crates/hosting/tilo-room-service/R[!E]*", "crates/hosting/tilo-room-service/RE", "crates/hosting/tilo-room-service/RE[!A]*", "crates/hosting/tilo-room-service/REA", "crates/hosting/tilo-room-service/REA[!D]*", "crates/hosting/tilo-room-service/READ", "crates/hosting/tilo-room-service/READ[!M]*", "crates/hosting/tilo-room-service/READM", "crates/hosting/tilo-room-service/READM[!E]*", "crates/hosting/tilo-room-service/README", "crates/hosting/tilo-room-service/README[!.]*", "crates/hosting/tilo-room-service/README.", "crates/hosting/tilo-room-service/README.[!m]*", "crates/hosting/tilo-room-service/README.m", "crates/hosting/tilo-room-service/README.m[!d]*", "crates/hosting/tilo-room-service/README.md[!/]*", "crates/hosting/tilo-room-service/c", "crates/hosting/tilo-room-service/c[!o]*", "crates/hosting/tilo-room-service/co", "crates/hosting/tilo-room-service/co[!n]*", "crates/hosting/tilo-room-service/con", "crates/hosting/tilo-room-service/con[!t]*", "crates/hosting/tilo-room-service/cont", "crates/hosting/tilo-room-service/cont[!a]*", "crates/hosting/tilo-room-service/conta", "crates/hosting/tilo-room-service/conta[!i]*", "crates/hosting/tilo-room-service/contai", "crates/hosting/tilo-room-service/contai[!n]*", "crates/hosting/tilo-room-service/contain", "crates/hosting/tilo-room-service/contain[!e]*", "crates/hosting/tilo-room-service/containe", "crates/hosting/tilo-room-service/containe[!r]*", "crates/hosting/tilo-room-service/container[!/]*", "crates/hosting/tilo-room-service/d", "crates/hosting/tilo-room-service/d[!e]*", "crates/hosting/tilo-room-service/de", "crates/hosting/tilo-room-service/de[!v]*", "crates/hosting/tilo-room-service/dev[!/]*", "crates/hosting/tilo-room-service/g", "crates/hosting/tilo-room-service/g[!r]*", "crates/hosting/tilo-room-service/gr", "crates/hosting/tilo-room-service/gr[!a]*", "crates/hosting/tilo-room-service/gra", "crates/hosting/tilo-room-service/gra[!f]*", "crates/hosting/tilo-room-service/graf", "crates/hosting/tilo-room-service/graf[!a]*", "crates/hosting/tilo-room-service/grafa", "crates/hosting/tilo-room-service/grafa[!n]*", "crates/hosting/tilo-room-service/grafan", "crates/hosting/tilo-room-service/grafan[!a]*", "crates/hosting/tilo-room-service/grafana[!/]*", "crates/hosting/tilo-room-service/w", "crates/hosting/tilo-room-service/w[!e]*", "crates/hosting/tilo-room-service/we", "crates/hosting/tilo-room-service/we[!b]*", "crates/hosting/tilo-room-service/web[!/]*", "crates/media/ocr/**", "crates/media/segment/**", "crates/media/thumbnail/**", "crates/media/video-render/**", "crates/media/vision/**", "crates/media/wet-media/**", "crates/packaging/app-cli/**", "crates/packaging/app-registry/**", "crates/packaging/bot-directory/**", "crates/packaging/launcher/**", "crates/packaging/oci-images/**", "crates/packaging/package-store/**", "crates/packaging/registry-types/**", "crates/packaging/runtime-bundle/**", "crates/packaging/tilo-app-package/**", "crates/platform/tilo-agent-models/**", "crates/platform/tilo-appearance/**", "crates/platform/tilo-capture/**", "crates/platform/tilo-clipboard/**", "crates/platform/tilo-clock/**", "crates/platform/tilo-contact-directory/**", "crates/platform/tilo-dialogs/**", "crates/platform/tilo-files/**", "crates/platform/tilo-host-search/**", "crates/platform/tilo-image-codec/**", "crates/platform/tilo-invidious/**", "crates/platform/tilo-locale/**", "crates/platform/tilo-location/**", "crates/platform/tilo-lock/**", "crates/platform/tilo-media/**", "crates/platform/tilo-messaging/**", "crates/platform/tilo-mime/**", "crates/platform/tilo-net/**", "crates/platform/tilo-notify/**", "crates/platform/tilo-paths/**", "crates/platform/tilo-pdf/**", "crates/platform/tilo-platform-caps/**", "crates/platform/tilo-presentation/**", "crates/platform/tilo-process/**", "crates/platform/tilo-render-protocol/**", "crates/platform/tilo-rt/**", "crates/platform/tilo-sandbox/**", "crates/platform/tilo-secrets/**", "crates/platform/tilo-sort/**", "crates/platform/tilo-subject/**", "crates/platform/tilo-typst-fonts/**", "crates/platform/tilo-wake/**", "crates/platform/tilo-workspace-emoji/**", "crates/runtime/cli/**", "crates/runtime/egress/**", "crates/runtime/env-tools/**", "crates/runtime/environment/**", "crates/runtime/legacy-agent-protocol/**", "crates/runtime/legacy-vm/**", "crates/runtime/runtime-collab/**", "crates/runtime/runtime-fs/**", "crates/runtime/runtime-identity/**", "crates/runtime/runtime-portal/**", "crates/runtime/tilo-fs-client/**", "crates/runtime/tilo-identity-client/**", "crates/runtime/tilo-identity-host/**", "crates/runtime/ush/**", "crates/sdk/font-catalog/**", "crates/sdk/provider-settings-ui/**", "crates/sdk/runner-native/**", "crates/sdk/search/**", "crates/sdk/tilo-app/**", "crates/sdk/tilo-cpu-raster/**", "crates/sdk/tilo-history/**", "crates/sdk/tilo-host/**", "crates/sdk/tilo-page-raster/**", "crates/sdk/tilo-resource-macros/**", "crates/sdk/tilo-resource/**", "crates/sdk/tilo-rich-text/**", "crates/sdk/ui-core/**", "crates/sdk/ui-paint/**", "crates/session/control-cli/**", "crates/session/desktop-model/**", "crates/session/desktop-search/**", "crates/session/desktop-surface/**", "crates/session/desktop/**", "crates/system/account-custody/**", "crates/system/accounts/**", "crates/system/advisory-lock/**", "crates/system/app-state/**", "crates/system/block-devices/**", "crates/system/bounded-command/**", "crates/system/cloud-source-dav/**", "crates/system/cloud-source-dropbox/**", "crates/system/cloud-source-gdrive/**", "crates/system/cloud-source-icloud/**", "crates/system/cloud-source-onedrive/**", "crates/system/cloud-source/**", "crates/system/content-device/**", "crates/system/content-types/**", "crates/system/content/**", "crates/system/desktop-entry/**", "crates/system/desktop-policy/**", "crates/system/documents/**", "crates/system/durable-store/**", "crates/system/endpoint-reachability/**", "crates/system/fs-content/**", "crates/system/fs-native/**", "crates/system/fs-protocol/**", "crates/system/fs/**", "crates/system/libvirt-domain/**", "crates/system/power/**", "crates/system/sandbox-core/**", "crates/system/secret-vault/**", "crates/system/settings-store/**", "crates/system/system-stats/**", "crates/system/tilo-crypto/**", "crates/system/tilo-dav/**", "crates/system/tilo-native-certs/**", "crates/system/tilo-nm/**", "crates/system/tilo-oauth/**", "crates/system/tilo-seal/**", "crates/system/tilo-startup-metrics/**", "crates/system/tts/**", "crates/system/wire-frame/**", "crates/text/emoji-catalogue/**", "crates/text/emoji/**", "crates/text/highlight-grammars/**", "crates/text/highlight/**", "crates/text/pim-lines/**", "crates/text/spellcheck/**", "crates/workspace-hack/**", "vendor/accesskit_unix/**", "vendor/accesskit_winit/**", "vendor/atspi-common/**", "vendor/atspi-proxies/**", "vendor/atspi/**", "vendor/automerge/**", "vendor/cosmic-text/**", "vendor/davey/**", "vendor/genawaiter-proc-macro/**", "vendor/iroh-gossip/**", "vendor/iroh/**", "vendor/netwatch/**", "vendor/pulldown-cmark/**", "vendor/regex-syntax/**", "vendor/rig-core/**", "vendor/serde_json/**", "vendor/vello/**", "vendor/vello_encoding/**", "vendor/vello_shaders/**", "vendor/wayland-backend/**", "vendor/web-transport-proto/**", "vendor/web-transport-quinn/**", "vendor/wgpu-hal/**", "vendor/wgpu/**", "vendor/winit/**", "apps/browser/chromium/tests/resize_frames.py", "apps/browser/tilo-app.toml", "crates/browser/tilo-browser-runtime/src/background_work.rs", "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs", "crates/dev/ui-examples/examples/common/gallery_scene.rs", "crates/packaging/app-host/systemd/tilo-app-host.service", "os/etc/systemd/system/greetd.service.d/50-tilo-oom.conf", "os/legacy-guest-snapshot.env", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/libexec/tilo-session"]
+# END generated
 outputs = ["/target/publish/room-service/bin/**"]
 # A command check gets no jobserver from t, so cargo would keep .cargo/config.toml's floor of 4
 # jobs on the 8 cores this check reserves.
@@ -5283,19 +5336,16 @@ default = false
 name = "site-door-acceptance"
 run = """
 export TILO_FONT_ASSET_CACHE=$CARGO_TARGET_DIR/font-artifacts
-python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts --scope fixtures --cache "$TILO_FONT_ASSET_CACHE" >/dev/null
-cp -r scripts/moq-browser "$TMPDIR/moq-browser"
-TILO_MOQ_BROWSER_DIR=$TMPDIR/moq-browser crates/browser/tilo-browser-runtime/scripts/build.sh "$TMPDIR/desktop-bundle" --bundle desktop
 bash tools/ci/ensure-browser-dependencies.sh
 npx --yes @puppeteer/browsers@2 install chrome@stable --path "$TMPDIR/chrome" | tee "$TMPDIR/chrome.txt"
 export CHROME=$(awk '{print $2}' "$TMPDIR/chrome.txt" | tail -n 1)
-bash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --bundle "$TMPDIR/desktop-bundle" --out /target/site-door-acceptance
+bash tools/test-env.sh python3 -I dist/dev/site-door-acceptance.py --no-build --bundle /target/publish/web-desktop/bundle --out /target/site-door-acceptance
 """
 # nested-session.sh and the local site take the nested-session check's output where t puts it, so
-# the sources stay read-only.
+# the sources stay read-only. The web view is served the images' desktop bundle.
 env = { TILO_NESTED_SESSION_BUILD = "/target/nested-session", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_PROFILE_RELEASE_LTO = "thin", CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "16" }
-needs = ["nested-session", "test-assets"]
-inputs = ["apps/**", "crates/**", "vendor/**", "dist/dev/site-door-acceptance.py", "dist/dev/nested-pair-check.py", "dist/dev/nested-session.sh", "scripts/moq-browser/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "tools/test-env.sh", "tools/with-test-environment.sh", "Cargo.toml", "Cargo.lock"]
+needs = ["nested-session", "test-assets", "web-desktop-bundle"]
+inputs = ["apps/**", "crates/**", "vendor/**", "dist/dev/**", "os/scripts/bake-runtime-bundle.sh", "os/scripts/stamp-runtime.sh", "os/usr/share/tilo/system-interfaces.toml", "tools/apps/**", "scripts/perf/browser_qualification.mjs", "tools/web/**", "tools/ci/ensure-browser-dependencies.sh", "tools/font-catalog.py", "tools/test-env.sh", "tools/with-test-environment.sh", "Cargo.toml", "Cargo.lock"]
 outputs = ["/target/site-door-acceptance/**"]
 git = true
 requires = ["arch=x86_64"]
@@ -5837,8 +5887,8 @@ on = ["stable"]
 # `env-runtime` tapp and published as env-runtime:set-<fingerprint> from stable, once per
 # fingerprint. Sealing with the publisher identity is a signing step of its own. The preview
 # checks seal with a throwaway key and build the image from that, so a change is checked whole
-# before it lands. Until stable publishes a new definition, OS images ship no runtime and
-# environments fetch one on first use.
+# before it lands. Until stable publishes a new definition, release OS images ship no runtime,
+# and a run's dev images (os-dev-image-{arch}) ship env-runtime-dev-{arch}'s (below).
 [[check]]
 name = "image-env-runtime-tree-{arch}"
 isolation = "vm"
@@ -5852,6 +5902,39 @@ cost = "heavy"
 # A micro-VM step can't grow past what it reserves, and buildah installs and exports the whole
 # runtime tree: the default 4 GiB guest ran out of memory.
 requirement = { cores = 4, memory = "8GiB" }
+default = false
+
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+# A dev image's runtime (os-dev-image-{arch}, tools/ci/vm-acceptance.sh): this architecture's
+# tree built from the run's own image-rpms-{arch}, so a package set stable has not published
+# still gets one, and sealed with a throwaway key. Nothing publishes either; release images keep
+# the published runtime of the published snapshot.
+[[check]]
+name = "image-env-runtime-dev-tree-{arch}"
+isolation = "vm"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/env-runtime.sh dev-tree {arch} /target/publish/rpms/{arch} /target/publish/env-runtime/dev-trees"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "os/Containerfile.env-runtime", "os/base-snapshot.env"]
+needs = ["image-rpms-{arch}"]
+outputs = ["/target/publish/env-runtime/dev-trees/env-runtime-tree-{arch}.tar", "/target/publish/env-runtime/dev-trees/env-runtime-rpms-{arch}.txt"]
+requires = ["arch={arch}"]
+cost = "heavy"
+requirement = { cores = 4, memory = "8GiB" }
+default = false
+
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
+[[check]]
+name = "env-runtime-dev-{arch}"
+run = "bash tools/ci/publish/env-runtime.sh dev {arch} /target/publish/env-runtime/dev-trees /target/publish/env-runtime/packer /target/publish/env-runtime/dev/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-runtime.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-index.py", "tools/ci/publish/oci-publish.sh", "os/dev/resolve-env-runtime.sh", "os/Containerfile.env-runtime"]
+needs = ["image-env-runtime-dev-tree-{arch}", "env-runtime-packer"]
+outputs = ["/target/publish/env-runtime/dev/{arch}/**"]
+requires = ["arch=x86_64"]
+cost = "minutes"
 default = false
 
 [check.matrix]
@@ -6836,8 +6919,8 @@ default = false
 name = "os-dev-image-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-image.sh dev {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/os/{arch}/compiled-dev"
-inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "Cargo.lock", "rust-toolchain.toml", ".containerignore", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
-needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "signing-tools"]
+inputs = ["os/**", "crates/dev/tilo-vmd/data/**", "keys/cosign-dev.pub", "Cargo.lock", "rust-toolchain.toml", ".containerignore", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
+needs = ["image-rpms-{arch}", "os-image-{arch}", "os-compile-dev-{arch}", "env-runtime-dev-{arch}", "signing-tools"]
 outputs = ["/target/publish/os-dev/{arch}/**"]
 git = true
 requires = ["{node}", "disk-100g"]
@@ -6874,20 +6957,45 @@ default = false
 [check.matrix]
 arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
 
+# The dev channel's gate (tools/ci/publish/os-dev-gate.sh): os-dev-image-{arch} installed onto a
+# disk boots under KVM to a greeter that takes input with boot-complete.target reached, then
+# stages a newer image with bootc and applies it live with tilo-extension live:system. A device
+# falls back by itself from an image that fails to boot, so this is all a dev device needs before
+# it follows an image: that it boots, and takes the next update. The disk it installed is what
+# publish-os-dev-{arch} publishes and os-acceptance-{arch} boots.
+[[check]]
+name = "os-dev-gate-{arch}"
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+run = "bash tools/ci/publish/os-dev-gate.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-gate/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-gate.sh", "os/dev/**", "os/tests/live-update-check.sh"]
+needs = ["os-dev-image-{arch}", "signing-tools"]
+outputs = ["/target/publish/os-dev-gate/{arch}/**"]
+git = true
+requires = ["{node}", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 5400
+default = false
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
 # The devices and desktop a person gets from os-image-{arch} and os-dev-image-{arch}, booted under
-# KVM on throwaway overlays of the dev image's installed disk (tools/ci/publish/os-acceptance.sh):
+# KVM on throwaway overlays of the disk os-dev-gate-{arch} installed (tools/ci/publish/os-acceptance.sh):
 # a joined device signs in; nearby pairing from first-boot onboarding, a third device paired
 # through one without the identity key, sibling unlock and, on x86_64, wake; device-admin reach
 # through a relay; the installed desktop from the sign-in screen through first use, the apps,
-# hot-plugged input and the lock screen to tilo-vmd, app updates and a live system update; the
-# boot splash on a large panel. `t outputs os-acceptance-x86_64` gives every gate's
+# hot-plugged input and the lock screen to tilo-vmd and app updates; the boot splash on a large
+# panel. The stable channel's gate; on main it runs when t has room and tells the commit that
+# broke it, and publishes nothing. `t outputs os-acceptance-x86_64` gives every gate's
 # report and the guests' logs.
 [[check]]
 name = "os-acceptance-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-acceptance/{arch}"
+run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev-gate/{arch} /target/publish/os-acceptance/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-acceptance.sh", "os/dev/**", "os/tests/**", "tools/atspi_external_client.py", "crates/session/shell/tests/native_atspi_smoke.sh", "apps/file-explorer/tests/atspi_smoke.sh", "scripts/vm-acceptance/**", "tools/perf/record.py"]
-needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-image-{arch}", "signing-tools"]
+needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-gate-{arch}", "signing-tools"]
 outputs = ["/target/publish/os-acceptance/{arch}/**"]
 git = true
 requires = ["{node}", "/dev/kvm", "disk-100g"]
@@ -6901,27 +7009,82 @@ default = false
 [check.matrix]
 arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
 
-# Main's dev VM image and its gated disk, once os-acceptance-{arch} passed on them
+# The development key in KMS (keys/cosign-dev.pub) signs os-dev-image-{arch}'s digest, in t's
+# trusted runs of main, as registry.tilo.so/tilo/tilo-vm: what a dev image's
+# policy requires of an image (os/scripts/finalize-dev-image.py). No registry token;
+# publish-os-dev-{arch} attaches it.
+[[check]]
+name = "sign-dev-os-{arch}"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-vm /target/publish/os-dev/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-dev-image-{arch}", "signing-tools"]
+outputs = ["/target/publish/os-dev/{arch}/payload.json", "/target/publish/os-dev/{arch}/signature", "/target/publish/os-dev/{arch}/dry-run.pub"]
+id_token = ["tilo-dev-signing"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
+requires = ["arch=any"]
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
+# The development key in KMS signs os-dev-image-{arch}'s digest for a branch's own repository,
+# registry.tilo.so/tilo/tilo-vm-ref (tools/ci/publish/os-ref.sh), in t's trusted runs of branches,
+# for publish-os-ref-{arch} to attach. No registry token.
+[[check]]
+name = "sign-ref-os-{arch}"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-ref.sh sign {arch} /target/publish/os-dev/{arch} /target/publish/os-ref/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-dev-image-{arch}", "signing-tools"]
+outputs = ["/target/publish/os-ref/{arch}/**"]
+id_token = ["tilo-dev-signing"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
+requires = ["arch=any"]
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
+# A branch's own dev image (tools/ci/publish/os-ref.sh), when dispatched: `t dispatch
+# publish-os-ref-{arch} --ref BRANCH --publish` publishes os-dev-image-{arch} of the branch's head, signed
+# with the development key, as registry.tilo.so/tilo/tilo-vm-ref:ref-<branch>-<commit7>-{arch},
+# which `tilo device vm upgrade --ref BRANCH` pins on one device until its channel moves on. The
+# branches' repository is not one devices follow channels from. No gate beyond the build: the
+# device falls back by itself from an image that does not boot.
+[[check]]
+name = "publish-os-ref-{arch}"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-ref.sh publish {arch} /target/publish/os-dev/{arch} /target/publish/os-ref/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-dev-image-{arch}", "sign-ref-os-{arch}", "signing-tools"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
+# Main's dev image and its disk, once os-dev-gate-{arch} passed on them
 # (tools/ci/publish/os-dev-publish.sh): registry.tilo.so/tilo/tilo-ci:main-<commit7>-{arch} (the
-# OS image), registry.tilo.so/tilo/tilo-vm:main-<commit7>-ci (an index of the architectures
-# published so far) and its disk in the tilo-vm-disk package, which `tilo-vm vm create` and `vm
-# upgrade --from sha:<commit>` take; tilo-vm:latest and, with both architectures, tilo-vm:main-ci
-# move forward to it. Main's head publishes it every night (and when dispatched: `t dispatch
-# publish-os-dev-x86_64 --ref main`); a night whose image fails os-acceptance-{arch} publishes
-# nothing.
+# OS image), registry.tilo.so/tilo/tilo-vm:main-<commit7>-ci-{arch} (the dev image, with
+# sign-dev-os-{arch}'s signature), to which tilo-vm:{arch}-ci, the dev channel of the
+# architecture, moves forward, and tilo-vm:main-<commit7>-ci (an index of the architectures
+# published so far) with its disk in the tilo-vm-disk package, which `tilo-vm vm create` takes;
+# tilo-vm:latest moves forward to it. It runs on main's newest head whenever t has room (and when dispatched:
+# `t dispatch publish-os-dev-x86_64 --ref main`), so a dev device gets main's code as soon as
+# it is built and gated, not a night later.
 [[check]]
 name = "publish-os-dev-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
-run = "bash tools/ci/publish/os-dev-publish.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-acceptance/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh"]
-needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-acceptance-{arch}"]
+run = "bash tools/ci/publish/os-dev-publish.sh {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-dev-gate/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-publish.sh", "tools/ci/publish/oci-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-gate-{arch}", "sign-dev-os-{arch}", "signing-tools"]
 id_token = ["registry.tilo.so"]
 git = true
 requires = ["{node}", "disk-100g"]
 isolation = "vm"
 requirement = { cores = 2, memory = "4GiB" }
 timeout_secs = 3600
-on = ["schedule:30 1 * * *", "dispatch"]
+on = ["idle", "dispatch"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 
 [check.matrix]
@@ -7255,14 +7418,15 @@ secrets = ["REGISTRY_TOKEN"]
 
 # Board dev images (os/Containerfile.board, tools/ci/publish/os-image.sh board): the board's
 # firmware, device tree and initramfs on the aarch64 dev image of the same commit, sealed in a UKI,
-# since bootc takes a device tree only from one. Every night (and when dispatched: `t dispatch
-# publish-os-board-lenovo-83ed --ref main`), main's head is built and, once os-board-<board>,
-# os-board-size-<board> and os-acceptance-aarch64 (the dev image it is built on) pass, pushed as
+# since bootc takes a device tree only from one. Whenever t has room (and when dispatched: `t dispatch
+# publish-os-board-lenovo-83ed --ref main`), main's newest head is built and, once os-board-<board>,
+# os-board-size-<board> and os-dev-gate-aarch64 (the dev image it is built on) pass, signed with
+# the development key (sign-dev-os-board-<board>) and pushed as
 # registry.tilo.so/tilo/tilo-vm:main-<commit7>-<board>, which `tilo-vm vm upgrade --from
 # sha:<commit>` takes on that board, and tilo-vm:<board>-ci moves to it, which installed boards
 # follow on their own; its flashable disk, which os-board-<board> installs (with the Lenovo's audio
 # stack checked inside the image first), replaces tilo-vm-disk-latest/aarch64-<board> in the
-# generic packages (docs/development/hardware.md).
+# generic packages (docs/development/devices.md).
 [[check]]
 name = "os-board-{board}"
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
@@ -7302,16 +7466,68 @@ default = false
 [check.matrix]
 board = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]
 
+# The development key in KMS (keys/cosign-dev.pub) signs os-board-{board}'s digest, in t's trusted
+# runs of main, as registry.tilo.so/tilo/tilo-vm, for publish-os-board-{board} to attach.
+[[check]]
+name = "sign-dev-os-board-{board}"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-vm /target/publish/os-board/{board}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-board-{board}", "signing-tools"]
+outputs = ["/target/publish/os-board/{board}/payload.json", "/target/publish/os-board/{board}/signature", "/target/publish/os-board/{board}/dry-run.pub"]
+id_token = ["tilo-dev-signing"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
+requires = ["arch=any"]
+
+[check.matrix]
+board = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]
+
+# The development key in KMS signs os-board-{board}'s digest for a branch's own repository,
+# registry.tilo.so/tilo/tilo-vm-ref (tools/ci/publish/os-ref.sh), in t's trusted runs of branches,
+# for publish-os-ref-{board} to attach. No registry token.
+[[check]]
+name = "sign-ref-os-{board}"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-ref.sh sign {board} /target/publish/os-board/{board} /target/publish/os-ref/{board}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-board-{board}", "signing-tools"]
+outputs = ["/target/publish/os-ref/{board}/**"]
+id_token = ["tilo-dev-signing"]
+env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
+requires = ["arch=any"]
+
+[check.matrix]
+board = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]
+
+# A branch's own board image (tools/ci/publish/os-ref.sh), when dispatched: `t dispatch
+# publish-os-ref-{board} --ref BRANCH --publish` publishes os-board-{board} of the branch's head, signed
+# with the development key, as registry.tilo.so/tilo/tilo-vm-ref:ref-<branch>-<commit7>-{board},
+# which `tilo device vm upgrade --ref BRANCH` pins on one device until its channel moves on. The
+# branches' repository is not one devices follow channels from. No gate beyond the build: the
+# device falls back by itself from an image that does not boot.
+[[check]]
+name = "publish-os-ref-{board}"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/os-ref.sh publish {board} /target/publish/os-board/{board} /target/publish/os-ref/{board}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-board-{board}", "sign-ref-os-{board}", "signing-tools"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=any"]
+on = ["dispatch"]
+
+[check.matrix]
+board = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board = "orangepi-3b-v2-1" }]
+
 [[check]]
 name = "publish-os-board-{board}"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-board-publish.sh {board} /target/publish/os-board/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh"]
-needs = ["os-board-{board}", "os-board-size-{board}", "os-acceptance-aarch64"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+needs = ["os-board-{board}", "os-board-size-{board}", "os-dev-gate-aarch64", "sign-dev-os-board-{board}", "signing-tools"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
-on = ["schedule:30 1 * * *", "dispatch"]
+on = ["idle", "dispatch"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 
 [check.matrix]
@@ -7331,8 +7547,8 @@ board = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board 
 
 [[check]]
 name = "os-assets"
-run = "bash os/image/build-layer.sh assets"
-inputs = ["os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/image/build-layer.sh"]
+run = "bash os/dev/cache-github-assets.sh"
+inputs = ["os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh"]
 outputs = ["os/external-assets/cache/**"]
 cost = "minutes"
 default = false
@@ -7411,12 +7627,26 @@ timeout_secs = 7200
 default = false
 
 [[check]]
+name = "os-chromium-x86_64"
+image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
+run = "bash os/image/compile.sh --chromium /target/os/x86_64/chromium"
+inputs = ["os/image/compile.sh", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "apps/browser/chromium/**", "crates/browser/chromium-blocker/**", "crates/workspace-hack/**", "vendor/**", "Cargo.lock", "**/Cargo.toml", ".cargo/**", "rust-toolchain.toml", "os/external-assets/github-assets.tsv"]
+needs = ["os-assets"]
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+outputs = ["/target/os/x86_64/chromium/**"]
+requires = ["arch=x86_64"]
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 10800
+default = false
+
+[[check]]
 name = "os-compile-x86_64"
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh /target/os/x86_64/compiled"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-assets", "test-assets"]
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["test-assets"]
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/x86_64/compiled/**"]
 requires = ["arch=x86_64"]
 cost = "heavy"
@@ -7429,8 +7659,8 @@ name = "os-compile-release-x86_64"
 image = { check = "os-builder-x86_64", path = "/target/os/x86_64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh /target/os/x86_64/compiled-release"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-assets", "test-assets"]
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["test-assets", "os-chromium-x86_64"]
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/x86_64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/x86_64/compiled-release/**"]
 requires = ["arch=x86_64"]
 cost = "heavy"
@@ -7516,8 +7746,8 @@ default = false
 name = "os-layer-image-x86_64"
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 run = "bash os/image/build-layer.sh layer image x86_64 /target/os/x86_64/layers/image"
-inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "crates/sdk/ui-core/assets/fonts/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/cosign.pub", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/base-snapshot.env", "os/components.toml", "os/desktop-artifacts/**", "os/dev/_common.sh", "os/dev/board-generation.sh", "os/dev/build-image.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/check-composefs-verity.py", "os/dev/check-disk-sectors.py", "os/dev/derive-rpm-package-set.py", "os/dev/development-signer.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/dev/fetch-orangepi-wifi-firmware.sh", "os/dev/hardware-firmware-artifact.py", "os/dev/hardware_profile.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/image-epoch.sh", "os/dev/install-cached-cosign.sh", "os/dev/install-rockchip-loader.py", "os/dev/installer-offline-target.py", "os/dev/installer-target-transport.py", "os/dev/layer-rpm-snapshot.py", "os/dev/next-generation.sh", "os/dev/prepare-hardware-profile.py", "os/dev/probe-kvm.py", "os/dev/raw-rootfs-receipt.py", "os/dev/registry-manifest.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/dev/verify-development-source.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/verify-rpm-snapshot-signatures.sh", "os/dev/windows_provider.py", "os/external-assets/github-assets.tsv", "os/hardware/firmware/*/**", "os/hardware/profiles/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/args.Containerfile", "os/image/binaries.Containerfile", "os/image/boot.Containerfile", "os/image/build-layer.sh", "os/image/helpers/apps-payload.Containerfile", "os/image/helpers/builder-sources.Containerfile", "os/image/helpers/component-files.Containerfile", "os/image/helpers/desktop-binaries.Containerfile", "os/image/helpers/env-runtime.Containerfile", "os/image/helpers/external-assets.Containerfile", "os/image/helpers/native-builder-payload.Containerfile", "os/image/helpers/os-fonts.Containerfile", "os/image/helpers/runtime-image-payload.Containerfile", "os/image/helpers/runtime-resolver-link.Containerfile", "os/image/layers.toml", "os/image/rootfs.Containerfile", "os/legacy-guest-snapshot.env", "os/registry-runtime-publisher.hex", "os/scripts/build-initramfs.sh", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/clean-bootc-transient-state.py", "os/scripts/collect-runtime-dependencies.py", "os/scripts/finalize-rpmdb.sh", "os/scripts/hardlink-identical.py", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/pin-directory-times.py", "os/scripts/seed-env-runtime.py", "os/scripts/stamp-runtime.sh", "os/scripts/verify-board-initramfs.py", "os/scripts/verify-boot-ordering.sh", "os/scripts/verify-elf-hardening.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/scripts/verify-rpm-files.sh", "os/scripts/verify-runtime-bundle-closure.sh", "os/tests/app_store.sh", "os/tests/boot_chain_invariants.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/luks_enrolment.sh", "os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf", "os/usr/lib/systemd/system/tilo-node-relay@.service", "os/usr/lib/systemd/system/tilo-node-session-key@.service", "os/usr/lib/systemd/system/tilo-node-session@.path", "os/usr/lib/systemd/system/tilo-node-session@.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/sysusers.d/tilo-relay.conf", "os/usr/lib/tilo/node-relay.toml", "os/usr/libexec/tilo-image-trust-staged", "os/usr/libexec/tilo-session", "os/usr/libexec/tilo-verified-update", "os/usr/share/licenses/tilo-speech-worker/LICENSE", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/os/oci_layers.py", "tools/ci/os/pieces.py", "tools/ci/publish/lib.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-x86_64", "os-builder-x86_64", "os-tools-x86_64", "os-compile-x86_64"]
+inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "crates/sdk/ui-core/assets/fonts/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/cosign.pub", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/base-snapshot.env", "os/components.toml", "os/desktop-artifacts/**", "os/dev/_common.sh", "os/dev/board-generation.sh", "os/dev/build-image.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/check-composefs-verity.py", "os/dev/check-disk-sectors.py", "os/dev/derive-rpm-package-set.py", "os/dev/development-signer.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/dev/fetch-orangepi-wifi-firmware.sh", "os/dev/hardware-firmware-artifact.py", "os/dev/hardware_profile.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/image-epoch.sh", "os/dev/install-cached-cosign.sh", "os/dev/install-rockchip-loader.py", "os/dev/installer-offline-target.py", "os/dev/installer-target-transport.py", "os/dev/layer-rpm-snapshot.py", "os/dev/next-generation.sh", "os/dev/prepare-hardware-profile.py", "os/dev/probe-kvm.py", "os/dev/raw-rootfs-receipt.py", "os/dev/registry-manifest.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/dev/verify-development-source.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/verify-rpm-snapshot-signatures.sh", "os/dev/windows_provider.py", "os/external-assets/github-assets.tsv", "os/hardware/firmware/*/**", "os/hardware/profiles/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/args.Containerfile", "os/image/binaries.Containerfile", "os/image/boot.Containerfile", "os/image/build-layer.sh", "os/image/helpers/apps-payload.Containerfile", "os/image/helpers/builder-sources.Containerfile", "os/image/helpers/component-files.Containerfile", "os/image/helpers/desktop-binaries.Containerfile", "os/image/helpers/env-runtime.Containerfile", "os/image/helpers/external-assets.Containerfile", "os/image/helpers/native-builder-payload.Containerfile", "os/image/helpers/os-fonts.Containerfile", "os/image/helpers/runtime-image-payload.Containerfile", "os/image/helpers/runtime-resolver-link.Containerfile", "os/image/layers.toml", "os/image/rootfs.Containerfile", "os/legacy-guest-snapshot.env", "os/registry-runtime-publisher.hex", "os/scripts/build-initramfs.sh", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/clean-bootc-transient-state.py", "os/scripts/collect-runtime-dependencies.py", "os/scripts/finalize-rpmdb.sh", "os/scripts/hardlink-identical.py", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/pin-directory-times.py", "os/scripts/seed-env-runtime.py", "os/scripts/stamp-runtime.sh", "os/scripts/verify-board-initramfs.py", "os/scripts/verify-boot-ordering.sh", "os/scripts/verify-elf-hardening.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/scripts/verify-rpm-files.sh", "os/scripts/verify-runtime-bundle-closure.sh", "os/tests/app_store.sh", "os/tests/boot_chain_invariants.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/luks_enrolment.sh", "os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf", "os/usr/lib/systemd/system/tilo-node-relay@.service", "os/usr/lib/systemd/system/tilo-node-session-key@.service", "os/usr/lib/systemd/system/tilo-node-session@.path", "os/usr/lib/systemd/system/tilo-node-session@.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/sysusers.d/tilo-relay.conf", "os/usr/lib/tilo/node-relay.toml", "os/usr/libexec/tilo-image-trust-staged", "os/usr/libexec/tilo-session", "os/usr/libexec/tilo-update-channel", "os/usr/libexec/tilo-verified-update", "os/usr/share/licenses/tilo-speech-worker/LICENSE", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/os/oci_layers.py", "tools/ci/os/pieces.py", "tools/ci/publish/lib.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
+needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-x86_64", "os-builder-x86_64", "os-tools-x86_64", "os-compile-x86_64", "os-chromium-x86_64"]
 outputs = ["/target/os/x86_64/layers/image/**"]
 git = true
 requires = ["arch=x86_64", "disk-100g"]
@@ -7570,8 +7800,8 @@ default = false
 name = "os-layer-image-release-x86_64"
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 run = "bash os/image/build-layer.sh layer image x86_64 /target/os/x86_64/release-layers/image"
-inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "crates/sdk/ui-core/assets/fonts/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/cosign.pub", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/base-snapshot.env", "os/components.toml", "os/desktop-artifacts/**", "os/dev/_common.sh", "os/dev/board-generation.sh", "os/dev/build-image.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/check-composefs-verity.py", "os/dev/check-disk-sectors.py", "os/dev/derive-rpm-package-set.py", "os/dev/development-signer.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/dev/fetch-orangepi-wifi-firmware.sh", "os/dev/hardware-firmware-artifact.py", "os/dev/hardware_profile.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/image-epoch.sh", "os/dev/install-cached-cosign.sh", "os/dev/install-rockchip-loader.py", "os/dev/installer-offline-target.py", "os/dev/installer-target-transport.py", "os/dev/layer-rpm-snapshot.py", "os/dev/next-generation.sh", "os/dev/prepare-hardware-profile.py", "os/dev/probe-kvm.py", "os/dev/raw-rootfs-receipt.py", "os/dev/registry-manifest.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/dev/verify-development-source.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/verify-rpm-snapshot-signatures.sh", "os/dev/windows_provider.py", "os/external-assets/github-assets.tsv", "os/hardware/firmware/*/**", "os/hardware/profiles/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/args.Containerfile", "os/image/binaries.Containerfile", "os/image/boot.Containerfile", "os/image/build-layer.sh", "os/image/helpers/apps-payload.Containerfile", "os/image/helpers/builder-sources.Containerfile", "os/image/helpers/component-files.Containerfile", "os/image/helpers/desktop-binaries.Containerfile", "os/image/helpers/env-runtime.Containerfile", "os/image/helpers/external-assets.Containerfile", "os/image/helpers/native-builder-payload.Containerfile", "os/image/helpers/os-fonts.Containerfile", "os/image/helpers/runtime-image-payload.Containerfile", "os/image/helpers/runtime-resolver-link.Containerfile", "os/image/layers.toml", "os/image/rootfs.Containerfile", "os/legacy-guest-snapshot.env", "os/publication.env", "os/registry-runtime-publisher.hex", "os/scripts/build-initramfs.sh", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/clean-bootc-transient-state.py", "os/scripts/collect-runtime-dependencies.py", "os/scripts/finalize-rpmdb.sh", "os/scripts/hardlink-identical.py", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/pin-directory-times.py", "os/scripts/seed-env-runtime.py", "os/scripts/stamp-runtime.sh", "os/scripts/verify-board-initramfs.py", "os/scripts/verify-boot-ordering.sh", "os/scripts/verify-elf-hardening.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/scripts/verify-rpm-files.sh", "os/scripts/verify-runtime-bundle-closure.sh", "os/tests/app_store.sh", "os/tests/boot_chain_invariants.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/luks_enrolment.sh", "os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf", "os/usr/lib/systemd/system/tilo-node-relay@.service", "os/usr/lib/systemd/system/tilo-node-session-key@.service", "os/usr/lib/systemd/system/tilo-node-session@.path", "os/usr/lib/systemd/system/tilo-node-session@.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/sysusers.d/tilo-relay.conf", "os/usr/lib/tilo/node-relay.toml", "os/usr/libexec/tilo-image-trust-staged", "os/usr/libexec/tilo-session", "os/usr/libexec/tilo-verified-update", "os/usr/share/licenses/tilo-speech-worker/LICENSE", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/os/oci_layers.py", "tools/ci/os/pieces.py", "tools/ci/publish/lib.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-release-x86_64", "os-builder-x86_64", "os-tools-x86_64", "os-compile-release-x86_64"]
+inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "crates/sdk/ui-core/assets/fonts/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/cosign.pub", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/base-snapshot.env", "os/components.toml", "os/desktop-artifacts/**", "os/dev/_common.sh", "os/dev/board-generation.sh", "os/dev/build-image.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/check-composefs-verity.py", "os/dev/check-disk-sectors.py", "os/dev/derive-rpm-package-set.py", "os/dev/development-signer.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/dev/fetch-orangepi-wifi-firmware.sh", "os/dev/hardware-firmware-artifact.py", "os/dev/hardware_profile.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/image-epoch.sh", "os/dev/install-cached-cosign.sh", "os/dev/install-rockchip-loader.py", "os/dev/installer-offline-target.py", "os/dev/installer-target-transport.py", "os/dev/layer-rpm-snapshot.py", "os/dev/next-generation.sh", "os/dev/prepare-hardware-profile.py", "os/dev/probe-kvm.py", "os/dev/raw-rootfs-receipt.py", "os/dev/registry-manifest.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/dev/verify-development-source.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/verify-rpm-snapshot-signatures.sh", "os/dev/windows_provider.py", "os/external-assets/github-assets.tsv", "os/hardware/firmware/*/**", "os/hardware/profiles/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/args.Containerfile", "os/image/binaries.Containerfile", "os/image/boot.Containerfile", "os/image/build-layer.sh", "os/image/helpers/apps-payload.Containerfile", "os/image/helpers/builder-sources.Containerfile", "os/image/helpers/component-files.Containerfile", "os/image/helpers/desktop-binaries.Containerfile", "os/image/helpers/env-runtime.Containerfile", "os/image/helpers/external-assets.Containerfile", "os/image/helpers/native-builder-payload.Containerfile", "os/image/helpers/os-fonts.Containerfile", "os/image/helpers/runtime-image-payload.Containerfile", "os/image/helpers/runtime-resolver-link.Containerfile", "os/image/layers.toml", "os/image/rootfs.Containerfile", "os/legacy-guest-snapshot.env", "os/publication.env", "os/registry-runtime-publisher.hex", "os/scripts/build-initramfs.sh", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/clean-bootc-transient-state.py", "os/scripts/collect-runtime-dependencies.py", "os/scripts/finalize-rpmdb.sh", "os/scripts/hardlink-identical.py", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/pin-directory-times.py", "os/scripts/seed-env-runtime.py", "os/scripts/stamp-runtime.sh", "os/scripts/verify-board-initramfs.py", "os/scripts/verify-boot-ordering.sh", "os/scripts/verify-elf-hardening.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/scripts/verify-rpm-files.sh", "os/scripts/verify-runtime-bundle-closure.sh", "os/tests/app_store.sh", "os/tests/boot_chain_invariants.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/luks_enrolment.sh", "os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf", "os/usr/lib/systemd/system/tilo-node-relay@.service", "os/usr/lib/systemd/system/tilo-node-session-key@.service", "os/usr/lib/systemd/system/tilo-node-session@.path", "os/usr/lib/systemd/system/tilo-node-session@.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/sysusers.d/tilo-relay.conf", "os/usr/lib/tilo/node-relay.toml", "os/usr/libexec/tilo-image-trust-staged", "os/usr/libexec/tilo-session", "os/usr/libexec/tilo-update-channel", "os/usr/libexec/tilo-verified-update", "os/usr/share/licenses/tilo-speech-worker/LICENSE", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/os/oci_layers.py", "tools/ci/os/pieces.py", "tools/ci/publish/lib.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
+needs = ["os-base-x86_64", "os-assets", "signing-tools", "image-rpms-x86_64", "os-layer-packages-x86_64", "os-layer-kernel-x86_64", "os-layer-system-x86_64", "os-layer-trust-release-x86_64", "os-builder-x86_64", "os-tools-x86_64", "os-compile-release-x86_64", "os-chromium-x86_64"]
 outputs = ["/target/os/x86_64/release-layers/image/**"]
 env = { TILO_OS_FLAVOUR = "release" }
 git = true
@@ -7660,12 +7890,26 @@ timeout_secs = 7200
 default = false
 
 [[check]]
+name = "os-chromium-aarch64"
+image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
+run = "bash os/image/compile.sh --chromium /target/os/aarch64/chromium"
+inputs = ["os/image/compile.sh", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "apps/browser/chromium/**", "crates/browser/chromium-blocker/**", "crates/workspace-hack/**", "vendor/**", "Cargo.lock", "**/Cargo.toml", ".cargo/**", "rust-toolchain.toml", "os/external-assets/github-assets.tsv"]
+needs = ["os-assets"]
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+outputs = ["/target/os/aarch64/chromium/**"]
+requires = ["arch=arm64"]
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 10800
+default = false
+
+[[check]]
 name = "os-compile-aarch64"
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh /target/os/aarch64/compiled"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-assets", "test-assets"]
-env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["test-assets"]
+env = { TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "apart", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/aarch64/compiled/**"]
 requires = ["arch=arm64"]
 cost = "heavy"
@@ -7678,8 +7922,8 @@ name = "os-compile-release-aarch64"
 image = { check = "os-builder-aarch64", path = "/target/os/aarch64/builder/builder-base/oci" }
 run = "bash os/image/compile.sh /target/os/aarch64/compiled-release"
 inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/components.toml", "os/desktop-artifacts/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/compile.sh", "os/legacy-guest-snapshot.env", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-assets", "test-assets"]
-env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["test-assets", "os-chromium-aarch64"]
+env = { TILO_RUST_LTO = "thin", TILO_RUST_DEBUGINFO = "line-tables-only", TILO_WITH_BROWSER = "1", TILO_CHROMIUM_ENGINE = "/target/os/aarch64/chromium", TILO_CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 outputs = ["/target/os/aarch64/compiled-release/**"]
 requires = ["arch=arm64"]
 cost = "heavy"
@@ -7765,8 +8009,8 @@ default = false
 name = "os-layer-image-aarch64"
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/layers/image"
-inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "crates/sdk/ui-core/assets/fonts/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/cosign.pub", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/base-snapshot.env", "os/components.toml", "os/desktop-artifacts/**", "os/dev/_common.sh", "os/dev/board-generation.sh", "os/dev/build-image.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/check-composefs-verity.py", "os/dev/check-disk-sectors.py", "os/dev/derive-rpm-package-set.py", "os/dev/development-signer.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/dev/fetch-orangepi-wifi-firmware.sh", "os/dev/hardware-firmware-artifact.py", "os/dev/hardware_profile.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/image-epoch.sh", "os/dev/install-cached-cosign.sh", "os/dev/install-rockchip-loader.py", "os/dev/installer-offline-target.py", "os/dev/installer-target-transport.py", "os/dev/layer-rpm-snapshot.py", "os/dev/next-generation.sh", "os/dev/prepare-hardware-profile.py", "os/dev/probe-kvm.py", "os/dev/raw-rootfs-receipt.py", "os/dev/registry-manifest.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/dev/verify-development-source.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/verify-rpm-snapshot-signatures.sh", "os/dev/windows_provider.py", "os/external-assets/github-assets.tsv", "os/hardware/firmware/*/**", "os/hardware/profiles/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/args.Containerfile", "os/image/binaries.Containerfile", "os/image/boot.Containerfile", "os/image/build-layer.sh", "os/image/helpers/apps-payload.Containerfile", "os/image/helpers/builder-sources.Containerfile", "os/image/helpers/component-files.Containerfile", "os/image/helpers/desktop-binaries.Containerfile", "os/image/helpers/env-runtime.Containerfile", "os/image/helpers/external-assets.Containerfile", "os/image/helpers/native-builder-payload.Containerfile", "os/image/helpers/os-fonts.Containerfile", "os/image/helpers/runtime-image-payload.Containerfile", "os/image/helpers/runtime-resolver-link.Containerfile", "os/image/layers.toml", "os/image/rootfs.Containerfile", "os/legacy-guest-snapshot.env", "os/registry-runtime-publisher.hex", "os/scripts/build-initramfs.sh", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/clean-bootc-transient-state.py", "os/scripts/collect-runtime-dependencies.py", "os/scripts/finalize-rpmdb.sh", "os/scripts/hardlink-identical.py", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/pin-directory-times.py", "os/scripts/seed-env-runtime.py", "os/scripts/stamp-runtime.sh", "os/scripts/verify-board-initramfs.py", "os/scripts/verify-boot-ordering.sh", "os/scripts/verify-elf-hardening.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/scripts/verify-rpm-files.sh", "os/scripts/verify-runtime-bundle-closure.sh", "os/tests/app_store.sh", "os/tests/boot_chain_invariants.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/luks_enrolment.sh", "os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf", "os/usr/lib/systemd/system/tilo-node-relay@.service", "os/usr/lib/systemd/system/tilo-node-session-key@.service", "os/usr/lib/systemd/system/tilo-node-session@.path", "os/usr/lib/systemd/system/tilo-node-session@.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/sysusers.d/tilo-relay.conf", "os/usr/lib/tilo/node-relay.toml", "os/usr/libexec/tilo-image-trust-staged", "os/usr/libexec/tilo-session", "os/usr/libexec/tilo-verified-update", "os/usr/share/licenses/tilo-speech-worker/LICENSE", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/os/oci_layers.py", "tools/ci/os/pieces.py", "tools/ci/publish/lib.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-aarch64", "os-builder-aarch64", "os-tools-aarch64", "os-compile-aarch64"]
+inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "crates/sdk/ui-core/assets/fonts/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/cosign.pub", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/base-snapshot.env", "os/components.toml", "os/desktop-artifacts/**", "os/dev/_common.sh", "os/dev/board-generation.sh", "os/dev/build-image.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/check-composefs-verity.py", "os/dev/check-disk-sectors.py", "os/dev/derive-rpm-package-set.py", "os/dev/development-signer.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/dev/fetch-orangepi-wifi-firmware.sh", "os/dev/hardware-firmware-artifact.py", "os/dev/hardware_profile.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/image-epoch.sh", "os/dev/install-cached-cosign.sh", "os/dev/install-rockchip-loader.py", "os/dev/installer-offline-target.py", "os/dev/installer-target-transport.py", "os/dev/layer-rpm-snapshot.py", "os/dev/next-generation.sh", "os/dev/prepare-hardware-profile.py", "os/dev/probe-kvm.py", "os/dev/raw-rootfs-receipt.py", "os/dev/registry-manifest.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/dev/verify-development-source.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/verify-rpm-snapshot-signatures.sh", "os/dev/windows_provider.py", "os/external-assets/github-assets.tsv", "os/hardware/firmware/*/**", "os/hardware/profiles/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/args.Containerfile", "os/image/binaries.Containerfile", "os/image/boot.Containerfile", "os/image/build-layer.sh", "os/image/helpers/apps-payload.Containerfile", "os/image/helpers/builder-sources.Containerfile", "os/image/helpers/component-files.Containerfile", "os/image/helpers/desktop-binaries.Containerfile", "os/image/helpers/env-runtime.Containerfile", "os/image/helpers/external-assets.Containerfile", "os/image/helpers/native-builder-payload.Containerfile", "os/image/helpers/os-fonts.Containerfile", "os/image/helpers/runtime-image-payload.Containerfile", "os/image/helpers/runtime-resolver-link.Containerfile", "os/image/layers.toml", "os/image/rootfs.Containerfile", "os/legacy-guest-snapshot.env", "os/registry-runtime-publisher.hex", "os/scripts/build-initramfs.sh", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/clean-bootc-transient-state.py", "os/scripts/collect-runtime-dependencies.py", "os/scripts/finalize-rpmdb.sh", "os/scripts/hardlink-identical.py", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/pin-directory-times.py", "os/scripts/seed-env-runtime.py", "os/scripts/stamp-runtime.sh", "os/scripts/verify-board-initramfs.py", "os/scripts/verify-boot-ordering.sh", "os/scripts/verify-elf-hardening.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/scripts/verify-rpm-files.sh", "os/scripts/verify-runtime-bundle-closure.sh", "os/tests/app_store.sh", "os/tests/boot_chain_invariants.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/luks_enrolment.sh", "os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf", "os/usr/lib/systemd/system/tilo-node-relay@.service", "os/usr/lib/systemd/system/tilo-node-session-key@.service", "os/usr/lib/systemd/system/tilo-node-session@.path", "os/usr/lib/systemd/system/tilo-node-session@.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/sysusers.d/tilo-relay.conf", "os/usr/lib/tilo/node-relay.toml", "os/usr/libexec/tilo-image-trust-staged", "os/usr/libexec/tilo-session", "os/usr/libexec/tilo-update-channel", "os/usr/libexec/tilo-verified-update", "os/usr/share/licenses/tilo-speech-worker/LICENSE", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/os/oci_layers.py", "tools/ci/os/pieces.py", "tools/ci/publish/lib.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
+needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-aarch64", "os-builder-aarch64", "os-tools-aarch64", "os-compile-aarch64", "os-chromium-aarch64"]
 outputs = ["/target/os/aarch64/layers/image/**"]
 git = true
 requires = ["arch=arm64", "disk-100g"]
@@ -7819,8 +8063,8 @@ default = false
 name = "os-layer-image-release-aarch64"
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/release-layers/image"
-inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "crates/sdk/ui-core/assets/fonts/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/cosign.pub", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/base-snapshot.env", "os/components.toml", "os/desktop-artifacts/**", "os/dev/_common.sh", "os/dev/board-generation.sh", "os/dev/build-image.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/check-composefs-verity.py", "os/dev/check-disk-sectors.py", "os/dev/derive-rpm-package-set.py", "os/dev/development-signer.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/dev/fetch-orangepi-wifi-firmware.sh", "os/dev/hardware-firmware-artifact.py", "os/dev/hardware_profile.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/image-epoch.sh", "os/dev/install-cached-cosign.sh", "os/dev/install-rockchip-loader.py", "os/dev/installer-offline-target.py", "os/dev/installer-target-transport.py", "os/dev/layer-rpm-snapshot.py", "os/dev/next-generation.sh", "os/dev/prepare-hardware-profile.py", "os/dev/probe-kvm.py", "os/dev/raw-rootfs-receipt.py", "os/dev/registry-manifest.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/dev/verify-development-source.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/verify-rpm-snapshot-signatures.sh", "os/dev/windows_provider.py", "os/external-assets/github-assets.tsv", "os/hardware/firmware/*/**", "os/hardware/profiles/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/args.Containerfile", "os/image/binaries.Containerfile", "os/image/boot.Containerfile", "os/image/build-layer.sh", "os/image/helpers/apps-payload.Containerfile", "os/image/helpers/builder-sources.Containerfile", "os/image/helpers/component-files.Containerfile", "os/image/helpers/desktop-binaries.Containerfile", "os/image/helpers/env-runtime.Containerfile", "os/image/helpers/external-assets.Containerfile", "os/image/helpers/native-builder-payload.Containerfile", "os/image/helpers/os-fonts.Containerfile", "os/image/helpers/runtime-image-payload.Containerfile", "os/image/helpers/runtime-resolver-link.Containerfile", "os/image/layers.toml", "os/image/rootfs.Containerfile", "os/legacy-guest-snapshot.env", "os/publication.env", "os/registry-runtime-publisher.hex", "os/scripts/build-initramfs.sh", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/clean-bootc-transient-state.py", "os/scripts/collect-runtime-dependencies.py", "os/scripts/finalize-rpmdb.sh", "os/scripts/hardlink-identical.py", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/pin-directory-times.py", "os/scripts/seed-env-runtime.py", "os/scripts/stamp-runtime.sh", "os/scripts/verify-board-initramfs.py", "os/scripts/verify-boot-ordering.sh", "os/scripts/verify-elf-hardening.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/scripts/verify-rpm-files.sh", "os/scripts/verify-runtime-bundle-closure.sh", "os/tests/app_store.sh", "os/tests/boot_chain_invariants.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/luks_enrolment.sh", "os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf", "os/usr/lib/systemd/system/tilo-node-relay@.service", "os/usr/lib/systemd/system/tilo-node-session-key@.service", "os/usr/lib/systemd/system/tilo-node-session@.path", "os/usr/lib/systemd/system/tilo-node-session@.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/sysusers.d/tilo-relay.conf", "os/usr/lib/tilo/node-relay.toml", "os/usr/libexec/tilo-image-trust-staged", "os/usr/libexec/tilo-session", "os/usr/libexec/tilo-verified-update", "os/usr/share/licenses/tilo-speech-worker/LICENSE", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/os/oci_layers.py", "tools/ci/os/pieces.py", "tools/ci/publish/lib.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-release-aarch64", "os-builder-aarch64", "os-tools-aarch64", "os-compile-release-aarch64"]
+inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "crates/sdk/ui-core/assets/fonts/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/cosign.pub", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/base-snapshot.env", "os/components.toml", "os/desktop-artifacts/**", "os/dev/_common.sh", "os/dev/board-generation.sh", "os/dev/build-image.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/check-composefs-verity.py", "os/dev/check-disk-sectors.py", "os/dev/derive-rpm-package-set.py", "os/dev/development-signer.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/dev/fetch-orangepi-wifi-firmware.sh", "os/dev/hardware-firmware-artifact.py", "os/dev/hardware_profile.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/image-epoch.sh", "os/dev/install-cached-cosign.sh", "os/dev/install-rockchip-loader.py", "os/dev/installer-offline-target.py", "os/dev/installer-target-transport.py", "os/dev/layer-rpm-snapshot.py", "os/dev/next-generation.sh", "os/dev/prepare-hardware-profile.py", "os/dev/probe-kvm.py", "os/dev/raw-rootfs-receipt.py", "os/dev/registry-manifest.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/dev/verify-development-source.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/verify-rpm-snapshot-signatures.sh", "os/dev/windows_provider.py", "os/external-assets/github-assets.tsv", "os/hardware/firmware/*/**", "os/hardware/profiles/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/args.Containerfile", "os/image/binaries.Containerfile", "os/image/boot.Containerfile", "os/image/build-layer.sh", "os/image/helpers/apps-payload.Containerfile", "os/image/helpers/builder-sources.Containerfile", "os/image/helpers/component-files.Containerfile", "os/image/helpers/desktop-binaries.Containerfile", "os/image/helpers/env-runtime.Containerfile", "os/image/helpers/external-assets.Containerfile", "os/image/helpers/native-builder-payload.Containerfile", "os/image/helpers/os-fonts.Containerfile", "os/image/helpers/runtime-image-payload.Containerfile", "os/image/helpers/runtime-resolver-link.Containerfile", "os/image/layers.toml", "os/image/rootfs.Containerfile", "os/legacy-guest-snapshot.env", "os/publication.env", "os/registry-runtime-publisher.hex", "os/scripts/build-initramfs.sh", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/clean-bootc-transient-state.py", "os/scripts/collect-runtime-dependencies.py", "os/scripts/finalize-rpmdb.sh", "os/scripts/hardlink-identical.py", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/pin-directory-times.py", "os/scripts/seed-env-runtime.py", "os/scripts/stamp-runtime.sh", "os/scripts/verify-board-initramfs.py", "os/scripts/verify-boot-ordering.sh", "os/scripts/verify-elf-hardening.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/scripts/verify-rpm-files.sh", "os/scripts/verify-runtime-bundle-closure.sh", "os/tests/app_store.sh", "os/tests/boot_chain_invariants.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/luks_enrolment.sh", "os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf", "os/usr/lib/systemd/system/tilo-node-relay@.service", "os/usr/lib/systemd/system/tilo-node-session-key@.service", "os/usr/lib/systemd/system/tilo-node-session@.path", "os/usr/lib/systemd/system/tilo-node-session@.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/sysusers.d/tilo-relay.conf", "os/usr/lib/tilo/node-relay.toml", "os/usr/libexec/tilo-image-trust-staged", "os/usr/libexec/tilo-session", "os/usr/libexec/tilo-update-channel", "os/usr/libexec/tilo-verified-update", "os/usr/share/licenses/tilo-speech-worker/LICENSE", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/os/oci_layers.py", "tools/ci/os/pieces.py", "tools/ci/publish/lib.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
+needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-aarch64", "os-layer-system-aarch64", "os-layer-trust-release-aarch64", "os-builder-aarch64", "os-tools-aarch64", "os-compile-release-aarch64", "os-chromium-aarch64"]
 outputs = ["/target/os/aarch64/release-layers/image/**"]
 env = { TILO_OS_FLAVOUR = "release" }
 git = true
@@ -7910,8 +8154,8 @@ default = false
 name = "os-layer-image-release-lenovo-83ed"
 image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/oci" }
 run = "bash os/image/build-layer.sh layer image aarch64 /target/os/aarch64/board-layers/lenovo-83ed/image"
-inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "crates/sdk/ui-core/assets/fonts/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/cosign.pub", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/base-snapshot.env", "os/components.toml", "os/desktop-artifacts/**", "os/dev/_common.sh", "os/dev/board-generation.sh", "os/dev/build-image.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/check-composefs-verity.py", "os/dev/check-disk-sectors.py", "os/dev/derive-rpm-package-set.py", "os/dev/development-signer.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/dev/fetch-orangepi-wifi-firmware.sh", "os/dev/hardware-firmware-artifact.py", "os/dev/hardware_profile.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/image-epoch.sh", "os/dev/install-cached-cosign.sh", "os/dev/install-rockchip-loader.py", "os/dev/installer-offline-target.py", "os/dev/installer-target-transport.py", "os/dev/layer-rpm-snapshot.py", "os/dev/next-generation.sh", "os/dev/prepare-hardware-profile.py", "os/dev/probe-kvm.py", "os/dev/raw-rootfs-receipt.py", "os/dev/registry-manifest.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/dev/verify-development-source.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/verify-rpm-snapshot-signatures.sh", "os/dev/windows_provider.py", "os/external-assets/github-assets.tsv", "os/hardware/**", "os/hardware/firmware/*/**", "os/hardware/profiles/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/args.Containerfile", "os/image/binaries.Containerfile", "os/image/boot.Containerfile", "os/image/build-layer.sh", "os/image/helpers/apps-payload.Containerfile", "os/image/helpers/builder-sources.Containerfile", "os/image/helpers/component-files.Containerfile", "os/image/helpers/desktop-binaries.Containerfile", "os/image/helpers/env-runtime.Containerfile", "os/image/helpers/external-assets.Containerfile", "os/image/helpers/native-builder-payload.Containerfile", "os/image/helpers/os-fonts.Containerfile", "os/image/helpers/runtime-image-payload.Containerfile", "os/image/helpers/runtime-resolver-link.Containerfile", "os/image/layers.toml", "os/image/rootfs.Containerfile", "os/legacy-guest-snapshot.env", "os/publication.env", "os/registry-runtime-publisher.hex", "os/scripts/build-initramfs.sh", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/clean-bootc-transient-state.py", "os/scripts/collect-runtime-dependencies.py", "os/scripts/finalize-rpmdb.sh", "os/scripts/hardlink-identical.py", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/pin-directory-times.py", "os/scripts/seed-env-runtime.py", "os/scripts/stamp-runtime.sh", "os/scripts/verify-board-initramfs.py", "os/scripts/verify-boot-ordering.sh", "os/scripts/verify-elf-hardening.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/scripts/verify-rpm-files.sh", "os/scripts/verify-runtime-bundle-closure.sh", "os/tests/app_store.sh", "os/tests/boot_chain_invariants.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/luks_enrolment.sh", "os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf", "os/usr/lib/systemd/system/tilo-node-relay@.service", "os/usr/lib/systemd/system/tilo-node-session-key@.service", "os/usr/lib/systemd/system/tilo-node-session@.path", "os/usr/lib/systemd/system/tilo-node-session@.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/sysusers.d/tilo-relay.conf", "os/usr/lib/tilo/node-relay.toml", "os/usr/libexec/tilo-image-trust-staged", "os/usr/libexec/tilo-session", "os/usr/libexec/tilo-verified-update", "os/usr/share/licenses/tilo-speech-worker/LICENSE", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/os/oci_layers.py", "tools/ci/os/pieces.py", "tools/ci/publish/lib.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
-needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed", "os-layer-trust-release-lenovo-83ed", "os-builder-aarch64", "os-tools-aarch64", "os-compile-release-aarch64"]
+inputs = [".cargo/**", "Cargo.lock", "Cargo.toml", "apps/**", "crates/**", "crates/sdk/ui-core/assets/fonts/**", "dist/**", "docs/developers/tasks/**", "examples/**", "keys/cosign.pub", "keys/tpm2-pcr-signing.public.pem", "os/app-artifacts/**", "os/app-runtime/**", "os/base-snapshot.env", "os/components.toml", "os/desktop-artifacts/**", "os/dev/_common.sh", "os/dev/board-generation.sh", "os/dev/build-image.sh", "os/dev/build-orangepi-uboot.sh", "os/dev/cache-github-assets.sh", "os/dev/check-composefs-verity.py", "os/dev/check-disk-sectors.py", "os/dev/derive-rpm-package-set.py", "os/dev/development-signer.py", "os/dev/development-trust.py", "os/dev/disk-image.sh", "os/dev/export-direct-boot-bundle.sh", "os/dev/fetch-orangepi-wifi-firmware.sh", "os/dev/hardware-firmware-artifact.py", "os/dev/hardware_profile.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/image-epoch.sh", "os/dev/install-cached-cosign.sh", "os/dev/install-rockchip-loader.py", "os/dev/installer-offline-target.py", "os/dev/installer-target-transport.py", "os/dev/layer-rpm-snapshot.py", "os/dev/next-generation.sh", "os/dev/prepare-hardware-profile.py", "os/dev/probe-kvm.py", "os/dev/raw-rootfs-receipt.py", "os/dev/registry-manifest.py", "os/dev/reseal-image.sh", "os/dev/resolve-env-runtime.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/rpm-snapshot-fingerprint.py", "os/dev/sign-development-rootfs.py", "os/dev/sign-target-prediction.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/verify-development-loader.py", "os/dev/verify-development-source.py", "os/dev/verify-rpm-snapshot-package-set.sh", "os/dev/verify-rpm-snapshot-signatures.sh", "os/dev/windows_provider.py", "os/external-assets/github-assets.tsv", "os/hardware/**", "os/hardware/firmware/*/**", "os/hardware/profiles/**", "os/hardware/profiles/lenovo-83ed/input/keyboard.json", "os/hardware/profiles/lenovo-83ed/input/mouse.json", "os/hardware/profiles/lenovo-83ed/input/touchpad.json", "os/image/args.Containerfile", "os/image/binaries.Containerfile", "os/image/boot.Containerfile", "os/image/build-layer.sh", "os/image/helpers/apps-payload.Containerfile", "os/image/helpers/builder-sources.Containerfile", "os/image/helpers/component-files.Containerfile", "os/image/helpers/desktop-binaries.Containerfile", "os/image/helpers/env-runtime.Containerfile", "os/image/helpers/external-assets.Containerfile", "os/image/helpers/native-builder-payload.Containerfile", "os/image/helpers/os-fonts.Containerfile", "os/image/helpers/runtime-image-payload.Containerfile", "os/image/helpers/runtime-resolver-link.Containerfile", "os/image/layers.toml", "os/image/rootfs.Containerfile", "os/legacy-guest-snapshot.env", "os/publication.env", "os/registry-runtime-publisher.hex", "os/scripts/build-initramfs.sh", "os/scripts/build-thin-apps.sh", "os/scripts/cargo-freshness.sh", "os/scripts/cargo-timings-summary.py", "os/scripts/check-shipped-runtimes.sh", "os/scripts/clean-bootc-transient-state.py", "os/scripts/collect-runtime-dependencies.py", "os/scripts/finalize-rpmdb.sh", "os/scripts/hardlink-identical.py", "os/scripts/install-components.py", "os/scripts/install-env-runtime.sh", "os/scripts/pack-apps.sh", "os/scripts/pin-directory-times.py", "os/scripts/seed-env-runtime.py", "os/scripts/stamp-runtime.sh", "os/scripts/verify-board-initramfs.py", "os/scripts/verify-boot-ordering.sh", "os/scripts/verify-elf-hardening.sh", "os/scripts/verify-no-cisco-openh264.sh", "os/scripts/verify-rpm-files.sh", "os/scripts/verify-runtime-bundle-closure.sh", "os/tests/app_store.sh", "os/tests/boot_chain_invariants.sh", "os/tests/collaborative-files-image-contract.sh", "os/tests/containerfile_copy_invariants.sh", "os/tests/containerfile_sources.sh", "os/tests/esp_capacity.sh", "os/tests/luks_enrolment.sh", "os/usr/lib/systemd/system/ldconfig.service.d/10-tilo-image-cache.conf", "os/usr/lib/systemd/system/tilo-node-relay@.service", "os/usr/lib/systemd/system/tilo-node-session-key@.service", "os/usr/lib/systemd/system/tilo-node-session@.path", "os/usr/lib/systemd/system/tilo-node-session@.service", "os/usr/lib/systemd/user/tilo-app-host.service", "os/usr/lib/systemd/user/tilo-ush.service", "os/usr/lib/sysusers.d/tilo-relay.conf", "os/usr/lib/tilo/node-relay.toml", "os/usr/libexec/tilo-image-trust-staged", "os/usr/libexec/tilo-session", "os/usr/libexec/tilo-update-channel", "os/usr/libexec/tilo-verified-update", "os/usr/share/licenses/tilo-speech-worker/LICENSE", "os/usr/share/tilo/system-interfaces.toml", "rust-toolchain.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py", "tools/ci/measure.sh", "tools/ci/os/oci_layers.py", "tools/ci/os/pieces.py", "tools/ci/publish/lib.sh", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py", "tools/perf/tapp-size-budget/**", "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml", "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py", "vendor/**"]
+needs = ["os-base-aarch64", "os-assets", "signing-tools", "image-rpms-aarch64", "os-layer-packages-aarch64", "os-layer-kernel-release-lenovo-83ed", "os-layer-system-release-lenovo-83ed", "os-layer-trust-release-lenovo-83ed", "os-builder-aarch64", "os-tools-aarch64", "os-compile-release-aarch64", "os-chromium-aarch64"]
 outputs = ["/target/os/aarch64/board-layers/lenovo-83ed/image/**"]
 env = { TILO_OS_FLAVOUR = "release", TILO_OS_BOARD = "lenovo-83ed" }
 git = true
@@ -8114,5 +8358,6 @@ requirement = { cores = 8, memory = "16GiB" }
 git = true
 isolation = "vm"
 timeout_secs = 5400
+on = ["idle"]
 default = false
 cache = false

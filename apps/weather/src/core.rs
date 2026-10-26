@@ -190,6 +190,9 @@ pub struct Core {
     /// Where the out-of-date notice's Retry button takes a pointer, while
     /// it shows.
     retry_rect: Option<Rect>,
+    /// Where the forecast's age line landed, as last painted: the bounds of
+    /// the reading assistive technology hears.
+    updated_rect: Rect,
 
     // --- detail: the horizontally-scrollable 24h strip ---
     hourly_scroll_x: f64,
@@ -268,6 +271,7 @@ impl Core {
             body_track: Rect::ZERO,
             body_content_h: 0.0,
             retry_rect: None,
+            updated_rect: Rect::ZERO,
             hourly_scroll_x: 0.0,
             hourly_max_scroll: 0.0,
             hourly_viewport: Rect::ZERO,

@@ -929,7 +929,6 @@ fn ownership_cancel_action(digest: &str) -> tilo_actions::ActionSpec {
         kind: ActionKind::Outside,
         risk: RiskLevel::Low,
         confirmation: ConfirmationPolicy::Confirm,
-        reversible: false,
         tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
         ..ActionContract::default()
     })

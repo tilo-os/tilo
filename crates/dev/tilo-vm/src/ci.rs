@@ -18,6 +18,9 @@ use crate::error::CliError;
 use crate::hypervisor::{CommandLine, Runner};
 
 pub const IMAGE: &str = "registry.tilo.so/tilo/tilo-vm";
+/// Branches' own builds (t's publish-os-ref-<target>): a repository of their own, never one a
+/// device follows a channel from.
+pub const REF_IMAGE: &str = "registry.tilo.so/tilo/tilo-vm-ref";
 
 /// What `--from` names, resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +84,26 @@ pub fn parse(from: &str, worktree: Option<&Worktree>) -> Result<Source, CliError
 /// CI's dev image of build `tag` (`main-1a2b3c4`, or with its `-ci`).
 pub fn image(tag: &str) -> String {
     format!("{IMAGE}:{}-ci", tag.strip_suffix("-ci").unwrap_or(tag))
+}
+
+/// A branch as the part of a tag naming it: lower case, every run of other characters a dash,
+/// at most 48 characters; the same as tools/ci/publish/lib.sh `ref_slug`, which names the
+/// branch's own builds `ref-<slug>-<sha7>-<target>`.
+pub fn ref_slug(branch: &str) -> String {
+    let mut slug = String::new();
+    for c in branch.chars().map(|c| c.to_ascii_lowercase()) {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' {
+            slug.push(c);
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_start_matches(['-', '.']).trim_end_matches('-');
+    slug.chars()
+        .take(48)
+        .collect::<String>()
+        .trim_end_matches('-')
+        .to_owned()
 }
 
 /// podman's name for an architecture.
@@ -279,6 +302,20 @@ pub fn extract_on_host(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_branch_names_its_builds_as_the_publishing_check_does() {
+        for (branch, slug) in [
+            ("feature/Foo_bar", "feature-foo-bar"),
+            ("ada/dev-delivery", "ada-dev-delivery"),
+            ("--x--", "x"),
+            ("a/b/c.d", "a-b-c.d"),
+        ] {
+            assert_eq!(ref_slug(branch), slug, "{branch}");
+        }
+        assert_eq!(ref_slug(&"a".repeat(60)).len(), 48);
+    }
+
     use super::*;
 
     #[test]
