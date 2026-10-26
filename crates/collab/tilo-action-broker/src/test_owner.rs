@@ -159,6 +159,37 @@ impl SessionOwner {
         Ok(owner)
     }
 
+    /// The key of this owner's person's [`Self::second_device`].
+    pub fn second_device_key() -> SigningKey {
+        SigningKey::from_bytes(&[90; 32])
+    }
+
+    /// A second device of this owner's person, certified by them: the same
+    /// root and room, a different device.
+    pub fn second_device(&self) -> DeviceCert {
+        let mut certificate = DeviceCert {
+            user_public_key: self.person.verifying_key().to_bytes(),
+            device_public_key: Self::second_device_key().verifying_key().to_bytes(),
+            device_label: "Second device".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        sign_device_cert(&mut certificate, &self.person).unwrap();
+        certificate
+    }
+
+    /// Admit [`Self::second_device`] into this owner's room, as the
+    /// governing device, and commit the room that admits it.
+    pub fn admit_second_device(&mut self) -> Result<(), String> {
+        let certificate = self.second_device();
+        let now = SystemTime::now();
+        let mut candidate = self.peer.clone();
+        candidate.admit_certificate(certificate, &self.key, now)?;
+        self.commit(candidate)
+    }
+
     /// The owner `root` last committed.
     pub fn open(root: &Path) -> Result<Self, String> {
         let bytes = std::fs::read(root.join(STATE)).map_err(|e| e.to_string())?;

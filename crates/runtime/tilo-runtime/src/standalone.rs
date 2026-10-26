@@ -432,12 +432,15 @@ impl RuntimeActionHost {
                 .map_err(io::Error::other)?;
             let caller = admission.caller().clone();
             // The MCP client is an agent the person's device hands this
-            // session to; the admission stays the person's.
+            // session to; the admission stays the person's. Its name is part
+            // of the durable owner, so people are shown a short label for it
+            // instead of the whole run id.
             let agent = crate::mcp::agent_id(&caller);
             let qualified = host
                 .broker
                 .certified_local_agent_host(&caller, admission.presentation(), &agent)
                 .map_err(io::Error::other)?;
+            let label = crate::mcp::agent_label(&agent);
             admission.check(&host.joined).map_err(io::Error::other)?;
             let session_host = RuntimeActionHost {
                 broker: host.broker.clone(),
@@ -447,11 +450,11 @@ impl RuntimeActionHost {
                     policy_time: policy_time.clone(),
                     host: qualified,
                     admission,
-                    agent: Some(agent),
+                    agent: Some(agent.clone()),
                     projection: None,
                 })),
             };
-            crate::mcp::McpServer::admitted(session_host, caller)
+            Ok(crate::mcp::McpServer::admitted(session_host, caller)?.with_agent_run(agent, label))
         })
     }
 
