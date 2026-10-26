@@ -316,3 +316,28 @@ fn metadata_bands_tags_and_backlinks_clear_the_editor_and_keep_identity() {
         );
     }
 }
+
+#[test]
+fn switching_notes_returns_to_the_scroll_each_was_left_at() {
+    let mut panel = MainPanel::new();
+    let first = fresh_page_id();
+    let second = fresh_page_id();
+    panel.load_page(first, "First", "one");
+    panel.restore_scroll(140.0);
+    panel.load_page(second, "Second", "two");
+    assert!(
+        panel.local_scroll().abs() < f64::EPSILON,
+        "a note not seen before opens at its top"
+    );
+    panel.restore_scroll(35.0);
+    panel.load_page(first, "First", "one");
+    assert!(
+        (panel.local_scroll() - 140.0).abs() < f64::EPSILON,
+        "the first note keeps its place"
+    );
+    panel.load_page(second, "Second", "two");
+    assert!(
+        (panel.local_scroll() - 35.0).abs() < f64::EPSILON,
+        "the second keeps its own"
+    );
+}
