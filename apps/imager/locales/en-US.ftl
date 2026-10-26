@@ -1852,6 +1852,12 @@ installer-media-capacity-estimate = Allow at least { $required } for the install
 
 installer-media-capacity-required = Estimated space needed: { $required }. This drive has { $available }. Choose a drive with enough space.
 
+installer-media-drive-too-small = { $contents }. Needs { $required }: choose a drive with more room.
+
+installer-media-ejected = { $drive } was ejected. You can take it out now.
+
+installer-media-eject-failed = The drive was written, but it could not be ejected: { $reason } Close everything using it and try again, or shut down before you remove it.
+
 installer-media-source-checking = Checking your selected files before writing the drive.
 
 installer-media-source-failed = Your selected files could not be verified. The drive has not been written. Try again or return to your preparation.

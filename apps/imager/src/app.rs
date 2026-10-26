@@ -108,6 +108,8 @@ pub(crate) enum Command {
     PrepareOriginalFiles,
     CancelWrite,
     WriteAnother,
+    /// Let go of the drive just written, so it can be taken out.
+    Eject,
     /// The typed device-name confirmation changed.
     Confirm(String),
     /// A guided-customization field changed (the value as the form shows it).
@@ -159,6 +161,9 @@ pub struct ImagerApp {
     selected: Option<usize>,
     action: Action,
     progress: Progress,
+    /// The drive just written was let go, so the window says the media can be
+    /// taken out rather than continuing to offer the eject.
+    ejected: bool,
     prepared_delivery: crate::setup::journey::prepared_media::Delivery,
     written_target: Option<TargetDrive>,
     write_preflight: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -245,6 +250,7 @@ impl ImagerApp {
             ssh_public_key: String::new(),
             windows_preparation: None,
             progress: Progress::default(),
+            ejected: false,
             prepared_delivery: crate::setup::journey::prepared_media::Delivery::default(),
             written_target: None,
             write_preflight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -974,8 +980,14 @@ impl ImagerApp {
                 )
                 .with_enabled(self.job_control.is_some() && !stopping)
             }
-            Step::Done => self
-                .button(
+            Step::Done => {
+                // A written drive that is still held can be let go here,
+                // instead of the window only saying it may be pulled out.
+                if self.offers_eject() {
+                    let eject = self.button("imager.eject", "Eject", Command::Eject);
+                    row = row.push(Box::new(eject));
+                }
+                self.button(
                     "imager.start-over",
                     if self.progress.phase == JobPhase::Failed {
                         "Review and retry"
@@ -984,9 +996,19 @@ impl ImagerApp {
                     },
                     Command::WriteAnother,
                 )
-                .role(ButtonRole::Primary),
+                .role(ButtonRole::Primary)
+            }
         };
         row.push(Box::new(primary.control_size(ControlSize::Large)))
+    }
+
+    /// Whether the window offers to let go of the drive it just wrote: the job
+    /// verified, the platform can eject, and it has not been ejected yet.
+    fn offers_eject(&self) -> bool {
+        self.progress.phase == JobPhase::Success
+            && !self.ejected
+            && self.target().is_some()
+            && imager_backend::write::can_eject()
     }
 
     /// Whether a release or a shown recent entry already presents the
@@ -1173,22 +1195,29 @@ impl ImagerApp {
                 EmptyState::new(EMPTY_DRIVES).with_icon(Icon::HardDrive),
             ));
         }
+        let required = self.required_capacity();
         let rows = visible
             .into_iter()
             .map(|(index, drive)| {
                 let sink = Rc::clone(&self.commands);
+                let fits = required.is_some_and(|required| drive.fits(required));
+                // A drive that cannot be chosen says why, on its own row: a
+                // control that is off with no reason reads as a fault.
+                let secondary = match required.filter(|required| !drive.fits(*required)) {
+                    Some(required) => crate::setup::strings::t_args(
+                        "installer-media-drive-too-small",
+                        &[
+                            ("contents", drive.contents_summary().into()),
+                            ("required", fmt_size(required).into()),
+                        ],
+                    ),
+                    None => format!("{}, {}", drive.dev_path(), drive.contents_summary()),
+                };
                 Box::new(
                     ListRow::new(format!("imager.drive.{}", drive.name), &drive.model)
-                        .with_enabled(
-                            self.required_capacity()
-                                .is_some_and(|required| drive.fits(required)),
-                        )
+                        .with_enabled(fits)
                         .icon(drive.icon())
-                        .secondary(format!(
-                            "{}, {}",
-                            drive.dev_path(),
-                            drive.contents_summary()
-                        ))
+                        .secondary(secondary)
                         .meta(fmt_size(drive.size))
                         .selected(self.selected == Some(index))
                         .checked(self.selected == Some(index))
@@ -1454,9 +1483,15 @@ impl ImagerApp {
             ),
             Action::Flash => (
                 "The drive is ready",
-                format!(
-                    "{image} was written to {drive} and verified. You can safely remove the drive."
-                ),
+                if self.offers_eject() {
+                    format!(
+                        "{image} was written to {drive} and verified. Eject it before you take it out."
+                    )
+                } else {
+                    format!(
+                        "{image} was written to {drive} and verified. You can safely remove the drive."
+                    )
+                },
             ),
         }
     }
@@ -2477,10 +2512,35 @@ impl ImagerApp {
             return;
         }
         self.progress = Progress::default();
+        self.ejected = false;
         self.confirm_text.clear();
         self.goto(Step::Source);
         self.set_status("");
     }
+    /// Let go of the drive just written, so the person can take it out. The
+    /// sentence under the title promises they can; this is the control that
+    /// makes it true on a desktop that does not eject by itself.
+    fn eject_written_drive(&mut self) {
+        let Some(target) = self.target().cloned() else {
+            return;
+        };
+        match imager_backend::write::eject_target(&target) {
+            Ok(()) => {
+                self.status_is_error = false;
+                self.set_status(&crate::setup::strings::t_args(
+                    "installer-media-ejected",
+                    &[("drive", target.model.clone().into())],
+                ));
+                self.ejected = true;
+            }
+            Err(error) => self.fail(&crate::setup::strings::t_args(
+                "installer-media-eject-failed",
+                &[("reason", error.to_string().into())],
+            )),
+        }
+        self.dirty = true;
+    }
+
     fn export_config(&mut self) {
         let text = self
             .profile
@@ -3159,6 +3219,7 @@ impl ImagerApp {
                 let _ = self.cancel_write();
             }
             Command::WriteAnother => self.write_another(),
+            Command::Eject => self.eject_written_drive(),
             Command::Confirm(value) => {
                 if self.step == Step::Confirm {
                     self.confirm_text = value
