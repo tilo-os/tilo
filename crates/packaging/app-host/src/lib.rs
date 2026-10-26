@@ -11,10 +11,10 @@
 //!
 //! - [`install`] — admit a `.tapp` against the catalogue identity the Store
 //!   capability approved, and install it into the package store.
-//! - `fetch` — remote fetch: resolve an app-id through the registry
-//!   protocol (`app-registry`), download the tapp over iroh-blobs, verify
-//!   it fail-closed, and install it.
-//! - [`service`] — Cap'n Proto `AppHost` server implementation.
+//! - [`service`] — Cap'n Proto `AppHost` server: resolves a Store request
+//!   through the same owner-signed catalogue, version index and verified
+//!   download the `app` command uses, then installs the exact package the
+//!   catalogue named.
 //! - [`transport`] — Unix-domain socket bind + accept loop (matches
 //!   the shape used by `format-host`).
 //! - [`client`] — the typed client the Store app uses.

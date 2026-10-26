@@ -15,10 +15,12 @@ use std::process::Command;
 use clap::{Args, Parser, Subcommand};
 
 mod language_pack;
+mod registry;
 mod trust_cmd;
 use install::shim;
 use language_pack::install_language_pack;
 use package_store::{Admission, InstalledPackage, PackageStore, StoreError};
+use registry::{fetch_from_registries, payload_blobs, trust_named_by_registry};
 use tilo_app_package::trust::{
     RevocationList, TrustFile, TrustedAttestors, default_revoked_keys_path,
     default_trusted_attestors_path,
@@ -79,8 +81,9 @@ enum Cmd {
         /// Print exactly what would change and exit, touching nothing.
         #[arg(long)]
         dry_run: bool,
-        /// Registry server to fetch payload blobs the .tapp does not carry
-        /// from (`<url>/blobs/<hash>`). A thin package needs one unless its
+        /// Registry that serves the payload blobs the .tapp does not carry,
+        /// as `<url>/blobs/<hash>`: an HTTP(S) registry or a local registry
+        /// directory (`file://<dir>`). A thin package needs one unless its
         /// payload is already in the content store.
         #[arg(long)]
         payload_from: Option<String>,
@@ -108,8 +111,9 @@ enum Cmd {
         trust: TrustFlags,
         #[command(flatten)]
         runtime: RuntimeFlags,
-        /// Registry server to fetch payload blobs a `--from` .tapp does not
-        /// carry from (`<url>/blobs/<hash>`).
+        /// Registry that serves payload blobs a `--from` .tapp does not
+        /// carry, as `<url>/blobs/<hash>`: an HTTP(S) registry or a local
+        /// registry directory (`file://<dir>`).
         #[arg(long, requires = "from")]
         payload_from: Option<String>,
     },
@@ -405,6 +409,8 @@ enum Error {
     ImageApp(String),
     #[error("registry read: {0}")]
     RegistryRead(String),
+    #[error("payload source: {0}")]
+    PayloadSource(String),
     #[error("trust registry: {0}")]
     Trust(String),
     #[error("I/O: {0}")]
@@ -468,8 +474,6 @@ enum Error {
     },
     #[error("fetching {app_id} from the configured registries: {detail}")]
     Fetch { app_id: String, detail: String },
-    #[error("starting the async runtime for a registry fetch: {0}")]
-    Runtime(#[source] tilo_rt::Error),
     #[error("package store: {0}")]
     Store(String),
     #[error(
@@ -1007,7 +1011,7 @@ struct InstallOptions {
     replacement: Replacement,
     dry_run: bool,
     /// Where payload blobs the archive does not carry come from.
-    payload_from: Option<app_registry::HttpBlobs>,
+    payload_from: Option<app_registry::RegistryBlobs>,
 }
 
 fn install(
@@ -1604,7 +1608,7 @@ struct UpdateRequest<'a> {
     trust: &'a TrustFlags,
     runtime: &'a RuntimeFlags,
     /// Where payload blobs a `--from` archive does not carry come from.
-    payload_from: Option<app_registry::HttpBlobs>,
+    payload_from: Option<app_registry::RegistryBlobs>,
 }
 
 /// Whether the candidate may replace the installed package, or why not.
@@ -1619,11 +1623,11 @@ fn update_allowed(
             found: checked.id().to_string(),
         });
     }
-    // A local file has no signed registry index authorising a publisher-key
+    // A local file has no signed catalogue entry authorising a publisher-key
     // rotation. Keep the identity recorded at install time unless the user
     // explicitly pins the candidate key on this command line. Registry-backed
-    // updates have their own owner-signed publisher authorisation chain in
-    // `resolve_and_fetch`, so legitimate rotations remain possible there.
+    // updates carry an owner-signed entry that names the publisher, so
+    // legitimate rotations remain possible there.
     if request.from.is_some()
         && !entry.publisher_key_hex.is_empty()
         && !entry
@@ -1746,8 +1750,9 @@ fn update_one(
 ) -> Result<UpdateOutcome, Error> {
     // 1. Get candidate bytes (local file or configured registries); either
     //    way `check` verifies them before anything is stored.
-    // A registry serves thin packages; their payload comes from the node that
-    // served them, and only the blobs the store lacks are fetched.
+    // A registry serves thin packages; their payload comes from the registry
+    // that served them, and only the blobs the store lacks are fetched.
+    let mut registry_trust = None;
     let (candidate, source, provider) = if let Some(path) = request.from {
         (
             Candidate::File(path.to_path_buf()),
@@ -1755,15 +1760,20 @@ fn update_one(
             None,
         )
     } else {
-        let (bytes, source, provider) = fetch_from_registries(&entry.id, request.version_req)?;
-        (Candidate::Fetched(bytes), source, Some(provider))
+        let fetched = fetch_from_registries(&entry.id, request.version_req)?;
+        registry_trust = Some(trust_named_by_registry(request.trust, &fetched)?);
+        (
+            Candidate::Fetched(fetched.bytes),
+            fetched.source,
+            Some(fetched.payload),
+        )
     };
     let payload: Option<&dyn BlobFetcher> = match (&provider, &request.payload_from) {
         (Some(provider), _) => Some(provider),
         (None, Some(server)) => Some(server),
         (None, None) => None,
     };
-    let checked = check(&candidate, request.trust)?;
+    let checked = check(&candidate, registry_trust.as_ref().unwrap_or(request.trust))?;
     if let Some(outcome) = update_allowed(entry, &checked, request)? {
         return Ok(outcome);
     }
@@ -2266,36 +2276,6 @@ fn compare_versions(installed: &str, candidate: &str) -> Option<std::cmp::Orderi
     Some(a.cmp(&b))
 }
 
-/// Resolve `app_id` through the configured registries; returns the
-/// verified `.tapp` bytes plus the registry that served them.
-///
-/// This verifies the registry protocol (signed index, signed entry,
-/// blake3 of the blob) — separately from `ingest`'s later check of the
-/// package's own publisher signature against local trust config. Two
-/// independent checks answering different questions.
-fn fetch_from_registries(
-    app_id: &str,
-    version_req: Option<&str>,
-) -> Result<(Vec<u8>, String, app_registry::ProviderBlobs), Error> {
-    let host = app_registry::HostProfile::detect();
-    let outcome = tilo_rt::block_on(app_registry::resolve::resolve_and_fetch(
-        None,
-        &host,
-        app_id,
-        version_req,
-    ))
-    .map_err(Error::Runtime)?
-    .map_err(|e| Error::Fetch {
-        app_id: app_id.to_string(),
-        // `{e:#}` renders anyhow's full context chain — where the useful part
-        // of a fetch failure lives (e.g. "no registry offers X" vs "index
-        // signature not trusted").
-        detail: format!("{e:#}"),
-    })?;
-    let source = format!("{} (registry {})", outcome.version, outcome.registry);
-    Ok((outcome.bytes, source, outcome.payload))
-}
-
 fn runtime_bundle_present(version: &str) -> bool {
     if version.is_empty() {
         return false;
@@ -2712,7 +2692,7 @@ fn dispatch(cmd: Cmd) -> Result<(), Error> {
                     (true, true) => Replacement::PreserveHeld,
                 },
                 dry_run,
-                payload_from: payload_from.map(app_registry::HttpBlobs::new),
+                payload_from: payload_from.as_deref().map(payload_blobs).transpose()?,
             },
             &trust,
             &runtime,
@@ -2735,7 +2715,7 @@ fn dispatch(cmd: Cmd) -> Result<(), Error> {
                 dry_run,
                 trust: &trust,
                 runtime: &runtime,
-                payload_from: payload_from.map(app_registry::HttpBlobs::new),
+                payload_from: payload_from.as_deref().map(payload_blobs).transpose()?,
             },
         ),
         Cmd::List {
@@ -2823,7 +2803,7 @@ fn image(cmd: ImageCmd) -> Result<(), Error> {
                     decode_hex_32(&publisher).map_err(Error::InvalidRequiredPublisher)?,
                 );
             }
-            let payload = payload_from.map(app_registry::HttpBlobs::new);
+            let payload = payload_from.as_deref().map(payload_blobs).transpose()?;
             let file = std::io::BufReader::new(fs::File::open(&tapp)?);
             let meta = store
                 .user()

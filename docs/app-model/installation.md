@@ -52,6 +52,7 @@ Repository management is available without hand-editing TOML:
 ```sh
 app repo list
 app repo add team https://apps.tilo.so --owner-key <64-hex-key>
+app repo add offline file:///srv/tilo-registry --owner-key <64-hex-key>
 app repo disable team
 app repo enable team
 app repo remove team

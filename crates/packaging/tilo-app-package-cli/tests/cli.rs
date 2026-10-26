@@ -986,3 +986,147 @@ fn bot_entry_signs_the_canonical_program() {
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stderr).contains("<package id>@<min version>"));
 }
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one publish, its dry run and its refusal keep one scenario together"
+)]
+fn cli_publish_writes_a_verifiable_registry_directory() {
+    let workdir = tempfile::tempdir().unwrap();
+    let path = |name: &str| workdir.path().join(name).to_str().unwrap().to_string();
+
+    run(&["keygen", "--out", &path("publisher.json")]);
+    run(&["keygen", "--out", &path("owner.json")]);
+    std::fs::write(
+        path("manifest.toml"),
+        sample_manifest_with(&"00".repeat(32)),
+    )
+    .unwrap();
+    std::fs::create_dir_all(path("payload/bin")).unwrap();
+    std::fs::write(path("payload/bin/hello"), b"#!/bin/sh\necho hi\n").unwrap();
+    run(&[
+        "pack",
+        "--manifest",
+        &path("manifest.toml"),
+        "--payload",
+        &path("payload"),
+        "--identity",
+        &path("publisher.json"),
+        "-o",
+        &path("example.tapp"),
+    ]);
+
+    let registry = path("registry");
+    let planned = run(&[
+        "publish",
+        "--dry-run",
+        "--registry",
+        &registry,
+        "--identity",
+        &path("publisher.json"),
+        "--registry-key",
+        &path("owner.json"),
+        "--base-url",
+        "http://127.0.0.1:8443",
+        &path("example.tapp"),
+    ]);
+    let planned: registry_types::RegistryEntry =
+        serde_json::from_slice(&planned.stdout).expect("a signed entry on stdout");
+    assert_eq!(planned.versions[0].version, "0.1.0");
+    assert!(
+        planned.versions[0]
+            .tapp()
+            .unwrap()
+            .tapp_url
+            .starts_with("http://127.0.0.1:8443/thin/"),
+        "{:?}",
+        planned.versions[0]
+    );
+    assert!(
+        !registry_client::local::LocalRegistry::open(&registry)
+            .snapshot_path()
+            .exists(),
+        "a dry run writes nothing"
+    );
+    run(&[
+        "publish",
+        "--registry",
+        &registry,
+        "--identity",
+        &path("publisher.json"),
+        "--registry-key",
+        &path("owner.json"),
+        "--base-url",
+        "http://127.0.0.1:8443",
+        &path("example.tapp"),
+    ]);
+
+    let owner_hex = {
+        let text = std::fs::read_to_string(path("owner.json")).unwrap();
+        let key: serde_json::Value = serde_json::from_str(&text).unwrap();
+        key["secret_key_hex"].as_str().unwrap().to_owned()
+    };
+    let owner = ed25519_dalek::SigningKey::from_bytes(
+        &hex::decode(&owner_hex).unwrap().try_into().unwrap(),
+    );
+    let directory = registry_client::local::LocalRegistry::open(&registry);
+    let snapshot = directory.read_snapshot().unwrap().expect("a snapshot");
+    registry_types::verify_snapshot(
+        &snapshot,
+        &hex::encode(owner.verifying_key().to_bytes()),
+        tilo_clock::unix_now(),
+    )
+    .expect("the directory snapshot verifies against the owner key");
+    let entry = snapshot
+        .entries
+        .iter()
+        .find(|entry| entry.package_id == "so.tilo.example")
+        .expect("the published entry");
+    let tapp = entry.versions[0].tapp().unwrap();
+    assert_eq!(entry.versions[0].version, "0.1.0");
+    assert!(tapp.tapp_url.starts_with("http://127.0.0.1:8443/thin/"));
+    let thin = directory
+        .read_thin_package(&tapp.tapp_root_hash_hex)
+        .unwrap()
+        .expect("the thin package is stored beside the snapshot");
+    assert_eq!(
+        blake3::hash(&thin).to_hex().to_string(),
+        tapp.tapp_blake3_hex
+    );
+    assert!(
+        std::fs::read_dir(directory.payload_blobs_dir())
+            .unwrap()
+            .next()
+            .is_some(),
+        "its payload blobs are stored too"
+    );
+
+    // A second operator cannot take over the directory's snapshot chain.
+    run(&["keygen", "--out", &path("other-owner.json")]);
+    let before = snapshot.sequence;
+    let refused = Command::new(bin_path())
+        .args([
+            "publish",
+            "--registry",
+            &registry,
+            "--identity",
+            &path("publisher.json"),
+            "--registry-key",
+            &path("other-owner.json"),
+            "--base-url",
+            "http://127.0.0.1:8443",
+            &path("example.tapp"),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !refused.status.success(),
+        "a different owner key must not extend the existing catalogue"
+    );
+    assert_eq!(
+        directory.read_snapshot().unwrap().unwrap().sequence,
+        before,
+        "the refused publish left the snapshot untouched"
+    );
+}

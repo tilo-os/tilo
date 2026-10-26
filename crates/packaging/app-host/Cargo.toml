@@ -27,7 +27,6 @@ default = ["service"]
 service = [
     "package-store/store",
     "dep:bounded-command",
-    "dep:app-registry",
     "dep:app-cli",
     "dep:install",
     "dep:runtime-bundle",
@@ -55,7 +54,6 @@ tilo-app-package = { path = "../tilo-app-package" }
 # The one package registry; the daemon (`service`) also writes its store and
 # keeps none of its own.
 package-store = { path = "../package-store" }
-app-registry = { path = "../app-registry", optional = true }
 app-cli = { path = "../app-cli", optional = true }
 # The collection `tilo-install` runs after every change (payload size sweep,
 # orphaned trees and staging, unused runtime builds), run after the daemon's
@@ -93,6 +91,8 @@ sd-notify = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+app-registry = { path = "../app-registry" }
+test-http = { path = "../../dev/test-http" }
 getrandom.workspace = true
 tokio = { workspace = true, features = ["full"] }
 ed25519-dalek.workspace = true

@@ -558,11 +558,20 @@ impl ObjectDir {
             Err(error) => Err(error),
         }
     }
+
+    /// `hash`'s object: the `.blob` name [`split`] writes, or the bare name
+    /// `registry-server` writes for a reviewed payload object.
+    fn open_named(&self, hash: &BlobHash) -> io::Result<Option<std::fs::File>> {
+        if let Some(file) = self.open_file(&blob_object_name(hash))? {
+            return Ok(Some(file));
+        }
+        self.open_file(&hash.to_hex())
+    }
 }
 
 impl BlobSource for ObjectDir {
     fn open_blob(&self, hash: &BlobHash) -> io::Result<Option<OpenBlob<'_>>> {
-        if let Some(file) = self.open_file(&blob_object_name(hash))? {
+        if let Some(file) = self.open_named(hash)? {
             let len = file.metadata()?.len();
             return Ok(Some(OpenBlob {
                 len,
@@ -579,14 +588,12 @@ impl BlobSource for ObjectDir {
         let len = list.len;
         let blob = *hash;
         let reader = ChunkedReader::new(list, move |chunk: &ChunkRef| {
-            let file = self
-                .open_file(&blob_object_name(&chunk.hash))?
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("chunk {} of {blob} is missing", chunk.hash),
-                    )
-                })?;
+            let file = self.open_named(&chunk.hash)?.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("chunk {} of {blob} is missing", chunk.hash),
+                )
+            })?;
             let mut bytes = Vec::new();
             file.take(chunk.len).read_to_end(&mut bytes)?;
             Ok(bytes)
@@ -871,6 +878,61 @@ type = "gui"
             }
             assert!(assembly.is_complete());
         }
+    }
+
+    #[test]
+    fn object_dir_reads_the_bare_names_a_registry_serves_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let small = b"a reviewed payload object".to_vec();
+        let small_hash = BlobHash::of(&small);
+        std::fs::write(dir.path().join(small_hash.to_hex()), &small).unwrap();
+
+        let chunked = noise(2048, 3);
+        let chunked_hash = BlobHash::of(&chunked);
+        let (first, second) = chunked.split_at(1024);
+        let first_hash = BlobHash::of(first);
+        let second_hash = BlobHash::of(second);
+        std::fs::write(dir.path().join(first_hash.to_hex()), first).unwrap();
+        std::fs::write(dir.path().join(second_hash.to_hex()), second).unwrap();
+        let list = ChunkList::new(
+            chunked_hash,
+            chunked.len() as u64,
+            1024,
+            vec![
+                ChunkRef {
+                    hash: first_hash,
+                    len: 1024,
+                },
+                ChunkRef {
+                    hash: second_hash,
+                    len: 1024,
+                },
+            ],
+        );
+        std::fs::write(
+            dir.path().join(chunk_list_name(&chunked_hash)),
+            list.encode(),
+        )
+        .unwrap();
+
+        let source = ObjectDir::new(dir.path());
+        assert_eq!(
+            source.verified_len(&small_hash).unwrap(),
+            Some(small.len() as u64)
+        );
+        assert_eq!(
+            source.verified_len(&chunked_hash).unwrap(),
+            Some(chunked.len() as u64)
+        );
+        let mut out = Vec::new();
+        source
+            .open_blob(&chunked_hash)
+            .unwrap()
+            .unwrap()
+            .reader
+            .read_to_end(&mut out)
+            .unwrap();
+        assert_eq!(out, chunked);
     }
 
     #[test]

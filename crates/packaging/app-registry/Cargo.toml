@@ -4,43 +4,25 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tilo app registry protocol — signed registry index (app-id → versions), iroh-blobs content transport, target selection, and the fail-closed resolve/verify/fetch path the app-host and tilo-app-package-cli share."
+description = "Payload blobs and fail-closed .tapp verification for the Tilo app registry: HTTP(S) and local registry directories, compressed twins, chunked objects."
 
 [lib]
 name = "app_registry"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-clock = { path = "../../platform/tilo-clock" }
-# Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-files = { path = "../../platform/tilo-files" }
 tilo-app-package = { path = "../tilo-app-package" }
 
-# Content-addressed blob transport — the SAME stack the FUSE filesystem
-# uses, so a tapp blob is downloaded once and deduped across every app.
-iroh.workspace = true
-iroh-base.workspace = true
-iroh-blobs.workspace = true
-
-# The index document is fetched over HTTPS (static/self-hostable); the
-# blob is fetched over iroh. Both async.
-tokio = { workspace = true, features = ["macros", "fs", "io-util", "time", "sync"] }
+# Payload transport: HTTPS from a registry server, or a directory registry on
+# this machine. Both are async over the same bounded reads.
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
 # rustls-tls only (no openssl / native-tls) to match the rest of the tree.
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 reqwest.workspace = true
-
-serde.workspace = true
-serde_json.workspace = true
-toml.workspace = true
-tilo-paths.workspace = true
-hex.workspace = true
-blake3.workspace = true
 bytes.workspace = true
-ed25519-dalek = { workspace = true, features = ["rand_core"] }
-semver.workspace = true
-thiserror.workspace = true
+blake3.workspace = true
+hex.workspace = true
 anyhow.workspace = true
-tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

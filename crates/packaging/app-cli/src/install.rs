@@ -17,6 +17,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::CatalogueApp;
+use crate::config::{RegistrySource, load_registries_no_seed};
+use registry_client::local::LocalRegistry;
 
 /// How long a .tapp download may take before it's abandoned;
 /// overridable via `TILO_APP_DOWNLOAD_TIMEOUT` (seconds).
@@ -566,6 +568,42 @@ impl Read for Wire<'_> {
     }
 }
 
+/// The package bytes a configured registry directory holds for `app`, or
+/// `None` when `app` came from an HTTP registry.
+///
+/// A directory is the person's own configured source, and the package is
+/// named by the root its signed entry binds, so nothing outside that
+/// directory is read and the bytes are verified like any download.
+fn local_package(app: &CatalogueApp) -> Result<Option<Vec<u8>>, InstallError> {
+    let registries = load_registries_no_seed();
+    let Some(registry) = registries
+        .registries
+        .iter()
+        .find(|registry| registry.name == app.registry)
+    else {
+        return Ok(None);
+    };
+    let RegistrySource::Directory(path) =
+        registry.source().map_err(|error| InstallError::Download {
+            detail: error.to_string(),
+        })?
+    else {
+        return Ok(None);
+    };
+    LocalRegistry::open(path)
+        .read_thin_package(&app.tapp_root_hash_hex)
+        .map_err(|error| InstallError::Download {
+            detail: error.to_string(),
+        })?
+        .map(Some)
+        .ok_or_else(|| InstallError::Integrity {
+            detail: format!(
+                "the registry directory has no package for {} {}",
+                app.package_id, app.version
+            ),
+        })
+}
+
 /// Download `app`'s package to `dest` and check it against the signed
 /// registry entry: its length, then its BLAKE3. Returns the package length.
 /// Whether it travelled compressed changes nothing here — `dest` holds the
@@ -582,8 +620,25 @@ fn fetch_verified(
         let _ = std::fs::remove_file(dest);
         error
     };
-    let downloaded = download_package(&app.download_url, dest, app.tapp_size_bytes, on_progress)
-        .map_err(|detail| refuse(InstallError::Download { detail }))?;
+    let downloaded = match local_package(app) {
+        Ok(Some(bytes)) => {
+            let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            std::fs::write(dest, &bytes).map_err(|error| {
+                refuse(InstallError::Download {
+                    detail: error.to_string(),
+                })
+            })?;
+            on_progress(DownloadProgress {
+                received: len,
+                total: Some(app.tapp_size_bytes),
+                phase: InstallPhase::Downloading,
+            });
+            len
+        }
+        Ok(None) => download_package(&app.download_url, dest, app.tapp_size_bytes, on_progress)
+            .map_err(|detail| refuse(InstallError::Download { detail }))?,
+        Err(error) => return Err(refuse(error)),
+    };
     verify_download_metadata(app, downloaded).map_err(refuse)?;
     let downloaded_bytes = std::fs::read(dest).map_err(|error| {
         refuse(InstallError::Integrity {
@@ -827,6 +882,25 @@ pub fn stage(
     let path = staging.join(format!("{safe_id}-{}.tapp", app.version.replace('/', "_")));
     let bytes = fetch_verified(app, &path, on_progress)?;
     Ok(StagedPackage { path, bytes })
+}
+
+/// Download and verify `app`'s package bytes for an installer that will
+/// verify and install them itself: the bytes whose length and BLAKE3 the
+/// signed registry entry binds.
+///
+/// # Errors
+///
+/// Returns an error when there is nowhere to stage the download, the
+/// download fails, the bytes do not match the signed entry, or the staged
+/// file cannot be read back.
+pub fn verified_bytes(
+    app: &CatalogueApp,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<Vec<u8>, InstallError> {
+    let staged = stage(app, on_progress)?;
+    std::fs::read(&staged.path).map_err(|error| InstallError::Integrity {
+        detail: format!("read the staged package: {error}"),
+    })
 }
 
 /// Packages [`stage_each`] downloads at once.

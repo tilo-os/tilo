@@ -198,12 +198,13 @@ enum Command {
         dest: PathBuf,
         file: PathBuf,
     },
-    /// Publish a signed .tapp to a registry directory: sign an index entry,
-    /// upload the blob to iroh-blobs, and re-sign the directory's index.
+    /// Publish a signed .tapp to a registry directory: store its thin form
+    /// and payload blobs, then advance the directory's owner-signed snapshot.
     ///
-    /// `--registry` is a local directory or `file://` URL; publish to an HTTP
-    /// registry with `tilo-app publish`. `--dry-run` prints the signed entry +
-    /// content hash without uploading.
+    /// `--registry` is a local directory or `file://` URL, which the `app`
+    /// catalogue reads directly; publish to an HTTP registry with `tilo-app
+    /// publish`. `--dry-run` prints the signed entry + content hash without
+    /// writing anything.
     Publish {
         /// Target registry: a local dir or `file://…` (self-hosted).
         #[arg(long)]
@@ -211,23 +212,20 @@ enum Command {
         /// Publisher identity JSON; required unless --dry-run, and must be the key that signed the package.
         #[arg(long)]
         identity: Option<PathBuf>,
-        /// Registry operator identity signing the served index (file:// only);
+        /// Registry operator identity signing the directory's catalogue;
         /// defaults to --identity for single-operator hosting.
         #[arg(long = "registry-key")]
         registry_key: Option<PathBuf>,
-        /// `registry_id` stamped into a freshly-created index.
-        #[arg(long = "registry-id", default_value = "local")]
-        registry_id: String,
+        /// Address the directory will be served at if it is put behind
+        /// `registry-server`; its package URLs are signed against it.
+        #[arg(long = "base-url", default_value = "http://127.0.0.1:8443")]
+        base_url: String,
         /// Target arch when the manifest declares more than one (`x86_64` | aarch64); inferred otherwise.
         #[arg(long)]
         arch: Option<String>,
-        /// Build + sign the entry and print it (with content hash); upload nothing.
+        /// Build + sign the entry and print it (with content hash); write nothing.
         #[arg(long)]
         dry_run: bool,
-        /// After publishing to a file:// registry, keep serving the uploaded
-        /// blobs so index tickets resolve (blocks until Ctrl-C).
-        #[arg(long)]
-        serve: bool,
         /// The .tapp to publish.
         file: PathBuf,
     },
@@ -465,20 +463,18 @@ fn main() -> Result<()> {
             registry,
             identity,
             registry_key,
-            registry_id,
+            base_url,
             arch,
             dry_run,
-            serve,
             file,
         } => cmd_publish(
             &file,
             &registry,
             identity.as_deref(),
             registry_key.as_deref(),
-            &registry_id,
+            &base_url,
             arch.as_deref(),
             dry_run,
-            serve,
         ),
         Command::Attest {
             publisher_identity,
@@ -1011,34 +1007,51 @@ fn cmd_publish(
     registry: &str,
     identity: Option<&Path>,
     registry_key: Option<&Path>,
-    registry_id: &str,
+    base_url: &str,
     arch: Option<&str>,
     dry_run: bool,
-    serve: bool,
 ) -> Result<()> {
     let tapp_bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
-    let arch = match arch {
-        None => None,
-        Some("x86_64") => Some(tilo_app_package::manifest::Arch::X86_64),
-        Some("aarch64") => Some(tilo_app_package::manifest::Arch::AArch64),
-        Some(other) => bail!("unknown --arch {other:?} (expected x86_64 or aarch64)"),
-    };
 
-    // --dry-run: emit the signed entry + content hash, no network; a
+    // --dry-run: emit the signed entry + content hash, touching nothing; a
     // fresh key still yields an inspectable signature, but a real publish
     // must pin --identity.
     if dry_run {
         let publisher = match identity {
-            Some(p) => load_identity(p)?,
-            None => SigningIdentity::generate(),
+            Some(path) => load_signing_key(path)?,
+            None => SigningKey::generate(&mut UnwrapErr(SysRng)),
         };
-        let (entry, package_id) = app_registry::build_entry(&tapp_bytes, &publisher, arch, None)
-            .map_err(|e| anyhow!("build entry: {e}"))?;
+        let package_id = tilo_app_package::tapp::read(tapp_bytes.as_slice(), &mut DiscardBlobs)
+            .context("decode .tapp")?
+            .meta
+            .id;
+        let entry = registry_client::build_entry(
+            &tapp_bytes,
+            &format!(
+                "{}/thin/{}.tapp",
+                base_url.trim_end_matches('/'),
+                package_id.to_hex()
+            ),
+            &publisher,
+            registry_client::Platform::TiloOs,
+            arch,
+            None,
+            None,
+            &registry_types::retention::RetentionPolicy::default(),
+        )
+        .map_err(|error| anyhow!("build entry: {error}"))?;
         println!(
             "{}",
             serde_json::to_string_pretty(&entry).context("encode entry")?
         );
-        eprintln!("content-hash: blake3:{}", entry.tapp_hash);
+        eprintln!(
+            "content-hash: blake3:{}",
+            entry
+                .versions
+                .last()
+                .and_then(|version| version.tapp())
+                .map_or("", |tapp| tapp.tapp_blake3_hex.as_str())
+        );
         eprintln!("package-id:   {package_id}");
         return Ok(());
     }
@@ -1046,7 +1059,7 @@ fn cmd_publish(
     let identity_path = identity.ok_or_else(|| {
         anyhow!("--identity is required to publish (only --dry-run may run keyless)")
     })?;
-    let publisher = load_identity(identity_path)?;
+    let publisher = load_signing_key(identity_path)?;
 
     if registry.starts_with("http://") || registry.starts_with("https://") {
         bail!(
@@ -1054,46 +1067,47 @@ fn cmd_publish(
         );
     }
 
-    // file:// / local directory registry (self-hosted reference).
+    // A `file://` URL or a local directory: a registry directory the `app`
+    // catalogue reads directly (`app repo add <name> file://<dir> --owner-key
+    // <key>`).
     let dir = PathBuf::from(registry.strip_prefix("file://").unwrap_or(registry));
-    let reg_key = match registry_key {
-        Some(p) => load_identity(p)?,
-        None => load_identity(identity_path)?,
+    let owner = match registry_key {
+        Some(path) => load_signing_key(path)?,
+        None => publisher.clone(),
     };
-
-    tilo_rt::block_on(async move {
-        let node =
-            app_registry::BlobNode::persistent(app_registry::registry_dir::blobs_dir(&dir)).await?;
-        let receipt = app_registry::publish_to_dir(
-            &dir,
-            &node,
-            &tapp_bytes,
-            &publisher,
-            &reg_key,
-            registry_id,
-            arch,
-        )
-        .await?;
-        eprintln!(
-            "published {}@{} ({}) to {}",
-            receipt.app_id,
-            receipt.version,
-            receipt.package_id,
-            dir.display()
-        );
-        eprintln!("content-hash: blake3:{}", receipt.tapp_hash);
-        if serve {
-            eprintln!("serving blobs — Ctrl-C to stop");
-            tokio::signal::ctrl_c().await.context("await Ctrl-C")?;
-        } else {
-            eprintln!(
-                "note: blob uploaded to {}/blobs; re-run with --serve (or run a persistent \
-                 registry node) so the index ticket resolves for clients",
-                dir.display()
-            );
-        }
-        anyhow::Ok(())
-    })??;
+    let entry = registry_client::local::publish_to_dir(
+        &dir,
+        base_url,
+        &tapp_bytes,
+        &publisher,
+        &owner,
+        registry_client::Platform::TiloOs,
+        arch,
+        None,
+    )
+    .map_err(|error| anyhow!("publish: {error:#}"))?;
+    let package_id = tilo_app_package::tapp::read(tapp_bytes.as_slice(), &mut DiscardBlobs)
+        .context("decode .tapp")?
+        .meta
+        .id;
+    let version = tilo_app_package::tapp::read(tapp_bytes.as_slice(), &mut DiscardBlobs)
+        .context("decode .tapp")?
+        .meta
+        .manifest
+        .package
+        .version;
+    let content_hash = entry
+        .versions
+        .iter()
+        .find(|candidate| candidate.version == version)
+        .and_then(|version| version.tapp())
+        .map_or("", |tapp| tapp.tapp_blake3_hex.as_str());
+    eprintln!(
+        "published {}@{version} ({package_id}) to {}",
+        entry.package_id,
+        dir.display()
+    );
+    eprintln!("content-hash: blake3:{content_hash}");
     Ok(())
 }
 

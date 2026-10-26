@@ -42,7 +42,18 @@ There are three layers:
 
 3. **The shared catalogue client** queries the server, requires a
    preconfigured owner pin, verifies the complete snapshot, and drives the
-   verified installer path. The Store and desktop search use this same client.
+   verified installer path. The Store, desktop search and `tilo-install
+   update` use this same client.
+
+A registry can also be a directory on the machine. `tilo-app-package publish
+--registry <dir>` writes an owner-signed `published-snapshot.json`, the
+packages' thin forms under `thin-packages/`, and their payload blobs under
+`payload-blobs/`; `app repo add <name> file://<dir> --owner-key <key>` reads
+it through the same snapshot verifier, owner pin and anti-rollback checkpoint
+as an HTTPS registry. The signed package URLs name the address the directory
+would be served at, while a reader of the directory locates a package by the
+signed root and verifies it the same way. The snapshot is short-lived, like a
+served registry's, so republish a directory that has gone stale.
 
 ### Trust chain
 

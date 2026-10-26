@@ -14,6 +14,7 @@ tilo-app-package = { path = "../tilo-app-package" }
 registry-types = { path = "../registry-types" }
 tilo-automation = { path = "../../collab/automation" }
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 reqwest = { workspace = true, features = ["blocking", "json"] }
 anyhow.workspace = true

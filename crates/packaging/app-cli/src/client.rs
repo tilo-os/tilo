@@ -1,7 +1,8 @@
-//! HTTP client for a Tilo registry.
+//! Client for a Tilo registry: HTTP endpoints, or a directory on this
+//! machine, both blocking — every caller runs these on a worker thread, never
+//! on a frame thread.
 //!
-//! Two endpoints, both blocking — every caller runs these on a worker
-//! thread, never on a frame thread:
+//! An HTTP registry has two endpoints:
 //!
 //!   * `GET {base_url}/registry` — informational metadata, accepted only
 //!     when it names the already-pinned owner key.
@@ -10,6 +11,10 @@
 //!     entry only the newest versions, and the hash of a version index
 //!     (`GET {base_url}/indexes/<blake3>.json`) holding the rest. Any other
 //!     registry answers with the full snapshot; both verify the same way.
+//!
+//! A registry directory carries the same owner-signed snapshot as
+//! `published-snapshot.json`, so it is verified, pinned and checkpointed by the
+//! same code.
 //!
 //! Every fetched entry is signature-checked against its own declared
 //! publisher pubkey via [`registry_types::verify_entry_signature`]. A
@@ -26,11 +31,12 @@
 use std::io::Read as _;
 use std::time::Duration;
 
+use registry_client::local::LocalRegistry;
 use registry_types::{CatalogueSnapshot, RegistryEntry, RegistryHandshake, VersionIndexRef};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::{RegistryConfig, config_dir, placeholder_owner_pubkey};
+use crate::config::{RegistryConfig, RegistrySource, config_dir, placeholder_owner_pubkey};
 
 /// How long one step of a request may wait: connecting and receiving the
 /// response head, then each read of the body. The blocking client applies it
@@ -82,6 +88,10 @@ pub enum RegistryError {
     VersionIndex(#[from] registry_types::VersionIndexError),
     #[error("bot program does not match its listing: {0}")]
     ProgramMismatch(String),
+    #[error("registry directory: {0}")]
+    Local(String),
+    #[error("registry configuration: {0}")]
+    Config(#[from] crate::config::ConfigError),
 }
 
 /// Trust classification for a fetched entry.
@@ -150,6 +160,14 @@ fn client() -> Result<&'static reqwest::blocking::Client, RegistryError> {
 /// that differs from the preconfigured pin. This endpoint never establishes
 /// trust on first contact.
 pub fn fetch_handshake(reg: &RegistryConfig) -> Result<RegistryHandshake, RegistryError> {
+    if let RegistrySource::Directory(path) = reg.source()? {
+        return Ok(RegistryHandshake::new(
+            reg.owner_pubkey_hex.clone(),
+            reg.name.clone(),
+            format!("A registry directory at {}", path.display()),
+            reg.base_url.clone(),
+        ));
+    }
     let url = registry_url(reg, "registry")?;
     let c = client()?;
     let text = c
@@ -188,11 +206,29 @@ pub fn fetch_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, Registr
 /// the size limit, any proof check fails, or the snapshot would roll back or
 /// fork the durable checkpoint.
 pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<CatalogueSnapshot, RegistryError> {
-    let mut url = registry_url(reg, "entries")?;
-    url.set_query(Some("format=compact"));
-    let bytes = fetch_bounded(&url, MAX_INDEX_RESPONSE_BYTES, "snapshot")?;
-    let snapshot =
-        CatalogueSnapshot::from_json(&bytes).map_err(|e| RegistryError::Decode(e.to_string()))?;
+    let (snapshot, bytes) = match reg.source()? {
+        RegistrySource::Http(_) => {
+            let mut url = registry_url(reg, "entries")?;
+            url.set_query(Some("format=compact"));
+            let bytes = fetch_bounded(&url, MAX_INDEX_RESPONSE_BYTES, "snapshot")?;
+            let snapshot = CatalogueSnapshot::from_json(&bytes)
+                .map_err(|e| RegistryError::Decode(e.to_string()))?;
+            (snapshot, bytes)
+        }
+        RegistrySource::Directory(path) => {
+            let snapshot = LocalRegistry::open(path)
+                .read_snapshot()
+                .map_err(|error| RegistryError::Local(error.to_string()))?
+                .ok_or_else(|| {
+                    RegistryError::Local(
+                        "the registry directory has no published-snapshot.json".into(),
+                    )
+                })?;
+            let bytes = serde_json::to_vec(&snapshot)
+                .map_err(|error| RegistryError::Local(error.to_string()))?;
+            (CatalogueSnapshot::Full(snapshot), bytes)
+        }
+    };
     let now = tilo_clock::unix_now();
     if let Err(error) = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now) {
         return Err(expired_or(error, &snapshot, &reg.owner_pubkey_hex, now));
