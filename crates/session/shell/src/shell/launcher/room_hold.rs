@@ -41,8 +41,6 @@ struct Rooms {
 pub(super) type Start = fn(HeldLaunch, &LaunchSession) -> Result<(), String>;
 
 struct Held {
-    /// The room's status as its waiter last saw it: waiting, and why.
-    status: RoomStatus,
     launches: Vec<(HeldLaunch, Start)>,
     /// Ends the room's waiter once nothing waits for the room any more.
     let_go: Arc<Notify>,
@@ -105,7 +103,6 @@ pub(super) fn admit(
     let mut rooms = lock(&session.rooms.0);
     let first = !rooms.held.contains_key(&room);
     let held = rooms.held.entry(room).or_insert_with(|| Held {
-        status: status.clone(),
         launches: Vec::new(),
         let_go: Arc::new(Notify::new()),
     });
@@ -168,7 +165,7 @@ impl LaunchSession {
                 Either::Right(((), _)) => seen.clone(),
             };
             let mut rooms = lock(&self.rooms.0);
-            let Some(held) = rooms.held.get_mut(&room) else {
+            let Some(held) = rooms.held.get(&room) else {
                 return;
             };
             if held.launches.is_empty() {
@@ -176,7 +173,6 @@ impl LaunchSession {
                 return;
             }
             if matches!(now, RoomStatus::Waiting { .. }) {
-                held.status = now.clone();
                 seen = now;
                 continue;
             }
@@ -215,26 +211,33 @@ pub(super) fn nothing_waits(session: &LaunchSession) -> bool {
     lock(&session.rooms.0).held.is_empty()
 }
 
-/// Why `package_id`'s window waits for its room, when its launch does: the
-/// room's reason, then what last held it up.
-pub(crate) fn room_wait(package_id: &str) -> Option<String> {
+/// What a launch held for its room waits on: the room being placed on
+/// this device's host, or being joined.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RoomWait {
+    Placing,
+    Joining,
+}
+
+/// What `package_id`'s window waits on, when its launch waits for its room.
+/// The window's place says it as where the window comes from
+/// (`PendingWindow::arrives_from`).
+pub(crate) fn room_wait(package_id: &str) -> Option<RoomWait> {
     let session = LaunchSession::current();
-    let status = lock(&session.rooms.0)
-        .held
-        .values()
-        .find(|held| {
-            held.launches
-                .iter()
-                .any(|(launch, _)| launch.package_id == package_id)
-        })
-        .map(|held| held.status.clone())?;
-    match status {
-        RoomStatus::Waiting { reason, detail } => Some(match detail {
-            Some(detail) => format!("{reason}\n{detail}"),
-            None => reason,
-        }),
-        _ => None,
-    }
+    let rooms = lock(&session.rooms.0);
+    let room = rooms.held.iter().find_map(|(room, held)| {
+        held.launches
+            .iter()
+            .any(|(launch, _)| launch.package_id == package_id)
+            .then_some(*room)
+    })?;
+    let source = rooms.source.clone()?;
+    drop(rooms);
+    Some(if source.placing(room) {
+        RoomWait::Placing
+    } else {
+        RoomWait::Joining
+    })
 }
 
 /// Visual review: a launch of `package_id` waits for `room` as a real one

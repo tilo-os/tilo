@@ -59,10 +59,10 @@ fn a_launch_into_a_room_being_joined_starts_once_the_room_is_ready_and_only_once
         session.take().is_empty(),
         "nothing starts while the room is joined"
     );
-    let wait = room_hold::room_wait("so.tilo.notes").expect("its window says why it waits");
-    assert!(
-        wait.starts_with(&crate::shell::i18n::t("workspace-not-ready-no-documents")),
-        "{wait}"
+    assert_eq!(
+        room_hold::room_wait("so.tilo.notes"),
+        Some(room_hold::RoomWait::Joining),
+        "its window says it waits for the room being joined"
     );
 
     tree.write().joining_rooms.remove(&room);
@@ -115,7 +115,11 @@ fn closing_the_window_of_a_held_launch_lets_it_go_so_nothing_starts_later() {
     };
     let session = session_over(&st.tree_handle());
     room_hold::admit(&session, launch_into("so.tilo.notes", room), recorded).unwrap();
-    assert!(room_hold::room_wait("so.tilo.notes").is_some());
+    assert_eq!(
+        room_hold::room_wait("so.tilo.notes"),
+        Some(room_hold::RoomWait::Placing),
+        "its window says it waits for the room being placed on this device's host"
+    );
 
     crate::shell::window_actions::close_tab(&mut st, tab).expect("the window closes");
     assert_eq!(room_hold::room_wait("so.tilo.notes"), None);
