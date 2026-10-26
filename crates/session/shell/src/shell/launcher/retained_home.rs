@@ -397,7 +397,7 @@ fn require_history_read(
             if !member.allows(&node, tilo_action_policy::ActionKind::Read, now)
                 || application
                     .decide(
-                        &node,
+                        &node.clone().app(package),
                         tilo_action_policy::ActionKind::Read,
                         &tilo_action_policy::Context::at_time(now),
                     )
