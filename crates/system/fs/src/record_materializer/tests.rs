@@ -2239,3 +2239,417 @@ fn malformed_bindings_and_denied_writes_never_enter_the_tree() {
     assert!(history.snapshot(file_record).is_some());
     drop(namespace);
 }
+
+#[derive(Clone, Copy, Debug)]
+enum LaterParticipantChange {
+    RenameSource,
+    RestoreVictim,
+    RenameAndEditSource,
+}
+
+#[test]
+fn partial_supersession_keeps_transaction_participants_that_were_not_later_changed() {
+    for later in [
+        LaterParticipantChange::RenameSource,
+        LaterParticipantChange::RestoreVictim,
+        LaterParticipantChange::RenameAndEditSource,
+    ] {
+        partial_supersession_after_atomic_replacement_case(later);
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one end-to-end replacement scenario keeps its signed transaction, later per-record operation, restart and log-only rebuild assertions together"
+)]
+fn partial_supersession_after_atomic_replacement_case(later: LaterParticipantChange) {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = Uuid::new_v4();
+    let log = SignedLog::new(&temp, workspace, 101);
+    let mut origin = Namespace::new("partial-supersession-origin").unwrap();
+    let source_ino = origin
+        .create_file(
+            ROOT_INO,
+            "source.txt",
+            Some(&iroh_blobs::Hash::from([1; 32])),
+            1,
+            1,
+        )
+        .unwrap();
+    let victim_ino = origin
+        .create_file(
+            ROOT_INO,
+            "destination.txt",
+            Some(&iroh_blobs::Hash::from([2; 32])),
+            1,
+            1,
+        )
+        .unwrap();
+    let root_record = origin.record_id_for(ROOT_INO).unwrap();
+    let source_record = origin.record_id_for(source_ino).unwrap();
+    let victim_record = origin.record_id_for(victim_ino).unwrap();
+    let root_binding = origin.signed_binding_for(ROOT_INO, log.actor, 1).unwrap();
+    let source_binding = origin.signed_binding_for(source_ino, log.actor, 1).unwrap();
+    let victim_binding = origin.signed_binding_for(victim_ino, log.actor, 1).unwrap();
+    let (source_version, source_revision, source_metadata) =
+        file_version(source_record, log.actor, 1, [1; 32], 1);
+    let (victim_version, victim_revision, victim_metadata) =
+        file_version(victim_record, log.actor, 1, [2; 32], 1);
+    log.apply(
+        root_record,
+        &[log.envelope(root_record, 1, RecordOperationV1::SetBinding(root_binding))],
+    );
+    log.apply(
+        source_record,
+        &create_record_envelopes(
+            &log,
+            source_record,
+            source_binding,
+            Some(source_version.clone()),
+            Some(source_revision),
+            Some(source_metadata),
+        ),
+    );
+    log.apply(
+        victim_record,
+        &create_record_envelopes(
+            &log,
+            victim_record,
+            victim_binding,
+            Some(victim_version.clone()),
+            Some(victim_revision),
+            Some(victim_metadata),
+        ),
+    );
+
+    let transaction_source_version = FileVersionV1 {
+        id: FileVersionId::new(),
+        record_id: source_record,
+        parents: vec![source_version.id],
+        actor: log.actor,
+        timestamp_ms: 2,
+        content_hash: Some(ContentHash([1; 32])),
+        metadata_hash: ContentHash([3; 32]),
+        provenance: FileProvenance::Rename,
+    };
+    let transaction_victim_version = FileVersionV1 {
+        id: FileVersionId::new(),
+        record_id: victim_record,
+        parents: vec![victim_version.id],
+        actor: log.actor,
+        timestamp_ms: 2,
+        content_hash: Some(ContentHash([2; 32])),
+        metadata_hash: ContentHash([4; 32]),
+        provenance: FileProvenance::Delete,
+    };
+    let participant = |record_id,
+                       role,
+                       expected_version,
+                       binding: FileBindingV1,
+                       version: FileVersionV1,
+                       content_hash| {
+        let mut participant = FileMutationParticipant {
+            record_id,
+            role,
+            expected_version,
+            proposed_binding: binding,
+            proposed_content_revision: Some(ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
+                record_id,
+                version_id: version.id,
+                content_hash: Some(content_hash),
+                byte_len: 1,
+                metadata_hash: version.metadata_hash,
+            }),
+            proposed_version: version,
+            projection_hash: ContentHash([0; 32]),
+        };
+        participant.projection_hash = participant.computed_projection_hash().unwrap();
+        participant
+    };
+    let mut participants = vec![
+        participant(
+            source_record,
+            FileMutationParticipantRole::Source,
+            source_version.id,
+            FileBindingV1 {
+                schema_version: FILE_BINDING_VERSION,
+                record_id: source_record,
+                parent: Some(root_record),
+                name: "destination.txt".into(),
+                kind: FileNodeKind::File,
+                tombstoned: false,
+                actor: log.actor,
+                observed_at_ms: 2,
+            },
+            transaction_source_version.clone(),
+            ContentHash([1; 32]),
+        ),
+        participant(
+            victim_record,
+            FileMutationParticipantRole::Replaced,
+            victim_version.id,
+            FileBindingV1 {
+                schema_version: FILE_BINDING_VERSION,
+                record_id: victim_record,
+                parent: Some(root_record),
+                name: "destination.txt".into(),
+                kind: FileNodeKind::File,
+                tombstoned: true,
+                actor: log.actor,
+                observed_at_ms: 2,
+            },
+            transaction_victim_version.clone(),
+            ContentHash([2; 32]),
+        ),
+    ];
+    participants.sort_by_key(|value| value.record_id);
+    let transaction = FileMutationTransaction::signed(
+        FileMutationTransactionManifest {
+            schema_version: FILE_MUTATION_TRANSACTION_VERSION,
+            transaction_id: Uuid::new_v4(),
+            workspace_id: workspace,
+            actor: log.actor,
+            timestamp_ms: 2,
+            operation: FileMutationOperation::ReplacementRename {
+                source_parent: root_record,
+                source_name: "source.txt".into(),
+                destination_parent: root_record,
+                destination_name: "destination.txt".into(),
+                source_record,
+                replaced_record: victim_record,
+            },
+            participants,
+        },
+        &log.device,
+    )
+    .unwrap();
+    for record_id in [source_record, victim_record] {
+        log.apply(
+            record_id,
+            &[
+                log.envelope(
+                    record_id,
+                    5,
+                    RecordOperationV1::PrepareTransaction(transaction.clone()),
+                ),
+                log.envelope(
+                    record_id,
+                    6,
+                    RecordOperationV1::CommitTransaction {
+                        transaction_id: transaction.manifest.transaction_id,
+                    },
+                ),
+            ],
+        );
+    }
+
+    let namespace = Arc::new(Mutex::new(Namespace::new("partial-supersession").unwrap()));
+    let history_path = temp.path().join("partial-history.json");
+    let history = Arc::new(FileHistoryStore::open(&history_path).unwrap());
+    let materializer = RecordMaterializer::new(
+        workspace,
+        Arc::clone(&namespace),
+        Some(Arc::clone(&history)),
+    );
+    let first = materializer.reconcile_repository(&log.repository).unwrap();
+    assert_eq!(first.transactions_reconciled, 1);
+    {
+        let namespace = namespace.lock().unwrap();
+        assert_eq!(
+            namespace
+                .entry_at("destination.txt")
+                .map(|entry| entry.record_id),
+            Some(source_record)
+        );
+        assert!(namespace.ino_for_record_id(victim_record).is_none());
+    }
+
+    let mut source_sequence = 6;
+    let mut later_revision = None;
+    match later {
+        LaterParticipantChange::RenameSource => {
+            source_sequence += 1;
+            log.apply(
+                source_record,
+                &[log.envelope(
+                    source_record,
+                    source_sequence,
+                    RecordOperationV1::SetBinding(FileBindingV1 {
+                        schema_version: FILE_BINDING_VERSION,
+                        record_id: source_record,
+                        parent: Some(root_record),
+                        name: "renamed-source.txt".into(),
+                        kind: FileNodeKind::File,
+                        tombstoned: false,
+                        actor: log.actor,
+                        observed_at_ms: 20,
+                    }),
+                )],
+            );
+        }
+        LaterParticipantChange::RestoreVictim => {
+            log.apply(
+                victim_record,
+                &[log.envelope(
+                    victim_record,
+                    7,
+                    RecordOperationV1::SetBinding(FileBindingV1 {
+                        schema_version: FILE_BINDING_VERSION,
+                        record_id: victim_record,
+                        parent: Some(root_record),
+                        name: "restored-victim.txt".into(),
+                        kind: FileNodeKind::File,
+                        tombstoned: false,
+                        actor: log.actor,
+                        observed_at_ms: 20,
+                    }),
+                )],
+            );
+        }
+        LaterParticipantChange::RenameAndEditSource => {
+            source_sequence += 1;
+            log.apply(
+                source_record,
+                &[log.envelope(
+                    source_record,
+                    source_sequence,
+                    RecordOperationV1::SetBinding(FileBindingV1 {
+                        schema_version: FILE_BINDING_VERSION,
+                        record_id: source_record,
+                        parent: Some(root_record),
+                        name: "edited-source.txt".into(),
+                        kind: FileNodeKind::File,
+                        tombstoned: false,
+                        actor: log.actor,
+                        observed_at_ms: 20,
+                    }),
+                )],
+            );
+            let (mut version, revision, metadata) =
+                file_version(source_record, log.actor, 21, [9; 32], 9);
+            version.parents = vec![transaction_source_version.id];
+            source_sequence += 1;
+            log.apply(
+                source_record,
+                &[log.envelope(
+                    source_record,
+                    source_sequence,
+                    RecordOperationV1::AppendVersion(version),
+                )],
+            );
+            source_sequence += 1;
+            log.apply(
+                source_record,
+                &[log.envelope(
+                    source_record,
+                    source_sequence,
+                    RecordOperationV1::SetContentRevision(revision),
+                )],
+            );
+            source_sequence += 1;
+            log.apply(
+                source_record,
+                &[log.envelope(
+                    source_record,
+                    source_sequence,
+                    RecordOperationV1::SetMetadata(metadata),
+                )],
+            );
+            later_revision = Some(revision);
+        }
+    }
+
+    let incremental = materializer.reconcile_repository(&log.repository).unwrap();
+    assert_eq!(incremental.transactions_reconciled, 1);
+    {
+        let mut namespace = namespace.lock().unwrap();
+        match later {
+            LaterParticipantChange::RenameSource => {
+                assert_eq!(
+                    namespace
+                        .entry_at("renamed-source.txt")
+                        .map(|entry| entry.record_id),
+                    Some(source_record)
+                );
+                assert!(namespace.entry_at("destination.txt").is_none());
+                assert!(namespace.ino_for_record_id(victim_record).is_none());
+            }
+            LaterParticipantChange::RestoreVictim => {
+                assert_eq!(
+                    namespace
+                        .entry_at("destination.txt")
+                        .map(|entry| entry.record_id),
+                    Some(source_record)
+                );
+                assert_eq!(
+                    namespace
+                        .entry_at("restored-victim.txt")
+                        .map(|entry| entry.record_id),
+                    Some(victim_record)
+                );
+            }
+            LaterParticipantChange::RenameAndEditSource => {
+                let ino = namespace
+                    .resolve_path_ino("edited-source.txt")
+                    .expect("edited source stays at its later name");
+                assert_eq!(
+                    namespace.content_revision_for(ino),
+                    later_revision,
+                    "a later edit's content revision survives the transaction replay"
+                );
+                assert!(namespace.entry_at("destination.txt").is_none());
+                assert!(namespace.ino_for_record_id(victim_record).is_none());
+            }
+        }
+    }
+    drop(namespace);
+
+    // A restart from an empty namespace rebuilds the same current state from
+    // the accepted record log alone, not from the previous namespace.
+    let restarted = Arc::new(Mutex::new(
+        Namespace::new("partial-supersession-restart").unwrap(),
+    ));
+    let restarted_history =
+        Arc::new(FileHistoryStore::open(temp.path().join("restart-history.json")).unwrap());
+    let restarted_materializer =
+        RecordMaterializer::new(workspace, Arc::clone(&restarted), Some(restarted_history));
+    restarted_materializer
+        .reconcile_repository(&log.repository)
+        .unwrap();
+    let mut restarted = restarted.lock().unwrap();
+    match later {
+        LaterParticipantChange::RenameSource => {
+            assert_eq!(
+                restarted
+                    .entry_at("renamed-source.txt")
+                    .map(|entry| entry.record_id),
+                Some(source_record)
+            );
+            assert!(restarted.entry_at("destination.txt").is_none());
+            assert!(restarted.ino_for_record_id(victim_record).is_none());
+        }
+        LaterParticipantChange::RestoreVictim => {
+            assert_eq!(
+                restarted
+                    .entry_at("destination.txt")
+                    .map(|entry| entry.record_id),
+                Some(source_record)
+            );
+            assert_eq!(
+                restarted
+                    .entry_at("restored-victim.txt")
+                    .map(|entry| entry.record_id),
+                Some(victim_record)
+            );
+        }
+        LaterParticipantChange::RenameAndEditSource => {
+            let ino = restarted
+                .resolve_path_ino("edited-source.txt")
+                .expect("log-only rebuild keeps the later name");
+            assert_eq!(restarted.content_revision_for(ino), later_revision);
+            assert!(restarted.entry_at("destination.txt").is_none());
+            assert!(restarted.ino_for_record_id(victim_record).is_none());
+        }
+    }
+}
