@@ -63,12 +63,14 @@ const SCENARIOS: &[&str] = &[
     "ringing",
     "world",
     "alarms",
+    "ringing-alarm",
     "stopwatch",
     "timers",
     "running-narrow",
     "ringing-narrow",
     "world-narrow",
     "alarms-narrow",
+    "ringing-alarm-narrow",
     "stopwatch-narrow",
     "timers-narrow",
 ];
@@ -187,6 +189,12 @@ impl ResourceApp for ClocksShell {
                 Clocks::ADD_ALARM.with(("Wake up".to_owned(), 7, 0, vec![Mon, Tue, Wed, Thu, Fri])),
                 Clocks::ADD_ALARM.with(("Gym".to_owned(), 18, 30, Vec::new())),
             ],
+            "ringing-alarm" => vec![Clocks::ADD_ALARM.with((
+                "Wake up".to_owned(),
+                7,
+                0,
+                vec![Mon, Tue, Wed, Thu, Fri],
+            ))],
             _ => Vec::new(),
         }
     }
@@ -209,6 +217,14 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
         match scene(scenario) {
             "world" => self.set_mode(crate::app::WORLD),
             "alarms" => self.set_mode(crate::app::ALARMS),
+            "ringing-alarm" => {
+                self.set_mode(crate::app::ALARMS);
+                let alarm = self
+                    .state
+                    .with(|shown| shown.clocks.alarms.ids().next().cloned());
+                self.notice
+                    .set(Some(("Alarm".to_owned(), "Wake up".to_owned(), alarm)));
+            }
             "stopwatch" => self.set_mode(crate::app::STOPWATCH),
             "running" => {
                 self.set_mode(crate::app::TIMERS);
