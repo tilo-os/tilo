@@ -103,23 +103,65 @@ guest_devices() {
 }
 
 # The frozen RPM snapshot, as os-image.sh resolves it: the published one for this package
-# set, else this run's image-rpms-ARCH, unsigned.
+# set, else this run's image-rpms-ARCH, unsigned. Loaded only for an action that installs
+# from it (rpms_read=1); one that doesn't, such as the binaries' and the derived state's, is
+# given only its name and the clock it sets (RPMS_CREATED), read from the archive, rather than
+# gigabytes of packages to unpack into its storage.
+rpms_read=1
 rpms_snapshot() {
   local built=/target/publish/rpms/$arch status=0 id
+  RPMS_CREATED=
   bash os/dev/resolve-rpm-snapshot.sh --exists || status=$?
   case $status in
     0) RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh) ;;
     1)
       [[ -f $built/image.oci.tar ]] || die "no published RPM snapshot for this package set and no image-rpms-$arch in this run"
       [[ $(archive_digest "$built/image.oci.tar") == "$(cat "$built/digest")" ]] || die "$built/image.oci.tar is not the build"
-      id=$(podman pull -q "oci-archive:$built/image.oci.tar")
       RPMS_REF=localhost/tilo-rpms:$(bash os/dev/resolve-rpm-snapshot.sh --tag)-$arch
-      podman tag "$id" "$RPMS_REF"
+      if [[ $rpms_read == 1 ]]; then
+        id=$(podman pull -q "oci-archive:$built/image.oci.tar")
+        podman tag "$id" "$RPMS_REF"
+      else
+        RPMS_CREATED=$(archive_created "$built/image.oci.tar")
+      fi
       export TILO_RPMS_TRUST=unsigned
       printf 'no published RPM snapshot for this package set: installing from image-rpms-%s, unsigned\n' "$arch" ;;
     *) die 'could not ask the registry for the published RPM snapshot' ;;
   esac
   export RPMS_REF
+}
+
+# The creation time of the single image in the OCI archive $1, as seconds (what
+# os/dev/image-epoch.sh reads of a loaded image: its configuration's `created`).
+archive_created() {
+  python3 -I - "$1" <<'PY'
+import datetime, json, sys, tarfile
+with tarfile.open(sys.argv[1]) as t:
+    names = {m.name.removeprefix("./"): m for m in t}
+    blob = lambda d: json.load(t.extractfile(names["blobs/sha256/" + d.split(":", 1)[1]]))
+    doc = json.load(t.extractfile(names["index.json"]))
+    while "config" not in doc:
+        doc = blob(doc["manifests"][0]["digest"])
+    created = blob(doc["config"]["digest"])["created"]
+print(int(datetime.datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()))
+PY
+}
+
+# Whether layer NAME's piece, given the stages it is given as images, installs from the RPM
+# snapshot: its Containerfile, with the helpers it builds, names the snapshot's stage.
+reads_rpms() {
+  python3 -I - "$1" <<'PY'
+import sys
+sys.path.insert(0, "tools/ci/os")
+import pieces
+name = sys.argv[1]
+layer = pieces.layer(name)
+given = {g.split(":", 1)[1] for g in layer.get("given", []) if g != "compiled"}
+if not layer.get("scratch"):
+    given.add(pieces.parent(name))
+refs = pieces.references(pieces.containerfile(name, given))
+sys.exit(0 if refs & {"rpms", "${RPMS_REF}"} else 1)
+PY
 }
 
 # Everything build-image.sh needs that the run decides: the pins, the clock, the keys.
@@ -129,7 +171,12 @@ build_env() {
   rpms_snapshot
   # One clock for every layer: the newest of the base's and the snapshot's creation, never
   # the commit's, so builds of different commits make the same bytes of the same inputs.
-  SOURCE_DATE_EPOCH=$(bash os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")
+  if [[ -n $RPMS_CREATED ]]; then
+    SOURCE_DATE_EPOCH=$(bash os/dev/image-epoch.sh "$BASE_REF")
+    if (( RPMS_CREATED > SOURCE_DATE_EPOCH )); then SOURCE_DATE_EPOCH=$RPMS_CREATED; fi
+  else
+    SOURCE_DATE_EPOCH=$(bash os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")
+  fi
   TILO_GENERATION=$(TILO_ALLOW_EMPTY_SERIES=1 bash os/dev/next-generation.sh)
   export SOURCE_DATE_EPOCH TILO_GENERATION
   export TILO_IMAGE_ONLY=1 TILO_WITH_BROWSER=${TILO_WITH_BROWSER:-1} TILO_OUTPUT=$scratch/os-output TMPDIR=/var/tmp
@@ -239,6 +286,7 @@ cmd_layer() {
   target=$(layer_field "$name" target)
   piece=$(layer_field "$name" piece)
   guest_devices
+  reads_rpms "$name" || rpms_read=0
   build_env
   if board_layer "$name"; then board_env; fi
   phase load-given
