@@ -1892,17 +1892,17 @@ impl CapnpBrokerState {
         if self.durable_owner_required {
             self.owner_health()?;
         }
-        self.journal
+        match &mut *self
+            .journal
             .lock()
             .map_err(|_| "invocation journal unavailable")?
-            .as_ref()
-            .map_err(Clone::clone)?
-            .as_ref()
-            .ok_or_else(|| "durable admission unavailable".to_string())
-            .and_then(|journal| {
-                journal.check()?;
-                Ok(journal.host())
-            })
+        {
+            // An invocation starts on a journal that recovered from any
+            // failed barrier, never on one that waits for a restart.
+            Ok(Some(journal)) => journal.ready().map(|()| journal.host()),
+            Ok(None) => Err("durable admission unavailable".to_string()),
+            Err(error) => Err(error.clone()),
+        }
     }
 
     pub(crate) fn verify_action_caller(
