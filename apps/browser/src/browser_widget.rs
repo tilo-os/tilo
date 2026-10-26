@@ -66,6 +66,7 @@ mod address_rows;
 mod architecture_tests;
 mod continuity;
 mod dialog;
+mod download_read;
 mod http_fallback;
 mod library;
 mod load_failure;
@@ -1868,6 +1869,9 @@ impl BrowserWidget {
                     .thread_name("browser-reveal-download")
                     .send();
             }
+            BrowserOperation::ReadDownload { .. } | BrowserOperation::AnswerDownload { .. } => {
+                return Err("downloads read and answered through their resource action".into());
+            }
             BrowserOperation::Page(_) => {
                 return Err("page actions report their result; start them as an invocation".into());
             }
@@ -3503,6 +3507,18 @@ impl BrowserWidget {
     /// after a restart and search, agents and the download actions read: the
     /// engine's own list lives as long as the engine.
     fn keep_native_download(&mut self, event: &WebViewEvent) {
+        // An offer the engine asks the person to answer becomes a row too, so
+        // its Save and Discard ride the download the agent already finds.
+        if let WebViewEvent::NativeDownloadRequested { id, url, name } = event {
+            let key = self.native_download_key(*id);
+            if self.downloads.get(&key).is_none()
+                && self.downloads.requested(key, url.clone(), name)
+            {
+                self.persist_downloads_now();
+                self.structure_dirty = true;
+            }
+            return;
+        }
         let WebViewEvent::DownloadUpdated {
             id,
             state,
@@ -3518,8 +3534,8 @@ impl BrowserWidget {
             return;
         };
         let key = self.native_download_key(*id);
-        // A page's own export (`data:`, `blob:`) has no address to fetch
-        // again, and is not kept.
+        // A page's own export (`data:`, `blob:`) has no address to fetch again,
+        // but the bytes it did write are a file the person may keep and read.
         if self.downloads.get(&key).is_none()
             && !self.downloads.requested(key.clone(), url.clone(), name)
         {
@@ -3527,6 +3543,13 @@ impl BrowserWidget {
         }
         match state.as_str() {
             "progress" => {
+                // Until the person says where the download goes, the engine
+                // already reports its bytes while nothing is kept. Keep the
+                // row offering Save and Discard rather than showing a transfer
+                // that cannot finish or be read.
+                if self.capabilities.offer_pending(*id) && self.downloads.awaiting_offer(&key) {
+                    return;
+                }
                 if !path.is_empty() {
                     self.downloads.destination(&key, path.into());
                 }
@@ -5724,7 +5747,16 @@ impl BrowserWidget {
             )
             .with_action(E::ShowDownload { id: id.clone() }.bound());
             match entry.status {
-                DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => {
+                DownloadStatus::AwaitingDestination => {
+                    // The page is offering the file: keep it or discard it.
+                    // Both ride the download's own id, so an agent reading a
+                    // download's row answers the same question the person's
+                    // prompt does.
+                    child = child
+                        .with_action(E::SaveDownload { id: id.clone() }.bound())
+                        .with_action(E::DiscardDownload { id }.bound());
+                }
+                DownloadStatus::Downloading => {
                     child = child.with_action(E::CancelDownload { id }.bound());
                 }
                 DownloadStatus::Failed | DownloadStatus::Cancelled => {
@@ -5732,6 +5764,7 @@ impl BrowserWidget {
                 }
                 DownloadStatus::Completed => {
                     child = child
+                        .with_action(E::ReadDownload { id: id.clone() }.bound())
                         .with_action(E::OpenDownload { id: id.clone() }.bound())
                         .with_action(E::RevealDownload { id }.bound());
                 }
@@ -6081,6 +6114,17 @@ impl BrowserWidget {
         }
         if let Some(result) = self.continuity_operation(&operation) {
             return result;
+        }
+        match &operation {
+            BrowserOperation::ReadDownload { id } => {
+                let value = self.read_download(id)?;
+                return Ok(ui::framework::Effected::value(value));
+            }
+            BrowserOperation::AnswerDownload { id, allow } => {
+                let value = self.answer_download(id, *allow)?;
+                return Ok(ui::framework::Effected::value(value));
+            }
+            _ => {}
         }
         if let BrowserOperation::Page(request) = operation {
             self.start_page_operation(invocation, request)?;
@@ -9125,7 +9169,12 @@ mod tests {
                     .iter()
                     .map(|action| action.id.as_str())
                     .collect::<Vec<_>>(),
-                vec!["show-download", "open-download", "reveal-download"]
+                vec![
+                    "show-download",
+                    "read-download",
+                    "open-download",
+                    "reveal-download"
+                ]
             );
             for action in &resource.actions {
                 assert_eq!(action.locus, ui::tilo_actions::ExecutionLocus::ClientLocal);

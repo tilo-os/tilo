@@ -595,6 +595,12 @@ impl Capabilities {
         launch_download(&path, reveal, &self.notice.writer());
         true
     }
+    /// Whether a download is still waiting for the person to say where it goes:
+    /// the engine reports bytes and progress for it, but nothing is kept. A row
+    /// keeps offering Save and Discard until this is answered.
+    pub fn offer_pending(&self, id: u32) -> bool {
+        self.downloads.borrow().prompts.contains_key(&id)
+    }
     /// The person dismissed the question on offer: a permission is set aside
     /// unanswered, so the site may ask again; an extension's request and a
     /// download are declined.
