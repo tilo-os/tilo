@@ -173,7 +173,12 @@ impl ShellNetwork {
     ) {
         if let Ok(mut members) = self.host_room_members.lock() {
             if active {
-                members.insert((ws, host, device));
+                // A member that joined the room's live plane has not heard
+                // where a resting pointer is: it is said again for them, as
+                // for a peer joining any other way.
+                if members.insert((ws, host, device)) {
+                    self.note_peer_joined();
+                }
             } else {
                 members.remove(&(ws, host, device));
             }
