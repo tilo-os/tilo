@@ -151,16 +151,20 @@ impl ShellNetwork {
         let Some(hosted) = self.hosted_sites.hosted(room) else {
             return false;
         };
-        let (Some(pinned), Ok(runtime)) = (hosted.host.as_deref(), self.runtime_handle()) else {
+        let Some(pinned) = hosted.host.as_deref() else {
             return false;
         };
-        let Ok(current) = runtime.block_on(hosted_sites::resolve_site(site)) else {
+        let site = site.clone();
+        let Ok(Ok(current)) = self.wait_on(async move { hosted_sites::resolve_site(&site).await })
+        else {
             return false;
         };
         let Ok(http) = hosted_sites::HostHttp::new(&current.origin) else {
             return false;
         };
-        let Ok(info) = runtime.block_on(tilo_relay_client::https::host_info(http.as_ref())) else {
+        let Ok(Ok(info)) =
+            self.wait_on(async move { tilo_relay_client::https::host_info(http.as_ref()).await })
+        else {
             return false;
         };
         if current.origin == hosted.origin
