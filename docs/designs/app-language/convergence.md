@@ -37,10 +37,15 @@ resources on outside services under the same rules as the workspace's own.
 | A YouTube video, a playlist | YouTube | YouTube |
 | A file in a Drive folder | Drive | Drive |
 | A file in Tilo's filesystem | the workspace | the workspace's host |
+| A feed entry | the workspace (the feed only contributed it) | the workspace's host |
 
 - **Resources are made of resources.** `Text`, `Int`, `Set<T>`, `List<T>`, `Tree<T>`,
   `Collection<T>` and an author's own types are all resources. The built-in ones are written in
   tilolang in `std`. A merge kind is not a separate concept.
+- **The home is trusted about existence.** A mail deleted on the server is gone. A feed entry's
+  home is the workspace from the moment it arrives: the feed may add and edit entries, but its
+  dropping one means nothing. Which home a type has is the whole difference between a mailbox and
+  a feed; there is no separate catalogue or stream concept.
 - **One resource can have fields with different homes.** A `Video`'s title lives on YouTube.
   Whether *you* watched it is the workspace's own field. Each field follows its home's rules
   (§5).
@@ -56,7 +61,15 @@ resources on outside services under the same rules as the workspace's own.
 2. **`commutes`.** An action declared `commutes` is checked by the compiler and tests to commute
    with others of its kind, and is never reordered. Text splices, counter adds and set adds are
    `commutes` in `std`, so ordinary editing never replays.
-3. **Versions.** An action records the app version it was invoked under, and replays with that
+3. **Non-deterministic inputs are recorded like arguments.** An action that reads something
+   whose answer differs on replay says so: `uses web`, `uses random`, `uses time`. What it read
+   (the response, the number, the time) is recorded with the invocation, exactly like an
+   invocation-time default. Replay runs the body again at its position with those recorded
+   inputs, so the action stays deterministic and is checked against the state at its position.
+   Large responses are stored as content-addressed blobs. The compiler's effect checking
+   enforces the declaration: `web.get`, `random()` and `now()` can only be called from actions
+   that declare them.
+4. **Versions.** An action records the app version it was invoked under, and replays with that
    version. Migrations apply to the action log as well as to state.
 
 ### 2.1 Outcomes and deltas
@@ -90,8 +103,10 @@ action check(item: Todo, done: Bool = not item.done)
 - The checkbox, the header, the context menu, the keyboard and an agent all call the same
   action. People get the default; an agent may pass `done:` explicitly.
 - Two people checking at once both record `done: true`.
-- The same mechanism covers every "the value I saw": a position dropped at, the next status, a
-  title as typed.
+- The same mechanism covers every "the value I saw": the next status, a title as typed, and a
+  position dropped at, which is named by its neighbour, not counted:
+  `move(item, after: other)`. A counted position goes stale as soon as anyone inserts or sorts.
+  The store already takes named places (`At::End`, `After(id)`, `Before(id)`).
 
 **The compiler rejects the ambiguous forms:** a register written as `not` of itself, or itself
 plus or minus an amount. The error names the two fixes: a parameter with an invocation-time
@@ -156,51 +171,85 @@ type Conference {
 
 ## 5. Resources on outside services
 
-An app's types may be backed by a **source**: the part of the app that connects some of its
-resources to the service they live on.
+A service is not a new concept. Its resources are types whose home is the service. The glue is
+ordinary actions that `use` it:
 
 ```
-/// A video on YouTube.
-type Video from youtube {
-    title: Text (title)            // YouTube's
-    channel: Channel               // YouTube's
-    published: Time                // YouTube's
-    watched: Bool                  // the workspace's own
+app so.tilo.feeds "Feeds" (icon: .rss, category: .news)
+
+/// A feed someone in this workspace subscribed to.
+type Feed {
+    url: Url
+    title: Text (title)
+    entries: Collection<Entry>
+    etag: Option<Text>                    // the server's cache validators
+    modified: Option<Text>
+    trouble: Option<Text>                 // why the last fetch failed, shown on the feed
+}
+
+/// One post, as the feed published it. Its home is the workspace.
+type Entry {
+    guid: Text
+    title: Text (title)
+    link: Option<Url>
+    published: Time
+    updated: Time
+    summary: Text (body)
+    read: Bool = false
+    starred: Bool = false
+}
+
+/// Fetches the feed and takes in what is new or edited.
+action refresh(feed: Feed) uses web {
+    let r = web.get(feed.url, if_none_match: feed.etag, if_modified_since: feed.modified)
+    if r.status == 304 { return }
+    if not r.ok { feed.trouble = "{r.status_text}"; return }
+    let doc = syndication.parse(r.body, r.content_type)       // a library, not the runtime
+    feed.title = doc.title
+    feed.etag = r.header("etag")
+    feed.modified = r.header("last-modified")
+    feed.trouble = .none
+    for e in doc.entries {
+        let updated = e.updated ?? e.published ?? now()
+        feed.entries.upsert(key: e.id ?? e.link ?? hash(e.title, e.published), if_newer: updated) {
+            title: e.title, link: e.link, published: e.published ?? updated,
+            updated: updated, summary: e.summary
+        }
+    }
 }
 ```
 
-**The source contract,** the same for every service:
+- **Identity.** `upsert(key:)` keys resources by the service's id. The same post never appears
+  twice, and an edited one updates in place.
+- **No conflicts by construction.** The service's fields are written only by the actions that
+  use it. People write only the workspace's own fields (`read`, `starred`), so refetching never
+  resets them.
+- **Failures are state.** `trouble` shows on the feed, like the connecting state. One broken feed
+  never blocks the others.
+- **Arrivals are the action's writes.** Nobody else did anything, and "new" is `read = false`.
+- **When it runs is a trigger, not syntax.** Main's saved shortcuts already have schedule
+  triggers (with a catch-up policy), app-opened and record-changed triggers. An app ships a
+  default shortcut ("refresh every 30 minutes"). Shortcuts are armed today only on their saver's
+  device. A workspace-owned shortcut armed on the host, so a refresh runs once for everyone, is
+  the one extension needed.
 
-| Part | Does |
-|---|---|
-| query | answers filters and text; declares which filters it answers itself |
-| fetch | one resource by id, with its version and this person's permissions on it |
-| changes | changes since a cursor, where the service offers them |
-| write | an action at the home: a conditional write against a version |
-
-**Query by default.** Nothing is mirrored wholesale, mail included.
-- Search plans one query: the local index for the workspace's resources, the sources for theirs,
-  merged into one ranking (`search.md`). People and agents just search.
-- Whatever was fetched is cached as a real resource stamped with its home's version, indexed
-  locally, and refreshed when shown or when it ages.
-- Keeping a mailbox or playlist available offline is a person's choice, not the app's.
-
-**Home-owned fields are read-through.** A refresh is not an event. Nothing appears in History
-and nobody is credited, because a fetch shows only that a value differs now, not who changed it
-or when. Where the service has a history of its own (a thread's messages, a document's
-revisions), it is shown as the service's history, read-only.
-
-**Your actions on sourced resources follow §3 unchanged:**
-- **Provisional overlay.** "Archive", "save draft" and "file into Sent" apply at once over the
-  fetched state, provisionally, and are attributed to you.
-- **Committed by the home.** They are final when the service commits, then the service's state
-  is simply current. If someone moves the thread back in Gmail's web UI, that is what shows.
-- **Merging with the home.** A write is conditional on the version it started from. If the
-  home has moved on, Tilo merges both changes from that common base, as for any concurrent
-  edit, and writes the result. Text merges like text. A field that can't merge takes the home's
-  value, and you are told.
-- **Offline.** A draft written offline exists in Drafts at once ("will save when online"). It
-  gets the service's id when it is created there, and its own id never changes.
+**Resources whose home is the service** (mail, YouTube, Drive) use the same means:
+- **Reads.** Queries and fetches are actions that `use` the service. Search plans one query over
+  the local index and these, merged into one ranking (`search.md`). What was fetched is cached as
+  a real resource stamped with the home's version, indexed locally, and refreshed when shown or
+  when it ages. A refresh writes only home-owned fields; it is not an event in History.
+- **Writes.** "Archive", "save draft" and "like" apply at once over the fetched state,
+  provisionally, attributed to you, and are final when the home commits (§3). Offline, they stay
+  pending, not rejected. Only a permanent refusal by the home ("attachment too large") is a
+  rejection.
+- **Merging with the home.** Where the service can write conditionally ("only if still the
+  version I saw"), Tilo merges both changes from the common base when the home has moved on, then
+  writes the result. Where it can't (IMAP replaces a draft by uploading a new copy), see §10.
+- **The home's permission.** Your authority over a resource is the lesser of your Tilo grant and
+  what the service allows for that resource, reported with each fetch. Actions you can't perform
+  aren't offered.
+- **Accounts are optional where the service allows.** Public data comes from public endpoints;
+  signing in is needed only for the person's own data and writes.
 
 **Identifiers** of a service (`mailto:`, `tel:`, `youtube:`) are written as in `search.md`.
 Links between them and people exist only where something actually recorded them.
@@ -260,7 +309,7 @@ same view.
 | Workshop signup | workspace | `hosted`, `invariant attendees.count <= seats` | The host decides the last seat; the loser is told |
 | Assignment deadline | workspace | `hosted type Course`, `invariant submitted_at <= due` | The host's clock decides |
 | Removing a member | workspace | nothing (platform, hosted) | Later edits by that member are refused |
-| Save a mail draft offline | the mail account | `type Draft from mail` | Exists at once; saved when online; merged with web edits |
+| Save a mail draft offline | the mail account | `save(d)` | Exists at once; saved when online; merged with web edits |
 | Archive a thread | the mail account | `archive(t)` | At once; final when the service commits |
 | Retitle someone's video | YouTube | nothing | Not offered: the home doesn't permit it |
 | Like a video | YouTube | `like(v)` | At once; final when YouTube accepts |
@@ -283,5 +332,7 @@ same view.
 
 - The design of the three exceptional UX states, per app.
 - **Checkpoint cadence and retention of old app versions** for replay.
-- **Sources without conditional writes:** which services offer no version to write against, and
-  whether "last write wins, and you are told" is acceptable for them.
+- **Services without conditional writes.** IMAP can't edit a draft in place: a client uploads a
+  new copy and deletes the old one, with no check for an edit made elsewhere meanwhile. For such
+  services: either the last write wins and the person is told, or both copies are kept as
+  conflicting versions.
