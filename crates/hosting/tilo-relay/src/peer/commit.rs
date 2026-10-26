@@ -3,7 +3,7 @@
 
 use super::{
     AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace, authorized_state_source,
-    desktop_refusal, enqueue_state_inner, governor_notice, resume_record, unix_now_ns, unpublished,
+    enqueue_state_inner, governor_notice, layout_refusal, resume_record, unix_now_ns, unpublished,
 };
 
 /// Spends `peer`'s budget for one change, unless the relay's own user sent
@@ -283,7 +283,7 @@ async fn commit_refusal(
         tracing::warn!(%reason, device = %hex::encode(author), "refused a document change");
         return Some(reason);
     }
-    desktop_refusal(ws, author, delta).await
+    layout_refusal(ws, author, delta).await
 }
 
 /// Hand `delta`, a member's change `ws` kept, to the room's governor, if a

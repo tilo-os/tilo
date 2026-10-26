@@ -67,8 +67,8 @@ use session::{finish_peer_outcome, private_may_overtake, run_peer_stream};
 pub use session::{run_peer, run_peer_until};
 use state::{
     FanoutStamp, LiveEnvelope, PreparedRecipients, SelectedPublication, SessionLease, SessionLives,
-    StateCommit, authorized_state_source, captured_live_current, desktop_refusal,
-    gated_checkpoint_channel, governor_notice, handle_delta, handle_delta_prefix, live_audience,
+    StateCommit, authorized_state_source, captured_live_current, gated_checkpoint_channel,
+    governor_notice, handle_delta, handle_delta_prefix, layout_refusal, live_audience,
     prepare_recipients, steward_audience, steward_only_delta, union_session_lives, unpublished,
 };
 pub(crate) use state::{Lag, StateDelivery, StateSession, StateSource};

@@ -4,9 +4,9 @@
 //! Whoever may edit the room may write the layout entries minted in their
 //! own device's namespace. Rearranging a window another device opened is a
 //! request the room retains, judged on that item's `moderation` node with the
-//! asker's own grants ([`crate::desktop_guard`]); nobody writes into another
+//! asker's own grants ([`crate::layout_guard`]); nobody writes into another
 //! device's entries. Every door a member's write enters by asks
-//! [`Rooms::decide_desktop_write`] first; a refused write is neither kept
+//! [`Rooms::judge_layout_write`] first; a refused write is neither kept
 //! nor forwarded, like any change the room does not grant.
 
 use collab_types::DocumentMutation;
@@ -14,47 +14,47 @@ use tilo_action_policy::ActionKind;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, act_node};
 
 use super::{GovernedRoom, Rooms, SystemTime};
-use crate::desktop_guard::LayoutGuard;
+use crate::layout_guard::LayoutGuard;
 
-/// Whether `(app, record)` is a room's shared desktop.
-pub(crate) fn is_desktop(app: &str, record: &str) -> bool {
+/// Whether `(app, record)` is the route a room's layout travels on.
+pub(crate) fn is_layout(app: &str, record: &str) -> bool {
     app == DESKTOP_APP && record == DESKTOP_RECORD
 }
 
-/// Whether `body`, a member's retained write, is one of the room's shared
-/// desktop: what a door asks before taking the room's lock for it.
-pub(crate) fn writes_desktop(body: &[u8]) -> bool {
+/// Whether `body`, a member's retained write, writes the room's layout: what
+/// a door asks before taking the room's lock for it.
+pub(crate) fn writes_layout(body: &[u8]) -> bool {
     matches!(
         postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body),
         Ok(neighbour_wire::NeighbourMsg::AppDocument { app_id, record_id, .. })
-            if is_desktop(&app_id, &record_id)
+            if is_layout(&app_id, &record_id)
     )
 }
 
 impl GovernedRoom {
-    /// The shared desktop as the room's writes are decided against, started
-    /// from the governor's copy the first time a write needs it.
-    async fn desktop_guard(&mut self) -> Result<&mut LayoutGuard, String> {
-        if self.desktop.is_none() {
+    /// The layout as the room's writes are decided against, started from the
+    /// governor's copy the first time a write needs it.
+    async fn layout_guard(&mut self) -> Result<&mut LayoutGuard, String> {
+        if self.layout.is_none() {
             let held = self.held_desktop().await?;
             let doc = match held {
                 Some(bytes) => automerge::AutoCommit::load(&bytes).map_err(|e| e.to_string())?,
                 None => automerge::AutoCommit::new(),
             };
-            self.desktop = Some(LayoutGuard::new(doc));
+            self.layout = Some(LayoutGuard::new(doc));
         }
-        self.desktop
+        self.layout
             .as_mut()
-            .ok_or_else(|| "the shared desktop is not followed".into())
+            .ok_or_else(|| "the room's layout is not followed".into())
     }
 
-    /// The governor's copy of the shared desktop, sealed or not.
+    /// The governor's copy of the layout, sealed or not.
     #[cfg(any(feature = "agents", feature = "web"))]
     async fn held_desktop(&self) -> Result<Option<Vec<u8>>, String> {
         self.readable_document(DESKTOP_APP, DESKTOP_RECORD).await
     }
 
-    /// The governor's copy of the shared desktop, written in the clear.
+    /// The governor's copy of the layout, written in the clear.
     #[cfg(not(any(feature = "agents", feature = "web")))]
     #[expect(
         clippy::unused_async,
@@ -65,15 +65,15 @@ impl GovernedRoom {
     }
 
     /// Take in a change the governor made to `(app, record)` itself, when it
-    /// is the shared desktop the room's writes are decided against.
+    /// is the layout the room's writes are decided against.
     #[cfg(feature = "agents")]
-    pub(super) fn absorb_desktop(
+    pub(super) fn absorb_layout(
         &mut self,
         (app, record): (&str, &str),
         doc: &mut automerge::AutoCommit,
     ) {
-        if is_desktop(app, record)
-            && let Some(guard) = self.desktop.as_mut()
+        if is_layout(app, record)
+            && let Some(guard) = self.layout.as_mut()
         {
             guard.absorb(doc);
         }
@@ -116,7 +116,7 @@ impl GovernedRoom {
             // one completes it, and is refused, so none of it ever applies
             // anywhere, when the whole write is.
             collab_types::DocumentFrame::Segment(segment) => match self
-                .desktop_segments
+                .layout_segments
                 .accept(envelope, segment, std::time::Instant::now())
                 .map_err(|error| error.to_string())?
             {
@@ -140,7 +140,7 @@ enum Readable {
 
 impl Rooms {
     /// Decide `author`'s write `body` (a retained document message) to
-    /// `room`'s shared desktop. Anything else, and the relay's own writes,
+    /// `room`'s layout. Anything else, and the relay's own writes,
     /// pass untouched.
     ///
     /// # Errors
@@ -150,7 +150,7 @@ impl Rooms {
         clippy::significant_drop_tightening,
         reason = "the room stays locked while its desktop decides the write and takes it in"
     )]
-    pub(crate) async fn decide_desktop_write(
+    pub(crate) async fn judge_layout_write(
         &self,
         room: &str,
         author: [u8; 32],
@@ -168,7 +168,7 @@ impl Rooms {
         else {
             return Ok(());
         };
-        if !is_desktop(&app_id, &record_id) || envelope.kind != collab_types::OpKind::Change {
+        if !is_layout(&app_id, &record_id) || envelope.kind != collab_types::OpKind::Change {
             return Ok(());
         }
         let state = self.room(room).await.map_err(|error| error.to_string())?;
@@ -179,7 +179,7 @@ impl Rooms {
             Readable::Whole(mutation) => mutation,
             Readable::Partial => return Ok(()),
             Readable::Sealed => {
-                tracing::debug!(%room, "a sealed shared desktop write this relay holds no keys for is left to the room's devices");
+                tracing::debug!(%room, "a sealed layout write this relay holds no keys for is left to the room's devices");
                 return Ok(());
             }
         };
@@ -188,7 +188,7 @@ impl Rooms {
             member.allows(&act_node(&room_id, act), ActionKind::Undoable, now)
         };
         let writer = hex::encode(author);
-        let guard = governed.desktop_guard().await?;
+        let guard = governed.layout_guard().await?;
         guard
             .decide(&mutation, &writer, &member.person, &allows)
             .map_err(|refusal| refusal.to_string())

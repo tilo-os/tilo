@@ -175,6 +175,52 @@ fn a_page_writing_an_old_layout_keeps_the_others_windows() {
     );
 }
 
+/// Two devices whose rooms started empty each mint their own root `contents`
+/// map, as concurrent creators do: both are read at the merged heads, and
+/// each change's own heads hold only its device's windows.
+#[test]
+fn concurrently_created_contents_are_joined_at_any_heads() {
+    let room = room();
+    let mut ada = AutoCommit::new();
+    let mut ben = AutoCommit::new();
+    room_layout::write(
+        &mut ada,
+        &layout(room, vec![strip_of(ADA, 1, "Notes")]),
+        ADA,
+        Some("ada"),
+    )
+    .unwrap();
+    ada.commit();
+    room_layout::write(
+        &mut ben,
+        &layout(room, vec![strip_of(BEN, 1, "Chat")]),
+        BEN,
+        Some("ben"),
+    )
+    .unwrap();
+    ben.commit();
+    let ada_heads = ada.get_heads();
+    let ben_heads = ben.get_heads();
+
+    let mut both = AutoCommit::load(&ada.save()).unwrap();
+    both.load_incoming(&ben.save()).unwrap();
+    assert_eq!(
+        titles(&room_layout::read(&both, None).unwrap()),
+        ["Notes", "Chat"],
+        "both concurrent containers are read"
+    );
+    assert_eq!(
+        titles(&room_layout::read(&both, Some(&ada_heads)).unwrap()),
+        ["Notes"],
+        "Ada's heads hold only Ada's window"
+    );
+    assert_eq!(
+        titles(&room_layout::read(&both, Some(&ben_heads)).unwrap()),
+        ["Chat"],
+        "Ben's heads hold only Ben's window"
+    );
+}
+
 /// A host that shows the room's history reads the layout as it stood at a
 /// change: those heads hold only what had been published by then.
 #[test]

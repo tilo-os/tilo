@@ -1,3 +1,4 @@
+use automerge::transaction::Transactable as _;
 use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand, TabLocation};
 use tilo_desktop_model::compose_id;
 use tilo_desktop_model::ids::namespace_of_device;
@@ -291,6 +292,51 @@ fn only_the_owner_records_what_it_applied() {
         ),
         "a mark in another device's namespace is refused"
     );
+}
+
+/// A page from before the one layout schema writes the desktop shape rooms
+/// used to keep: its write is refused rather than read as touching nothing.
+#[test]
+fn a_write_of_the_old_shape_is_refused() {
+    let mut guard = room();
+    let mut page = Page::of(&guard);
+    let heads = page.doc.get_heads();
+    page.doc
+        .put(automerge::ROOT, "strips", "the old shape")
+        .unwrap();
+    page.doc.commit();
+    let write = DocumentMutation::Incremental(page.doc.save_after(&heads));
+    assert!(
+        matches!(
+            guard.decide(&write, ADA, "ada", &moderates(ADA)),
+            Err(LayoutRefusal::NotALayout { .. })
+        ),
+        "the old desktop shape is no room layout"
+    );
+}
+
+/// A document that names no room carries no layout this build reads, whoever
+/// writes to it.
+#[test]
+fn a_document_that_names_no_room_is_no_layout() {
+    let mut guard = LayoutGuard::new(AutoCommit::new());
+    let mut page = AutoCommit::new();
+    let heads = page.get_heads();
+    let strip = strip_of(ADA, 1);
+    tilo_desktop_model::projection::project_owned_contents(
+        &mut page,
+        std::slice::from_ref(&strip),
+        namespace_of_device(ADA),
+        None,
+        tilo_desktop_model::projection::EmptyStrips::Skip,
+    )
+    .unwrap();
+    page.commit();
+    let write = DocumentMutation::Incremental(page.save_after(&heads));
+    assert!(matches!(
+        guard.decide(&write, ADA, "ada", &moderates(ADA)),
+        Err(LayoutRefusal::NotALayout { .. })
+    ));
 }
 
 #[test]

@@ -14,14 +14,14 @@
 //! ([`tilo_desktop_model::projection::ROOM_LAYOUT_KEY`]), where every
 //! member's device reads it, and in a personal room:
 //! - refuses a member's change to the room's topology (`SyncResp`) or to its
-//!   shared desktop record at every door it enters by
-//!   ([`Rooms::decide_layout_write`]): neither kept, nor forwarded, nor
+//!   layout document at every door it enters by
+//!   ([`Rooms::judge_layout_write`]): neither kept, nor forwarded, nor
 //!   taken in; the room's admission refuses it too
 //!   (`RoomRefusal::PersonalLayout`);
 //! - replays to nobody what the relay retained of such changes before
 //!   ([`crate::store::WorkspaceStore::replay_member_layout`]);
 //! - removes what it committed of members' windows while the room shared
-//!   its layout, from the room document and the shared desktop record, when
+//!   its layout, from the room document and the layout document, when
 //!   the room becomes personal and whenever the relay opens it
 //!   ([`Rooms::keep_personal`]). Each device keeps its own layout: that
 //!   lives on the device, not in the room.
@@ -33,7 +33,7 @@ use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
 use tilo_desktop_model::projection::RoomLayout;
 use tilo_lock::MutexRecover as _;
 
-use super::desktop_writes::is_desktop;
+use super::layout_writes::is_layout;
 use super::{CollaborationError, GovernedRoom, Rooms, SystemTime};
 
 /// Why a room whose layout is personal refuses a member's change to it. A
@@ -73,8 +73,8 @@ impl Layouts {
 pub(super) enum LayoutWrite {
     /// Changes the room document of `room`: its topology, windows included.
     Topology,
-    /// Writes the room's shared desktop record.
-    Desktop,
+    /// Writes the room's layout document on its record route.
+    Document,
 }
 
 /// Whether `body`, a member's retained write to `room`, changes the room's
@@ -86,7 +86,7 @@ pub(super) fn layout_write(room: &str, body: &[u8]) -> Option<LayoutWrite> {
         }
         neighbour_wire::NeighbourMsg::AppDocument {
             app_id, record_id, ..
-        } if is_desktop(&app_id, &record_id) => Some(LayoutWrite::Desktop),
+        } if is_layout(&app_id, &record_id) => Some(LayoutWrite::Document),
         _ => None,
     }
 }
@@ -235,7 +235,7 @@ impl Rooms {
     /// Remove from `room`, whose layout is personal, what its governor
     /// committed of its members' windows while it shared them: from the
     /// room document (each entry in a member's topology namespace) and from
-    /// the shared desktop record (every window, and the strips people made).
+    /// the layout document (every window, and the strips people made).
     /// What the room itself holds stays. Changes nothing a second time.
     #[allow(
         clippy::significant_drop_tightening,
@@ -267,7 +267,7 @@ impl Rooms {
         self.clear_shared_desktop(room).await
     }
 
-    /// Remove what members put on `room`'s shared desktop record
+    /// Remove what members put on `room`'s layout document
     /// ([`drop_shared_windows`]), as its governor.
     ///
     /// # Errors
@@ -284,13 +284,13 @@ impl Rooms {
             )
             .await?;
         if cleared {
-            tracing::info!(%room, "removed members' windows from a personal room's shared desktop");
+            tracing::info!(%room, "removed members' windows from a personal room's layout");
         }
         Ok(())
     }
 
     /// Without the browser plane's record authoring this relay keeps no
-    /// shared desktop record a member's page wrote: nothing to remove.
+    /// layout document a member's page wrote: nothing to remove.
     #[cfg(not(feature = "agents"))]
     #[expect(
         clippy::unused_async,
@@ -303,9 +303,9 @@ impl Rooms {
 
     /// Decide `author`'s write `body` (a retained message) to `room`'s
     /// shared layout: in a room whose layout is personal a member's change
-    /// to the room's topology or shared desktop is refused, and a desktop
+    /// to the room's topology or layout is refused, and a layout
     /// write anywhere is decided by what it does to what others made
-    /// ([`Self::decide_desktop_write`]). Anything else, and the relay's own
+    /// ([`Self::judge_layout_write`]). Anything else, and the relay's own
     /// writes, pass untouched.
     ///
     /// # Errors
@@ -327,13 +327,13 @@ impl Rooms {
         }
         match write {
             LayoutWrite::Topology => Ok(()),
-            LayoutWrite::Desktop => self.decide_desktop_write(room, author, body).await,
+            LayoutWrite::Document => self.judge_layout_write(room, author, body).await,
         }
     }
 
     /// Whether the governor of `room` takes in `author`'s retained write
     /// `message` when it replays what the relay retains: never a member's
-    /// shared desktop write in a room whose layout is personal.
+    /// layout write in a room whose layout is personal.
     pub(super) fn recalls(
         &self,
         room: &GovernedRoom,
@@ -347,7 +347,7 @@ impl Rooms {
             return true;
         };
         author == self.inner.host.cert.device_public_key
-            || !is_desktop(app_id, record_id)
+            || !is_layout(app_id, record_id)
             || !self.is_public(room.room())
     }
 }

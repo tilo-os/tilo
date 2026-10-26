@@ -27,6 +27,7 @@ use tilo_desktop_model::ownership::{Touched, commanded_act};
 use tilo_desktop_model::projection::{
     LayoutRequest, layout_authors_at, layout_digest_at, layout_marks_at, layout_requests_at,
 };
+use tilo_desktop_model::room_layout;
 
 /// A room's layout document as the relay follows it.
 pub(crate) struct LayoutGuard {
@@ -51,6 +52,12 @@ pub(crate) enum LayoutRefusal {
         request: String,
         why: String,
     },
+    /// It writes the room's layout in a shape this build does not read (a
+    /// document that declares no room, or a top-level key that is no part of
+    /// the layout). A page from before the one layout schema writes these,
+    /// and its windows are its own until it updates.
+    #[error("{writer} writes no room layout: {what}")]
+    NotALayout { writer: String, what: String },
     /// It is not a layout document, or not one the relay can read.
     #[error("not a room layout: {0}")]
     Unreadable(String),
@@ -92,13 +99,50 @@ impl LayoutGuard {
             person,
             salt: namespace_of_device(writer),
         };
+        if room_layout::declared_room(&next, None).is_none() {
+            return Err(LayoutRefusal::NotALayout {
+                writer: writer.to_owned(),
+                what: "it declares no room".into(),
+            });
+        }
         for change in next.get_changes(&before) {
             let deps = change.deps().to_vec();
+            let added = added_room_keys(&next, &deps, change.hash());
+            if let Some(key) = added
+                .iter()
+                .find(|key| !LAYOUT_KEYS.contains(&key.as_str()))
+            {
+                return Err(LayoutRefusal::NotALayout {
+                    writer: writer.to_owned(),
+                    what: format!("it writes {key}, which is not the layout's"),
+                });
+            }
             judge(&next, &write, &deps, change.hash(), allows)?;
         }
         self.doc = next;
         Ok(())
     }
+}
+
+/// The top-level keys a room's layout document holds: its windows, the
+/// requests for them, the marks their owners keep, and the room it names.
+/// A write that adds any other key is not writing the layout this build
+/// reads.
+const LAYOUT_KEYS: [&str; 5] = [
+    tilo_desktop_model::projection::ROOM_CONTENTS_KEY,
+    tilo_desktop_model::projection::ROOM_LAYOUT_REQUESTS_KEY,
+    tilo_desktop_model::projection::ROOM_LAYOUT_APPLIED_KEY,
+    tilo_desktop_model::projection::ROOM_ID_KEY,
+    tilo_desktop_model::projection::ROOM_NAME_KEY,
+];
+
+/// The top-level keys `doc` holds one change after `deps` that it did not
+/// hold before.
+fn added_room_keys(doc: &AutoCommit, deps: &[ChangeHash], at: ChangeHash) -> Vec<String> {
+    let before: std::collections::BTreeSet<String> = doc.keys_at(&automerge::ROOT, deps).collect();
+    doc.keys_at(&automerge::ROOT, &[at])
+        .filter(|key| !before.contains(key))
+        .collect()
 }
 
 /// One admitted batch's writer: its device key (hex), the person it writes

@@ -32,10 +32,10 @@ mod collaboration;
 mod content;
 pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, RoomContent};
-mod desktop_writes;
 #[cfg(test)]
 mod device_rejoin_tests;
-pub(crate) use desktop_writes::writes_desktop;
+mod layout_writes;
+pub(crate) use layout_writes::writes_layout;
 mod listing;
 mod member_records;
 pub use member_records::PreparedRecord;
@@ -234,11 +234,11 @@ struct GovernedRoom {
     /// whole history.
     #[cfg(any(feature = "agents", feature = "web"))]
     compaction_wait: usize,
-    /// The room's shared desktop as members' writes of it are decided,
-    /// followed from the first such write ([`desktop_writes`]).
-    desktop: Option<crate::desktop_guard::LayoutGuard>,
-    /// The segments of members' larger desktop writes, until each is whole.
-    desktop_segments: collab_types::DocumentReassembler,
+    /// The room's layout as members' writes of it are decided, followed
+    /// from the first such write ([`layout_writes`]).
+    layout: Option<crate::layout_guard::LayoutGuard>,
+    /// The segments of members' larger layout writes, until each is whole.
+    layout_segments: collab_types::DocumentReassembler,
     /// Members' writes the governor took in that the room file lacks.
     unkept: bool,
     /// Whether writing them through is due already ([`Rooms::keep_soon`]).
@@ -346,8 +346,8 @@ impl GovernedRoom {
             publisher: Arc::default(),
             #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
-            desktop: None,
-            desktop_segments: collab_types::DocumentReassembler::default(),
+            layout: None,
+            layout_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
             rebased: false,
@@ -401,8 +401,8 @@ impl GovernedRoom {
             publisher: Arc::default(),
             #[cfg(any(feature = "agents", feature = "web"))]
             compaction_wait: 0,
-            desktop: None,
-            desktop_segments: collab_types::DocumentReassembler::default(),
+            layout: None,
+            layout_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
             rebased: false,
