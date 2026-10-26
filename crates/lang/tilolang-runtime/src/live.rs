@@ -17,10 +17,9 @@ use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::handles::Retained;
 use crate::ids::Principal;
-use crate::meta::FieldKind;
 use crate::render::{Boundaries, LoopRows, Offer, Rendered, Scoped, Stub, ViewTarget, VirtualRows};
 use crate::space::Space;
-use crate::store::{ANY_FIELD, ChangeSummary, FieldSpec, Splice, doc_of};
+use crate::store::{ANY_FIELD, ChangeSummary, Splice, doc_of};
 use crate::value::Value;
 use crate::view::{Patch, UiNode, VirtualLists, diff_at};
 
@@ -95,6 +94,19 @@ fn distinct(mut reads: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut first = first.into_iter();
     reads.retain(|_| first.next().unwrap_or(false));
     reads
+}
+
+/// The collection an item resource (written as [`crate::value::ResourceRef::id_string`]) is
+/// in: its parent resource and the collection's field.
+fn item_of(resource: &str) -> Option<(&str, &str)> {
+    let (parent, step) = resource.rsplit_once('/')?;
+    let (field, _) = step.split_once(':')?;
+    Some((parent, field))
+}
+
+/// Whether a change to the item field `field` may change what `pred` holds of the item.
+fn reads(pred: &crate::store::Pred, field: &str) -> bool {
+    field == ANY_FIELD || pred.fields().iter().any(|read| read.spec.id == field)
 }
 
 /// Which boundaries read what.
@@ -421,34 +433,70 @@ impl Live {
             reach
                 .hit
                 .extend(self.index.readers(&key.resource, &key.field));
-            for (id, field) in self.index.coll_readers(&key.resource, &key.field) {
-                let Some(seen) = self.bound(id).and_then(|b| {
-                    b.colls
-                        .iter()
-                        .find(|seen| seen.resource == key.resource && seen.coll.field == field)
-                }) else {
-                    continue;
-                };
-                if !seen.holds_now(core) {
-                    reach.hit.push(id);
-                }
-            }
+            self.reach_colls(core, &key.resource, &key.field, false, &mut reach);
             for (id, field) in self.index.loop_holders(&key.resource, &key.field) {
                 let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
                 for rows in held.filter(|rows| rows.coll.field == field) {
                     match change.listing(key) {
                         Some([]) => {}
-                        Some(splices) if key.field != ANY_FIELD => reach.steps.push(Pending {
-                            holder: id,
-                            rows: Rc::clone(rows),
-                            splices: splices.to_vec(),
-                        }),
+                        // The steps are the collection's; a filtered one's rows are not its
+                        // items, and are built again by their boundary.
+                        Some(splices) if key.field != ANY_FIELD && rows.coll.filter.is_none() => {
+                            reach.steps.push(Pending {
+                                holder: id,
+                                rows: Rc::clone(rows),
+                                splices: splices.to_vec(),
+                            });
+                        }
                         _ => reach.hit.push(id),
+                    }
+                }
+            }
+            // A field of an item of a collection decides whether the item is in a filtered
+            // view of it: the readers of filtered views of the item's collection look again.
+            if let Some((parent, coll)) = item_of(&key.resource) {
+                self.reach_colls(core, parent, coll, true, &mut reach);
+                for (id, field) in self.index.loop_holders(parent, coll) {
+                    let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
+                    if held.filter(|rows| rows.coll.field == field).any(|rows| {
+                        rows.coll
+                            .filter
+                            .as_deref()
+                            .is_some_and(|pred| reads(pred, &key.field))
+                    }) {
+                        reach.hit.push(id);
                     }
                 }
             }
         }
         reach
+    }
+
+    /// The boundaries that saw something of the collection `field` of `resource` (or of any
+    /// collection of it, for [`ANY_FIELD`]) that no longer holds: of its filtered views alone
+    /// when `filtered`.
+    fn reach_colls(
+        &self,
+        core: &Core,
+        resource: &str,
+        field: &str,
+        filtered: bool,
+        reach: &mut Reach,
+    ) {
+        for (id, coll) in self.index.coll_readers(resource, field) {
+            let Some(b) = self.bound(id) else {
+                continue;
+            };
+            let stale = b
+                .colls
+                .iter()
+                .filter(|seen| seen.resource == resource && seen.coll.field == coll)
+                .filter(|seen| !filtered || seen.coll.filter.is_some())
+                .any(|seen| !seen.holds_now(core));
+            if stale {
+                reach.hit.push(id);
+            }
+        }
     }
 
     /// Whether a change reaches some boundary or the rows of some loop.
@@ -1130,11 +1178,7 @@ impl Live {
         if self.lists.contains_key(&rows.parent) {
             return self.virtual_fits(core, rows);
         }
-        let spec = FieldSpec {
-            id: rows.coll.field.clone(),
-            kind: FieldKind::Collection,
-        };
-        let Ok(listing) = core.store.borrow().listing(&rows.coll.target, &spec) else {
+        let Ok(listing) = crate::colls::listing_of(&**core.store.borrow(), &rows.coll) else {
             return false;
         };
         self.node_path_in(holder, &rows.parent)

@@ -231,17 +231,17 @@ impl Host for Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, CollInsert, CollMove, CollRemove, EnumGetF, EnumGetH,
-            EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, FloatToStr, IntToStr, Invoke,
-            Invoker, InvokerPop, InvokerPush, IsError, IsSome, ListEnd, ListGetF, ListGetH,
-            ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListSortByKey, MapGetH,
-            MapKeys, MapPut, MapRemove, ModelCall, NoneV, Now, Outside, PrincipalEq, PrincipalName,
-            PrincipalNamed, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefLit,
-            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
-            SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp, StrConcat,
-            StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
-            TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
-            UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            Abort, ActOpen, ActRef, ActSet, CollInsert, CollMove, CollRemove, CollWhere, EnumGetF,
+            EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, FloatToStr,
+            IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, ListEnd, ListGetF,
+            ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListSortByKey,
+            MapGetH, MapKeys, MapPut, MapRemove, ModelCall, NoneV, Now, Outside, PrincipalEq,
+            PrincipalName, PrincipalNamed, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
+            RefId, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
+            ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp,
+            StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
+            TupleSetF, TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
+            UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -251,6 +251,10 @@ impl Core {
             | ListSortByKey | ListGetH | ListEnd | TupleNew | TupleSetI | TupleSetF | TupleSetH
             | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome
             | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
+            CollWhere => {
+                let found = self.coll_where(a.h(0)?, a.h(1)?)?;
+                self.ret_h(found)
+            }
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
