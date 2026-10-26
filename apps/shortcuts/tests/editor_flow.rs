@@ -353,6 +353,35 @@ fn the_window_bar_names_the_page_and_holds_its_actions() {
 }
 
 #[test]
+fn the_bar_duplicates_the_open_draft() {
+    let (_host, _guard, mut app) = open();
+    app.harness()
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
+        .expect("the library shows");
+    press_bar(&mut app, "new-shortcut");
+    press_bar(&mut app, "duplicate-shortcut");
+    assert_eq!(app.state().drafts.len(), 2, "Duplicate starts a variant");
+    assert!(
+        app.state()
+            .drafts
+            .values()
+            .any(|draft| draft.name == "New shortcut copy"),
+        "the copy is named after the draft"
+    );
+}
+
+#[test]
+fn the_action_picker_has_a_filter_field() {
+    let mut app = TestApp::<App>::capture(Some("picker")).expect("the picker scenario stages");
+    app.harness().relayout();
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Filter"))
+        .expect("the action picker has a filter field");
+}
+
+#[test]
 fn every_operation_is_a_published_action() {
     let (_host, _guard, mut app) = open();
     let resources = app.harness().resources();
@@ -362,6 +391,8 @@ fn every_operation_is_a_published_action() {
         .expect("the drafts are a published resource");
     for action in [
         "new-draft",
+        "duplicate-draft",
+        "duplicate-shortcut",
         "draft-shortcut",
         "set-schedule",
         "add-step",
