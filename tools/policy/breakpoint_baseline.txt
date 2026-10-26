@@ -3,7 +3,6 @@
 # breakpoint from the rect this surface is laid out in, or mark a line
 # `allow-breakpoint: <why>` when it is not a breakpoint at all.
 1 apps/browser/src/browser_widget.rs
-2 apps/calculator/src/model.rs
 1 apps/canvas/tests/history.rs
 4 apps/chat/src/local_voice.rs
 1 apps/chip-design/src/verification/operators.rs
