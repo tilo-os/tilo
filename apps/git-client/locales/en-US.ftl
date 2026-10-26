@@ -68,6 +68,7 @@ git-stage-hunk = Stage hunk
 git-unstage-hunk = Unstage hunk
 git-discard-hunk = Discard hunk
 git-renamed-from = Renamed from { $path }
+git-split-needs-width = Two columns need a wider window, so this is one.
 git-binary-file = Binary file
 git-binary-file-detail = There is no text to compare.
 git-mode-only = No changes to show

@@ -68,6 +68,7 @@ git-stage-hunk = Abschnitt vormerken
 git-unstage-hunk = Abschnitt zurücknehmen
 git-discard-hunk = Abschnitt verwerfen
 git-renamed-from = Umbenannt von { $path }
+git-split-needs-width = Zwei Spalten brauchen ein breiteres Fenster, also ist es eine.
 git-binary-file = Binärdatei
 git-binary-file-detail = Es gibt keinen Text zum Vergleichen.
 git-mode-only = Keine Änderungen anzuzeigen
