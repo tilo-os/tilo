@@ -2775,13 +2775,19 @@ impl Widget for GitClientApp {
         let choices = confirm.choices();
         let cancel = t("git-cancel");
         let mut actions = vec![ModalAction::secondary(&cancel)];
-        actions.extend(choices.iter().map(|face| {
-            if face.danger {
+        // The answer the sheet recommends is its primary; a second answer
+        // that keeps the work another way is the alternate, which stands
+        // apart so the two are not read as the same act.
+        let mut recommended = true;
+        for face in &choices {
+            actions.push(if face.danger {
                 ModalAction::danger(&face.label)
-            } else {
+            } else if std::mem::take(&mut recommended) {
                 ModalAction::primary(&face.label)
-            }
-        }));
+            } else {
+                ModalAction::alternate(&face.label)
+            });
+        }
         let spec = ModalSpec::new(&title)
             .actions(&actions)
             .dismiss_on_scrim(true);
