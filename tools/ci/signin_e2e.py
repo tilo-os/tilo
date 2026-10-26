@@ -274,9 +274,15 @@ if command -v auditctl >/dev/null 2>&1; then
   auditctl -a always,exit -F arch=b64 -S execve -F path=/usr/bin/chcon -k chcon \
     && echo 'tilo-e2e-shell: chcon audit rule installed' \
     || echo 'tilo-e2e-shell: the chcon audit rule could not be installed'
+elif mountpoint -q /usr/bin/chcon; then
+  echo 'tilo-e2e-shell: chcon calls are already traced by a wrapper'
 elif [ -x /etc/tilo-e2e-chcon ]; then
+  # The bind of the real binary joins /usr's shared peer group: unless it is made private
+  # first, the wrapper mounted over /usr/bin/chcon propagates onto it and chcon.real execs
+  # the wrapper forever.
   mkdir -p /run/tilo-e2e && touch /run/tilo-e2e/chcon.real \
     && mount --bind /usr/bin/chcon /run/tilo-e2e/chcon.real \
+    && mount --make-private /run/tilo-e2e/chcon.real \
     && mount --bind /etc/tilo-e2e-chcon /usr/bin/chcon \
     && echo 'tilo-e2e-shell: no auditctl; chcon calls are traced by a wrapper' \
     || echo 'tilo-e2e-shell: no auditctl, and the chcon wrapper could not be mounted'
@@ -293,11 +299,17 @@ done
 """
 CHCON_TRACE = r"""#!/usr/bin/bash
 # signin-e2e check, this throwaway disk only: say who runs chcon, then run it.
+if [ -n "${TILO_E2E_CHCON_TRACED:-}" ]; then
+  echo 'tilo-e2e-chcon: /run/tilo-e2e/chcon.real is this wrapper, not chcon' \
+    | systemd-cat -t tilo-e2e-chcon -p err
+  exit 127
+fi
+export TILO_E2E_CHCON_TRACED=1
 {
-  printf 'chcon pid=%s ctx=%s args=%s\n' "$$" "$(cat /proc/self/attr/current 2>/dev/null)" "$*"
+  printf 'chcon pid=%s ctx=%s args=%s\n' "$$" "$(tr -d '\0' </proc/self/attr/current 2>/dev/null)" "$*"
   gp=$(awk '{print $4}' /proc/$PPID/stat 2>/dev/null)
   printf 'parent pid=%s exe=%s ctx=%s cmd=%s\n' "$PPID" "$(readlink /proc/$PPID/exe)" \
-    "$(cat /proc/$PPID/attr/current 2>/dev/null)" "$(tr '\0' ' ' </proc/$PPID/cmdline)"
+    "$(tr -d '\0' </proc/$PPID/attr/current 2>/dev/null)" "$(tr '\0' ' ' </proc/$PPID/cmdline)"
   printf 'grandparent pid=%s exe=%s cmd=%s\n' "$gp" "$(readlink /proc/$gp/exe 2>/dev/null)" \
     "$(tr '\0' ' ' </proc/$gp/cmdline 2>/dev/null)"
   printf 'cgroup=%s\n' "$(cat /proc/$$/cgroup)"
@@ -872,7 +884,6 @@ cryptsetup close e2e-target
         session = self.wait_session(300)
         prompts = self.watch_greeter_prompts(label, 25)
         again = self.classify(self.cycle.screen()[1]) == "disk-prompt"
-        _, pending = self.guest("test -e /etc/tilo/firstboot-autologin-pending && echo pending || echo consumed")
         _, greetd = self.guest("journalctl -b -u greetd --no-pager -o cat | tail -n 40", quiet=True)
         self.save("first-boot-greetd.txt", greetd)
         _, sessions = self.guest("loginctl list-sessions --no-pager; systemctl --failed --no-pager "
@@ -882,10 +893,14 @@ cryptsetup close e2e-target
         self.cycle.keep_screen("first-boot-after-unlock", path, text)
         custody = self.lockout_custody(wait=240)
         hardened = custody["reset_auth_set"] is True and custody["harden_file"] == "root:600"
+        _, pending = self.guest("test -e /etc/tilo/firstboot-autologin-pending && echo pending || echo consumed; "
+                                "systemctl show -P ActiveState -P Result tilo-firstboot-autologin-cleanup; "
+                                "journalctl -b -u tilo-firstboot-autologin-cleanup --no-pager -o cat | tail -n 5")
+        consumed = pending.strip().startswith("consumed")
         evidence = {"disk_prompts_answered": typed, "user_session": session,
                     "greeter_prompts": prompts, "disk_prompt_again": again,
                     "firstboot_autologin_marker": pending.strip(), "lockout_custody": custody}
-        if typed == 1 and session and not prompts and not again and hardened:
+        if typed == 1 and session and not prompts and not again and hardened and consumed:
             self.item("1", "passed", "one disk prompt at first boot, then the session started "
                       "without the greeter asking", **evidence)
         else:
@@ -900,6 +915,9 @@ cryptsetup close e2e-target
                 why.append("the disk prompt came back")
             if not hardened:
                 why.append(f"the TPM reset authorisation was not set by harden: {custody}")
+            if not consumed:
+                why.append("the one-boot autologin handoff was not consumed, so the next boot "
+                           f"logs in without the greeter again: {pending.strip()}")
             self.item("1", "failed", "; ".join(why), **evidence)
         self.power_off(label)
 
