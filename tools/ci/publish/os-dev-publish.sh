@@ -56,7 +56,7 @@ login
 
 tag=main-${T_COMMIT:0:7}
 base_digest=$(cat "$image/digest")
-skopeo copy --preserve-digests --retry-times 3 "oci:$image/oci" "docker://registry.tilo.so/tilo/tilo-ci:$tag-$arch"
+registry_copy "$auth" "oci:$image/oci" "docker://registry.tilo.so/tilo/tilo-ci:$tag-$arch"
 [[ $(skopeo inspect --raw "docker://registry.tilo.so/tilo/tilo-ci:$tag-$arch" | sha256sum | awk '{print "sha256:" $1}') == "$base_digest" ]] \
   || die "registry.tilo.so/tilo/tilo-ci:$tag-$arch is not $base_digest"
 
