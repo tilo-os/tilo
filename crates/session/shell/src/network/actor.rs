@@ -2580,10 +2580,18 @@ impl ActorState {
         let (ws, to) = (request.ws, request.to);
         room_governance::trace::note(|| {
             format!(
-                "send {} {} on ws {ws} to {to:?}: sessions {:?}",
+                "send {} {} on ws {ws} to {to:?}: sessions {:?}, replaying {:?}",
                 request.invoke.invocation,
                 request.invoke.target.address.action,
-                self.sessions_of(ws)
+                self.sessions_of(ws),
+                self.host_sessions
+                    .iter()
+                    .filter(|((session_ws, _), _)| *session_ws == ws)
+                    .map(|((_, host), runtime)| (
+                        host.fmt_short().to_string(),
+                        runtime.replaying.load(std::sync::atomic::Ordering::Acquire)
+                    ))
+                    .collect::<Vec<_>>()
             )
         });
         match to {
