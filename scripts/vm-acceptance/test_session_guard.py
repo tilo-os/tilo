@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acceptance import core  # noqa: E402
+from acceptance import core, session_unit  # noqa: E402
 from acceptance.context import Context  # noqa: E402
 from acceptance.vm import VmError  # noqa: E402
 
@@ -138,6 +138,25 @@ class KeepAwakeTest(unittest.TestCase):
         self.assertIn("input failed", ctx.facts["awake_failed"])
         self.assertNotIn("awake_at", ctx.facts)
 
+
+
+class KillerEvidenceTest(unittest.TestCase):
+    def test_an_oom_kill_in_the_dump_is_named(self):
+        dump = "\n".join([
+            "=== unit", "ExecMainStatus=137",
+            "=== kernel",
+            "Oct 26 16:36:55 kernel: Out of memory: Killed process 14000 (shell) total-vm:9GB, anon-rss:2GB",
+            "=== systemd-oomd",
+            "Oct 26 16:36:54 systemd-oomd[700]: Killed /user.slice/user-1001.slice due to memory pressure",
+            "=== user manager", "Oct 26 16:36:56 systemd[2576]: Stopped tilo-ush.service",
+        ])
+        said = session_unit.killer_evidence(dump)
+        self.assertIn("Out of memory: Killed process 14000 (shell)", said)
+        self.assertIn("systemd-oomd[700]: Killed /user.slice", said)
+        self.assertNotIn("Stopped tilo-ush", said)
+
+    def test_a_dump_without_a_kill_names_nothing(self):
+        self.assertIsNone(session_unit.killer_evidence("=== kernel\nsegfault at 0\n=== systemd-oomd\n"))
 
 if __name__ == "__main__":
     unittest.main()
