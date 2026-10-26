@@ -162,29 +162,65 @@ Every room this session governs is now a `StatePeer` room in
 `NativeWorkspaceOwner`: a new workspace is created as one
 (`create_governed_workspace`, at the tick after its first frame), and a
 state file from before has each such room created once when the owner opens
-(`ShellNetwork::govern_awaiting_rooms`). A room with no workspace host is
-carried by `direct_carrier`: gossip delivers the same `SyncResp` and
-`AppDocument` a relay session does, admitted as `Input::direct` only after
-the transport authenticated a device the room's current governance names.
-A direct invitation is a workspace-join invitation issued by the governing
-device (`ShellNetwork::issue_direct_invitation`) and redeemed through the
-same signed exchange a relay answers; a person's other devices receive
-their device-addressed invitation in the person's own workspace list. What
-is still doubled:
+(`ShellNetwork::govern_awaiting_rooms`). That one creation imports what the
+workspace already showed: its strips and windows in this device's topology
+namespace, and the record index its apps referenced
+(`tilo_peer_state::workspace_seed_with_layout`), so an upgrade keeps the
+tabs and records the file held instead of replacing them with an empty
+room. Until that one-time pass finishes for a room, `requires_native_owner`
+is false and the older engine still writes it, so a gesture during the
+import lands in the tree the seed is taken from; once every room found at
+open has its native record (`native_rooms_ready`), every room this device
+governs is native. An import that cannot be published leaves the workspace
+and its windows in the tree, logs why and is retried; it never deletes a
+tab or a record it could not carry. This is the ready window migration step
+1 still has to delete: it is not claimed gone here.
 
-1. **The older room engine remains, for owner-less sessions and old state.**
-   `room_docs` is now also the admitted-document cache a native room's
-   publication writes (command admission and Activity read it), and
-   `sync_room_doc`, `apply_room_changes`, `try_sync_room_doc`,
-   `room_authority`, `name_peer`, `certify_peer_identity`,
+A room with no workspace host is carried by `direct_carrier`: gossip
+delivers the same `SyncResp` and `AppDocument` a relay session does,
+admitted as `Input::direct` only after the transport authenticated a device
+the room's current governance names. A direct invitation is a
+workspace-join invitation issued by the governing device
+(`ShellNetwork::issue_direct_invitation`) and redeemed through the same
+signed exchange a relay answers; a person's other devices receive their
+device-addressed invitation in the person's own workspace list. The
+governor's join ledger is also the list, resend and cancel source for those
+invitations (`pending_issued_invitations`, `issued_invitation`,
+`cancel_invitation`), so the people sheet never reads a second local
+inventory for a room this device governs. A member's direct carrier dials
+the governor the room names *now*, not only the endpoint an older
+invitation named, so a succession, a restart or a reconnect reaches the
+current governor.
+
+Retained requests to rearrange another device's windows are room state
+(`layout_requests_v1`). The native owner drains the requests addressed to
+its own salt, admits each against the exact revision its requester saw,
+claims it in its own namespace (`layout_applied_v1`) under the same change
+that publishes the rearranged entries, and never applies it twice; a
+request it cannot apply yet stays retained. Only the device that owns a
+salt may write its claims, and only the person who asked may add or remove
+a request; both are refused by room admission.
+
+What is still doubled:
+
+1. **The older room engine remains, for owner-less sessions and joined
+   rooms written by an older state file.** `room_docs` is now also the
+   admitted-document cache a native room's publication writes (command
+   admission and Activity read it), and `sync_room_doc`, `apply_room_changes`,
+   `try_sync_room_doc`, `room_authority`, `name_peer`, `certify_peer_identity`,
    `redeem_invited_identity`, `peer_room_allows`, `network/replica.rs`, the
    `PeerInviteToken` format in `network/invite.rs` and the hello store in
-   `network/identity.rs` remain for a session with no native owner (tests,
-   an offscreen renderer) and for rooms written by an older state file.
-   None of them writes a room this session governs natively, and no new
-   invitation is minted in the old format. Removing them is the remaining
-   work of migration step 1, not a claim that the old path can still serve
-   a native room.
+   `network/identity.rs` remain for a session with no native owner at all
+   (tests, an offscreen renderer), for a governed room during the one-time
+   creation pass above, and for a *joined* room written by an older state
+   file, which has no native record to reopen and cannot be governed from
+   here. None of them writes a room this session governs natively once the
+   pass is done, and no new invitation is minted in the old format.
+   Removing the rest is the remaining work of migration step 1; this page
+   does not claim it is done. A joined old-shape room is read as an empty
+   room neither by the native owner nor by a resumed session: it keeps its
+   workspace and its last projection, and is fetched again by joining its
+   host. There is no automatic migration for it.
 2. **Three layout schemas.** The room document's `contents` (native), the
    `so.tilo.browser-desktop/desktop` shared record (`shared_record.rs`,
    browser, relay, agent participant) and the device's whole-desktop
@@ -194,23 +230,29 @@ is still doubled:
 ## Migration
 
 Each step lands on `main` on its own, green, and deletes the copy it
-replaces. Pre-alpha: old paths are removed, not kept beside the new ones;
-state of an older shape is refused and fetched again, not migrated.
+replaces. Pre-alpha: old paths are removed, not kept beside the new ones.
+State of an older shape that this device governs is imported in place,
+without dropping its tabs or record index; state it cannot import (a joined
+room with no native record) is fetched again by joining its host, never
+read as an empty room. Until a governed room's import finishes the older
+engine still writes it; the native owner takes it over at once afterwards.
 
 1. **The shell governs its own rooms with `StatePeer`.** The pieces are
    in place: the engine follows a revoked governor's root-named successor
    (`StatePeer::follow_successions`) and the device's owner keeps the
    successions with the room; the owner holds rooms this device governs
    beside joined ones (`NativeWorkspaceOwner::create_governed`, seeded by
-   `tilo_peer_state::workspace_seed`, no host custody of its writes); and
-   the shell admits the windows it opens into such a room under its own
-   registered namespace. New workspaces are created that way and the rooms a
-   state file already held are created on the owner when it opens. Steps 2
-   and 3 landed first, as they had to: a governed room is carried to the
-   person's other devices and to an invited person. What remains is deleting
-   `room_docs`' older governance path, `sync_room_doc`, `apply_room_changes`,
-   `try_sync_room_doc` and `ContentOwnership::Salted` once no owner-less
-   session or old state needs them.
+   `tilo_peer_state::workspace_seed_with_layout`, no host custody of its
+   writes); and the shell admits the windows it opens into such a room under
+   its own registered namespace. New workspaces are created that way and the
+   rooms a state file already held are imported on the owner when it opens,
+   with their windows and record index. Steps 2 and 3 landed first, as they
+   had to: a governed room is carried to the person's other devices and to
+   an invited person. What remains is deleting `room_docs`' older governance
+   path, `sync_room_doc`, `apply_room_changes`, `try_sync_room_doc` and
+   `ContentOwnership::Salted` once no owner-less session or joined old-shape
+   room needs them; a governed room and a room the owner holds already use
+   neither.
 2. **Direct peers on the same engine.** Gossip becomes a carrier for
    `StatePeer` (`SyncResp` and `AppDocument` from an authenticated device,
    like a relay delta). A direct invitation is a workspace-join invitation
@@ -234,9 +276,13 @@ state of an older shape is refused and fetched again, not migrated.
    workspace in the browser is a new room.
 5. **Requests to rearrange another device's windows are retained room
    state** applied once by their owner, with the applied ids in its
-   namespace. Today a device may move and close only the windows it
-   opened; this lets a person arrange the windows of their other devices,
-   offline ones included.
+   namespace. The schema (`room_layout::request`, `pending`, `claim`) and
+   the native owner's drain/claim/apply have landed: a request waits while
+   its owner is away and is applied once when it returns, in the same change
+   that marks it. A command the owner's reducer refuses (for example a tab
+   that has since gone) stays retained rather than being dropped. Closing
+   another device's tab still runs through that owner's ordinary close
+   lifecycle, not a second mutation here.
 6. **The device desktop holds only what is the device's.** `desktop_doc`
    keeps the workspace list and presentation; Activity and Replay read
    the room documents' history for everything else.
@@ -247,13 +293,17 @@ step 1); 4, 5 and 6 are independent of them. When 3 has landed,
 renaming them is then mechanical and optional.
 
 Status of steps 1–3 in this tree: the owner creates and governs every room
-the shell owns, direct peers carry admitted `StatePeer` traffic over gossip,
-a direct invitation is the canonical workspace-join exchange, and a
-person's other devices hold their rooms as owner-role members through the
-device-addressed invitation in the person's workspace list. The shell's old
-governance/projection path still exists for owner-less sessions and old
-state (see above); it is no longer reached for a room this session governs
-with the native owner. Steps 4–6 are unchanged.
+the shell owns and imports an existing store's layout and record index;
+direct peers carry admitted `StatePeer` traffic over gossip, dial the
+governor the room names now after a succession or restart, and a direct
+invitation is the canonical workspace-join exchange, listed and cancelled
+from the governor's ledger. A person's other devices hold their rooms as
+owner-role members through the device-addressed invitation in the person's
+workspace list. The shell's old governance/projection path still exists for
+sessions with no native owner at all, for the one-time creation pass, and
+for joined old-shape rooms (see above); it is not reached for a room this
+session governs once that room's native record exists. Steps 4–6 are
+unchanged.
 
 ## Records that outgrow a snapshot
 
