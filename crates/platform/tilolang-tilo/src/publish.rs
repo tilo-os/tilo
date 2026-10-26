@@ -130,8 +130,16 @@ fn param_type(meta: &Meta, ty: &str) -> ParamType {
 
 fn action_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
     let ty = param_type(meta, &param.ty);
-    let description = format!("{}: {}", param.name, param.ty);
-    let optional = param.ty.trim().starts_with("Option<");
+    // A default is the action's: what an invocation that leaves the argument out gets, computed
+    // when it is invoked, on what the invoker sees, and recorded as the argument.
+    let description = match &param.default {
+        Some(default) => format!(
+            "{}: {}; when left out, `{}` as it is when invoked",
+            param.name, param.ty, default.text
+        ),
+        None => format!("{}: {}", param.name, param.ty),
+    };
+    let optional = param.default.is_some() || param.ty.trim().starts_with("Option<");
     let built = if optional {
         ActionParam::optional_owned(param.name.clone(), ty, description)
     } else {
@@ -189,7 +197,8 @@ pub fn action_type(
     };
     // An action without parameters is planned when it runs, not when it is published: planning
     // is a trial run of the action, and publishing every item's actions must not run them all.
-    let spec = if params.is_empty() {
+    let no_params = params.is_empty();
+    let spec = if no_params {
         ActionSpec::deferred_on(
             action.id.clone(),
             label,
@@ -206,6 +215,16 @@ pub fn action_type(
             params,
             build,
         )
+    };
+    // Every argument has a default (a checkbox's `check(item, done: Bool = not item.done)`): a
+    // person choosing it is asked nothing, and an agent may still pass `done:`.
+    let defaulted = arguments(meta, &action.params)
+        .iter()
+        .all(|param| param.default.is_some());
+    let spec = if defaulted && !no_params {
+        spec.with_immediate_per_target()
+    } else {
+        spec
     };
     let mut spec = spec.of_kind(action_kind(action.class));
     if !action.doc.is_empty() {
@@ -318,7 +337,7 @@ fn open_spec(anchor: &str) -> ActionSpec {
 }
 
 /// The resource of a root record with the items of its collections as child resources, each
-/// carrying the actions whose subject is its type (a draft's `send`, a note's `toggle_pin`).
+/// carrying the actions whose subject is its type (a draft's `send`, a note's `pin`).
 ///
 /// An item's resource id is the root's with the path to the item (`doc/field:item`), the same
 /// form an action takes an item as an argument in, so an agent that surveys the tree calls an

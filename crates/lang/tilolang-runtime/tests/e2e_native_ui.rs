@@ -23,8 +23,8 @@ type Note {
     pinned: Bool = false
 }
 
-action toggle_pin(n: Note) (label: if n.pinned { "Unpin" } else { "Pin" }, icon: if n.pinned { .bell_off } else { .pin }, on: n.pinned) {
-    n.pinned = not n.pinned
+action pin(n: Note, pinned: Bool = not n.pinned) (label: if pinned { "Pin" } else { "Unpin" }, icon: if pinned { .pin } else { .bell_off }, on: n.pinned) {
+    n.pinned = pinned
 }
 
 action rename(n: Note, t: Text) (label: "Rename", on: n.title != "") {
@@ -48,19 +48,16 @@ action rename(n: Note, t: Text) (label: "Rename", on: n.title != "") {
             assert!(tree.children.is_empty());
             tree
         };
-        let off = present("toggle_pin");
+        let off = present("pin");
         assert_eq!(text_prop(&off, "label"), "Pin");
         assert_eq!(text_prop(&off, "icon"), "pin");
         assert_eq!(off.props["on"], Value::Int(0));
         rt.invoke_action(
             &me(),
-            (
-                app.action("toggle_pin").as_str(),
-                vec![Value::resource(&note)],
-            ),
+            (app.action("pin").as_str(), vec![Value::resource(&note)]),
         )
         .unwrap();
-        let on = present("toggle_pin");
+        let on = present("pin");
         assert_eq!(text_prop(&on, "label"), "Unpin");
         assert_eq!(text_prop(&on, "icon"), "bell-off");
         assert_eq!(on.props["on"], Value::Int(1));

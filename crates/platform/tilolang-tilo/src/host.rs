@@ -191,6 +191,15 @@ pub(crate) fn value_of(
     }
 }
 
+/// A value as an invocation records its argument: a resource by its id, as the door takes it
+/// ([`value_of`]), anything else as its JSON.
+fn json_of(value: &Value) -> Json {
+    match value {
+        Value::Ref(reference) => Json::String(reference.target.id_string()),
+        other => tilolang_runtime::value::to_json(other).unwrap_or(Json::Null),
+    }
+}
+
 impl HostInner {
     pub(crate) fn admit_agent(&self, actor: &str) {
         self.agents.borrow_mut().insert(actor.to_owned());
@@ -223,19 +232,44 @@ impl HostInner {
             .iter()
             .find(|action| action.id == request.action_id)
             .ok_or_else(|| format!("no action {}", request.action_id))?;
-        let mut args = Vec::new();
+        let mut given: Vec<Option<Value>> = Vec::new();
         let mut params = action.params.iter();
         if let (Some(subject), Some(declared)) =
             (request.resource, package.meta.subject_of(&action.params))
         {
             let target = ResourceRef::parse_id(subject, declared.id.clone())
                 .ok_or_else(|| format!("`{subject}` is not a resource id"))?;
-            args.push(Value::resource(&target));
+            given.push(Some(Value::resource(&target)));
             params.next();
         }
+        // An argument left out that has a default gets it now, on the invoker's state: what
+        // the person saw is the argument, and the invocation records it.
+        let mut defaulted = Vec::new();
         for param in params {
-            let json = request.args.get(&param.name).cloned().unwrap_or(Json::Null);
-            args.push(value_of(self, &package.meta, &json, &param.ty)?);
+            match request.args.get(&param.name) {
+                None if param.default.is_some() => {
+                    defaulted.push(param);
+                    given.push(None);
+                }
+                json => {
+                    let json = json.cloned().unwrap_or(Json::Null);
+                    given.push(Some(value_of(self, &package.meta, &json, &param.ty)?));
+                }
+            }
+        }
+        let args = self
+            .runtime
+            .complete_args(request.action_id, given)
+            .map_err(|error| error.to_string())?;
+        let mut recorded = request.args.clone();
+        for param in defaulted {
+            let index = action
+                .params
+                .iter()
+                .position(|declared| declared.name == param.name);
+            if let Some(value) = index.and_then(|index| args.get(index)) {
+                recorded.insert(param.name.clone(), json_of(value));
+            }
         }
         // The runtime sees the invoker the door admitted: an agent's task delegate for itself,
         // the person at the window otherwise.
@@ -275,7 +309,7 @@ impl HostInner {
             app: request.app.to_owned(),
             kind: request.kind.to_owned(),
             action_id: request.action_id.to_owned(),
-            args: Json::Object(request.args.clone()),
+            args: Json::Object(recorded),
             authorship: Authorship {
                 invoker: invoker.0,
                 chain: Vec::new(),

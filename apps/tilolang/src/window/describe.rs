@@ -95,13 +95,24 @@ pub fn label_of(action: &ActionMeta) -> String {
     }
 }
 
+/// Whether every one of `params` has a default: an invocation may leave them all out.
+fn all_defaulted(params: &[tilolang_tilo::runtime::meta::ParamMeta]) -> bool {
+    params.iter().all(|param| param.default.is_some())
+}
+
 /// The actions a person can run on a resource of the type `ty` from a menu: those whose subject
-/// is the type and that take nothing else. The primary one first.
+/// is the type and that need nothing else (what else they take has a default, which the
+/// invocation gets). The primary one first.
 #[must_use]
 pub fn actions_on(meta: &Meta, ty: &TypeMeta) -> Vec<ActionMeta> {
     let mut actions: Vec<ActionMeta> = meta
         .offered_actions()
-        .filter(|action| action.params.len() == 1)
+        .filter(|action| {
+            action
+                .params
+                .split_first()
+                .is_some_and(|(_, rest)| all_defaulted(rest))
+        })
         .filter(|action| {
             meta.subject_of(&action.params)
                 .is_some_and(|subject| subject.id == ty.id)
@@ -176,7 +187,7 @@ fn presented(
 }
 
 /// The actions offered on the item `item` of a list `owner` shows: its own, and the owner's
-/// that take nothing but the item (`delete(nb: Notebook, n: Note)`), invoked on the owner with
+/// that need nothing but the item (`delete(nb: Notebook, n: Note)`), invoked on the owner with
 /// the item.
 #[must_use]
 pub fn offered_in(host: &Host, item: &ResourceRef, owner: &ResourceRef) -> Rc<[RowAction]> {
@@ -184,9 +195,12 @@ pub fn offered_in(host: &Host, item: &ResourceRef, owner: &ResourceRef) -> Rc<[R
     if let Some((meta, owner_ty)) = type_of(host, &owner.ty) {
         let published = resource_id(&meta.app, &owner.id_string());
         for action in meta.offered_actions() {
-            let [first, second] = action.params.as_slice() else {
+            let [first, second, rest @ ..] = action.params.as_slice() else {
                 continue;
             };
+            if !all_defaulted(rest) {
+                continue;
+            }
             let on_owner = meta
                 .type_named(&first.ty)
                 .is_some_and(|ty| ty.id == owner_ty.id);
@@ -233,9 +247,9 @@ pub fn primary(host: &Host, resource: &ResourceRef) -> Option<RowAction> {
 /// The primary action of the package itself (one that takes no resource), when it declares one.
 #[must_use]
 pub fn package_primary(meta: &Meta) -> Option<RowAction> {
-    let action = meta
-        .offered_actions()
-        .find(|action| action.params.is_empty() && action.role.as_deref() == Some("primary"))?;
+    let action = meta.offered_actions().find(|action| {
+        all_defaulted(&action.params) && action.role.as_deref() == Some("primary")
+    })?;
     Some(RowAction {
         label: label_of(action),
         icon: action.icon.as_deref().and_then(icon_named),

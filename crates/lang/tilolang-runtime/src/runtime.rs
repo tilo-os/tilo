@@ -144,7 +144,12 @@ impl Runtime {
             .map(|a| format!("a_{}", a.id))
             .chain(meta.views.iter().map(|v| format!("v_{}", v.id)))
             .chain(meta.flows.iter().map(|f| format!("f_{}", f.id)))
-            .chain(meta.fns.iter().map(|f| format!("n_{}", f.id)));
+            .chain(meta.fns.iter().map(|f| format!("n_{}", f.id)))
+            .chain(meta.actions.iter().flat_map(|a| {
+                a.params
+                    .iter()
+                    .filter_map(|p| p.default.as_ref().map(|d| d.export.clone()))
+            }));
         for name in wanted {
             if !exports.contains(&name) {
                 return Err(RuntimeError::Package(format!(
@@ -346,6 +351,21 @@ impl Runtime {
         action: impl Into<ActionRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
         self.core.invoke_direct(principal, &action.into())
+    }
+
+    /// The arguments of an invocation of `action` with those left out (`None`) given their
+    /// defaults: each computed now, on the current state, over the arguments before it. What an
+    /// invocation records, so that replay never computes a default again.
+    ///
+    /// # Errors
+    ///
+    /// An unknown action, an argument left out that has no default, or a default that traps.
+    pub fn complete_args(
+        &self,
+        action: &str,
+        given: Vec<Option<Value>>,
+    ) -> Result<Vec<Value>, RuntimeError> {
+        self.core.complete_args(action, given)
     }
 
     /// Run a flow. It finishes, or suspends on a suggestion waiting for a decision.

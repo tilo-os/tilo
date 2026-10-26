@@ -297,6 +297,10 @@ fn params_meta(params: &[ParamInfo], app: &str) -> Vec<ParamMeta> {
         .map(|p| ParamMeta {
             name: p.name.clone(),
             ty: p.ty.meta_text(app),
+            default: p.default.as_ref().map(|d| crate::meta::DefaultMeta {
+                export: d.export.clone(),
+                text: d.text.clone(),
+            }),
         })
         .collect()
 }

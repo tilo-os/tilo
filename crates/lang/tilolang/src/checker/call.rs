@@ -144,6 +144,21 @@ impl Checker<'_> {
         span: Span,
         sig: &str,
     ) -> Vec<Ex> {
+        self.bind_args_or_default(name, params, args, span, sig)
+            .into_iter()
+            .map(|s| s.unwrap_or_else(Ex::error))
+            .collect()
+    }
+
+    /// As [`Self::bind_args`]; a parameter with a default may be left out, as `None`.
+    pub(super) fn bind_args_or_default(
+        &mut self,
+        name: &str,
+        params: &[crate::resolve::ParamInfo],
+        args: &[ast::Arg],
+        span: Span,
+        sig: &str,
+    ) -> Vec<Option<Ex>> {
         let mut slots: Vec<Option<Ex>> = vec![None; params.len()];
         let mut pos = 0usize;
         let mut named = false;
@@ -206,7 +221,7 @@ impl Checker<'_> {
         let missing: Vec<&str> = params
             .iter()
             .zip(&slots)
-            .filter(|(_, s)| s.is_none())
+            .filter(|(p, s)| s.is_none() && p.default.is_none())
             .map(|(p, _)| p.name.as_str())
             .collect();
         if !missing.is_empty() {
@@ -218,7 +233,11 @@ impl Checker<'_> {
         }
         slots
             .into_iter()
-            .map(|s| s.unwrap_or_else(Ex::error))
+            .zip(params)
+            .map(|(s, p)| match s {
+                None if p.default.is_none() => Some(Ex::error()),
+                other => other,
+            })
             .collect()
     }
 
@@ -235,10 +254,16 @@ impl Checker<'_> {
 
     fn call_callable(&mut self, c: &Callable, args: &[ast::Arg], span: Span) -> Ex {
         let sig = c.signature(&self.env.app);
-        let bound = self.bind_args(&c.name, &c.params, args, span, &sig);
+        let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig);
         let ctx = self.st.ctx;
         match (c.kind, ctx) {
-            (CKind::Fn, _) => self.call_own(c, bound, span, "fn"),
+            (CKind::Fn, _) => {
+                let bound = bound
+                    .into_iter()
+                    .map(|s| s.unwrap_or_else(Ex::error))
+                    .collect();
+                self.call_own(c, bound, span, "fn")
+            }
             (CKind::Action, Ctx::Fn) => {
                 self.err("E043", span, format!("a fn computes values and cannot use actions; `{}` is an action. Move this into an action or a flow", c.name));
                 Ex::error()
@@ -251,10 +276,23 @@ impl Checker<'_> {
                 if let Some(f) = c.func {
                     self.st.facts.inline_actions.insert(f);
                 }
-                self.call_own(c, bound, span, "action")
+                let (stmts, bound) = self.inline_args(c, bound);
+                let call = self.call_own(c, bound, span, "action");
+                if stmts.is_empty() {
+                    call
+                } else {
+                    let ty = call.ty.clone();
+                    Ex::new(Ek::Seq(stmts, Box::new(call)), ty)
+                }
             }
-            (CKind::Action, Ctx::Flow) => self.invoke(c, bound),
-            (CKind::Action | CKind::Flow, Ctx::View | Ctx::Block) => self.action_value(c, bound),
+            (CKind::Action, Ctx::Flow) => {
+                let bound = self.applied_args(c, bound, span);
+                self.invoke(c, bound)
+            }
+            (CKind::Action | CKind::Flow, Ctx::View | Ctx::Block) => {
+                let bound = self.applied_args(c, bound, span);
+                self.action_value(c, bound)
+            }
             (CKind::Flow, other) => {
                 let who = other.word();
                 self.err("E046", span, format!("{who} cannot call the flow `{}`; flows run on their own and are applied from a view or a block as an action", c.name));

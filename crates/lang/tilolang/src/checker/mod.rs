@@ -7,6 +7,7 @@ mod call;
 mod enums;
 mod expr;
 mod native;
+mod outcomes;
 #[cfg(test)]
 mod tests;
 mod ui;
@@ -118,6 +119,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         .iter()
         .filter(|x| x.own)
         .filter_map(|x| x.func)
+        .chain(env.defaults.iter().map(|d| d.func))
         .map(|f| f.saturating_add(1))
         .max()
         .unwrap_or(0);
@@ -161,8 +163,24 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         if view.name != crate::ids::present_key(&a.name.name) {
             continue;
         }
-        let params: Vec<&str> = a.params.iter().map(|p| p.name.name.as_str()).collect();
-        funcs.push(c.run_present(&view, &a.opts, &params));
+        let Some(action) = env.own_callable(&a.name.name) else {
+            continue;
+        };
+        funcs.push(c.run_present(&view, &a.opts, &action.params));
+    }
+    // The defaults of action parameters, in the order the resolver numbered them.
+    for d in &env.defaults {
+        if funcs.len() != d.func {
+            break;
+        }
+        let written = module.items.iter().find_map(|item| match item {
+            Item::Action(a) if a.name.name == d.action => a.params.get(d.param)?.default.as_ref(),
+            _ => None,
+        });
+        let (Some(written), Some(action)) = (written, env.own_callable(&d.action)) else {
+            break;
+        };
+        funcs.push(c.run_default(action, d.param, written));
     }
     c.check_proposals(module);
     let mut views = Vec::new();

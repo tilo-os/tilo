@@ -92,6 +92,36 @@ pub struct StateInfo {
 pub struct ParamInfo {
     pub name: String,
     pub ty: Ty,
+    /// An action parameter's invocation-time default (`done: Bool = not item.done`).
+    pub default: Option<ParamDefault>,
+}
+
+/// How an action parameter's default is computed: when the action is invoked without the
+/// argument, over the arguments before it, on the invoker's state, and recorded as the argument.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParamDefault {
+    /// The module export computing it: it takes the parameters before this one.
+    pub export: String,
+    /// The function computing it, when the action is declared in this module.
+    pub func: Option<usize>,
+    /// The default as written (`not item.done`), for descriptions.
+    pub text: String,
+}
+
+/// The function of an action parameter's default, which the checker lowers.
+#[derive(Clone, Debug)]
+pub struct DefaultFn {
+    /// The action's name.
+    pub action: String,
+    /// The index of the parameter in the action's parameters.
+    pub param: usize,
+    /// Index into the module's functions.
+    pub func: usize,
+}
+
+/// The export name of the default of the parameter `param` of the action `action` (an id).
+pub fn default_export(action: &str, param: &str) -> String {
+    format!("d_{action}_{param}")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -224,6 +254,8 @@ pub struct Env {
     pub states: Vec<StateInfo>,
     /// `row view v for T`: the type and the view's name.
     pub row_views: Vec<(TypeKey, String)>,
+    /// The functions of action parameters' defaults, numbered after the presentation views.
+    pub defaults: Vec<DefaultFn>,
 }
 
 impl Env {
@@ -372,6 +404,11 @@ impl Env {
                 .map(|p| ParamInfo {
                     name: p.name.clone(),
                     ty: Ty::parse_meta(&p.ty, &app).unwrap_or(Ty::Error),
+                    default: p.default.as_ref().map(|d| ParamDefault {
+                        export: d.export.clone(),
+                        func: None,
+                        text: d.text.clone(),
+                    }),
                 })
                 .collect()
         };
@@ -680,6 +717,9 @@ impl Resolver<'_> {
             }
             let mut fields: Vec<FieldInfo> = Vec::new();
             for p in &v.fields {
+                if let Some(d) = &p.default {
+                    self.err("E028", d.span, format!("`.{}` is a variant's field, which takes no default; only an action's parameter does", p.name.name));
+                }
                 if fields.iter().any(|x| x.name == p.name.name) {
                     self.err(
                         "E012",
@@ -1151,6 +1191,7 @@ impl Resolver<'_> {
             out.push(ParamInfo {
                 name: p.name.name.clone(),
                 ty,
+                default: None,
             });
         }
         out
@@ -1160,6 +1201,9 @@ impl Resolver<'_> {
         let mut func = 0usize;
         // The presentation views of actions, which get functions after every declared one.
         let mut presents: Vec<(String, ParamInfo)> = Vec::new();
+        // The defaults of action parameters, which get functions after the presentation views:
+        // the callable's index and the parameter's.
+        let mut defaults: Vec<(usize, usize)> = Vec::new();
         for item in &module.items {
             if let Item::Scenario(sc) = item {
                 let index = func;
@@ -1210,7 +1254,24 @@ impl Resolver<'_> {
                     ),
                 );
             }
+            let ast_params = params;
             let params = self.params(params);
+            if kind == CKind::Action {
+                let at = self.env.callables.len();
+                defaults.extend(
+                    ast_params
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| p.default.is_some())
+                        .map(|(i, _)| (at, i)),
+                );
+            } else {
+                for p in ast_params {
+                    if let Some(d) = &p.default {
+                        self.err("E028", d.span, format!("`{}` is a parameter of the {} `{}`; only an action's parameters take a default, which the action's invoker gets when they leave it out", p.name.name, kind.word(), name.name));
+                    }
+                }
+            }
             if matches!(kind, CKind::Action | CKind::Flow)
                 && params.iter().any(|p| mentions_principal(&p.ty))
             {
@@ -1223,7 +1284,7 @@ impl Resolver<'_> {
             };
             let present = match item {
                 Item::Action(a) => {
-                    let mut p = self.presentation(a);
+                    let mut p = self.presentation(a, &params);
                     if a.presents_state() {
                         match params.first() {
                             Some(subject) => {
@@ -1276,6 +1337,38 @@ impl Resolver<'_> {
             });
             func += 1;
         }
+        let actions: Vec<&ast::ActionDecl> = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Action(a) => Some(a),
+                _ => None,
+            })
+            .collect();
+        for (at, index) in defaults {
+            let Some(callable) = self.env.callables.get_mut(at) else {
+                continue;
+            };
+            let written = actions
+                .iter()
+                .find(|a| a.name.name == callable.name)
+                .and_then(|a| a.params.get(index))
+                .and_then(|p| p.default.as_ref());
+            let (Some(written), Some(param)) = (written, callable.params.get_mut(index)) else {
+                continue;
+            };
+            param.default = Some(ParamDefault {
+                export: default_export(&callable.id, &param.name),
+                func: Some(func),
+                text: crate::print::expr_source(written),
+            });
+            self.env.defaults.push(DefaultFn {
+                action: callable.name.clone(),
+                param: index,
+                func,
+            });
+            func += 1;
+        }
         self.one_primary(module);
     }
 
@@ -1320,7 +1413,12 @@ impl Resolver<'_> {
     /// An action's label, icon and role, from its modifiers and its `(icon: ..., label: ...)`.
     /// A `label:` or `icon:` written as an `if` follows the subject; the static one is then its
     /// `else` branch's value (or its first), what a menu shows without evaluating anything.
-    fn presentation(&mut self, a: &ast::ActionDecl) -> Presentation {
+    fn presentation(&mut self, a: &ast::ActionDecl, params: &[ParamInfo]) -> Presentation {
+        let subject = params.first().and_then(|p| match &p.ty {
+            Ty::Record(key) => self.env.type_info(key).cloned(),
+            _ => None,
+        });
+        let at_rest = |cond: &Expr| at_rest(cond, a, subject.as_ref(), 0);
         let mut out = Presentation {
             label: action_label(&a.name.name, &a.doc.join("\n")),
             icon: None,
@@ -1340,7 +1438,7 @@ impl Resolver<'_> {
                     out.icon = self.icon(icon);
                 }
                 ("icon", ExprKind::If { .. }) => {
-                    if let Some(icon) = fallback_icon(&opt.value) {
+                    if let Some(icon) = fallback_icon(&opt.value, &at_rest) {
                         out.icon = prims::icon(&icon.name).map(str::to_string);
                     }
                 }
@@ -1353,7 +1451,7 @@ impl Resolver<'_> {
                     out.label = plain_text(&opt.value).unwrap_or_default();
                 }
                 ("label", ExprKind::If { .. }) => {
-                    if let Some(label) = fallback_label(&opt.value) {
+                    if let Some(label) = fallback_label(&opt.value, &at_rest) {
                         out.label = label;
                     }
                 }
@@ -1668,26 +1766,87 @@ fn block_expr(b: &ast::Block) -> Option<&Expr> {
 
 /// What a dynamic option shows without evaluation: the value of its `else` branch, or of its
 /// first branch that has one.
-fn fallback<T>(e: &Expr, leaf: &impl Fn(&Expr) -> Option<T>) -> Option<T> {
+/// What an `if` of `label:` or `icon:` shows where it is not evaluated (a menu of every item,
+/// History): the branch a subject at rest takes, when `at_rest` can tell (see [`at_rest`]),
+/// else the `else` branch.
+fn fallback<T>(
+    e: &Expr,
+    leaf: &impl Fn(&Expr) -> Option<T>,
+    at_rest: &impl Fn(&Expr) -> Option<bool>,
+) -> Option<T> {
     match &e.kind {
-        ExprKind::If { then, els, .. } => els
-            .as_deref()
-            .and_then(|x| fallback(x, leaf))
-            .or_else(|| block_expr(then).and_then(|x| fallback(x, leaf))),
-        ExprKind::Block(b) => block_expr(b).and_then(|x| fallback(x, leaf)),
+        ExprKind::If { cond, then, els } => {
+            let then = || block_expr(then).and_then(|x| fallback(x, leaf, at_rest));
+            let els = || els.as_deref().and_then(|x| fallback(x, leaf, at_rest));
+            if at_rest(cond) == Some(true) {
+                then().or_else(els)
+            } else {
+                els().or_else(then)
+            }
+        }
+        ExprKind::Block(b) => block_expr(b).and_then(|x| fallback(x, leaf, at_rest)),
         _ => leaf(e),
     }
 }
 
-fn fallback_label(e: &Expr) -> Option<String> {
-    fallback(e, &plain_text)
+fn fallback_label(e: &Expr, at_rest: &impl Fn(&Expr) -> Option<bool>) -> Option<String> {
+    fallback(e, &plain_text, at_rest)
 }
 
-fn fallback_icon(e: &Expr) -> Option<ast::Ident> {
-    fallback(e, &|x: &Expr| match &x.kind {
-        ExprKind::Variant { name, args: None } => Some(name.clone()),
+fn fallback_icon(e: &Expr, at_rest: &impl Fn(&Expr) -> Option<bool>) -> Option<ast::Ident> {
+    fallback(
+        e,
+        &|x: &Expr| match &x.kind {
+            ExprKind::Variant { name, args: None } => Some(name.clone()),
+            _ => None,
+        },
+        at_rest,
+    )
+}
+
+/// The value of an action option's condition for a subject at rest (each Bool field at its
+/// default) invoked with every parameter's default: `n.pinned` is `false`, and `done` with
+/// `done: Bool = not item.done` is `true`. `None` for a condition that reads anything else.
+fn at_rest(
+    cond: &Expr,
+    a: &ast::ActionDecl,
+    subject: Option<&TypeInfo>,
+    depth: u8,
+) -> Option<bool> {
+    if depth > 8 {
+        return None;
+    }
+    let deeper = |e: &Expr| at_rest(e, a, subject, depth.saturating_add(1));
+    match &cond.kind {
+        ExprKind::Bool(b) => Some(*b),
+        ExprKind::Unary {
+            op: UnOp::Not,
+            operand,
+        } => deeper(operand).map(|b| !b),
+        ExprKind::Block(b) => block_expr(b).and_then(deeper),
+        ExprKind::Ident(name) => a
+            .params
+            .iter()
+            .skip(1)
+            .find(|p| &p.name.name == name)
+            .and_then(|p| p.default.as_ref())
+            .and_then(deeper),
+        ExprKind::Field { base, name } => {
+            let ExprKind::Ident(base) = &base.kind else {
+                return None;
+            };
+            if a.params.first().is_none_or(|p| &p.name.name != base) {
+                return None;
+            }
+            let field = subject?.field(&name.name)?;
+            match (&field.ty, &field.default) {
+                (Ty::Bool, None) => Some(false),
+                (Ty::Bool, Some(value)) => value.as_bool(),
+                _ => None,
+            }
+        }
         _ => None,
-    })
+    }
 }
 
 /// Names the language gives types of its own; a package cannot declare them.

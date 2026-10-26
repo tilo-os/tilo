@@ -808,12 +808,32 @@ impl Checker<'_> {
         &mut self,
         view: &Callable,
         opts: &[ast::ActionOpt],
-        params: &[&str],
+        params: &[crate::resolve::ParamInfo],
     ) -> crate::ir::Func {
         self.begin(super::Ctx::View, &view.params, Ty::View, &view.id);
+        // The parameters whose defaults follow from the subject are what an invocation from
+        // here would pass: `done` with `done: Bool = not item.done`. The options read them.
+        let mut given: Vec<Ex> = view
+            .params
+            .first()
+            .map(|subject| Ex::local(0, subject.ty.clone()))
+            .into_iter()
+            .collect();
+        let mut others: Vec<&str> = Vec::new();
+        for p in params.iter().skip(1) {
+            match p.default.as_ref().and_then(|d| d.func) {
+                Some(f) if others.is_empty() && !given.is_empty() => {
+                    let value = Ex::new(crate::ir::Ek::Call(f, given.clone()), p.ty.clone());
+                    let id = self.declare(&p.name, p.ty.clone());
+                    self.emit(Stmt::Set(id, value));
+                    given.push(Ex::local(id, p.ty.clone()));
+                }
+                _ => others.push(p.name.as_str()),
+            }
+        }
         let n = self.new_node("present", Ex::str(&view.id));
         let node = Ex::local(n, Ty::View);
-        let others = params.get(1..).unwrap_or_default();
+        let others = others.as_slice();
         for opt in opts {
             let name = opt.name.name.as_str();
             let dynamic = name == "on" || matches!(opt.value.kind, ExprKind::If { .. });
@@ -821,7 +841,7 @@ impl Checker<'_> {
                 continue;
             }
             if let Some(other) = mentions(&opt.value, others) {
-                let subject = params.first().copied().unwrap_or_default();
+                let subject = params.first().map_or("", |p| p.name.as_str());
                 self.err("E090", opt.value.span, format!("`{name}:` is shown wherever the action is offered on `{subject}`, before anyone gives `{other}`; it reads only the subject, `{subject}`"));
                 continue;
             }
@@ -898,7 +918,7 @@ impl Checker<'_> {
 }
 
 /// The first of `names` an expression reads as a variable, ignoring the inside of lambdas.
-fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> {
+pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> {
     let block = |b: &ast::Block| {
         b.stmts.iter().find_map(|s| match &s.kind {
             StmtKind::Expr(x) | StmtKind::Let { value: x, .. } => mentions(x, names),
