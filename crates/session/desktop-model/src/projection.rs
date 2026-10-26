@@ -1226,21 +1226,29 @@ pub fn layout_digest_at(
             records.insert(tab, record);
         }
     }
+    // Who each entry names as its publisher is part of what its owner wrote:
+    // an edit of someone else's name is a write into their entry.
+    let authors = layout_authors_at(doc, heads);
+    let author = |id: u64| authors.get(&id);
     let mut out = std::collections::BTreeMap::new();
     for strip in contents_in(&reads) {
-        out.insert(strip.id, format!("s|{}|{:?}", strip.order, strip.name));
+        out.insert(
+            strip.id,
+            format!("s|{}|{:?}|{:?}", strip.order, strip.name, author(strip.id)),
+        );
         for group in strip.groups {
             out.insert(group.id, format!("g|{}", group.order));
             for tab in group.tabs {
                 out.insert(
                     tab.id,
                     format!(
-                        "t|{}|{}|{:?}|{:?}|{:?}",
+                        "t|{}|{}|{:?}|{:?}|{:?}|{:?}",
                         tab.order,
                         tab.title,
                         tab.app_title,
                         tab.tile,
                         records.get(&tab.id),
+                        author(tab.id),
                     ),
                 );
             }

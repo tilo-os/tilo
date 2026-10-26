@@ -145,7 +145,12 @@ fn declare(
     set(doc, ROOM_NAME_KEY, name)
 }
 
-fn text(doc: &AutoCommit, heads: Option<&[ChangeHash]>, obj: &ObjId, key: &str) -> Option<String> {
+fn text(
+    doc: &impl ReadDoc,
+    heads: Option<&[ChangeHash]>,
+    obj: &ObjId,
+    key: &str,
+) -> Option<String> {
     let held = match heads {
         Some(heads) => doc.get_at(obj, key, heads),
         None => doc.get(obj, key),

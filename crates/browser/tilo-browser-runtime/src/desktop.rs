@@ -1776,7 +1776,7 @@ pub(crate) fn apply_requests(
     salt: u16,
     workspace: u64,
 ) {
-    for request in tilo_desktop_model::room_layout::pending(doc, salt) {
+    for request in tilo_desktop_model::room_layout::pending(&*doc, salt) {
         let Ok(bound) =
             serde_json::from_slice::<tilo_desktop_model::commands::BoundCommand>(&request.command)
         else {
