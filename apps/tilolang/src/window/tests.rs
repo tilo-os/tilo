@@ -436,6 +436,34 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
 }
 
 #[test]
+fn a_new_conversation_shows_the_groups_avatar_until_someone_writes() {
+    let mut room = Room::new("chat");
+    room.header_action("New chat");
+    let rows = room.shown();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].avatar,
+        Some(list::RowAvatar::Glyph(
+            "New chat".to_owned(),
+            ui::icons::Icon::Users
+        )),
+        "a conversation always has an avatar: before a message, its group's"
+    );
+    let seeded = Room::seeded("chat").shown();
+    assert!(
+        seeded
+            .iter()
+            .filter(|row| row
+                .row
+                .as_ref()
+                .and_then(|node| node.props.get("secondary"))
+                != Some(&Value::Text("No messages yet".to_owned())))
+            .all(|row| matches!(row.avatar, Some(list::RowAvatar::Of(..)))),
+        "after one, its last author's"
+    );
+}
+
+#[test]
 fn a_filter_case_from_the_sidebar_narrows_the_list_and_titles_it() {
     let mut room = Room::seeded("notes");
     let all = room.rows().len();
