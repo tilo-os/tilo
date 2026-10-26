@@ -106,6 +106,7 @@ use crate::inject::{Keypress, Symbol};
 use crate::layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState};
 use crate::output::{OskOutput, TextMirror};
 use crate::predict::Predictor;
+use crate::resource::KeyboardSize;
 use crate::suggest::Suggestion;
 use crate::swipe::{GeometricSwipeModel, SwipeModel};
 
@@ -214,6 +215,11 @@ pub struct OskWidget {
     /// Whether candidate chips are shown. Turning this off leaves the stable
     /// suggestion band in place, avoiding geometry churn while typing.
     suggestions_enabled: bool,
+    /// Whether a finished word may be rewritten to a likely correction.
+    /// Independent of [`Self::suggestions_enabled`].
+    autocorrect_enabled: bool,
+    /// How tall the key rows are, as the person chose.
+    key_size: KeyboardSize,
     /// Whether the keyboard may adapt rankings and tap targets to this
     /// person's typing. What it learns is theirs alone: their host keeps it
     /// in the person's own record ([`crate::learned`]).
@@ -250,9 +256,11 @@ pub struct OskWidget {
     /// Host-issued reader of the person's shared local vocabulary. No app
     /// path fallback: an anonymous or unbound keyboard has no personal hints.
     personal_vocabulary: Option<std::sync::Arc<dyn ui::personal_dictionary::Vocabulary>>,
-    /// The language the preferred letter layout types; the predictor, the
-    /// autocorrector and the swipe decoder all serve it.
+    /// The language the dictionary, predictor, autocorrector and swipe
+    /// decoder serve; it may be chosen independently of the letter layout.
     language: Language,
+    /// The language the person chose, if any; `None` follows the layout.
+    typing_language: Option<Language>,
     /// The current ranked suggestion chips (swipe candidates or next-word
     /// predictions). Empty → the bar collapses to a hint row.
     suggestions: Vec<Suggestion>,
@@ -392,6 +400,8 @@ impl OskWidget {
             toolbar_height: toolbar_row_height(&ui::tokens::Spacing::BASE),
             suggestion_height: suggestion_row_height(&ui::tokens::Metrics::BASE),
             suggestions_enabled: true,
+            autocorrect_enabled: true,
+            key_size: KeyboardSize::Standard,
             personalization_enabled: true,
             rect: Rect::ZERO,
             content_rect: Rect::ZERO,
@@ -412,6 +422,7 @@ impl OskWidget {
             predictor: Predictor::english(),
             personal_vocabulary: None,
             language: Language::English,
+            typing_language: None,
             suggestions: Vec::new(),
             current_word: String::new(),
             word_from_swipe: false,
@@ -694,9 +705,39 @@ impl OskWidget {
         self.suggestions_enabled
     }
 
+    /// Whether a finished word may be rewritten to a likely correction.
+    pub fn autocorrect_enabled(&self) -> bool {
+        self.autocorrect_enabled
+    }
+
+    /// The chosen key height.
+    pub fn key_size(&self) -> KeyboardSize {
+        self.key_size
+    }
+
+    /// The language the dictionary and autocorrection use.
+    pub fn typing_language(&self) -> Language {
+        self.language
+    }
+
     /// Whether this process may adapt future rankings from committed words.
     pub fn personalization_enabled(&self) -> bool {
         self.personalization_enabled
+    }
+
+    /// Correct finished words, or leave every word as typed, as the
+    /// autocorrect preference says. The suggestion bar is unaffected.
+    pub fn set_autocorrect_enabled(&mut self, enabled: bool) {
+        self.autocorrect_enabled = enabled;
+    }
+
+    /// Set the key height. The preference changes no other app's density.
+    pub fn set_key_size(&mut self, size: KeyboardSize) {
+        if self.key_size == size {
+            return;
+        }
+        self.key_size = size;
+        self.structure_dirty = true;
     }
 
     /// Show or hide the suggestion chips, as the suggestions preference
@@ -924,7 +965,10 @@ impl OskWidget {
     pub fn present_preferences(&mut self, preferences: &crate::resource::OskPreferences) {
         self.present_layout_order(preferences);
         self.select_text_layout_from_preference(&preferences.layout);
+        self.set_typing_language(preferences.typing_language.as_deref());
         self.set_suggestions_enabled(preferences.suggestions);
+        self.set_autocorrect_enabled(preferences.autocorrect);
+        self.set_key_size(preferences.size);
         self.set_personalization_enabled(preferences.personalization);
         self.set_emoji_recents(&preferences.emoji_recents);
     }
@@ -1277,11 +1321,23 @@ impl OskWidget {
         true
     }
 
-    /// Switch the word data to the language the preferred letter layout
-    /// types. The previous language's context, corrections and learned words
-    /// do not carry over.
+    /// Choose the typing language explicitly, or follow the letter layout
+    /// when `code` is `None`. The previous language's context, corrections
+    /// and learned words do not carry over.
+    fn set_typing_language(&mut self, code: Option<&str>) {
+        self.typing_language = code.and_then(Language::from_code);
+        self.follow_layout_language();
+    }
+
+    /// Switch the word data to the chosen typing language, or to the
+    /// language the preferred letter layout types when none was chosen.
+    /// The previous language's context, corrections and learned words do
+    /// not carry over.
     fn follow_layout_language(&mut self) {
-        let Some(language) = Language::for_layout(&self.preferred_text_layout) else {
+        let Some(language) = self
+            .typing_language
+            .or_else(|| Language::for_layout(&self.preferred_text_layout))
+        else {
             return;
         };
         if language == self.language {
@@ -1545,7 +1601,7 @@ impl OskWidget {
     /// text with suggestions on. Passwords, addresses and codes are typed
     /// verbatim.
     fn autocorrect_allowed(&self) -> bool {
-        self.purpose == InputPurpose::Text && self.suggestions_enabled && !self.is_secret_field()
+        self.purpose == InputPurpose::Text && self.autocorrect_enabled && !self.is_secret_field()
     }
 
     /// The correction for a finished `word`, if autocorrection applies and the
@@ -2771,7 +2827,7 @@ impl Widget for OskWidget {
     ) -> NodeId {
         self.spacing = theme.tokens.spacing;
         self.metrics = theme.tokens.metrics;
-        self.target_key_height = key_row_height(&self.metrics);
+        self.target_key_height = key_row_height(&self.metrics) * self.key_size.scale();
         self.toolbar_height = toolbar_row_height(&self.spacing);
         self.suggestion_height =
             if self.purpose == InputPurpose::Terminal && self.context_error.is_none() {
@@ -3494,6 +3550,93 @@ mod tests {
         type_word(&mut osk, "teh");
         osk.apply_action(KeyAction::Space);
         assert_eq!(osk.pending_text(), "teh ");
+    }
+
+    #[test]
+    fn autocorrect_is_independent_of_the_suggestion_bar() {
+        let mut without_suggestions = OskWidget::new();
+        without_suggestions.set_suggestions_enabled(false);
+        type_word(&mut without_suggestions, "teh");
+        without_suggestions.apply_action(KeyAction::Space);
+        assert_eq!(
+            without_suggestions.pending_text(),
+            "the ",
+            "turning suggestions off leaves correction alone"
+        );
+
+        let mut without_correction = OskWidget::new();
+        without_correction.set_autocorrect_enabled(false);
+        type_word(&mut without_correction, "teh");
+        without_correction.apply_action(KeyAction::Space);
+        assert_eq!(
+            without_correction.pending_text(),
+            "teh ",
+            "the suggestion bar can offer words without rewriting what was typed"
+        );
+    }
+
+    #[test]
+    fn the_typing_language_is_chosen_independently_of_the_key_layout() {
+        let mut osk = OskWidget::new();
+        osk.present_preferences(&crate::resource::OskPreferences {
+            layout: "qwerty".into(),
+            typing_language: Some("fr".into()),
+            ..Default::default()
+        });
+        assert_eq!(osk.active_layout_name(), "qwerty");
+        assert_eq!(osk.language(), Language::French, "QWERTY types French");
+
+        osk.select_text_layout("azerty");
+        assert_eq!(osk.active_layout_name(), "azerty");
+        assert_eq!(
+            osk.language(),
+            Language::French,
+            "changing the keys does not silently change the typing language"
+        );
+        osk.present_preferences(&crate::resource::OskPreferences {
+            layout: "azerty".into(),
+            typing_language: Some("en".into()),
+            ..Default::default()
+        });
+        assert_eq!(osk.active_layout_name(), "azerty");
+        assert_eq!(osk.language(), Language::English, "AZERTY types English");
+
+        osk.present_preferences(&crate::resource::OskPreferences {
+            layout: "azerty".into(),
+            typing_language: None,
+            ..Default::default()
+        });
+        assert_eq!(
+            osk.language(),
+            Language::French,
+            "no chosen language follows the layout"
+        );
+    }
+
+    #[test]
+    fn the_key_size_changes_key_height_without_changing_the_desktop_density() {
+        let mut compact = OskWidget::new();
+        compact.present_preferences(&crate::resource::OskPreferences {
+            size: KeyboardSize::Compact,
+            ..Default::default()
+        });
+        lay_out(&mut compact, 390.0, 844.0);
+        let (_, compact_key) = key_rect(&compact, "q");
+
+        let mut standard = OskWidget::new();
+        lay_out(&mut standard, 390.0, 844.0);
+        let (_, standard_key) = key_rect(&standard, "q");
+
+        let mut large = OskWidget::new();
+        large.present_preferences(&crate::resource::OskPreferences {
+            size: KeyboardSize::Large,
+            ..Default::default()
+        });
+        lay_out(&mut large, 390.0, 844.0);
+        let (_, large_key) = key_rect(&large, "q");
+        assert!(compact_key.height() < standard_key.height());
+        assert!(standard_key.height() < large_key.height());
+        assert_eq!(large.key_size(), KeyboardSize::Large);
     }
 
     #[test]
