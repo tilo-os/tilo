@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 
 use crate::{BOT_USER, GUILD, Scripted, Shared, State, Webhook, time};
 
+mod oauth;
+
 /// One REST request the fake received.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Recorded {
@@ -21,6 +23,11 @@ pub struct Recorded {
     pub query: Vec<(String, String)>,
     /// Whether it carried `Authorization: Bot <the current token>`.
     pub bot_auth: bool,
+    /// The OAuth 2 access token it carried (`Authorization: Bearer ...`).
+    pub bearer: Option<String>,
+    /// The client credentials it carried (`Authorization: Basic ...`),
+    /// still encoded.
+    pub basic: Option<String>,
     /// `X-Audit-Log-Reason`, decoded.
     pub audit_reason: Option<String>,
     /// The JSON body, or a multipart request's `payload_json`.
@@ -150,6 +157,10 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
         let mut state = shared.lock();
         let bot_auth = authorization.as_deref() == Some(format!("Bot {}", state.token).as_str());
         let route_path = path.strip_prefix("/api/v10").map(str::to_owned);
+        let (bearer, basic) = (
+            scheme(authorization.as_deref(), "Bearer "),
+            scheme(authorization.as_deref(), "Basic "),
+        );
         let recorded = Recorded {
             method: method.clone(),
             path: route_path.as_deref().map_or_else(
@@ -158,6 +169,8 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
             ),
             query,
             bot_auth,
+            bearer,
+            basic,
             audit_reason,
             json,
             files,
@@ -173,6 +186,8 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
                 },
                 None => Answer::error(404, 0, "Not Found"),
             }
+        } else if let Some(answer) = oauth::page(&mut state, &path, &recorded.query) {
+            answer
         } else if route_path.is_none() {
             Answer::error(404, 0, "404: Not Found")
         } else if let Some(scripted) = take_script(&mut state, &method, &recorded.path) {
@@ -206,6 +221,11 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
     response
         .body(Full::new(Bytes::from(answer.body)))
         .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+}
+
+/// The credentials of an `Authorization` header under `prefix`.
+fn scheme(authorization: Option<&str>, prefix: &str) -> Option<String> {
+    authorization?.strip_prefix(prefix).map(str::to_owned)
 }
 
 fn windowed(state: &mut State, index: usize, recorded: &Recorded) -> Answer {
@@ -275,6 +295,9 @@ fn decode(text: &str) -> String {
 fn route(state: &mut State, request: &Recorded) -> Answer {
     let segments: Vec<&str> = request.path.trim_start_matches('/').split('/').collect();
     let body = &request.json;
+    if let Some(answer) = oauth::route(state, request, &segments) {
+        return answer;
+    }
     let public = matches!(segments.first(), Some(&"webhooks" | &"interactions"));
     if !public && !request.bot_auth {
         return Answer::unauthorized();
@@ -292,6 +315,22 @@ fn route(state: &mut State, request: &Recorded) -> Answer {
             &json!({"id": BOT_USER, "username": "tilo-bridge", "bot": true}),
         ),
         ("POST", ["webhooks", id, token]) => execute_webhook(state, id, token, request),
+        ("PATCH", ["webhooks", BOT_USER, token, "messages", "@original"]) => {
+            let Some(interaction) = token.strip_prefix("itoken-") else {
+                return Answer::error(401, 50027, "Invalid Webhook Token");
+            };
+            let answered = state
+                .interaction_replies
+                .iter()
+                .any(|reply| reply["interaction"] == interaction);
+            if !answered {
+                return Answer::error(404, 10008, "Unknown Message");
+            }
+            state
+                .interaction_edits
+                .push(json!({"interaction": interaction, "edit": body}));
+            Answer::json(200, body)
+        }
         ("PATCH", ["webhooks", id, token, "messages", message]) => {
             if let Err(answer) = check_webhook(state, id, token) {
                 return answer;
@@ -750,6 +789,19 @@ fn list_messages(state: &State, channel: &str, request: &Recorded) -> Answer {
 }
 
 fn parse_body(content_type: &str, body: &[u8]) -> (Value, Vec<(String, Vec<u8>)>) {
+    if content_type.starts_with("application/x-www-form-urlencoded") {
+        let form: serde_json::Map<String, Value> = String::from_utf8_lossy(body)
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(k, v)| {
+                (
+                    decode(&k.replace('+', " ")),
+                    json!(decode(&v.replace('+', " "))),
+                )
+            })
+            .collect();
+        return (Value::Object(form), Vec::new());
+    }
     if let Some(boundary) = content_type
         .strip_prefix("multipart/form-data")
         .and_then(|rest| rest.split("boundary=").nth(1))

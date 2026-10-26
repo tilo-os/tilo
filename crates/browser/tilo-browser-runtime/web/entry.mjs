@@ -236,7 +236,8 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // while it lasts: once in, the note is back until the desktop draws.
   const loading = status?.textContent ?? '';
   // A machine to set up is not admission: the page offers it once open.
-  const {install, ...secrets} = takeLinkSecrets(window);
+  // Nor is a Discord account to link: the desktop offers it once open.
+  const {install, link: linkOffer, ...secrets} = takeLinkSecrets(window);
   // The runtime (most of the page's download) loads while the entry is read
   // and, for a bare entry under a home workspace, while admission starts:
   // a host's door is asked, and the person and device keys opened, before
@@ -298,6 +299,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop,
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
+      ...(linkOffer ? {linkOffer} : {}),
       // The room service's spectator count, for the desktop's "watching".
       ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
       ...invite, ...diagnostics},

@@ -190,6 +190,34 @@ impl ConnectorProcess {
         }
     }
 
+    /// Append an event the host itself observed for this connector (one
+    /// the service told the host directly, such as a sign-in on its consent
+    /// page that came back to the host), as if the worker had reported it:
+    /// the bots listening to `source` get it the same way, deduplicated by
+    /// `id`.
+    ///
+    /// # Errors
+    /// The event log could not keep it.
+    pub async fn emit(
+        &self,
+        source: &str,
+        id: &str,
+        payload: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let now = tilo_clock::unix_now_ms_i64();
+        let appended = self
+            .shared
+            .events
+            .lock()
+            .await
+            .append(source, id, now, now, payload)
+            .map_err(|error| error.to_string())?;
+        if let Some(seq) = appended {
+            self.shared.seq.send_replace(seq);
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn events(&self) -> Arc<Mutex<EventLog>> {
         Arc::clone(&self.shared.events)

@@ -1,7 +1,7 @@
 //! Environment configuration; see README.md.
 use anyhow::{Context, Result, ensure};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::limits::TrustedProxies;
@@ -138,6 +138,9 @@ pub struct PersistentConfig {
     pub root_file: PathBuf,
     /// The Discord bot token, when the bridge runs.
     pub discord_token_file: Option<PathBuf>,
+    /// Signing in with Discord to link an account, when the operator set
+    /// up the Discord application for it.
+    pub discord_sign_in: Option<crate::discord_sign_in::SignInConfig>,
     /// The model API key the room's moderation agent asks with, when it
     /// runs; mounted from the operator's encrypted secrets. The same model
     /// looks over members' feedback reports before they are sent.
@@ -448,6 +451,28 @@ fn public_origins(
 }
 
 /// The persistent room's settings, when `TILO_ROOMS_PERSISTENT` names one.
+/// The file `name` points at, else the secret `mounted` under
+/// `/run/secrets` when the operator mounted it.
+fn secret_file(
+    var: &impl Fn(&str) -> Option<String>,
+    name: &str,
+    mounted: &str,
+) -> Option<PathBuf> {
+    let mounted = Path::new("/run/secrets").join(mounted);
+    var(name)
+        .map(PathBuf::from)
+        .or_else(|| mounted.is_file().then_some(mounted))
+}
+
+/// Signing in with Discord, when the operator set up its application; the
+/// callback is on the room's public API.
+fn discord_sign_in(
+    var: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<crate::discord_sign_in::SignInConfig>> {
+    let api = var("TILO_ROOMS_PUBLIC_API").unwrap_or_else(|| "http://localhost:8790".into());
+    crate::discord_sign_in::SignInConfig::from_vars(var, &api)
+}
+
 fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<PersistentConfig>> {
     let Some(name) = var("TILO_ROOMS_PERSISTENT") else {
         return Ok(None);
@@ -486,8 +511,6 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         "TILO_ROOMS_MAX_SPECTATORS must be 1-100000"
     );
     let (guest_joins, spectator_joins) = join_rates(var)?;
-    let token = PathBuf::from("/run/secrets/discord-bot-token");
-    let moderation_key = PathBuf::from("/run/secrets/moderation-model-key");
     let moderation_model = moderation_model(var)?;
     let seed_apps = if var("TILO_ROOMS_SEED_APPS").is_some() {
         list("TILO_ROOMS_SEED_APPS", ',')
@@ -530,12 +553,13 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         },
         root_file: var("TILO_ROOMS_ROOT_FILE")
             .map_or_else(|| PathBuf::from("/run/secrets/room-root"), PathBuf::from),
-        discord_token_file: var("TILO_ROOMS_DISCORD_TOKEN_FILE")
-            .map(PathBuf::from)
-            .or_else(|| token.is_file().then_some(token)),
-        moderation_key_file: var("TILO_ROOMS_MODERATION_KEY_FILE")
-            .map(PathBuf::from)
-            .or_else(|| moderation_key.is_file().then_some(moderation_key)),
+        discord_token_file: secret_file(var, "TILO_ROOMS_DISCORD_TOKEN_FILE", "discord-bot-token"),
+        discord_sign_in: discord_sign_in(var)?,
+        moderation_key_file: secret_file(
+            var,
+            "TILO_ROOMS_MODERATION_KEY_FILE",
+            "moderation-model-key",
+        ),
         moderation_model,
         max_spectators,
         guest_joins,

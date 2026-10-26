@@ -315,25 +315,56 @@ fn member_calls_need_a_linked_account() {
     );
 }
 
-use crate::link;
+use discord_wire::event::{LINK_TTL_MS, link_check, link_proof, sha256_hex};
 
-fn begin(replica: &mut Replica<Guild>, code: &str) {
-    replica
-        .apply(Guild::BEGIN_LINK.with(guild::BeginLink {
-            code_sha256: link::hash(code),
-        }))
-        .unwrap();
+/// The bot offers `user` under the token `token`, as `/link` does, or as a
+/// sign-in from Tilo whose state is `state`.
+fn offer(
+    bot: &mut Replica<Guild>,
+    user: &str,
+    token: &str,
+    state: Option<&str>,
+) -> Result<(), String> {
+    let check = link_check(&link_proof(token));
+    let offered = match state {
+        Some(state) => bot.apply(Guild::OFFER_SIGN_IN.with(guild::OfferSignIn {
+            check,
+            discord_user: user.into(),
+            user_name: format!("{user}.name"),
+            display_name: None,
+            avatar: Some("a1b2".into()),
+            state_sha256: sha256_hex(state.as_bytes()),
+        })),
+        None => bot.apply(Guild::OFFER_LINK.with(guild::OfferLink {
+            check,
+            discord_user: user.into(),
+            user_name: format!("{user}.name"),
+            display_name: None,
+            avatar: Some("a1b2".into()),
+            interaction: Some("i_1".to_owned()),
+        })),
+    };
+    offered
+        .map(|_| ())
+        .map_err(|refusal| format!("{refusal:?}"))
 }
 
-fn complete(bot: &mut Replica<Guild>, user: &str, person: &str, code: &str) {
-    bot.apply(Guild::COMPLETE_LINK.with(guild::CompleteLink {
-        discord_user: user.into(),
-        person: person.into(),
-        code_sha256: link::hash(code),
-        user_name: None,
-        display_name: None,
-    }))
-    .unwrap();
+/// `person` takes the offer `token` opens.
+fn take(replica: &mut Replica<Guild>, token: &str) -> Result<(), String> {
+    replica
+        .apply(Guild::COMPLETE_LINK.with(guild::CompleteLink {
+            proof: link_proof(token),
+        }))
+        .map(|_| ())
+        .map_err(|refusal| format!("{refusal:?}"))
+}
+
+fn begin(replica: &mut Replica<Guild>, state: &str) {
+    replica
+        .apply(Guild::BEGIN_CONNECT.with(guild::BeginConnect {
+            state_sha256: sha256_hex(state.as_bytes()),
+        }))
+        .unwrap();
 }
 
 fn linked_to(replica: &Replica<Guild>, user: &str) -> Option<String> {
@@ -345,107 +376,183 @@ fn linked_to(replica: &Replica<Guild>, user: &str) -> Option<String> {
         .map(|l| l.person.clone())
 }
 
-#[test]
-fn a_code_links_its_own_person_once() {
-    let mut bot = connected();
+/// Ada's account offered by the bot through `/link`, then taken by Ada.
+fn link_ada(bot: Replica<Guild>) -> Replica<Guild> {
+    let mut bot = bot;
+    offer(&mut bot, "d_ada", "T0KEN", None).unwrap();
     let mut ada = bot.fork().as_author(ADA);
-    begin(&mut ada, "AAAABBBBCCCC");
-    let mut bot = ada.fork().as_bot_for(INSTALL, ADA);
-    complete(&mut bot, "d_ada", ADA, "AAAABBBBCCCC");
-    assert_eq!(linked_to(&bot, "d_ada").as_deref(), Some(ADA));
-    assert!(bot.state().unwrap().pending_links.is_empty());
+    take(&mut ada, "T0KEN").unwrap();
+    ada.fork().as_bot_for(INSTALL, ADA)
 }
 
 #[test]
-fn a_code_from_one_person_cannot_link_another() {
+fn a_link_from_discord_links_whoever_holds_its_token_once() {
     let mut bot = connected();
+    offer(&mut bot, "d_ada", "T0KEN", None).unwrap();
+    let offered = bot
+        .state()
+        .unwrap()
+        .link_offers
+        .iter()
+        .next()
+        .unwrap()
+        .clone();
+    assert_eq!(offered.check, link_check(&link_proof("T0KEN")));
+    assert_ne!(offered.check, "T0KEN", "the record never holds the token");
+    assert_eq!(offered.interaction.as_deref(), Some("i_1"));
+
     let mut ada = bot.fork().as_author(ADA);
-    begin(&mut ada, "AAAABBBBCCCC");
-    let mut bot = ada.fork().as_bot_for(INSTALL, ADA);
-    complete(&mut bot, "d_eve", "u_eve", "AAAABBBBCCCC");
-    assert_eq!(linked_to(&bot, "d_eve"), None);
+    take(&mut ada, "T0KEN").unwrap();
+    assert_eq!(linked_to(&ada, "d_ada").as_deref(), Some(ADA));
+    let link = ada.state().unwrap().links.iter().next().unwrap().clone();
+    assert_eq!(link.avatar.as_deref(), Some("a1b2"));
     assert_eq!(
-        bot.state()
-            .unwrap()
-            .link_failures
-            .find(&Id::from_raw("d_eve"))
-            .unwrap()
-            .count,
-        1
+        link.interaction.as_deref(),
+        Some("i_1"),
+        "its reply is edited"
     );
+    assert!(ada.state().unwrap().link_offers.is_empty(), "used up");
+
+    let mut bo = ada.fork().as_author("u_bo");
+    let reused = take(&mut bo, "T0KEN").unwrap_err();
+    assert!(reused.contains("already used"), "{reused}");
+    assert_eq!(linked_to(&bo, "d_ada").as_deref(), Some(ADA));
 }
 
 #[test]
-fn codes_expire_and_wrong_codes_are_counted_then_ignored() {
+fn a_forged_or_expired_token_links_nobody() {
+    let mut bot = connected();
+    bot.set_now_ms(1_000);
+    offer(&mut bot, "d_ada", "T0KEN", None).unwrap();
+    let mut eve = bot.fork().as_author("u_eve");
+    eve.set_now_ms(1_000);
+    let forged = take(&mut eve, "GUESSED").unwrap_err();
+    assert!(forged.contains("already used or has run out"), "{forged}");
+    // The check the record shows opens nothing: only the token's proof does.
+    let check = eve
+        .state()
+        .unwrap()
+        .link_offers
+        .iter()
+        .next()
+        .unwrap()
+        .check
+        .clone();
+    assert!(
+        eve.apply(Guild::COMPLETE_LINK.with(guild::CompleteLink { proof: check }))
+            .is_err()
+    );
+
+    let mut ada = eve.fork().as_author(ADA);
+    ada.set_now_ms(1_000 + LINK_TTL_MS + 1);
+    let late = take(&mut ada, "T0KEN").unwrap_err();
+    assert!(late.contains("ran out after ten minutes"), "{late}");
+    assert_eq!(linked_to(&ada, "d_ada"), None);
+}
+
+#[test]
+fn a_sign_in_from_tilo_links_only_the_person_who_started_it() {
+    let mut bot = connected();
+    let mut ada = bot.fork().as_author(ADA);
+    begin(&mut ada, "STATE");
+    let mut bot = ada.fork().as_bot_for(INSTALL, ADA);
+    let unknown = offer(&mut bot, "d_ada", "T0KEN", Some("FORGED")).unwrap_err();
+    assert!(unknown.contains("not started here"), "{unknown}");
+    offer(&mut bot, "d_ada", "T0KEN", Some("STATE")).unwrap();
+    assert!(
+        bot.state().unwrap().connects.is_empty(),
+        "the state is used up"
+    );
+    assert!(
+        offer(&mut bot, "d_ada", "T0KEN2", Some("STATE")).is_err(),
+        "a state comes back once"
+    );
+
+    let mut eve = bot.fork().as_author("u_eve");
+    let theirs = take(&mut eve, "T0KEN").unwrap_err();
+    assert!(theirs.contains("another Tilo account"), "{theirs}");
+    let mut ada = eve.fork().as_author(ADA);
+    take(&mut ada, "T0KEN").unwrap();
+    assert_eq!(linked_to(&ada, "d_ada").as_deref(), Some(ADA));
+}
+
+#[test]
+fn a_sign_in_that_took_too_long_is_refused() {
     let mut bot = connected();
     let mut ada = bot.fork().as_author(ADA);
     ada.set_now_ms(1_000);
-    begin(&mut ada, "AAAABBBBCCCC");
+    begin(&mut ada, "STATE");
     let mut bot = ada.fork().as_bot_for(INSTALL, ADA);
-    bot.set_now_ms(1_000 + link::CODE_TTL_MS + 1);
-    complete(&mut bot, "d_ada", ADA, "AAAABBBBCCCC");
-    assert_eq!(linked_to(&bot, "d_ada"), None, "expired");
-
-    let mut ada = bot.fork().as_author(ADA);
-    begin(&mut ada, "DDDDEEEEFFFF");
-    let mut bot = ada.fork().as_bot_for(INSTALL, ADA);
-    for _ in 0..link::MAX_FAILURES {
-        complete(&mut bot, "d_ada", ADA, "WRONGWRONGWR");
-    }
-    complete(&mut bot, "d_ada", ADA, "DDDDEEEEFFFF");
-    assert_eq!(
-        linked_to(&bot, "d_ada"),
-        None,
-        "the sixth attempt in the hour is ignored, even if right"
-    );
-    bot.set_now_ms(
-        bot.state()
-            .unwrap()
-            .link_failures
-            .find(&Id::from_raw("d_ada"))
-            .unwrap()
-            .window_start_ms
-            + link::FAILURE_WINDOW_MS
-            + 1,
-    );
-    let mut ada = bot.fork().as_author(ADA);
-    begin(&mut ada, "GGGGHHHHIIII");
-    let mut bot = ada.fork().as_bot_for(INSTALL, ADA);
-    complete(&mut bot, "d_ada", ADA, "GGGGHHHHIIII");
-    assert_eq!(
-        linked_to(&bot, "d_ada").as_deref(),
-        Some(ADA),
-        "a new hour starts clean"
-    );
+    bot.set_now_ms(1_000 + LINK_TTL_MS + 1);
+    assert!(offer(&mut bot, "d_ada", "T0KEN", Some("STATE")).is_err());
 }
 
 #[test]
-fn only_a_person_begins_and_only_bots_complete() {
+fn linking_again_replaces_the_persons_old_link() {
+    let mut bot = link_ada(connected());
+    offer(&mut bot, "d_ada2", "T0KEN2", None).unwrap();
+    let mut ada = bot.fork().as_author(ADA);
+    take(&mut ada, "T0KEN2").unwrap();
+    assert_eq!(linked_to(&ada, "d_ada"), None);
+    assert_eq!(linked_to(&ada, "d_ada2").as_deref(), Some(ADA));
+}
+
+#[test]
+fn only_a_person_begins_or_takes_and_only_bots_offer() {
     let mut bot = connected();
     assert!(
-        bot.apply(Guild::BEGIN_LINK.with(guild::BeginLink {
-            code_sha256: link::hash("X")
+        bot.apply(Guild::BEGIN_CONNECT.with(guild::BeginConnect {
+            state_sha256: sha256_hex(b"S")
         }))
         .is_err()
     );
     let mut ada = bot.fork().as_author(ADA);
-    let forged = ada.apply(Guild::COMPLETE_LINK.with(guild::CompleteLink {
-        discord_user: "d_ada".into(),
-        person: ADA.into(),
-        code_sha256: link::hash("X"),
-        user_name: None,
-        display_name: None,
-    }));
-    assert!(forged.is_err());
+    assert!(
+        offer(&mut ada, "d_ada", "T0KEN", None).is_err(),
+        "a person cannot vouch for an account"
+    );
+    assert!(
+        ada.apply(Guild::BEGIN_CONNECT.with(guild::BeginConnect {
+            state_sha256: "not hex".into()
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn answers_go_out_through_the_outbox() {
+    let mut bot = connected();
+    bot.apply(Guild::ANSWER_INTERACTION.with(guild::AnswerInteraction {
+        op: AnswerInteractionOp {
+            interaction: "i_1".into(),
+            content: "Linked to Ada ✓".into(),
+        },
+    }))
+    .unwrap();
+    assert!(
+        bot.apply(Guild::ANSWER_INTERACTION.with(guild::AnswerInteraction {
+            op: AnswerInteractionOp {
+                interaction: "i_1".into(),
+                content: String::new(),
+            },
+        }))
+        .is_err()
+    );
+    let mut ada = bot.fork().as_author(ADA);
+    assert!(
+        ada.apply(Guild::ANSWER_INTERACTION.with(guild::AnswerInteraction {
+            op: AnswerInteractionOp {
+                interaction: "i_1".into(),
+                content: "forged".into(),
+            },
+        }))
+        .is_err()
+    );
 }
 
 #[test]
 fn unlink_by_the_person_or_the_bot_and_kick_needs_the_link() {
-    let mut bot = connected();
-    let mut ada = bot.fork().as_author(ADA);
-    begin(&mut ada, "AAAABBBBCCCC");
-    let mut bot = ada.fork().as_bot_for(INSTALL, ADA);
-    complete(&mut bot, "d_ada", ADA, "AAAABBBBCCCC");
+    let mut bot = link_ada(connected());
     let kick = Guild::KICK.with(guild::Kick {
         op: discord_wire::op::MemberOp {
             user: "d_ada".into(),

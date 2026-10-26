@@ -3,8 +3,8 @@ use serde_json::json;
 
 use super::*;
 use crate::layout::tests::mapping;
-use crate::link;
-use crate::record::{Link, Mapping, Ownership, PendingLink};
+use crate::record::{Link, Mapping, Ownership};
+use discord_wire::event::{Authorized, link_check, link_proof};
 
 fn guild() -> Guild {
     let mut g = Guild {
@@ -533,59 +533,135 @@ fn a_ban_blocks_and_hand_made_role_changes_are_reverted() {
     );
 }
 
-#[test]
-fn link_commands_find_the_pending_code_or_count_a_failure() {
-    let mut g = guild();
-    g.pending_links.push(PendingLink {
-        person: "u_ada".into(),
-        code_sha256: link::hash("AAAABBBBCCCC"),
-        expires_ms: i64::MAX,
-    });
-    let cmd = |code: &str| Command {
-        user_id: "u7".into(),
-        name: "link".into(),
-        code_sha256: Some(link::hash(code)),
-        ..Command::default()
-    };
-    assert_eq!(
-        plan_command(&g, &cmd("aaaa bbbb cccc")).complete_links[0].person,
-        "u_ada"
-    );
-    assert_eq!(
-        plan_command(&g, &cmd("WRONG")).complete_links[0].person,
-        "",
-        "complete-link records the failure"
-    );
-    let unlink = Command {
-        user_id: "u7".into(),
-        name: "unlink".into(),
-        ..Command::default()
-    };
-    assert!(plan_command(&g, &unlink).unlinks.is_empty(), "not linked");
+fn named(user_name: &str, display_name: Option<&str>) -> UserName {
+    UserName {
+        user_name: user_name.into(),
+        display_name: display_name.map(str::to_owned),
+    }
+}
+
+fn chat_with_ada() -> serde_json::Value {
+    json!({"people": [{"id": "u_ada", "name": "Ada Lovelace"}]})
 }
 
 #[test]
-fn a_link_carries_the_names_and_a_member_seen_renamed_updates_them() {
-    let mut g = guild();
-    g.pending_links.push(PendingLink {
-        person: "u_ada".into(),
-        code_sha256: link::hash("aaaabbbbcccc"),
-        expires_ms: i64::MAX,
-    });
-    let named = |user_name: &str, display_name: Option<&str>| UserName {
-        user_name: user_name.into(),
-        display_name: display_name.map(str::to_owned),
-    };
+fn link_offers_the_account_under_the_tokens_check_only() {
+    let g = guild();
     let linking = Command {
         user_id: "u7".into(),
         name: "link".into(),
-        code_sha256: Some(link::hash("aaaabbbbcccc")),
+        interaction: "i_1".into(),
+        link_check: Some(link_check(&link_proof("T0KEN"))),
         user: Some(named("ada.l", Some("Ada L"))),
+        avatar: Some("a1b2".into()),
         ..Command::default()
     };
-    let item = &plan_command(&g, &linking).complete_links[0];
-    assert_eq!(item.user_name, "ada.l");
-    assert_eq!(item.display_name, "Ada L");
+    let plan = plan_command(&g, &json!({}), &linking);
+    assert_eq!(
+        plan.offers,
+        [OfferItem {
+            check: link_check(&link_proof("T0KEN")),
+            discord_user: "u7".into(),
+            user_name: "ada.l".into(),
+            display_name: "Ada L".into(),
+            avatar: "a1b2".into(),
+            interaction: "i_1".into(),
+            state_sha256: String::new(),
+        }]
+    );
+    assert!(
+        plan.answers.is_empty(),
+        "the worker answered with the button"
+    );
+    let without = Command {
+        link_check: None,
+        ..linking
+    };
+    assert!(
+        plan_command(&g, &json!({}), &without).offers.is_empty(),
+        "no token, nothing to offer"
+    );
+}
+
+#[test]
+fn unlink_answers_with_what_came_of_it() {
+    let mut g = guild();
+    let unlink = Command {
+        user_id: "u7".into(),
+        name: "unlink".into(),
+        interaction: "i_2".into(),
+        ..Command::default()
+    };
+    let plan = plan_command(&g, &chat_with_ada(), &unlink);
+    assert!(plan.unlinks.is_empty(), "not linked");
+    assert!(plan.answers[0].content.contains("nothing to unlink"));
+
+    g.links.push(Link {
+        discord_user: "u7".into(),
+        person: "u_ada".into(),
+        ..Link::default()
+    });
+    let plan = plan_command(&g, &chat_with_ada(), &unlink);
+    assert_eq!(plan.unlinks, ["u7"]);
+    assert_eq!(
+        plan.answers,
+        [AnswerItem {
+            interaction: "i_2".into(),
+            content: "Unlinked from Ada Lovelace. What you write here shows under your Discord name again."
+                .into(),
+        }]
+    );
+}
+
+#[test]
+fn a_sign_in_from_tilo_is_offered_with_its_state() {
+    let authorized = Authorized {
+        user_id: "u7".into(),
+        user: Some(named("ada.l", None)),
+        avatar: None,
+        state_sha256: "5".repeat(64),
+        link_check: "c".repeat(64),
+    };
+    let plan = plan_authorized(&authorized);
+    assert!(plan.offers.is_empty(), "not for whoever holds the token");
+    let offer = &plan.sign_in_offers[0];
+    assert_eq!(offer.state_sha256, "5".repeat(64));
+    assert_eq!(offer.check, "c".repeat(64));
+    assert_eq!(
+        (offer.user_name.as_str(), offer.interaction.as_str()),
+        ("ada.l", "")
+    );
+}
+
+#[test]
+fn a_link_made_from_discord_edits_its_reply_to_the_tilo_name() {
+    let mut g = guild();
+    g.links.push(Link {
+        discord_user: "u7".into(),
+        person: "u_ada".into(),
+        interaction: Some("i_1".into()),
+        ..Link::default()
+    });
+    assert_eq!(
+        plan_linked(&g, &chat_with_ada(), "u_ada").answers,
+        [AnswerItem {
+            interaction: "i_1".into(),
+            content: linked_reply("Ada Lovelace"),
+        }]
+    );
+    assert!(linked_reply("Ada Lovelace").starts_with("Linked to Ada Lovelace ✓"));
+    g.links[0].interaction = None;
+    assert!(
+        plan_linked(&g, &chat_with_ada(), "u_ada")
+            .answers
+            .is_empty(),
+        "a sign-in from Tilo has no reply to edit"
+    );
+}
+
+#[test]
+fn a_member_seen_renamed_updates_the_link() {
+    let mut g = guild();
 
     g.links.push(Link {
         discord_user: "u7".into(),

@@ -193,6 +193,18 @@ pub struct PersistentArgs {
     /// secrets; kept where the Discord connector's worker asks for it.
     #[arg(long = "discord-token-file", value_name = "PATH")]
     pub discord_token_file: Option<PathBuf>,
+    /// The Discord application members sign in with to link their
+    /// account (OAuth 2, `identify`); with the redirect and consent page
+    /// below, the room offers "Connect Discord". The room's host keeps the
+    /// client secret and trades the code itself.
+    #[arg(long = "discord-client-id", value_name = "ID", requires_all = ["discord_redirect_url", "discord_authorize_url"])]
+    pub discord_client_id: Option<String>,
+    /// Where Discord sends the browser back: the room host's callback.
+    #[arg(long = "discord-redirect-url", value_name = "URL")]
+    pub discord_redirect_url: Option<String>,
+    /// Discord's consent page.
+    #[arg(long = "discord-authorize-url", value_name = "URL")]
+    pub discord_authorize_url: Option<String>,
     /// The worker binary of a connector (`APP=PATH`), where it is not
     /// `<name>-worker` beside this binary; repeatable.
     #[arg(long = "connector-worker", value_name = "APP=PATH")]
@@ -245,6 +257,9 @@ pub(crate) struct PersistentRoom {
     pub spectator: SigningKey,
     pub host_cert: DeviceCert,
     pub web: WebHandle,
+    /// The Discord connector a bridge runs on, which a sign-in with Discord
+    /// that came back to the service is handed to.
+    pub discord: Option<Arc<tilo_connector::ConnectorProcess>>,
 }
 
 /// The workspace name people see for the persistent room `name` (a lowercase
@@ -1658,7 +1673,7 @@ pub(crate) async fn run(
             origin: Some(web.origin.clone()),
         },
     );
-    let runners = start_bots(
+    let (runners, discord) = start_bots(
         &rooms,
         &room,
         &host_cert,
@@ -1669,6 +1684,9 @@ pub(crate) async fn run(
         &state,
     )
     .await?;
+    if let Some(discord) = &discord {
+        offer_sign_in(discord, &persistent).await;
+    }
     // The files members post in the room's Chat, kept in the same store
     // as what the bots fetch, so they stay once their poster left.
     let attachments = attachment_limits(&persistent).map(|limits| {
@@ -1702,6 +1720,7 @@ pub(crate) async fn run(
         spectator,
         host_cert,
         web,
+        discord,
     };
     let governance = Governance {
         owners,
@@ -1759,7 +1778,10 @@ async fn start_bots(
     connector_host: &tilo_relay::room_bots::installed::ConnectorHost,
     persistent: &PersistentArgs,
     state: &Path,
-) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
+) -> anyhow::Result<(
+    Vec<tokio::task::JoinHandle<()>>,
+    Option<Arc<tilo_connector::ConnectorProcess>>,
+)> {
     use tilo_relay::room_bots::discord;
     use tilo_relay::room_bots::installed::{self, BotRunner, InstalledBot};
     if let Some(path) = &persistent.discord_token_file {
@@ -1804,7 +1826,7 @@ async fn start_bots(
         installed_bots.push((dir, bot));
     }
     if installed_bots.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     }
     let blobs = connector_host.blobs(rooms);
     // The room serves without its bots rather than not at all: a connector
@@ -1823,7 +1845,7 @@ async fn start_bots(
         Ok(started) => started,
         Err(error) => {
             tracing::error!(%error, "not running the room's bots: a connector did not start");
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
     };
     let mut runners = Vec::new();
@@ -1860,7 +1882,7 @@ async fn start_bots(
         ));
         runners.push(tokio::spawn(runner.run()));
     }
-    Ok(runners)
+    Ok((runners, started.get(discord::APP).cloned()))
 }
 
 /// Carry `room`'s calls to Discord and back as `bot`'s device, through the
@@ -2171,6 +2193,74 @@ impl OnlineWatch {
     }
 }
 
+/// Hand a sign-in with Discord that came back to the service to the room's
+/// Discord bridge, as an event of its connector: the bridge offers the
+/// account to the person who started it. Nothing secret is in it: the
+/// state and the token arrive hashed.
+async fn hand_to_discord(
+    context: &PersistentRoom,
+    user_id: String,
+    user_name: String,
+    display_name: Option<String>,
+    avatar: Option<String>,
+    state_sha256: String,
+    link_check: String,
+) {
+    let Some(discord) = &context.discord else {
+        tracing::warn!("a sign-in with Discord came back, but the room runs no Discord bridge");
+        return;
+    };
+    let event = discord::event::Authorized {
+        user_id,
+        user: Some(discord::event::UserName {
+            user_name,
+            display_name,
+        }),
+        avatar,
+        state_sha256,
+        link_check,
+    };
+    let id = discord::event::event_id::authorized(&event.link_check);
+    let payload = match serde_json::to_value(&event) {
+        Ok(serde_json::Value::Object(payload)) => payload,
+        _ => return,
+    };
+    if let Err(error) = discord
+        .emit(discord::event::source::AUTHORIZED, &id, payload)
+        .await
+    {
+        tracing::error!(%error, "could not hand a sign-in with Discord to the bridge");
+    }
+}
+
+/// Tell the Discord bridge whether, and through which consent page, the
+/// room offers signing in with Discord: members are offered "Connect
+/// Discord" while it does. Said at each start, so settings taken away are
+/// withdrawn too.
+async fn offer_sign_in(bridge: &tilo_connector::ConnectorProcess, persistent: &PersistentArgs) {
+    let page = match (
+        &persistent.discord_client_id,
+        &persistent.discord_redirect_url,
+        &persistent.discord_authorize_url,
+    ) {
+        (Some(client), Some(redirect), Some(authorize)) => {
+            discord::event::sign_in_page(authorize, client, redirect)
+        }
+        _ => String::new(),
+    };
+    let offered = discord::event::SignInOffered { page };
+    let id = discord::event::event_id::sign_in(&offered.page);
+    let Ok(serde_json::Value::Object(payload)) = serde_json::to_value(&offered) else {
+        return;
+    };
+    if let Err(error) = bridge
+        .emit(discord::event::source::SIGN_IN, &id, payload)
+        .await
+    {
+        tracing::error!(%error, "could not tell the bridge about signing in with Discord");
+    }
+}
+
 async fn serve_operator(
     context: &PersistentRoom,
     governance: &Governance,
@@ -2266,6 +2356,9 @@ async fn serve_operator(
                     if let Some(sender) = mail_acks.remove(&request) {
                         let _ = sender.send(queued);
                     }
+                }
+                Some(Ok(OperatorCommand::DiscordAuthorized { user_id, user_name, display_name, avatar, state_sha256, link_check })) => {
+                    hand_to_discord(context, user_id, user_name, display_name, avatar, state_sha256, link_check).await;
                 }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent room admits guests by pre-admission only"),
                 Some(Ok(OperatorCommand::Shutdown {})) | None => {

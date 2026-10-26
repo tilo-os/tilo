@@ -187,6 +187,17 @@ struct State {
     windows: Vec<Window>,
     commands: Value,
     interaction_replies: Vec<Value>,
+    /// Edits of interaction replies (`PATCH .../messages/@original`), as
+    /// `{"interaction", "edit"}`.
+    interaction_edits: Vec<Value>,
+    /// Who is signed in to Discord in the browser: the account the consent
+    /// page authorizes.
+    oauth_user: Option<User>,
+    /// Authorization codes the consent page handed out, each to its
+    /// account and redirect address, good once.
+    oauth_codes: HashMap<String, (User, String)>,
+    /// Access tokens the token endpoint issued, by token.
+    oauth_tokens: HashMap<String, User>,
     last_id: u64,
     gateway: Gateway,
     voice: voice::Voice,
@@ -494,8 +505,13 @@ impl FakeDiscord {
         at_ms: u64,
     ) -> String {
         let id = self.post_written(channel, &User::new(webhook, name), content, at_ms);
-        let mut state = self.shared.lock();
-        if let Some(message) = state.messages.iter_mut().find(|m| m["id"] == id.as_str()) {
+        if let Some(message) = self
+            .shared
+            .lock()
+            .messages
+            .iter_mut()
+            .find(|m| m["id"] == id.as_str())
+        {
             message["webhook_id"] = json!(webhook);
             message["author"]["bot"] = json!(true);
         }
@@ -657,15 +673,11 @@ impl FakeDiscord {
         message.to_owned()
     }
 
-    /// `user` runs `/name` (with `code` for `/link`); returns the
-    /// interaction id.
-    pub fn slash(&self, user: &User, name: &str, code: Option<&str>) -> String {
+    /// `user` runs `/name`; returns the interaction id.
+    pub fn slash(&self, user: &User, name: &str) -> String {
         let mut state = self.shared.lock();
         let id = state.snowflake();
-        let options: Vec<Value> = code
-            .map(|code| json!({"type": 3, "name": "code", "value": code}))
-            .into_iter()
-            .collect();
+        let options: Vec<Value> = Vec::new();
         state.dispatch(
             "INTERACTION_CREATE",
             json!({
@@ -924,6 +936,19 @@ impl FakeDiscord {
     #[must_use]
     pub fn interaction_replies(&self) -> Vec<Value> {
         self.shared.lock().interaction_replies.clone()
+    }
+
+    /// The bot's edits of its interaction replies, oldest first, as
+    /// `{"interaction", "edit"}`.
+    #[must_use]
+    pub fn interaction_edits(&self) -> Vec<Value> {
+        self.shared.lock().interaction_edits.clone()
+    }
+
+    /// Sign `user` in to Discord: the consent page (`/oauth2/authorize`)
+    /// authorizes their account.
+    pub fn sign_in(&self, user: User) {
+        self.shared.lock().oauth_user = Some(user);
     }
 
     /// The guild's registered slash commands.

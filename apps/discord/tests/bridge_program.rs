@@ -424,17 +424,49 @@ fn pass() -> Vec<Step> {
             )],
         ),
         each(
-            "complete_links",
+            "offers",
             vec![guild(
-                "complete-link",
-                "complete-link",
+                "offer-link",
+                "offer-link",
                 &[
+                    ("check", item("check")),
                     ("discord_user", item("discord_user")),
-                    ("person", item("person")),
-                    ("code_sha256", item("code_sha256")),
                     ("user_name", item("user_name")),
                     ("display_name", item("display_name")),
+                    ("avatar", item("avatar")),
+                    ("interaction", item("interaction")),
                 ],
+            )],
+        ),
+        each(
+            "sign_in_offers",
+            vec![guild(
+                "offer-sign-in",
+                "offer-sign-in",
+                &[
+                    ("check", item("check")),
+                    ("discord_user", item("discord_user")),
+                    ("user_name", item("user_name")),
+                    ("display_name", item("display_name")),
+                    ("avatar", item("avatar")),
+                    ("state_sha256", item("state_sha256")),
+                ],
+            )],
+        ),
+        each(
+            "sign_ins",
+            vec![guild(
+                "set-sign-in",
+                "set-sign-in",
+                &[("page", item("page"))],
+            )],
+        ),
+        each(
+            "answers",
+            vec![guild(
+                "answer-interaction",
+                "answer-interaction",
+                &[("op", item(""))],
             )],
         ),
         each(
@@ -580,7 +612,7 @@ fn triggers() -> Vec<TriggerSpec> {
         },
         TriggerSpec::RecordChanged {
             kind: KIND.into(),
-            actions: vec!["block-persona".to_owned()],
+            actions: vec!["block-persona".to_owned(), "complete-link".to_owned()],
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
@@ -602,6 +634,7 @@ fn program() -> Shortcut {
         |name: &'static str, ty, about: &'static str| ActionParam::required(name, ty, about);
     Shortcut {
         id: "discord-bridge".into(),
+        step_timeout_secs: None,
         name: "Discord Bridge".into(),
         inputs: vec![
             param("event", ParamType::Object, "What fired"),
@@ -643,7 +676,6 @@ fn program() -> Shortcut {
                 },
             ),
         ],
-        step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
         triggers: triggers(),

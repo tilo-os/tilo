@@ -21,9 +21,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use discord_wire::op::{
-    ChannelKind, ChannelSpec, CreateWebhookOp, DeleteOp, DiscordOp, DiscordResult, EditOp,
-    FetchAssetOp, InAttachment, MemberOp, MemberRolesOp, OverwriteKind, OverwriteOp, ReactOp,
-    RoleSpec, SendOp, StartThreadOp,
+    AnswerInteractionOp, ChannelKind, ChannelSpec, CreateWebhookOp, DeleteOp, DiscordOp,
+    DiscordResult, EditOp, FetchAssetOp, InAttachment, MemberOp, MemberRolesOp, OverwriteKind,
+    OverwriteOp, ReactOp, RoleSpec, SendOp, StartThreadOp,
 };
 use serde_json::{Value, json};
 use tilo_connector::protocol::{Bytes, FromWorker, Outcome};
@@ -215,6 +215,7 @@ impl Performer {
             }
             DiscordOp::SetOverwrite(op) => self.overwrite(op).await,
             DiscordOp::FetchAsset(op) => self.fetch_asset(op).await,
+            DiscordOp::AnswerInteraction(op) => self.answer_interaction(op).await,
         }
     }
 
@@ -753,6 +754,20 @@ impl Performer {
     /// Download a CDN file (an avatar, an attachment) up to `max_bytes` and
     /// hand its bytes to the host, which stores them before it reads the
     /// result naming them.
+    /// Edit the reply to a slash command to what came of it, its button
+    /// gone.
+    async fn answer_interaction(&self, op: AnswerInteractionOp) -> OpResult {
+        let Some(kept) = self.ctx.take_interaction(&op.interaction) else {
+            return Err(OpError::Refused(
+                "the reply was answered already, or Discord no longer lets it be edited".into(),
+            ));
+        };
+        crate::gateway::edit_reply(&self.ctx.rest, &kept, &op.content)
+            .await
+            .map_err(|error| OpError::Unavailable(format!("editing the reply: {error:?}")))?;
+        Ok(DiscordResult::Done)
+    }
+
     async fn fetch_asset(&self, op: FetchAssetOp) -> OpResult {
         let url = Url::parse(&op.url).map_err(|_| OpError::Refused("not a URL".into()))?;
         if self.ctx.config.egress.check(&url, Purpose::Cdn).is_err() {

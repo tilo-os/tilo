@@ -1,6 +1,7 @@
 //! Shared Tilo rooms next to a website: short-lived rooms on request, or
 //! one persistent public room. See README.md.
 mod config;
+mod discord_sign_in;
 mod guests;
 mod limits;
 mod mail;
@@ -227,6 +228,54 @@ impl Service {
         let mut response = Response::new(full(Bytes::new()));
         *response.status_mut() = StatusCode::FOUND;
         response.headers_mut().insert(header::LOCATION, location);
+        response
+    }
+
+    /// `GET /discord/callback`: back from Discord's consent page, on to the
+    /// web entry, or a page saying what went wrong.
+    async fn discord_callback(
+        &self,
+        persistent: &persistent::Persistent,
+        query: &str,
+    ) -> Response<Body> {
+        let web_entry = self
+            .config
+            .persistent
+            .as_ref()
+            .and_then(|persistent| persistent.web_entry.clone())
+            .unwrap_or_default();
+        match persistent.discord_callback(query, &web_entry).await {
+            None => Self::error(StatusCode::NOT_FOUND, "not found"),
+            Some(Ok(onward)) => Self::front_door(Some(&onward)),
+            Some(Err(discord_sign_in::Failed::Declined)) => Self::front_door(Some(&web_entry)),
+            Some(Err(failed)) => Self::sign_in_failed(failed.said(), &web_entry),
+        }
+    }
+
+    /// A sign-in with Discord that linked nothing: a plain page saying why
+    /// and what to do, with the way back into Tilo.
+    fn sign_in_failed(said: &str, web_entry: &str) -> Response<Body> {
+        let escape = |text: &str| {
+            text.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+        };
+        let page = format!(
+            "<!doctype html><meta charset=utf-8><meta name=viewport content=\"width=device-width\">\
+             <title>Linking Discord didn't work</title>\
+             <body style=\"font:16px/1.5 system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#1c1c1e\">\
+             <h1 style=\"font-size:1.4rem\">Linking Discord didn't work</h1><p>{}</p>\
+             <p><a href=\"{}\" style=\"color:#5865f2\">Back to Tilo</a></p>",
+            escape(said),
+            escape(web_entry)
+        );
+        let mut response = Response::new(full(Bytes::from(page)));
+        *response.status_mut() = StatusCode::BAD_REQUEST;
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("text/html; charset=utf-8"),
+        );
         response
     }
 
@@ -788,6 +837,10 @@ impl Service {
                     .as_ref()
                     .and_then(|persistent| persistent.web_entry.as_deref()),
             ),
+            (&Method::GET, ["discord", "callback"]) => {
+                let query = request.uri().query().unwrap_or_default().to_owned();
+                self.discord_callback(persistent, &query).await
+            }
             (&Method::POST, ["join"]) => match Self::paused() {
                 Some(refused) => refused,
                 None => match Self::decode::<persistent::JoinRequest>(request.into_body()).await {

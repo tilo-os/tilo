@@ -12,8 +12,8 @@
 //! is in the record; [`BridgePlan::again`] asks for that pass.
 
 use discord_wire::event::{
-    Command, LayoutChanged, MemberChanged, MessageCreated, MessageDeleted, MessageUpdated,
-    ReactionChanged, source,
+    Authorized, Command, LayoutChanged, MemberChanged, MessageCreated, MessageDeleted,
+    MessageUpdated, ReactionChanged, SignInOffered, source,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -98,7 +98,14 @@ pub struct BridgePlan {
     pub chat_unreacts: Vec<Value>,
     /// `block-persona`.
     pub blocks: Vec<Value>,
-    pub complete_links: Vec<Value>,
+    /// `offer-link`.
+    pub offers: Vec<Value>,
+    /// `offer-sign-in`.
+    pub sign_in_offers: Vec<Value>,
+    /// `answer-interaction`: a slash command's reply says what came of it.
+    pub answers: Vec<Value>,
+    /// `set-sign-in`: the host's offer of signing in with Discord changed.
+    pub sign_ins: Vec<Value>,
     pub unlinks: Vec<Value>,
     /// `rename-link`.
     pub renames: Vec<Value>,
@@ -555,6 +562,17 @@ fn room_change(plan: &mut BridgePlan, guild: &Guild, verb: &str, event: &Value) 
 /// A Moderator blocked a Discord author: what was already mirrored of them
 /// is removed from Chat.
 fn guild_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, event: &Value) {
+    if verb == "complete-link" {
+        // A person took a link offer: the `/link` it answered says so.
+        if let Some(person) = event.pointer("/actor/id").and_then(Value::as_str) {
+            inbound_plan(
+                plan,
+                read,
+                inbound::plan_linked(read.guild, read.chat, person),
+            );
+        }
+        return;
+    }
     if verb != "block-persona" {
         return;
     }
@@ -586,7 +604,18 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
         source::MEMBER_CHANGED => {
             payload::<MemberChanged>(body).map(|e| inbound::plan_member(guild, &e, read.room))
         }
-        source::COMMAND => payload::<Command>(body).map(|e| inbound::plan_command(guild, &e)),
+        source::COMMAND => {
+            payload::<Command>(body).map(|e| inbound::plan_command(guild, read.chat, &e))
+        }
+        source::AUTHORIZED => payload::<Authorized>(body).map(|e| inbound::plan_authorized(&e)),
+        source::SIGN_IN => {
+            if let Some(offered) = payload::<SignInOffered>(body)
+                && guild.sign_in_page.as_deref().unwrap_or_default() != offered.page
+            {
+                plan.sign_ins.push(json!({ "page": offered.page }));
+            }
+            None
+        }
         source::LAYOUT_CHANGED => {
             if let Some(layout) = payload::<LayoutChanged>(body) {
                 layout_changed(plan, read, &layout);
@@ -684,7 +713,9 @@ fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) 
             .map(|user| json!({ "discord_user": user })),
     );
     plan.member_roles.extend(values(inbound.member_roles));
-    plan.complete_links.extend(values(inbound.complete_links));
+    plan.offers.extend(values(inbound.offers));
+    plan.sign_in_offers.extend(values(inbound.sign_in_offers));
+    plan.answers.extend(values(inbound.answers));
     plan.unlinks.extend(
         inbound
             .unlinks

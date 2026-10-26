@@ -103,23 +103,13 @@ impl ResourceApp for Discord {
     }
 
     fn view(cx: &mut ViewCx<Guild>) -> Element {
-        let code = cx.local(String::new());
-        let shown_code = code.clone();
         let bridging = Setup::new();
         let answering = bridging.clone();
         cx.effects::<DiscordEffect>(move |effect, ecx| {
             if let Some(answer) = setup::answer(&answering, &effect, ecx) {
                 return answer;
             }
-            let linking = effect == DiscordEffect::LinkAccount;
-            let answer = effects::answer(effect, ecx);
-            if linking
-                && let Ok(ui::framework::Effected::Done(output)) = &answer
-                && let Some(value) = output.value.as_ref().and_then(|v| v["code"].as_str())
-            {
-                code.set(value.to_owned());
-            }
-            answer
+            effects::answer(effect, ecx)
         });
         let shown = cx.value(Shown::of);
         let offered = bridging.clone();
@@ -132,27 +122,10 @@ impl ResourceApp for Discord {
                 .with_id("guild-name")
                 .with_role(TextRole::Title);
             let summary = Text::new(&status(shown)).with_id("guild-status");
-            let link = cx
-                .effect_button("discord-link-account", &DiscordEffect::LinkAccount)
-                .role(ui::widget::ButtonRole::Primary);
-            let instruction = Text::from_state(&shown_code, |code| {
-                if code.is_empty() {
-                    String::new()
-                } else {
-                    CATALOG.t("discord-link-code")
-                }
-            })
-            .with_live(ui::a11y::Politeness::Polite);
-            let code = Text::from_state(&shown_code, Clone::clone)
-                .with_id("link-code")
-                .with_role(TextRole::Code);
             let account = ui::widget::Section::titled(
                 CATALOG.t("discord-your-account"),
                 vec![
                     Box::new(Text::new(&CATALOG.t("discord-link-explanation")).dimmed()) as Element,
-                    Box::new(link),
-                    Box::new(instruction),
-                    Box::new(code),
                 ],
             );
             Box::new(

@@ -20,22 +20,65 @@ fn connected() -> TestApp<Discord> {
     app
 }
 
+const PAGE: &str = "https://discord.com/oauth2/authorize?response_type=code&client_id=1234&scope=identify\
+                    &redirect_uri=https%3A%2F%2Frooms.example%2Fdiscord%2Fcallback&prompt=none";
+
 #[test]
-fn linking_shows_the_code_once_and_keeps_only_its_hash() {
+fn connect_goes_to_the_page_the_host_offers_and_binds_the_state_to_the_person() {
     let mut app = connected();
-    let output = app.effect(&DiscordEffect::LinkAccount).unwrap();
-    let code = output.value.unwrap()["code"].as_str().unwrap().to_owned();
-    assert_eq!(code.len(), 12);
-    let state = app.state();
-    let pending = state.pending_links.iter().next().unwrap();
-    assert_eq!(pending.code_sha256, link::hash(&code));
-    assert_ne!(pending.code_sha256, code);
+    let refused = app.effect(&DiscordEffect::ConnectAccount).unwrap_err();
+    assert!(format!("{refused:?}").contains("sign"), "{refused:?}");
+    let mut unbridged = TestApp::<Discord>::new().unwrap();
+    assert!(unbridged.effect(&DiscordEffect::ConnectAccount).is_err());
+
+    app.call_by(bot(), crate::KIND, "set-sign-in", json!({"page": PAGE}))
+        .unwrap();
+    let start: ui::linked_accounts::LinkStart = serde_json::from_value(
+        app.effect(&DiscordEffect::ConnectAccount)
+            .unwrap()
+            .value
+            .unwrap(),
+    )
+    .unwrap();
+    let state = start.url.rsplit_once("&state=").unwrap().1.to_owned();
+    assert!(start.url.starts_with(PAGE), "{}", start.url);
+    assert_eq!(state.len(), 43);
+    let connect = app.state().connects.iter().next().unwrap().clone();
+    assert_eq!(connect.state_sha256, sha256_hex(state.as_bytes()));
+    assert_ne!(
+        connect.state_sha256, state,
+        "the record keeps only its hash"
+    );
+
+    app.call_by(bot(), crate::KIND, "set-sign-in", json!({"page": ""}))
+        .unwrap();
+    assert!(
+        app.effect(&DiscordEffect::ConnectAccount).is_err(),
+        "withdrawn"
+    );
+    assert!(
+        app.call_by(
+            bot(),
+            crate::KIND,
+            "set-sign-in",
+            json!({"page": "javascript:x"})
+        )
+        .is_err()
+    );
 }
 
 #[test]
-fn a_record_that_is_not_connected_makes_no_code() {
-    let mut app = TestApp::<Discord>::new().unwrap();
-    assert!(app.effect(&DiscordEffect::LinkAccount).is_err());
+fn the_consent_page_asks_for_identify_only_and_comes_back_to_the_host() {
+    let page = discord_wire::event::sign_in_page(
+        "https://discord.com/oauth2/authorize",
+        "1234",
+        "https://rooms.example/discord/callback",
+    );
+    assert_eq!(page, PAGE);
+    assert_eq!(consent_url(&page, "st/te"), format!("{PAGE}&state=st%2Fte"));
+    let states: std::collections::BTreeSet<String> = (0..8).map(|_| new_state()).collect();
+    assert_eq!(states.len(), 8, "each round trip its own state");
+    assert!(states.iter().all(|state| state.len() == 43));
 }
 
 #[test]
@@ -72,6 +115,7 @@ fn plans_answer_what_the_program_loops_over() {
 fn linked_guild() -> Guild {
     let mut guild = Guild {
         guild_id: "1".into(),
+        sign_in_page: Some(PAGE.into()),
         ..Guild::default()
     };
     guild.links.push(crate::Link {
@@ -80,10 +124,27 @@ fn linked_guild() -> Guild {
         linked_at: 5,
         user_name: "ada.l".into(),
         display_name: Some("Ada L".into()),
+        avatar: None,
+        interaction: None,
     });
-    guild.pending_links.push(crate::PendingLink {
-        person: "bo".into(),
-        code_sha256: link::hash("ABCDEFGHIJKL"),
+    guild.link_offers.push(crate::LinkOffer {
+        check: link_check(&link_proof("FROM-DISCORD")),
+        discord_user: "43".into(),
+        user_name: "bo".into(),
+        display_name: None,
+        avatar: None,
+        person: None,
+        interaction: Some("i_1".into()),
+        expires_ms: 100,
+    });
+    guild.link_offers.push(crate::LinkOffer {
+        check: link_check(&link_proof("FROM-TILO")),
+        discord_user: "44".into(),
+        user_name: "cy".into(),
+        display_name: Some("Cy".into()),
+        avatar: None,
+        person: Some("cy".into()),
+        interaction: None,
         expires_ms: 100,
     });
     guild
@@ -92,29 +153,58 @@ fn linked_guild() -> Guild {
 #[test]
 fn my_link_answers_for_its_reader_by_name() {
     let guild = linked_guild();
-    let ada = my_link(&guild, Some("ada"), 50);
+    let ada = my_link(&guild, Some("ada"));
     assert!(ada.connected);
     assert_eq!(ada.service, "Discord");
     let account = ada.account.unwrap();
     assert_eq!(account.user_name, "ada.l");
     assert_eq!(account.display_name.as_deref(), Some("Ada L"));
-    assert_eq!(ada.link, DiscordEffect::LinkAccount.id());
-    assert_eq!(ada.unlink.as_deref(), Some(DiscordEffect::UnlinkMine.id()));
-
-    let bo = my_link(&guild, Some("bo"), 50);
-    assert_eq!((bo.account, bo.pending, bo.unlink), (None, true, None));
-    assert!(
-        !my_link(&guild, Some("bo"), 101).pending,
-        "the code expired"
+    assert_eq!(
+        ada.connect.as_deref(),
+        Some(DiscordEffect::ConnectAccount.id())
     );
-    assert!(!my_link(&Guild::default(), Some("ada"), 0).connected);
+    assert_eq!(ada.unlink.as_deref(), Some(DiscordEffect::UnlinkMine.id()));
+    assert!(ada.elsewhere.unwrap().contains("/link"));
+
+    let no_sign_in = Guild {
+        sign_in_page: None,
+        ..linked_guild()
+    };
+    let bo = my_link(&no_sign_in, Some("bo"));
+    assert_eq!((bo.account, bo.connect, bo.unlink), (None, None, None));
+    let one_channel = Guild {
+        only_channel: Some("5".into()),
+        ..linked_guild()
+    };
+    assert_eq!(
+        my_link(&one_channel, Some("bo")).elsewhere,
+        None,
+        "/link is registered only for a whole server"
+    );
+    assert!(!my_link(&Guild::default(), Some("ada")).connected);
+}
+
+#[test]
+fn an_offer_reads_for_whoever_holds_its_token_or_only_its_starter() {
+    let guild = linked_guild();
+    let bo = read_offer(&guild, "FROM-DISCORD", Some("anyone"), 50).unwrap();
+    assert_eq!(bo.account.user_name, "bo");
+    assert!(!bo.started_here, "a link from Discord asks first");
+    let cy = read_offer(&guild, "FROM-TILO", Some("cy"), 50).unwrap();
+    assert!(cy.started_here);
+    let theirs = read_offer(&guild, "FROM-TILO", Some("eve"), 50).unwrap_err();
+    assert!(theirs.contains("another Tilo account"), "{theirs}");
+    let late = read_offer(&guild, "FROM-DISCORD", Some("bo"), 101).unwrap_err();
+    assert!(late.contains("10 minutes"), "{late}");
+    let forged = read_offer(&guild, "GUESSED", Some("bo"), 50).unwrap_err();
+    assert!(forged.contains("/link"), "says what to do: {forged}");
 }
 
 #[test]
 fn the_linking_actions_are_offered_to_every_member_through_the_host() {
     assert_eq!(DiscordEffect::MyLink.id(), ui::linked_accounts::READ_ACTION);
     let mut app = connected();
-    let own: Vec<String> = app
+    let mut own: Vec<String> = app
         .actions()
         .unwrap()
         .into_iter()
@@ -134,72 +224,67 @@ fn the_linking_actions_are_offered_to_every_member_through_the_host() {
             entry.address.action
         })
         .collect();
-    assert_eq!(own, ["link-account", "my-link", "unlink-mine"]);
+    own.sort();
+    assert_eq!(
+        own,
+        [
+            "accept-link",
+            "connect-account",
+            "link-offer",
+            "my-link",
+            "unlink-mine"
+        ]
+    );
     let reading: ui::linked_accounts::Reading =
         serde_json::from_value(app.effect(&DiscordEffect::MyLink).unwrap().value.unwrap()).unwrap();
     assert!(reading.connected);
     assert_eq!(reading.account, None);
-    let code: ui::linked_accounts::LinkCode = serde_json::from_value(
-        app.effect(&DiscordEffect::LinkAccount)
-            .unwrap()
-            .value
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        code.instruction,
-        "In Discord, type /link with this code. It works for 10 minutes."
-    );
+    assert_eq!(reading.connect, None, "the host offers no sign-in yet");
+    assert_eq!(reading.offer, "link-offer");
+    assert_eq!(reading.accept, "accept-link");
 }
 
-/// The bridge bot, which completes links from Discord's `/link`.
+/// The bridge bot, which offers accounts Discord vouched for.
 fn bot() -> ui::tilo_actions::ActionInvoker {
     ui::tilo_actions::ActionInvoker::actor("bridge").with_kind(ui::tilo_actions::ActorKind::Bot)
 }
 
-/// `person`'s code completed by the bot as Discord user `user`, named
-/// `user_name`.
-fn complete(app: &mut TestApp<Discord>, code: &str, person: &str, user: &str, user_name: &str) {
+/// The bot offers Discord user `user`, named `user_name`, under `token`,
+/// as `/link` does.
+fn offer(app: &mut TestApp<Discord>, token: &str, user: &str, user_name: &str) {
     app.call_by(
         bot(),
         crate::KIND,
-        "complete-link",
+        "offer-link",
         json!({
+            "check": link_check(&link_proof(token)),
             "discord_user": user,
-            "person": person,
-            "code_sha256": link::hash(code),
             "user_name": user_name,
             "display_name": "",
+            "avatar": "",
+            "interaction": "",
         }),
     )
     .unwrap();
 }
 
-fn code_of(output: &ui::tilo_actions::ActionOutput) -> String {
-    output.value.as_ref().unwrap()["code"]
-        .as_str()
-        .unwrap()
-        .to_owned()
-}
-
 #[test]
 fn a_link_keeps_the_names_and_unlinking_mine_takes_only_mine() {
     let mut app = connected();
-    let mine = code_of(&app.effect(&DiscordEffect::LinkAccount).unwrap());
-    let me = app
-        .state()
-        .pending_links
-        .iter()
-        .next()
-        .unwrap()
-        .person
-        .clone();
-    let theirs = code_of(
-        &app.effect_by("someone-else", &DiscordEffect::LinkAccount)
-            .unwrap(),
-    );
-    complete(&mut app, &mine, &me, "42", "ada.l");
-    complete(&mut app, &theirs, "someone-else", "43", "bo");
+    offer(&mut app, "MINE", "42", "ada.l");
+    offer(&mut app, "THEIRS", "43", "bo");
+    app.effect(&DiscordEffect::AcceptLink {
+        token: "MINE".into(),
+    })
+    .unwrap();
+    let me = app.state().links.iter().next().unwrap().person.clone();
+    app.effect_by(
+        "someone-else",
+        &DiscordEffect::AcceptLink {
+            token: "THEIRS".into(),
+        },
+    )
+    .unwrap();
     let names: Vec<(String, String)> = app
         .state()
         .links
@@ -210,6 +295,15 @@ fn a_link_keeps_the_names_and_unlinking_mine_takes_only_mine() {
         names,
         [("42".into(), "ada.l".into()), ("43".into(), "bo".into())]
     );
+    let reused = app
+        .effect_by(
+            "a-third-person",
+            &DiscordEffect::AcceptLink {
+                token: "MINE".into(),
+            },
+        )
+        .unwrap_err();
+    assert!(format!("{reused:?}").contains("already used"), "{reused:?}");
 
     app.call_by(
         bot(),
@@ -218,7 +312,7 @@ fn a_link_keeps_the_names_and_unlinking_mine_takes_only_mine() {
         json!({"discord_user": "42", "user_name": "ada.lovelace", "display_name": "Ada"}),
     )
     .unwrap();
-    let reading = my_link(&app.state(), Some(&me), 0);
+    let reading = my_link(&app.state(), Some(&me));
     let account = reading.account.unwrap();
     assert_eq!(account.user_name, "ada.lovelace");
     assert_eq!(account.display_name.as_deref(), Some("Ada"));

@@ -189,15 +189,33 @@ pub fn plan_post(
     if text.is_empty() && attachments.is_empty() {
         return plan;
     }
+    // A person who linked their Discord account reads as themselves there:
+    // their name with their handle, and their Discord picture while they
+    // have none of their own in Tilo.
+    let link = guild
+        .links
+        .iter()
+        .find(|link| link.person == message.author);
+    let username = match link {
+        Some(link) if !automated => slug::linked_webhook_username(&name, &link.user_name),
+        _ => slug::webhook_username(&name, automated),
+    };
+    let discord_avatar = link.filter(|_| avatar_blob.is_none()).and_then(|link| {
+        Some(discord_avatar_url(
+            &link.discord_user,
+            link.avatar.as_deref()?,
+        ))
+    });
     plan.sends.push(SendItem {
         op: SendOp {
             channel: target.channel,
             webhook: target.webhook,
             thread,
-            username: slug::webhook_username(&name, automated),
+            username,
             avatar_url: avatar_blob
                 .as_ref()
-                .map(|b| format!("{}{b}", context.avatars)),
+                .map(|b| format!("{}{b}", context.avatars))
+                .or(discord_avatar),
             avatar_blob,
             content: text,
             attachments,
@@ -207,6 +225,13 @@ pub fn plan_post(
         root: message.parent,
     });
     plan
+}
+
+/// Where Discord serves the avatar `hash` of `user`.
+#[must_use]
+pub fn discord_avatar_url(user: &str, hash: &str) -> String {
+    let format = if hash.starts_with("a_") { "gif" } else { "png" };
+    format!("https://cdn.discordapp.com/avatars/{user}/{hash}.{format}?size=128")
 }
 
 struct Target {
