@@ -111,12 +111,12 @@ fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
     // The shared navigation is a rail of four screens. Back exposes it as
     // a list on a phone; a little wider, the rail docks beside the screen.
     // Every destination retains a full, independent pointer target.
-    for width in [360_u32, 520_u32] {
+    let phone_width = 360_u32;
+    for width in [phone_width, 520_u32] {
         let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (width, 820)).unwrap();
         let harness = app.harness();
         harness.set_interaction_environment(ui::InteractionEnvironment::TOUCH);
-        if width < 400 {
-            // allow-breakpoint: test varies width
+        if width < phone_width {
             harness
                 .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
                 .unwrap();
