@@ -128,13 +128,10 @@ enum Confirm {
     /// Delete a local branch.
     DeleteBranch(String),
     /// Switch to a branch while the working tree holds uncommitted work:
-    /// the person chooses what becomes of it.
-    SwitchBranch {
-        name: String,
-        /// Whether there is uncommitted work at all (a clean tree switches
-        /// without asking).
-        dirty: bool,
-    },
+    /// the person chooses what becomes of it. A clean tree has nothing at
+    /// stake and switches without a question, so this only ever asks when
+    /// there is work to lose.
+    SwitchBranch { name: String },
 }
 
 /// One answer to a confirmation sheet.
@@ -178,8 +175,7 @@ impl Confirm {
             }
             Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => "git-confirm-discard-body",
             Confirm::DeleteBranch(_) => "git-confirm-delete-branch-body",
-            Confirm::SwitchBranch { dirty: true, .. } => "git-confirm-switch-dirty-body",
-            Confirm::SwitchBranch { dirty: false, .. } => "git-confirm-switch-body",
+            Confirm::SwitchBranch { .. } => "git-confirm-switch-body",
         })
     }
 
@@ -196,7 +192,9 @@ impl Confirm {
                 label: t("git-delete-branch"),
                 danger: true,
             }],
-            Confirm::SwitchBranch { dirty, .. } if *dirty => vec![
+            // The work comes along or it is parked; there is no third answer
+            // that keeps it anywhere else.
+            Confirm::SwitchBranch { .. } => vec![
                 ChoiceFace {
                     choice: ConfirmChoice::SwitchStashing,
                     label: t("git-switch-stash"),
@@ -208,12 +206,6 @@ impl Confirm {
                     danger: false,
                 },
             ],
-            // A clean tree has nothing to decide: Cancel, or go.
-            Confirm::SwitchBranch { .. } => vec![ChoiceFace {
-                choice: ConfirmChoice::SwitchCarrying,
-                label: t("git-switch-go"),
-                danger: false,
-            }],
         }
     }
 }
@@ -1267,9 +1259,8 @@ impl GitClientApp {
             // Switching branches with work in the tree asks first: the work
             // either comes along or is parked, and the person decides which.
             BranchAction::Checkout(name) => {
-                let dirty = self.model.change_count() > 0;
-                if dirty {
-                    self.confirm = Some(Confirm::SwitchBranch { name, dirty });
+                if self.model.change_count() > 0 {
+                    self.confirm = Some(Confirm::SwitchBranch { name });
                     return;
                 }
                 crate::repo::checkout_branch(&path, &name)
@@ -3771,7 +3762,6 @@ impl GitClientApp {
             Some("switch") => {
                 self.confirm = Some(Confirm::SwitchBranch {
                     name: "wgpu-pipeline".to_owned(),
-                    dirty: true,
                 });
             }
             // The narrow window's list column, revealed over its scrim
