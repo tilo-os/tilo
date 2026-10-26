@@ -213,3 +213,43 @@ test('history entries never hold a secret', async () => {
   for (const entry of window.entries) assert.doesNotMatch(entry.url, /invite=|ticket=|token=/);
   assert.equal(router.url('desktop'), link.format({mode: 'desktop', target: router.route.target}));
 });
+
+test('a link that names a view is written as what it opened, not as the link it came from', async () => {
+  const bare = {scope, app: 'so.tilo.chat'};
+  const opened = {scope, app: 'so.tilo.chat', view: 'thread'};
+  const navigation = fakeNavigation(desk([['1', 'so.tilo.chat']], '1'));
+  // The page was opened with the view's link; the person has since been
+  // moved elsewhere, and Back comes to that link.
+  const window = fakeWindow(link.format({mode: 'desktop', target: bare}));
+  window.history.pushState(null, '', link.format({mode: 'desktop', target: opened}));
+  const router = startRouter({window, link, navigation, initial: {mode: 'desktop', target: opened},
+    show: async () => {
+      // `entry.mjs` shows the view, then names it in the address, as the
+      // link to it would: the route it was shown as carries no resource.
+      assert.equal(window.location.href, link.format({mode: 'desktop', target: bare}));
+      router.replace({mode: 'desktop', target: opened});
+    }});
+  window.writes.length = 0;
+  await window.back();
+  assert.deepEqual(window.writes, [['replace', link.format({mode: 'desktop', target: opened})]]);
+  assert.deepEqual(router.route.target, opened, 'the router reads the address it wrote, not the bare link');
+  router.stop();
+});
+
+test('windows the router itself opened never overwrite the view it named', async () => {
+  const navigation = fakeNavigation(desk([['1', 'so.tilo.notes']], '1'));
+  const window = fakeWindow(link.format({mode: 'desktop', target: {scope, app: 'so.tilo.notes'}}));
+  const router = startRouter({window, link, navigation,
+    initial: {mode: 'desktop', target: {scope, app: 'so.tilo.notes'}},
+    show: async () => {
+      navigation.emit(desk([['1', 'so.tilo.notes'], ['2', 'so.tilo.chat']], '2'));
+      router.replace({mode: 'desktop', target: {scope, app: 'so.tilo.chat'}});
+    }});
+  window.writes.length = 0;
+  await router.open({mode: 'desktop', target: {scope, app: 'so.tilo.chat'}});
+  // The open is one history entry, and the window it launched never wrote
+  // the address again: it already holds what the router wrote.
+  assert.deepEqual(window.writes, [['replace', link.format({mode: 'desktop', target: {scope, app: 'so.tilo.chat'}})]]);
+  assert.deepEqual(router.route.target, {scope, app: 'so.tilo.chat'});
+  router.stop();
+});

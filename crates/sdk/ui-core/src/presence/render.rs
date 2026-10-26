@@ -977,7 +977,16 @@ pub fn paint_reaction(
     reaction: &super::ReactionFloat,
 ) -> Rect {
     let style = reaction_style(theme);
-    let (w, h) = text_renderer.measure_style(&reaction.emoji, None, &style);
+    // A workspace emoji floats its picture, a square as tall as an emoji
+    // of the reaction's type would stand.
+    let picture = tilo_resource::custom_emoji_name(&reaction.emoji)
+        .and_then(|name| crate::workspace_emoji::emoji().image(name));
+    let (w, h) = if picture.is_some() {
+        let side = style.size * crate::richtext::inline_emoji::SIDE_EM;
+        (side, side)
+    } else {
+        text_renderer.measure_style(&reaction.emoji, None, &style)
+    };
     let (w, h) = (f64::from(w), f64::from(h));
     let rect = Rect::new(
         at.x - w / 2.0,
@@ -987,6 +996,10 @@ pub fn paint_reaction(
     );
     let bounds = rect.inflate(FADE_EDGE, FADE_EDGE);
     faded(scene, transform, reaction.opacity, bounds, |scene| {
+        if let Some(picture) = &picture {
+            crate::image_store::paint_image_contain(scene, transform, rect, picture, 0.0);
+            return;
+        }
         text_renderer.draw_style(
             scene,
             &reaction.emoji,
@@ -1051,7 +1064,7 @@ fn faded(
 
 /// The outline of a person's pointer: an arrow with its tip at the origin,
 /// the shape everyone reads as "someone is pointing here".
-fn arrow_path() -> vello::kurbo::BezPath {
+pub(crate) fn arrow_path() -> vello::kurbo::BezPath {
     let mut path = vello::kurbo::BezPath::new();
     path.move_to((0.0, 0.0));
     path.line_to((0.0, 16.0));
@@ -3158,5 +3171,50 @@ mod tests {
         );
         let bubble = painted.iter().copied().reduce(|a, b| a.union(b)).unwrap();
         assert!(bubble.width() > 150.0, "the message is in it: {bubble:?}");
+    }
+
+    /// A reaction of a workspace emoji floats its picture, in a square; one the
+    /// window's workspace lacks floats its `:name:`.
+    #[test]
+    fn a_workspace_emoji_reaction_floats_its_picture() {
+        use crate::richtext::inline_emoji::tests::{Fixed, workspace};
+        let float = |emoji: &str| {
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            let theme = Theme::dark();
+            let reaction = crate::presence::ReactionFloat {
+                emoji: emoji.to_owned(),
+                rise: 0.0,
+                opacity: 1.0,
+            };
+            let at = Point::new(200.0, 200.0);
+            let painted = paint_reaction(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                at,
+                &reaction,
+            );
+            let picture = scene
+                .encoding()
+                .draw_tags
+                .contains(&vello_encoding::DrawTag::IMAGE);
+            (picture, painted)
+        };
+        assert!(!float(":tilo:").0, "no window: text");
+        let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
+        crate::workspace_emoji::register(
+            &scope.handle(),
+            std::rc::Rc::new(Fixed::new(workspace())),
+        );
+        let (picture, painted) = float(":tilo:");
+        assert!(picture);
+        assert!(
+            (painted.width() - painted.height()).abs() < 1e-6,
+            "a square: {painted:?}"
+        );
+        assert!(!float(":missing:").0);
     }
 }

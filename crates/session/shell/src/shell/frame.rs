@@ -261,6 +261,11 @@ pub enum LayerPolicy {
 /// does not leave the layers and come back.
 const PAN_LINGER_FRAMES: u32 = 4;
 
+/// How many drawn frame identities the desktop remembers, so a pointer action
+/// waiting for the next frame can still tell whether one landed. A press holds
+/// one frame, not a session.
+const DRAWN_REVISIONS_KEPT: usize = 16;
+
 /// What the presenter asks of strip pans.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct StripPanPresenter {
@@ -857,6 +862,12 @@ pub struct FrameBuilder {
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
     next_scene_revision: u64,
+    /// Revisions issued to frames the desktop has finished drawing, in order:
+    /// the last few of them. A press the control socket lands asks to be
+    /// answered at a revision later than the frame its target was read from,
+    /// so the one place that turns a decision into a pointer action is also
+    /// the one place that has to hold it until then.
+    drawn_revisions: Vec<u64>,
     /// Capacity of this builder's actual presenter; absent for dense captures.
     retained_layer_width: Option<u32>,
     /// Which frames that presenter gets as layers.
@@ -965,6 +976,7 @@ fn shots_theme_requested() -> bool {
     SHOTS_THEME.get().is_some()
         || std::env::var_os("TILO_SHOTS_THEME").is_some()
         || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
+        || std::env::var_os("TILO_SHOTS_DENSITY").is_some()
 }
 
 /// Whether `app` may write `workspace`'s room for `person` at `now`: the
@@ -1006,10 +1018,10 @@ impl FrameBuilder {
     }
 
     /// Optional presentation overrides for offscreen `shots` capture:
-    /// `TILO_SHOTS_THEME=<preset>` (any name `Theme::named` finds) and
-    /// `TILO_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
-    /// a theme-driven chrome change be proven in high contrast and at large
-    /// text, not just its comfortable default density.
+    /// `TILO_SHOTS_THEME=<preset>` (any name `Theme::named` finds),
+    /// `TILO_SHOTS_TEXT_SCALE=<factor>` and `TILO_SHOTS_DENSITY=compact`.
+    /// Unset keeps the dark default — lets a theme-driven chrome change be
+    /// proven in high contrast, at large text and at compact density.
     fn shots_theme_override() -> Option<Theme> {
         let requested_theme = SHOTS_THEME
             .get()
@@ -1019,18 +1031,21 @@ impl FrameBuilder {
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|value| value.is_finite());
-        if requested_theme.is_none() && requested_scale.is_none() {
+        let compact = std::env::var_os("TILO_SHOTS_DENSITY").is_some_and(|d| d == "compact");
+        if requested_theme.is_none() && requested_scale.is_none() && !compact {
             return None;
         }
-        let theme = requested_theme
+        let mut theme = requested_theme
             .as_deref()
             .and_then(|name| Theme::named(name.trim()))
             .unwrap_or_else(Theme::dark);
-        Some(if let Some(scale) = requested_scale {
-            theme.with_text_scale(scale)
-        } else {
-            theme
-        })
+        if let Some(scale) = requested_scale {
+            theme = theme.with_text_scale(scale);
+        }
+        if compact {
+            theme = theme.with_density(ui::tokens::Density::Compact);
+        }
+        Some(theme)
     }
 
     /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle), with
@@ -1214,6 +1229,7 @@ impl FrameBuilder {
             palette_focus_active: false,
             last_produced_sections: None,
             next_scene_revision: 1,
+            drawn_revisions: Vec::new(),
             retained_layer_width: None,
             layer_policy: LayerPolicy::default(),
             strip_motion: StripMotion::default(),
@@ -4675,6 +4691,15 @@ impl FrameBuilder {
 
     /// Earliest one-shot widget deadline. Unlike animation demand this lets
     /// the compositor sleep until the visual state can actually change.
+    /// Until when the next frame waits for a window's first frame that may
+    /// still land inside its frame budget ([`ui::arriving`]): shown then, it
+    /// opens with no placeholder at all. The hold's end is a wake deadline
+    /// ([`Self::next_wake_deadline`]), so the frame is made then at the
+    /// latest.
+    pub fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
+        Widget::holds_frame_until(&*self.host, now).filter(|until| *until > now)
+    }
+
     pub fn next_wake_deadline(&self) -> Option<Instant> {
         [
             self.host.next_wake_deadline(),
@@ -4735,12 +4760,12 @@ impl FrameBuilder {
         .flatten()
     }
 
-    /// Whether any tab is still holding a place for an app that hasn't drawn
-    /// yet. The opening card's spinner keeps [`Self::needs_animation_frame`]
-    /// true for the wait's duration, so a caller waiting for quiet has to
-    /// distinguish "still starting" from "animation wedged".
-    pub fn any_tile_opening(&mut self) -> bool {
-        self.host.any_tile_opening()
+    /// Whether any tab is still holding a place for a window whose first
+    /// frame hasn't arrived yet. Asking also latches a client frame that was
+    /// published as presented, so a caller waiting for a client to show asks
+    /// this every frame.
+    pub fn any_tile_arriving(&mut self) -> bool {
+        self.host.any_tile_arriving()
     }
 
     /// The chrome's monotonic revision counter. Bumps whenever chrome
@@ -4750,6 +4775,14 @@ impl FrameBuilder {
         self.chrome.borrow().revision
     }
 
+    /// The identity of the last frame drawn, and which frames were drawn
+    /// before it, oldest first — what a pointer action asks to be answered at
+    /// a later one of.
+    #[must_use]
+    pub fn drawn_revisions(&self) -> &[u64] {
+        &self.drawn_revisions
+    }
+
     /// The shell was drawn, its motions read at `motions_at` or later: the
     /// motion clock may stop asking for a frame at rest it has now had, and
     /// the window groups' once-per-drawn-frame motion is told the frame
@@ -4757,6 +4790,17 @@ impl FrameBuilder {
     fn frame_drawn(&mut self, motions_at: Instant) {
         ui::motion::frame_drawn(motions_at);
         self.host.frame_presented();
+        // The scene this frame issued has just landed. The list is a window,
+        // not a ledger: a press waits for one frame, not for a session.
+        let issued = self.next_scene_revision.saturating_sub(1);
+        if self.drawn_revisions.last() != Some(&issued) {
+            self.drawn_revisions.push(issued);
+            let excess = self
+                .drawn_revisions
+                .len()
+                .saturating_sub(DRAWN_REVISIONS_KEPT);
+            self.drawn_revisions.drain(..excess);
+        }
     }
 
     pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
@@ -6079,6 +6123,7 @@ impl FrameBuilder {
             ("members", WsTab::Members),
             ("permissions", WsTab::Permissions),
             ("apps", WsTab::Apps),
+            ("emoji", WsTab::Emoji),
         ] {
             put(
                 format!("ws_settings_tab[{key}]"),
@@ -9902,13 +9947,13 @@ mod tests {
                 .take_pending_configure(SURFACE)
                 .expect("layout must make the initial client configure available without input");
             assert!(
-                fb.needs_animation_frame(),
+                fb.needs_animation_frame() || fb.next_wake_deadline().is_some(),
                 "the opening window must keep progressing"
             );
             assert!(!store.is_presented(SURFACE));
             assert!(
-                fb.any_tile_opening(),
-                "the visible notice must become an opening card, not an unresponsive-app error"
+                fb.any_tile_arriving(),
+                "the visible notice must become the window's arrival, not an unresponsive-app error"
             );
             let _ = fb.paint();
 

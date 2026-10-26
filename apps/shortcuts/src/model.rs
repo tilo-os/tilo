@@ -29,6 +29,10 @@ pub struct Program {
     /// keeps when it runs on its own and what it may do then.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<TriggerSpec>,
+    /// How long each step of a run may take before it is given up on
+    /// (`Shortcut::step_timeout_secs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_timeout_secs: Option<u64>,
 }
 
 /// One shortcut being written.
@@ -60,6 +64,9 @@ pub struct Draft {
     /// Carried unchanged from the saved shortcut, so editing its steps
     /// keeps when it runs on its own and what it may do then.
     pub triggers: Vec<TriggerSpec>,
+    /// Carried unchanged like the triggers: how long each step of a run may
+    /// take, or `None` for the engine's own patience.
+    pub step_timeout_secs: Option<u64>,
     /// Whether saving replaces a saved shortcut rather than creating one.
     pub replaces_saved: bool,
 }
@@ -242,6 +249,7 @@ impl Draft {
             steps: self.block("", ""),
             output: self.output.clone(),
             triggers: self.triggers.clone(),
+            step_timeout_secs: self.step_timeout_secs,
         }
     }
 
@@ -356,6 +364,7 @@ impl Draft {
             output: program.output,
             grant,
             triggers: program.triggers,
+            step_timeout_secs: program.step_timeout_secs,
             saved_by: None,
         }
     }
@@ -497,6 +506,7 @@ impl Workbench {
             steps: shortcut.steps,
             output: shortcut.output,
             triggers: Vec::new(),
+            step_timeout_secs: shortcut.step_timeout_secs,
         };
         let draft = Draft::new(shortcut.name, shortcut.id, &program, false, &mut || cx.id());
         self.drafts.push(id, draft);
@@ -518,6 +528,7 @@ impl Workbench {
             steps: shortcut.steps,
             output: shortcut.output,
             triggers: shortcut.triggers,
+            step_timeout_secs: shortcut.step_timeout_secs,
         };
         let draft = Draft::new(shortcut.name, shortcut.id, &program, true, &mut || cx.id());
         self.drafts.push(id, draft);

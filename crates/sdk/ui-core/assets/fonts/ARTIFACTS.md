@@ -29,8 +29,9 @@ TILO_FONT_ASSETS_OFFLINE=1 python3 tools/font-catalog.py prepare   crates/sdk/ui
 python3 tools/font-catalog.py stage target/offline-fonts   target/installed-fonts --scope os
 ~~~
 
-The cache defaults to target/font-artifacts. Set TILO_FONT_ASSET_CACHE or pass
---cache to use a prewarmed cache elsewhere. --offline or
+The cache defaults to font-artifacts in the machine's tilo test cache
+(TILO_TEST_CACHE_DIR, or ~/.cache/tilo/test-env). Set TILO_FONT_ASSET_CACHE or
+pass --cache to use a prewarmed cache elsewhere. --offline or
 TILO_FONT_ASSETS_OFFLINE=1 rejects missing cache entries. Every use verifies the
 file size and SHA-256; a corrupt entry fails instead of being replaced. Failed
 preparation never publishes a partial destination. Destinations must be new.
@@ -41,8 +42,10 @@ carry 37. No font is subset, converted, renamed internally or replaced. Installe
 catalogs retain all selected font bytes and notices and need no runtime fetch.
 
 Cargo source builds prepare the fixture catalog through tilo-font-catalog's
-build script. SDK packaging prepares the selected checkout's product catalog;
-OS staging prepares its OS catalog. No application downloads fonts at runtime.
+build script, into the crate's OUT_DIR: the catalog is part of the build's
+output, so anything that reuses the build finds it there. SDK packaging
+prepares the selected checkout's product catalog; OS staging prepares its OS
+catalog. No application downloads fonts at runtime.
 CI prewarms the digest cache and runs subsequent preparation offline.
 
 For a self-contained offline SDK, set TILO_FONT_CATALOG_ROOT to a prepared

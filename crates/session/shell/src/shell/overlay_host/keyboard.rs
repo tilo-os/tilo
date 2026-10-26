@@ -231,6 +231,17 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        // Super+R: point at what is wrong, where reports have somewhere to go.
+        if shortcut_pressed(ShortcutAction::ReportProblem) && self.feedback_configured() {
+            crate::compositor::key_latency::note_key_handler(
+                crate::compositor::key_latency::KeyHandler::Shortcut(ShortcutAction::ReportProblem),
+            );
+            if !repeat {
+                self.open_feedback_picker();
+            }
+            *handled = true;
+            return true;
+        }
         if shortcut_pressed(ShortcutAction::QuickSettings) {
             crate::compositor::key_latency::note_key_handler(
                 crate::compositor::key_latency::KeyHandler::Shortcut(ShortcutAction::QuickSettings),

@@ -61,11 +61,14 @@ window-toolbar-more = Weitere Aktionen
 window-toolbar-views = Ansicht
 window-toolbar-suggestions = Vorschläge
 window-toolbar-edited = Bearbeitet
+window-toolbar-view-only = Nur ansehen
 segmented-choose = Auswählen
 window-toolbar-show-sidebar = Seitenleiste einblenden
 window-toolbar-hide-sidebar = Seitenleiste ausblenden
 window-toolbar-show-inspector = Inspektor einblenden
 window-toolbar-hide-inspector = Inspektor ausblenden
+window-share-to-channel = In Kanal teilen…
+window-stop-sharing-in = Teilen in { $place } beenden
 history-genesis = Erstellt
 history-edited-field = { $more ->
     [0] { $path } bearbeitet
@@ -217,7 +220,7 @@ history-filters-clear = Filter zurücksetzen
 history-entries = Verlaufseinträge
 history-author-anyone = Alle
 history-work-task = Aufgabe
-history-work-agent-run = Agentenlauf
+history-work-agent-run = Lauf
 history-work-shortcut = Kurzbefehl
 history-selection-clear = Aufheben
 history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernte Änderungen empfangen werden
@@ -226,6 +229,8 @@ history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich ge�
 history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
 arriving-loading = Wird geladen
 arriving-from = Von { $source }
+arriving-received-of = { $received } von { $total }
+arriving-received = { $received } empfangen
 arriving-failed = Konnte nicht geladen werden
 arriving-retry = Erneut versuchen
 content-unavailable = Keines der verbundenen Geräte hat es
@@ -757,6 +762,8 @@ approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
 
 author-bot-chip = Bot
 author-via-chip = über { $service }
+author-from-service = Aus { $service }
+author-from-service-as = Aus { $service } als { $handle }
 author-bot-details = { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-linked = Mit { $person } auf Tilo verknüpft
@@ -847,6 +854,7 @@ block-a11y-table-row = Zeile { $row }
 block-a11y-table = Tabelle
 block-a11y-open-link = Verlinkte Notiz öffnen
 block-a11y-open-external = Weblink öffnen
+block-a11y-open-resource = { $label } öffnen
 block-a11y-block = { $kind }-Block { $position }
 block-a11y-level = Ebene { $level }
 block-a11y-document = Ziehe den Griff eines Blocks, um ihn zu verschieben. Alt+Pfeil hoch und Alt+Pfeil runter verschieben den fokussierten Block. Tab rückt ihn unter den Block darüber ein, Umschalt+Tab wieder aus; Escape, dann Tab, verlässt den Editor.
@@ -912,6 +920,50 @@ signal-meter-fair = Mittleres Signal
 signal-meter-good = Gutes Signal
 signal-meter-strong = Starkes Signal
 
+reaction-strip-add = Reaktion hinzufügen
+reaction-strip-react = Reaktion { $emoji } hinzufügen
+reaction-strip-unreact = Reaktion { $emoji } entfernen
+reaction-strip-count = { $count ->
+    [one] Eine Reaktion
+   *[other] { $count } Reaktionen
+}
+reaction-strip-you = Du
+reaction-strip-reacted-one = { $first } hat mit { $emoji } reagiert
+reaction-strip-reacted-two = { $first } und { $second } haben mit { $emoji } reagiert
+reaction-strip-reacted-three = { $first }, { $second } und { $third } haben mit { $emoji } reagiert
+reaction-strip-reacted-more = { $first }, { $second } und { $others ->
+    [one] eine weitere Person
+   *[other] { $others } weitere
+} haben mit { $emoji } reagiert
+
+emoji-chooser-title = Emoji
+emoji-chooser-search = Emoji suchen
+emoji-chooser-groups = Emoji-Kategorien
+emoji-chooser-workspace = Arbeitsbereich
+emoji-chooser-recent = Zuletzt verwendet
+emoji-chooser-results = Passende Emoji
+emoji-chooser-no-results = Keine Emoji gefunden
+emoji-chooser-arriving = Weitere Emoji kommen gleich
+emoji-chooser-add = Emoji hinzufügen
+emoji-chooser-add-failed = Das Bild konnte nicht hinzugefügt werden: { $reason }
+emoji-chooser-tones = Hauttöne
+emoji-chooser-tone-hint = Hautton wählen
+emoji-chooser-toned = { $name }, { $tone }
+emoji-chooser-tone-light = heller Hautton
+emoji-chooser-tone-medium-light = mittelheller Hautton
+emoji-chooser-tone-medium = mittlerer Hautton
+emoji-chooser-tone-medium-dark = mitteldunkler Hautton
+emoji-chooser-tone-dark = dunkler Hautton
+
+## The workspace's own emoji
+workspace-emoji-choose-title = Emoji hinzufügen
+workspace-emoji-choose-accept = Hinzufügen
+workspace-emoji-image-files = Bilder
+workspace-emoji-loading = die Bildwerkzeuge laden noch
+workspace-emoji-not-a-picture = es ist kein PNG, JPEG oder WebP
+workspace-emoji-too-detailed = es ist zu detailreich für ein Emoji
+workspace-emoji-unavailable = die Emoji dieses Arbeitsbereichs sind nicht verfügbar
+workspace-emoji-not-allowed = du darfst hier keine Emoji hinzufügen
 # Der Gesprächs-Grundbaustein: Zustellvokabular und die Anhangsleiter.
 conversation-delivery-queued = In der Warteschlange
 conversation-delivery-sending = Wird gesendet
@@ -940,3 +992,40 @@ conversation-draft = Draft
 conversation-draft-preview = Draft: {$text}
 conversation-unread = Unread message
 conversation-day-earlier = {$date}
+# Jobs: what is running. A job's row says what it is doing and how far.
+jobs-starting = Wird gestartet
+jobs-phase-of = { $phase }: { $done } von { $total }
+jobs-phase-seen = { $phase }: { $seen }
+jobs-percent = { $percent } %
+jobs-bar-of = { $done } von { $total }
+jobs-failed = Nicht fertig geworden: { $reason }
+jobs-stopped = Angehalten
+jobs-stop = Anhalten
+jobs-stopping = Wird angehalten
+jobs-show-me = Zeigen
+jobs-read = Gelesen
+jobs-more = Noch { $count }
+jobs-running-heading = Läuft
+jobs-finished-heading = Beendet
+jobs-none = Es läuft nichts
+jobs-none-message = Alles, was länger dauert, steht währenddessen da und sagt, wie es geendet hat.
+
+jobs-files-one = { $count } Datei
+jobs-files = { $count } Dateien
+jobs-items-one = { $count } Element
+jobs-items = { $count } Elemente
+jobs-steps-one = { $count } Schritt
+jobs-steps = { $count } Schritte
+
+# Needs you: what wants a person.
+attention-blocking = Jetzt
+attention-waiting = Wartet
+attention-noted = Gut zu wissen
+attention-none = Nichts braucht dich
+attention-none-message = Was auf deine Entscheidung wartet, wartet weiter.
+attention-because = { $about }, { $because }
+attention-defer = Für später beiseitelegen
+attention-deferred-one = { $count } beiseitegelegt
+attention-deferred = { $count } beiseitegelegt
+attention-pill-one = { $count } wartet
+attention-pill = { $count } warten

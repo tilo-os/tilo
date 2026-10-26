@@ -3,6 +3,7 @@
 //! player on this device is the surface over it, with its effects and the
 //! live rows of what it shows.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::framework::{
@@ -49,7 +50,15 @@ impl ResourceApp for VideoPlayerShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Library>) -> Element {
-        cx.surface(PlayerApp::new(cx.mode()))
+        // The playhead is the player's, not the document's, so the player
+        // says what it is on and the view publishes those verbs: neither
+        // holds the other.
+        let playhead = Playhead::default();
+        let published = Rc::clone(&playhead);
+        cx.bind_declarations(move |_| published.borrow().clone());
+        let mut player = PlayerApp::new(cx.mode());
+        player.share_playhead(&playhead);
+        cx.surface(player)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -109,12 +118,6 @@ impl ResourceSurface<Library, VideoEffect> for PlayerApp {
         self.effect_statuses()
     }
 
-    /// Edits bound to the playhead: bookmark the moment shown, add the open
-    /// video to the shared Watch later playlist.
-    fn bound_declarations(&self) -> Vec<ActionDecl<Library>> {
-        self.playhead_declarations()
-    }
-
     fn live_rows(&self) -> Vec<LiveRow> {
         actions::live_rows(&self.player_rows(), actions::CONTEXTUAL_CHILD_LIMIT)
     }
@@ -123,6 +126,11 @@ impl ResourceSurface<Library, VideoEffect> for PlayerApp {
         actions::live_row(&self.player_rows(), id)
     }
 }
+
+/// What the view publishes of the player's playhead: the shared library's
+/// verbs bound to the video open and the moment shown, which the player
+/// keeps current and the view reads when the published tree is read.
+pub(crate) type Playhead = Rc<RefCell<Vec<ActionDecl<Library>>>>;
 
 #[cfg(test)]
 mod tests {
@@ -210,11 +218,14 @@ mod tests {
         );
         // Seek reaches the player: it moves the open clip, or, on a machine
         // without the system decoder, says a video must be open first. The
-        // scenario parks the clip at two seconds and plays on from there, so
-        // the target is before it: a seek that did nothing would leave the
-        // playhead at or past where it was.
+        // test puts the playhead at two seconds itself and seeks back from
+        // there: a seek that did nothing would leave it at or past where it
+        // was. The scenario's own park at two seconds is no starting point:
+        // it comes before the decoder knows how long the clip is, so it can
+        // land at the start, and the clip then plays on from there.
+        let parked = drive_invoke(&mut app, &VideoEffect::Seek { seconds: 2.0 });
         let before = surface(&mut app, |player| player.player().position_ms());
-        match drive_invoke(&mut app, &VideoEffect::Seek { seconds: 0.5 }) {
+        match parked.and_then(|()| drive_invoke(&mut app, &VideoEffect::Seek { seconds: 0.5 })) {
             Ok(()) => {
                 let after = surface(&mut app, |player| player.player().position_ms());
                 assert!(

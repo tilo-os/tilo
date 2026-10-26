@@ -74,12 +74,20 @@ fn wayland() -> Option<&'static NoWayland> {
 }
 
 /// Stand-in so the resolution order reads the same on every desktop.
+///
+/// The Linux build reaches its Wayland session through the same
+/// [`ClipboardBackend`] methods, so resolving through this type keeps the
+/// calls above checked against the trait the Linux backend implements. Adding
+/// a method one side and not the other is then a compile error wherever each
+/// is built, rather than one only a macOS or Windows build meets.
 #[cfg(not(target_os = "linux"))]
 struct NoWayland;
 
 #[cfg(not(target_os = "linux"))]
-#[allow(clippy::unused_self, reason = "mirrors the Wayland backend's methods")]
-impl NoWayland {
+impl ClipboardBackend for NoWayland {
+    // There is no Wayland connection to hand a copy to, so every method
+    // answers as an empty clipboard and `NativeClipboard` falls through to
+    // the system clipboard behind it.
     fn set_text(&self, _target: ClipboardTarget, _text: &str) -> bool {
         false
     }
@@ -91,20 +99,8 @@ impl NoWayland {
         let _ = reply.send(None);
         result
     }
-    fn set_secret_text(&self, _text: &str) -> bool {
-        false
-    }
-    fn set_rich_text(&self, _html: &str, _plain: &str) -> bool {
-        false
-    }
-    fn rich_text(&self) -> Option<crate::RichTextOffer> {
-        None
-    }
-    fn set_image(&self, _width: usize, _height: usize, _rgba: &[u8]) -> bool {
-        false
-    }
-    fn image(&self) -> Option<crate::ClipboardImage> {
-        None
+    fn name(&self) -> &'static str {
+        "no-wayland"
     }
 }
 

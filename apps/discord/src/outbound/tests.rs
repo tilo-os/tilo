@@ -42,7 +42,158 @@ fn context() -> Context {
     Context {
         avatars: "https://rooms.example/avatars/".into(),
         link: "https://app.example/#m".into(),
+        links: None,
     }
+}
+
+const ROOM: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
+
+fn linked() -> Context {
+    Context {
+        links: Some(Box::new(Links {
+            web_entry: "https://tilo.example/".into(),
+            origin: "https://lounge.tilo.example".into(),
+            room: ROOM.into(),
+            host_device: "ab".repeat(32),
+        })),
+        ..context()
+    }
+}
+
+fn shared(id: &str, text: &str, share: &Value) -> Value {
+    msg(
+        id,
+        "u_ada",
+        text,
+        &json!({
+            "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Launch *plan*"},
+            "source_provider": "record:so.tilo.notes:notes:plan",
+            "share": share,
+        }),
+    )
+}
+
+/// A window shared live goes across as a line that says so and opens the
+/// resource on the room's web entry, where `share-link` would send its
+/// reader; its words go first unless they only repeat its name.
+#[test]
+fn a_live_share_links_to_where_it_opens_on_the_web() {
+    let url = format!(
+        "https://tilo.example/app/#/@lounge.tilo.example/w/{ROOM}/so.tilo.notes/notes:plan/notes.page:1"
+    );
+    let chat = chat(&[
+        shared(
+            "m1",
+            "Launch *plan*",
+            &json!({"access": {"$variant": "view"}, "open": true, "ended": false}),
+        ),
+        shared(
+            "m2",
+            "Look at this",
+            &json!({"access": {"$variant": "edit"}, "open": true, "ended": false}),
+        ),
+    ]);
+    let reference = crate::tilo::message(&chat, "m1")
+        .unwrap()
+        .reference
+        .unwrap();
+    assert_eq!(
+        linked()
+            .links
+            .unwrap()
+            .resource("record:so.tilo.notes:notes:plan", &reference),
+        Ok(url.clone())
+    );
+    let one = &plan_post(&guild(), &chat, "m1", &linked()).sends[0].op;
+    assert_eq!(
+        one.content,
+        format!("Sharing **Launch \\*plan\\*** live. Open it in Tilo: {url}")
+    );
+    let two = &plan_post(&guild(), &chat, "m2", &linked()).sends[0].op;
+    assert_eq!(
+        two.content,
+        format!("Look at this\nSharing **Launch \\*plan\\*** live. Open it in Tilo: {url}")
+    );
+    // A host that serves no web page leaves the link out.
+    let bare = &plan_post(&guild(), &chat, "m1", &context()).sends[0].op;
+    assert_eq!(bare.content, "Sharing **Launch \\*plan\\*** live in Tilo");
+}
+
+/// When the share ends, its Discord copy is edited to say so, without the
+/// link that no longer opens anything.
+#[test]
+fn an_ended_share_is_edited_to_say_it_is_no_longer_shared() {
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
+    let chat = chat(&[shared(
+        "m1",
+        "Launch *plan*",
+        &json!({"access": {"$variant": "view"}, "open": false, "ended": true}),
+    )]);
+    let edit = &plan_edit(&g, &chat, "m1", &linked())[0];
+    assert_eq!(
+        (edit.message.as_str(), edit.content.as_str()),
+        ("d_m1", "**Launch \\*plan\\*** is no longer shared")
+    );
+}
+
+/// While its sharer has the window closed, the Discord copy says it is not
+/// live right now and still links to it; reopening makes it live again.
+#[test]
+fn a_closed_share_reads_as_not_live_right_now() {
+    let url = format!(
+        "https://tilo.example/app/#/@lounge.tilo.example/w/{ROOM}/so.tilo.notes/notes:plan/notes.page:1"
+    );
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
+    let closed = chat(&[shared(
+        "m1",
+        "Launch *plan*",
+        &json!({"access": {"$variant": "view"}, "open": false, "ended": false}),
+    )]);
+    let edit = &plan_edit(&g, &closed, "m1", &linked())[0];
+    assert_eq!(
+        edit.content,
+        format!("Shared **Launch \\*plan\\***, not live right now. Open it in Tilo: {url}")
+    );
+    let bare = &plan_edit(&g, &closed, "m1", &context())[0];
+    assert_eq!(
+        bare.content,
+        "Shared **Launch \\*plan\\***, not live right now"
+    );
+    let reopened = chat(&[shared(
+        "m1",
+        "Launch *plan*",
+        &json!({"access": {"$variant": "view"}, "open": true, "ended": false}),
+    )]);
+    let edit = &plan_edit(&g, &reopened, "m1", &linked())[0];
+    assert_eq!(
+        edit.content,
+        format!("Sharing **Launch \\*plan\\*** live. Open it in Tilo: {url}")
+    );
+}
+
+/// A resource shared without a live window links to it too.
+#[test]
+fn a_shared_resource_links_to_it() {
+    let chat = chat(&[msg(
+        "m1",
+        "u_ada",
+        "Discuss",
+        &json!({
+            "reference": {"kind": "notes.page", "id": "notes.page:1", "label": "Plan"},
+            "source_provider": "record:so.tilo.notes:notes:plan",
+        }),
+    )]);
+    let send = &plan_post(&guild(), &chat, "m1", &linked()).sends[0].op;
+    assert!(
+        send.content
+            .starts_with("Discuss\n**Plan**: https://tilo.example/"),
+        "{}",
+        send.content
+    );
+    let bare = &plan_post(&guild(), &chat, "m1", &context()).sends[0].op;
+    assert_eq!(bare.content, "Discuss");
 }
 
 #[test]
@@ -260,25 +411,73 @@ fn the_bot_reacts_once_per_emoji_while_tilo_people_have_it() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
     let reacted = |rs: Value| chat(&[msg("m1", "u_ada", "x", &json!({"reactions": rs}))]);
-    let one = reacted(json!([{"emoji": "👍", "user": "u_ada"}]));
-    assert_eq!(plan_reaction(&g, &one, "m1", "👍", true).0.len(), 1);
-    let two = reacted(json!([{"emoji": "👍", "user": "u_ada"}, {"emoji": "👍", "user": "u_bo"}]));
+    let one = reacted(json!([{"emoji": "👍", "by": "u_ada", "at": 1}]));
+    let (reacts, unreacts) = plan_reaction(&g, &one, "m1", "👍", true);
+    assert_eq!(
+        reacts,
+        [ReactOp {
+            channel: "d1".into(),
+            message: "d_m1".into(),
+            emoji: "👍".into(),
+        }]
+    );
+    assert!(unreacts.is_empty());
+    let two = reacted(json!([
+        {"emoji": "👍", "by": "u_ada", "at": 1},
+        {"emoji": "👍", "by": "u_bo", "at": 2}
+    ]));
     assert!(
         plan_reaction(&g, &two, "m1", "👍", true).0.is_empty(),
         "already there"
     );
-    let persona_only = reacted(
-        json!([{"emoji": "👍", "user": "bot:i", "persona": {"service": "discord", "account": "d7"}}]),
+    assert!(
+        plan_reaction(&g, &one, "m1", "👍", false).1.is_empty(),
+        "Ada still has it"
     );
+    // What the bridge reacted for Discord people never goes back out.
+    let persona_only = reacted(json!([
+        {"emoji": "👍", "by": "bot:i", "persona": "discord/d7", "name": "Dee", "at": 1}
+    ]));
     assert_eq!(
         plan_reaction(&g, &persona_only, "m1", "👍", false).1.len(),
         1,
         "the last Tilo person took it back"
     );
+    // One emoji spelled with or without its variation selector is one.
+    let hearts = reacted(json!([
+        {"emoji": "❤", "by": "u_bo", "at": 1},
+        {"emoji": "❤️", "by": "u_ada", "at": 2}
+    ]));
     assert!(
-        plan_reaction(&g, &one, "m1", ":tilo_hello:", true)
-            .0
-            .is_empty(),
-        "custom emoji cannot go across"
+        plan_reaction(&g, &hearts, "m1", "❤️", true).0.is_empty(),
+        "Bo's heart is already the bot's"
+    );
+}
+
+#[test]
+fn a_workspace_emoji_crosses_as_the_servers_emoji_of_its_name_only() {
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "d_m1"));
+    g.observe_emojis(vec![discord_wire::event::EmojiInfo {
+        id: "55".into(),
+        name: "tilo_hello".into(),
+        animated: false,
+    }]);
+    let reacted = |rs: Value| chat(&[msg("m1", "u_ada", "x", &json!({"reactions": rs}))]);
+    let hello = reacted(json!([{"emoji": ":tilo_hello:", "by": "u_ada", "at": 1}]));
+    assert_eq!(
+        plan_reaction(&g, &hello, "m1", ":tilo_hello:", true).0[0].emoji,
+        "tilo_hello:55",
+        "Discord's reaction routes name a custom emoji `name:id`"
+    );
+    assert_eq!(
+        plan_reaction(&g, &reacted(json!([])), "m1", ":tilo_hello:", false).1[0].emoji,
+        "tilo_hello:55"
+    );
+    let pizza = reacted(json!([{"emoji": ":pizza:", "by": "u_ada", "at": 1}]));
+    assert_eq!(
+        plan_reaction(&g, &pizza, "m1", ":pizza:", true),
+        (Vec::new(), Vec::new()),
+        "a workspace emoji the server has no emoji of stays in Tilo"
     );
 }

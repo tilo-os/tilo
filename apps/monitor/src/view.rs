@@ -333,7 +333,16 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
                     .with_rhythm(ui::tokens::Rhythm::Tight)
                     .push(Box::new(tile))
                     .push(Box::new(Facts::new(vec![
-                        Fact::text(fact.caption(now)).priority(3),
+                        // A fresh sample says where it came from; only a sample
+                        // old enough to mislead says how old it is. Four tiles
+                        // repeating "measured 0 s ago" is noise, and a number
+                        // nobody doubts does not need a timestamp.
+                        Fact::text(if fact.is_stale(now) {
+                            fact.caption(now)
+                        } else {
+                            fact.source().unwrap_or_default().to_owned()
+                        })
+                        .priority(3),
                         Fact::text(metrics.history_period()).priority(2),
                         Fact::text(scale.clone()).priority(1),
                     ]))),

@@ -1156,6 +1156,11 @@ pub struct UpgradeArgs {
     /// published dev image, or a dev image built here FROM its integration image.
     #[arg(long)]
     pub from: Option<String>,
+    /// A pushed branch's head: t builds it (reusing what it built before), signs and
+    /// publishes it for this device (`t dispatch publish-os-ref-<target> --ref BRANCH
+    /// --publish`), and the device follows it until its channel publishes something newer.
+    #[arg(long = "ref", value_name = "BRANCH", conflicts_with_all = ["from", "image"])]
+    pub branch: Option<String>,
     /// With `--from local`: build FROM this production image as it is,
     /// instead of localhost/tilo:latest rebuilt when its inputs changed.
     #[arg(long, requires = "from", conflicts_with = "rebuild_base")]

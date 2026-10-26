@@ -17,8 +17,12 @@ path = "src/main.rs"
 [dependencies]
 # tilo-auth, plymouth and systemd-ask-password are driven as the programs the
 # initramfs carries, as tilo-rollback and tilo-sibling-unlock drive theirs.
+# Refused entries are remembered as HMACs under a key made at start.
+getrandom.workspace = true
+hmac.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tilo-ask-password = { path = "../ask-password" }
 zeroize.workspace = true
 workspace-hack = { version = "0.1" }

@@ -638,6 +638,12 @@ pub struct TerminalWidget {
     /// person pastes next, while every other clipboard effect of this
     /// terminal is admitted through the host.
     allow_osc52_clipboard: bool,
+    /// The bell, and when it last rang. Both settings above are kept where
+    /// the person's other preferences are kept, so they hold for the next
+    /// terminal too.
+    bell: crate::preferences::Bell,
+    bell_at: Option<ui::time::Instant>,
+    preferences: crate::preferences::Preferences,
     /// Right-click context menu (Copy / Paste), reusing the shared toolkit
     /// `ContextMenu` primitive so the terminal never draws its own menu chrome.
     /// The menu's `Arc<dyn Fn>` callbacks can't reach the PTY, so we dispatch on
@@ -646,6 +652,8 @@ pub struct TerminalWidget {
     find_menu_index: Option<usize>,
     copy_on_select_menu_index: Option<usize>,
     osc52_menu_index: Option<usize>,
+    /// The context menu's bell row, when the menu is tall enough to hold it.
+    bell_menu_index: Option<usize>,
     menu_paste_index: Option<usize>,
     /// What each effect row of the open menu asks for.
     menu_effects: HashMap<usize, crate::resource::TerminalEffect>,
@@ -764,8 +772,9 @@ struct RunState {
     /// out the session's outbox.
     queue: crate::runs::RunQueue,
     waiting: std::collections::VecDeque<crate::runs::Asked>,
-    /// Typed at the prompt, waiting for the shell to start it.
-    typed: Option<crate::runs::Asked>,
+    /// Typed at the prompt, waiting for the shell to start them, oldest
+    /// first.
+    typed: std::collections::VecDeque<crate::runs::Asked>,
     /// Started for whoever asked.
     running: Option<crate::runs::Asked>,
     /// Ended, waiting to be recorded.
@@ -781,6 +790,30 @@ struct RunState {
 }
 
 impl TerminalWidget {
+    /// The bell's flash: the pane washes with the attention colour and fades.
+    /// It is drawn over the grid, because a bell nobody sees is what the
+    /// terminal used to do.
+    fn draw_bell_flash(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let flash = self.bell_flash(theme.motion());
+        if flash <= 0.0 {
+            self.bell_at = None;
+            return;
+        }
+        let wash = theme
+            .tokens
+            .colors
+            .semantic
+            .warning
+            .with_alpha_factor(flash * 0.22);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            wash,
+            None,
+            &self.rect,
+        );
+    }
+
     pub(crate) fn native_editor_read_only_changed(&mut self, read_only: bool) {
         if self.native_read_only != read_only {
             self.native_read_only = read_only;
@@ -871,10 +904,14 @@ impl TerminalWidget {
             drag_anchor_span: None,
             select_to_copy: false,
             allow_osc52_clipboard: false,
+            bell: crate::preferences::Bell::default(),
+            bell_at: None,
+            preferences: crate::preferences::Preferences::none(),
             context_menu: ContextMenu::new(),
             find_menu_index: None,
             copy_on_select_menu_index: None,
             osc52_menu_index: None,
+            bell_menu_index: None,
             menu_paste_index: None,
             menu_effects: HashMap::new(),
             last_cursor_pos: Point::ZERO,
@@ -1417,14 +1454,80 @@ impl TerminalWidget {
     }
     /// Enable/disable "select to copy": when on, finishing a selection also
     /// writes it to the system clipboard (in addition to the always-set
-    /// primary selection used by middle-click paste).
+    /// primary selection used by middle-click paste). The choice is kept for
+    /// every terminal opened afterwards.
     pub fn set_select_to_copy(&mut self, on: bool) {
+        if self.select_to_copy == on {
+            return;
+        }
         self.select_to_copy = on;
+        self.preferences.set_copy_on_select(on);
     }
     /// Allow (or refuse, the default) programs to write the clipboard through
-    /// OSC 52.
+    /// OSC 52. The choice is kept for every terminal opened afterwards.
     pub fn set_allow_osc52_clipboard(&mut self, on: bool) {
+        if self.allow_osc52_clipboard == on {
+            return;
+        }
         self.allow_osc52_clipboard = on;
+        self.preferences.set_allow_osc52_clipboard(on);
+    }
+
+    /// Choose what a bell does, and keep it. A bell the person asked for is
+    /// a flash of the pane; there is no audible bell in the toolkit yet.
+    pub fn set_bell(&mut self, bell: crate::preferences::Bell) {
+        self.bell = bell;
+        self.preferences.set_bell(bell);
+    }
+
+    /// Read the person's preferences — the bell and what a selection does —
+    /// and use them from now on.
+    pub fn use_preferences(&mut self, preferences: crate::preferences::Preferences) {
+        let stored = preferences.load();
+        self.select_to_copy = stored.copy_on_select;
+        self.allow_osc52_clipboard = stored.allow_osc52_clipboard;
+        self.bell = stored.bell;
+        self.preferences = preferences;
+    }
+
+    /// The bell rang: remember when, so the pane washes and fades. A bell set
+    /// to off rings nothing.
+    fn ring_bell(&mut self) {
+        if self.bell == crate::preferences::Bell::Off {
+            return;
+        }
+        self.bell_at = Some(ui::time::now());
+    }
+
+    /// The bell's flash as a test reads it.
+    #[cfg(test)]
+    pub(crate) fn bell_flash_for_test(&self) -> f32 {
+        self.bell_flash(ui::theme::Theme::default().motion())
+    }
+
+    /// Whether a finished selection copies, as a test reads it.
+    #[cfg(test)]
+    pub(crate) fn selects_to_copy_for_test(&self) -> bool {
+        self.select_to_copy
+    }
+
+    /// How much of the bell's flash is left, `0.0..=1.0`. A bell is a
+    /// confirmation that arrives at once and leaves, so its arrival, its life
+    /// and its fade are the motion library's `Transient` — the app decides only
+    /// how long it is worth looking at.
+    fn bell_flash(&self, motion: ui::tokens::EffectiveMotion) -> f32 {
+        // A quarter second: long enough to catch the eye from another window,
+        // short enough not to sit on the text.
+        const FLASH: std::time::Duration = std::time::Duration::from_millis(260);
+        let Some(at) = self.bell_at else {
+            return 0.0;
+        };
+        ui::motion::Transient::opacity(
+            ui::motion::Transient::CONFIRMATION,
+            (at, at + FLASH),
+            ui::time::now(),
+            motion,
+        )
     }
     /// Set (or clear) the selection programmatically over buffer-absolute
     /// cells. Host/demo API — e.g. "select all", or a screenshot scenario
@@ -2015,6 +2118,7 @@ impl TerminalWidget {
         // XTVERSION, DECRQM). Written back to the PTY after the parse — the
         // vte performer only reads, so it stages answers here.
         let mut responses: Vec<u8> = Vec::new();
+        let mut bells: u32 = 0;
         let mut performer = TerminalPerformer {
             screen: &mut self.screen,
             content: &self.content,
@@ -2031,6 +2135,7 @@ impl TerminalWidget {
             next_link_id: &mut self.next_link_id,
             current_link_id: self.current_link_id,
             title_out: &mut title_out,
+            bells: &mut bells,
             responses: &mut responses,
             print_buf: None,
             allow_osc52_clipboard: self.allow_osc52_clipboard,
@@ -2068,6 +2173,11 @@ impl TerminalWidget {
         // An OSC 0/2 title change shows as the window's title.
         if let Some(t) = title_out {
             self.title = t;
+        }
+        // A bell rings once per feed, however many times it was rung: one
+        // flash is as much attention as one burst of bells deserves.
+        if bells > 0 {
+            self.ring_bell();
         }
         self.show_screen();
     }
@@ -2533,7 +2643,7 @@ impl TerminalWidget {
         let unanswered: Vec<_> = runs
             .waiting
             .drain(..)
-            .chain(runs.typed.take())
+            .chain(runs.typed.drain(..))
             .chain(runs.running.take())
             .collect();
         for asked in unanswered {
@@ -2550,13 +2660,28 @@ impl TerminalWidget {
         match piece {
             Piece::Mark(Mark::Prompt) => {
                 runs.at_prompt = true;
-                if let Some(asked) = runs.typed.take() {
+                if let Some(asked) = runs.typed.pop_front() {
                     fail_run(asked, "the shell did not run the command");
                 }
             }
-            Piece::Mark(Mark::Started { .. }) => {
+            Piece::Mark(Mark::Started { command, .. }) => {
                 runs.at_prompt = false;
-                runs.running = runs.typed.take();
+                // The line this terminal typed for `run` starts when the
+                // shell stops showing its prompt and says it runs the
+                // command that was typed: lines reach the shell in the order
+                // they were typed, so the oldest waiting one that matches is
+                // it. Anything else the shell runs — a person's line, a
+                // `.bashrc` command — is nobody's request.
+                let typed = if runs
+                    .typed
+                    .front()
+                    .is_some_and(|asked| asked.command.trim() == command.trim())
+                {
+                    runs.typed.pop_front()
+                } else {
+                    None
+                };
+                runs.running = typed;
             }
             Piece::Mark(Mark::Ended { .. }) | Piece::Output(_) => {}
         }
@@ -2579,7 +2704,7 @@ impl TerminalWidget {
             match runs
                 .waiting
                 .iter_mut()
-                .chain(runs.typed.as_mut())
+                .chain(runs.typed.iter_mut())
                 .chain(runs.running.as_mut())
                 .find(|known| known.request == asked.request)
             {
@@ -2610,7 +2735,7 @@ impl TerminalWidget {
             }
             return;
         }
-        if !self.runs.at_prompt || self.runs.typed.is_some() {
+        if !self.runs.at_prompt || !self.runs.typed.is_empty() {
             return;
         }
         let Some(asked) = self.runs.waiting.pop_front() else {
@@ -2624,7 +2749,7 @@ impl TerminalWidget {
         match self.try_write_input(&line) {
             Ok(()) => {
                 self.runs.at_prompt = false;
-                self.runs.typed = Some(asked);
+                self.runs.typed.push_back(asked);
             }
             Err(error) => fail_run(asked, &error),
         }
@@ -2650,11 +2775,24 @@ impl TerminalWidget {
                 }
             };
             let request = asked.as_ref().map(|asked| asked.request.clone());
-            let id = request.clone().unwrap_or_else(|| {
-                ui::tilo_resource::Id::from_raw(uuid::Uuid::new_v4().simple().to_string())
+            // The run a request asked for takes the request's id, so the
+            // answer names it. Only a line the person started before this
+            // terminal saw the request's line reach the shell can hold that
+            // id already: this run is the request's all the same, under an
+            // id of its own.
+            let taken = request.as_ref().is_some_and(|request| {
+                self.runs
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.runs.contains(request))
             });
+            let id = match request.clone() {
+                Some(request) if !taken => request,
+                _ => ui::tilo_resource::Id::from_raw(uuid::Uuid::new_v4().simple().to_string()),
+            };
             let finished = crate::resource::Finished {
                 tool: crate::parse::tool_of(&run.command).to_owned(),
+                undoable: crate::undoability::of(&run.command) == Some(true),
                 items: crate::parse::items(&run.command, &run.output),
                 output_len: if output.is_some() {
                     u64::try_from(run.output.len()).unwrap_or(u64::MAX)
@@ -3023,7 +3161,10 @@ impl Widget for TerminalWidget {
         // A glide, or the give past an end springing back.
         let gliding = self.view.glide.is_active()
             || self.view.glide.give_needs_frame(ui::motion::frame_now());
-        queued || gliding || self.folder_picker_pending()
+        queued
+            || gliding
+            || self.folder_picker_pending()
+            || self.bell_flash(ui::theme::Theme::default().motion()) > 0.0
     }
 
     /// The rows that changed, came into view or went, and a scroll as a
@@ -3177,6 +3318,7 @@ impl Widget for TerminalWidget {
         }
         self.draw_top_bands(&mut outside, transform, text_renderer, theme);
         self.draw_grid(scene, transform, text_renderer, theme, presence, outside);
+        self.draw_bell_flash(scene, transform, theme);
     }
 
     /// The right-click Copy/Paste menu is a floating Panel: it paints in the
@@ -4014,6 +4156,27 @@ impl TerminalWidget {
         {
             return;
         }
+        // Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+Shift+T are the desktop's tab
+        // chords wherever an app leaves them: the next or previous tab of
+        // this window, the last closed tab. A terminal has no bytes of its
+        // own for them (Ctrl+Tab would send the Tab that Tab sends,
+        // Ctrl+Shift+T the ^T of Ctrl+T), so they go unhandled to the
+        // desktop through `ui::shell_tabs`. Ctrl+T and Ctrl+W stay the
+        // shell's ^T and ^W.
+        if matches!(
+            ui::shell_tabs::chord_request(
+                logical_key,
+                ui::platform::PlatformConventions::default().command_modifier_down(mods),
+                mods.shift_key(),
+                mods.alt_key() || (mods.control_key() && mods.super_key()),
+            ),
+            Some(
+                ui::shell_tabs::TabRequest::CycleTab { .. }
+                    | ui::shell_tabs::TabRequest::ReopenClosed
+            )
+        ) {
+            return;
+        }
         if self.take_no_runtime_offer(logical_key, mods) {
             *handled = true;
             return;
@@ -4828,10 +4991,16 @@ impl TerminalWidget {
         // still expose the toggle.
         self.copy_on_select_menu_index = None;
         self.osc52_menu_index = None;
+        self.bell_menu_index = None;
         if self.rect.height() >= 180.0 {
             menu.push(MenuItem::separator());
             self.copy_on_select_menu_index = Some(menu.items().len());
             menu.push(MenuItem::action("Copy on select", || {}).with_checked(self.select_to_copy));
+            self.bell_menu_index = Some(menu.items().len());
+            menu.push(
+                MenuItem::action(self.bell.label(), || {})
+                    .with_checked(self.bell == crate::preferences::Bell::Visual),
+            );
             self.osc52_menu_index = Some(menu.items().len());
             menu.push(
                 MenuItem::action("Let programs set the clipboard", || {})
@@ -4875,6 +5044,10 @@ impl TerminalWidget {
     }
 
     fn activate_context_menu_item(&mut self, index: usize) {
+        if self.bell_menu_index == Some(index) {
+            self.set_bell(self.bell.toggled());
+            return;
+        }
         if self.menu_paste_index == Some(index) {
             if let Some(text) = clipboard_paste() {
                 self.submit_effect(crate::resource::TerminalEffect::Paste { text });
@@ -4890,10 +5063,10 @@ impl TerminalWidget {
             return;
         }
         if self.copy_on_select_menu_index == Some(index) {
-            self.select_to_copy = !self.select_to_copy;
+            self.set_select_to_copy(!self.select_to_copy);
         }
         if self.osc52_menu_index == Some(index) {
-            self.allow_osc52_clipboard = !self.allow_osc52_clipboard;
+            self.set_allow_osc52_clipboard(!self.allow_osc52_clipboard);
         }
     }
 
@@ -5162,6 +5335,9 @@ pub struct TerminalPerformer<'a> {
     /// Out-param for an OSC 0/2 window-title change parsed this feed; the
     /// widget records it in the session and its own `title` field afterwards.
     pub title_out: &'a mut Option<String>,
+    /// Out-param: how many times a program rang the bell (BEL) in this feed,
+    /// so the widget flashes the pane after the parse.
+    pub bells: &'a mut u32,
     /// Reply bytes accumulated for terminal capability queries (Device
     /// Attributes, Device Status Report, XTVERSION, DECRQM, …). A real
     /// terminal answers these on the same wire the keyboard writes to; the
@@ -5356,8 +5532,10 @@ impl Perform for TerminalPerformer<'_> {
                 let next = ((self.cursor_x / 8) + 1) * 8;
                 self.cursor_x = next.min(self.width.saturating_sub(1));
             }
-            // Everything else, including 7 (BEL), is a no-op — the toolkit
-            // has no audible bell yet and no other single byte has meaning.
+            // BEL: the toolkit has no audible bell, so a bell the person
+            // asked for is the pane flashing. No other single byte means
+            // anything here.
+            7 => *self.bells = self.bells.saturating_add(1),
             _ => {}
         }
         self.update_cursor();
@@ -7432,6 +7610,10 @@ impl TerminalWidget {
     /// receiver) is dropped.
     fn from_backend(backend: TerminalBackend) -> Self {
         let mut widget = Self::without_process(ContentStore::memory());
+        // The bell and what a selection does are the person's preferences,
+        // kept where their other preferences are: the next terminal opens
+        // with them already set.
+        widget.use_preferences(crate::preferences::Preferences::discover());
         widget.attach_backend(backend);
         widget
     }

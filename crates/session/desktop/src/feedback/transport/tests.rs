@@ -94,6 +94,7 @@ fn submission() -> Submission {
             text: "The book lost my position".into(),
             context: vec![],
             screenshot: None,
+            ..Default::default()
         },
     }
 }
@@ -236,6 +237,7 @@ fn endpoint(records: RecordStore) -> CanonicalDestination {
             records,
             record: RecordId::package_primary(),
             project: chat::feedback::canonical_feedback_projection,
+            content: None,
         },
         Box::new(FixtureSigner {
             owner: enrollment().owner,
@@ -466,6 +468,7 @@ fn signing_callback_cannot_acknowledge_after_policy_clock_becomes_unavailable() 
             records,
             record: RecordId::package_primary(),
             project: chat::feedback::canonical_feedback_projection,
+            content: None,
         },
         Box::new(RetiringClockSigner {
             signer: FixtureSigner {
@@ -484,21 +487,147 @@ fn signing_callback_cannot_acknowledge_after_policy_clock_becomes_unavailable() 
 }
 
 #[test]
-fn canonical_owner_refuses_attachment_without_durable_content_witness() {
+fn canonical_owner_acknowledges_a_screenshot_only_once_it_keeps_the_bytes() {
     let root = tempfile::tempdir().unwrap();
     let (records, mut frame) = canonical(root.path());
+    let picture = b"masked report picture".to_vec();
     let mut report = submission();
     report.feedback.screenshot = Some(tilo_app::feedback::ScreenshotRef {
-        hash: "a".repeat(64),
+        hash: blake3::hash(&picture).to_hex().to_string(),
         width: 1,
         height: 1,
     });
     submit(&mut frame, &report);
     records.try_flush().unwrap();
-    let mut service = endpoint(records);
+    // No content store: the report's metadata alone proves nothing.
     assert!(matches!(
-        service.receipt(&report, &enrollment()),
+        endpoint(records.clone()).receipt(&report, &enrollment()),
         Err(Error::NotDurable)
+    ));
+    let content = ui::content::ContentStore::memory();
+    let with_content = |content: &ui::content::ContentStore| {
+        CanonicalDestination::new(
+            enrollment().owner,
+            enrollment().destination,
+            CanonicalRecord {
+                records: records.clone(),
+                record: RecordId::package_primary(),
+                project: chat::feedback::canonical_feedback_projection,
+                content: Some(content.clone()),
+            },
+            Box::new(FixtureSigner {
+                owner: enrollment().owner,
+                key: SigningKey::from_bytes(&[41; 32]),
+            }),
+        )
+        .unwrap()
+    };
+    // Other bytes kept are not this picture.
+    content.put(b"some other picture").unwrap();
+    assert!(matches!(
+        with_content(&content).receipt(&report, &enrollment()),
+        Err(Error::NotDurable)
+    ));
+    content.put(&picture).unwrap();
+    let signed = with_content(&content)
+        .receipt(&report, &enrollment())
+        .unwrap();
+    assert_eq!(
+        signed.verify(&report, &enrollment()).unwrap().digest,
+        report.digest().unwrap()
+    );
+}
+
+/// A report with a picture reaches its owner before the picture does: the
+/// owner takes the picture in from the room only once the report landed.
+/// Asked for the receipt before then, the owner answers "not yet" rather
+/// than refusing, so the reporter keeps waiting with no error, and the
+/// report ends Sent once the owner keeps the picture.
+#[test]
+fn a_picture_report_ends_sent_once_the_owner_keeps_its_picture() {
+    let root = tempfile::tempdir().unwrap();
+    let (records, frame) = canonical(root.path());
+    let frame = Rc::new(RefCell::new(frame));
+    let content = ui::content::ContentStore::memory();
+    let picture = b"masked report picture".to_vec();
+    let mut report = submission();
+    report.feedback.screenshot = Some(tilo_app::feedback::ScreenshotRef {
+        hash: blake3::hash(&picture).to_hex().to_string(),
+        width: 1,
+        height: 1,
+    });
+    let owner = Rc::new(RefCell::new(
+        CanonicalDestination::new(
+            enrollment().owner,
+            enrollment().destination,
+            CanonicalRecord {
+                records: records.clone(),
+                record: RecordId::package_primary(),
+                project: chat::feedback::canonical_feedback_projection,
+                content: Some(content.clone()),
+            },
+            Box::new(FixtureSigner {
+                owner: enrollment().owner,
+                key: SigningKey::from_bytes(&[41; 32]),
+            }),
+        )
+        .unwrap(),
+    ));
+    let filed = Rc::new(RefCell::new(0));
+    let transport = SessionTransport::new(
+        Box::new(|| Ok(enrollment())),
+        Box::new({
+            let filed = filed.clone();
+            move |_, submission| {
+                submit(&mut frame.borrow_mut(), submission);
+                records.try_flush().unwrap();
+                *filed.borrow_mut() += 1;
+                Ok(())
+            }
+        }),
+        Box::new({
+            let owner = owner.clone();
+            move |submission| {
+                owner
+                    .borrow_mut()
+                    .receipt_when_kept(submission, &enrollment())
+            }
+        }),
+    );
+    let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
+    let setup = Startup::new(enrollment(), Box::new(transport), Box::new(NoCapture)).unwrap();
+    let host = Host::open(store.clone(), setup).unwrap();
+    let mut outbox = Outbox::open(
+        store.clone(),
+        StorageKey::package("so.tilo.feedback-test-outbox"),
+    )
+    .unwrap();
+    outbox.queue(report.clone()).unwrap();
+    let mut composer = Composer::new(enrollment().destination, outbox, Box::new(host)).unwrap();
+    composer.resume(ID).unwrap();
+    // Asked before the report is filed, and again once it is but before
+    // its picture arrived: not yet, and no error either time.
+    composer.pump().unwrap();
+    assert_eq!(*filed.borrow(), 1);
+    composer.pump().unwrap();
+    assert_eq!(
+        composer.state().unwrap(),
+        Some(DeliveryState::AwaitingReceipt)
+    );
+    content.put(&picture).unwrap();
+    // A report changed since review is still refused outright.
+    let mut changed = report;
+    changed.feedback.text.push_str(" changed");
+    assert!(matches!(
+        owner
+            .borrow_mut()
+            .receipt_when_kept(&changed, &enrollment()),
+        Err(Error::ReceiptMismatch)
+    ));
+    composer.pump().unwrap();
+    assert!(matches!(
+        composer.state().unwrap(),
+        Some(DeliveryState::Sent { .. })
     ));
 }
 
@@ -729,6 +858,7 @@ fn retained_receipt_source_cannot_substitute_report_identity_or_destination() {
                 records: records.clone(),
                 record: RecordId::package_primary(),
                 project: chat::feedback::canonical_feedback_projection,
+                content: None,
             },
             change_destination,
         };

@@ -6423,6 +6423,7 @@ mod automerge_foundation_tests {
             name: "Forged".into(),
             inputs: Vec::new(),
             steps: Vec::new(),
+            step_timeout_secs: None,
             output: None,
             grant: Vec::new(),
             triggers: Vec::new(),
@@ -8392,7 +8393,7 @@ mod automerge_foundation_tests {
             "apps' own history is told the same agents"
         );
         let author = activity_author_of_a_change_by(host, room, scribe);
-        assert_eq!(author.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(author.name, "Scribe · Software, for Ada Lovelace");
         assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
         assert_eq!(
             author.attribution,

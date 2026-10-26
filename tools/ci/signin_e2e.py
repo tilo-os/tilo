@@ -269,6 +269,20 @@ def quote(value: str) -> str:
 # check hot-plugs it; without the port the loop only waits.
 SHELL_SCRIPT = f"""#!/usr/bin/bash
 # signin-e2e check, this throwaway disk only: a root shell on {SHELL_PORT}.
+# Who runs chcon on this system: its parent and arguments, for the evidence.
+if command -v auditctl >/dev/null 2>&1; then
+  auditctl -a always,exit -F arch=b64 -S execve -F path=/usr/bin/chcon -k chcon \
+    && echo 'tilo-e2e-shell: chcon audit rule installed' \
+    || echo 'tilo-e2e-shell: the chcon audit rule could not be installed'
+elif [ -x /etc/tilo-e2e-chcon ]; then
+  mkdir -p /run/tilo-e2e && touch /run/tilo-e2e/chcon.real \
+    && mount --bind /usr/bin/chcon /run/tilo-e2e/chcon.real \
+    && mount --bind /etc/tilo-e2e-chcon /usr/bin/chcon \
+    && echo 'tilo-e2e-shell: no auditctl; chcon calls are traced by a wrapper' \
+    || echo 'tilo-e2e-shell: no auditctl, and the chcon wrapper could not be mounted'
+else
+  echo 'tilo-e2e-shell: this image has no auditctl'
+fi
 echo 'tilo-e2e-shell: waiting for {SHELL_PORT}'
 while :; do
   if [ -e /dev/virtio-ports/{SHELL_PORT} ]; then
@@ -276,6 +290,20 @@ while :; do
   fi
   sleep 1
 done
+"""
+CHCON_TRACE = r"""#!/usr/bin/bash
+# signin-e2e check, this throwaway disk only: say who runs chcon, then run it.
+{
+  printf 'chcon pid=%s ctx=%s args=%s\n' "$$" "$(cat /proc/self/attr/current 2>/dev/null)" "$*"
+  gp=$(awk '{print $4}' /proc/$PPID/stat 2>/dev/null)
+  printf 'parent pid=%s exe=%s ctx=%s cmd=%s\n' "$PPID" "$(readlink /proc/$PPID/exe)" \
+    "$(cat /proc/$PPID/attr/current 2>/dev/null)" "$(tr '\0' ' ' </proc/$PPID/cmdline)"
+  printf 'grandparent pid=%s exe=%s cmd=%s\n' "$gp" "$(readlink /proc/$gp/exe 2>/dev/null)" \
+    "$(tr '\0' ' ' </proc/$gp/cmdline 2>/dev/null)"
+  printf 'cgroup=%s\n' "$(cat /proc/$$/cgroup)"
+  for arg in "$@"; do [ -e "$arg" ] && ls -Zd -- "$arg"; done
+} 2>&1 | systemd-cat -t tilo-e2e-chcon
+exec /run/tilo-e2e/chcon.real "$@"
 """
 SHELL_UNIT = """[Unit]
 Description=signin-e2e check: root shell on a hot-plugged virtio-serial port (this test disk only)
@@ -307,6 +335,7 @@ class Run:
         self.recovery: str | None = None
         self.baseline: dict = {}
         self.items: dict[str, dict] = {}
+        self.avcs: dict[str, list[str]] = {}
         self.facts: dict = {"variant": variant, "cycle": self.cycle.name}
         self.shell: Shell | None = None
 
@@ -324,6 +353,13 @@ class Run:
     # -- the installer ------------------------------------------------------------------------
 
     def install(self) -> None:
+        """The separate-secret variant installs through the installer's unattended entry point:
+        a private recipe applied through the same published actions and privileged backend
+        (tilo-install, tilo-disk-encrypt) as the wizard, with the one-time recovery key written
+        to a private file the test shell reads. The one-secret variant drives the wizard over
+        the console, because only the wizard installs with one secret: an unattended recipe
+        always carries a separate disk secret and refuses one equal to the account password.
+        That variant has no recovery key; item 6 runs in the other."""
         c = self.cycle
         c.vm("init-cycle")
         # The medium is unsigned: its installer admits the target only with the VM proof port.
@@ -333,6 +369,27 @@ class Run:
             console.poll(c.console, lambda s: s.get("app") == "installer", 900, 5)
         except TimeoutError as error:
             raise Failed("the live installer never answered on its console") from error
+        if not self.disk:
+            self.run_wizard()
+        sh = self.live_shell()
+        try:
+            if self.disk:
+                self.run_unattended(sh)
+            self.prepare_target(sh)
+        finally:
+            try:
+                sh.run("systemctl --no-block poweroff", 30, quiet=True)
+            except Failed:
+                pass
+            sh.close()
+        if not c.wait_stopped(180):
+            say("the live installer did not power off; stopping the VM")
+            c.stop()
+        (self.out / "serial-installer-withheld.log").write_text(
+            "withheld: the live installer's serial may carry the one-time recovery key\n")
+
+    def run_wizard(self) -> None:
+        c = self.cycle
         last, repeats = "", 0
         while True:
             state = console.state(c.console, 30)
@@ -358,9 +415,6 @@ class Run:
                 self.facts["installer_secret_policy"] = (state.get("account") or {}).get("secret_policy")
                 c.invoke("installer", "set-identity@installer.account",
                          {"username": self.user, "full_name": self.full_name})
-                if self.disk:
-                    c.invoke("installer", "set-disk-passphrase@installer.account",
-                             {"passphrase": self.disk, "confirmation": self.disk})
                 c.invoke("installer", "set-passphrase@installer.account",
                          {"passphrase": self.account, "confirmation": self.account})
                 c.invoke("installer", "next@installer")
@@ -390,29 +444,85 @@ class Run:
         try:
             final = console.poll(c.console, finished, 3600, 10)
         except TimeoutError as error:
-            try:
-                tail = (console.state(c.console, 30).get("install") or {}).get("log_tail", [])[-8:]
-            except Exception as reason:  # the console itself may be the thing that stopped
-                tail = [f"no installer state: {reason}"]
-            raise Failed("the install did not finish within an hour; its last lines: "
-                         + " | ".join(map(str, tail))) from error
+            raise Failed("the install did not finish within an hour") from error
         self.save("installer-final-state.json", final)
         if final["install"]["state"] != "done":
             raise Failed("the install failed: " + " | ".join(final["install"].get("log_tail", [])[-5:]))
         self.facts["install_seconds"] = round(time.monotonic() - started)
-        if not (final.get("recovery_key") or {}).get("available"):
-            raise Failed("the install finished without a recovery key")
-        c.invoke("installer", "copy@installer.recovery")
+        # The key is not read here: the separate-secret variant proves the recovery path.
         c.invoke("installer", "confirm-saved@installer.recovery", {"saved": True})
-        self.prepare_target_from_live()
-        try:
-            c.invoke("installer", "power-off@installer.power")
-        except (console.Unreachable, console.Refused):
-            pass
-        if not c.wait_stopped(180):
-            raise Failed("the installer's power-off did not stop the VM")
-        (self.out / "serial-installer-withheld.log").write_text(
-            "withheld: the live installer's serial may carry the one-time recovery key\n")
+
+    def run_unattended(self, sh: Shell) -> None:
+        c = self.cycle
+        # The wizard holds the console port; the unattended run serves the same actions there.
+        sh.run("systemctl stop greetd", 120)
+        code, text = sh.run("lsblk --json --bytes --nodeps --paths "
+                            "-o NAME,SIZE,PTTYPE,PTUUID,LOG-SEC,MAJ:MIN,WWN,SERIAL /dev/vdb", quiet=True)
+        if code:
+            raise Failed(f"lsblk could not describe the target disk: {text.strip()[-300:]}")
+        device = json.loads(text[text.index("{"):])["blockdevices"][0]
+        recipe = {
+            "schema": 1,
+            "account": {"username": self.user, "full_name": self.full_name,
+                        "password": self.account},
+            "disk": {"device": device["name"], "method": "erase", "size_bytes": int(device["size"]),
+                     "major_minor": device["maj:min"], "wwn": device.get("wwn") or "",
+                     "serial": device.get("serial") or "",
+                     "partition_table": device.get("pttype") or "",
+                     "partition_table_uuid": device.get("ptuuid") or "",
+                     "logical_sector_size": int(device["log-sec"])},
+            "protection": {"kind": "passphrase", "secret": self.disk or self.account},
+            "data_source": "none",
+            "acknowledge_recovery_key": True,
+            "preferences": {"hostname": "signin-e2e"},
+            "finish": "stay",
+        }
+        self.facts["target_disk"] = recipe["disk"]
+        # The recipe travels on the shell's input, never in argv, and only into a 0600 file.
+        body = json.dumps(recipe)
+        code, text = sh.run("rm -rf /run/e2e && install -d -m 0700 /run/e2e && umask 077 && "
+                            "cat > /run/e2e/recipe.json <<'E2E_RECIPE_END'\n" + body + "\nE2E_RECIPE_END",
+                            quiet=True)
+        if code:
+            raise Failed(f"the recipe could not be written: {SECRETS.redact(text.strip())[-300:]}")
+        sh.run("setsid -f sh -c '/usr/libexec/tilo/tilo-installer --unattended-file /run/e2e/recipe.json "
+               "--unattended-recovery-file /run/e2e/recovery >/run/e2e/unattended.log 2>&1; "
+               "echo $? >/run/e2e/rc' </dev/null >/dev/null 2>&1", 30)
+        started = time.monotonic()
+        seen: list = []
+        while True:
+            try:
+                state = console.state(c.console, 10)
+                install = state.get("install") or {}
+                for stage in (install.get("stages") or [])[len(seen):]:
+                    seen.append(stage)
+                    say(f"install stage after {time.monotonic() - started:.0f}s: "
+                        f"{SECRETS.redact(str(stage))}")
+            except Exception:  # noqa: BLE001 - the stage log is best effort; the rc file decides
+                pass
+            _, rc = sh.run("cat /run/e2e/rc 2>/dev/null || true", 30, quiet=True)
+            if rc.strip():
+                break
+            _, log = sh.run("tail -n 5 /run/e2e/unattended.log 2>/dev/null", 30, quiet=True)
+            if "Unattended installation stopped" in log:
+                break
+            if time.monotonic() - started > 3600:
+                raise Failed("the install did not finish within an hour; its last lines: "
+                             + SECRETS.redact(log.strip())[-600:])
+            time.sleep(20)
+        _, log = sh.run("tail -n 40 /run/e2e/unattended.log; rm -f /run/e2e/recipe.json", 30, quiet=True)
+        self.save("unattended.log", log)
+        self.facts["install_seconds"] = round(time.monotonic() - started)
+        if rc.strip() != "0" or "Unattended installation finished" not in log:
+            raise Failed(f"the unattended install failed (exit {rc.strip() or 'none'}): "
+                         + SECRETS.redact(log.strip())[-800:])
+        code, text = sh.run("cat /run/e2e/recovery && shred -u /run/e2e/recovery", 30, quiet=True)
+        found = RECOVERY_SHAPE.search(text)
+        if code or not found:
+            raise Failed("the unattended install wrote no recovery key in the expected form "
+                         f"({len(text.strip())} characters)")
+        self.recovery = SECRETS.add(found.group(0))
+        say("read the recovery key from the unattended install's private file")
 
     def live_shell(self) -> Shell:
         """The live installer's tty2 recovery tools: option 5 is a root shell. Its first command
@@ -432,59 +542,22 @@ class Run:
         c.keys("ctrl-alt-f1")
         return Shell(c.shell_socket, 120)
 
-    def prepare_target_from_live(self) -> None:
-        sh = self.live_shell()
-        try:
-            code, dev = sh.run(f"lsblk -lnpo NAME,PARTTYPE /dev/vdb | awk 'tolower($2)==\"{TILO_ROOT_TYPE}\" {{print $1}}'")
-            dev = dev.strip()
-            if code or not dev.startswith("/dev/"):
-                raise Failed(f"no Tilo root partition on the target: {dev}")
-            self.facts["target_root_partition"] = dev
-            self.recovery = self.read_recovery_key(sh)
-            self.baseline = self.keyslot_view(sh, dev)
-            self.save("keyslots-after-install.json", self.baseline)
-            unlock = self.disk or self.account
-            opened = self.slot_opened_by(sh, dev, unlock)
-            self.baseline["disk_secret_slot"] = opened
-            if self.recovery:
-                self.baseline["recovery_slot"] = self.slot_opened_by(sh, dev, self.recovery)
-            say(f"after install: keyslots {sorted(self.baseline['keyslots'])}, the disk secret opens "
-                f"{opened}, the recovery key opens {self.baseline.get('recovery_slot')}")
-            self.inject_test_shell(sh, dev, unlock)
-        finally:
-            sh.close()
-
-    def read_recovery_key(self, sh: Shell) -> str | None:
-        """The key the installer just copied to its clipboard, read back through wl-paste as the
-        installer's user. Kept in memory only and redacted from everything this run writes."""
-        script = r"""
-for dir in /run/user/*; do
-  for sock in "$dir"/wayland-[0-9]*; do
-    case "$sock" in *.lock) continue ;; esac
-    [ -S "$sock" ] || continue
-    owner=$(stat -c %U "$dir")
-    runuser -u "$owner" -- env XDG_RUNTIME_DIR="$dir" WAYLAND_DISPLAY="${sock##*/}" \
-      timeout 10 wl-paste -n 2>/dev/null && exit 0
-  done
-done
-exit 1
-"""
-        code, text = sh.run(script, quiet=True)
-        found = RECOVERY_SHAPE.search(text)
-        if code == 0 and found:
-            say("read the recovery key from the installer's clipboard")
-            return SECRETS.add(found.group(0))
-        say("the installer's clipboard held no recovery key; reading it from the screen")
-        path, text = self.cycle.screen("private-recovery")
-        if path:
-            ocr = subprocess.run(["tesseract", str(path), "stdout", "-c",
-                                  "tessedit_char_whitelist=cbdefghijklnrtuv-"],
-                                 capture_output=True, text=True)
-            path.unlink(missing_ok=True)
-            found = RECOVERY_SHAPE.search(ocr.stdout.replace(" ", ""))
-            if found:
-                return SECRETS.add(found.group(0))
-        return None
+    def prepare_target(self, sh: Shell) -> None:
+        code, dev = sh.run(f"lsblk -lnpo NAME,PARTTYPE /dev/vdb | awk 'tolower($2)==\"{TILO_ROOT_TYPE}\" {{print $1}}'")
+        dev = dev.strip()
+        if code or not dev.startswith("/dev/"):
+            raise Failed(f"no Tilo root partition on the target: {dev}")
+        self.facts["target_root_partition"] = dev
+        self.baseline = self.keyslot_view(sh, dev)
+        self.save("keyslots-after-install.json", self.baseline)
+        unlock = self.disk or self.account
+        opened = self.slot_opened_by(sh, dev, unlock)
+        self.baseline["disk_secret_slot"] = opened
+        if self.recovery:
+            self.baseline["recovery_slot"] = self.slot_opened_by(sh, dev, self.recovery)
+        say(f"after install: keyslots {sorted(self.baseline['keyslots'])}, the disk secret opens "
+            f"{opened}, the recovery key opens {self.baseline.get('recovery_slot')}")
+        self.inject_test_shell(sh, dev, unlock)
 
     def keyslot_view(self, sh: Shell, dev: str) -> dict:
         """The LUKS2 header's keyslots and tokens, and a hash of each keyslot's key material."""
@@ -519,6 +592,10 @@ test -d "$etc/systemd/system"
 cat > "$etc/tilo-e2e-shell" <<'E2E_SCRIPT'
 {SHELL_SCRIPT}E2E_SCRIPT
 chmod 0755 "$etc/tilo-e2e-shell"
+cat > "$etc/tilo-e2e-chcon" <<'E2E_CHCON'
+{CHCON_TRACE}E2E_CHCON
+chmod 0755 "$etc/tilo-e2e-chcon"
+chcon system_u:object_r:bin_t:s0 "$etc/tilo-e2e-chcon"
 cat > "$etc/systemd/system/tilo-e2e-shell.service" <<'E2E_UNIT'
 {SHELL_UNIT}E2E_UNIT
 mkdir -p "$etc/systemd/system/multi-user.target.wants"
@@ -632,6 +709,12 @@ cryptsetup close e2e-target
         "failed": "systemctl --failed --no-pager --plain --no-legend; "
                   "systemctl status --no-pager tilo-authd.socket tilo-authd.service greetd | tail -n 60",
         "sessions": "loginctl list-sessions --no-pager",
+        "chcon": "{ journalctl -b -u tilo-e2e-shell -o cat | grep -i 'audit\\|chcon'; "
+                 "journalctl -b --no-pager -o short-monotonic -t tilo-e2e-chcon; "
+                 "ausearch -k chcon -i 2>/dev/null; } | tail -n 200",
+        "initrd": "journalctl -b --no-pager -o short-monotonic | grep -E "
+                  "'tilo-root-discover|tilo-boot-signin|tilo-auth|systemd-cryptsetup|plymouth' "
+                  "| head -n 300",
     }
 
     def collect_signin_state(self, label: str) -> None:
@@ -644,11 +727,44 @@ cryptsetup close e2e-target
             except Failed as error:
                 text = f"not collected: {error}"
             self.save(f"signin-{label}-{name}.txt", text)
+            if name == "avc":
+                self.avcs[label] = parse_avcs(text)
         try:
             state = console.state(self.cycle.console, 10)
         except Exception as reason:  # no greeter or installer answers once a session runs
             state = {"unreachable": str(reason)}
         self.save(f"signin-{label}-console.json", state)
+
+    def lockout_custody(self, wait: float = 0) -> dict:
+        """Where the TPM's dictionary-attack reset authorisation is held. The TPM reports
+        lockoutAuthSet once tilo-rollback-harden (a timer-started oneshot) has set it and left
+        it in its root-only file; at the admin's sign-in tilo-authd wraps it into lockout.json
+        under the user key, and the file goes once a recovery-key wrapping exists too. Only
+        the wrapping kinds are read, never an envelope."""
+        deadline = time.monotonic() + wait
+        while True:
+            _, status = self.guest("/usr/libexec/tilo/tilo-rollback tpm-status --json", 60, True)
+            try:
+                reported = json.loads(status[status.index("{"):])
+            except ValueError:
+                reported = {}
+            if reported.get("reset_auth_set") or time.monotonic() >= deadline:
+                break
+            time.sleep(10)
+        _, harden_file = self.guest("stat -c '%U:%a' /var/lib/tilo/rollback/lockout-auth 2>/dev/null "
+                                    "|| echo absent", 30, True)
+        _, stored = self.guest("cat /var/lib/tilo/auth/lockout.json 2>/dev/null || true", 30, True)
+        try:
+            wrappings = json.loads(stored[stored.index("{"):]).get("wrappings", []) if "{" in stored else []
+        except ValueError:
+            wrappings = ["unreadable"]
+        _, harden = self.guest("systemctl show -p ActiveState -p Result tilo-rollback-harden.service "
+                               "--value | tr '\\n' ' '", 30, True)
+        return {"reset_auth_set": reported.get("reset_auth_set"),
+                "pin_is_defensible": reported.get("pin_is_defensible"),
+                "harden_file": harden_file.strip(),
+                "lockout_json_wrappings": [w.get("by") if isinstance(w, dict) else w for w in wrappings],
+                "harden_unit": harden.strip()}
 
     def uid(self) -> int:
         code, text = self.guest(f"id -u {self.user}")
@@ -657,10 +773,11 @@ cryptsetup close e2e-target
         return int(text.strip())
 
     def user_session(self) -> dict | None:
-        _, text = self.guest("loginctl list-sessions -o json --no-pager", quiet=True)
+        _, text = self.guest("loginctl list-sessions --json=short --no-pager", quiet=True)
         try:
             sessions = json.loads(text[text.index("["):])
         except ValueError:
+            self.save("loginctl-unparsed.txt", text)
             return None
         for session in sessions:
             if session.get("user") == self.user and session.get("class", "user") == "user":
@@ -763,10 +880,12 @@ cryptsetup close e2e-target
         self.save("first-boot-sessions.txt", sessions)
         path, text = self.cycle.screen()
         self.cycle.keep_screen("first-boot-after-unlock", path, text)
+        custody = self.lockout_custody(wait=240)
+        hardened = custody["reset_auth_set"] is True and custody["harden_file"] == "root:600"
         evidence = {"disk_prompts_answered": typed, "user_session": session,
                     "greeter_prompts": prompts, "disk_prompt_again": again,
-                    "firstboot_autologin_marker": pending.strip()}
-        if typed == 1 and session and not prompts and not again:
+                    "firstboot_autologin_marker": pending.strip(), "lockout_custody": custody}
+        if typed == 1 and session and not prompts and not again and hardened:
             self.item("1", "passed", "one disk prompt at first boot, then the session started "
                       "without the greeter asking", **evidence)
         else:
@@ -779,6 +898,8 @@ cryptsetup close e2e-target
                 why.append(f"the greeter asked {len(prompts)} times")
             if again:
                 why.append("the disk prompt came back")
+            if not hardened:
+                why.append(f"the TPM reset authorisation was not set by harden: {custody}")
             self.item("1", "failed", "; ".join(why), **evidence)
         self.power_off(label)
 
@@ -854,7 +975,8 @@ cryptsetup close e2e-target
         volume_key_left = [k for k in keys if "tilo-auth:volume-key" in k]
         _, authd = self.guest("journalctl -b --no-pager -o cat -t tilo-authd -u tilo-authd | tail -n 60", quiet=True)
         self.save("tilo-authd-migration.txt", authd)
-        evidence = {"disk_prompts_answered": typed, "session": session, "record": summary,
+        custody = self.lockout_custody()
+        evidence = {"lockout_custody": custody, "disk_prompts_answered": typed, "session": session, "record": summary,
                     "tilo_signin_tokens": [{k: t.get(k) for k in ("keyslots", "uid", "name")}
                                            for t in tokens],
                     "shadow_locked": locked, "pre_existing_keyslots_unchanged": unchanged,
@@ -878,10 +1000,12 @@ cryptsetup close e2e-target
                 reopen["disk_secret"] is not None and reopen["disk_secret"] == self.baseline.get("disk_secret_slot"),
             "the recovery key still opens its slot":
                 self.recovery is None or reopen.get("recovery_key") == self.baseline.get("recovery_slot"),
+            "the TPM reset authorisation is set": custody["reset_auth_set"] is True,
+            "lockout.json wraps it under the person's user key": "user" in custody["lockout_json_wrappings"],
         }
         evidence["checks"] = checks
         if self.recovery is None:
-            evidence["note"] = "the recovery key could not be read in the live installer; its slot was compared by header and key material only"
+            evidence["note"] = "this variant installs without reading the recovery key; its slot was compared by header and key material only"
         failed = [name for name, ok in checks.items() if not ok]
         if failed:
             self.item("2", "failed", "; ".join(failed), **evidence)
@@ -1112,8 +1236,7 @@ cryptsetup close e2e-target
         """Item 6: "Can't sign in", then the recovery key opens the volume."""
         label = "recovery"
         if not self.recovery:
-            self.item("6", "failed", "the recovery key could not be read in the live installer "
-                      "(clipboard and screen), so it could not be typed")
+            self.item("6", "failed", "the install delivered no recovery key, so it could not be typed")
             return
         self.boot(label)
         kind, path, text, _ = self.wait_screen(label, {"disk-prompt", "boot-signin"}, 600)
@@ -1127,7 +1250,16 @@ cryptsetup close e2e-target
             self.cycle.keep_screen("recovery-no-prompt", path, text)
             self.item("6", "failed", f"no prompt for the recovery key after \"Can't sign in\" ({kind})",
                       **evidence)
-            self.cycle.stop()
+            # Sign in as usual so the boot completes and its initrd journal says what the empty
+            # answer did.
+            self.cycle.type(self.account)
+            self.cycle.keys("ret")
+            try:
+                self.connect(300)
+                self.power_off(label)
+            except Failed as error:
+                say(f"the recovery boot did not come up after signing in: {error}")
+                self.cycle.stop()
             return
         self.cycle.keep_screen("recovery-prompt", path, text)
         self.cycle.type(self.recovery)
@@ -1168,6 +1300,9 @@ cryptsetup close e2e-target
             "the recovery key still opens its slot": self.recovery is None
             or opened.get("recovery_key") == self.baseline.get("recovery_slot"),
             "no tilo-auth:volume-key left in the kernel keyring": not evidence["volume_key_left_in_keyring"],
+            "the TPM reset authorisation is set": evidence["lockout_custody"]["reset_auth_set"] is True,
+            "lockout.json wraps it under the person's user key":
+                "user" in evidence["lockout_custody"]["lockout_json_wrappings"],
         }
         evidence["checks"] = checks
         failed = [name for name, ok in checks.items() if not ok]
@@ -1199,18 +1334,18 @@ cryptsetup close e2e-target
     # -- the variants -----------------------------------------------------------------------
 
     def execute(self) -> None:
-        steps = [("install", self.install, ("1", "2", "3", "4", "5", "6"))]
         if self.variant == "one-secret":
-            steps += [("first boot", self.first_boot, ("1",)),
-                      ("migration", self.migrate, ("2", "3", "4", "5", "6")),
-                      ("boot sign-in", self.boot_sign_in, ("3",)),
-                      ("wrong entry", self.wrong_entry, ("4", "5")),
-                      ("recovery key", self.recovery_path, ("6",))]
+            steps = [("install", self.install, ("1", "2", "3", "4", "5")),
+                     ("first boot", self.first_boot, ("1",)),
+                     ("migration", self.migrate, ("2", "3", "4", "5")),
+                     ("boot sign-in", self.boot_sign_in, ("3",)),
+                     ("wrong entry", self.wrong_entry, ("4", "5"))]
         else:
-            steps = [("install", self.install, ("7",)),
-                     ("first boot", self.first_boot_quiet, ("7",)),
-                     ("migration", self.migrate, ("7",)),
-                     ("separate disk secret", self.separate_disk_secret, ("7",))]
+            steps = [("install", self.install, ("6", "7")),
+                     ("first boot", self.first_boot_quiet, ("6", "7")),
+                     ("migration", self.migrate, ("6", "7")),
+                     ("separate disk secret", self.separate_disk_secret, ("7",)),
+                     ("recovery key", self.recovery_path, ("6",))]
         for name, step, items in steps:
             try:
                 step()
@@ -1259,15 +1394,20 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
                 "facts": {r.variant: r.facts for r in runs},
                 "screenshots": sorted(str(p.relative_to(out)) for p in out.rglob("*.png")),
                 "withheld": [str(p.relative_to(out)) for p in withheld]}
-    (out / "report.json").write_text(SECRETS.redact(json.dumps(document, indent=2, sort_keys=True,
-                                                               default=str)) + "\n")
     lines = ["# One-password sign-in, end to end", ""]
     for key in sorted(items):
         entry = items[key]
         lines.append(f"- **{key}. {names[key]}**: {entry['status'].upper()} - {entry['summary']}")
+    avcs = {f"{r.variant}/{label}": found for r in runs for label, found in r.avcs.items()}
+    document["avc_denials"] = avcs
+    new = sorted({d for found in avcs.values() for d in found if not known_avc(d)})
+    lines += ["", "AVC denials during boot and sign-in, beyond those already filed:",
+              *([f"- {d}" for d in new] or ["- none"])]
     lines += ["", "Screenshots:", *[f"- {p}" for p in document["screenshots"]]]
     if withheld:
         lines += ["", "Withheld (held a secret, emptied):", *[f"- {p}" for p in document["withheld"]]]
+    (out / "report.json").write_text(SECRETS.redact(json.dumps(document, indent=2, sort_keys=True,
+                                                               default=str)) + "\n")
     text = SECRETS.redact("\n".join(lines) + "\n")
     (out / "report.md").write_text(text)
     print(text)
@@ -1275,6 +1415,27 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
     if bad:
         print_evidence(out, document)
     return 1 if bad or withheld else 0
+
+
+AVC = re.compile(r"avc:\s+denied\s+\{\s*([^}]+?)\s*\}.*?comm=\"?([^\"\s]*)\"?.*?"
+                 r"scontext=[^:\s]+:[^:\s]+:([^:\s]+)\S*\s+tcontext=[^:\s]+:[^:\s]+:([^:\s]+)\S*"
+                 r"\s+tclass=(\S+)")
+# Denials already filed elsewhere: logind's getattr on the unlabeled /boot.
+KNOWN_AVCS = [("getattr", "systemd_logind_t", "unlabeled_t", "dir")]
+
+
+def parse_avcs(text: str) -> list[str]:
+    """Each distinct denial as `perms comm scontext->tcontext:tclass`."""
+    found = set()
+    for match in AVC.finditer(text):
+        perms, comm, source, target, tclass = match.groups()
+        found.add(f"{{ {perms} }} {comm} {source}->{target}:{tclass}")
+    return sorted(found)
+
+
+def known_avc(denial: str) -> bool:
+    return any(perm in denial and f"{source}->{target}:{tclass}" in denial
+               for perm, source, target, tclass in KNOWN_AVCS)
 
 
 JOURNAL_LINES = re.compile(r"greetd|greeter|tilo|pam_|systemd-logind|session|autologin|cryptsetup|"

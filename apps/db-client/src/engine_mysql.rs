@@ -235,17 +235,17 @@ impl MySqlEngine {
                 elapsed_ms: elapsed_ms(start),
                 rows_affected: Some(affected),
                 is_select: false,
-                truncated: false,
+                truncation: None,
             });
         }
 
         let mut rows_out: Vec<Vec<Cell>> = Vec::new();
-        let mut truncated = false;
+        let mut truncation: Option<crate::model::Truncation> = None;
         let mut retained_bytes = 0usize;
         let mut retained_cells = 0usize;
         for row_res in result.by_ref() {
             if rows_out.len() == MAX_QUERY_ROWS {
-                truncated = true;
+                truncation = Some(crate::model::Truncation::RowLimit);
                 break;
             }
             let row = row_res.map_err(|e| e.to_string())?;
@@ -256,7 +256,7 @@ impl MySqlEngine {
                 .map(|(i, v)| cell_from_value(v, col_meta.get(i).map(|(_, ct)| *ct)))
                 .collect();
             if !can_retain_result_row(retained_bytes, retained_cells, &cells) {
-                truncated = true;
+                truncation = Some(crate::model::Truncation::Payload);
                 break;
             }
             retained_bytes += row_retained_bytes(&cells);
@@ -271,7 +271,7 @@ impl MySqlEngine {
             elapsed_ms: elapsed_ms(start),
             rows_affected: None,
             is_select: true,
-            truncated,
+            truncation,
         })
     }
 }

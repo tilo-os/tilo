@@ -101,6 +101,56 @@ class MotionLibraryTests(unittest.TestCase):
         )
         self.assertEqual(self.whats(root), [])
 
+    def test_a_spring_built_by_hand_is_found(self):
+        widget = "crates/sdk/ui-core/src/widget/group_row.rs"
+        for source in (
+            "fn f() -> (f64, f64) { crate::motion::SpringSpec::critical(omega).state(x, v, t) }\n",
+            "fn f() { let s = SpringSpec::from_params(theme.tokens.motion.springs.heavy); }\n",
+            "fn f() { let s = SpringSpec { response: 0.3, damping: 1.0 }; }\n",
+        ):
+            with self.subTest(source=source):
+                root = self.fixture({widget: source})
+                self.assertEqual(self.whats(root), ["spring built outside the library"])
+
+    def test_time_bounded_interpolation_is_found(self):
+        widget = "crates/session/shell/src/shell/thing.rs"
+        for source in (
+            "fn f(now: Instant) -> f32 { now.duration_since(t).as_millis() as f32 / FADE_MS as f32 }\n",
+            "fn f(now: Instant) -> f64 { (now - start).as_secs_f64() / SLIDE_SECS }\n",
+            "fn f() -> f32 { (started.elapsed().as_micros() as f32) / f32::from(GLOW_US) }\n",
+            "fn f() -> f64 { elapsed.as_millis() as f64 / REVEAL_MS }\n",
+        ):
+            with self.subTest(source=source):
+                root = self.fixture({widget: source})
+                self.assertEqual(self.whats(root), ["time-bounded interpolation"])
+
+    def test_sample_interpolation_rates_and_buckets_are_not_motion(self):
+        root = self.fixture(
+            {
+                # A finger path interpolates between its reports.
+                "crates/sdk/ui-core/src/widget/finger_path.rs": (
+                    "fn f() -> f64 {\n"
+                    "    let span = later.0.saturating_duration_since(sample_at).as_secs_f64();\n"
+                    "    let into = at.saturating_duration_since(sample_at).as_secs_f64();\n"
+                    "    let r = last + (last - prev) * ahead.as_secs_f64() / interval.as_secs_f64();\n"
+                    "    travel + (later.1 - travel) * into / span\n"
+                    "}\n"
+                ),
+                # A transfer rate over the time it took.
+                "apps/speed-test/src/measure.rs": (
+                    "fn mbps(bytes: u64, elapsed: Duration) -> f64 {\n"
+                    "    let seconds = elapsed.as_secs_f64();\n"
+                    "    bytes as f64 * 8.0 / seconds / 1_000_000.0\n"
+                    "}\n"
+                ),
+                # How many days old a file is.
+                "crates/session/shell/src/shell/search/files.rs": (
+                    "fn f() -> u64 { age.as_secs() / DAY }\n"
+                ),
+            }
+        )
+        self.assertEqual(self.whats(root), [])
+
     def test_any_site_fails_the_check(self):
         root = self.fixture(
             {"crates/sdk/ui-core/src/widget/thing.rs": "fn f() { Curve::Linear; }\n"}

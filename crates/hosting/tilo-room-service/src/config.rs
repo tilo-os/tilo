@@ -63,9 +63,17 @@ pub struct PersistentConfig {
     /// (`TILO_ROOMS_CHAT_CHANNELS`); unset, `general`, since a chat without a
     /// channel has nowhere for a visitor's first message to go.
     pub chat_channels: Vec<String>,
+    /// The channel its members report problems to, kept in its Chat on
+    /// every start (`TILO_ROOMS_FEEDBACK_CHANNEL`); unset, none.
+    pub feedback_channel: Option<String>,
     /// The strips, by name, the room's shared desktop has
     /// (`TILO_ROOMS_STRIPS`); unset, none beyond what people make.
     pub strips: Vec<String>,
+    /// Texts published outside the room that get a discussion thread in it
+    /// (`TILO_ROOMS_DISCUSSIONS`: semicolon-separated `<address>=<title>`),
+    /// so a reader arriving from such a text finds the people discussing it.
+    /// Unset, none. A text whose thread the room keeps is left as it is.
+    pub discussions: Vec<String>,
     /// Proxies whose `X-Forwarded-For` names the visitor.
     pub trusted_proxies: TrustedProxies,
     /// The header those proxies name a visitor's country in
@@ -105,10 +113,16 @@ pub struct PersistentConfig {
     /// `0` keeps none): someone without an invitation leaves an email
     /// address, and whoever may invite sees it with the room's join requests.
     pub wait_list_max: usize,
-    /// Where someone on the wait list asks to be taken off it
+    /// Where someone on the wait list asks questions or to be taken off it
     /// (`TILO_ROOMS_CONTACT`: an email address or an `https://` page), said
-    /// under the door's email field; unset, the door names none.
+    /// under the door's email field beside its own way off the list; unset,
+    /// the door names none.
     pub contact: Option<String>,
+    /// How the door mails the addresses on its wait list, when it does
+    /// (`TILO_ROOMS_MAIL_FROM` and `TILO_ROOMS_RESEND_KEY_FILE`): it then
+    /// lists an address once the link mailed there is opened, and members
+    /// have invitations mailed. Unset, the door sends no mail and says so.
+    pub mail: Option<MailConfig>,
     /// Days a member may be away (no session) before their membership ends
     /// (`TILO_ROOMS_INACTIVE_AFTER_DAYS`, 30 unless set); one who comes back
     /// later joins through the door again as the same person. Membership
@@ -125,7 +139,8 @@ pub struct PersistentConfig {
     /// The Discord bot token, when the bridge runs.
     pub discord_token_file: Option<PathBuf>,
     /// The model API key the room's moderation agent asks with, when it
-    /// runs; mounted from the operator's encrypted secrets.
+    /// runs; mounted from the operator's encrypted secrets. The same model
+    /// looks over members' feedback reports before they are sent.
     pub moderation_key_file: Option<PathBuf>,
     /// The model the moderation agent asks, when not the default.
     pub moderation_model: Option<String>,
@@ -487,7 +502,9 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         shown_name: shown_name(var)?,
         description: description(var)?,
         chat_channels: chat_channels(var)?,
+        feedback_channel: feedback_channel(var)?,
         strips: strips(var)?,
+        discussions: discussions(var)?,
         trusted_proxies: trusted_proxies(var)?,
         country_header: var("TILO_ROOMS_COUNTRY_HEADER")
             .map(|name| name.trim().to_owned())
@@ -504,6 +521,7 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         admission: admission(var)?,
         wait_list_max: wait_list_max(var)?,
         contact: contact(var)?,
+        mail: mail(var, web_entry.as_deref())?,
         inactive_after_days: inactive_after_days(var)?,
         attachments: AttachmentQuota {
             max_file: optional(var, "TILO_ROOMS_ATTACHMENT_MAX_MIB")?,
@@ -598,6 +616,100 @@ fn wait_list_max(var: &impl Fn(&str) -> Option<String>) -> Result<usize> {
         "TILO_ROOMS_WAIT_LIST_MAX must be 0-{MAX_WAIT_LIST}"
     );
     Ok(max)
+}
+
+/// How the door sends mail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MailConfig {
+    /// The sender, `Name <address>` or an address (`TILO_ROOMS_MAIL_FROM`).
+    pub from: String,
+    /// The file holding the Resend API key (`TILO_ROOMS_RESEND_KEY_FILE`),
+    /// read at start and never logged.
+    pub resend_key_file: PathBuf,
+    /// Where mail is posted (`TILO_ROOMS_RESEND_URL`): Resend's API unless
+    /// set, which only a test changes, to a loopback stand-in.
+    pub resend_url: String,
+    /// The directory the mails' words are read from
+    /// (`TILO_ROOMS_MAIL_TEMPLATES`), or `None` for the ones built in. A
+    /// directory that is missing or holds a template this mail cannot fill
+    /// stops the service: it never falls back to the built-in words.
+    pub templates: Option<PathBuf>,
+}
+
+/// Resend's endpoint for sending one mail.
+const RESEND_URL: &str = "https://api.resend.com/emails";
+
+/// `TILO_ROOMS_MAIL_FROM` with `TILO_ROOMS_RESEND_KEY_FILE`, if set: both or
+/// neither, and only beside the door's page (`TILO_ROOMS_WEB_ENTRY`), which
+/// the mailed links open.
+fn mail(
+    var: &impl Fn(&str) -> Option<String>,
+    web_entry: Option<&str>,
+) -> Result<Option<MailConfig>> {
+    let set = |name: &str| {
+        var(name)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    };
+    let (from, key) = match (
+        set("TILO_ROOMS_MAIL_FROM"),
+        set("TILO_ROOMS_RESEND_KEY_FILE"),
+    ) {
+        (None, None) => return Ok(None),
+        (Some(from), Some(key)) => (from, key),
+        _ => anyhow::bail!(
+            "TILO_ROOMS_MAIL_FROM and TILO_ROOMS_RESEND_KEY_FILE are set together, or neither"
+        ),
+    };
+    ensure!(
+        web_entry.is_some(),
+        "the door mails links to its page: mail needs TILO_ROOMS_WEB_ENTRY"
+    );
+    let resend_url = set("TILO_ROOMS_RESEND_URL").unwrap_or_else(|| RESEND_URL.to_owned());
+    let loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
+        .iter()
+        .any(|prefix| resend_url.starts_with(prefix));
+    ensure!(
+        resend_url.starts_with("https://") || loopback,
+        "TILO_ROOMS_RESEND_URL is an https URL"
+    );
+    let templates = set("TILO_ROOMS_MAIL_TEMPLATES").map(PathBuf::from);
+    sender(&from)?;
+    Ok(Some(MailConfig {
+        from,
+        resend_key_file: PathBuf::from(key),
+        resend_url,
+        templates,
+    }))
+}
+
+/// `from` as a mail service's sender: `Name <address>` or an address, with
+/// no line break, control character or second angle-bracketed address that
+/// could become another header.
+fn sender(from: &str) -> Result<()> {
+    ensure!(
+        !from.chars().any(char::is_control),
+        "TILO_ROOMS_MAIL_FROM is an address or Name <address>, on one line"
+    );
+    let address = match from.rsplit_once('<') {
+        Some((name, rest)) => {
+            ensure!(
+                !name.contains(['<', '>', '"']) && !name.trim().is_empty(),
+                "TILO_ROOMS_MAIL_FROM is an address or Name <address>"
+            );
+            rest.strip_suffix('>').with_context(
+                || "TILO_ROOMS_MAIL_FROM is an address or Name <address>, closed with >",
+            )?
+        }
+        None => from,
+    };
+    ensure!(
+        !address.contains(['<', '>', '"']) && !address.chars().any(char::is_whitespace),
+        "TILO_ROOMS_MAIL_FROM is an address or Name <address>"
+    );
+    tilo_relay_protocol::rooms::contact_address(address)
+        .map(|_| ())
+        .map_err(|_| anyhow::anyhow!("TILO_ROOMS_MAIL_FROM is an address or Name <address>"))
 }
 
 /// `TILO_ROOMS_CONTACT`: an email address or an `https://` page, if set.
@@ -751,6 +863,25 @@ fn author_apps(var: &impl Fn(&str) -> Option<String>, seed_apps: &[String]) -> R
     Ok(apps)
 }
 
+/// `TILO_ROOMS_FEEDBACK_CHANNEL`: one channel name, as in
+/// `TILO_ROOMS_CHAT_CHANNELS`.
+fn feedback_channel(var: &impl Fn(&str) -> Option<String>) -> Result<Option<String>> {
+    let Some(name) = var("TILO_ROOMS_FEEDBACK_CHANNEL")
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+    else {
+        return Ok(None);
+    };
+    ensure!(
+        name.len() <= 64
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+        "TILO_ROOMS_FEEDBACK_CHANNEL names a channel of up to 64 lowercase letters, digits and -, not {name:?}"
+    );
+    Ok(Some(name))
+}
+
 /// `TILO_ROOMS_CHAT_CHANNELS`: comma-separated channel names, each
 /// lowercase letters, digits and `-` (the relay derives each channel's id
 /// from its name, so two names may not share one). Unset or empty, the
@@ -781,6 +912,34 @@ fn chat_channels(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
         "TILO_ROOMS_CHAT_CHANNELS names a channel twice"
     );
     Ok(channels)
+}
+
+/// `TILO_ROOMS_DISCUSSIONS`: semicolon-separated `<address>=<title>`, each
+/// a published text's address and the title its thread is named. Checked as
+/// the relay checks an announcement, so a mistyped one stops the start
+/// rather than the room's threads.
+fn discussions(var: &impl Fn(&str) -> Option<String>) -> Result<Vec<String>> {
+    let announced: Vec<String> = var("TILO_ROOMS_DISCUSSIONS")
+        .unwrap_or_default()
+        .split(';')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for entry in &announced {
+        let (address, title) = entry.split_once('=').with_context(|| {
+            format!("TILO_ROOMS_DISCUSSIONS takes ADDRESS=TITLE, not {entry:?}")
+        })?;
+        ensure!(
+            address.trim().starts_with("http"),
+            "TILO_ROOMS_DISCUSSIONS names a web address, not {address:?}"
+        );
+        ensure!(
+            !title.trim().is_empty(),
+            "TILO_ROOMS_DISCUSSIONS names each thread's title"
+        );
+    }
+    Ok(announced)
 }
 
 /// `TILO_ROOMS_STRIPS`: comma-separated strip names, each 1-48
@@ -1038,6 +1197,34 @@ mod tests {
                 "{bad}"
             );
         }
+        assert!(defaults.discussions.is_empty());
+        let discussions = config(&[
+            base[0],
+            base[1],
+            (
+                "TILO_ROOMS_DISCUSSIONS",
+                " https://tilo.so/blog/a-post=A post ;; https://tilo.so/blog/two=Second ",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            discussions.persistent.unwrap().discussions,
+            [
+                "https://tilo.so/blog/a-post=A post",
+                "https://tilo.so/blog/two=Second"
+            ]
+        );
+        for bad in [
+            "https://tilo.so/blog/a-post",
+            "=A post",
+            "https://tilo.so/blog/a-post=",
+            "tilo.so/blog/a-post=A post",
+        ] {
+            assert!(
+                config(&[base[0], base[1], ("TILO_ROOMS_DISCUSSIONS", bad)]).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -1053,6 +1240,128 @@ mod tests {
         let shared = config(&[base[0], base[1], ("TILO_ROOMS_LAYOUT", "shared")]).unwrap();
         assert_eq!(shared.persistent.unwrap().layout, "shared");
         assert!(config(&[base[0], base[1], ("TILO_ROOMS_LAYOUT", "public")]).is_err());
+    }
+
+    #[test]
+    fn the_door_mails_with_a_sender_and_a_key_file_beside_its_page() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+            ("TILO_ROOMS_WEB_ENTRY", "https://app.example/"),
+        ];
+        let from = ("TILO_ROOMS_MAIL_FROM", "Tilo <hello@tilo.example>");
+        let key = ("TILO_ROOMS_RESEND_KEY_FILE", "/run/secrets/resend-key");
+        let mail = config(&[base[0], base[1], base[2], from, key])
+            .unwrap()
+            .persistent
+            .unwrap()
+            .mail
+            .unwrap();
+        assert_eq!(
+            mail,
+            MailConfig {
+                from: from.1.into(),
+                resend_key_file: PathBuf::from(key.1),
+                resend_url: RESEND_URL.into(),
+                templates: None,
+            }
+        );
+        let local = config(&[
+            base[0],
+            base[1],
+            base[2],
+            ("TILO_ROOMS_MAIL_FROM", "hello@tilo.example"),
+            key,
+            ("TILO_ROOMS_RESEND_URL", "http://127.0.0.1:9/emails"),
+        ])
+        .unwrap();
+        assert_eq!(
+            local.persistent.unwrap().mail.unwrap().resend_url,
+            "http://127.0.0.1:9/emails"
+        );
+        for bad in [
+            vec![base[0], base[1], base[2], from],
+            vec![base[0], base[1], base[2], key],
+            vec![base[0], base[1], from, key],
+            vec![
+                base[0],
+                base[1],
+                base[2],
+                ("TILO_ROOMS_MAIL_FROM", "Tilo"),
+                key,
+            ],
+            vec![
+                base[0],
+                base[1],
+                base[2],
+                from,
+                key,
+                ("TILO_ROOMS_RESEND_URL", "http://mail.example/emails"),
+            ],
+        ] {
+            assert!(config(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_sender_that_could_be_more_headers_is_refused() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+            ("TILO_ROOMS_WEB_ENTRY", "https://app.example/"),
+        ];
+        let key = ("TILO_ROOMS_RESEND_KEY_FILE", "/run/secrets/resend-key");
+        for from in [
+            "Tilo <hello@tilo.example>\r\nBcc: evil@example.net",
+            "Tilo <hello@tilo.example> <evil@example.net>",
+            "Tilo <hello@tilo.example",
+            "<hello@tilo.example>",
+            "Tilo <>",
+            "hello@tilo.example, evil@example.net",
+            "hello@tilo.example>",
+        ] {
+            let mail = ("TILO_ROOMS_MAIL_FROM", from);
+            assert!(
+                config(&[base[0], base[1], base[2], mail, key]).is_err(),
+                "{from:?}"
+            );
+        }
+        for from in [
+            "hello@tilo.example",
+            "Tilo <hello@tilo.example>",
+            "Tilo B <hello@tilo.example>",
+        ] {
+            let mail = ("TILO_ROOMS_MAIL_FROM", from);
+            assert!(
+                config(&[base[0], base[1], base[2], mail, key]).is_ok(),
+                "{from:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_door_reads_its_words_from_a_configured_directory_when_it_names_one() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+            ("TILO_ROOMS_WEB_ENTRY", "https://app.example/"),
+            ("TILO_ROOMS_MAIL_FROM", "hello@tilo.example"),
+            ("TILO_ROOMS_RESEND_KEY_FILE", "/run/secrets/resend-key"),
+        ];
+        let templates = (
+            "TILO_ROOMS_MAIL_TEMPLATES",
+            "/usr/local/share/tilo/room-mail",
+        );
+        let mail = config(&[base[0], base[1], base[2], base[3], base[4], templates])
+            .unwrap()
+            .persistent
+            .unwrap()
+            .mail
+            .unwrap();
+        assert_eq!(
+            mail.templates.as_deref(),
+            Some(std::path::Path::new("/usr/local/share/tilo/room-mail"))
+        );
     }
 
     #[test]
@@ -1100,7 +1409,8 @@ mod tests {
         .persistent
         .unwrap();
         assert_eq!(set.wait_list_max, 0);
-        assert_eq!(set.contact.as_deref(), Some("hello@example.org"));
+        assert_eq!(set.contact.as_deref(), Some("Hello@Example.org"));
+        assert_eq!(set.mail, None, "no mail unless told");
         let page = config(&[
             base[0],
             base[1],

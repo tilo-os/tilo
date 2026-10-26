@@ -151,13 +151,24 @@ impl HostWorker {
         self.app.install_published_invocation_authorizer(authorizer)
     }
     /// Recompute time-sensitive permissions in the host before every pump.
+    ///
+    /// A worker whose collaboration is not connected sent no invocation, so
+    /// this pass has no application outcome to speak for. It refuses with the
+    /// connection state's own reason instead of reporting an uncertain one:
+    /// uncertain outcomes belong to invocations that were sent, retained by the
+    /// broker's guarded journal and the managed sender, and calling a merely
+    /// unconnected transport one hid the actual cause while implying that work
+    /// may have happened.
     pub fn pump(&mut self, current: PermissionContext) -> Result<(), String> {
         self.app.published_invocation_health()?;
         *self.permissions.borrow_mut() = current;
         self.app.pump_hosted_model();
         self.app.published_invocation_health()?;
         if !self.app.collaboration_is_connected() {
-            return Err("application collaboration transport failed; outcome unknown".into());
+            return Err(format!(
+                "application collaboration transport is not connected: {}; no invocation was sent",
+                self.app.collaboration_state().reason()
+            ));
         }
         Ok(())
     }

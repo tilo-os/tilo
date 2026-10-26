@@ -156,6 +156,9 @@ class Row:
     status: str
     failing: bool
     note: str = ""
+    # The KPI missed a ceiling `enforce = true` names, which fails the run
+    # whatever its regression status is.
+    over_budget: bool = False
 
 
 def series(item: record.Record) -> str | None:
@@ -235,6 +238,8 @@ def judge(item: record.Record, history: list[record.Record], budgets: Budgets, a
             verdict["budget_enforced"] = enforced
             failing = failing or enforced
             notes.append(("over budget: " if enforced else "over target: ") + "; ".join(misses))
+            if enforced:
+                return Row(item, item.kpi, status, failing, "; ".join(notes), over_budget=True)
     if status == "regression-pending":
         notes.append("first regression; fails if the next run regresses too")
     return Row(item, item.kpi, status, failing, "; ".join(notes))
@@ -283,6 +288,10 @@ def summary(rows: list[Row]) -> str:
             continue
         verdict = item.verdict or {}
         status = f"**{row.status}**" if row.failing else row.status
+        # A record over its enforced ceiling fails the run although its own
+        # status (new, pass, accepted) reads as quiet.
+        if row.over_budget:
+            status = f"**over budget** ({row.status})"
         lines.append(
             f"| `{item.kpi}` | {'/'.join(item.env_key)} | {item.n} | {number(item.p50)} {item.unit} "
             f"| {number(item.p99)} {item.unit} | {number(verdict.get('baseline_p50'))} "
@@ -290,7 +299,7 @@ def summary(rows: list[Row]) -> str:
     kinds: dict[str, int] = {}
     for row in rows:
         if row.failing:
-            kind = row.status if row.status in {"missing", *FAILING} else "over budget"
+            kind = "over budget" if row.over_budget else row.status
             kinds[kind] = kinds.get(kind, 0) + 1
     detail = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
     lines.append("")

@@ -26,6 +26,7 @@ pub use observed_launch::AppOpen;
 mod offload_door;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
+mod app_changes;
 #[cfg(test)]
 mod app_settings_tests;
 #[cfg(test)]
@@ -701,7 +702,7 @@ fn cert_capped_in(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct AdmittedJoinIdentity {
+pub(crate) struct AdmittedJoinIdentity {
     /// Only an actual broker-allocated private descriptor can carry this scope.
     host_scope: Option<LocalHostWorkerScope>,
     worker_registration: Option<PrivateWorkerRegistration>,
@@ -2194,6 +2195,8 @@ impl PendingInvocation {
 
 // Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
 mod action_host;
+mod invocation_update;
+pub(crate) use action_host::{LEGACY_DOOR_FOREIGN_APP, legacy_door_may_act_as_person};
 mod admission_memo;
 mod app_consent;
 mod app_open_door;
@@ -3635,8 +3638,6 @@ pub struct CapnpBrokerState {
     /// Applications with a grant question on screen, by room: one at a
     /// time each, so an app cannot bury the person in sheets.
     app_action_consent_pending: Mutex<std::collections::HashSet<(String, String)>>,
-    /// Steps of interactive shortcut runs waiting for their person.
-    step_prompts: crate::automation::StepPrompts,
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.
@@ -4400,7 +4401,6 @@ impl CapnpBrokerState {
                 app_action_consent: RwLock::new(None),
                 run_question_notices: Mutex::new(HashMap::new()),
                 app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
-                step_prompts: crate::automation::StepPrompts::default(),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
@@ -7575,6 +7575,7 @@ impl CapnpBrokerState {
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged
             | CollabEvent::DrivesChanged
+            | CollabEvent::ApplicationsChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
@@ -7789,6 +7790,7 @@ impl CapnpBrokerState {
             let _ = tx.send(ContextEnvelope::HistoryAgents(history_agents.clone()));
         }
         let certified = native.is_some();
+        let held = tx.clone();
         if let Ok(mut m) = self.channels.lock() {
             m.entry(channel_id.to_owned())
                 .or_insert_with(ChannelSubscribers::default)
@@ -7801,6 +7803,13 @@ impl CapnpBrokerState {
                     history_agents,
                 });
         }
+        // The records of its app's trees this device already holds in the
+        // room ([`BrokerChannels::tree_records_held`]), such as those it was
+        // replayed when it joined, before any window of the app ran: a
+        // window learns those only from here. Read after the subscription
+        // is in place, so a record admitted meanwhile is told either here
+        // or live (the shell announces a record once it is admitted).
+        subscriptions::held_tree_records(&self.broker_channels, channel_id, &held);
         if certified {
             // A new admitted session brings its own certificate expiry: the
             // policy turn re-checks, and from then on wakes at that expiry.
@@ -9293,6 +9302,14 @@ impl channel_handle::Server for CapnpChannelHandle {
             }),
             Err(error) => Promise::err(error),
         }
+    }
+
+    fn applications_changed(
+        self: Rc<Self>,
+        params: channel_handle::ApplicationsChangedParams,
+        results: channel_handle::ApplicationsChangedResults,
+    ) -> Promise<(), capnp::Error> {
+        self.answered_about_app_changes(&params, results)
     }
 
     fn approved_check_reported_progress(
@@ -11699,6 +11716,17 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .filter(|surface| surface.route.cluster_id == cluster)
                 .and_then(|surface| surface.action_projection(&resource, &action))
                 .ok_or_else(|| capnp::Error::failed("unknown application action".into()))?;
+            // The target app comes from the same clone the action was taken
+            // from, and is checked before any confirmation is minted.
+            let invoke_access = state.app_action_access(&origin_route.app_id).invoke;
+            if !legacy_door_may_act_as_person(
+                &current,
+                &origin_route,
+                &publication.0.app_id,
+                invoke_access,
+            ) {
+                return Err(capnp::Error::failed(LEGACY_DOOR_FOREIGN_APP.into()));
+            }
             let offered = &publication.1;
             let actor = current.broker_actor();
             let phrase = confirmation
@@ -12649,7 +12677,7 @@ fn handle_signed_op_send_for_artifact(
     match validation {
         Ok(()) => {
             if let Ok(mut ch) = state.broker_channels.lock() {
-                ch.record_history(&route.cluster_id, &envelope);
+                ch.record_history(route, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.kind == collab_types::OpKind::Compaction
@@ -16159,6 +16187,8 @@ pub mod tests {
     include!("native_checkout_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
+    #[cfg(test)]
+    include!("legacy_invoke_door_tests.rs");
     #[cfg(test)]
     include!("record_content_tests.rs");
     #[cfg(test)]
@@ -19912,7 +19942,7 @@ pub mod tests {
     }
 
     #[test]
-    fn current_connection_invocation_sentinel_cannot_target_another_app() {
+    fn the_current_connection_sentinel_names_the_callers_own_peer() {
         assert_eq!(
             invocation_target_peer(ui::collaboration::CURRENT_CONNECTION_PEER_ID, 41),
             41
@@ -21088,104 +21118,6 @@ pub mod tests {
     }
 }
 
-/// Checks one application-reported update against its pending invocation's
-/// published contract, returning the sequence it advances to.
-fn validate_invocation_update(
-    pending: &PendingInvocation,
-    update: &tilo_actions::InvocationUpdate,
-) -> Result<u64, capnp::Error> {
-    if update.invocation() != pending.update.invocation() {
-        return Err(capnp::Error::failed(
-            "invocation update identity mismatch".into(),
-        ));
-    }
-    let mut next_sequence = pending.last_sequence;
-    if matches!(update, tilo_actions::InvocationUpdate::Accepted { .. }) {
-        return Err(capnp::Error::failed(
-            "invocation acceptance is owned by the broker".into(),
-        ));
-    }
-    if let tilo_actions::InvocationUpdate::Progress {
-        sequence,
-        phase,
-        completed,
-        total,
-        ..
-    } = update
-    {
-        if matches!(pending.execution, tilo_actions::ExecutionMode::Immediate) {
-            return Err(capnp::Error::failed(
-                "immediate action reported background progress".into(),
-            ));
-        }
-        if *sequence <= pending.last_sequence {
-            return Err(capnp::Error::failed(
-                "invocation progress must be monotonic".into(),
-            ));
-        }
-        if phase.trim().is_empty() {
-            return Err(capnp::Error::failed(
-                "invocation progress phase must be non-empty".into(),
-            ));
-        }
-        if completed
-            .zip(*total)
-            .is_some_and(|(completed, total)| completed > total)
-        {
-            return Err(capnp::Error::failed(
-                "invocation progress cannot exceed its total".into(),
-            ));
-        }
-        next_sequence = *sequence;
-    }
-    if let tilo_actions::InvocationUpdate::Item {
-        sequence, value, ..
-    } = update
-    {
-        let Some(item_schema) = pending.execution.item_schema() else {
-            return Err(capnp::Error::failed(
-                "non-streaming action reported a streamed item".into(),
-            ));
-        };
-        if *sequence <= pending.last_sequence {
-            return Err(capnp::Error::failed(
-                "invocation stream sequence must be monotonic".into(),
-            ));
-        }
-        tilo_actions::validate_json_schema(value, item_schema).map_err(|error| {
-            capnp::Error::failed(format!(
-                "streamed item violated its published contract: {error}"
-            ))
-        })?;
-        next_sequence = *sequence;
-    }
-    if let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update {
-        pending.result.validate(output).map_err(|error| {
-            capnp::Error::failed(format!(
-                "invocation result violated its published contract: {error}"
-            ))
-        })?;
-    }
-    if let tilo_actions::InvocationUpdate::Failed { error, .. } = update {
-        if error.code.trim().is_empty() || error.message.trim().is_empty() {
-            return Err(capnp::Error::failed(
-                "invocation failure requires a code and message".into(),
-            ));
-        }
-        if error.retryable && !pending.retryable_on_disconnect {
-            return Err(capnp::Error::failed(
-                "at-most-once action cannot advertise a retryable failure".into(),
-            ));
-        }
-    }
-    if matches!(update, tilo_actions::InvocationUpdate::Cancelled { .. }) && !pending.cancellable {
-        return Err(capnp::Error::failed(
-            "non-cancellable action reported cancellation".into(),
-        ));
-    }
-    Ok(next_sequence)
-}
-
 impl CapnpBrokerState {
     fn publish_pending_activity(
         &self,
@@ -21246,7 +21178,7 @@ impl CapnpBrokerState {
                 .get(&id)
                 .filter(|pending| pending.peer_id == peer_id)
                 .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-            let next_sequence = validate_invocation_update(pending, &update)?;
+            let next_sequence = invocation_update::validate_invocation_update(pending, &update)?;
             (pending.clone(), next_sequence)
         };
         state

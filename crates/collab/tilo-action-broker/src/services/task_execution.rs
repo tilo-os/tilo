@@ -1,6 +1,8 @@
 //! Host-owned adaptation of authenticated task channels to the canonical owner.
 //! No caller certificate, actor label or new grant is accepted from task arguments.
 
+use serde::{Deserialize, Serialize};
+
 #[cfg(test)]
 #[path = "task_execution_tests.rs"]
 mod tests;
@@ -120,6 +122,14 @@ impl NativeTaskActionRequirement {
     /// grants (as `verdict` decided them) and the starter's (`starter`).
     /// Deny refuses; Ask pauses for the person unless this invocation is
     /// [`Self::confirmed`].
+    ///
+    /// Undo is a system service, so a change that can be taken back (an
+    /// undoable action, not one that sends, buys or deletes for good) runs
+    /// in the run's scope as well as it runs there for a person: a person's
+    /// own grant that says "ask" asks them when *they* press it, their
+    /// gesture being their answer, and never pauses a run they started on a
+    /// change it can undo. What the agent's and the issue's own grants say
+    /// still decides: an answer asking the agent first keeps asking.
     fn answer(
         &self,
         verdict: &tilo_action_policy::Verdict<'_>,
@@ -137,7 +147,18 @@ impl NativeTaskActionRequirement {
         if agent_answer == Answer::Deny {
             return Err(not_allowed(self.need.kind, &agent_basis(verdict)));
         }
-        let answer = agent_answer.min(starter);
+        let undoable =
+            !self.consequential && self.need.kind == tilo_action_policy::ActionKind::Undoable;
+        let declared = agent_answer.min(starter);
+        let answer = if declared == Answer::Ask
+            && undoable
+            && agent_answer == Answer::Allow
+            && starter == Answer::Ask
+        {
+            Answer::Allow
+        } else {
+            declared
+        };
         if answer == Answer::Ask && !self.confirmed {
             let whose = if agent_answer == Answer::Ask {
                 agent_basis(verdict)
@@ -231,7 +252,49 @@ pub struct TrackerQuestion {
     pub arguments_digest: String,
     /// The [`tilo_actions::Draft`] the person was shown.
     pub draft: serde_json::Value,
+    /// The change the step makes, before and after, where it previews one
+    /// ([`Preview`]): the person decides on the difference rather than on
+    /// the end state alone. Carried as the app recorded it beside the draft,
+    /// so what the sheet puts up is what the run wrote.
+    pub before: Option<serde_json::Value>,
     pub answer: TrackerAnswer,
+}
+
+/// What one side of a change preview shows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewSide {
+    /// The tree, or the item, as it is (or will be) written.
+    pub text: String,
+    /// Its lines, for a person who cannot see characters line up.
+    pub spoken: String,
+}
+
+/// The change a step makes, in tree form: the resource as it stands and as
+/// it will stand. A person approving a bulk move sees what it becomes
+/// before any of it happens; a script or a screen reader reads the same two
+/// sides as text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preview {
+    pub before: PreviewSide,
+    pub after: PreviewSide,
+}
+
+/// The draft of `question` as a person reading it with a preview reads it:
+/// the step as the run recorded it, and what the step before it left.
+/// Nothing the asking agent sent decides either.
+#[must_use]
+pub fn confirmation_preview(question: &TrackerQuestion) -> (tilo_actions::Draft, Option<Preview>) {
+    (
+        serde_json::from_value(question.draft.clone()).unwrap_or_default(),
+        // A preview this build cannot read is no preview: the person is
+        // asked on the draft alone rather than on a difference shown wrong.
+        question
+            .before
+            .clone()
+            .and_then(|preview| serde_json::from_value(preview).ok()),
+    )
 }
 
 /// An agent's run of one issue, as the Tasks app's record holds it.

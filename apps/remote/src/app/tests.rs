@@ -468,10 +468,10 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
         app.workspace.get_mut(id).unwrap().host = Atom(SecretKey::generate().public().to_string());
         app.apply(Action::ConfirmPending);
         assert!(app.session.borrow().live.is_none());
-        assert_eq!(
-            app.shell.toast_text(),
-            Some("This connection changed while you were asked. Review it, then try again."),
-            "the person learns why nothing opened, in the window's bar"
+        assert!(
+            ui::attention::entries().iter().any(|entry| entry.what()
+                == "This connection changed while you were asked. Review it, then try again."),
+            "the person learns why nothing opened, in the ledger"
         );
     }
 
@@ -506,7 +506,10 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
             app.status_model(rdp).action,
             Some(("Edit connection", Action::EditConnection(rdp)))
         );
+        // Ending a live session asks first: its scrollback goes with it.
         app.apply(Action::Disconnect);
+        assert!(app.dialog.is_some(), "closing a session asks first");
+        app.apply(Action::ConfirmPending);
         assert_eq!(app.screen, Screen::List);
         assert!(app.session_for.is_none());
     }
@@ -689,6 +692,7 @@ fn tilo_sessions_use_the_authenticated_broker_and_consent() {
     assert!(!app.session.borrow_mut().queue_tilo_input(motion));
     let _ = app.take_collab_requests();
     app.apply(Action::Disconnect);
+    app.apply(Action::ConfirmPending);
     assert!(matches!(
         app.take_collab_requests().as_slice(),
         [ui::collaboration::CollabRequest::CloseWorkspaceControl { .. }]

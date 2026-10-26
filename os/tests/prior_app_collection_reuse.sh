@@ -6,12 +6,17 @@ repo=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/bin" "$work/tmp" "$work/release/runtime/tilo-runtime/root" \
-  "$work/prior/tapp" "$work/prior/runtime/tilo-runtime/root"
+  "$work/prior/tapp" "$work/prior/runtime/tilo-runtime/root/lib/fonts"
 
 root=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 printf 'root_hash = "%s"\n' "$root" > "$work/release/runtime/tilo-runtime/root/bundle.toml"
 printf 'root_hash = "%s"\n' "$root" > "$work/prior/runtime/tilo-runtime/root/bundle.toml"
 printf 'old package\n' > "$work/prior/tapp/old-1.0.1-dev.9+ga-x86_64.tapp"
+# Every published collection carries the runtime's variable fonts, whose file
+# names hold OpenType axis tags in brackets. A real prior collection without
+# them would let a member allowlist that rejects brackets pass this suite.
+printf 'font\n' > "$work/prior/runtime/tilo-runtime/root/lib/fonts/AtkinsonHyperlegibleNext-Italic[wght].ttf"
+printf 'font\n' > "$work/prior/runtime/tilo-runtime/root/lib/fonts/TiloSans[wdth,wght].ttf"
 printf '{"apps":[{"name":"old","id":"so.tilo.old","package":"old","version":"1.0.1-dev.9+ga","declared_version":"1.0.0","runtime":"tilo-runtime/1.0.0"}]}\n' > "$work/prior/index.json"
 printf 'checksums\n' > "$work/prior/SHA256SUMS"
 tar -C "$work/prior" -czf "$work/prior.tar.gz" tapp runtime index.json SHA256SUMS
@@ -88,5 +93,31 @@ if tools/reuse_prior_app_collection.sh "$work/release/index.json" "$work/plan.js
   printf 'unexpected archive content was accepted\n' >&2
   exit 1
 fi
+
+# A bracketed axis tag widens the font name only: the same archive member
+# outside the runtime's font directory must still be refused.
+mkdir -p "$work/outside/tapp" "$work/outside/runtime/tilo-runtime/root"
+cp "$work/prior/tapp/old-1.0.1-dev.9+ga-x86_64.tapp" "$work/outside/tapp/"
+cp "$work/prior/runtime/tilo-runtime/root/bundle.toml" "$work/outside/runtime/tilo-runtime/root/"
+# Otherwise identical to the accepted prior collection, so the member allowlist
+# is the only thing that can refuse it.
+cp "$work/prior/index.json" "$work/prior/SHA256SUMS" "$work/outside/"
+printf 'font\n' > "$work/outside/runtime/tilo-runtime/root/TiloSans[wdth,wght].ttf"
+tar -C "$work/outside" -czf "$work/outside.tar.gz" tapp runtime index.json SHA256SUMS
+outside_sha=$(sha256sum "$work/outside.tar.gz" | cut -d' ' -f1)
+export PRIOR_FIXTURE="$work/outside.tar.gz"
+if tools/reuse_prior_app_collection.sh "$work/release/index.json" "$work/plan.json" \
+    "$work/outside-font-out" x86_64 "$internal_url" "$outside_sha" 2>"$work/outside.err"; then
+  printf 'a font outside the runtime font directory was accepted\n' >&2
+  exit 1
+fi
+# Refused by the member allowlist, not by some later check that happens to fail
+# for an unrelated reason.
+grep -Fq 'unexpected prior collection member: runtime/tilo-runtime/root/TiloSans[wdth,wght].ttf' \
+  "$work/outside.err" || {
+  printf 'a font outside the runtime font directory was refused for another reason\n' >&2
+  sed 's/^/  /' "$work/outside.err" >&2
+  exit 1
+}
 
 printf 'prior app collection reuse tests passed\n'

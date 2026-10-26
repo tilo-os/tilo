@@ -20,6 +20,7 @@ tilo_accessibility_settings::accessibility_settings!(
 /// The person's assists, shared with the compositor and the shell.
 impl ui::storage::SettingsSchema for AccessibilitySettings {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(SECTION);
+    ui::settings_codec!();
 }
 
 /// The section as a record the person edits by path.

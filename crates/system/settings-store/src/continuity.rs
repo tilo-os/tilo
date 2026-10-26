@@ -96,6 +96,9 @@ policies! {
         "tilo.appearance.language",
         "tilo.appearance.studio",
         "tilo.identity.colour",
+        // What the person has learned of the desktop's controls: a hint
+        // taught on one device is not taught again on the next.
+        "tilo.control_hints.learned",
         "tilo.locale.currency",
         "tilo.locale.date_format",
         "tilo.locale.time_format",
@@ -186,6 +189,9 @@ policies! {
         "tilo.power.performance_suspend_minutes",
         "tilo.power.blank_minutes",
         "tilo.power.lock_minutes",
+        // Whether waking from sleep asks for the password describes the
+        // person, and every device they carry wants the same answer.
+        "tilo.power.lock_on_sleep",
         "tilo.power.lid_close_action",
         "tilo.power.power_key_action",
         "tilo.power.low_battery_percent",

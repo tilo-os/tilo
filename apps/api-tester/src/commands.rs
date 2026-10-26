@@ -63,6 +63,19 @@ impl Sink {
             None => state.unavailable(),
         }
     }
+    /// Bind `effect` to `control`, so a copy or a cancel is the same action
+    /// the palette and an agent invoke.
+    pub(crate) fn effect<V: ActionControl<()>>(
+        &self,
+        control: V,
+        effect: &crate::actions::ApiTesterEffect,
+    ) -> V {
+        match self.actions.borrow().as_ref() {
+            Some(actions) => actions.bind_effect_invocation(control, effect),
+            None => control.unavailable(),
+        }
+    }
+
     pub(crate) fn send(&self, button: ui::widget::Button) -> ui::widget::Button {
         match self.actions.borrow().as_ref() {
             Some(actions) => {

@@ -1307,7 +1307,7 @@ impl crate::widget::app_widget::AppWidget for OwnHistoryProbe {
     }
 }
 
-// An app that replaces a tile's content (its opening card, an earlier
+// An app that replaces a tile's content (its placeholder, an earlier
 // app) hears where the window presents its History and search, so it
 // draws neither beside the bar's.
 #[test]
@@ -1685,7 +1685,6 @@ struct Starting {
     rect: Rect,
     drawn: std::rc::Rc<std::cell::Cell<bool>>,
     presented: bool,
-    opening: bool,
 }
 
 impl Widget for Starting {
@@ -1726,9 +1725,6 @@ impl Widget for Starting {
     }
     fn presented(&self) -> bool {
         self.presented
-    }
-    fn opening(&self) -> bool {
-        self.opening
     }
 }
 
@@ -1821,17 +1817,13 @@ fn a_moved_tile_draws_its_app_where_the_tile_went() {
 /// app painted.
 const STARTING_FLOOD: vello::peniko::Color = vello::peniko::Color::from_rgb8(0xFF, 0x00, 0x00);
 
-pub(super) fn starting_host(
-    presented: bool,
-    opening: bool,
-) -> (TileHost, std::rc::Rc<std::cell::Cell<bool>>) {
+pub(super) fn starting_host(presented: bool) -> (TileHost, std::rc::Rc<std::cell::Cell<bool>>) {
     let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
     let drawn = std::rc::Rc::new(std::cell::Cell::new(false));
     let mut host = TileHost::new(TileContent::App(Box::new(Starting {
         rect,
         drawn: std::rc::Rc::clone(&drawn),
         presented,
-        opening,
     })));
     host.rect = rect;
     (host, drawn)
@@ -1924,20 +1916,38 @@ fn replacing_a_document_with_a_notice_detaches_the_record() {
 }
 
 #[test]
-fn an_arrived_app_after_a_visible_card_still_asks_for_a_frame() {
-    // Case `retiring_the_opening_card_keeps_one_paint_so_the_app_replaces_it`.
-    let (mut host, _) = starting_host(true, false);
-    host.mark_opening_shown_for_test();
-    assert!(
-        Widget::needs_animation_frame(&host),
-        "the person already saw the opening card; without one more frame              the compositor sleeps on that empty fill (A05 Store)"
-    );
+fn an_arrived_app_after_a_visible_placeholder_still_asks_for_a_frame() {
+    // Case `retiring_the_placeholder_keeps_one_paint_so_the_app_replaces_it`.
+    let t0 = crate::time::now();
+    let (mut host, _) = crate::time::testing::with_monotonic_time(t0, || starting_host(false));
+    let theme = Theme::default();
+    let later = t0 + crate::time::Duration::from_secs(1);
+    crate::time::testing::with_monotonic_time(later, || {
+        let _ = paint(&mut host, &theme);
+        host.mark_drawn();
+    });
+    let TileContent::App(app) = &mut host.content else {
+        panic!("the starting app");
+    };
+    app.as_any_mut()
+        .and_then(|app| app.downcast_mut::<Starting>())
+        .expect("controlled app")
+        .presented = true;
+    crate::time::testing::with_monotonic_time(later, || {
+        assert!(
+            Widget::needs_redraw(&host),
+            "the person already saw the placeholder; without one more frame \
+             the compositor sleeps on it (A05 Store)"
+        );
+    });
 }
 
 #[test]
 fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
     // Case `visible_notice_replacement_tracks_new_content_readiness_without_hiding_the_tile`.
-    {
+    // On one instant: the replacement answers inside its frame budget, so
+    // it shows at once, with no placeholder to outlast.
+    crate::time::testing::with_monotonic_time(crate::time::now(), || {
         let theme = Theme::default();
         let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
         let mut host = TileHost::new(TileContent::Notice {
@@ -1952,7 +1962,6 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
             rect,
             drawn: std::rc::Rc::clone(&drawn),
             presented: false,
-            opening: false,
         })));
 
         assert!(
@@ -1960,13 +1969,13 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
             "an already visible tab must not disappear"
         );
         assert!(
-            Widget::opening(&host),
-            "pending replacement content must use the opening card immediately"
+            host.is_arriving(),
+            "pending replacement content stands as an arrival at once"
         );
         let _ = paint(&mut host, &theme);
         assert!(
             !drawn.get(),
-            "unready replacement must not draw behind the opening card"
+            "unready replacement must not draw behind its placeholder"
         );
         let TileContent::App(app) = &mut host.content else {
             panic!("replacement app");
@@ -1976,8 +1985,8 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
             .expect("controlled replacement")
             .presented = true;
         assert!(
-            !Widget::opening(&host),
-            "opening must observe new content readiness without a parent presentation poll"
+            !host.is_arriving(),
+            "the arrival observes new content readiness without a parent presentation poll"
         );
         assert!(Widget::presented(&host));
         let _ = paint(&mut host, &theme);
@@ -1991,13 +2000,12 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
             .and_then(|app| app.downcast_mut::<Starting>())
             .expect("controlled replacement");
         app.presented = false;
-        app.opening = true;
         assert!(Widget::presented(&host));
         assert!(
-            !Widget::opening(&host),
-            "the same content resizing must not reopen its card"
+            !host.is_arriving(),
+            "the same content resizing must not stand for an arrival again"
         );
-    }
+    });
 
     // Case `a_tile_holding_a_place_does_not_paint_the_app_behind_it`.
     // An unpresented app has only its own early buffer size, so painting
@@ -2006,7 +2014,7 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
     // tab's size.
     {
         let theme = Theme::default();
-        let (mut host, drawn) = starting_host(false, true);
+        let (mut host, drawn) = starting_host(false);
         let _ = paint(&mut host, &theme);
         assert!(
             !drawn.get(),
@@ -2020,7 +2028,7 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
     // And the moment it has something to show, it is what is shown.
     {
         let theme = Theme::default();
-        let (mut host, drawn) = starting_host(true, false);
+        let (mut host, drawn) = starting_host(true);
         let _ = paint(&mut host, &theme);
         assert!(
             drawn.get(),
@@ -2031,57 +2039,64 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
     }
 
     // Case `a_static_tile_holding_a_place_does_not_pump_frames_forever`.
-    // Holding a place is not itself an animation. The hosted opening widget
-    // (or the spinner painted by the host) must explicitly request motion;
-    // otherwise a static reduced-motion card would keep the desktop awake
-    // until the app presented its first frame.
+    // Holding a place is not itself an animation: the placeholder's steps
+    // are deadlines, so a slow app's first frame never keeps the desktop
+    // awake.
     {
-        let (mut host, _) = starting_host(false, true);
-        let theme = Theme::default().with_reduce_motion(true);
-        let _ = paint(&mut host, &theme);
+        let (mut host, _) = starting_host(false);
+        let _ = paint(&mut host, &Theme::default());
         assert!(
             !host.needs_animation_frame(),
-            "opening state alone must not turn a slow app into a full-rate compositor loop",
+            "arriving content alone must not turn a slow app into a full-rate compositor loop",
+        );
+        assert!(
+            host.next_wake_deadline().is_some(),
+            "its next step is a deadline"
         );
     }
 
     // Case `a_tile_that_has_shown_a_window_never_holds_a_place_again`.
     // A tile that has ever had a window in it never goes back to holding
     // a place for one — without the latch, a drag on a group edge would
-    // flash the opening card over a window the person is using.
+    // flash a placeholder over a window the person is using.
     {
-        let (host, _) = starting_host(true, false);
+        let (mut host, _) = starting_host(true);
         assert!(Widget::presented(&host), "precondition: it presented");
-        // The app now claims both, as a client whose buffer stopped
-        // matching its tab mid-resize would.
-        let (host_again, _) = starting_host(true, true);
-        assert!(Widget::presented(&host_again));
+        let TileContent::App(app) = &mut host.content else {
+            panic!("the app");
+        };
+        // The app now says it has not drawn, as a client whose buffer
+        // stopped matching its tab mid-resize would.
+        app.as_any_mut()
+            .and_then(|app| app.downcast_mut::<Starting>())
+            .expect("controlled app")
+            .presented = false;
+        assert!(Widget::presented(&host));
         assert!(
-            !Widget::opening(&host_again),
-            "a tile that has presented must never answer `opening` again — \
-         a window the person is looking at would be replaced by a card \
-         saying it is on its way",
+            !host.is_arriving(),
+            "a tile that has presented must never stand for an arrival again — \
+         a window the person is looking at would be replaced by a placeholder",
         );
     }
 
-    // Case `the_card_that_holds_a_place_is_opaque`.
+    // Case `the_place_held_is_opaque`.
     // What is in the tile while the place is held is the frame's own
-    // card, not the desktop showing through.
+    // ground, not the desktop showing through.
     {
         use crate::offscreen::OffscreenRenderer;
         let theme = Theme::default();
-        let (mut host, _) = starting_host(false, true);
+        let (mut host, _) = starting_host(false);
         let scene = paint(&mut host, &theme);
         let mut r = OffscreenRenderer::new(200, 200);
         // A ground colour that appears nowhere else, so a pixel of it in
-        // the middle of the tile means the card did not cover it.
+        // the middle of the tile means the ground did not cover it.
         let rgba = r.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
         let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, 200, 100, 100);
         assert!(
             !(cr < 40 && cg < 40 && cb > 200),
             "the desktop showed through the middle of a window's own place \
          at (100,100) — got ({cr},{cg},{cb}), the backdrop colour. The \
-         card has to hold the space, or the window is a hole until it \
+         ground has to hold the space, or the window is a hole until it \
          arrives",
         );
         assert!(

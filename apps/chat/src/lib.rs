@@ -68,6 +68,8 @@ pub mod identity;
 mod image_arrival;
 pub mod images;
 mod live_context;
+mod live_share;
+mod live_share_panel;
 mod local_voice;
 pub mod mention;
 mod mention_alerts;
@@ -88,6 +90,7 @@ pub mod record;
 pub mod render_call;
 pub mod render_chat;
 pub mod resource;
+mod share_grants;
 mod shared_resources;
 mod sidebar;
 pub mod transcript;
@@ -106,6 +109,8 @@ impl ChatApp {
 
 #[cfg(test)]
 mod component_tests;
+#[cfg(test)]
+mod live_share_tests;
 #[cfg(all(test, unix))]
 mod native_models_tests;
 #[cfg(test)]

@@ -590,7 +590,7 @@ async fn child_http() {
 }
 
 async fn child_fd() {
-    for app in [AGENT_APP, CHAT_APP] {
+    for app in [AGENT_APP, CHAT_APP, FEEDBACK_APP] {
         within(format!("{app} being refused administration"), async {
             let (transport, server) = fd(app);
             let denied = AdministrationClient::new(transport);

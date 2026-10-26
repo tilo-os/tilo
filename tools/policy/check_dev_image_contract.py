@@ -65,8 +65,16 @@ class Finding:
     why: str
     fix: str
 
+    def headline(self) -> str:
+        """The finding, one line: what main prints on stdout."""
+        return f"{self.where}: {self.what}"
+
+    def detail(self) -> str:
+        """Why it matters and the fix: what main prints on stderr after the headline."""
+        return f"  why: {self.why}.\n  fix: {self.fix}\n  re-run: {RERUN}"
+
     def __str__(self) -> str:
-        return f"{self.where}: {self.what}\n  why: {self.why}.\n  fix: {self.fix}\n  re-run: {RERUN}"
+        return f"{self.headline()}\n{self.detail()}"
 
 
 def load(name: str, path: Path):
@@ -251,8 +259,9 @@ def check_production_policy(repo: Path) -> list[Finding]:
     findings = []
     docker = policy.get("transports", {}).get("docker", {})
     for repository, why, admitted in (
-        (DEV_REPOSITORY, WHY_FLAVOUR + "; dev images are unsigned by design, so the production policy "
-         "refuses them by name", "only the dev image's own policy (os/scripts/finalize-dev-image.py) admits it."),
+        (DEV_REPOSITORY, WHY_FLAVOUR + "; dev images run dev-only code, so the production policy "
+         "refuses them by name", "only the dev image's own policy (os/scripts/finalize-dev-image.py) admits "
+         "them, signed with the development key."),
         (INTEGRATION_REPOSITORY, WHY_INTEGRATION, "nothing on an installed system may pull it."),
     ):
         scope = docker.get(repository)
@@ -330,10 +339,13 @@ def main(argv: list[str] | None = None) -> int:
     findings = audit(args.repo.resolve())
     if findings:
         print(f"dev image contract failed ({len(findings)} problem(s)):\n", file=sys.stderr)
-        print("\n\n".join(map(str, findings)), file=sys.stderr)
+        for finding in findings:
+            sys.stderr.flush()
+            print(finding.headline(), flush=True)
+            print(finding.detail() + "\n", file=sys.stderr)
         return 1
     print(f"Dev image contract OK ({len(production_containerfiles(args.repo.resolve()))} production "
-          "Containerfiles carry nothing dev-only)")
+          "Containerfiles carry nothing dev-only)", file=sys.stderr)
     return 0
 
 

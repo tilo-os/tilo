@@ -23,7 +23,9 @@ use collab_types::{
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
 
+mod layout;
 mod pointer;
+pub use layout::{LAYOUT_UNITS, LiveLayout, LiveWindow, MAX_LAYOUT_APP_BYTES, MAX_LAYOUT_WINDOWS};
 pub use pointer::{LivePointer, PointerLayout, ShownStrip};
 
 /// Largest encoded presence frame. Kept at datagram size so presence can
@@ -359,6 +361,16 @@ pub struct PresenceFrame {
     /// frame restates the same wave, which shows nothing.
     #[serde(default)]
     pub wave: Option<LiveWave>,
+    /// Where the publisher's windows are on its screen, by app and record
+    /// digest only: others draw a mini view of it from what they hold.
+    /// Sent under the same rule as [`Self::focus`].
+    #[serde(default)]
+    pub layout: Option<LiveLayout>,
+    /// Whose view the publisher follows: their live publisher, lower-case
+    /// hex, 1..=[`MAX_WAVE_TARGET_BYTES`] bytes. Restated with every frame
+    /// while it lasts, so every member's roster can say who follows whom.
+    #[serde(default)]
+    pub following: Option<String>,
 }
 
 /// Largest presence place.
@@ -422,17 +434,22 @@ pub struct LiveWave {
 
 impl LiveWave {
     fn validate(&self) -> Result<()> {
-        if self.target.is_empty()
-            || self.target.len() > MAX_WAVE_TARGET_BYTES
-            || !self
-                .target
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            Err(LiveWireError::Invalid)
-        } else {
-            Ok(())
-        }
+        publisher(&self.target)
+    }
+}
+
+/// A member named by their live publisher: lower-case hex,
+/// 1..=[`MAX_WAVE_TARGET_BYTES`] bytes.
+fn publisher(id: &str) -> Result<()> {
+    if id.is_empty()
+        || id.len() > MAX_WAVE_TARGET_BYTES
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Err(LiveWireError::Invalid)
+    } else {
+        Ok(())
     }
 }
 
@@ -482,6 +499,12 @@ impl PresenceFrame {
         }
         if let Some(wave) = &self.wave {
             wave.validate()?;
+        }
+        if let Some(layout) = &self.layout {
+            layout.validate()?;
+        }
+        if let Some(following) = &self.following {
+            publisher(following)?;
         }
         if self
             .place
@@ -1060,6 +1083,8 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
+            following: None,
             seq,
             sent_at_ms: 1,
             focus: Some(record()),
@@ -1086,6 +1111,8 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 1,
             focus: Some(primary.clone()),
@@ -1188,6 +1215,8 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 1,
             focus: None,
@@ -1233,6 +1262,8 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
+            following: None,
             seq: 3,
             sent_at_ms: 10,
             focus: Some(record()),
@@ -1276,6 +1307,8 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
+            following: None,
         });
         for frame in [
             presence,
@@ -1389,6 +1422,8 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1406,6 +1441,8 @@ mod tests {
             chat: None,
             reaction: None,
             wave: None,
+            layout: None,
+            following: None,
             seq: 1,
             sent_at_ms: 0,
             focus: None,
@@ -1433,6 +1470,8 @@ mod tests {
                 chat: None,
                 reaction: None,
                 wave: None,
+                layout: None,
+                following: None,
             });
             assert_eq!(placed.encode(), Err(LiveWireError::Invalid));
         }

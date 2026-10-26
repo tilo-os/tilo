@@ -127,7 +127,14 @@ impl ShellOverlayHost {
                 .then(|| state.fullscreen_group())
                 .flatten()
         });
-        self.fullscreen_bar_reveal.follow(fullscreen, now);
+        // Entered by a key or an action, its bar lands with it; by a click,
+        // it fades in.
+        let entered_by = self
+            .desktop_surface()
+            .and_then(tilo_desktop::composition::DesktopSurface::transition_source)
+            .unwrap_or(self.input_source);
+        self.fullscreen_bar_reveal
+            .follow(fullscreen, entered_by, now);
         let in_use = self.fullscreen_bar_in_use();
         self.fullscreen_bar_reveal.settle(now, in_use);
         let bar_over = self
@@ -135,6 +142,7 @@ impl ShellOverlayHost {
             .shown()
             .then(|| self.fullscreen_bar_reveal.group())
             .flatten();
+        let bar_source = self.fullscreen_bar_reveal.source();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: same stable boxed-row contract as the other
             // `group_row_ptrs` accessors; `&mut self` gives unaliased access.
@@ -142,7 +150,7 @@ impl ShellOverlayHost {
             for group in &mut row.groups {
                 group.set_top_overlay_inset(inset);
                 group.set_fills_display(presence != tilo_desktop::chrome::TopBarPresence::Docked);
-                group.set_fullscreen_bar_revealed(bar_over == Some(group.id));
+                group.set_fullscreen_bar_revealed(bar_over == Some(group.id), bar_source);
             }
         }
     }
@@ -275,7 +283,7 @@ impl ShellOverlayHost {
             .top_bar_reveal_geometry()
             .is_some_and(|(display, _)| near(display))
         {
-            self.top_bar_reveal.reveal_by_touch(now);
+            self.top_bar_reveal.reveal_by_touch();
         }
         if self
             .fullscreen_bar_geometry()

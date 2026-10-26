@@ -31,6 +31,7 @@ mod input_declines;
 mod lan_discovery;
 #[cfg(test)]
 mod live_identity_tests;
+mod live_layouts;
 mod live_waves;
 mod native_admission;
 #[cfg(test)]
@@ -1611,6 +1612,8 @@ pub struct ShellNetwork {
     live_labels: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
     /// The app each live member focuses, per room and handle.
     live_apps: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
+    /// Where each live member's windows are, per room and handle.
+    live_layouts: live_layouts::LiveLayouts,
     /// What live members say beside their pointers and react with, as it
     /// arrived, for the presence pump ([`Self::take_live_chat`]).
     live_chat: Mutex<Vec<LiveChat>>,
@@ -2049,7 +2052,13 @@ impl ShellNetwork {
         // session, moments in a test of it.
         let (builder, deferred_relays, rest_after) = match reach {
             Reach::Internet => (
-                iroh::Endpoint::builder(presets::N0).relay_mode(held_back),
+                // What `presets::N0` builds, with its publisher behind the
+                // directory gate and its public relays held back
+                // (`tilo_endpoint_reachability::directory`).
+                iroh::Endpoint::builder(presets::Minimal)
+                    .address_lookup(tilo_endpoint_reachability::collaborating())
+                    .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
+                    .relay_mode(held_back),
                 iroh::endpoint::default_relay_mode().relay_map(),
                 crate::network::reachability::REST_AFTER,
             ),
@@ -2356,6 +2365,7 @@ impl ShellNetwork {
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
             live_apps: Mutex::default(),
+            live_layouts: Mutex::default(),
             live_chat: Mutex::default(),
             live_desk_pointers: Mutex::default(),
             live_waves: Mutex::default(),
@@ -2805,7 +2815,15 @@ impl ShellNetwork {
         {
             return false;
         }
-        self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
+        self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
+                    ws,
+                    msg,
+                })
+                .is_ok()
     }
 
     /// Publish live legacy-app traffic on an explicit authenticated room
@@ -2827,6 +2845,7 @@ impl ShellNetwork {
             && self
                 .cmd_tx
                 .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: workspace_topic,
                     msg,
                 })
@@ -3910,6 +3929,7 @@ impl ShellNetwork {
                 pointer: inbound.desk_pointer.clone(),
             });
         }
+        self.hear_layout(&cluster_id, peer, inbound.layout.clone());
         if let Ok(mut apps) = self.live_apps.lock() {
             let apps = apps.entry(cluster_id.clone()).or_default();
             match inbound.app_id.as_str() {
@@ -3941,6 +3961,29 @@ impl ShellNetwork {
                 inbound.app_id.clone(),
                 cluster_id.clone(),
                 presence,
+            );
+        }
+        // Whom they follow reaches the roster as a desktop's following
+        // does over the mesh: room presence of the sender's handle.
+        let following = self
+            .live_waves
+            .lock()
+            .ok()
+            .and_then(|mut waves| waves.hear_following(from, inbound.following.as_deref()));
+        if let Some(target) = following
+            && let Ok(key) = postcard::to_stdvec(&ui::presence::PresenceKey::Workspace {
+                id: cluster_id.clone(),
+            })
+        {
+            self.handle_typed_app_presence_message(
+                peer,
+                None,
+                "tilo-shell".into(),
+                cluster_id,
+                collab_types::PeerPresence {
+                    key,
+                    payload: collab_types::PeerPresencePayload::Following { target },
+                },
             );
         }
     }
@@ -4429,7 +4472,15 @@ impl ShellNetwork {
             requester: self.local_peer_id_hash(),
         };
         let ws = room_topic_id(room);
-        let _ = self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok();
+        let _ = self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
+                    ws,
+                    msg,
+                })
+                .is_ok();
     }
 
     /// Publish a `NeighbourMsg::ScrollbackResponse` for an artifact
@@ -4452,6 +4503,7 @@ impl ShellNetwork {
             && self
                 .cmd_tx
                 .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
                     ws: workspace_topic,
                     msg,
                 })
@@ -9008,6 +9060,7 @@ pub(crate) fn shell_network_for_test(
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
         live_apps: Mutex::default(),
+        live_layouts: Mutex::default(),
         live_chat: Mutex::default(),
         live_desk_pointers: Mutex::default(),
         live_waves: Mutex::default(),
@@ -9178,6 +9231,7 @@ mod tests {
                 if let NetCmd::Publish {
                     ws,
                     msg: NeighbourMsg::SyncResp { room, changes },
+                    ..
                 } = cmd
                 {
                     pushes.push((ws, room, changes));
@@ -10859,7 +10913,7 @@ mod tests {
         assert!(
             answered.iter().any(|command| matches!(
                 command,
-                NetCmd::Publish { ws, msg: NeighbourMsg::SyncReq { room, .. } }
+                NetCmd::Publish { ws, msg: NeighbourMsg::SyncReq { room, .. }, .. }
                     if *ws == room_topic_id(research) && *room == research.to_string()
             )),
             "the board asks the new workspace's room for its content at once"
@@ -13375,7 +13429,7 @@ mod tests {
                 .try_recv()
                 .expect("accepting an invite must ask the room for a catch-up");
             match cmd {
-                NetCmd::Publish { ws, msg } => {
+                NetCmd::Publish { ws, msg, .. } => {
                     assert_eq!(ws, room_topic_id(host_room));
                     match msg {
                         NeighbourMsg::SyncReq {
@@ -15491,8 +15545,15 @@ mod tests {
                 history: Some(store()),
                 ..Default::default()
             };
-            earlier.record_history(&person_room.to_string(), &person_op);
-            earlier.record_history(&shared_room.to_string(), &shared_op);
+            let route = |room: RoomId| {
+                tilo_action_broker::route::CrdtRoute::record(
+                    "so.tilo.tube",
+                    room.to_string(),
+                    "history",
+                )
+            };
+            earlier.record_history(&route(person_room), &person_op);
+            earlier.record_history(&route(shared_room), &shared_op);
         }
 
         let (net, _commands) = personal_continuity_network_for_test(user);
@@ -15662,7 +15723,7 @@ mod tests {
         assert!(net.publish_channel_governance(message));
         let Some((ws, msg)) =
             std::iter::from_fn(|| cmd_rx.try_recv().ok()).find_map(|command| match command {
-                NetCmd::Publish { ws, msg } => Some((ws, msg)),
+                NetCmd::Publish { ws, msg, .. } => Some((ws, msg)),
                 _ => None,
             })
         else {
@@ -15948,7 +16009,7 @@ mod tests {
                 .try_recv()
                 .expect("publish_presence must enqueue a NetCmd");
             match cmd {
-                NetCmd::Publish { ws, msg } => {
+                NetCmd::Publish { ws, msg, .. } => {
                     assert_eq!(ws, expected_topic);
                     match msg {
                         NeighbourMsg::PresenceMoved {
@@ -16051,7 +16112,7 @@ mod tests {
                 .try_recv()
                 .expect("publish_document must enqueue a NetCmd");
             match cmd {
-                NetCmd::Publish { ws, msg } => {
+                NetCmd::Publish { ws, msg, .. } => {
                     assert_eq!(ws, expected_topic);
                     match msg {
                         NeighbourMsg::AppDocument {
@@ -16120,7 +16181,7 @@ mod tests {
                 .try_recv()
                 .expect("publish_scrollback_request must enqueue a NetCmd");
             match cmd {
-                NetCmd::Publish { ws, msg } => {
+                NetCmd::Publish { ws, msg, .. } => {
                     assert_eq!(ws, expected_topic);
                     match msg {
                         NeighbourMsg::ScrollbackRequest {

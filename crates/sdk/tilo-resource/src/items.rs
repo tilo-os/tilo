@@ -84,6 +84,18 @@
 //! }
 //! # fn main() {}
 //! ```
+//!
+//! A label joined from several fields names each of them once: naming one
+//! twice would label an item by a field that is not there.
+//!
+//! ```compile_fail
+//! use tilo_resource::Model;
+//!
+//! #[derive(Model, Default)]
+//! #[model(label = "first first")]
+//! pub struct Person { pub first: String, pub last: String }
+//! # fn main() {}
+//! ```
 
 use std::any::TypeId;
 use std::cell::RefCell;
@@ -187,6 +199,16 @@ pub fn item_resource_id<R: Resource>(field: &str, item: &Id) -> String {
 /// app.
 pub fn item_resource_id_in(kind: &str, field: &str, item: &Id) -> String {
     format!("{kind}/{field}/{item}")
+}
+
+/// The kind an item published under `resource_id` has, `<kind>.<field>`,
+/// read from its id, `<kind>/<field>/<item>`; `None` for an id naming no
+/// item of a top-level collection.
+pub fn item_kind(resource_id: &str) -> Option<String> {
+    let (collection, item) = resource_id.rsplit_once('/')?;
+    let (kind, field) = collection.split_once('/')?;
+    (!kind.is_empty() && !field.is_empty() && !field.contains('/') && !item.is_empty())
+        .then(|| format!("{kind}.{field}"))
 }
 
 /// The item an item resource id names, if it is one of `R`'s.
@@ -970,4 +992,26 @@ fn offered_bound_as(children: &[tilo_actions::Resource], id: &str, params: usize
             .any(|spec| spec.id == id && spec.params().len() < params)
             || offered_bound_as(&child.children, id, params)
     })
+}
+
+#[cfg(test)]
+mod item_kind_tests {
+    #[test]
+    fn an_items_kind_is_read_from_its_id() {
+        let id = super::item_resource_id_in("notes.notebook", "pages", &super::Id::from_raw("p1"));
+        assert_eq!(
+            super::item_kind(&id).as_deref(),
+            Some("notes.notebook.pages")
+        );
+        assert_eq!(
+            super::item_kind("notes.notebook"),
+            None,
+            "the record itself"
+        );
+        assert_eq!(
+            super::item_kind("deck/slides/s1/elements/e1"),
+            None,
+            "a nested item"
+        );
+    }
 }

@@ -46,6 +46,7 @@ use crate::render::{Options, Renderer};
 use crate::resource::ViewOp;
 use crate::view_ops;
 
+pub mod peers;
 mod views;
 
 /// The largest SVG `export-svg` also answers inline, in bytes.
@@ -230,6 +231,9 @@ pub struct CanvasSurface {
     /// The theme's spacing: how far a click may wander, how near an edge
     /// snaps, how far a copy lands from its original.
     spacing: ui::tokens::Spacing,
+    /// A remote participant's own view of this artwork, and where it says it
+    /// is (see [`peers`]).
+    participants: peers::PeerViews,
 }
 
 impl CanvasSurface {
@@ -279,6 +283,7 @@ impl CanvasSurface {
             stylus: None,
             metrics: ui::tokens::Metrics::BASE,
             spacing: ui::tokens::Spacing::BASE,
+            participants: peers::PeerViews::default(),
         }
     }
 
@@ -2311,6 +2316,61 @@ impl CanvasSurface {
         }
     }
 
+    /// Collaborators' selections, in their own colours and with their names,
+    /// where the presence they published says they are: a range over the
+    /// artwork's marks, resolved here against this screen's copy of them.
+    ///
+    /// Read from `presence`, never from anything this window remembers about
+    /// them, so a wash left by a peer whose frame stopped arriving fades with
+    /// their presence instead of sitting on the artwork for good.
+    fn paint_peers(
+        &self,
+        scene: &mut Scene,
+        to_screen: Affine,
+        theme: &Theme,
+        text: &mut TextRenderer,
+        presence: &PresenceCtx,
+    ) {
+        let keys = presence_keys();
+        let bounds = to_screen.transform_rect_bbox(self.rect);
+        for key in &keys {
+            let Some(list) = presence.selections.get(key) else {
+                continue;
+            };
+            for (user, range) in list {
+                if range.is_empty() {
+                    continue;
+                }
+                let view = peers::PeerView::new(range.start, range.end, self.art.marks.len());
+                let name = presence.display_name(user);
+                // Each mark is outlined; the name hangs off the first one, so
+                // a peer who picked eight marks is named once, not eight
+                // times.
+                for (index, id) in view.picked(&self.art).enumerate() {
+                    let Some(mark) = self.art.mark(id) else {
+                        continue;
+                    };
+                    let screen = to_screen.transform_rect_bbox(mark.bounds());
+                    let mut ctx = ui::paint::PaintCtx::new(scene, Affine::IDENTITY, text, theme);
+                    if index == 0 {
+                        presence.draw_peer_outline_labeled_within(
+                            &mut ctx, user, &name, screen, 0.0, bounds,
+                        );
+                    } else {
+                        presence.draw_peer_outline(
+                            ctx.scene,
+                            ctx.theme,
+                            ctx.transform,
+                            user,
+                            screen,
+                            0.0,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// While a picture is cropped: the rest of the picture, faint, around
     /// its frame, and the picture's edge, as far as a crop can reach.
     fn overlay_crop(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
@@ -2896,6 +2956,8 @@ fn draw_anchor(
 }
 
 impl Widget for CanvasSurface {
+    ui::provides!(dyn ui::collaboration::participants::Participants);
+
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
         if reduced && let Some((motion, focal)) = self.zoom_motion.take() {
@@ -2961,7 +3023,7 @@ impl Widget for CanvasSurface {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         self.advance_zoom();
         self.follow_tool();
@@ -3026,6 +3088,7 @@ impl Widget for CanvasSurface {
         }
         ui::surface::ContentFrame::Sheet.draw(scene, transform, sheet, theme);
         self.paint_overlay(scene, to_screen, theme, text_renderer);
+        self.paint_peers(scene, to_screen, theme, text_renderer, presence);
         if self.focused && !self.pressed_into_focus {
             ui::widget::paint_focus_ring(scene, transform, self.rect.inset(-2.0), 0.0, theme);
         }
@@ -3282,6 +3345,68 @@ impl Widget for CanvasSurface {
 /// What a canvas view reads the artwork through.
 type Reading = ui::framework::EffectCx<Artwork, CanvasSurface>;
 
+impl ui::collaboration::participants::Participants for CanvasSurface {
+    fn join_participant(&mut self, participant: &ui::tilo_actions::ParticipantId) -> bool {
+        self.participants.join(participant, ui::time::now())
+    }
+
+    fn leave_participant(&mut self, participant: &ui::tilo_actions::ParticipantId) {
+        self.participants.leave(participant);
+    }
+
+    fn set_participant_label(
+        &mut self,
+        participant: &ui::tilo_actions::ParticipantId,
+        label: &str,
+    ) {
+        self.participants.set_label(participant, label);
+    }
+
+    /// Where each participant's own view has selected, under the same
+    /// resource key this window's selection is published under, so a peer
+    /// resolves the marks on their own screen.
+    fn participant_presence(&self, _doc: &ui::tilo_resource::Doc) -> Vec<ui::ParticipantPresence> {
+        let mut presence: Vec<ui::ParticipantPresence> = self
+            .participants
+            .iter()
+            .filter(|(_, view, _)| !view.is_empty())
+            .map(|(participant, view, label)| ui::ParticipantPresence {
+                participant: participant.clone(),
+                label: label.map(str::to_owned),
+                key: peer_presence_key(),
+                payload: ui::PresencePayload::Selection {
+                    start: view.marks.start,
+                    end: view.marks.end,
+                },
+            })
+            .collect();
+        presence.sort_by(|a, b| a.participant.as_str().cmp(b.participant.as_str()));
+        presence
+    }
+
+    fn set_participant_host(&mut self, _host: bool) {}
+}
+
+/// The presence key a participant's place in an artwork travels under: the
+/// artwork's own selection, which covers marks rather than a caret in a run
+/// of text.
+fn peer_presence_key() -> ui::PresenceKey {
+    ui::framework::ResourceSelection::Item(peers::SELECTION_ITEM.to_owned())
+        .presence::<Artwork>(crate::APP_ID)
+        .0
+}
+
+/// The keys a peer's selection may arrive under: the resource key itself,
+/// and the digest stand-in a key too long for the wire crosses as.
+fn presence_keys() -> Vec<ui::PresenceKey> {
+    let exact = peer_presence_key();
+    let mut keys = vec![exact.clone()];
+    if let Some(digest) = exact.digest_form() {
+        keys.push(digest);
+    }
+    keys
+}
+
 impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
     /// Settled pictures run on a thread where there is one, and image areas
     /// as jobs; other views answer from the current artwork or the version
@@ -3356,6 +3481,25 @@ impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
         self.read_only = read_only;
     }
 
+    /// A participant's action left them on the marks it selected. Only a
+    /// participant this canvas already holds a view for is placed: a binding
+    /// that expired, or that was never joined here, records nothing rather
+    /// than inventing presence for it.
+    fn landed(
+        &mut self,
+        participant: &ui::tilo_actions::ParticipantId,
+        place: &ui::tilo_resource::Place,
+    ) {
+        let ui::tilo_resource::Place::Range { item, start, end } = place else {
+            return;
+        };
+        if item != peers::SELECTION_ITEM {
+            return;
+        }
+        let view = peers::PeerView::new(*start, *end, self.art.marks.len());
+        self.participants.set(participant, view, ui::time::now());
+    }
+
     /// The screenshots show the canvas mid-work: a selection with its
     /// handles, the points of a path, a close look at the paint.
     fn stage(&mut self, scenario: Option<&str>) {
@@ -3420,6 +3564,88 @@ mod tests {
 
     use super::*;
     use crate::panels::shortcuts::{GROUPS, tools};
+
+    /// A surface showing an artwork with `marks` drawn on it, ready to be
+    /// told where participants are.
+    fn surface_with_marks() -> CanvasSurface {
+        let mut doc = ui::tilo_resource::Doc::new();
+        <Artwork as ui::tilo_resource::Resource>::initialize(&mut doc).unwrap();
+        for action in crate::sample::shapes() {
+            Artwork::apply_to(&mut doc, action);
+        }
+        let mut surface = CanvasSurface::new(Tools::default());
+        surface.present(&Rc::new(Artwork::from_doc(&doc).unwrap()));
+        assert!(surface.art.marks.len() > 2, "marks to select");
+        surface
+    }
+
+    fn participant(id: &str) -> ui::tilo_actions::ParticipantId {
+        ui::tilo_actions::ParticipantId::new(id).unwrap()
+    }
+
+    fn selection(start: usize, end: usize) -> ui::tilo_resource::Place {
+        ui::tilo_resource::Place::Range {
+            item: peers::SELECTION_ITEM.to_owned(),
+            start,
+            end,
+        }
+    }
+
+    #[test]
+    fn a_participant_that_joined_is_published_where_it_selected() {
+        let mut surface = surface_with_marks();
+        let task = participant("agent-task:paint");
+        assert!(
+            ui::collaboration::participants::Participants::join_participant(&mut surface, &task)
+        );
+        surface.landed(&task, &selection(1, 3));
+        let doc = ui::tilo_resource::Doc::new();
+        let presence =
+            ui::collaboration::participants::Participants::participant_presence(&surface, &doc);
+        let [one] = presence.as_slice() else {
+            panic!("one participant's presence, got {presence:?}");
+        };
+        assert_eq!(one.participant, task);
+        assert_eq!(one.key, peer_presence_key());
+        assert_eq!(
+            one.payload,
+            ui::PresencePayload::Selection { start: 1, end: 3 }
+        );
+    }
+
+    #[test]
+    fn a_participant_this_canvas_never_joined_is_not_placed_or_presenced() {
+        let mut surface = surface_with_marks();
+        let stranger = participant("agent-task:stranger");
+        surface.landed(&stranger, &selection(0, 2));
+        assert!(!surface.participants.contains(&stranger));
+        let doc = ui::tilo_resource::Doc::new();
+        assert!(
+            ui::collaboration::participants::Participants::participant_presence(&surface, &doc)
+                .is_empty(),
+            "a binding that was never joined is not presence"
+        );
+    }
+
+    #[test]
+    fn a_participant_that_left_is_not_presenced_and_cannot_be_placed_again() {
+        let mut surface = surface_with_marks();
+        let task = participant("agent-task:gone");
+        assert!(
+            ui::collaboration::participants::Participants::join_participant(&mut surface, &task)
+        );
+        surface.landed(&task, &selection(0, 2));
+        ui::collaboration::participants::Participants::leave_participant(&mut surface, &task);
+        surface.landed(&task, &selection(2, 4));
+        assert!(
+            ui::collaboration::participants::Participants::participant_presence(
+                &surface,
+                &ui::tilo_resource::Doc::new()
+            )
+            .is_empty(),
+            "the view it left does not come back"
+        );
+    }
 
     #[test]
     fn capture_waits_for_requested_artwork_painting() {

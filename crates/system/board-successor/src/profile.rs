@@ -33,7 +33,7 @@ const FIELDS: [&str; 5] = [
     "devicetree",
     "firmware",
 ];
-const OPTIONAL_V2: [&str; 7] = [
+const OPTIONAL_V2: [&str; 8] = [
     "boot_modules",
     "always_on",
     "kernel_args",
@@ -41,7 +41,11 @@ const OPTIONAL_V2: [&str; 7] = [
     "internal_keyboards",
     "firmware_exclude",
     "crash_record",
+    "dmi",
 ];
+/// The DMI system identity of a board whose firmware describes its devices,
+/// which has no device tree for a model-bound quirk to match on.
+const DMI_FIELDS: [&str; 2] = ["sys_vendor", "product_name"];
 /// Where the kernel keeps a record of a panic, what resets a hung machine,
 /// and which detector panics first. Every definition declares all three.
 const CRASH_RECORD_FIELDS: [&str; 3] = ["storage", "watchdog", "lockup"];
@@ -146,11 +150,12 @@ pattern!(MODULE_NAME, r"[a-z0-9][a-z0-9_-]{0,63}");
 pattern!(KEYBOARD_ID, r"[0-9A-F]{4}");
 pattern!(KEYBOARD_NAME, r"[A-Za-z0-9][A-Za-z0-9 :._()-]{0,79}");
 pattern!(COMPATIBLE, r"[a-z0-9][a-z0-9._-]*,[a-z0-9][a-z0-9._-]*");
+pattern!(DMI_VALUE, r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}");
 pattern!(KERNEL_VERSION, r"[A-Za-z0-9][A-Za-z0-9._+-]*");
 pattern!(DTB_DIGEST, r"[0-9a-f]{64}");
 pattern!(
     KERNEL_ARG,
-    r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})?"
+    r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})*"
 );
 
 /// The image root the profile is read from, and who must own its inputs
@@ -472,6 +477,7 @@ pub fn validate_definition(data: Value) -> Result<Map<String, Value>> {
             "Wi-Fi wake policy requires the Lenovo 83ED definition and disabled WoWLAN",
         )?;
     }
+    validate_dmi(&data)?;
     validate_internal_keyboards(&data)?;
     let kernel_args = optional_list(
         &data,
@@ -683,8 +689,10 @@ fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
         "hardware definition internal keyboards must be a bounded list",
     )?;
     require(
-        keyboards.is_empty() || !data.get("devicetree").unwrap_or(&Value::Null).is_null(),
-        "hardware definition internal keyboards require a device-tree board",
+        keyboards.is_empty()
+            || !data.get("devicetree").unwrap_or(&Value::Null).is_null()
+            || data.get("dmi").is_some(),
+        "hardware definition internal keyboards require a device-tree or DMI board",
     )?;
     let mut seen = BTreeSet::new();
     for keyboard in keyboards {
@@ -697,7 +705,9 @@ fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
             }
         };
         require(
-            keyboard.values().all(Value::is_string),
+            keyboard
+                .values()
+                .all(|value| value.is_string() || value.is_null()),
             "hardware definition internal keyboard fields must be strings",
         )?;
         let text = |key: &str| {
@@ -718,8 +728,17 @@ fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
             KEYBOARD_NAME.is_match(text("name")),
             "hardware definition internal keyboard name is invalid",
         )?;
+        // A device-tree board confines the quirk by its compatible; a
+        // firmware-described one has no compatible and is confined by the
+        // definition's DMI identity instead. Exactly one applies, so a quirk
+        // can never name an identity that cannot both apply and be true.
+        let board_has_devicetree = !data.get("devicetree").unwrap_or(&Value::Null).is_null();
         require(
-            COMPATIBLE.is_match(text("devicetree_compatible")),
+            if board_has_devicetree {
+                COMPATIBLE.is_match(text("devicetree_compatible"))
+            } else {
+                keyboard.get("devicetree_compatible") == Some(&Value::Null)
+            },
             "hardware definition internal keyboard device-tree compatible is invalid",
         )?;
         require(
@@ -728,6 +747,33 @@ fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// `validate_dmi`: the DMI system identity a firmware-described board matches
+/// on, kept out of a board that already has a device tree to name it.
+fn validate_dmi(data: &Map<String, Value>) -> Result<()> {
+    let Some(dmi) = data.get("dmi") else {
+        return Ok(());
+    };
+    let Value::Object(dmi) = dmi else {
+        return Err(Error::value(
+            "hardware definition DMI has missing or unknown fields",
+        ));
+    };
+    require(
+        keys(dmi) == names(&DMI_FIELDS),
+        "hardware definition DMI has missing or unknown fields",
+    )?;
+    for field in DMI_FIELDS {
+        require(
+            as_str(dmi.get(field).unwrap_or(&Value::Null)).is_some_and(|v| DMI_VALUE.is_match(v)),
+            format!("hardware definition DMI {field} is invalid"),
+        )?;
+    }
+    require(
+        data.get("devicetree").unwrap_or(&Value::Null).is_null(),
+        "hardware definition DMI requires a firmware-described board",
+    )
 }
 
 /// `validate_target_imgref(value, root=root)`: a development image's bound
@@ -1104,6 +1150,7 @@ mod tests {
             &*KEYBOARD_NAME,
             &*COMPATIBLE,
             &*KERNEL_ARG,
+            &*DMI_VALUE,
             &*KERNEL_VERSION,
             &*DTB_DIGEST,
         ] {

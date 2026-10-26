@@ -86,6 +86,27 @@ impl ChatApp {
             }
             label.push_str(attachment.name());
         }
+        // A shared window: what it is and how it stands, as its card says.
+        if let Some(share) = &message.share {
+            if !message.text.is_empty() {
+                label.push('\n');
+            }
+            if let Some(reference) = &message.reference {
+                label.push_str(&reference.label);
+                label.push('\n');
+            }
+            if share.ended {
+                label.push_str(&crate::i18n::t("chat-share-ended"));
+            } else {
+                if share.open {
+                    label.push_str(&crate::i18n::t("chat-share-live"));
+                    label.push('\n');
+                }
+                // What the card says to this reader, not the share's
+                // access alone: an Editor hears they can edit it anyway.
+                label.push_str(&self.share_caption(message, share));
+            }
+        }
         if let Some(stream) = message.work.as_ref().and_then(|work| work.stream.as_ref()) {
             label.push('\n');
             label.push_str(&crate::i18n::t(stream.status_key()));

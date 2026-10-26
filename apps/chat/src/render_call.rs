@@ -26,14 +26,11 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{
-    Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ChipStyle, ControlSize, SegmentedFace,
-    SegmentedStyle, ToggleGroup, Widget,
-};
+use ui::widget::{Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ChipStyle, ControlSize};
 
 use crate::app::{ChatApp, Hit};
 use crate::model::{self, VoiceMember};
-use crate::paint::{elide, line_in, line_of, push_clip, text, width_of};
+use crate::paint::{elide, line_in, line_of, text, width_of};
 
 /// One person to render in the call, derived from the shared CRDT voice
 /// membership (not hardcoded). The host (this peer) is listed first.
@@ -513,11 +510,11 @@ impl ChatApp {
             PaintCtx::new(scene, tf, tr, theme),
             rect,
             &me,
-            if self.call.audio_only {
-                "Camera off"
+            &crate::i18n::t(if self.call.audio_only {
+                "chat-call-camera-off-caption"
             } else {
-                "Your camera is starting"
-            },
+                "chat-call-camera-starting"
+            }),
         );
     }
 
@@ -660,7 +657,7 @@ impl ChatApp {
         );
         let name = self
             .channel(&self.call.channel)
-            .map_or_else(|| "Call".into(), |c| c.name.clone());
+            .map_or_else(|| crate::i18n::t("chat-call-untitled"), |c| c.name.clone());
         ui::surface::floating_drag_grip(scene, tf, panel, local.text_dim);
         let sp = &theme.tokens.spacing;
         let count = self.call_count_label();
@@ -917,19 +914,19 @@ impl ChatApp {
         // Sibling controls sit an `s2` apart, like the expanded bar's.
         let gap = f64::from(theme.tokens.spacing.s2);
         // The microphone and leaving are the window bar's.
-        let mut ctrls: Vec<(&str, Icon, ButtonRole, Hit)> = vec![
+        let mut ctrls: Vec<(String, Icon, ButtonRole, Hit)> = vec![
             (
-                if self.call.audio_only {
-                    "Camera"
+                crate::i18n::t(if self.call.audio_only {
+                    "chat-call-camera-on"
                 } else {
-                    "Stop camera"
-                },
+                    "chat-call-camera-off"
+                }),
                 Icon::Video,
                 ButtonRole::Secondary,
                 Hit::CallCamera,
             ),
             (
-                "Expand",
+                crate::i18n::t("chat-call-expand"),
                 Icon::Maximize2,
                 ButtonRole::Secondary,
                 Hit::CallExpand,
@@ -962,9 +959,9 @@ impl ChatApp {
             let r = Rect::new(x, cy, x + cw, cy + bh);
             let hovered = self.call_control_is_hovered(&hit);
             let face = if fits {
-                ButtonFace::new(r, label).icon(icon)
+                ButtonFace::new(r, &label).icon(icon)
             } else {
-                ButtonFace::icon_only(r, icon, label)
+                ButtonFace::icon_only(r, icon, &label)
             };
             Button::paint(
                 scene,
@@ -1068,23 +1065,23 @@ impl ChatApp {
                 media.ink_dim,
             );
             let head = if is_me {
-                "You're sharing your screen".to_string()
+                crate::i18n::t("chat-call-screen-mine")
             } else {
-                format!("{name} is sharing their screen")
+                crate::i18n::t_args("chat-call-screen-theirs", &[("name", name.clone().into())])
             };
             // Honest status: the local sharer is the source; a remote tile
             // waits on the first decoded frame (this branch only runs with no
             // frame, so it never claims to show video it lacks).
-            let sub = if is_me {
-                "Everyone in the call sees your screen"
+            let sub = crate::i18n::t(if is_me {
+                "chat-call-screen-mine-detail"
             } else {
-                "Waiting for the first frame"
-            };
+                "chat-call-screen-waiting"
+            });
             let mut ctx = PaintCtx::new(scene, tf, tr, theme);
             let mut y = top + icon_side + gap;
             for (s, style, ink) in [
                 (head.as_str(), &head_style, media.ink),
-                (sub, &sub_style, media.ink_dim),
+                (sub.as_str(), &sub_style, media.ink_dim),
             ] {
                 let shown = elide(ctx.text, s, style, rect.width() - 2.0 * gap);
                 let w = width_of(ctx.text, &shown, style);
@@ -1100,9 +1097,9 @@ impl ChatApp {
             }
         }
         let who = if is_me {
-            "Your screen".to_string()
+            crate::i18n::t("chat-call-screen-mine-chip")
         } else {
-            format!("{name}'s screen")
+            crate::i18n::t_args("chat-call-screen-theirs-chip", &[("name", name.into())])
         };
         let h = ChipFace::height(theme);
         let w = ChipFace::intrinsic_width(&who, ChipLead::None, false, tr, theme);
@@ -1475,11 +1472,11 @@ impl ChatApp {
             );
         } else {
             let caption = if is_stream {
-                "Audio stream"
+                crate::i18n::t("chat-call-audio-stream")
             } else {
                 member_tile_caption(p)
             };
-            self.paint_viewfinder(PaintCtx::new(scene, tf, tr, theme), rect, &p.user, caption);
+            self.paint_viewfinder(PaintCtx::new(scene, tf, tr, theme), rect, &p.user, &caption);
         }
     }
 
@@ -1550,13 +1547,10 @@ impl ChatApp {
             .is_some_and(|hovered| std::mem::discriminant(hovered) == std::mem::discriminant(hit))
     }
 
-    /// The picker popover: a filter field, a tab per Unicode group, and a
-    /// scrolling grid showing either the matches or recently used emoji
-    /// followed by the selected group.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one linear layout-then-paint pass: panel, filter, tabs, clipped grid"
-    )]
+    /// The toolkit's shared emoji picker beside its anchor. Its emoji and
+    /// group tabs are also hit targets, so they are named to assistive
+    /// technology and reachable as actions like the rest of Chat; pointer
+    /// and keys go to the picker itself (`route_emoji_picker_event`).
     pub(crate) fn draw_emoji_picker(
         &mut self,
         scene: &mut Scene,
@@ -1566,230 +1560,31 @@ impl ChatApp {
         presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let catalogue = crate::i18n::emoji_catalogue();
         // Full-window dismiss target (lowest priority).
         ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
-        let sp = &theme.tokens.spacing;
-        let local = theme.on_ground(ui::chrome::panel_ground(theme));
-        let pad = f64::from(sp.s3);
-        let w = f64::from(theme.tokens.metrics.panel_width_utility);
-        let cols = 8usize;
-        let cell = (w - 2.0 * pad) / cols as f64;
-        let grid_rows = 6.0;
-        let title_h = ui::chrome::nav_row_height(theme);
-        let field_h = ButtonFace::height(ControlSize::Regular, theme);
-        let tabs_h = SegmentedFace::height(ControlSize::Regular, theme);
-        let h = pad + title_h + field_h + pad + tabs_h + pad + grid_rows * cell + pad;
-        let margin = f64::from(sp.s2);
-        let x0 = self.emoji_anchor.x.clamp(
-            self.rect.x0 + margin,
-            (self.rect.x1 - w - margin).max(self.rect.x0 + margin),
-        );
-        let y0 = self.emoji_anchor.y.clamp(
-            self.rect.y0 + margin,
-            (self.rect.y1 - h - margin).max(self.rect.y0 + margin),
-        );
-        let panel = Rect::new(x0, y0, x0 + w, y0 + h);
-        let radius = f64::from(theme.tokens.radii.panel);
-        ui::surface::shadow(scene, tf, panel, radius, &theme.tokens.elevation.floating);
-        ui::surface::panel(scene, tf, panel, radius, theme);
-
-        let title = if self.emoji_target.is_some() {
-            crate::i18n::t("chat-emoji-add-reaction")
-        } else {
-            crate::i18n::t("chat-emoji-title")
-        };
-        let title_band = Rect::new(panel.x0, panel.y0 + pad, panel.x1, panel.y0 + pad + title_h);
-        line_in(
-            &mut PaintCtx::new(scene, tf, tr, &local),
-            &title,
-            &local.text(TextRole::Subheading),
-            local.text_primary,
-            panel.x0 + pad,
-            title_band,
-            w - 2.0 * pad,
-        );
-
-        // The filter: the shared field, placed by hand like the composers.
-        let search = Rect::new(
-            panel.x0 + pad,
-            title_band.y1,
-            panel.x1 - pad,
-            title_band.y1 + field_h,
-        );
-        self.emoji_search.apply_layout_external(search);
-        self.emoji_search.draw(scene, tf, tr, &local, presence);
-        ChatApp::push_hit(hits, search, Hit::FocusEmojiSearch);
-        // The rest of the panel keeps the query focused instead of dismissing;
-        // the field's own rect above stays its accessible bounds.
-        ChatApp::push_hit(hits, panel, Hit::FocusEmojiSearch);
-        let query = self.emoji_search.value().trim().to_owned();
-
-        // Group tabs.
-        let groups = catalogue.groups();
-        self.emoji_group = self.emoji_group.min(groups.len().saturating_sub(1));
-        let tabs_y = search.y1 + pad;
-        let icons: Vec<&str> = groups.iter().map(emoji::Group::icon).collect();
-        let segments: Vec<ui::widget::Segment> = icons
-            .iter()
-            .map(|icon| ui::widget::Segment::new(*icon))
-            .collect();
-        let tab_rects = SegmentedFace::partition_segments(
-            Rect::new(panel.x0 + pad, tabs_y, panel.x1 - pad, tabs_y + tabs_h),
-            &segments,
-            SegmentedStyle::Tabs,
-            ControlSize::Regular,
-            tr,
-            &local,
-        );
-        let selected = if query.is_empty() {
-            self.emoji_group
-        } else {
-            usize::MAX
-        };
-        ToggleGroup::paint(
-            scene,
-            tf,
-            tr,
-            &local,
-            &SegmentedFace::new(&tab_rects, &icons, selected).style(SegmentedStyle::Tabs),
-        );
-        for (i, r) in tab_rects.iter().enumerate() {
-            ChatApp::push_hit(hits, *r, Hit::EmojiGroup(i));
+        if !self.emoji_picker.is_open() {
+            self.emoji_picker.reopen();
         }
-
-        // The scrolling grid: matches, or recents + the group.
-        let grid = Rect::new(
-            panel.x0 + pad,
-            tabs_y + tabs_h + pad,
-            panel.x1 - pad,
-            panel.y1 - pad,
-        );
-        self.emoji_grid = grid;
-        let mut sections: Vec<(String, Vec<&str>)> = Vec::new();
-        if query.is_empty() {
-            let recents: Vec<&str> = self
-                .emoji_recents
-                .items()
-                .iter()
-                .map(String::as_str)
-                .collect();
-            if !recents.is_empty() {
-                sections.push((crate::i18n::t("chat-emoji-recent"), recents));
-            }
-            if let Some(group) = groups.get(self.emoji_group) {
-                sections.push((
-                    group.label().to_owned(),
-                    catalogue
-                        .group_emoji(group)
-                        .iter()
-                        .map(emoji::Emoji::text)
-                        .collect(),
-                ));
-            }
-        } else {
-            let found: Vec<&str> = catalogue
-                .search(&query, cols * 12)
-                .into_iter()
-                .map(emoji::Emoji::text)
-                .collect();
-            let heading = if found.is_empty() {
-                crate::i18n::t("chat-emoji-no-results")
-            } else {
-                crate::i18n::t("chat-emoji-results")
+        self.emoji_picker
+            .place_at(self.emoji_anchor, self.rect, theme);
+        ui::Widget::draw(&mut self.emoji_picker, scene, tf, tr, theme, presence);
+        ChatApp::push_hit(hits, self.emoji_picker.rect(), Hit::FocusEmojiSearch);
+        for index in 0.. {
+            let Some(tab) = self.emoji_picker.tab_rect(index) else {
+                break;
             };
-            sections.push((heading, found));
+            ChatApp::push_hit(hits, tab, Hit::EmojiGroup(index));
         }
-        let heading_style = local.text(TextRole::Caption);
-        let heading_h = line_of(tr, &heading_style) + f64::from(sp.s1);
-        let content_h: f64 = sections
-            .iter()
-            .map(|(_, set)| heading_h + set.len().div_ceil(cols) as f64 * cell + f64::from(sp.s2))
-            .sum();
-        self.emoji_scroll = self.emoji_scroll.min((content_h - grid.height()).max(0.0));
-
-        push_clip(scene, tf, grid);
-        let mut y = grid.y0 - self.emoji_scroll;
-        for (heading, set) in &sections {
-            text(
-                &mut PaintCtx::new(scene, tf, tr, &local),
-                heading,
-                &heading_style,
-                local.text_dim,
-                Point::new(grid.x0, y),
-                None,
-            );
-            y += heading_h;
-            self.emoji_grid(
-                PaintCtx::new(scene, tf, tr, &local),
-                set,
-                grid,
-                &mut y,
-                (cols, cell),
-                hits,
-            );
-            y += f64::from(sp.s2);
-        }
-        scene.pop_layer();
-    }
-
-    /// One section's cells from `*y` down, advancing `*y` past them. Only
-    /// cells inside `clip` receive a hit target; the cell under the pointer
-    /// lifts.
-    fn emoji_grid(
-        &self,
-        paint: PaintCtx<'_>,
-        set: &[&str],
-        clip: Rect,
-        y: &mut f64,
-        (cols, cell): (usize, f64),
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let PaintCtx {
-            scene,
-            transform: tf,
-            text: tr,
-            theme,
-        } = paint;
-        // Emoji are content: set at the size of a title line.
-        let style = theme.text(TextRole::Title);
-        let ground = theme.tokens.colors.surfaces.content;
-        for (i, e) in set.iter().enumerate() {
-            let col = i % cols;
-            let row = i / cols;
-            let cx = clip.x0 + col as f64 * cell;
-            let cyy = *y + row as f64 * cell;
-            let cellr = Rect::new(cx, cyy, cx + cell, cyy + cell);
-            if cellr.y1 < clip.y0 || cellr.y0 > clip.y1 {
+        let items = self.emoji_picker.items();
+        for (index, item) in items.iter().enumerate() {
+            let Some(cell) = self.emoji_picker.item_rect(index) else {
                 continue;
-            }
-            ui::chrome::paint_row_selection(
-                scene,
-                tf,
-                cellr,
-                ui::chrome::SelectionState::new(false, cellr.contains(self.last_mouse), false),
-                ground,
-                theme,
-            );
-            let (ew, eh) = tr.measure_style(e, None, &style);
-            text(
-                &mut PaintCtx::new(scene, tf, tr, theme),
-                e,
-                &style,
-                theme.text_primary,
-                Point::new(
-                    cellr.center().x - f64::from(ew) / 2.0,
-                    cellr.center().y - f64::from(eh) / 2.0,
-                ),
-                None,
-            );
-            let target = cellr.intersect(clip);
-            if target.area() > 0.0 {
-                ChatApp::push_hit(hits, target, Hit::EmojiChoice((*e).to_string()));
-            }
+            };
+            let hit = item.map_or(Hit::EmojiAddCustom, |emoji| {
+                Hit::EmojiChoice(emoji.to_owned())
+            });
+            ChatApp::push_hit(hits, cell, hit);
         }
-        let rows = set.len().div_ceil(cols);
-        *y += rows as f64 * cell;
     }
 
     /// Every version of an edited message, newest first.
@@ -1816,13 +1611,11 @@ impl ChatApp {
         let head_style = local.text(TextRole::Caption).numeric();
         let body_style = local.text(TextRole::Body);
         let head_h = line_of(tr, &head_style);
+        let at = |key: &str, ts| crate::i18n::t_args(key, &[("time", clock_label(ts).into())]);
         let mut entries: Vec<(String, String)> =
-            vec![(format!("Current, {}", clock_label(m.ts)), m.text.clone())];
+            vec![(at("chat-edit-history-current", m.ts), m.text.clone())];
         for rec in m.history.iter().rev() {
-            entries.push((
-                format!("Earlier, {}", clock_label(rec.ts)),
-                rec.text.clone(),
-            ));
+            entries.push((at("chat-edit-history-earlier", rec.ts), rec.text.clone()));
         }
         let title_h = ui::chrome::nav_row_height(theme);
         let gap = f64::from(sp.s3);
@@ -1851,7 +1644,7 @@ impl ChatApp {
         let title_band = Rect::new(panel.x0, panel.y0 + pad, panel.x1, panel.y0 + pad + title_h);
         line_in(
             &mut ctx,
-            "Edit history",
+            &crate::i18n::t("chat-edit-history"),
             &local.text(TextRole::Subheading),
             local.text_primary,
             panel.x0 + pad,
@@ -1982,12 +1775,12 @@ fn viewfinder_block(
 /// environment, so a tile must never imply a live feed: an audio-only peer
 /// reads "Camera off"; a camera-enabled peer whose frame doesn't reach us
 /// reads "No video".
-fn member_tile_caption(p: &Participant) -> &'static str {
-    if p.audio_only {
-        "Camera off"
+fn member_tile_caption(p: &Participant) -> String {
+    crate::i18n::t(if p.audio_only {
+        "chat-call-camera-off-caption"
     } else {
-        "No video"
-    }
+        "chat-call-no-video"
+    })
 }
 
 /// Lay `n` participant tiles into a single centred row filling `region`'s

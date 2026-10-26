@@ -146,7 +146,10 @@ fn a_window_that_opens_beside_another_is_placed_whole_on_screen_with_it() {
         );
 
         row.scroll_groups_into_view_animated(100, 200, crate::time::now(), MotionSource::default());
-        let to = row.pan.glide.map_or(row.scroll_x(), |glide| glide.to);
+        let to = row
+            .pan
+            .motion
+            .map_or(row.scroll_x(), |motion| motion.target());
         assert!(
             first.1 >= to - 0.5 && last.2 <= to + 1280.0 + 0.5,
             "the pan shows both whole: spans {spans:?}, scroll {to}"
@@ -167,7 +170,10 @@ fn a_window_that_opens_beside_another_is_placed_whole_on_screen_with_it() {
     {
         let mut row = strip_at(2, 800.0, 0.0, 1000);
         row.scroll_groups_into_view_animated(100, 200, crate::time::now(), MotionSource::default());
-        let to = row.pan.glide.map_or(row.scroll_x(), |glide| glide.to);
+        let to = row
+            .pan
+            .motion
+            .map_or(row.scroll_x(), |motion| motion.target());
         assert!(
             to.abs() < 0.5,
             "the window the person is in stays framed, not the new one: {to}"

@@ -37,6 +37,25 @@ pub(crate) fn about(st: &mut ChromeState, subject: Option<Subject>) -> Result<()
     bring_up(st)
 }
 
+/// Whether reports have a destination on this desktop.
+pub(crate) fn configured(st: &ChromeState) -> bool {
+    st.hosted_inputs
+        .in_process()
+        .is_some_and(|apps| apps.borrow().feedback_configured())
+}
+
+/// Open the composer on a report about the parts the person picked.
+pub(crate) fn report(
+    st: &mut ChromeState,
+    picked: tilo_app::feedback::PickedReport,
+) -> Result<(), ActionError> {
+    in_process(st)?
+        .borrow()
+        .begin_feedback_report(picked)
+        .map_err(ActionError::Explained)?;
+    bring_up(st)
+}
+
 fn in_process(
     st: &ChromeState,
 ) -> Result<crate::shell::in_process::SharedInProcessApps, ActionError> {

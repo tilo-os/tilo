@@ -76,14 +76,24 @@ fn terminal() -> Vec<u8> {
     rgba
 }
 
+/// The host's share behind the stream tile, kept by the driver between
+/// the window opening and its first picture.
+struct RoomMemberShare {
+    session: SharedFlatpakSession,
+}
+
 impl ShellDriver {
     /// The active strip holds one window: another member's terminal, hosted
     /// on their laptop, streaming live into its tab.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scene: the host share, the stream and the tile it decodes into read top to bottom"
-    )]
     pub(super) fn scene_room_member_window(&mut self) {
+        self.open_room_member_window();
+        self.show_room_member_picture();
+        self.step_frames(3);
+    }
+
+    /// Another member's terminal opens here as a stream tile whose pictures
+    /// have not come yet: the place its window arrives in, on its own.
+    pub(crate) fn open_room_member_window(&mut self) {
         let (group, tab) = (0x5EED_0000_0000_0101, 0x5EED_0000_0000_0102);
         self.with_chrome(|st| {
             let mut tree = st.tree_mut();
@@ -117,6 +127,9 @@ impl ShellDriver {
             drop(tree);
             st.bump();
         });
+        // The tab's document, as opening a window makes one: binding never
+        // creates it.
+        self.open_tab_records(&[tab]);
         self.step_frames(3);
         let Ok(session) = SharedFlatpakSession::start_with_metrics(
             HOST_PEER,
@@ -167,9 +180,26 @@ impl ShellDriver {
             eprintln!("room-member-window: the stream found no tab");
             return;
         }
+        self.held.push(Box::new(RoomMemberShare { session }));
+    }
+
+    /// The terminal [`Self::open_room_member_window`] opened sends its first
+    /// pictures, and the tile decodes them.
+    pub(crate) fn show_room_member_picture(&mut self) {
+        let Some(share) = self
+            .held
+            .iter()
+            .rev()
+            .find_map(|held| held.downcast_ref::<RoomMemberShare>())
+        else {
+            eprintln!("room-member-window: no window opened to show");
+            return;
+        };
+        let session = &share.session;
         let picture = terminal();
         // A few changes, so the decoder has its keyframe and the picture
         // after it.
+        let mut units = Vec::new();
         for _ in 0..4 {
             session.deposit_captured_rgba(picture.clone());
             if let Some(frame) = session.encode_next_frame(Instant::now())
@@ -177,14 +207,14 @@ impl ShellDriver {
                     encoded_h264, seq, ..
                 } = frame.into_neighbour_msg()
             {
-                let _ = self.fb.host_mut().push_peer_stream_frame(
-                    HOST_PEER,
-                    SURFACE,
-                    seq,
-                    &encoded_h264,
-                    None,
-                );
+                units.push((seq, encoded_h264));
             }
+        }
+        for (seq, unit) in units {
+            let _ = self
+                .fb
+                .host_mut()
+                .push_peer_stream_frame(HOST_PEER, SURFACE, seq, &unit, None);
         }
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
@@ -199,6 +229,5 @@ impl ShellDriver {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        self.step_frames(3);
     }
 }

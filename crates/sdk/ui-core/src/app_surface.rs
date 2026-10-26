@@ -125,6 +125,14 @@ pub fn register_kind(kind: &str, app_id: &str) {
     }
 }
 
+/// The app that keeps records of kind `kind`, when this process knows it: a
+/// link naming the kind reaches the app that declares it without naming that
+/// app itself.
+#[must_use]
+pub fn app_of_kind(kind: &str) -> Option<String> {
+    kinds().lock().ok()?.get(kind).cloned()
+}
+
 /// The hash of the surface the changes to a record of kind `kind` are
 /// decided against: its app's.
 #[must_use]

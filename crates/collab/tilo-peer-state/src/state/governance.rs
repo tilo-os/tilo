@@ -522,6 +522,75 @@ impl PeerGovernanceMut<'_> {
         self.peer
             .set_member(user_public_key, Role::Editor, true, key, now)
     }
+    /// Name the admitted person `user_public_key` `name` in the room: the
+    /// name every reader of [`PeerGovernance::governed_members`] shows for
+    /// them, on each of their admitted devices' rows. A device's own label
+    /// stays on its certificate. Whether the room changed: naming someone
+    /// what they are already called writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, `name` is not
+    /// a display name ([`tilo_user_identity::display_name`]), the person has
+    /// no admitted device here, or governance cannot be updated.
+    pub fn name_person(
+        self,
+        user_public_key: [u8; 32],
+        name: &str,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.peer.require_governance_writer(key, now)?;
+        let name = tilo_user_identity::display_name(name)
+            .map_err(tilo_user_identity::DisplayNameError::reason)?;
+        let mut doc = self
+            .peer
+            .core
+            .room_doc
+            .clone()
+            .ok_or("room governance missing")?;
+        let policy = doc.policy();
+        let names = room::governance_of(Some(&doc)).peers;
+        let mut devices = Vec::new();
+        for (id, bytes) in &policy.identities {
+            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+            if identity.device_cert.user_public_key == user_public_key && identity.has_admission() {
+                devices.push(id.clone());
+            }
+        }
+        if devices.is_empty() {
+            return Err("the person is not admitted to the room".into());
+        }
+        devices.retain(|id| names.get(id).map(String::as_str) != Some(name));
+        if devices.is_empty() {
+            return Ok(false);
+        }
+        let peers = doc
+            .get(ROOT, "peers")
+            .map_err(err)?
+            .ok_or("governed peers missing")?
+            .1;
+        let before = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        for id in &devices {
+            doc.put(&peers, id, name).map_err(err)?;
+        }
+        doc.commit();
+        let changes = doc
+            .get_changes(&before)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        let room = self.peer.core.room.clone();
+        let outcome = self.peer.receive_from(
+            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            NeighbourMsg::SyncResp { changes, room },
+            now,
+        )?;
+        Ok(outcome.changed || outcome.metadata_changed)
+    }
     /// Rewrite each administrator's grant still in the shape rooms held
     /// before [`tilo_action_policy::roles::administrator_grant`] (on the
     /// room's resource, where the Editor's own Deny outranked it) to that

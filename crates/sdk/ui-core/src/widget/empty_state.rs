@@ -14,8 +14,8 @@
 //! - an optional primary **action**, s4 under the text.
 //!
 //! An error state ([`EmptyState::error`]) tints its icon with the danger
-//! status colour and bounds its message to one elided line; assistive
-//! technology still reads the whole message.
+//! status colour. Its message wraps to its full text like any other: what
+//! went wrong and what to do about it is never cut off mid-sentence.
 //!
 //! What went wrong technically (an error code, what a service answered) is
 //! not the person's message: [`EmptyState::with_details`] keeps it behind a
@@ -90,8 +90,7 @@ pub struct EmptyStateContent<'a> {
     pub title: &'a str,
     pub message: Option<&'a str>,
     pub action_label: Option<&'a str>,
-    /// Something failed: the icon takes the danger colour and the message
-    /// is bounded to one line.
+    /// Something failed: the icon takes the danger colour.
     pub error: bool,
 }
 
@@ -264,19 +263,7 @@ impl StackStyle {
         let (_, title_h) =
             text_renderer.measure_style(content.title, Some(inner_width), &self.title);
         let (_, msg_h) = content.message.map_or((0.0, 0.0), |value| {
-            if content.error {
-                // An error detail is bounded to one line per line it has
-                // (a host adds a hint, such as dropping a file, on its own).
-                let (w, line) = text_renderer.measure_style("Ag", None, &self.message);
-                #[allow(
-                    clippy::cast_precision_loss,
-                    reason = "a message has a handful of lines"
-                )]
-                let lines = value.lines().count().max(1) as f32;
-                (w, line * lines)
-            } else {
-                text_renderer.measure_style(value, Some(inner_width), &self.message)
-            }
+            text_renderer.measure_style(value, Some(inner_width), &self.message)
         });
         let (action_w, action_h) = content.action_label.map_or((0.0, 0.0), |value| {
             text_renderer.measure_style(value, Some(inner_width), &self.action)
@@ -567,31 +554,13 @@ fn paint_empty_state(
     );
 
     if let (Some(msg), Some(y)) = (content.message, message_y) {
-        if content.error {
-            let line = msg
-                .lines()
-                .map(|line| {
-                    ctx.text
-                        .elide_to_width_style(line, metrics.inner_width, &style.message)
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            ctx.text(
-                &line,
-                &style.message,
-                theme.text_dim,
-                Point::new(text_x, y),
-                Some(metrics.inner_width),
-            );
-        } else {
-            ctx.text(
-                msg,
-                &style.message,
-                theme.text_dim,
-                Point::new(text_x, y),
-                Some(metrics.inner_width),
-            );
-        }
+        ctx.text(
+            msg,
+            &style.message,
+            theme.text_dim,
+            Point::new(text_x, y),
+            Some(metrics.inner_width),
+        );
     }
 
     if let (Some(label), Some(action_rect)) = (content.action_label, action) {
@@ -1684,7 +1653,7 @@ impl Widget for EmptyState {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+        use crate::a11y::{AccessNode, AccessState, Politeness, Role};
         // The empty state is a labelled group; the title is its accessible
         // name and the message its description so a screen reader announces
         // both without the caller wiring anything.
@@ -1694,6 +1663,12 @@ impl Widget for EmptyState {
         }
         if self.spinner.is_some() {
             node = node.with_state(AccessState::new().busy(true));
+        }
+        // A failure is announced at once; a wait when the reader is free.
+        if self.error {
+            node = node.with_live(Politeness::Assertive);
+        } else if self.spinner.is_some() {
+            node = node.with_live(Politeness::Polite);
         }
         let mut children = Vec::new();
         if let Some(action) = &self.resolved.2 {
@@ -1706,6 +1681,7 @@ impl Widget for EmptyState {
             children.push(
                 AccessNode::new(Role::Button)
                     .with_name(action.clone())
+                    .with_bounds(self.action_rect)
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -1722,6 +1698,7 @@ impl Widget for EmptyState {
                 AccessNode::new(Role::Button)
                     .with_name(crate::i18n!("empty-state-details"))
                     .with_description(details.clone())
+                    .with_bounds(self.details_rect)
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -2408,6 +2385,17 @@ mod tests {
             let action = scroll.children()[0]
                 .synthetic_accessibility_rect(&[0])
                 .expect("retained action geometry");
+            let node = scroll.children()[0]
+                .accessibility()
+                .expect("a described state");
+            assert_eq!(
+                node.children
+                    .first()
+                    .and_then(|button| button.bounds)
+                    .map(crate::a11y::AccessBounds::to_rect),
+                Some(action),
+                "the action is described where it is drawn"
+            );
             assert!(
                 scroll.content_viewport_rect().contains(action.center()),
                 "the scrolled action is visible: {action:?}"
@@ -2512,6 +2500,14 @@ mod tests {
             assert_eq!(node.role, Role::Group);
             assert_eq!(node.name.as_deref(), Some("No results"));
             assert_eq!(node.description.as_deref(), Some("Try another search"));
+            assert_eq!(node.live, None, "a quiet empty state is not a live region");
+            let failed = EmptyState::error("Couldn't open Music", "Permission denied");
+            let node = Widget::accessibility(&failed).expect("an error exposes a11y");
+            assert_eq!(node.live, Some(crate::a11y::Politeness::Assertive));
+            let waiting = EmptyState::new("Opening folder").busy();
+            let node = Widget::accessibility(&waiting).expect("a wait exposes a11y");
+            assert_eq!(node.live, Some(crate::a11y::Politeness::Polite));
+            assert!(node.state.busy);
         }
 
         draws_something_visible();
@@ -2553,41 +2549,44 @@ mod tests {
         );
     }
 
+    /// At a phone's width an error says all of what happened and what to
+    /// do: its message wraps like any other, never cut off with an ellipsis.
     #[test]
-    fn errors_use_the_danger_tone_and_one_bounded_line() {
+    fn errors_use_the_danger_tone_and_wrap_their_whole_message_at_420_px() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let detail = "The file ends before its cross-reference table. ".repeat(6);
+        let detail = "Couldn't read the selected files. Check permissions and try again.";
         let content = EmptyStateContent {
             icon: Some(Icon::FileText),
-            message: Some(detail.as_str()),
+            message: Some(detail),
             error: true,
-            ..EmptyStateContent::new("Can't open this document")
+            ..EmptyStateContent::new("Couldn't open the files")
         };
         let style = StackStyle::resolved(&theme, false);
-        let error = style.measure(&mut text, 360.0, &content);
+        let error = style.measure(&mut text, 420.0, &content);
         let plain = style.measure(
             &mut text,
-            360.0,
+            420.0,
             &EmptyStateContent {
                 error: false,
                 ..content
             },
         );
+        let (_, line) = text.measure_style("Ag", None, &style.message);
         assert!(
-            error.msg_h < plain.msg_h,
-            "the detail is bounded to one line"
+            error.msg_h > f64::from(line) * 1.5,
+            "the whole message wraps onto more lines than one"
+        );
+        assert!(
+            (error.msg_h - plain.msg_h).abs() < f64::EPSILON,
+            "an error wraps exactly like any other message"
         );
         assert_eq!(error.text_gap, f64::from(theme.tokens.spacing.s3));
         assert_eq!(error.gap, f64::from(theme.tokens.spacing.s4));
 
-        let state = EmptyState::error("Can't open this document", detail.clone());
+        let state = EmptyState::error("Couldn't open the files", detail);
         let node = Widget::accessibility(&state).unwrap();
-        assert_eq!(
-            node.description.as_deref(),
-            Some(detail.as_str()),
-            "full text"
-        );
+        assert_eq!(node.description.as_deref(), Some(detail), "full text");
 
         // The glyph is the danger colour, not an accent or the inverted fill.
         let mut scene = Scene::new();

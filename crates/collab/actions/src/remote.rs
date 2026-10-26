@@ -42,6 +42,7 @@ mod catalogue;
 mod content_put;
 pub mod crash_records;
 pub mod feedback;
+mod nodes;
 pub mod own_device;
 mod pending;
 mod wait;
@@ -54,6 +55,9 @@ pub use catalogue::{
 };
 pub use content_put::{
     CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_OPEN_CONTENT_PUTS,
+};
+pub use nodes::{
+    NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};

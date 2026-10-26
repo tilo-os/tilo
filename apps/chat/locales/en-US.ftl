@@ -28,21 +28,15 @@ chat-call-camera-off = Stop camera
 chat-call-share-screen = Share screen
 chat-call-stop-sharing = Stop sharing
 
-# Emoji picker: its title when inserting into the composer or reacting to a
-# message, the search field's placeholder and the grid's section headings.
-chat-emoji-title = Emoji
+# Emoji picker: the add-reaction button, the search field's name, the
+# composer's emoji button and a group tab without a name of its own.
 chat-emoji-add-reaction = Add reaction
 chat-emoji-search = Search emoji
-chat-emoji-recent = Recently used
-chat-emoji-results = Results
-chat-emoji-no-results = No emoji found
+chat-emoji-add = Add emoji
 chat-emoji-insert = Insert emoji
 chat-emoji-group = Emoji group
 # A picker cell; the name is the emoji's name in the desktop's language.
 chat-emoji-choose = Choose { $name }
-# A reaction chip under a message, which adds or removes the user's own.
-chat-reaction-add = Add { $emoji } reaction
-chat-reaction-remove = Remove { $emoji } reaction
 
 # Governed voice status, shared by native and browser hosts.
 chat-call-issue-unavailable = Voice isn't available in this room yet
@@ -169,6 +163,24 @@ chat-conversation-read-only = You can read this conversation but not write in it
 chat-agent-author = { $name } (agent)
 chat-resource-link-copied = Link copied
 chat-resource-link-unavailable = Link unavailable
+
+## A window shared live into a channel
+chat-share-window = Share a window
+chat-share-window-detail = A live view others can open
+chat-share-window-to = Share a window in { $place }
+chat-share-window-button = Share
+chat-share-your-windows = Your windows
+chat-share-no-windows = Open the window you want to share, then come back here.
+chat-share-view-only = View only
+chat-share-already-edit = You can already edit this
+chat-share-can-edit = Can edit
+chat-share-live = Live
+chat-share-ended = No longer shared
+chat-share-stop = Stop sharing
+chat-share-loading = Loading the live view…
+chat-share-open-to-see = Open it to see it live
+chat-share-open = Open { $title }, shared by { $name }
+chat-share-pick = Share { $title }
 chat-voice-unavailable = Voice calls are unavailable until a media service is connected.
 chat-call-not-joined = Join the call first.
 chat-attachment-import-unavailable = Attachment import is unavailable on this host.
@@ -205,8 +217,6 @@ chat-share-resource = Shared a link in #{ $item }
 chat-deliver-message = Delivered a message from { $author }
 chat-edit-message = Edited a message: { $text }
 chat-delete-message = Deleted a message
-chat-react = Reacted with { $emoji }
-chat-unreact = Took back a { $emoji } reaction
 chat-mark-read = Marked #{ $item } read
 chat-record-work = Recorded what it is doing
 chat-submit-feedback = Filed feedback in #{ $item }
@@ -277,3 +287,182 @@ chat-sheet-no-category = None
 chat-sheet-topic = Topic
 chat-sheet-topic-placeholder = What this channel is for (optional)
 chat-mention-alert = { $name } mentioned you in #{ $channel }
+
+# What kind of thing a message row is, for assistive technology and the
+# feedback picker ("Message in Chat").
+chat-message-kind = Message
+
+## A filed feedback report as its channel shows it
+# One picked part of the screen: its place, what it was, and the app.
+chat-feedback-pick = { $index }. { $what } in { $app }
+# One picked part from an app whose name is not known: its place and what it
+# was, never the app's id.
+chat-feedback-pick-alone = { $index }. { $what }
+# What a picked part was, when the app said what kind of thing it is.
+chat-feedback-part-kind = { $kind }
+# What a picked part was, by the app's own name for it and its role.
+chat-feedback-part-named = The “{ $name }” { $role ->
+    [Button] button
+    [ToggleButton] button
+    [Link] link
+    [Tab] tab
+    [MenuItem] menu item
+    [Checkbox] checkbox
+    [Switch] switch
+    [TextInput] field
+    [MultilineTextInput] field
+    [Heading] heading
+   *[other] { $role }
+}
+# What a picked part was, known only by its role.
+chat-feedback-part-role = { $role ->
+    [ListItem] A list item
+    [Row] A row
+    [Cell] A cell
+    [Button] A button
+    [ToggleButton] A button
+    [Link] A link
+    [Image] A picture
+    [TextInput] A field
+    [MultilineTextInput] A field
+    [StaticText] A text
+    [Paragraph] A paragraph
+    [Heading] A heading
+    [List] A list
+    [Group] A group
+    [Window] A window
+    [Toolbar] A toolbar
+    [Menu] A menu
+    [MenuItem] A menu item
+    [Tab] A tab
+   *[other] A part
+}
+chat-feedback-note = “{ $note }”
+# One text a picked part showed, as reviewed.
+chat-feedback-text = { $text }
+# One of the reporter's last actions, by the label its app gives it;
+# $outcome is done, refused or failed.
+chat-feedback-action = { $outcome ->
+    [refused] { $label } (refused)
+    [failed] { $label } (failed)
+   *[done] { $label }
+}
+# An action whose app gave it no label, by its id and resource kind.
+chat-feedback-action-unnamed = { $action } on { $resource }
+chat-feedback-recent = Just before: { $actions }
+chat-feedback-slow = Slow: { $slow } of the last { $frames } frames over { $budget } ms, the slowest { $worst } ms
+# A hidden span of a reported text, by what it hid.
+chat-feedback-hidden = { $kind ->
+    [name] ‹name›
+    [email] ‹email›
+    [phone] ‹phone›
+    [address] ‹address›
+    [account] ‹account number›
+    [credential] ‹credential›
+   *[personal] ‹personal›
+}
+
+## The conversation's own controls and labels
+chat-surface = Chat
+chat-surface-detail = Channels in the current Tilo workspace
+chat-messages = Messages
+chat-add-channel = Add channel
+chat-create-menu = Create channel or category
+chat-composer = Message composer
+chat-send-message = Send message
+chat-undo = Undo
+chat-retry = Retry
+chat-close = Close
+# A message that did not reach the room; $reason says why.
+chat-not-sent = Not sent: { $reason }
+chat-message-deleted = Message deleted
+chat-message-edited = Edited
+# Beside a pinned message's time.
+chat-message-pinned-marker = Pinned
+chat-empty-title = No messages yet
+chat-empty-title-read-only = Nothing has been said here yet
+chat-jump-latest = Jump to latest
+chat-jump-latest-message = Jump to latest message
+chat-right-flap = Show people or thread
+chat-typing-one = { $name } is typing…
+chat-typing-two = { $first } and { $second } are typing…
+chat-typing-several = Several people are typing…
+
+## Pinned messages
+chat-pins = Pinned messages
+chat-pinned-message = Pinned message
+chat-pins-empty = Nothing pinned yet
+chat-pins-empty-detail = Pin a message from its menu to keep it here for everyone.
+
+## Threads
+chat-thread-open = Open message thread
+chat-thread-composer = Thread reply composer
+chat-thread-reply-placeholder = Reply in thread
+chat-thread-last-reply = Last reply { $time }
+
+## Editing a message
+chat-edit-field = Edit message
+chat-edit-save = Save message edit
+chat-edit-cancel = Cancel message edit
+chat-edit-save-button = Save
+chat-edit-cancel-button = Cancel
+chat-edit-history-show = Show edit history
+chat-edit-history = Edit history
+chat-edit-history-current = Current, { $time }
+chat-edit-history-earlier = Earlier, { $time }
+
+## Sharing a file
+chat-attach = Share a file
+chat-attach-device = Upload from this device
+chat-attach-device-detail = Files, pictures and videos up to 32 MiB
+chat-attach-workspace = From the workspace
+chat-attach-more = { $count } more in the workspace
+chat-attach-pick = Attach { $name }
+chat-attach-picker-title = Share files
+chat-attach-picker-accept = Share
+
+## Calls
+chat-call-start-or-open = Start or open call
+chat-call-active = Active call
+# A call whose channel has no name to show.
+chat-call-untitled = Call
+chat-call-expand = Expand
+chat-call-expand-restore = Expand or restore call
+chat-call-participants-show = Show call participants
+chat-call-camera-off-caption = Camera off
+chat-call-camera-starting = Your camera is starting
+chat-call-no-video = No video
+chat-call-audio-stream = Audio stream
+chat-call-screen-mine = You're sharing your screen
+chat-call-screen-mine-detail = Everyone in the call sees your screen
+chat-call-screen-mine-chip = Your screen
+chat-call-screen-theirs = { $name } is sharing their screen
+chat-call-screen-theirs-chip = { $name }'s screen
+chat-call-screen-waiting = Waiting for the first frame
+
+## A channel's, category's or message's menu
+chat-menu-rename = Rename
+chat-menu-rename-channel = Rename channel
+chat-menu-rename-category = Rename category
+chat-menu-edit-channel = Edit channel
+chat-menu-delete = Delete
+chat-menu-delete-channel = Delete channel
+chat-menu-delete-category = Delete category
+chat-menu-move-up = Move up
+chat-menu-move-down = Move down
+chat-menu-new-channel = New channel
+chat-menu-new-voice-channel = New voice channel
+chat-menu-new-category = New category
+chat-menu-collapse-category = Collapse category
+chat-menu-expand-category = Expand category
+chat-menu-archive-channel = Archive channel
+chat-menu-reply-in-thread = Reply in thread
+chat-menu-edit-message = Edit message
+chat-menu-pin-message = Pin message
+chat-menu-unpin-message = Unpin message
+chat-menu-delete-message = Delete message
+chat-menu-report-message = Report message
+chat-menu-report-sender = Report sender
+chat-menu-ban = Ban from the room
+chat-menu-volume = Volume
+chat-attach-share = Share a file

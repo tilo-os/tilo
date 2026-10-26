@@ -97,11 +97,11 @@ pub enum ChatEffect {
     /// Expand an unsent private editor using its ephemeral native handoff token.
     #[effect(view, returns, audience = "agents")]
     AdoptPrivateDraft { token: String },
-    /// Send privately through the native person-only host door.
-    #[effect(returns, audience = "agents")]
+    /// Send privately through the person-only host door.
+    #[effect(job, returns, audience = "agents")]
     SendDirectMessage { public_key: String, text: String },
     /// Read a private conversation on this device.
-    #[effect(returns, audience = "agents")]
+    #[effect(job, returns, audience = "agents")]
     ReadDirectConversation { public_key: String },
     /// Read message
     ///
@@ -112,9 +112,9 @@ pub enum ChatEffect {
     /// Read room
     ///
     /// The room's categories and channels and its people as the record
-    /// stores them, and, when asked, one message with the message it
-    /// answers or a channel's latest messages: what a bot mirroring the
-    /// room elsewhere works from.
+    /// stores them, the names of the workspace's own emoji, and, when
+    /// asked, one message with the message it answers or a channel's latest
+    /// messages: what a bot mirroring the room elsewhere works from.
     #[effect(kind = "read", returns, audience = "agents")]
     ReadRoom {
         #[param("A message to include, with the message it answers")]
@@ -285,11 +285,8 @@ impl ChatApp {
             ChatEffect::AdoptPrivateDraft { .. } => {
                 return Err("private draft adoption requires its original effect context".into());
             }
-            ChatEffect::SendDirectMessage { public_key, text } => {
-                return self.send_person_message(&public_key, &text);
-            }
-            ChatEffect::ReadDirectConversation { public_key } => {
-                return self.read_person_conversation(&public_key);
+            ChatEffect::SendDirectMessage { .. } | ChatEffect::ReadDirectConversation { .. } => {
+                return Err("a private conversation answers in its original effect context".into());
             }
             ChatEffect::ReadMessage { message } => {
                 return self.read_message(&message).map(Effected::value);
@@ -666,10 +663,9 @@ impl ChatApp {
                 .find(|message| {
                     message.author == user
                         || message.mentions.iter().any(|mention| mention.user == user)
-                        || message
-                            .reactions
-                            .iter()
-                            .any(|reaction| reaction.users.iter().any(|id| id == user))
+                        || message.reactions.iter().any(|reaction| {
+                            reaction.reactors.iter().any(|reactor| reactor.by == user)
+                        })
                 })
                 .and_then(|message| self.channel(&message.channel))
                 .map(|channel| channel.id.clone())
@@ -713,6 +709,7 @@ impl ChatApp {
             "work": message.work,
             "reference": message.reference,
             "sourceProvider": message.source_provider,
+            "share": message.share,
         }))
     }
 }
@@ -806,8 +803,9 @@ const READ_LATEST: usize = 20;
 
 /// The answer of [`ChatEffect::ReadRoom`]: the record's own JSON form of
 /// the room's categories and channels, every person, the channels holding
-/// any message (`busy`), and `message` and the latest messages of
-/// `channel`, each with the message it answers.
+/// any message (`busy`), the names of the workspace's own emoji (`emoji`,
+/// each written `:name:` in reactions and text), and `message` and the
+/// latest messages of `channel`, each with the message it answers.
 pub(crate) fn read_room(
     chat: &Chat,
     held: &crate::messages::Messages,
@@ -815,6 +813,10 @@ pub(crate) fn read_room(
     channel: Option<&str>,
 ) -> serde_json::Value {
     use ui::tilo_resource::Model as _;
+    // A filed report reads as the message its channel shows.
+    let reports: std::collections::BTreeMap<tilo_resource::Id, crate::record::Message> =
+        chat.feedback_messages().collect();
+    let found = |id: &tilo_resource::Id| held.get(id).or_else(|| reports.get(id));
     let mut wanted: Vec<tilo_resource::Id> = message
         .map(tilo_resource::Id::from_raw)
         .into_iter()
@@ -822,6 +824,7 @@ pub(crate) fn read_room(
     if let Some(channel) = channel {
         let mut latest: Vec<(&tilo_resource::Id, &crate::record::Message)> = held
             .iter()
+            .chain(&reports)
             .filter(|(_, found)| found.channel.as_str() == channel)
             .collect();
         latest.sort_by_key(|(_, found)| found.ts);
@@ -831,7 +834,7 @@ pub(crate) fn read_room(
     // Each with the message it answers, once.
     let answered: Vec<tilo_resource::Id> = wanted
         .iter()
-        .filter_map(|id| held.get(id)?.parent.clone())
+        .filter_map(|id| found(id)?.parent.clone())
         .collect();
     wanted.extend(answered);
     let mut messages = Vec::new();
@@ -840,7 +843,7 @@ pub(crate) fn read_room(
         if !seen.insert(id.clone()) {
             continue;
         }
-        if let Some(found) = held.get(&id) {
+        if let Some(found) = found(&id) {
             messages.push(serde_json::json!({ "id": id.as_str(), "value": found.to_json() }));
         }
     }
@@ -853,6 +856,10 @@ pub(crate) fn read_room(
         "channels": chat.channels.to_json(),
         "people": chat.people.to_json(),
         "busy": busy,
+        "emoji": ui::workspace_emoji::emoji()
+            .iter()
+            .map(|emoji| emoji.name.clone())
+            .collect::<Vec<_>>(),
         "messages": messages,
     })
 }

@@ -2,8 +2,9 @@
 //!
 //! The catalog is one directory of unmodified font files plus a
 //! `manifest.toml` that pins every file by size and SHA-256. Source metadata lives in
-//! `crates/sdk/ui-core/assets/fonts`; builds prepare the pinned font bytes in
-//! a verified artifact cache. The OS image installs its catalog once,
+//! `crates/sdk/ui-core/assets/fonts`; a build fetches the pinned font bytes into
+//! a verified artifact cache and prepares this crate's catalog from it in its
+//! own `OUT_DIR`. The OS image installs its catalog once,
 //! at [`INSTALLED_ROOT`], where fontconfig and every Tilo process that sets
 //! text find the same bytes. This crate owns the manifest's schema and the
 //! checks that tie an installed directory to the build that reads it: the
@@ -34,11 +35,9 @@ pub const MANIFEST: &str = include_str!("../manifest.toml");
 /// extra configuration.
 pub const INSTALLED_ROOT: &str = "/usr/share/fonts/tilo";
 
-/// The catalog in the checkout this build was compiled in. A build machine
-/// bakes its own path here (`build.rs`), so a binary built elsewhere — a
-/// remote runner, a build server — names a directory the running machine does
-/// not have; [`override_root`] is how such a run still finds the checkout it
-/// is actually running in.
+/// The catalog this build prepared from the source checkout, in this crate's
+/// `OUT_DIR`: it is part of the build's output, so wherever the build is
+/// reused the catalog is too.
 #[must_use]
 pub fn checkout_root() -> PathBuf {
     PathBuf::from(env!("TILO_CHECKOUT_FONT_ROOT"))

@@ -358,7 +358,7 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
         app.focus = Focus::Main;
         assert!(app.draft_main.is_empty());
         app.on_hit(
-            Hit::ComposerEmoji(Point::ZERO),
+            Hit::ComposerEmoji(Rect::ZERO),
             &mut ui::widget::Edits::lend(&mut doc),
         );
         assert!(
@@ -373,7 +373,11 @@ fn composer_edits_the_draft_and_sends_through_the_action_route() {
             app.draft_main, "🎉",
             "the emoji was typed into the composer draft"
         );
-        assert_eq!(app.emoji_recents.items(), ["🎉"], "picks are remembered");
+        assert_eq!(
+            ui::emoji_catalogue::recents(),
+            ["🎉"],
+            "picks are remembered"
+        );
     }
 
     // Phase: reply_in_thread_sets_parent.
@@ -1094,6 +1098,92 @@ fn an_empty_channel_invites_the_first_message() {
         ui::permissions::PermissionContext::member("reader", ui::permissions::Role::Viewer),
     );
     assert_eq!(app.empty_channel_message(), None, "no invitation to write");
+}
+
+/// A workspace whose emoji someone may manage, counting the times the
+/// picker's "Add emoji" asked to choose a picture.
+struct ManagedEmoji(std::rc::Rc<std::cell::Cell<usize>>);
+
+impl ui::workspace_emoji::EmojiSource for ManagedEmoji {
+    fn emoji(&self) -> std::rc::Rc<ui::workspace_emoji::WorkspaceEmoji> {
+        std::rc::Rc::default()
+    }
+    fn revision(&self) -> u64 {
+        1
+    }
+    fn can_manage(&self) -> bool {
+        true
+    }
+    fn add(&self, _: &str, _: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+    fn remove(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn choose_and_add(&self) {
+        self.0.set(self.0.get() + 1);
+    }
+}
+
+#[test]
+fn the_pickers_add_emoji_tile_is_a_named_action() {
+    let scope = ui::WakeScope::new();
+    let chosen = std::rc::Rc::new(std::cell::Cell::new(0));
+    ui::workspace_emoji::register(
+        &scope.handle(),
+        std::rc::Rc::new(ManagedEmoji(std::rc::Rc::clone(&chosen))),
+    );
+    let _in = scope.enter();
+    let (mut app, mut doc) = app_with_doc();
+    app.on_hit(
+        Hit::ComposerEmoji(vello::kurbo::Rect::new(400.0, 600.0, 430.0, 630.0)),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    render_frame(&mut app, 1280.0, 720.0);
+    assert!(
+        app.hits
+            .iter()
+            .any(|(_, hit)| matches!(hit, Hit::EmojiAddCustom)),
+        "the Workspace section's + tile is a hit target, so it is named and reachable"
+    );
+    app.on_hit(Hit::EmojiAddCustom, &mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(chosen.get(), 1, "it asks for a picture to add");
+}
+
+#[test]
+fn a_reaction_pill_says_how_many_reacted() {
+    let (mut app, _doc) = app_with_doc();
+    render_frame(&mut app, 1280.0, 720.0);
+    let shown: Vec<(String, usize)> = app
+        .hits
+        .iter()
+        .filter_map(|(_, hit)| match hit {
+            Hit::Reaction { msg, emoji } => app
+                .message(msg)
+                .and_then(|m| m.reactions.iter().find(|r| r.emoji == *emoji))
+                .map(|r| (emoji.clone(), r.count())),
+            _ => None,
+        })
+        .collect();
+    let (emoji, count) = shown
+        .first()
+        .cloned()
+        .expect("a message with a reaction shows");
+    let tree = app.accessibility().unwrap();
+    let pill = tree
+        .children
+        .iter()
+        .find(|node| {
+            node.name
+                .as_deref()
+                .is_some_and(|name| name.contains(&emoji))
+        })
+        .expect("the pill is named");
+    assert_eq!(
+        pill.value.as_deref(),
+        Some(ui::widget::reaction_strip::pill_count(count).as_str()),
+        "its value is the count, as the toolkit's strip says it"
+    );
 }
 
 #[test]
@@ -2481,7 +2571,7 @@ fn a_bridged_calls_guests_get_their_own_tiles_and_volume() {
         .into_iter()
         .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if id == "discord:1"))
         .expect("Dana has a tile of her own");
-    assert_eq!(dana.2, "Dana (via Discord): volume and mute for you");
+    assert_eq!(dana.2.text, "Dana (via Discord): volume and mute for you");
     assert!(
         app.semantic_hits()
             .iter()
@@ -2507,4 +2597,80 @@ fn a_bridged_calls_guests_get_their_own_tiles_and_volume() {
     );
     let listening = app.call_listening("discord:1");
     assert_eq!((listening.percent, listening.silenced), (50, false));
+}
+
+/// Every node under `node`, depth first.
+fn access_nodes(node: &ui::a11y::AccessNode) -> Vec<&ui::a11y::AccessNode> {
+    std::iter::once(node)
+        .chain(node.children.iter().flat_map(access_nodes))
+        .collect()
+}
+
+#[test]
+fn the_composers_controls_are_chats_own_copy() {
+    let (mut app, _doc) = app_with_doc();
+    render_frame(&mut app, 1280.0, 720.0);
+    let tree = app.accessibility().unwrap();
+    let nodes = access_nodes(&tree);
+    for name in [
+        crate::i18n::t("chat-send-message"),
+        crate::i18n::t("chat-attach"),
+    ] {
+        let node = nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some(name.as_str()))
+            .unwrap_or_else(|| panic!("the composer shows {name}"));
+        assert!(node.interface_name, "{name} is Chat's own copy");
+    }
+    // A message is someone's words, never Chat's copy.
+    let message = nodes
+        .iter()
+        .find(|node| node.role == ui::a11y::Role::ListItem)
+        .expect("a message is shown");
+    assert!(!message.interface_name);
+}
+
+#[test]
+fn a_messages_texts_are_read_where_they_are_drawn() {
+    let (mut app, _doc) = app_with_doc();
+    render_frame(&mut app, 1280.0, 720.0);
+    let tree = app.accessibility().unwrap();
+    let rows: Vec<&ui::a11y::AccessNode> = access_nodes(&tree)
+        .into_iter()
+        .filter(|node| node.role == ui::a11y::Role::ListItem && !node.children.is_empty())
+        .collect();
+    assert!(!rows.is_empty(), "shown messages say where their texts are");
+    let mut headed = false;
+    for row in rows {
+        let bounds = row.bounds.expect("a shown message has bounds").to_rect();
+        let roles: Vec<ui::a11y::Role> = row.children.iter().map(|child| child.role).collect();
+        if roles.first() == Some(&ui::a11y::Role::Image) {
+            headed = true;
+            assert_eq!(
+                roles.get(1..3),
+                Some(&[ui::a11y::Role::StaticText, ui::a11y::Role::StaticText][..]),
+                "an avatar is followed by the author and the time"
+            );
+        }
+        assert!(
+            roles.contains(&ui::a11y::Role::StaticText),
+            "a shown message has texts"
+        );
+        // Laid out, a part may overhang the row by a hair of rounding.
+        let row_band = bounds.inflate(1.0, 1.0);
+        for child in &row.children {
+            let rect = child.bounds.expect("every part has its rect").to_rect();
+            assert!(rect.width() > 0.0 && rect.height() > 0.0);
+            assert!(
+                row_band.contains(rect.origin()) && row_band.contains(Point::new(rect.x1, rect.y1)),
+                "{child:?} is drawn inside its row {bounds:?}"
+            );
+            assert!(
+                !child.interface_name,
+                "a message's parts are not Chat's copy"
+            );
+            assert!(child.name.as_deref().is_some_and(|name| !name.is_empty()));
+        }
+    }
+    assert!(headed, "a message that starts a group shows its author");
 }

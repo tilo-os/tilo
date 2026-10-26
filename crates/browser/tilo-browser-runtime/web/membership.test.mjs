@@ -34,6 +34,11 @@ test('an invitation names the inviter and comes back as base64url text', async (
   assert.equal(invite.inviter_name, 'Ada Lovelace');
   assert.equal(invite.expires_at_ns, 61_000 * 1e6);
   assert.equal(invite.request_id.length, 32);
+  assert.equal('wait_list_entry' in invite, false);
+  // An invitation for a wait-list entry names the entry.
+  await membership.createInvitation({waitListEntry: '08'.repeat(32)});
+  assert.deepEqual(host.sent.at(-1).Invite.wait_list_entry, key(8));
+  await assert.rejects(membership.createInvitation({waitListEntry: 'not hex'}), TypeError);
   await assert.rejects(membership.createInvitation({role: 'owner'}), TypeError);
   await assert.rejects(membership.createInvitation({expiresIn: MAX_INVITATION_SECONDS + 1}), RangeError);
 });
@@ -42,8 +47,10 @@ test('the owner lists, admits, declines and removes people', async () => {
   const host = fakeHost({
     List: () => ({Rooms: [room]}),
     Requests: () => ({Requests: [{request_id: key(9), user_public_key: key(0xcc), device_public_key: key(0xcd), name: 'Cy', role: 'Editor', requested_at_ns: 5e6}]}),
-    WaitList: () => ({WaitList: [{request_id: key(8), contact: 'ed@example.org', added_at_ns: 6e6}]}),
+    WaitList: () => ({WaitList: [{request_id: key(8), contact: 'Ed@example.org', added_at_ns: 6e6, invited_at_ns: null},
+      {request_id: key(7), contact: 'fy@example.org', added_at_ns: 6e6, invited_at_ns: 8e6}]}),
     Unlist: () => ({WaitList: []}),
+    MailInvite: () => ({WaitList: []}),
     Pending: () => ({Pending: [{invite_id: key(4), role: 'Editor', expires_at_ns: 9e9}]}),
     Notices: () => ({Notices: [{PreAdmitted: {user_public_key: key(0xdd), name: 'Di', label: 'di@example.com', role: 'Editor', at_ns: 7e6}}]}),
     Admit: () => ({Room: room}),
@@ -60,9 +67,12 @@ test('the owner lists, admits, declines and removes people', async () => {
     {requestId: '09'.repeat(32), userPublicKey: 'cc'.repeat(32), devicePublicKey: 'cd'.repeat(32), name: 'Cy', role: 'editor', requestedAtMs: 5},
   ]);
   // Addresses left at the door are a list of their own: nobody to admit.
-  assert.deepEqual(await membership.waitList(), [{requestId: '08'.repeat(32), contact: 'ed@example.org', addedAtMs: 6}]);
+  assert.deepEqual(await membership.waitList(), [{requestId: '08'.repeat(32), contact: 'Ed@example.org', addedAtMs: 6, invitedAtMs: null},
+    {requestId: '07'.repeat(32), contact: 'fy@example.org', addedAtMs: 6, invitedAtMs: 8}]);
   await membership.unlist('08'.repeat(32));
   assert.deepEqual(host.sent.at(-1), {Unlist: {room: ROOM, request_id: key(8)}});
+  await membership.mailInvite('07'.repeat(32), 'https://tilo.example/?invite=AAEC');
+  assert.deepEqual(host.sent.at(-1), {MailInvite: {room: ROOM, wait_list_entry: key(7), link: 'https://tilo.example/?invite=AAEC'}});
   assert.deepEqual(listed.invitations, [{inviteId: '04'.repeat(32), role: 'editor', expiresAtMs: 9000}]);
   assert.deepEqual(listed.notices, [{kind: 'pre-admitted', userPublicKey: 'dd'.repeat(32), name: 'Di', label: 'di@example.com', role: 'editor', atMs: 7}]);
 

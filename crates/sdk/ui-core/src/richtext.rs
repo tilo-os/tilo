@@ -13,6 +13,7 @@ use tilo_sort::CompactSort as _;
 use crate::text_break::OffsetMap;
 use crate::text_selection::{TextAffinity, TextPosition};
 
+pub mod inline_emoji;
 #[path = "richtext_paragraphs.rs"]
 mod paragraphs;
 #[cfg(test)]
@@ -110,6 +111,10 @@ pub struct RichSpan {
     /// style's kind, with the identifiers found in prose set apart
     /// ([`crate::text_detect`]).
     pub kind: Option<crate::text_render::TextKind>,
+    /// The run is the `:name:` of an emoji of the window's workspace, drawn
+    /// as its picture in a square of its own ([`inline_emoji`]); its bytes
+    /// stay the text's.
+    pub workspace_emoji: bool,
 }
 
 impl RichSpan {
@@ -124,6 +129,7 @@ impl RichSpan {
             background: None,
             baseline: BaselineShift::None,
             kind: None,
+            workspace_emoji: false,
         }
     }
     #[must_use]
@@ -169,6 +175,7 @@ impl RichSpan {
             && self.background.is_none()
             && self.baseline == BaselineShift::None
             && self.kind.is_none()
+            && !self.workspace_emoji
     }
 }
 
@@ -189,6 +196,63 @@ impl TextAlign {
             TextAlign::Center => Some(Align::Center),
             TextAlign::Right => Some(Align::Right),
             TextAlign::Justified => Some(Align::Justified),
+        }
+    }
+}
+
+/// How far the ink of a layout's rows reaches past their own bands: above a
+/// row's top and below its bottom, in the layout's units. Zero where every
+/// glyph stays inside its row.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InkReach {
+    pub above: f32,
+    pub below: f32,
+}
+
+/// How far each logical line's rows' ink reaches past their bands, kept
+/// as it is worked out the first time it is asked for
+/// ([`crate::text_render::TextRenderer::rich_ink_reach`]), and the most of
+/// them. Each line's reach is measured from its own rows, so an edit
+/// forgets only the lines it replaced; a new width forgets them all.
+#[derive(Default)]
+pub(crate) struct InkReachCache {
+    /// Each logical line's reach, once worked out; shorter than the lines
+    /// where the ones past its end are not.
+    pub(crate) lines: std::sync::Mutex<Vec<Option<InkReach>>>,
+    /// The most any line's reaches, until a line changes.
+    pub(crate) all: std::sync::OnceLock<InkReach>,
+}
+
+impl InkReachCache {
+    /// Lines `first..=last` were replaced by `count` new ones.
+    pub(crate) fn lines_replaced(&mut self, first: usize, last: usize, count: usize) {
+        self.all = std::sync::OnceLock::new();
+        let lines = self
+            .lines
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if last < lines.len() {
+            lines.splice(first..=last, std::iter::repeat_n(None, count));
+        } else {
+            lines.truncate(first);
+        }
+    }
+
+    /// Every line's rows changed.
+    pub(crate) fn forget(&mut self) {
+        *self = Self::default();
+    }
+
+    /// The same reaches, for a copy of the same rows.
+    pub(crate) fn duplicate(&self) -> Self {
+        Self {
+            lines: std::sync::Mutex::new(
+                self.lines
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+            ),
+            all: self.all.clone(),
         }
     }
 }
@@ -215,6 +279,8 @@ pub struct RichTextLayout {
     /// ranges are already shaped at the reduced size; the draw path applies the
     /// vertical offset.
     pub(crate) baselines: Vec<(usize, usize, BaselineShift)>,
+    /// The runs drawn as a workspace emoji's picture, in text order.
+    pub(crate) inline_emoji: Vec<inline_emoji::InlineEmoji>,
     discretionary_hyphen_width: f32,
     line_height: f32,
     /// Block-level paint axes. The renderer replaces `wght` with each batch's
@@ -232,6 +298,9 @@ pub struct RichTextLayout {
     /// where the monospace, serif and italic faces load on demand, reads
     /// these to fetch them.
     pub(crate) faces: Vec<crate::text_render::TextStyle>,
+    /// How far the rows' ink reaches past their bands
+    /// ([`crate::text_render::TextRenderer::rich_ink_reach`]).
+    pub(crate) ink_reach: InkReachCache,
 }
 
 /// Where each shaped logical line of a buffer starts, as its rows are laid
@@ -410,6 +479,7 @@ type RichRuns<'a, 's> = (
     )>,
     Vec<(usize, usize, [u8; 3])>,
     Vec<(usize, usize, BaselineShift)>,
+    Vec<inline_emoji::InlineEmoji>,
 );
 
 impl RichTextLayout {
@@ -544,12 +614,14 @@ impl RichTextLayout {
             strikes: Vec::new(),
             backgrounds: Vec::new(),
             baselines: Vec::new(),
+            inline_emoji: Vec::new(),
             discretionary_hyphen_width,
             line_height,
             font_variations: style.resolved_variations(),
             hanging_punctuation: style.hanging_punctuation,
             fragmentation: style.fragmentation,
             row_tops: std::cell::OnceCell::new(),
+            ink_reach: InkReachCache::default(),
         }
     }
 
@@ -746,7 +818,7 @@ impl RichTextLayout {
         let fam = style.family.to_cosmic();
         let base = style.cosmic_attrs().family(fam);
 
-        let (built, backgrounds, baselines) =
+        let (built, backgrounds, baselines, inline_emoji) =
             Self::build_rich_runs(spans, style, &offset_map, &base, size, line_height_mult);
 
         let planned = crate::font_catalog::matched::plan_runs(
@@ -828,12 +900,14 @@ impl RichTextLayout {
             strikes: Vec::new(),
             backgrounds,
             baselines,
+            inline_emoji,
             discretionary_hyphen_width,
             line_height,
             font_variations: style.resolved_variations(),
             hanging_punctuation: style.hanging_punctuation,
             fragmentation: style.fragmentation,
             row_tops: std::cell::OnceCell::new(),
+            ink_reach: InkReachCache::default(),
         }
     }
 
@@ -949,6 +1023,7 @@ impl RichTextLayout {
     ) -> RichRuns<'a, 's> {
         let mut backgrounds: Vec<(usize, usize, [u8; 3])> = Vec::new();
         let mut baselines: Vec<(usize, usize, BaselineShift)> = Vec::new();
+        let mut pictures: Vec<inline_emoji::InlineEmoji> = Vec::new();
         let mut cursor: usize = 0;
 
         let built = if spans.iter().all(|r| r.text.is_empty()) {
@@ -967,12 +1042,26 @@ impl RichTextLayout {
                     if r.baseline.is_shifted() {
                         baselines.push((start, end, r.baseline));
                     }
-                    let a = Self::run_attrs(r, style, size, line_height_mult);
-                    (offset_map.shape_fragment(&r.text, start), a, r.kind)
+                    let mut a = Self::run_attrs(r, style, size, line_height_mult);
+                    let fragment = offset_map.shape_fragment(&r.text, start);
+                    if r.workspace_emoji
+                        && let Some(name) = tilo_resource::custom_emoji_name(&r.text)
+                    {
+                        let run_size = r.size.unwrap_or(size);
+                        let glyphs = fragment.chars().count();
+                        let line_height = run_size * line_height_mult;
+                        a = inline_emoji::shaped_attrs(a, run_size, line_height, glyphs);
+                        pictures.push(inline_emoji::InlineEmoji {
+                            range: start..end,
+                            name: name.to_owned(),
+                            side: run_size * inline_emoji::SIDE_EM,
+                        });
+                    }
+                    (fragment, a, r.kind)
                 })
                 .collect()
         };
-        (built, backgrounds, baselines)
+        (built, backgrounds, baselines, pictures)
     }
 
     /// The cosmic-text attributes of one span's run in `style`.
@@ -1545,18 +1634,40 @@ impl RichTextLayout {
         top: f32,
         bottom: f32,
     ) -> impl Iterator<Item = cosmic_text::LayoutRun<'_>> {
-        // The bisection reads rows from the top of an unscrolled buffer of
-        // unbounded height, as layouts here are shaped; any other walks.
-        let runs = if self.buffer.scroll() == cosmic_text::Scroll::default()
-            && self.buffer.size().1.is_none()
+        // No row of a line above the first can reach within three rows of
+        // `top`: each ends where the next line starts, at most the tallest
+        // row above `top - 3 × tallest`.
+        self.rows_from(top, 3.0)
+            .skip_while(move |run| run.line_top + run.line_height * 3.0 < top)
+            .take_while(move |run| run.line_top - run.line_height * 2.0 <= bottom)
+    }
+
+    /// The shaped rows whose band, widened by how far any row's ink reaches
+    /// past its own (`reach`), meets `top..bottom` (in the layout's
+    /// coordinates), and any between them: every row whose ink may show
+    /// there, for a caller that checks each row's own ink.
+    pub fn rows_reaching(
+        &self,
+        top: f32,
+        bottom: f32,
+        reach: InkReach,
+    ) -> impl Iterator<Item = cosmic_text::LayoutRun<'_>> {
+        // No row of a line above the first ends below `top - reach.below`.
+        self.rows_from(top - reach.below, 1.0)
+            .skip_while(move |run| run.line_top + run.line_height + reach.below <= top)
+            .take_while(move |run| run.line_top - reach.above < bottom)
+    }
+
+    /// The rows from the start of the line `rows` tallest rows above `y`.
+    /// The bisection reads rows from the top of an unscrolled buffer of
+    /// unbounded height, as layouts here are shaped; any other walks.
+    fn rows_from(&self, y: f32, rows: f32) -> Rows<'_> {
+        if self.buffer.scroll() == cosmic_text::Scroll::default() && self.buffer.size().1.is_none()
         {
             let tops = self.row_tops.get_or_init(|| RowTops::of(&self.buffer));
-            // No row of a line above `start` can reach within three rows of
-            // `top`: each ends where the next line starts, at most the
-            // tallest row above `top - 3 × tallest`.
             let start = tops
                 .starts
-                .partition_point(|line_top| *line_top <= top - 3.0 * tops.tallest)
+                .partition_point(|line_top| *line_top <= y - rows * tops.tallest)
                 .saturating_sub(1);
             Rows::From(RowsFrom {
                 lines: &self.buffer.lines,
@@ -1567,9 +1678,7 @@ impl RichTextLayout {
             })
         } else {
             Rows::Walk(cosmic_text::LayoutRunIter::new(&self.buffer))
-        };
-        runs.skip_while(move |run| run.line_top + run.line_height * 3.0 < top)
-            .take_while(move |run| run.line_top - run.line_height * 2.0 <= bottom)
+        }
     }
 
     fn cursor_at(&self, byte: usize) -> Cursor {

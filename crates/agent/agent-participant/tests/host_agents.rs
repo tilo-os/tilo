@@ -113,6 +113,7 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             state_dir: state.join("agents"),
             model,
             catalogue: Some(Arc::new(common::catalogue)),
+            feedback_reviewer: None,
         },
     )
     .await

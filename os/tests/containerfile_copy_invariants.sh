@@ -314,7 +314,9 @@ containerfile="$repo/os/Containerfile"
 # tilo-boot-fallback.service settles bootc on the running one and the session's
 # tilo-boot-fallback-notice (script and user unit) tells the person: three
 # payload rows on the existing recovery-files and user-unit COPY instructions.
-expected_contract=75e13497c82537ec28c88f6c7f56ca4b31fb24ce623ad571e6750491ef853ebd
+# tilo-update-channel, which names the image the update path follows, travels
+# with tilo-verified-update in the component files: one payload row.
+expected_contract=e847bfe162c18fb2294b506a5899e12cd287d67b57a5d8c1bedca28b991e6bf4
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

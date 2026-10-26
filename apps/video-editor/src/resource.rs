@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use crate::app::{EMPTY_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use crate::model::{
-    ClipId, EffectKind, MAX_GAIN_DB, MIN_GAIN_DB, MediaItem, MediaKind, Project, TextSource, Track,
-    TrackKind, key,
+    ClipId, EffectKind, MAX_GAIN_DB, MIN_GAIN_DB, MediaItem, MediaKind, Project, Side,
+    SidePlacement, TextSource, Track, TrackKind, Transform, key,
 };
 use crate::param::Param;
 
@@ -253,6 +253,68 @@ impl Project {
         let at = instant(at)?;
         let name = name.trim();
         self.add_marker(at, if name.is_empty() { "Marker" } else { name }, 1);
+        Ok(())
+    }
+
+    /// Place every clip covering `at` on the two sides of the frame: the
+    /// bottom-most visible video track on the left, the next one on the
+    /// right. Two angles of one moment then play together instead of one
+    /// covering the other, and nothing is tagged or named to make it work:
+    /// the track order is the arrangement.
+    #[action(id = "place-two-angles")]
+    pub fn place_side_by_side(
+        &mut self,
+        #[param("Seconds on the timeline where the two angles meet")] at: f64,
+    ) -> Result<(), Refusal> {
+        let at = instant(at)?;
+        let sides = self
+            .cut_sides(at)
+            .ok_or_else(|| Refusal::new("two pictures have to meet at that time"))?;
+        for side in [Side::Left, Side::Right] {
+            if let Some(clip) = sides.clip(side)
+                && !self.clip_editable(clip)
+            {
+                return Err(Refusal::new("the clip's track is locked"));
+            }
+        }
+        if self.place_angles(at).is_empty() {
+            return Err(Refusal::new(
+                "the two pictures already sit side by side there",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Give each clip back the picture it had before it was placed side by
+    /// side. A clip the person has since placed somewhere else is left as
+    /// they put it.
+    #[action(id = "unplace-two-angles")]
+    pub fn unplace_side_by_side(
+        &mut self,
+        #[param("Seconds on the timeline where the two angles meet")] at: f64,
+    ) -> Result<(), Refusal> {
+        let at = instant(at)?;
+        let sides = self
+            .cut_sides(at)
+            .ok_or_else(|| Refusal::new("two pictures have to meet at that time"))?;
+        let mut placements = Vec::new();
+        for side in [Side::Left, Side::Right] {
+            let Some(c) = sides.clip(side).and_then(|clip| self.clip(clip)) else {
+                continue;
+            };
+            if Some(c.transform) != side.placement() {
+                continue;
+            }
+            placements.push(SidePlacement {
+                clip: c.id,
+                side,
+                before: Transform::default(),
+            });
+        }
+        if placements.is_empty() {
+            return Err(Refusal::new("neither picture sits beside the other there"));
+        }
+        self.restore_angles(&placements);
         Ok(())
     }
 

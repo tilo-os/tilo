@@ -26,28 +26,29 @@ FORBIDDEN = {"openssl", "openssl-sys", "native-tls"}
 
 
 def check(root: Path = ROOT) -> list[str]:
-    """Return a line for each forbidden package and each package that depends on one."""
+    """Return a finding for each forbidden package and each package that depends on one, about
+    the Cargo.lock that resolves it."""
     lock = tomllib.loads((root / "Cargo.lock").read_text(encoding="utf-8"))
     found = []
     for package in lock.get("package", []):
         name = package["name"]
         if name in FORBIDDEN:
-            found.append(f"Cargo.lock contains {name} {package['version']}")
+            found.append(f"Cargo.lock: contains {name} {package['version']}")
         for entry in package.get("dependencies", []):
             dependency = entry.split()[0]
             if dependency in FORBIDDEN:
-                found.append(f"{name} {package['version']} depends on {dependency}")
+                found.append(f"Cargo.lock: {name} {package['version']} depends on {dependency}")
     return sorted(found)
 
 
 def main() -> int:
     found = check()
     if found:
-        print("rustls is the only TLS stack; OpenSSL is not allowed (docs/policies.md):")
+        print("rustls is the only TLS stack; OpenSSL is not allowed (docs/policies.md):", file=sys.stderr)
         for line in found:
-            print(f"  {line}")
+            print(line)
         return 1
-    print("No OpenSSL in the dependency graph.")
+    print("No OpenSSL in the dependency graph.", file=sys.stderr)
     return 0
 
 

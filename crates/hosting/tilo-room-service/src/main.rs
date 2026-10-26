@@ -3,7 +3,9 @@
 mod config;
 mod guests;
 mod limits;
+mod mail;
 mod ops;
+mod outbox;
 mod persistent;
 mod room;
 mod tls;
@@ -582,6 +584,7 @@ impl Service {
             {
                 fields.insert("waitList".into(), true.into());
                 fields.insert("contact".into(), door.contact.into());
+                fields.insert("mail".into(), door.mail.into());
             }
             Self::json(status, &body)
         } else {
@@ -609,6 +612,12 @@ impl Service {
             WaitRefusal::Invalid(message) => {
                 (StatusCode::BAD_REQUEST, "invalid-email", message, None)
             }
+            WaitRefusal::NotASecret => (
+                StatusCode::BAD_REQUEST,
+                "invalid-secret",
+                "not a secret this door handed out",
+                None,
+            ),
             WaitRefusal::TooMany { retry_after_secs } => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too-many",
@@ -717,6 +726,52 @@ impl Service {
         response
     }
 
+    /// `POST /wait-list`, `/wait-list/remove`, `/wait-list/confirm` and
+    /// `/wait-list/standing`. Taking an entry off with its secret is
+    /// answered alike whether or not an entry had it.
+    async fn wait_list_route(
+        persistent: &persistent::Persistent,
+        client: std::net::IpAddr,
+        request: Request<hyper::body::Incoming>,
+        act: &str,
+    ) -> Response<Body> {
+        let body = request.into_body();
+        let answer = match act {
+            "remove" => match Self::decode::<persistent::UnlistRequest>(body).await {
+                Ok(asked) => persistent
+                    .unlist(client, asked)
+                    .await
+                    .map(|()| serde_json::json!({})),
+                Err(response) => return response,
+            },
+            "confirm" => match Self::decode::<persistent::ConfirmRequest>(body).await {
+                Ok(asked) => persistent
+                    .confirm(client, asked)
+                    .await
+                    .map(|confirmed| serde_json::json!({"confirmed": confirmed})),
+                Err(response) => return response,
+            },
+            "standing" => match Self::decode::<persistent::UnlistRequest>(body).await {
+                Ok(asked) => persistent
+                    .standing(client, asked)
+                    .await
+                    .map(|standing| serde_json::json!({"standing": standing})),
+                Err(response) => return response,
+            },
+            _ => match Self::decode::<persistent::WaitListRequest>(body).await {
+                Ok(asked) => persistent
+                    .wait(client, asked)
+                    .await
+                    .map(|answer| serde_json::to_value(answer).unwrap_or_default()),
+                Err(response) => return response,
+            },
+        };
+        match answer {
+            Ok(answer) => Self::json(StatusCode::OK, &answer),
+            Err(refusal) => Self::wait_refusal(refusal),
+        }
+    }
+
     /// The persistent room's routes; `None` passes to the shared ones.
     async fn persistent_route(
         &self,
@@ -749,13 +804,11 @@ impl Service {
                 },
             },
             (&Method::POST, ["wait-list"]) => {
-                match Self::decode::<persistent::WaitListRequest>(request.into_body()).await {
-                    Ok(asked) => match persistent.wait(client, asked).await {
-                        Ok(answer) => Self::json(StatusCode::OK, &answer),
-                        Err(refusal) => Self::wait_refusal(refusal),
-                    },
-                    Err(response) => response,
-                }
+                Self::wait_list_route(persistent, client, request, "").await
+            }
+            (&Method::POST, ["wait-list", act @ ("remove" | "confirm" | "standing")]) => {
+                let act = *act;
+                Self::wait_list_route(persistent, client, request, act).await
             }
             (&Method::POST, ["spectate"])
                 if ops::get().is_some_and(|ops| !ops.mode().allows_spectators()) =>
@@ -975,6 +1028,26 @@ async fn serve(service: Arc<Service>, socket: tokio::net::TcpStream, peer: Socke
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|command| command == "mail-preview")
+    {
+        let dir = args
+            .get(1)
+            .context("usage: tilo-room-service mail-preview <dir>")?;
+        // The same words the door would send: a configured directory is
+        // read and checked here too, never quietly replaced by the built-in
+        // ones.
+        let templates = match std::env::var_os("TILO_ROOMS_MAIL_TEMPLATES") {
+            Some(templates) => mail::Templates::load(std::path::Path::new(&templates))
+                .context("TILO_ROOMS_MAIL_TEMPLATES")?,
+            None => mail::Templates::baked(),
+        };
+        for path in mail::preview(std::path::Path::new(dir), &templates)? {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
     if args.first().is_some_and(|command| command == "mode") {
         let state = std::env::var("TILO_ROOMS_STATE").unwrap_or_else(|_| "/run/tilo-rooms".into());
         return ops::mode_command(

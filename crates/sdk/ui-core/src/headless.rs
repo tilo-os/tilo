@@ -8126,6 +8126,9 @@ impl FrameHarness {
             .map_err(crate::bound_dispatch::BoundActionError::into_door);
         drop(answering);
         drop(scopes);
+        if origin == crate::bound_dispatch::Origin::Person {
+            crate::pick::note_invocation(&target.address, result.is_ok());
+        }
         self.note_continuation(on_behalf_of, &result);
         if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
             self.root.as_mut(),

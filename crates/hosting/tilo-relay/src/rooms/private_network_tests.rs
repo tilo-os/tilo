@@ -1,9 +1,8 @@
 use super::*;
 use std::collections::HashMap;
 use tilo_peer_state::join;
-use tilo_relay_session::rooms::private::{
-    PRIVATE_ALPN, PrivateClient, PrivateConversation, PrivateOperation, PrivateReply,
-};
+use tilo_relay_protocol::rooms::private::{PrivateConversation, PrivateOperation, PrivateReply};
+use tilo_relay_session::rooms::private::{PRIVATE_ALPN, PrivateClient};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 mod foreign_devices;
@@ -697,5 +696,281 @@ async fn exercise_expired_certificate(
     .await;
     client_endpoint.close().await;
     router.shutdown().await.unwrap();
+    relay.shutdown().await;
+}
+
+/// A page reaches the same door over its HTTPS session: the device its
+/// session proved is the caller, a watch is a poll whose time running out
+/// answers the unchanged cursor, and a change wakes it at once.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay serves the whole exchange and is shut down at its end"
+)]
+async fn a_pages_session_carries_the_same_private_door() {
+    let directory = tempfile::tempdir().unwrap();
+    let (governor_key, governor_cert) = tests::governor();
+    let relay = tests::view_read_relay(directory.path(), &governor_key, &governor_cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms
+        .create("Private conversations in a page")
+        .await
+        .unwrap();
+    let (alice_key, alice) = identity(81, None);
+    let (bob_key, bob) = identity(91, None);
+    let now = SystemTime::now();
+    admit(
+        &rooms,
+        &created.room,
+        &governor_key,
+        &alice_key,
+        &alice,
+        now,
+    )
+    .await;
+    admit(&rooms, &created.room, &governor_key, &bob_key, &bob, now).await;
+    let door = PrivateProtocol::new(rooms.clone());
+    let (a, b) = (
+        hex::encode(alice.user_public_key),
+        hex::encode(bob.user_public_key),
+    );
+    let ask = |cert: &DeviceCert, operation, poll: Duration| {
+        let (door, cert, room) = (door.clone(), cert.clone(), created.room.clone());
+        async move {
+            let until = async {
+                tokio::time::sleep(poll).await;
+                Ok(())
+            };
+            door.serve(&cert, &cert.device_public_key, &room, operation, until)
+                .await
+        }
+    };
+    let quick = Duration::from_millis(50);
+    let PrivateReply::Contacts(contacts) = ask(&alice, PrivateOperation::Contacts, quick).await
+    else {
+        panic!("contacts");
+    };
+    assert!(contacts.iter().any(|contact| contact.public_key == b));
+    assert!(matches!(
+        ask(&alice, PrivateOperation::Open { peer: b.clone() }, quick).await,
+        PrivateReply::Conversation(_)
+    ));
+    // Nothing new within the poll: the cursor it was given.
+    let unchanged = ask(
+        &bob,
+        PrivateOperation::Watch {
+            peer: a.clone(),
+            after_sequence: 0,
+        },
+        quick,
+    )
+    .await;
+    assert!(matches!(unchanged, PrivateReply::Changed(0)));
+    let watching = tokio::spawn(ask(
+        &bob,
+        PrivateOperation::Watch {
+            peer: a.clone(),
+            after_sequence: 0,
+        },
+        Duration::from_secs(60),
+    ));
+    wait_for_watch(&rooms, &created.room, &bob, &a).await;
+    let sent = ask(
+        &alice,
+        PrivateOperation::Send {
+            peer: b.clone(),
+            invocation: uuid::Uuid::new_v4(),
+            text: BODY.into(),
+        },
+        quick,
+    )
+    .await;
+    assert!(matches!(sent, PrivateReply::Sent));
+    let changed = tilo_test_env::within("the page's watch wakes", watching)
+        .await
+        .unwrap();
+    assert!(matches!(changed, PrivateReply::Changed(1)));
+    let read = conversation(
+        ask(
+            &bob,
+            PrivateOperation::Read {
+                peer: a.clone(),
+                after_sequence: 0,
+                limit: 50,
+            },
+            quick,
+        )
+        .await,
+    );
+    assert_eq!(read.messages.len(), 1);
+    assert_eq!(read.messages[0].text, BODY);
+    assert_eq!(read.messages[0].sender, a);
+    drop((rooms, door));
+    relay.shutdown().await;
+}
+
+/// A person names themself in the room: governance holds the name, so
+/// every person list shows it, not their device's label, and naming them
+/// what they are called writes nothing. The room's spectator person, whom
+/// every watching page is certified as, is a member yet nobody: it names
+/// nobody, holds no conversations and is on no one's list.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay serves the whole exchange and is shut down at its end"
+)]
+async fn people_name_themselves_and_the_spectator_is_nobody() {
+    use tilo_relay_protocol::rooms::{RoomsReply, RoomsRequest};
+    let directory = tempfile::tempdir().unwrap();
+    let (governor_key, governor_cert) = tests::governor();
+    let relay = tests::view_read_relay(directory.path(), &governor_key, &governor_cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Who is who").await.unwrap();
+    let (alice_key, alice) = identity(82, None);
+    let (bob_key, bob) = identity(92, None);
+    let (watcher_key, watcher) = identity(112, None);
+    let now = SystemTime::now();
+    for (key, cert) in [
+        (&alice_key, &alice),
+        (&bob_key, &bob),
+        (&watcher_key, &watcher),
+    ] {
+        admit(&rooms, &created.room, &governor_key, key, cert, now).await;
+    }
+    relay
+        .admit_spectators(
+            created.workspace_id,
+            crate::room_access::Spectators {
+                root: watcher.user_public_key,
+                seats: 4,
+                public: true,
+            },
+        )
+        .await
+        .unwrap();
+    let name = |cert: &DeviceCert, name: &str| {
+        let (rooms, cert, room) = (rooms.clone(), cert.clone(), created.room.clone());
+        let name = name.to_owned();
+        async move {
+            rooms
+                .page_rooms(&cert, RoomsRequest::Name { room, name })
+                .await
+        }
+    };
+    assert_eq!(name(&alice, "Lucky Seal").await, RoomsReply::Named);
+    let summary = rooms.summary(&created.room).await.unwrap();
+    let named = summary
+        .members
+        .iter()
+        .find(|member| member.user_public_key == alice.user_public_key)
+        .unwrap();
+    assert_eq!(named.display_name.as_deref(), Some("Lucky Seal"));
+    assert_eq!(name(&alice, "Lucky Seal").await, RoomsReply::Named);
+    assert_eq!(
+        rooms.summary(&created.room).await.unwrap().generation,
+        summary.generation,
+        "the name they already go by writes nothing"
+    );
+
+    let door = PrivateProtocol::new(rooms.clone());
+    let ask = |cert: &DeviceCert, operation| {
+        let (door, cert, room) = (door.clone(), cert.clone(), created.room.clone());
+        async move {
+            door.serve(
+                &cert,
+                &cert.device_public_key,
+                &room,
+                operation,
+                std::future::ready(Ok(())),
+            )
+            .await
+        }
+    };
+    let PrivateReply::Contacts(contacts) = ask(&bob, PrivateOperation::Contacts).await else {
+        panic!("contacts");
+    };
+    let watcher_key_hex = hex::encode(watcher.user_public_key);
+    assert!(contacts.iter().any(|contact| contact.public_key
+        == hex::encode(alice.user_public_key)
+        && contact.display_name.as_deref() == Some("Lucky Seal")));
+    assert!(
+        !contacts
+            .iter()
+            .any(|contact| contact.public_key == watcher_key_hex),
+        "the spectator is nobody's contact"
+    );
+    let open_watcher = PrivateOperation::Open {
+        peer: watcher_key_hex,
+    };
+    assert!(matches!(
+        ask(&bob, open_watcher).await,
+        PrivateReply::Refused
+    ));
+    assert!(matches!(
+        ask(&watcher, PrivateOperation::Contacts).await,
+        PrivateReply::Refused
+    ));
+    let (_, stranger) = identity(102, None);
+    for (cert, asked) in [
+        (&watcher, "Watching"),
+        (&stranger, "Someone"),
+        (&bob, "\u{7}"),
+    ] {
+        let refused = matches!(name(cert, asked).await, RoomsReply::Refused(_));
+        assert!(refused, "{asked:?} names nobody");
+    }
+    drop((rooms, door));
+    relay.shutdown().await;
+}
+
+/// A page's session proves one device: a certificate the session did not
+/// prove is refused at the door like a stranger's.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay serves the whole exchange and is shut down at its end"
+)]
+async fn a_page_is_only_the_device_its_session_proved() {
+    let directory = tempfile::tempdir().unwrap();
+    let (governor_key, governor_cert) = tests::governor();
+    let relay = tests::view_read_relay(directory.path(), &governor_key, &governor_cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("One device per session").await.unwrap();
+    let (alice_key, alice) = identity(83, None);
+    let (bob_key, bob) = identity(93, None);
+    let now = SystemTime::now();
+    admit(
+        &rooms,
+        &created.room,
+        &governor_key,
+        &alice_key,
+        &alice,
+        now,
+    )
+    .await;
+    admit(&rooms, &created.room, &governor_key, &bob_key, &bob, now).await;
+    let door = PrivateProtocol::new(rooms.clone());
+    let ask = |cert: &DeviceCert, device: [u8; 32]| {
+        let (door, cert, room) = (door.clone(), cert.clone(), created.room.clone());
+        async move {
+            let contacts = PrivateOperation::Contacts;
+            door.serve(&cert, &device, &room, contacts, std::future::ready(Ok(())))
+                .await
+        }
+    };
+    assert!(matches!(
+        ask(&alice, alice.device_public_key).await,
+        PrivateReply::Contacts(_)
+    ));
+    assert!(matches!(
+        ask(&alice, bob.device_public_key).await,
+        PrivateReply::Refused
+    ));
+    let (_, stranger) = identity(103, None);
+    assert!(matches!(
+        ask(&stranger, stranger.device_public_key).await,
+        PrivateReply::Refused
+    ));
+    drop((rooms, door));
     relay.shutdown().await;
 }

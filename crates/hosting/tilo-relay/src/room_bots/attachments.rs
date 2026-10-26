@@ -4,8 +4,10 @@
 //! A member's device keeps what it posts and answers whoever asks the room
 //! for it, as long as it is online. The host asks too: each time a member's
 //! write reaches a part of the Chat's messages, it reads the attachments
-//! there and asks the room for every one it does not keep yet, on its own
-//! presence, as any member asks. The pieces members answer it with are
+//! there, and each time one reaches the Chat's own record, the pictures of
+//! the feedback reports filed there ([`reported`]); it asks the room for
+//! every one it does not keep yet, on its own presence, as any member asks.
+//! A report's receipt waits for the host to keep its picture. The pieces members answer it with are
 //! assembled and verified as a page assembles them
 //! ([`tilo_browser_peer::content::ContentWants`]) and kept in the host's one
 //! blob store, beside what its bots fetched ([`super::installed::FsBlobs`]),
@@ -183,6 +185,30 @@ pub fn referenced(part: &[u8]) -> Vec<Referenced> {
         .collect()
 }
 
+/// The pictures of the feedback reports filed in `record`, the saved Chat
+/// record, each by whoever filed it.
+#[must_use]
+pub fn reported(record: &[u8]) -> Vec<Referenced> {
+    let Ok(doc) = AutoCommit::load(record) else {
+        return Vec::new();
+    };
+    chat::projection::read(&doc)
+        .feedback
+        .iter()
+        .filter_map(|(_, report)| {
+            let picture = report.submission.as_ref()?.feedback.screenshot.as_ref()?;
+            Some(Referenced {
+                hash: picture.hash.to_ascii_lowercase(),
+                member: report.author.0.clone(),
+                size: None,
+            })
+        })
+        .collect()
+}
+
+/// The Chat's own record on the wire: its package primary.
+const CHAT_RECORD: &str = "";
+
 fn now_ms() -> u64 {
     tilo_clock::unix_now_ns() / 1_000_000
 }
@@ -260,11 +286,19 @@ impl RoomAttachments {
         }
     }
 
-    /// The part of the Chat's messages `write` went to, if it went to one
-    /// of this room's.
+    /// The record of this room's Chat `write` went to, if it went to one
+    /// that references files: a part of its messages or its own record,
+    /// where feedback reports are filed.
     fn part_of(&self, write: &RecordWrite) -> Option<String> {
+        if write.room != self.room || write.app != CHAT {
+            return None;
+        }
+        if write.record == CHAT_RECORD {
+            return Some(write.record.clone());
+        }
         let id = ui::record::RecordId::parse(&write.record)?;
-        (write.room == self.room && write.app == CHAT && chat::parts::part_index(&id).is_some())
+        chat::parts::part_index(&id)
+            .is_some()
             .then(|| write.record.clone())
     }
 
@@ -295,7 +329,11 @@ impl RoomAttachments {
                 return;
             }
         };
-        let files = referenced(&bytes);
+        let files = if part == CHAT_RECORD {
+            reported(&bytes)
+        } else {
+            referenced(&bytes)
+        };
         let asks = self.asks(&files, now_ms());
         {
             let mut state = self.state.lock_recover();
@@ -475,6 +513,62 @@ mod tests {
     #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 
     use super::*;
+
+    /// The pictures of the reports filed in the Chat's record are the
+    /// files the host keeps for them, each for whoever filed it; a report
+    /// without one references nothing.
+    #[test]
+    fn a_filed_reports_picture_is_kept_for_its_reporter() {
+        let mut doc = AutoCommit::new();
+        chat::demo::seed(&mut doc).unwrap();
+        let picture = "ab".repeat(32);
+        let file = |id: &str, screenshot: Option<serde_json::Value>| {
+            let mut feedback = serde_json::json!({
+                "text": "The picker misses a row",
+                "context": [],
+            });
+            if let Some(screenshot) = screenshot {
+                feedback["screenshot"] = screenshot;
+            }
+            serde_json::json!({
+                "id": id.repeat(32),
+                "destination": {
+                    "room": "room",
+                    "provider": "record:so.tilo.chat:",
+                    "channel": "c_general",
+                },
+                "feedback": feedback,
+            })
+        };
+        let with_picture = serde_json::json!({
+            "hash": picture.to_ascii_uppercase(),
+            "width": 4,
+            "height": 3,
+        });
+        for (author, submission) in [
+            ("visitor:one", file("a", Some(with_picture))),
+            ("visitor:two", file("b", None)),
+        ] {
+            chat::demo::apply_as(
+                &mut doc,
+                author,
+                chat::Chat::SUBMIT_FEEDBACK.with(chat::record::chat::SubmitFeedback {
+                    channel: tilo_resource::Id::from_raw("c_general"),
+                    submission,
+                }),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            reported(&doc.save()),
+            [Referenced {
+                hash: picture,
+                member: "visitor:one".into(),
+                size: None,
+            }]
+        );
+        assert!(reported(b"not a record").is_empty());
+    }
 
     #[test]
     fn the_oldest_files_go_first_past_a_quota() {

@@ -104,12 +104,41 @@ impl AnthropicJudge {
     }
 
     async fn ask(&self, case: &Case) -> Result<Verdict, JudgeError> {
+        self.send(&self.body(case))
+            .await
+            .and_then(|text| Verdict::parse(&text))
+    }
+
+    /// Ask the model `prompt` alone, its answer held to the JSON `schema`:
+    /// the host lends the same model to another contract than moderation,
+    /// such as the privacy review of its reporters' reports.
+    ///
+    /// # Errors
+    /// The provider failed, refused, or cut the answer off.
+    pub async fn complete(
+        &self,
+        prompt: &str,
+        schema: &serde_json::Value,
+    ) -> Result<String, JudgeError> {
+        self.send(&serde_json::json!({
+            "model": self.model,
+            "max_tokens": MAX_OUTPUT_TOKENS,
+            "output_config": {
+                "effort": "low",
+                "format": {"type": "json_schema", "schema": schema}
+            },
+            "messages": [{"role": "user", "content": prompt}]
+        }))
+        .await
+    }
+
+    async fn send(&self, body: &serde_json::Value) -> Result<String, JudgeError> {
         let response = self
             .http
             .post(format!("{}/v1/messages", self.endpoint))
             .header("x-api-key", self.key.as_str())
             .header("anthropic-version", API_VERSION)
-            .json(&self.body(case))
+            .json(body)
             .send()
             .await
             .map_err(|error| JudgeError::Provider(error.without_url().to_string()))?;
@@ -125,7 +154,7 @@ impl AnthropicJudge {
                 .unwrap_or("no message");
             return Err(JudgeError::Provider(format!("{status}: {message}")));
         }
-        answer_text(&body).and_then(|text| Verdict::parse(&text))
+        answer_text(&body)
     }
 }
 

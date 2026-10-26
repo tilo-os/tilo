@@ -1963,7 +1963,8 @@ pub struct MenuButton {
 impl crate::widget::Button {
     /// Make this button open `items` as a menu anchored to its own rect.
     #[must_use]
-    pub fn with_menu(self, items: Vec<MenuItem>) -> MenuButton {
+    pub fn with_menu(mut self, items: Vec<MenuItem>) -> MenuButton {
+        self.opens_menu = true;
         let request = std::rc::Rc::new(std::cell::Cell::new(false));
         let flag = std::rc::Rc::clone(&request);
         MenuButton {

@@ -2132,14 +2132,24 @@ mod command_path_tests {
             FileCommand::Up,
             "trying again can't fix a permission; going up can"
         );
-        assert_eq!(w.folder_recovery_label(), t("files-open-enclosing"));
+        assert_eq!(recovery_label(&w), t("files-open-enclosing"));
 
         let odd = std::io::Error::from_raw_os_error(5).to_string();
         w.error = Some(t_args("files-directory-read-failed", &[arg("error", odd)]));
         let (_, detail, _) = w.state_surface_copy().expect("error state copy");
         assert!(!detail.contains("os error"), "{detail}");
         assert_eq!(w.folder_recovery_command(), FileCommand::Refresh);
-        assert_eq!(w.folder_recovery_label(), t("files-try-again"));
+        assert_eq!(recovery_label(&w), t("files-try-again"));
+    }
+
+    /// What the failed listing's button says, as the pane shows it.
+    fn recovery_label(w: &FileExplorerWidget) -> String {
+        let pane = w.build_content_pane(&ui::theme::Theme::dark());
+        let state = pane.accessibility().expect("the failure is a state");
+        let [action] = state.children.as_slice() else {
+            panic!("a failure offers one way on: {state:?}");
+        };
+        action.name.clone().unwrap_or_default()
     }
 
     fn retry_refresh_recovers_from_error_once_the_dir_exists() {
@@ -4184,7 +4194,7 @@ mod command_path_tests {
         else {
             panic!("Files hands the selected version to Workspace Activity");
         };
-        assert_eq!(entry.author.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(entry.author.name, "Scribe · Software, for Ada Lovelace");
         assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
         let attribution = entry.author.attribution.expect("who acted for whom");
         assert_eq!(attribution.actor, "agent:scribe");
@@ -5120,6 +5130,19 @@ mod responsive_body_tests {
             find(&self.w, name)
         }
 
+        /// The pane's empty state, as assistive technology reads it, and
+        /// where its action stands.
+        fn empty_state(&self) -> Option<(ui::a11y::AccessNode, vello::kurbo::Rect)> {
+            fn find(w: &dyn Widget) -> Option<(ui::a11y::AccessNode, vello::kurbo::Rect)> {
+                if w.name() == "EmptyState" {
+                    let action = w.synthetic_accessibility_rect(&[0]).unwrap_or_default();
+                    return w.accessibility().map(|node| (node, action));
+                }
+                w.children().into_iter().find_map(find)
+            }
+            find(&self.w)
+        }
+
         /// Run a real draw pass so immediate-mode children (the file view)
         /// publish their per-frame geometry — e.g. the in-place rename field's
         /// rect.
@@ -5190,7 +5213,9 @@ mod responsive_body_tests {
     /// asks the host for the window's Undo, and Ctrl+Z is the host's.
     #[test]
     fn changes_announce_once_with_the_windows_undo() {
+        let _serial = crate::files_app::serial();
         use crate::file_ops::Change;
+        ui::attention::clear();
         let dir = tempfile::tempdir().unwrap();
         for name in ["a.txt", "b.txt", "c.txt"] {
             std::fs::write(dir.path().join(name), b"x").unwrap();
@@ -5230,15 +5255,14 @@ mod responsive_body_tests {
             "one plain line, no meta text"
         );
         h.lay_out(1000.0, 720.0);
-        let shown = ui::window_toolbar::notice().expect("the window's bar says it");
-        assert_eq!(shown.text, told);
-        let undo = shown
-            .actions
+        // The change waits for the person, with Undo as its one action.
+        let waiting = ui::attention::items()
             .into_iter()
-            .next()
-            .expect("Undo is the bar's action while it shows");
-        assert_eq!(undo.name, t("files-notice-undo"));
-        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: undo.id });
+            .find(|item| item.owner().app == "so.tilo.files")
+            .expect("the move waits in Needs you");
+        assert_eq!(waiting.title(), told);
+        assert_eq!(waiting.action().label, t("files-notice-undo"));
+        h.w.needs.pressed(ui::attention::Press::Act(waiting.id()));
         h.lay_out(1000.0, 720.0);
         assert_eq!(
             ui::undo::UndoControl::take_undo_request(&mut h.w),
@@ -5274,13 +5298,13 @@ mod responsive_body_tests {
         assert!(!told.contains("os error"), "{told}");
     }
 
-    /// A move to Trash's Undo stands in the window's bar right after the
-    /// notice, wide and compact: it names itself where the row has room and
-    /// never goes into the overflow menu, and the notice is cut short only
-    /// where nothing that yields to it stands beside it.
+    /// A move to Trash's Undo is the one action of the row it waits on,
+    /// wherever the person is.
     #[test]
-    fn a_move_to_trash_keeps_its_undo_in_the_window_bar_wide_and_compact() {
+    fn a_move_to_trash_keeps_its_undo_where_the_person_can_take_it() {
+        let _serial = crate::files_app::serial();
         use crate::file_ops::Change;
+        ui::attention::clear();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
         let mut files = FileExplorerWidget::with_persistence(None, None);
@@ -5307,25 +5331,17 @@ mod responsive_body_tests {
             }]),
         );
         harness.recompose().unwrap();
-        for width in [1280.0, 420.0] {
-            let shown = harness
-                .window_bar_notice(width)
-                .expect("the move is said in the bar");
-            let button = shown.buttons.first().expect("Undo stands in the row");
-            assert_eq!(button.name, t("files-notice-undo"));
-            assert!(
-                button.bounds.x0 > shown.text_bounds.x1,
-                "{width} px: {shown:?}"
-            );
-            // Wide, inline; compact, in a strip of its own under the row,
-            // its text whole.
-            assert_eq!(
-                shown.strip.is_some(),
-                width < 1280.0,
-                "{width} px: {shown:?}"
-            );
-            assert!(shown.whole && button.labelled, "{width} px: {shown:?}");
-        }
+        // The move waits for the person with one action, and its row is the
+        // same row at every width: it is not a notice with a lifetime and a
+        // strip of its own.
+        let waiting = ui::attention::items()
+            .into_iter()
+            .find(|item| item.owner().app == "so.tilo.files")
+            .expect("the move waits in Needs you");
+        assert_eq!(waiting.action().label, t("files-notice-undo"));
+        assert_eq!(waiting.owner().name, "Files");
+        let harness = harness;
+        drop(harness);
     }
 
     /// Alt+Left, Alt+Right and Alt+Up go back, forward and up; typing the
@@ -5534,7 +5550,9 @@ mod responsive_body_tests {
         h.lay_out(390.0, 780.0);
         h.draw();
 
-        let retry = h.w.state_retry.get_rect();
+        let (_, retry) = h
+            .empty_state()
+            .expect("the failure is the pane's empty state");
         assert!(
             retry.width() >= 120.0 && retry.y0 > 0.0,
             "retry is a usable target: {retry:?}"
@@ -5666,10 +5684,12 @@ mod responsive_body_tests {
             "archive toolbar must not expose a one-item duplicate menu"
         );
         assert_eq!(h.w.footer_label(), t("files-archive-read-only"));
-        assert_eq!(
-            h.w.status_notice.get().cloned(),
-            Some(t("files-archive-read-only")),
-            "entering an archive says it is read-only in the window's bar"
+        assert!(
+            h.w.status_notice.get().cloned() == Some(t("files-archive-read-only"))
+                || ui::attention::entries()
+                    .iter()
+                    .any(|entry| entry.what() == t("files-archive-read-only")),
+            "entering an archive says it is read-only, and the record keeps it"
         );
 
         h.lay_out(1200.0, 760.0);
@@ -6215,9 +6235,14 @@ mod accessibility_tests {
         let loading = Widget::accessibility(&widget).unwrap();
         assert!(loading.state.busy);
         assert!(loading.value.as_deref().unwrap().starts_with("Loading "));
-        assert_eq!(loading.children.len(), 1);
-        assert_eq!(loading.children[0].name.as_deref(), Some("Opening folder"));
-        assert_eq!(loading.children[0].live, Some(Politeness::Polite));
+        let theme = ui::theme::Theme::dark();
+        let pane = widget.build_content_pane(&theme);
+        let state = pane
+            .accessibility()
+            .expect("the pane says the folder is opening");
+        assert_eq!(state.name.as_deref(), Some("Opening folder"));
+        assert_eq!(state.live, Some(Politeness::Polite));
+        assert!(state.state.busy);
 
         widget.is_loading = false;
         widget.error = Some("permission denied".into());
@@ -6230,7 +6255,8 @@ mod accessibility_tests {
                 .unwrap()
                 .contains("permission denied")
         );
-        let state = error.children.first().expect("error state semantic group");
+        let pane = widget.build_content_pane(&theme);
+        let state = pane.accessibility().expect("error state semantic group");
         let name = widget
             .current_path()
             .file_name()
@@ -6243,7 +6269,7 @@ mod accessibility_tests {
         assert_eq!(state.live, Some(Politeness::Assertive));
         let retry = state.children.first().expect("retry semantic action");
         assert_eq!(retry.role, Role::Button);
-        assert_eq!(retry.action_target.as_deref(), Some("files-retry-folder"));
+        assert_eq!(retry.action_target.as_deref(), Some(RETRY_ROW));
     }
 
     fn deterministic_shot_seams_cover_loading_and_actionable_error_states() {

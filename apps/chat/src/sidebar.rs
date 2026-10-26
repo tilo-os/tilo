@@ -68,7 +68,7 @@ pub(crate) fn sidebar(places: &NavFeed) -> Element {
     Box::new(
         NavList::new(Vec::new())
             .with_id("chat.channels")
-            .with_accessible_name("Channels")
+            .with_accessible_name(crate::i18n::t("chat-channels-title"))
             .fed_by(places)
             .fed_menus(places)
             .fed_renames(places),
@@ -123,7 +123,11 @@ impl ChatApp {
             }
             if keeps_layout {
                 section = section
-                    .trailing_action(NavAction::new(ADD_CHANNEL, Icon::Plus, "Add channel"))
+                    .trailing_action(NavAction::new(
+                        ADD_CHANNEL,
+                        Icon::Plus,
+                        crate::i18n::t("chat-add-channel"),
+                    ))
                     .editable_title();
             }
             sections.push(section);

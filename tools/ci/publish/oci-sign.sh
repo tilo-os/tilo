@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# The signing half of an image: sign the image OUT/image.oci.tar will be published as, with the
-# release key in KMS (keys/cosign.pub), and write the signature beside it (OUT/payload.json,
-# OUT/signature). It holds signing credentials and nothing else: no registry token, so it
-# publishes nothing itself. It refuses to sign anything but the digest the build produced.
+# The signing half of an image: sign the image OUT/image.oci.tar (or the layout OUT/oci) will be
+# published as, with the release key in KMS (keys/cosign.pub), and write the signature beside it
+# (OUT/payload.json, OUT/signature). It holds signing credentials and nothing else: no registry
+# token, so it publishes nothing itself. It refuses to sign anything but the digest the build
+# produced.
 #
 # With TILO_SIGN_TLOG=1 the signature is also entered in the public transparency log (Rekor) and
 # its entry kept as OUT/bundle.json, which oci-publish.sh attaches: images that release builds
@@ -24,11 +25,12 @@ set -euo pipefail
 repository=${1:?usage: oci-sign.sh REPOSITORY OUT}
 out=${2:?}
 # A development candidate may be signed too, with the development key only (TILO_DEV_SIGNING=1,
-# `dev_signed` in products.toml): its signature says the candidate came from main's build, and
-# no release verification accepts that key.
+# `dev_signed` in products.toml): its signature says the candidate came from t's trusted build of
+# main or of a branch of this repository, and no release verification accepts that key.
 run_channel=$(channel)
 if [[ ${TILO_DEV_SIGNING:-} == 1 ]]; then
-  [[ $run_channel == dev ]] || die "the development key signs main's candidates only; this run is for $T_REF"
+  [[ $run_channel == dev || $run_channel == branch ]] \
+    || die "the development key signs development candidates only; this run is for $T_REF"
   [[ ${COSIGN_KEY_REF:-} == *alias/tilo-dev-signing || -n ${TILO_PUBLISH_DRY_RUN:-} ]] \
     || die 'development signing uses the development key alias/tilo-dev-signing'
   public_key=$repo_root/keys/cosign-dev.pub
@@ -37,8 +39,8 @@ else
   public_key=$repo_root/keys/cosign.pub
 fi
 expected=$(cat "$out/digest")
-actual=$(archive_digest "$out/image.oci.tar")
-[[ $actual == "$expected" ]] || die "the archive is $actual, the build recorded $expected"
+actual=$(built_digest "$out")
+[[ $actual == "$expected" ]] || die "the image is $actual, the build recorded $expected"
 rm -rf "$out/dry-run.pub" "$out/certified"
 use_cosign
 signing_payload "$repository" "$expected" > "$out/payload.json"

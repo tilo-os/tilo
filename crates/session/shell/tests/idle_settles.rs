@@ -249,9 +249,9 @@ fn windows_resized_on_an_overflowing_strip_reach_their_widths_and_idle() {
 }
 
 /// A window made fullscreen by its key is whole at once, and the windows
-/// it covers go with it: nothing is left fading under the fullscreen window,
-/// where no frame of the fade could be seen, so the desktop asks for no
-/// frame after the one that shows it.
+/// it covers go with it: the fullscreen bar fades over the window and then
+/// nothing is left moving behind it, so the desktop asks for no frame after
+/// the one that finishes the fade.
 #[test]
 fn a_fullscreen_by_key_lands_and_asks_for_no_frames_after() {
     use winit::keyboard::{Key, ModifiersState};
@@ -274,7 +274,14 @@ fn a_fullscreen_by_key_lands_and_asks_for_no_frames_after() {
         desk.fb.chrome().fullscreen_group().is_some(),
         "the focused window is fullscreen"
     );
+    // The window is whole on the frame the key lands; only its bar's fade is
+    // in flight, over it, so nothing under it moves.
     desk.frame();
-    assert_eq!(desk.busy(), None, "landed: nothing is left moving under it");
+    desk.settle("the fullscreen bar's fade");
+    assert!(
+        desk.fb.animation_owners().is_empty(),
+        "landed: nothing is left moving over the window"
+    );
+    assert_eq!(desk.busy(), None, "and nothing else wakes the desktop");
     drop(desk);
 }

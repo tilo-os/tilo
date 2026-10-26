@@ -3754,6 +3754,73 @@ async fn read_only_member_never_downloads_full_snapshot() {
     }
 }
 
+/// A device that may only read the workspace keeps reading it across
+/// reconnects: the host's changes arrive into a reader that already holds
+/// a change of its own, a later reconnect with nothing new to take is a
+/// quiet pass rather than a failure, and the device that was never part of
+/// the exchange is left exactly as it was. The reader ends holding the
+/// host's files, so what an app reads through it is what the workspace has.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn read_only_member_keeps_reading_across_reconnects() {
+    let workspace = uuid::Uuid::new_v4();
+    let (_base, mut forks) = forks_of_a_shared_tree(&["hosts-only", "reader-local", "untouched"]);
+    let reader_tree = forks.pop().unwrap();
+    let observer_tree = forks.pop().unwrap();
+    let host_tree = Arc::new(Mutex::new(forks.pop().unwrap()));
+    let (host_router, host, host_person) = session_member(workspace, Arc::clone(&host_tree)).await;
+    let (endpoint, _lookup, identity) = bind_certified_endpoint().await;
+    // The reader may read the whole workspace; only the host may write it.
+    let policy = Some(policy_read_write(
+        &[host_person],
+        &[identity.user_public_key(), identity.device_public_key()],
+    ));
+    let reader = Arc::new(Mutex::new(reader_tree));
+    let exchanges = exchanges_for(
+        &endpoint,
+        &identity,
+        (workspace, policy),
+        &reader,
+        PEER_DEADLINE,
+    );
+    let first_pass = PassPlan {
+        announce: false,
+        reconcile: crate::record_materializer::ReconcileScope::Everything,
+        quiet: false,
+    };
+    for plan in [first_pass, TIMER_PASS] {
+        exchanges.run(vec![host.clone()], plan).await;
+    }
+
+    let names = |namespace: &Arc<Mutex<Namespace>>| {
+        let namespace = namespace.lock().unwrap();
+        ["hosts-only", "reader-local"]
+            .into_iter()
+            .filter(|path| namespace.entry_at(path).is_some())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(&reader),
+        ["hosts-only"],
+        "the read-only device did not take the host's change"
+    );
+    assert_eq!(
+        names(&Arc::new(Mutex::new(observer_tree))),
+        ["reader-local"],
+        "the read-only device's own change reached the host"
+    );
+
+    // A later pass, and a session dropped and dialled again: both still
+    // answer, and the reader still lists exactly the host's files.
+    exchanges.run(vec![host.clone()], TIMER_PASS).await;
+    exchanges.run(vec![host.clone()], TIMER_PASS).await;
+    assert_eq!(
+        names(&reader),
+        ["hosts-only"],
+        "a reconnect changed what the read-only device lists"
+    );
+    host_router.shutdown().await.unwrap();
+}
+
 /// A namespace whose document holds `changes` changes, as months of saves
 /// leave one: a file per hundred changes, rewritten in a change of its own.
 fn namespace_with_history(changes: u64) -> Namespace {

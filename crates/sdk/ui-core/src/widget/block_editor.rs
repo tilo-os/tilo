@@ -46,6 +46,9 @@ pub const LIST_INDENT_STEP_PX: f32 = 28.0;
 pub enum LinkTarget {
     Page(PageId),
     External(String),
+    /// A resource of this desktop, by the `tilo://open#…` address it is
+    /// written as: activating it opens the resource in its own app.
+    Resource(String),
 }
 
 /// Case-insensitive byte ranges without assuming that Unicode case folding
@@ -725,6 +728,7 @@ pub struct BlockEditor {
     transclusion_previews: HashMap<PageId, TransclusionPreview>,
     transclusion_rects: Vec<Option<(Rect, PageId)>>,
     pending_transclusion_opens: Vec<PageId>,
+    pending_resource_link_opens: Vec<String>,
     pending_external_link_opens: Vec<String>,
     /// Images pasted into the editor, for its host to store and place after
     /// the caret: the editor holds text, and an image becomes a block once
@@ -958,6 +962,7 @@ impl BlockEditor {
             transclusion_previews: HashMap::new(),
             transclusion_rects: Vec::new(),
             pending_transclusion_opens: Vec::new(),
+            pending_resource_link_opens: Vec::new(),
             pending_external_link_opens: Vec::new(),
             pasted_images: Vec::new(),
             code_copy_hits: Vec::new(),
@@ -2271,19 +2276,35 @@ impl BlockEditor {
     /// selected, insert `target` at the caret as its own linked text.
     /// `false` when no block is focused or `target` is blank.
     pub fn insert_link(&mut self, target: &str) -> bool {
+        self.insert_link_to(target, target)
+    }
+
+    /// Link the focused block's selection to the address `target`, labelled
+    /// `label` — the text the person reads, which for a resource is its name
+    /// while `target` is the address that reaches it. With nothing selected,
+    /// `label` is inserted at the caret already linked.
+    /// `false` when no block is focused or `target` is blank.
+    pub fn insert_link_to(&mut self, target: &str, label: &str) -> bool {
         let target = target.trim();
-        if target.is_empty() {
+        let label = label.trim();
+        if target.is_empty() || label.is_empty() {
             return false;
         }
         let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) else {
             return false;
         };
         let line = &mut block.line;
-        let mark = Mark::ExternalLink(target.to_owned());
+        // A `tilo://open#…` address names a resource of this desktop, which
+        // opens in the app that keeps it rather than in a web browser.
+        let mark = if html::is_resource_link(target) {
+            Mark::ResourceLink(target.to_owned())
+        } else {
+            Mark::ExternalLink(target.to_owned())
+        };
         if let Some((start, end)) = line.selection_range().filter(|(start, end)| start < end) {
             let mut spans = line.marks().to_vec();
             spans.retain(|span| {
-                !(matches!(span.mark, Mark::ExternalLink(_))
+                !(matches!(span.mark, Mark::ExternalLink(_) | Mark::ResourceLink(_))
                     && span.range.start < end
                     && start < span.range.end)
             });
@@ -2292,13 +2313,13 @@ impl BlockEditor {
         } else {
             let at = line.cursor_pos().min(line.value().len());
             let mut text = line.value().to_owned();
-            text.insert_str(at, target);
+            text.insert_str(at, label);
             let mut spans = line.marks().to_vec();
-            crate::widget::marks::shift_after_edit(&mut spans, at, target.len(), 0);
-            spans.push(MarkSpan::new(at..at.saturating_add(target.len()), mark));
+            crate::widget::marks::shift_after_edit(&mut spans, at, label.len(), 0);
+            spans.push(MarkSpan::new(at..at.saturating_add(label.len()), mark));
             line.set_text(&text);
             line.set_marks(spans);
-            line.set_cursor_pos(at.saturating_add(target.len()));
+            line.set_cursor_pos(at.saturating_add(label.len()));
         }
         self.dirty = true;
         true
@@ -3659,6 +3680,22 @@ impl BlockEditor {
                     crate::i18n!("block-a11y-open-external"),
                     external_link_action_target(url),
                 ),
+                Mark::ResourceLink(href) => (
+                    crate::i18n::I18nManager::format(
+                        "block-a11y-open-resource",
+                        &[(
+                            "label",
+                            crate::i18n::ArgValue::from(
+                                block
+                                    .text()
+                                    .get(span.range.clone())
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                            ),
+                        )],
+                    ),
+                    resource_link_action_target(href),
+                ),
                 _ => continue,
             };
             block_children.push(
@@ -4558,6 +4595,13 @@ impl BlockEditor {
         self.pending_external_link_opens.pop()
     }
 
+    /// The `tilo://open#…` address of the resource link activated since the
+    /// last call (a click, Enter, or assistive technology's activate), for
+    /// the host to open in the app that keeps it.
+    pub fn take_resource_link_open(&mut self) -> Option<String> {
+        self.pending_resource_link_opens.pop()
+    }
+
     /// Images for legacy hosts which insert after the caret. Canonical hosts
     /// use [`Self::take_image_paste_requests`] to replace the captured selection.
     pub fn take_pasted_images(&mut self) -> Vec<crate::clipboard::ClipboardImage> {
@@ -4782,6 +4826,7 @@ impl BlockEditor {
                 let target = match &span.mark {
                     Mark::Link(id) => LinkTarget::Page(*id),
                     Mark::ExternalLink(url) => LinkTarget::External(url.clone()),
+                    Mark::ResourceLink(href) => LinkTarget::Resource(href.clone()),
                     _ => continue,
                 };
                 for rect in line.mark_rects(theme, span.range.clone()) {
@@ -7832,6 +7877,10 @@ fn external_link_action_target(url: &str) -> String {
     format!("notes.external-link:{url}")
 }
 
+fn resource_link_action_target(href: &str) -> String {
+    format!("notes.resource-link:{href}")
+}
+
 fn draw_transclusion_card(
     scene: &mut Scene,
     transform: Affine,
@@ -10478,6 +10527,11 @@ impl Widget for BlockEditor {
         }
         if let Some(url) = target.strip_prefix("notes.external-link:") {
             self.pending_external_link_opens.push(url.to_string());
+            self.dirty = true;
+            return true;
+        }
+        if let Some(href) = target.strip_prefix("notes.resource-link:") {
+            self.pending_resource_link_opens.push(href.to_string());
             self.dirty = true;
             return true;
         }

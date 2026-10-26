@@ -74,11 +74,12 @@ history-value-true = ein
 history-value-false = aus
 history-value-empty = nichts
 
+history-actor-via-task = { $person } über Aufgabe „{ $task }“
 history-actor-for = { $actor }, für { $for }
 history-actor-you = Du
 history-actor-you-for = Du, für { $for }
 history-actor-unknown = Jemand
-history-actor-agent = { $actor } · Agent
+history-actor-agent = { $actor } · Software
 history-actor-shortcut = { $actor } · Kurzbefehl
 history-actor-app = { $actor } · App
 history-actor-bot = { $actor } · Bot

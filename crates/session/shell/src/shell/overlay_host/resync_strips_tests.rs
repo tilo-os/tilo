@@ -1718,7 +1718,10 @@ fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
         )
     };
     chrome.borrow_mut().bump();
-    // The frame that reconciles the desktop with the tree.
+    // The frame that reconciles the desktop with the tree, read at its own
+    // instant: on a loaded machine the slide may be over by the time a
+    // running clock is looked at.
+    let frozen = ui::motion::testing::frozen();
     let _ = ui::widget::Widget::take_structure_dirty(&mut host);
     let deck = host.strip_deck().expect("a strip deck");
     assert_eq!(deck.shown(), 1, "the view goes to the other strip");
@@ -1727,6 +1730,7 @@ fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
         "it slides there rather than jumping: the deck stands at {}",
         deck.position()
     );
+    drop(frozen);
     frame(&mut host);
     let state = chrome.borrow();
     let tree = state.tree();

@@ -91,7 +91,7 @@ class HostDataAppsTests(unittest.TestCase):
     def test_an_exception_that_is_no_app_any_more_is_named(self):
         root = self.fixture({})
         (root / "apps" / "backups").rmdir()
-        self.assertEqual(host_data.check(root), ["EXCEPTIONS: backups is no app any more"])
+        self.assertEqual(host_data.check(root), ["tools/policy/check_host_data_apps.py: EXCEPTIONS: backups is no app any more"])
 
     def test_the_repository_passes(self):
         self.assertEqual(host_data.check(host_data.ROOT), [])

@@ -755,6 +755,13 @@ impl ApplicationHost {
             Ok(records) => context.provide_person_records(records),
             Err(error) => tracing::warn!(%error, "the person's records are unavailable"),
         }
+        // The records every app of the room opens, kept beside the app's
+        // own in the same owners: one writer per app and room here.
+        context.provide_workspace_records(crate::record::workspace::WorkspaceRecords::in_room(
+            self.owners.clone(),
+            self.views.workspace_id().to_owned(),
+            self.author.clone(),
+        ));
         context
     }
 

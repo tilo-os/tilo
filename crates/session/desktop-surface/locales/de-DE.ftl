@@ -88,6 +88,16 @@ workspace-menu-rename = Arbeitsbereich umbenennen
 workspace-menu-overview = Übersicht
 workspace-menu-new-strip = Neue Leiste
 profile-card = Dein Profil
+profile-card-of = Profil von { $name }
+profile-id = ID
+profile-copy-id = ID kopieren
+profile-status-own-words = In eigenen Worten
+profile-status-automatic = Automatisch aus dem, was die Person tut
+profile-message = Nachricht
+profile-follow = Folgen
+profile-stop-following = Nicht mehr folgen
+profile-photo-change = Bild ändern
+profile-photo-remove = Bild entfernen
 profile-name = Dein Name
 profile-name-placeholder = Dein Name
 profile-name-hint = So sehen dich alle hier
@@ -117,6 +127,11 @@ profile-visibility-nothing = Nichts
 profile-visibility-where-detail = Dein Gesicht, dein Fenster und dein Zeiger
 profile-visibility-here-detail = Dein Gesicht, nie dein Fenster oder dein Zeiger
 profile-visibility-nothing-detail = Du erscheinst nicht und siehst auch die Zeiger der anderen nicht
+profile-control-hints = Bedienhinweise zeigen
+control-hint-open = Alles öffnen
+control-hint-move = Zum Verschieben ziehen
+control-hint-resize = Größe per Ziehen ändern
+control-hint-pan = Freie Fläche ziehen
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
@@ -325,6 +340,9 @@ activity-affected-records = Betroffene Einträge
 activity-undo-task-needs-open = Öffne alle betroffenen Dokumente, um diese Aufgabe gemeinsam rückgängig zu machen.
 activity-undo-task-needs-documents = Nichts geändert. Öffne zuerst alle betroffenen Dokumente.
 activity-undo-task-partial = Aufgabe teilweise rückgängig gemacht; spätere Bearbeitungen anderer wurden behalten.
+activity-undo-task-partial-records = Aufgabe rückgängig gemacht, außer den unten genannten Einträgen.
+activity-undo-task-record-left = { $record } in { $app } wurde nicht rückgängig gemacht.
+activity-detail-undo-step = Diesen Schritt rückgängig
 activity-undo-task-done = Ganze Aufgabe als neuer Verlaufseintrag rückgängig gemacht.
 activity-undo-task-gone = Die Auswirkungen der Aufgabe waren bereits entfernt.
 activity-undo-task-refused = Die Aufgabe konnte nicht rückgängig gemacht werden. { $detail }
@@ -584,6 +602,29 @@ workspace-settings-tab-privacy-security = Datenschutz & Sicherheit
 workspace-settings-tab-privacy = Datenschutz
 workspace-settings-tab-apps-files = Apps & Dateien
 workspace-settings-tab-apps = Apps
+workspace-settings-tab-emoji = Emoji
+workspace-settings-emoji-count = { $count ->
+    [0] Eigene Emoji dieses Arbeitsbereichs
+    [one] 1 Emoji dieses Arbeitsbereichs
+   *[other] { $count } Emoji dieses Arbeitsbereichs
+}
+workspace-settings-emoji-help = Schreibe :Name: in einer beliebigen App dieses Arbeitsbereichs oder wähle eines bei den Emoji einer Reaktion.
+workspace-settings-emoji-add = Emoji hinzufügen
+workspace-settings-emoji-empty-title = Dieser Arbeitsbereich hat noch keine eigenen Emoji
+workspace-settings-emoji-empty-detail = Wähle „Emoji hinzufügen“ und ein Bild: Sein Dateiname wird der Name des Emoji.
+workspace-settings-emoji-empty-detail-viewer = Wer diesen Arbeitsbereich bearbeiten darf, kann welche hinzufügen.
+workspace-settings-emoji-unavailable = Die Emoji dieses Arbeitsbereichs sind auf diesem Gerät nicht verfügbar.
+workspace-settings-emoji-editors-add = Nur wer diesen Arbeitsbereich bearbeiten darf, kann Emoji hinzufügen.
+workspace-settings-emoji-added-by = Hinzugefügt von { $name }
+workspace-settings-emoji-added-by-you = Von dir hinzugefügt
+workspace-settings-emoji-remove = :{ $name }: entfernen
+workspace-settings-emoji-not-chosen = Es wurde kein Bild ausgewählt
+workspace-settings-emoji-not-added = { $file } wurde nicht als Emoji hinzugefügt
+workspace-settings-emoji-not-removed = :{ $name }: wurde nicht entfernt
+workspace-settings-emoji-tools-loading = Die Bildwerkzeuge werden noch geladen. Versuche es gleich noch einmal.
+workspace-settings-emoji-not-a-picture = Nur PNG-, JPEG- und WebP-Bilder können Emoji werden.
+workspace-settings-emoji-too-detailed = Das Bild ist zu detailreich, um in Emoji-Größe scharf zu bleiben. Versuche ein einfacheres.
+workspace-settings-emoji-no-name = Sein Dateiname enthält keine Buchstaben oder Ziffern, nach denen ein Emoji heißen könnte.
 workspace-settings-role-owner = Eigentümer
 workspace-settings-role-moderator = Moderator
 workspace-settings-role-editor = Bearbeiter
@@ -845,9 +886,8 @@ workspace-settings-current-workspace = Aktueller Arbeitsbereich
 workspace-settings-identity-title = Identität des Arbeitsbereichs
 workspace-settings-identity-description = Dieser Name erscheint in der oberen Leiste, in Einladungen und in geteilten Aktivitäten.
 workspace-settings-rename-admin-only = Nur Administratoren des Arbeitsbereichs können ihn umbenennen.
-workspace-settings-invite-hint = Wähle eine Person und eine Rolle. Die Einladung ist signiert und gilt eine Stunde.
-workspace-settings-invite-admin-only = Nur verwaltende Administratoren können Einladungen in den Arbeitsbereich erstellen.
-workspace-settings-invite-create = Erstellen
+workspace-settings-invite-admin-only = Nur Administratoren dieses Arbeitsbereichs können Personen einladen.
+workspace-settings-invite-create = Einladung erstellen
 workspace-settings-devices-title = Deine Geräte
 workspace-settings-devices-local = Fensteranordnung und Bedienelemente bleiben auf jedem Gerät.
 workspace-settings-public-title = Öffentlich
@@ -864,11 +904,13 @@ workspace-settings-device-hidden = Ausgeblendet
 workspace-settings-move-earlier = Nach oben
 workspace-settings-move-later = Nach unten
 workspace-settings-delete = Workspace löschen
+workspace-settings-delete-description = Entfernt ihn von diesem Gerät und deinen anderen Geräten.
+workspace-settings-delete-action = Löschen
 workspace-settings-archived-title = Archivierte Workspaces
 workspace-settings-archived-restore = Wiederherstellen
 workspace-settings-archived-delete = Löschen
 workspace-settings-invite-title = Personen einladen
-workspace-settings-invite-description = Einladungen binden Arbeitsbereich, Rolle der empfangenden Person, Ablauf und die Identität dieses Geräts.
+workspace-settings-invite-description = Wähle eine Person und was sie hier tun darf. Jede Einladung gilt eine Stunde.
 workspace-settings-glance-title = Auf einen Blick
 workspace-settings-stat-members = { $count ->
     [one] Mitglied
@@ -974,6 +1016,31 @@ a11y-shell-people-changes-description = Den Verlauf bei ihren Änderungen öffne
 a11y-shell-people-change-description = Den Verlauf bei dieser Änderung öffnen
 people-panel-follow = Folgen
 people-panel-stop-following = Beenden
+
+# The people overlay: the roster pinned out of the bar, floating over windows
+people-panel-pin = Auf dem Bildschirm halten
+a11y-people-pin = Wer hier ist, auf dem Bildschirm halten
+people-overlay-title = { $count ->
+    [0] Nur du
+    [one] 1 hier
+   *[other] { $count } hier
+}
+people-overlay-unpin = Zurück in die Leiste
+people-overlay-follow-name = { $name } folgen
+people-overlay-doing-nothing = Hier
+people-overlay-screen-private = { $name } behält für sich, wo { $name } gerade ist
+people-overlay-empty-desk = Auf dem Bildschirm von { $name } ist nichts offen
+people-overlay-message-placeholder = Nachricht an { $name }
+people-overlay-message-you = Du
+people-overlay-send = Senden
+people-overlay-own-status = Was du gerade machst
+people-overlay-own-status-placeholder = Woran arbeitest du?
+people-overlay-own-status-clear = Leeren, was du gerade machst
+people-overlay-no-messages = Sag { $name } Hallo
+people-overlay-messages-unavailable = Direktnachrichten mit dieser Person sind gerade nicht verfügbar
+people-overlay-message-failed = Die Nachricht an { $name } ging nicht raus: { $reason }
+a11y-people-follow = { $name } folgen
+a11y-people-stop-following = { $name } nicht mehr folgen
 launchpad-subtitle = Wähle, wie du anfängst. Alle in diesem Arbeitsbereich sehen, was du hier machst.
 launchpad-subtitle-private = Wähle, wie du anfängst. Nur du siehst, was du hier machst, bis du jemanden einlädst.
 launchpad-subtitle-public = Wähle, wie du anfängst. Dieser Arbeitsbereich ist öffentlich: Alle, die beitreten, sehen, was du hier machst.
@@ -1119,3 +1186,59 @@ strip-switcher-refused = Die Leiste konnte nicht geändert werden
 strip-switcher-remove-named = { $name } entfernen
 strip-switcher-rename = Umbenennen
 strip-switcher-remove = Entfernen
+
+## Ein Problem melden, indem man darauf zeigt
+feedback-report-problem = Problem melden…
+feedback-picker-hint = Klicke auf das, was nicht funktioniert. Umschalt-Klick oder Ziehen wählt mehr, Scrollen erweitert, Esc verlässt.
+feedback-picker-picked = { $count ->
+    [one] 1 Teil gewählt. Umschalt-Klick oder Ziehen wählt mehr.
+   *[other] { $count } Teile gewählt. Umschalt-Klick oder Ziehen wählt mehr.
+}
+feedback-picker-continue = Weiter
+feedback-picker-cancel = Abbrechen
+feedback-part-in = { $what } in { $app }
+feedback-part-named = „{ $name }“ ({ $role ->
+    [Button] Schaltfläche
+    [ToggleButton] Schaltfläche
+    [Link] Link
+    [Tab] Tab
+    [MenuItem] Menüeintrag
+    [Checkbox] Kästchen
+    [Switch] Schalter
+    [TextInput] Feld
+    [MultilineTextInput] Feld
+    [Heading] Überschrift
+   *[other] { $role }
+})
+feedback-part-role = { $role ->
+    [ListItem] Ein Listeneintrag
+    [Row] Eine Zeile
+    [Cell] Eine Zelle
+    [Button] Eine Schaltfläche
+    [ToggleButton] Eine Schaltfläche
+    [Link] Ein Link
+    [Image] Ein Bild
+    [TextInput] Ein Feld
+    [MultilineTextInput] Ein Feld
+    [StaticText] Ein Text
+    [Paragraph] Ein Absatz
+    [Heading] Eine Überschrift
+    [List] Eine Liste
+    [Group] Eine Gruppe
+    [Window] Ein Fenster
+    [Toolbar] Eine Werkzeugleiste
+    [Menu] Ein Menü
+    [MenuItem] Ein Menüeintrag
+    [Tab] Ein Tab
+   *[other] Ein Teil
+}
+
+# Der Ansicht einer Person folgen
+follow-label = Du folgst { $person }
+follow-stopped = Folgen beendet
+follow-stop = Beenden
+
+people-follows = Folgt { $person }
+people-follows-you = Folgt dir
+people-follows-where = { $place }, folgt { $person }
+people-follows-you-where = { $place }, folgt dir
