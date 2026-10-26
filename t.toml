@@ -2355,7 +2355,7 @@ default = false
 name = "real-fuse"
 devices = ["/dev/fuse"]
 requires = ["/dev/fuse"]
-requirement = { cores = 6, memory = "16GiB" }
+requirement = { cores = 6, memory = "24GiB" }
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 isolation = "nested"
 run = """
