@@ -17,6 +17,7 @@ use ui::widget::Element;
 
 use crate::actions::GitClientEffect;
 use crate::app::GitClientApp;
+use crate::i18n::t;
 use crate::model::{DiffMap, RepoModel};
 use crate::shared::SharedRepo;
 
@@ -150,8 +151,12 @@ impl ResourceApp for GitClientShell {
     /// confirm the destructive effect before it runs.
     fn scenario_input(name: Option<&str>, input: &mut FrameHarness) -> Result<(), String> {
         if name == Some("discard") {
+            // The name the button carries in whichever language the capture
+            // runs in, not the one this source happens to spell: under
+            // `--pseudo-locale` the two differ, and a scenario looking for
+            // English finds no button and fails to render at all.
             let discard = input
-                .a11y_node_named("Discard file changes")
+                .a11y_node_named(&t("git-discard-file-name"))
                 .ok_or("no \"Discard file\" button on the changed file")?;
             input.perform_a11y_action(discard, &ui::a11y::Action::Activate)?;
         }
@@ -210,7 +215,6 @@ impl ResourceSurface<GitClient, GitClientEffect> for GitClientApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::i18n::t;
     use crate::settings::{DiffLayout, Settings};
     use crate::shared::{SharedRepo, shared_fingerprint};
     use ui::framework::Effect as _;
