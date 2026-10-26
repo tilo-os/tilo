@@ -230,14 +230,14 @@ one window. Both hold:
 
 - **Model.** The notebook and the note are two workspace windows. Each has its own identity,
   window state, lenses and presence. `open(n)` creates or goes to the note's window, as before.
-- **Presentation.** Consecutive windows of the *same package* in a lane render as the columns of
+- **Presentation.** Consecutive windows of the *same app* in a strip render as the columns of
   that app's one `NavShell`: sidebar, overview, content and inspector. On a narrow screen they
   become push navigation with Back, exactly like native apps.
 
-  A note opened from a chat (another package) gets its own app window in the lane.
+  A note opened from a chat (another app) gets its own app window in the strip.
 
 The app keeps no "selected note" state. Selection in the overview column is simply which note
-window follows it in the lane.
+window follows it in the strip.
 
 ### 3.5 Rendering through the framework root
 
@@ -409,7 +409,7 @@ note" header action, a document editor in the next column, search, history and p
 2. **Runtime: performance** (§4.2): invalidation, row boundaries, patch application, the engine
    cache and decision, and `tilolang bench`.
 3. **Vocabulary and host: native widgets** (§3): frames, `list`/`row`, automatic actions,
-   `ResourceRoot`, and same-package lane columns.
+   `ResourceRoot`, and same-app strip columns.
 4. **Apps, scenarios, review** (§5–6): rewrite the six apps and review them against native.
 
 Steps 1–3 are independent and run in parallel. Step 4 starts once 3 renders a frame.

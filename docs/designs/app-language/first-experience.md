@@ -37,7 +37,7 @@ Everything here is `workspace-model.md`'s six concepts. Nothing is added to them
   resolves through search (`search.md`). An app's name opens its home resource, a resource opens
   in its default view, and a query opens a result list.
 - **Ask anywhere.** Right-clicking any window, or a selection in one, opens a chat field carrying
-  that context (`agents.md` §2). The answer opens beside it in the lane.
+  that context (`agents.md` §2). The answer opens beside it in the strip.
 - **Across windows.**
   - **Selection is one across the workspace,** so "add these to the board" works on what is
     selected in another window.
@@ -83,4 +83,4 @@ End to end, with real data, in a nested session:
 
 - How the workspace presents its windows: strips, a canvas, or free windows.
 - What each person sees of a shared workspace.
-- How a kept composed view is found again: search, its lane, or by name.
+- How a kept composed view is found again: search, its strip, or by name.
