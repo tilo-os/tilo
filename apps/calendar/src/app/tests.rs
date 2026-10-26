@@ -53,7 +53,7 @@ fn apply_to(doc: &mut AutoCommit, invoke: impl Into<ui::tilo_resource::Invoke<Ca
 }
 
 /// Pump the same settle/read passes as the production frame host.
-fn present(app: &mut CalendarApp, doc: &mut AutoCommit, path: &ObjId) {
+pub(crate) fn present(app: &mut CalendarApp, doc: &mut AutoCommit, path: &ObjId) {
     app.settle(&mut Edits::lend(doc), path);
     app.sync(doc, path);
     app.settle(&mut Edits::lend(doc), path);
@@ -2147,7 +2147,8 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         app.sample_accounts = false; // exercise the real (threaded) branch
         app.accounts = AccountStore::sample();
         let mut state = demo_document(&app);
-        app.start_sync(&mut Edits::lend(&mut state));
+        app.start_sync(&mut Edits::lend(&mut state))
+            .expect("a calendar that reads starts its pull");
         assert!(app.syncing, "a live sync is in flight");
         assert!(app.sync_rx.is_some(), "worker result channel is armed");
         // The worker's reply wakes the app through its waking channel;
@@ -2168,7 +2169,8 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         app.sample_accounts = false;
         app.accounts = AccountStore::default();
         let mut state = demo_document(&app);
-        app.start_sync(&mut Edits::lend(&mut state));
+        app.start_sync(&mut Edits::lend(&mut state))
+            .expect("nothing to sync is not a refusal");
         assert!(!app.syncing, "nothing to sync → no background work");
         assert!(app.status.as_deref().unwrap_or("").contains("account"));
     }
@@ -3454,7 +3456,8 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 events: 1,
             },
             &mut Edits::lend(&mut doc),
-        );
+        )
+        .expect("the pull reconciles");
         let id = remote_at(&doc, "work/default", "/dav/work/meeting.ics")
             .expect("what the server keeps there is known");
         app.apply_sync_result(
@@ -3479,7 +3482,8 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 events: 1,
             },
             &mut Edits::lend(&mut doc),
-        );
+        )
+        .expect("the pull reconciles");
         assert_eq!(app.model.event(id).unwrap().title, "Server-edited title");
         assert_eq!(remote_etag(&doc, id).as_deref(), Some("\"two\""));
         app.apply_sync_result(
@@ -3501,7 +3505,8 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 events: 0,
             },
             &mut Edits::lend(&mut doc),
-        );
+        )
+        .expect("the pull reconciles");
         assert!(app.model.event(id).is_none());
         assert!(
             !crate::resource::read_doc(&doc)
@@ -3556,7 +3561,8 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                         events: 0,
                     },
                     &mut Edits::lend(doc),
-                );
+                )
+                .expect("the pull reconciles");
             };
 
         apply(&mut app, &mut doc, parsed_task(false), "\"one\"");
