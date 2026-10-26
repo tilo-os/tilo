@@ -128,13 +128,25 @@ page's state lives in its scripts:
 
 ### How mode 1 works
 
-- **The host runs real Chromium, driven over the DevTools protocol.** It
-  loads the site directly, from the site's real origin, with the
-  workspace's cookies in its own profile, so nothing about the page itself is
-  rewritten: logins, service workers, WebSockets and the site's own origin
-  checks work as they do in any browser. Input reaches it through the
-  protocol's input dispatch, so the page sees trusted events, the same as
-  from a real keyboard and mouse.
+- **The host runs Tilo's own browser engine.** That's the Chromium the
+  Browser app already embeds through CEF (`ui-core`'s `webview::chromium`,
+  with one host process per profile shared by every process that opens it),
+  running off-screen. It is not a second, automation-driven headless
+  Chromium: automation leaves fingerprints, such as the webdriver flag and the
+  DevTools runtime, that sign-in pages and bot checks refuse, and DevTools
+  is a debugging protocol, not an embedding interface. The engine loads the
+  site directly, from the site's real origin, with the workspace's cookies
+  in its profile, so nothing about the page itself is rewritten: logins,
+  service workers, WebSockets and the site's own origin checks work as they
+  do in any browser. Input reaches it through CEF's native input path, the
+  same one the Browser app uses for a person at the keyboard.
+- **One engine integration.** The mirror is a feature of that engine host,
+  beside its frames and damage. The Browser app on a Tilo device and a
+  shared page on a host are the same code, so a page shared from a device
+  and a page run by tilo.coffee behave alike.
+- **The host doesn't paint what nobody needs.** Viewers render the mirror
+  themselves, so the host keeps rasterising only for canvas and WebGL
+  elements and for the page's own needs, at a low frame rate otherwise.
 - **An agent in the page sends the mirror.** It is injected before any page
   script runs. It sends the DOM, the CSS (including constructed and adopted
   stylesheets), shadow roots (it wraps `attachShadow` first, so closed roots
@@ -199,7 +211,8 @@ page's state lives in its scripts:
 - **Mode 2 shares one session across devices.** Some sites sign out a
   session used from several devices at once.
 - **Each mode 1 page costs the host an engine.** That's a Chromium renderer
-  per open shared page, typically 100–300 MB. A person's own host device
+  per open shared page (Chromium because shared pages are arbitrary
+  sites, and compatibility decides), typically 100–300 MB. A person's own host device
   bears its own pages. tilo.coffee bears the Lounge's and, later, those of
   the workspaces it hosts, so it needs a limit per workspace and pages
   nobody is viewing suspended.
