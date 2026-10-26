@@ -791,3 +791,25 @@ fn dated_props_say_what_they_are() {
     assert!(has("meta:as") && has("secondary:as") && has("value:as"));
     crate::common::validate(&c.wasm);
 }
+
+// native-apps.md section 3: one control per action. An action whose `on:` is its subject's
+// field says which state it toggles, so a window that binds a control to that field shows the
+// control alone.
+#[test]
+fn an_action_whose_on_is_its_subjects_field_says_which_state_it_toggles() {
+    let src = "app so.tilo.todo \"Todo\"\n\
+        type Todo {\n    title: Text (title)\n    done: Bool = false\n    starred: Bool = false\n}\n\
+        action check(item: Todo) (icon: .check, on: item.done) {\n    item.done = not item.done\n}\n\
+        action flip(item: Todo) (icon: .check, on: not item.done) {\n    item.done = not item.done\n}\n\
+        action star(item: Todo) (icon: .plus) {\n    item.starred = true\n}\n";
+    let m = crate::common::compile(src).meta;
+    let todo = m.types.iter().find(|t| t.name == "Todo").expect("Todo");
+    let done = todo.fields.iter().find(|f| f.name == "done").expect("done");
+    assert_eq!(action(&m, "check").toggles.as_ref(), Some(&done.id));
+    assert_eq!(
+        action(&m, "flip").toggles,
+        None,
+        "an `on:` that is not the field itself names no field"
+    );
+    assert_eq!(action(&m, "star").toggles, None, "no `on:`, no state");
+}
