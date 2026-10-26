@@ -1791,16 +1791,10 @@ mod tests {
     /// and the device reverts in a later frame, as a job.
     fn undo_settled(app: &mut TestApp<FileExplorerShell>) {
         assert!(app.undo());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        app.settle();
-        while app.state().ops.pending().next().is_some() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the undo never settled"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        tilo_test_env::wait_until("the undo to settle", || {
             app.settle();
-        }
+            app.state().ops.pending().next().is_none()
+        });
     }
 
     /// Invoke the resource's action `id` with `args` through the door, as
@@ -2126,15 +2120,10 @@ mod tests {
         app.settle();
         let listener = server.join().unwrap();
         listener.set_nonblocking(true).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while app.state().ops.pending().next().is_some() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "import did not settle"
-            );
+        tilo_test_env::wait_until("the cloud import to settle", || {
             app.settle();
-            std::thread::yield_now();
-        }
+            app.state().ops.pending().next().is_none()
+        });
         let state = app.state();
         let (id, entry) = state.ops.entries().next().unwrap();
         assert_eq!(entry.value.device, "laptop");
@@ -2368,12 +2357,10 @@ mod tests {
         );
         app.invoke(FileExplorer::queueing("laptop", op).unwrap())
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !folder.join("Google.docx").exists() || app.state().ops.pending().next().is_some() {
-            assert!(std::time::Instant::now() < deadline);
+        tilo_test_env::wait_until("the mounted import to settle", || {
             app.settle();
-            std::thread::yield_now();
-        }
+            folder.join("Google.docx").exists() && app.state().ops.pending().next().is_none()
+        });
         assert_eq!(
             std::fs::read(folder.join("Google.docx")).unwrap(),
             b"native Google view"
@@ -2410,12 +2397,10 @@ mod tests {
         };
         app.invoke(FileExplorer::queueing("laptop", op).unwrap())
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while app.state().ops.pending().next().is_some() {
-            assert!(std::time::Instant::now() < deadline);
+        tilo_test_env::wait_until("the mounted import to settle", || {
             app.settle();
-            std::thread::yield_now();
-        }
+            app.state().ops.pending().next().is_none()
+        });
         assert!(
             app.state()
                 .ops

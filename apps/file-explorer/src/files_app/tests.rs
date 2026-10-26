@@ -1677,12 +1677,10 @@ mod command_path_tests {
         std::os::unix::fs::symlink(&mount, &alias).unwrap();
         app.invoke(crate::resource::FileExplorer::queueing("test-device", op).unwrap())
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while app.state().ops.pending().next().is_some() {
-            assert!(std::time::Instant::now() < deadline);
+        tilo_test_env::wait_until("the cloud import to settle", || {
             app.settle();
-            std::thread::yield_now();
-        }
+            app.state().ops.pending().next().is_none()
+        });
         let state = app.state();
         let outcome = state
             .ops
