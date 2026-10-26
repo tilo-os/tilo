@@ -10,7 +10,7 @@ use ui::prelude::*;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::items::item_resource_id;
 
-use crate::app::{ClocksApp, Controls, Shown, duration, repeat_summary};
+use crate::app::{ClocksApp, Controls, Shown, duration, repeat_summary, wall_now};
 use crate::model::Clocks;
 use crate::schedule::OnThisDevice;
 
@@ -31,6 +31,13 @@ pub enum ClocksEffect {
     },
     /// Dismiss the due alarm or timer notice on this device.
     DismissNotice,
+    /// Ring this device's alarm again after a few minutes.
+    SnoozeAlarm {
+        #[param("The alarm's id")]
+        alarm: String,
+        #[param("Minutes to wait before ringing again")]
+        minutes: u32,
+    },
     /// Float a timer above other windows.
     FloatTimer {
         #[param("The timer's id")]
@@ -218,7 +225,7 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
             "ringing" => {
                 self.set_mode(crate::app::TIMERS);
                 self.notice
-                    .set(Some(("Timer finished".to_owned(), "Tea".to_owned())));
+                    .set(Some(("Timer finished".to_owned(), "Tea".to_owned(), None)));
             }
             _ => self.set_mode(crate::app::TIMERS),
         }
@@ -246,6 +253,21 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
                 }
             }),
             ClocksEffect::DismissNotice => self.notice.set(None),
+            ClocksEffect::SnoozeAlarm { alarm, minutes } => {
+                let id = Id::from_raw(alarm.as_str());
+                let now_ms = wall_now().timestamp_millis();
+                let mut delivery = self.device.get().delivery;
+                self.state.with(|shown| {
+                    let alarm = shown
+                        .clocks
+                        .alarms
+                        .get(&id)
+                        .ok_or_else(|| format!("there is no alarm `{alarm}`"))?;
+                    crate::schedule::snooze(&mut delivery, &id, alarm, now_ms, minutes)
+                })?;
+                self.update_device(|device| device.delivery = delivery);
+                self.notice.set(None);
+            }
             ClocksEffect::FloatTimer { timer, floating } => {
                 if !self
                     .state
