@@ -4,7 +4,7 @@
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
 use crate::shell::input_policy::{
-    is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch, winit_event_to_lock_key,
+    is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch,
 };
 use crate::shell::pointer_readiness::PressFacts;
 pub use crate::shell::session_policy::*;
@@ -5576,7 +5576,7 @@ fn execute_locked_action(
                 client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
             }
             client_input::consume_keyboard_while_captured(state, &event);
-            lock.handle_key(winit_event_to_lock_key(&event));
+            lock.handle_event(&event, &ctx.modifiers);
             None
         }
         // The loop routes it to the lock as it does a physical key.
@@ -11446,7 +11446,9 @@ pub fn run() {
                     if route == PriorityRoute::LockScreen {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
-                        let mut key = winit_event_to_lock_key(wev);
+                        // A key of the keyboard drawn for touch, when one
+                        // was pressed; every other event goes to the prompt.
+                        let mut key = None;
                         match wev {
                             WindowEvent::CursorMoved { position, .. } => {
                                 lock_pointer =
@@ -11486,7 +11488,7 @@ pub fn run() {
                                     )
                                 });
                                 if let Some(pressed) = pressed {
-                                    key = lock_keyboard.press(pressed);
+                                    key = Some(lock_keyboard.press(pressed));
                                 } else if let Some(transport) = lock_pointer.and_then(|point| {
                                     lock_screen::transport_at(
                                         &outputs,
@@ -11500,7 +11502,14 @@ pub fn run() {
                             }
                             _ => {}
                         }
-                        lock.handle_key(key);
+                        match key {
+                            Some(key) => {
+                                lock.handle_key(key);
+                            }
+                            None => {
+                                lock.handle_event(wev, &test_control_ctx.modifiers);
+                            }
+                        }
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
                     } else if route == PriorityRoute::PowerKey {
@@ -14007,7 +14016,7 @@ pub fn run() {
         let keepalive_due = false;
         let lock_clock_due =
             lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh)
-                || (session.is_locked() && retained_lock.feedback_frame_due(iter_t0));
+                || (session.is_locked() && retained_lock.feedback_frame_due());
         if session.is_locked() {
             if iter_t0.saturating_duration_since(last_lock_media_poll) >= LOCK_MEDIA_REFRESH {
                 last_lock_media_poll = iter_t0;
@@ -14143,9 +14152,7 @@ pub fn run() {
                 pipe_ready,
                 (content_changed && !cadence_due)
                     || (!session.is_locked() && !display_dark && animating)
-                    || (session.is_locked()
-                        && !display_dark
-                        && retained_lock.feedback_frame_due(iter_t0)),
+                    || (session.is_locked() && !display_dark && retained_lock.feedback_frame_due()),
             );
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
@@ -15251,7 +15258,7 @@ pub fn run() {
                     // frame must be a cadence tick, not only the resting deadline.
                     || (session.is_locked()
                         && !session.is_blanked()
-                        && retained_lock.feedback_frame_due(park_now)),
+                        && retained_lock.feedback_frame_due()),
             );
         // Nothing changed on screen and no frame is waiting, here or behind
         // the presenter: the inputs handled so far are done without a frame.

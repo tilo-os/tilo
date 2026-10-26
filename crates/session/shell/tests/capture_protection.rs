@@ -324,8 +324,14 @@ fn the_lock_screen_is_never_captured() {
         size: (f64::from(W), f64::from(H)),
         scale: 1.0,
     }];
+    let prompt = shell::compositor::lock_controller::LockPrompt::new();
+    prompt
+        .borrow_mut()
+        .reject(shell::compositor::lock_controller::refusal_line(
+            "Incorrect password",
+        ));
     let view = LockView {
-        password_len: 6,
+        prompt: Some(&prompt),
         error: Some("Incorrect password"),
         clock: "13:37",
         date: "Friday, 11 July",
