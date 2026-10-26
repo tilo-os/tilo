@@ -113,8 +113,15 @@ viewer and not a video stream of one.
   this lives in this repository beside the browser runtime
   ([`browser-runtime.md`](browser-runtime.md)), not as a separate product.
 
-How the proxy carries script effects to devices is still being designed
-with its author.
+What exists: `crates/browser/paint-stream` carries a host's page to members
+as a layered display list (a `Frame`, then `Patch`es) that each client draws
+with its own renderer, as it draws any Tilo surface. Scroll layers move
+locally, and input goes back to the host. `tilo-browser-peer` shows a native
+member's browser tab to web members this way, not as video. Other legacy
+windows still reach web members as video. A display list carries what the
+page looks like, not its CSS, so effects that depend on one person's pointer
+(hover, focus) can't yet render locally. How script and style effects reach
+devices so that they can is ours to design.
 
 ## Status
 
