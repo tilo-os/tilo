@@ -1138,6 +1138,7 @@ doc = false
 "tilo-environment" = { path = "../../../crates/runtime/environment", default-features = false, features = [] }
 "tilo-esp-write" = { path = "../../../crates/system/esp-write", default-features = false, features = [] }
 "tilo-extension" = { path = "../../../crates/system/extension-helper", default-features = false, features = [] }
+"tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-feedback" = { path = "../../../crates/collab/feedback", default-features = false, features = [] }
 "tilo-feedback-review" = { path = "../../../crates/collab/feedback-review", default-features = false, features = [] }
 "tilo-file-provider" = { path = "../../../crates/runtime/tilo-file-provider", default-features = false, features = [] }
@@ -2198,6 +2199,7 @@ doc = false
 "tilo-delivery-protocol" = { path = "../../../crates/hosting/tilo-delivery-protocol", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
+"tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["test-support", "watch"] }
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = [] }
@@ -3490,6 +3492,7 @@ doc = false
 "tilo-environment" = { path = "../../../crates/runtime/environment", default-features = false, features = [] }
 "tilo-esp-write" = { path = "../../../crates/system/esp-write", default-features = false, features = [] }
 "tilo-extension" = { path = "../../../crates/system/extension-helper", default-features = false, features = [] }
+"tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-feedback" = { path = "../../../crates/collab/feedback", default-features = false, features = [] }
 "tilo-feedback-review" = { path = "../../../crates/collab/feedback-review", default-features = false, features = [] }
 "tilo-file-provider" = { path = "../../../crates/runtime/tilo-file-provider", default-features = false, features = [] }
@@ -4548,6 +4551,7 @@ doc = false
 "tilo-delivery-protocol" = { path = "../../../crates/hosting/tilo-delivery-protocol", default-features = false, features = [] }
 "tilo-desktop-entry" = { path = "../../../crates/system/desktop-entry", default-features = false, features = [] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
+"tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["test-support", "watch"] }
 "tilo-font-catalog" = { path = "../../../crates/sdk/font-catalog", default-features = false, features = ["faces"] }
 "tilo-fs" = { path = "../../../crates/system/fs", default-features = false, features = [] }

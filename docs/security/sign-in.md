@@ -127,6 +127,16 @@ capture the PIN (§7.4).
 
 On a machine without a TPM, the secret must be a strong passphrase.
 
+The initrd draws each person's face as the login screen does before anyone signs
+in: the initials of their name in the colour their account name derives
+(`tilo-face`), in the login screen's colours and sizes (`look.json`, which the
+greeter's own test keeps current). It shows no account picture. A picture would
+have to sit in the volume header beside the name, readable by anyone holding the
+disk, and the header carries only what the list of people needs: uid, account
+name, display name and the kind of secret. Plymouth draws text in the one font the
+initrd carries, at regular weight, so names and messages there are set in that
+font rather than the login screen's.
+
 ### 3.3 What the person sees
 
 | Machine | First screen | Secrets typed |

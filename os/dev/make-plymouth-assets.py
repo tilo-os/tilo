@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate dependency-free PNG assets for the Tilo Plymouth theme."""
 
+import json
 import math
 import os
 import re
@@ -262,8 +263,9 @@ def person_pixel(size, disc, figure):
     return pixel
 
 
-def main(directory):
+def main(directory, look_path=None):
     os.makedirs(directory, exist_ok=True)
+    look = read_look(look_path or os.path.join(directory, "look.json"))
     png(os.path.join(directory, "tilo-logo.png"), 160, 160, logo_pixel(160))
     png(os.path.join(directory, "entry.png"), 360, 56,
         rounded_rect(360, 56, 14, (31, 34, 51), (59, 67, 118), 2))
@@ -281,7 +283,7 @@ def main(directory):
              (240, 240, 250), "SemiBold")
     text_png(os.path.join(directory, "startup-help.png"),
              "Press Esc to view startup messages", 16, (158, 163, 186))
-    sign_in_assets(directory)
+    sign_in_assets(directory, look)
     png(os.path.join(directory, "progress-background.png"), 280, 4,
         progress_pixel(280, (54, 57, 75), (54, 57, 75)))
     png(os.path.join(directory, "progress-fill.png"), 280, 4,
@@ -290,23 +292,112 @@ def main(directory):
 
 TEXT = (240, 240, 250)
 MUTED = (158, 163, 186)
-ERROR = (244, 169, 154)
 
 
-def sign_in_assets(directory):
-    """The sign-in screen's fixed text and shapes (tilo.script, "Sign-in")."""
+def read_look(path):
+    """The login screen's colours and sizes (look.json, which the greeter's
+    own test keeps equal to the theme it paints with)."""
+    with open(path, encoding="utf-8") as source:
+        look = json.load(source)
+    rgb = lambda value: tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))
+    for key in ("text", "dim", "placeholder", "danger", "field"):
+        look[key] = rgb(look[key])
+    look["faces"] = [{"fill": rgb(face["fill"]), "ink": rgb(face["ink"])}
+                     for face in look["faces"]]
+    for key in ("field_radius", "field_height", "avatar", "initials_size",
+                "name_size", "body_size", "label_size"):
+        look[key] = round(look[key])
+    return look
+
+
+def script_look(look):
+    """The block of tilo.script that carries the look: Plymouth's script
+    language reads no files, so the values sit in the script itself, and
+    os/tests/boot_ux_invariants.sh checks that they are look.json's."""
+    def colour(name, value):
+        red, green, blue = (round(channel / 255, 3) for channel in value)
+        return f"{name}.red = {red}; {name}.green = {green}; {name}.blue = {blue};"
+    lines = [LOOK_BEGIN]
+    for key in ("text", "dim", "danger"):
+        lines.append(colour(f"look.{key}", look[key]))
+    for slot, face in enumerate(look["faces"]):
+        lines.append(colour(f"look.ink[{slot}]", face["ink"]))
+    lines.append(f"look.faces = {len(look['faces'])};")
+    for key in ("avatar", "initials_size", "name_size", "label_size", "field_height"):
+        lines.append(f"look.{key} = {look[key]};")
+    lines.append(LOOK_END)
+    return "\n".join(lines) + "\n"
+
+
+LOOK_BEGIN = "# ---- The login screen's look (look.json; make-plymouth-assets.py --script-look)"
+LOOK_END = "# ---- End of the login screen's look"
+
+
+def alert_pixel(size, color):
+    """The circle-alert icon the login screen puts before an error."""
+    center = size / 2
+    ring = size / 2 - 1.25
+    stroke = max(1.25, size / 12)
+
+    def pixel(x, y):
+        px, py = x + 0.5, y + 0.5
+        circle = abs(math.hypot(px - center, py - center) - ring) - stroke / 2
+        bar_x = abs(px - center) - stroke / 2
+        bar = max(bar_x, abs(py - size * 0.42) - size * 0.14)
+        dot = math.hypot(px - center, py - size * 0.68) - stroke * 0.6
+        inside = 1.0 - smoothstep(-0.6, 0.6, min(circle, bar, dot))
+        return (*color, round(inside * 255))
+    return pixel
+
+
+def note_png(path, text, look, color, icon=True):
+    """A line under the field as the login screen sets it: the label size,
+    led by the alert icon when it reports an error."""
+    font = noto_sans(look["label_size"], "Medium")
+    probe = ImageDraw.Draw(PillowImage.new("RGBA", (1, 1)))
+    ascent, descent = font.getmetrics()
+    height = ascent + descent + 4
+    icon_size = look["label_size"] + 1
+    offset = icon_size + 6 if icon else 0
+    width = round(probe.textlength(text, font=font)) + offset + 4
+    image = PillowImage.new("RGBA", (width, height), (0, 0, 0, 0))
+    if icon:
+        glyph = PillowImage.new("RGBA", (icon_size, icon_size))
+        pixel = alert_pixel(icon_size, color)
+        glyph.putdata([pixel(x, y) for y in range(icon_size) for x in range(icon_size)])
+        image.alpha_composite(glyph, (0, (height - icon_size) // 2))
+    ImageDraw.Draw(image).text((offset, height / 2), text, font=font,
+                               fill=(*color, 255), anchor="lm")
+    image.save(path, format="PNG", optimize=True)
+
+
+def sign_in_assets(directory, look):
+    """The sign-in screen's fixed text and shapes (tilo.script, "Sign-in"),
+    in the login screen's colours and sizes."""
     def out(name):
         return os.path.join(directory, name)
 
-    png(out("avatar.png"), 96, 96, circle_pixel(96, (59, 67, 118)))
-    png(out("avatar-person.png"), 96, 96, person_pixel(96, (59, 67, 118), (226, 224, 255)))
-    text_png(out("signin-heading.png"), "Sign in", 26, TEXT, "SemiBold")
-    text_png(out("placeholder-pin.png"), "PIN", 18, MUTED)
-    text_png(out("placeholder-password.png"), "Password", 18, MUTED)
-    text_png(out("note-wrong-pin.png"), "Incorrect PIN. Try again.", 17, ERROR)
-    text_png(out("note-wrong-password.png"), "Incorrect password. Try again.", 17, ERROR)
-    text_png(out("note-wait.png"), "Too many failed attempts. Wait, then try again.", 17, ERROR)
-    text_png(out("signing-in.png"), "Signing in\u2026", 17, MUTED)
+    side = look["avatar"]
+    for slot, face in enumerate(look["faces"]):
+        png(out(f"avatar-{slot}.png"), side, side, circle_pixel(side, face["fill"]))
+    png(out("avatar-person.png"), side, side,
+        person_pixel(side, look["faces"][8]["fill"], look["faces"][8]["ink"]))
+    width, height, radius = 360, look["field_height"], look["field_radius"]
+    png(out("field.png"), width, height, rounded_rect(width, height, radius, look["field"]))
+    png(out("field-invalid.png"), width, height,
+        rounded_rect(width, height, radius, look["field"], look["danger"], 1.5))
+    png(out("field-bullet.png"), 7, 7, circle_pixel(7, look["text"]))
+    text_png(out("signin-heading.png"), "Sign in", look["name_size"], look["text"], "SemiBold")
+    text_png(out("placeholder-pin.png"), "PIN", look["body_size"], look["placeholder"])
+    text_png(out("placeholder-password.png"), "Password", look["body_size"],
+             look["placeholder"])
+    note_png(out("alert.png"), "", look, look["danger"])
+    note_png(out("note-wrong-pin.png"), "Incorrect PIN. Try again.", look, look["danger"])
+    note_png(out("note-wrong-password.png"), "Incorrect password. Try again.", look,
+             look["danger"])
+    note_png(out("note-wait.png"), "Too many failed attempts. Wait, then try again.", look,
+             look["danger"])
+    note_png(out("signing-in.png"), "Signing in\u2026", look, look["dim"], icon=False)
     hint_png(out("hint-other-ways.png"),
              [("text", "Can't sign in? Press "), ("key", "Enter"),
               ("text", " with the field empty.")], 16, MUTED)
@@ -329,4 +420,7 @@ def sign_in_assets(directory):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    if sys.argv[1] == "--script-look":
+        sys.stdout.write(script_look(read_look(sys.argv[2])))
+    else:
+        main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)

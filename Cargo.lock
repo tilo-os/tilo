@@ -2562,6 +2562,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-face",
  "tilo-resource",
  "tilo-sort",
  "toml 1.0.6+spec-1.1.0",
@@ -5817,6 +5818,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "tilo-automerge-fork",
+ "tilo-face",
  "tilo-lock",
  "tilo-paths",
  "tilo-power-mgmt",
@@ -17151,6 +17153,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tilo-ask-password",
+ "tilo-face",
  "workspace-hack",
  "zeroize",
 ]
@@ -18033,6 +18036,10 @@ dependencies = [
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
+
+[[package]]
+name = "tilo-face"
+version = "0.1.0"
 
 [[package]]
 name = "tilo-feedback"
@@ -20444,6 +20451,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-doc",
  "tilo-engine-loader",
+ "tilo-face",
  "tilo-files",
  "tilo-font-catalog",
  "tilo-headless-schema",
@@ -25828,6 +25836,7 @@ dependencies = [
  "tilo-environment",
  "tilo-esp-write",
  "tilo-extension",
+ "tilo-face",
  "tilo-feedback",
  "tilo-feedback-review",
  "tilo-file-provider",
