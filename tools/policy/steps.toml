@@ -16,6 +16,8 @@
 #            .git, it runs under tools/ci/t-git-index.sh, which indexes the files present
 #   tests    a test of the suite's own tools, run after the checks of the tree: its fixtures
 #            write beside the sources, so under t it gets a private copy of them
+#   history  a test that reads the commit's Git history: under t it gets t's .git, which keys
+#            its result per commit, so it reruns on every commit of main
 #
 # Workspace membership, the repository layout and the code map are t.toml's `workspace-layout`
 # and `codemap` checks, and the SDK's portability, capabilities and browser desktop registry its
@@ -40,18 +42,21 @@ name = "dependency-cycles"
 label = "Package graph is acyclic"
 run = "python3 tools/policy/check_dependency_cycles.py"
 inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
+pre_push = true
 
 [[step]]
 name = "integration-test-modules"
 label = "Integration tests are compiled by a test target"
 run = "python3 tools/policy/check_integration_test_modules.py"
 inputs = ["Cargo.toml", "**/Cargo.toml", "**/*.rs"]
+pre_push = true
 
 [[step]]
 name = "capnp-bindings"
 label = "Checked-in capnp bindings match their schemas"
 run = "python3 tools/policy/check_capnp_bindings.py"
 inputs = ["tools/policy/capnp_bindings.toml", "**/*.capnp", "**/*_capnp.rs"]
+pre_push = true
 
 [[step]]
 name = "interfaces"
@@ -59,18 +64,21 @@ label = "Interface schemas match the code and their versions"
 run = "python3 tools/policy/check_interfaces.py check"
 inputs = ["crates/**/interface.toml", "crates/**/*.rs", "crates/**/*.capnp", "os/Containerfile.env-runtime",
           "os/usr/share/tilo/system-interfaces.toml"]
+pre_push = true
 
 [[step]]
 name = "format-migrations"
 label = "Versioned on-disk formats name the oldest version they bring up"
 run = "python3 tools/policy/check_format_migrations.py check"
 inputs = ["crates/**/*.rs", "apps/**/*.rs"]
+pre_push = true
 
 [[step]]
 name = "workflow-timeouts"
 label = "Workflow timeouts"
 run = "python3 tools/policy/check_workflow_timeouts.py"
 inputs = [".forgejo/workflows/**"]
+pre_push = true
 
 [[step]]
 name = "workflow-dependencies"
@@ -79,6 +87,7 @@ run = "bash os/tests/workflow_dependency_invariants.sh"
 inputs = [".forgejo/**", ".config/visual-goldens-image", "dist/ci/install-sccache.sh", "keys/cosign.pub",
           "os/Containerfile", "os/kernel/Containerfile", "os/dev/**", "os/external-assets/github-assets.tsv",
           "os/tests/test_require_cosign_authority.py", "tools/policy/check_workflow_actions.py"]
+pre_push = true
 
 [[step]]
 name = "workflow-package-paths"
@@ -91,14 +100,18 @@ run = """python3 tools/policy/check_workflow_package_paths.py \
   --check tilo-relay 't.toml#image-relay' \
   --check registry-server 't.toml#image-registry-server' \
   --check tilo-runtime 't.toml#runtime-macos' \
+  --check notes 't.toml#apps-macos' \
+  --check tilo-install-helpers 't.toml#vm-test-binaries' \
   --check tilo-app-cli 't.toml#sdk-linux'"""
 inputs = ["t.toml", ".forgejo/workflows/**", "Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
+pre_push = true
 
 [[step]]
 name = "developer-docs"
 label = "Developer docs pages and links"
-run = "python3 tools/docs/developer_docs.py check"
-inputs = ["docs/**", "**/*.md"]
+run = "python3 -m unittest tools/tests/test_developer_docs.py tools/tests/test_development_book.py tools/tests/test_development_tool_help.py && python3 tools/docs/developer_docs.py check && python3 tools/docs/check_development_book.py"
+inputs = ["docs/**", "**/*.md", "**/Cargo.toml", "tools/docs/**", "tools/tests/test_developer_docs.py", "tools/tests/test_development_book.py", "tools/tests/test_development_tool_help.py", "tools/dev/install-git-hooks.py", "scripts/test-local.sh", "dist/rpm/build-rpm.sh", "crates/session/shell/build-macos.sh"]
+pre_push = true
 
 [[step]]
 name = "suites"
@@ -112,12 +125,21 @@ name = "codex-hooks"
 label = "Codex hook manifest"
 run = "python3 -m json.tool .codex/hooks.json >/dev/null"
 inputs = [".codex/hooks.json"]
+pre_push = true
 
 [[step]]
 name = "app-text-contract"
 label = "Application text-stack contract"
 run = "python3 tools/policy/check_app_text_contract.py"
 inputs = ["apps/**/*.rs", "apps/*/Cargo.toml"]
+pre_push = true
+
+[[step]]
+name = "action-confirmation"
+label = "Undoable actions are never confirmed by typing; a typed phrase names what is lost"
+run = "python3 tools/policy/check_action_confirmation.py"
+inputs = ["apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs"]
+pre_push = true
 
 [[step]]
 name = "app-copy"
@@ -125,6 +147,7 @@ label = "Copy used by source is in every shipped catalogue"
 run = "python3 tools/policy/check_app_copy.py"
 inputs = ["apps/**/*.rs", "apps/**/*.ftl", "apps/**/Cargo.toml", "crates/**/*.rs", "crates/**/*.ftl",
           "crates/**/Cargo.toml"]
+pre_push = true
 
 [[step]]
 name = "copy-language"
@@ -132,24 +155,28 @@ label = "Copy follows the house language and glossary"
 run = "python3 tools/policy/check_copy_language.py"
 inputs = ["**/locales/*.ftl", "apps/**/*.rs", "crates/**/*.rs", "tools/policy/copy_glossary.toml",
           "tools/policy/copy_save_exceptions.toml", "tools/policy/copy_language_baseline/**"]
+pre_push = true
 
 [[step]]
 name = "primitives"
 label = "Surfaces are built from the design system primitives"
 run = "python3 tools/policy/check_primitives.py"
 inputs = ["crates/session/**/*.rs", "apps/**/*.rs", "tools/policy/primitives_baseline.txt"]
+pre_push = true
 
 [[step]]
 name = "app-toolbars"
 label = "Apps put their controls, search included, in the window bar's slots"
 run = "python3 tools/policy/check_app_toolbars.py"
 inputs = ["apps/**/*.rs", "apps/*/locales/en-US.ftl", "tools/policy/app_toolbars_baseline.txt"]
+pre_push = true
 
 [[step]]
 name = "host-data-apps"
 label = "Apps that show the machine declare it and are captured only from scenarios"
 run = "python3 tools/policy/check_host_data_apps.py"
 inputs = ["apps/*/tilo-app.toml", "apps/**/*.rs", "tools/screenshots/*.toml", "tools/policy/check_host_data_apps.py"]
+pre_push = true
 
 [[step]]
 name = "app-resource-action-contract"
@@ -157,6 +184,7 @@ label = "Application resource/action contract"
 run = "python3 tools/policy/check_app_resource_action_contract.py"
 inputs = ["apps/**/*.rs", "apps/*/Cargo.toml", "crates/**/*.rs", "crates/**/Cargo.toml", "examples/apps/**/*.rs",
           "tools/policy/app_resource_action_baseline/**"]
+pre_push = true
 
 [[step]]
 name = "atspi-endpoint-contract"
@@ -166,24 +194,28 @@ inputs = ["apps/*/Cargo.toml", "apps/*/tilo-app.toml", "apps/*/src/main.rs", "cr
           "crates/sdk/ui-core/src/accesskit_bridge.rs", "crates/sdk/ui-core/src/app.rs", "crates/sdk/ui-core/src/app/**",
           "crates/session/shell/src/compositor/accessibility.rs", "crates/session/shell/src/compositor/native.rs",
           "os/Containerfile", "os/dev/vm.sh", "tools/atspi_external_client.py"]
+pre_push = true
 
 [[step]]
 name = "component-manifest"
 label = "OS component manifest"
 run = "python3 tools/policy/check_component_manifest.py"
 inputs = ["os/**", "Cargo.toml", "**/Cargo.toml", "**/src/main.rs", "**/src/bin/*.rs", "apps/*/tilo-app.toml"]
+pre_push = true
 
 [[step]]
 name = "dev-image-contract"
 label = "Dev image stays out of production"
 run = "python3 tools/policy/check_dev_image_contract.py"
 inputs = ["os/**", ".forgejo/workflows/**", "tools/**/*.sh", "crates/dev/tilo-vmd/data/**"]
+pre_push = true
 
 [[step]]
 name = "uki-pipeline"
 label = "Sealed images share one UKI pipeline"
 run = "python3 tools/policy/check_uki_pipeline.py"
 inputs = ["os/Containerfile*", "os/dev/**", ".forgejo/workflows/os-dev-installer.yml"]
+pre_push = true
 
 [[step]]
 name = "image-builder-inputs"
@@ -198,72 +230,84 @@ label = "Dev kernel build follows the release build"
 run = "python3 tools/policy/check_kernel_dev_build.py"
 inputs = ["os/kernel/Containerfile", "os/kernel/dev-build.sh", "os/scripts/build-initramfs.sh",
           "crates/dev/tilo-vmd/src/boot.rs"]
+pre_push = true
 
 [[step]]
 name = "dev-overrides-contract"
 label = "Dev-override features stay out of production images"
 run = "python3 tools/policy/check_dev_overrides_contract.py"
 inputs = ["os/Containerfile*"]
+pre_push = true
 
 [[step]]
 name = "ui-host-inputs-contract"
 label = "UI host-inputs contract"
 run = "python3 tools/policy/check_ui_host_inputs_contract.py"
 inputs = ["crates/sdk/ui-core/src/**", "crates/sdk/tilo-host/src/**"]
+pre_push = true
 
 [[step]]
 name = "ui-clock-contract"
 label = "UI clock contract"
 run = "python3 tools/policy/check_ui_clock_contract.py"
 inputs = ["crates/sdk/ui-core/**", "crates/sdk/tilo-host/**", "clippy.toml"]
+pre_push = true
 
 [[step]]
 name = "no-transient-cards"
 label = "Transient notices are the window bar's"
 run = "python3 tools/policy/check_no_transient_cards.py"
 inputs = ["apps/**", "crates/**", "examples/**"]
+pre_push = true
 
 [[step]]
 name = "motion-library"
 label = "Animations are composed from the motion library"
 run = "python3 tools/policy/check_motion_library.py"
 inputs = ["crates/sdk/**/*.rs", "crates/session/**/*.rs", "apps/**/*.rs"]
+pre_push = true
 
 [[step]]
 name = "formats"
 label = "Dates, times, numbers and sizes go through ui::format"
 run = "python3 tools/policy/check_formats.py"
 inputs = ["crates/sdk/**/*.rs", "crates/session/**/*.rs", "apps/**/*.rs"]
+pre_push = true
 
 [[step]]
 name = "settings-writes"
 label = "Settings are written through typed keys"
 run = "python3 tools/policy/check_settings_writes.py"
 inputs = ["crates/**/*.rs", "apps/**/*.rs"]
+pre_push = true
 
 [[step]]
 name = "widget-document-writes"
 label = "Widgets never write the document"
 run = "python3 tools/policy/check_widget_document_writes.py"
 inputs = ["crates/sdk/ui-core/src/widget/**", "tools/policy/widget_document_writes_baseline.toml"]
+pre_push = true
 
 [[step]]
 name = "app-content-store"
 label = "App content store contract"
 run = "python3 tools/policy/check_app_content_store.py"
 inputs = ["crates/**/*.rs", "apps/**/*.rs"]
+pre_push = true
 
 [[step]]
 name = "crypto-dependencies"
 label = "Raw cryptography stays behind tilo-seal"
 run = "python3 tools/policy/check_crypto_dependencies.py"
 inputs = ["Cargo.toml", "**/Cargo.toml", ".config/hakari.toml", "**/*.rs"]
+pre_push = true
 
 [[step]]
 name = "crypto-generation"
 label = "Own crates use one RustCrypto generation"
 run = "python3 tools/policy/check_crypto_generation.py"
 inputs = ["Cargo.lock", "vendor/**/Cargo.toml"]
+pre_push = true
 
 [[step]]
 name = "automerge-apply-contract"
@@ -277,18 +321,21 @@ name = "document-engine-boundary"
 label = "Document content stays behind the document layer"
 run = "python3 tools/policy/check_document_engine_boundary.py"
 inputs = ["apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs", "tools/policy/document_engine_baseline.toml"]
+pre_push = true
 
 [[step]]
 name = "desktop-model-dependencies"
 label = "Desktop crates dependency boundary"
 run = "python3 tools/policy/check_desktop_model_dependencies.py"
 inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
+pre_push = true
 
 [[step]]
 name = "shell-layers"
 label = "Shell service modules stay below the compositor"
 run = "python3 tools/policy/check_shell_layers.py"
 inputs = ["crates/session/shell/**/*.rs", "Cargo.toml", "**/Cargo.toml", "tools/policy/shell_layers_baseline.toml"]
+pre_push = true
 
 [[step]]
 name = "runtime-dylib-surface"
@@ -296,12 +343,14 @@ label = "Shared app runtime carries no OS internals or dead weight"
 run = "python3 tools/policy/check_runtime_dylib_surface.py"
 inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", "apps/*/tilo-app.toml", "dist/apps/app-collections.toml",
           "tools/apps/app_release.py", "tools/ci/__init__.py", "tools/ci/runner_labels.py", "tools/ci/workspace_graph.py"]
+pre_push = true
 
 [[step]]
 name = "wasm-workspace-hack"
 label = "Browser wasm32 builds stay off the workspace-hack"
 run = "python3 tools/policy/check_wasm_workspace_hack.py"
 inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock"]
+pre_push = true
 
 [[step]]
 name = "image-interpreters"
@@ -324,18 +373,28 @@ label = "GStreamer is the only media stack"
 run = "python3 tools/policy/check_media_stack.py"
 inputs = ["Cargo.lock", "**/Cargo.toml", "**/Containerfile", "**/Containerfile.*", "**/Dockerfile", "**/Dockerfile.*",
           "os/**", "dist/ci/install-build-deps.sh", "dist/dev/Containerfile.fedora44"]
+pre_push = true
 
 [[step]]
 name = "tls-stack"
 label = "rustls is the only TLS stack"
 run = "python3 tools/policy/check_tls_stack.py"
 inputs = ["Cargo.lock"]
+pre_push = true
 
 [[step]]
 name = "no-telemetry"
 label = "No telemetry, analytics or crash-upload client"
 run = "python3 tools/policy/check_no_telemetry.py"
 inputs = ["Cargo.lock"]
+pre_push = true
+
+[[step]]
+name = "iroh-presets"
+label = "No durable endpoint signs itself in to number 0's directory"
+run = "python3 tools/policy/check_iroh_presets.py"
+inputs = ["crates/**/*.rs", "tools/policy/check_iroh_presets.py"]
+pre_push = true
 
 [[step]]
 name = "setup-neutral"
@@ -349,6 +408,7 @@ name = "vendor-provenance"
 label = "Vendored crates carry licence and provenance"
 run = "python3 tools/policy/check_vendor_provenance.py"
 inputs = ["vendor/**"]
+pre_push = true
 
 [[step]]
 name = "too-many-arguments"
@@ -373,6 +433,8 @@ run = "python3 tools/policy/run_unit_tests.py tools/tests"
 tests = true
 # Some 240 test files of tools across the tree, which read what those tools read.
 inputs = ["**"]
+history = true
+pre_push = true
 
 [[step]]
 name = "sccache"
@@ -380,6 +442,7 @@ label = "Compiler-cache helper tests"
 run = "bash tools/tests/ci_sccache.sh"
 tests = true
 inputs = ["tools/ci/sccache.sh"]
+pre_push = true
 
 [[step]]
 name = "cargo-shim"
@@ -387,6 +450,7 @@ label = "Cargo shim tests"
 run = "bash tools/tests/cargo_shim.sh"
 tests = true
 inputs = ["tools/ci/cargo-shim"]
+pre_push = true
 
 [[step]]
 name = "receipt"
@@ -394,6 +458,7 @@ label = "CI receipt tests"
 run = "bash tools/tests/test_ci_receipt.sh"
 tests = true
 inputs = ["tools/ci/receipt.sh"]
+pre_push = true
 
 [[step]]
 name = "builder-candidate-workflow"
@@ -401,7 +466,15 @@ label = "Builder candidate workflow tests"
 run = "python3 os/tests/test_builder_candidate_workflow.py"
 tests = true
 inputs = ["t.toml", ".forgejo/workflows/**", "os/dev/**", "os/Containerfile.builder", "tools/ci/**",
-          "dist/ci/install-build-deps.sh", "crates/agent/agent-participant/tests/host_agents.rs"]
+          "dist/ci/install-build-deps.sh", "crates/agent/agent-participant/tests/host_agents.rs",
+          "crates/browser/tilo-browser-peer/tests/end_to_end.rs",
+          "crates/browser/tilo-browser-peer/tests/passkey_root.rs",
+          "crates/browser/tilo-browser-peer/tests/node_workspace.rs",
+          "crates/browser/tilo-browser-peer/tests/voice_browsers.rs",
+          "scripts/legacy-app-subjects.sh",
+          # t.toml's checks as t expands them: the app matrix lists apps/*/tilo-app.toml.
+          "apps/*/tilo-app.toml"]
+pre_push = true
 
 
 [[step]]
@@ -410,9 +483,12 @@ label = "Codex CI watcher tests"
 run = "python3 tools/policy/run_unit_tests.py .codex/hooks"
 tests = true
 inputs = [".codex/**"]
+pre_push = true
 
 # Steps t runs as checks declared on their own in t.toml (`covered_by`): run.sh runs them here
-# too, and tools/ci/t_toml.py requires that check to run the same command.
+# too, and tools/ci/t_toml.py requires that check to run the same command. `pre_push` on one of
+# these is that check's: t.toml's declarations are hand-written, so the flag stays here, where
+# both the hook and tools/ci/pre_push.py read it.
 
 [[step]]
 name = "workspace-membership"
@@ -433,21 +509,25 @@ name = "codemap"
 label = "Code map is current"
 run = "python3 tools/docs/codemap.py --check"
 covered_by = "codemap"
+pre_push = true
 
 [[step]]
 name = "app-portability"
 label = "Apps and portable SDK crates hold no platform code"
 run = "python3 tools/policy/check_app_portability.py"
 covered_by = "sdk-policy"
+pre_push = true
 
 [[step]]
 name = "app-capabilities"
 label = "Apps declare the capabilities their code uses"
 run = "python3 tools/policy/check_app_capabilities.py"
 covered_by = "sdk-policy"
+pre_push = true
 
 [[step]]
 name = "web-desktop-registry"
 label = "Browser desktop registry matches app manifests"
 run = "python3 tools/web/generate_web_desktop.py --check"
 covered_by = "sdk-policy"
+pre_push = true

@@ -659,6 +659,17 @@ impl ScreenshotMarkup {
         }
     }
 
+    /// Close the open picker through its button, so a keyboard on one of
+    /// its choices returns to that button rather than to nothing (where
+    /// Enter would save and close the editor).
+    fn close_picker(&mut self) {
+        if self.tool_picker_open {
+            self.press("tool");
+        } else if self.color_picker_open {
+            self.press("colors");
+        }
+    }
+
     /// Tab and Shift+Tab: the next or previous toolbar control, wrapping.
     fn move_keyboard(&mut self, back: bool) {
         let ids: Vec<&'static str> = self
@@ -1244,8 +1255,7 @@ impl Widget for ScreenshotMarkup {
                     self.press(id);
                     *ctx.handled = true;
                 } else if self.tool_picker_open || self.color_picker_open {
-                    self.tool_picker_open = false;
-                    self.color_picker_open = false;
+                    self.close_picker();
                     *ctx.handled = true;
                 } else if self.viewport.contains(self.cursor) && self.canvas.contains(self.cursor) {
                     let (width_px, alpha) = match self.tool {
@@ -1295,11 +1305,7 @@ impl Widget for ScreenshotMarkup {
                 match &event.logical_key {
                     Key::Named(NamedKey::Escape) => {
                         if self.tool_picker_open || self.color_picker_open {
-                            if self.tool_picker_open {
-                                self.press("tool");
-                            } else {
-                                self.press("colors");
-                            }
+                            self.close_picker();
                         } else {
                             self.pending.push(ScreenshotMarkupCommand::Cancel);
                         }

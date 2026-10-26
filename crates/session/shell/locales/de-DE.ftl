@@ -198,6 +198,7 @@ shortcut-name-power-menu = Ein/Aus-Menü
 shortcut-name-next-input-source = Nächstes Tastaturlayout
 shortcut-name-emoji-picker = Emoji
 shortcut-name-say-something = Hier etwas sagen
+shortcut-name-report-problem = Problem melden
 shortcut-name-ask-agent = Agent zur Auswahl fragen
 
 # Die Gruppen, in denen Tastenkürzel aufgeführt werden
@@ -519,6 +520,13 @@ portal-a11y-name = Name
 portal-a11y-answer = Antwort
 portal-secret-required = Fülle alle Pflichtfelder aus.
 portal-secret-wifi-length = Ein WLAN-Passwort hat 8 bis 63 Zeichen oder 64 Hexadezimalziffern.
+portal-sim-unlock = Entsperren
+portal-sim-unlocking = SIM wird entsperrt …
+portal-sim-unlock-failed = Die SIM konnte nicht entsperrt werden. Versuche es erneut.
+portal-sim-pin-wrong = Diese PIN ist falsch.
+portal-sim-puk-title = SIM gesperrt
+portal-sim-puk-lead = Zu viele falsche PINs haben die SIM für „{ $network }“ gesperrt. Gib die PUK vom Kartenhalter der SIM ein und wähle eine neue PIN.
+portal-sim-puk-wrong = Diese PUK ist falsch.
 portal-network-heading = Netzwerk
 portal-network-this-network = dieses Netzwerk
 portal-network-password = Passwort
@@ -553,7 +561,6 @@ topbar-clocks-notification-body = Die Zeit ist abgelaufen
 # Arbeitsbereichsaktivität: woran eine mitarbeitende Person gerade arbeitet
 host-activity-working-on = Arbeitet an { $target }
 host-activity-workspace-not-shown = Wechsle zu diesem Arbeitsbereich, um seinen Verlauf zu ändern.
-host-activity-personal-only = Das kann nur die Person an diesem Gerät.
 host-activity-action-feed = Verlauf lesen
 host-activity-action-summary = Neues lesen
 host-activity-action-replay = Layout abspielen
@@ -602,6 +609,10 @@ host-source-app-actions = App-Aktionen
 # App-Starts und Sitzungsaktionen
 host-app-did-not-open-title = Anwendung wurde nicht geöffnet
 host-app-did-not-open-body = Die App wurde gestartet, hat aber kein Fenster erstellt. Sieh im Sitzungsprotokoll nach und versuche es erneut.
+live-view-not-installed = Die App dazu ist nicht auf diesem Computer
+live-view-gone = Es ist nicht mehr da
+live-view-did-not-open = Es hat sich hier nicht geöffnet
+live-view-closed = Die App dazu wurde geschlossen
 host-session-action-failed = Sitzungsaktion fehlgeschlagen
 host-session-lock-failed = Die Sitzung konnte nicht gesperrt werden. Sieh im Sitzungsprotokoll nach und versuche es erneut.
 host-session-logout-failed = Abmelden fehlgeschlagen. Sieh im Sitzungsprotokoll nach und versuche es erneut.
@@ -830,11 +841,6 @@ overview-site-here = { $count ->
    *[other] { $count } Personen hier
 }
 a11y-leave-workspace = { $name } verlassen
-
-# Der Ansicht einer Person folgen
-follow-label = Du folgst { $person }
-follow-stopped = Folgen beendet
-follow-stop = Beenden
 
 # Filterchips der Suche
 search-filter-all = Alle
@@ -1381,6 +1387,8 @@ search-answer-bad-address = Diese Adresse lässt sich nicht öffnen.
 search-people-invited = Eingeladen
 search-action-emoji-picker = Emoji auswählen
 search-action-emoji-picker-subtitle = Dort einfügen, wo du schreibst
+search-action-next-input-source-subtitle = Mit dem nächsten Layout deiner Liste schreiben
+input-source-next-none = Füge in den Einstellungen ein weiteres Tastaturlayout hinzu, um zwischen ihnen zu wechseln
 search-provider-host-apps = Host-Apps
 search-provider-app-actions = Ressourcen und Aktionen von Anwendungen
 
@@ -1420,7 +1428,7 @@ search-app-job-streaming = liefert Ergebnisse
 search-app-job-succeeded = abgeschlossen
 search-app-job-failed = fehlgeschlagen
 search-app-job-cancelled = abgebrochen
-search-app-resource-contains = enthält Ressourcen
+search-app-content-contains = enthält Ressourcen
 
 # Suche: Sitzungsaktionen
 search-session-logout = Von Tilo abmelden
@@ -1576,12 +1584,24 @@ search-action-group-move-to-strip-previous = Fenstergruppe in die Leiste darübe
 search-action-group-move-to-strip-previous-subtitle = Die fokussierte Fenstergruppe in die Leiste darüber tragen
 search-action-group-move-to-strip-next = Fenstergruppe in die Leiste darunter verschieben
 search-action-group-move-to-strip-next-subtitle = Die fokussierte Fenstergruppe in die Leiste darunter tragen
+search-action-group-move-to-strip = Fenstergruppe in eine Leiste verschieben…
+search-action-group-move-to-strip-subtitle = Die fokussierte Fenstergruppe in die gewählte Leiste tragen
+search-action-group-close = Dieses Fenster schließen
+search-action-group-close-subtitle = Das fokussierte Fenster mit allen Tabs schließen
+search-action-window-none = Es gibt kein Fenster für diese Aktion.
+search-action-window-unchanged = Nichts geändert. Das Fenster ist schon dort.
+search-action-window-unchanged-edge = Nichts geändert. Das Fenster kann nicht weiter in diese Richtung.
+search-action-window-unchanged-maximized = Nichts geändert. Das Fenster ist schon maximiert.
+search-action-window-unchanged-restored = Nichts geändert. Das Fenster ist nicht maximiert.
+search-action-window-unchanged-narrowest = Nichts geändert. Das Fenster ist schon so schmal wie möglich.
+search-action-window-unchanged-widest = Nichts geändert. Das Fenster ist schon so breit wie möglich.
+search-action-tab-unchanged-edge = Nichts geändert. Auf dieser Seite gibt es kein Fenster, das den Tab aufnehmen kann.
 search-action-group-move-to-display-previous = Fenstergruppe auf den vorherigen Bildschirm verschieben
 search-action-group-move-to-display-previous-subtitle = Die fokussierte Fenstergruppe auf den linken Bildschirm verschieben
 search-action-group-move-to-display-next = Fenstergruppe auf den nächsten Bildschirm verschieben
 search-action-group-move-to-display-next-subtitle = Die fokussierte Fenstergruppe auf den rechten Bildschirm verschieben
-search-action-group-maximize = Fenstergruppe maximieren oder wiederherstellen
-search-action-group-maximize-subtitle = Die fokussierte Fenstergruppe auf ihren Bildschirm vergrößern oder wiederherstellen
+search-action-group-maximize = Fenstergruppe maximieren
+search-action-group-maximize-subtitle = Die fokussierte Fenstergruppe auf ihren Bildschirm vergrößern
 search-action-group-restore = Fenstergruppe wiederherstellen
 search-action-group-restore-subtitle = Die fokussierte maximierte Fenstergruppe an ihren Platz in der Leiste zurückbringen
 search-action-group-fullscreen = Vollbild oder wiederherstellen
@@ -1937,7 +1957,7 @@ onboarding-recovery-identity = Identität dieses Computers: { $fingerprint }
 onboarding-backup-recovery-key = Wiederherstellungsschlüssel aufschreiben
 onboarding-backup-recovery-key-detail = 24 Wörter auf Papier holen diese Identität zurück. Ohne Datei oder Passphrase.
 onboarding-recovery-key-copy-title = Schreib deinen Wiederherstellungsschlüssel auf
-onboarding-recovery-key-copy-body = Schreib diese 24 Wörter der Reihe nach auf Papier und bewahre es sicher auf. Wer sie hat, kann sich als du ausgeben. Fotografiere sie also nicht und lege sie nicht an einem geteilten Ort ab.
+onboarding-recovery-key-copy-body = Schreib sie der Reihe nach auf Papier. Wer sie hat, kann sich als du ausgeben, also fotografiere sie nicht.
 onboarding-recovery-key-confirm = Zur Kontrolle tippe die Wörter { $first }, { $second } und { $third } ein.
 onboarding-recovery-key-word = Wort { $position }
 onboarding-recovery-key-confirm-button = Ich habe ihn aufgeschrieben
@@ -1950,13 +1970,16 @@ onboarding-recovery-key-placeholder = wort1 wort2 wort3 …
 onboarding-recovery-key-progress = { $count } von { $total } Wörtern
 onboarding-recovery-key-count = Ein Wiederherstellungsschlüssel hat 24 Wörter; dieser hat { $found }.
 onboarding-recovery-key-unknown-word = Wort { $position } ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
+onboarding-recovery-key-typo = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
+onboarding-recovery-key-suggestion = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Meintest du „{ $suggestion }“?
 onboarding-recovery-key-checksum = Diese Wörter ergeben keinen Wiederherstellungsschlüssel. Wahrscheinlich ist eines vertippt oder vertauscht.
 onboarding-recovery-key-ready = Wiederherstellungsschlüssel für Identität { $fingerprint }
 onboarding-recovery-key-ready-detail = Wähle Identität wiederherstellen, um ihn auf diesem Computer zu verwenden.
-onboarding-recovery-key-matches = Das ist die Identität dieses Computers. Wähle Identität wiederherstellen, um sie zurückzuholen.
+onboarding-recovery-key-matches = Er passt zur Identität dieses Computers. Wähle Identität wiederherstellen, um sie zurückzuholen.
 onboarding-recovery-key-different = Diese Wörter gehören zu einer anderen Identität
-onboarding-recovery-key-different-detail = Sie stellen { $found } wieder her, aber dieser Computer gehört zu { $expected }. Prüfe, ob du den Wiederherstellungsschlüssel der Identität dieses Computers verwendest.
+onboarding-recovery-key-different-detail = Sie stellen { $found } wieder her, aber dieser Computer gehört zu { $expected }, also prüfe, ob du den Wiederherstellungsschlüssel dieses Computers verwendest.
 onboarding-recovery-key-restoring = Deine Identität wird wiederhergestellt …
+onboarding-recovery-key-failed = Wiederherstellung mit diesem Schlüssel fehlgeschlagen
 onboarding-choice-restore-detail = Eine verschlüsselte Identitätssicherung öffnen
 onboarding-restore-title = Aus einer Sicherung wiederherstellen
 onboarding-restore-body = Wähle die verschlüsselte Sicherung, die du aus Tilo gespeichert hast, und gib ihre Passphrase ein.
@@ -2012,7 +2035,7 @@ onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automa
 # Identitätseinrichtung: verschlüsselte Sicherung
 onboarding-backup-title = Deine Tilo-Identität sichern
 onboarding-backup-identity-created = Deine lokale Identität wurde erstellt
-onboarding-backup-explanation = Oder speichere eine verschlüsselte Kopie an einem anderen Ort. Bewahre Datei und Passphrase getrennt auf; zusammen stellen sie diese Identität wieder her.
+onboarding-backup-explanation = Oder speichere eine verschlüsselte Sicherungsdatei und bewahre sie getrennt von ihrer Passphrase auf.
 onboarding-backup-passphrase = Neue Passphrase für die Sicherung
 onboarding-backup-passphrase-placeholder = Mindestens 12 Zeichen, lang und einzigartig
 onboarding-backup-confirmation = Neue Passphrase für die Sicherung bestätigen
@@ -2253,16 +2276,6 @@ overview-items-shared = { $count ->
 }
 
 # Fenster und Dokumente, die die Shell anzeigt
-shell-window-restoring = Dieses Fenster wird wiederhergestellt …
-shell-window-opening = Wird geöffnet …
-shell-window-opening-slow = { $app } wird geöffnet … dauert länger als üblich
-shell-window-installing-slow = { $app } wird installiert … dauert länger als üblich
-shell-window-installing-of = { $app } wird installiert … { $received } von { $total }
-shell-window-installing-received = { $app } wird installiert … { $received }
-shell-window-updating = { $app } wird aktualisiert …
-shell-window-updating-slow = { $app } wird aktualisiert … dauert länger als üblich
-shell-window-updating-of = { $app } wird aktualisiert … { $received } von { $total }
-shell-window-updating-received = { $app } wird aktualisiert … { $received }
 peer-window-not-installed = Auf diesem Gerät nicht installiert.
 peer-window-install = { $app } installieren
 peer-window-installing = { $app } wird installiert …
@@ -2360,6 +2373,17 @@ search-action-workspace-create-invalid-name = Gib einen Namen mit 1 bis 120 Zeic
 search-action-workspace-rename = Diesen Arbeitsbereich umbenennen
 search-action-workspace-rename-subtitle = Dem angezeigten Arbeitsbereich einen neuen Namen geben
 search-action-workspace-rename-refused = Nur wer diesen Arbeitsbereich leitet, kann ihn umbenennen.
+search-action-workspace-delete = Diesen Arbeitsbereich löschen
+search-action-workspace-delete-subtitle = Den angezeigten Arbeitsbereich hier und auf deinen anderen Geräten löschen
+search-action-workspace-delete-confirm = Arbeitsbereich löschen
+search-action-workspace-delete-last = Das ist dein einziger Arbeitsbereich. Lege zuerst einen weiteren an.
+search-action-workspace-delete-failed = Der Arbeitsbereich konnte nicht gelöscht werden. Versuche es noch einmal.
+search-action-workspace-move-earlier = Diesen Arbeitsbereich nach oben verschieben
+search-action-workspace-move-earlier-subtitle = Den angezeigten Arbeitsbereich in deiner Liste eine Stelle nach vorn rücken
+search-action-workspace-move-later = Diesen Arbeitsbereich nach unten verschieben
+search-action-workspace-move-later-subtitle = Den angezeigten Arbeitsbereich in deiner Liste eine Stelle nach hinten rücken
+search-action-workspace-move-first = Dieser Arbeitsbereich steht schon ganz oben in deiner Liste.
+search-action-workspace-move-last = Dieser Arbeitsbereich steht schon ganz unten in deiner Liste.
 search-action-strip-create = Leiste erstellen
 search-action-strip-create-subtitle = Eine benannte Leiste zu diesem Arbeitsbereich hinzufügen und dorthin wechseln
 search-action-strip-create-default-name = Neue Leiste
@@ -2404,7 +2428,6 @@ pad-map-dial-brightness = Helligkeit
 
 # Gerätefremde Ansichten, Dokumente öffnen, Identitätssicherung und Einladungen
 peer-view-surface-title = Entfernte Oberfläche #{ $id }
-peer-view-awaiting = Warte auf die entfernte Oberfläche …
 doc-open-no-handler = Keine App auf diesem Desktop öffnet .{ $ext }-Dateien ({ $name })
 doc-open-no-file-type = { $name } hat keinen Dateityp, mit dem es sich öffnen lässt
 doc-open-no-workspace = Es gibt keinen aktiven Arbeitsbereich, in dem es sich öffnen lässt
@@ -2800,6 +2823,7 @@ shell-launch-registry-unavailable = Die Prozessverwaltung für Apps ist nicht ve
 shell-launch-writer-still-closing = Die vorherige App wird noch geschlossen. Öffne sie erneut, sobald sie fertig ist.
 
 shell-window-restore-interrupted = Dieses gespeicherte Fenster wurde nicht vollständig wieder geöffnet.
+shell-window-open-failed = Dieses Fenster wurde nicht geöffnet
 shell-window-retry = Erneut öffnen
 shell-window-app-missing = { $app } ist nicht auf diesem Computer
 shell-window-get-app = { $app } holen
@@ -2926,7 +2950,7 @@ onboarding-browser-start = Meine Browserdaten verwenden
 onboarding-browser-unavailable = Deine Browserdaten warten noch. Versuche es erneut oder mach vorerst weiter.
 onboarding-backup-unavailable = Auf diesem Gerät kann keine Sicherung deiner persönlichen Identität erstellt werden.
 onboarding-ready-welcome = Willkommen bei Tilo
-onboarding-ready-next = Richte dich ein oder starte zuerst eine kurze Tour.
+onboarding-ready-next = Der Desktop ist bereit. Beginne mit irgendetwas: Öffne eine App, suche, was du brauchst, oder lade jemanden in einen Arbeitsbereich ein.
 onboarding-migration-cleanup-pending = Deine Sachen sind in Tilo bereit. Einige temporäre Dateien müssen noch entfernt werden.
 onboarding-migration-cleanup-unavailable = Deine Sachen sind in Tilo bereit. Das Entfernen der temporären Dateien konnte nicht bestätigt werden.
 onboarding-migration-cleanup-resume = Aufräumen erneut versuchen
@@ -3152,6 +3176,13 @@ crash-notice-app-name = Desktop
 crash-notice-title = Der Desktop wurde neu gestartet
 crash-notice-froze-body = Er reagierte um { $time } nicht mehr. Ein Bericht darüber bleibt auf diesem Computer.
 crash-notice-crashed-body = Er wurde um { $time } unerwartet beendet. Ein Bericht darüber bleibt auf diesem Computer.
+crash-notice-stopped-title = Der Computer wurde neu gestartet
+crash-notice-stopped-body = Er wurde vor diesem Start unerwartet angehalten. Ein Bericht darüber bleibt auf diesem Computer.
+host-crash-records-resource = Probleme
+host-crash-records-list = Probleme auflisten
+host-crash-records-list-detail = Wann der Desktop oder der Computer angehalten hat, das Neueste zuerst, ohne die Einzelheiten.
+host-crash-records-read = Einzelheiten eines Problems lesen
+host-crash-records-read-detail = Alles, was der Bericht über ein Problem enthält. Er bleibt auf diesem Computer.
 
 ## Desk widgets
 
@@ -3279,20 +3310,16 @@ directory-reported = Arbeitsbereich gemeldet
 directory-reported-body = Die Betreibenden wurden benachrichtigt.
 directory-report-failed = Die Meldung ist nicht angekommen
 directory-moved = { $name } ist auf deinen Host umgezogen, damit alle ihn finden und beitreten können.
-arrival-others = { $count ->
-    [one] und 1 weitere Person
-   *[other] und { $count } weitere
-}
 
 # Cursor chat: a short message beside your pointer, shown to everyone in that window.
 cursor-chat-placeholder = Sag etwas
 cursor-chat-you = Du
 
-# The line under the top bar when you arrive where people are, or someone waves.
-presence-arrival-intro-where = Andere hier sehen deinen Namen, deine Farbe und wo du in diesem Arbeitsbereich bist
-presence-arrival-intro-here = Andere hier sehen deinen Namen und deine Farbe, nie wo du bist
-presence-arrival-intro-nothing = Andere hier sehen dich nicht, und du siehst ihre Zeiger nicht
-presence-arrival-change = Ändern
+# The top bar's status when you arrive in a public workspace the first time:
+# what its people see of you, in a few words.
+presence-arrival-seen-where = Sie sehen, wo du bist
+presence-arrival-seen-here = Sie sehen, dass du da bist
+presence-arrival-seen-nothing = Sie sehen dich nicht
 profile-name-not-saved = Dein Name wurde nicht gespeichert
 profile-action-say-something = Hier etwas sagen
 cursor-chat-no-window = Zeig auf ein geteiltes Fenster, um etwas zu sagen
@@ -3337,3 +3364,7 @@ search-action-app-remove-from-apps = Eine App aus deinen Apps entfernen…
 search-action-app-remove-from-apps-subtitle = Sie bleibt auf diesem Computer
 search-apps-uninstall = Deinstallieren
 search-apps-remove-from-apps = Aus Apps entfernen
+
+# The pinned people overlay's message box
+people-overlay-messages-unavailable = Direktnachrichten sind gerade nicht verfügbar
+people-overlay-message-failed = Die Nachricht an { $name } ging nicht raus

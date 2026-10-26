@@ -745,7 +745,7 @@ impl Widget for NotificationLayer {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let node = tree
-            .new_leaf(super::history::overlay_style())
+            .new_leaf(overlay_style())
             .unwrap_or_else(|_| NodeId::from(0u64));
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -860,6 +860,24 @@ impl Widget for NotificationLayer {
         let focused = center.focus_accessibility_path(notifications.host(), &layout, dialog);
         self.dirty |= focused;
         focused
+    }
+}
+
+/// A leaf over the whole surface, out of the strip's flow.
+fn overlay_style() -> ui::taffy::Style {
+    ui::taffy::Style {
+        position: ui::taffy::Position::Absolute,
+        inset: ui::taffy::Rect {
+            left: ui::taffy::LengthPercentageAuto::length(0.0),
+            top: ui::taffy::LengthPercentageAuto::length(0.0),
+            right: ui::taffy::LengthPercentageAuto::auto(),
+            bottom: ui::taffy::LengthPercentageAuto::auto(),
+        },
+        size: ui::taffy::Size {
+            width: ui::taffy::Dimension::percent(1.0),
+            height: ui::taffy::Dimension::percent(1.0),
+        },
+        ..Default::default()
     }
 }
 

@@ -40,6 +40,7 @@ use crate::widgets::{
 };
 
 mod devices;
+mod kill_switch;
 
 /// A key, under its label: a key is longer than the room a trailing value
 /// has beside a label, so it takes the row's measure and breaks across two
@@ -75,6 +76,19 @@ fn plugin_page_key(service: &str) -> String {
 
 /// What `allowed_ips` a new tunnel routes unless told otherwise: everything.
 const ALL_ADDRESSES: &str = "0.0.0.0/0, ::/0";
+
+/// Whether `text` is an address a tunnel can route: an IP address, or one
+/// with a prefix no longer than the address.
+fn is_routed_address(text: &str) -> bool {
+    let (address, prefix) = text
+        .split_once('/')
+        .map_or((text, None), |(address, prefix)| (address, Some(prefix)));
+    let Ok(address) = address.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    let longest = if address.is_ipv4() { 32 } else { 128 };
+    prefix.is_none_or(|prefix| prefix.parse::<u8>().is_ok_and(|prefix| prefix <= longest))
+}
 
 /// What VPN does on this device. The import, connect, disconnect and delete
 /// effects keep the ids the VPN app published, so what asked for them
@@ -130,7 +144,7 @@ pub enum VpnEffect {
         server_public_key: Option<String>,
         #[param("The server: host:port")]
         endpoint: Option<String>,
-        #[param("What goes through the tunnel, comma-separated")]
+        #[param("What goes through the tunnel, comma-separated; everything when omitted")]
         allowed_ips: Option<String>,
         #[param("Name servers, comma-separated")]
         dns: Option<String>,
@@ -236,13 +250,32 @@ pub enum VpnEffect {
         #[param("host:port")]
         endpoint: String,
     },
-    /// What a `WireGuard` tunnel routes.
-    #[effect(job, row, idempotent, label = "Routed addresses")]
-    SetVpnAllowedIps {
+    /// Have a `WireGuard` tunnel route this address too.
+    #[effect(job, row, idempotent, label = "Add routed address")]
+    AddVpnRoutedAddress {
         #[param("The VPN's id or name")]
         connection: String,
-        #[param("Addresses with their prefix, comma-separated")]
-        addresses: String,
+        #[param("An address with its prefix: 10.20.0.0/16")]
+        address: String,
+    },
+    /// Stop a `WireGuard` tunnel routing this address.
+    #[effect(job, row, idempotent, label = "Remove routed address")]
+    RemoveVpnRoutedAddress {
+        #[param("The VPN's id or name")]
+        connection: String,
+        #[param("An address with its prefix, as the tunnel lists it")]
+        address: String,
+    },
+    /// Block this device's traffic while a VPN is set to connect and is not
+    /// connected, or not; and whether the local network stays reachable
+    /// meanwhile (kept as it was when omitted).
+    #[effect(idempotent, row, label = "Block traffic while the VPN is down")]
+    SetKillSwitch {
+        #[param("The VPN's id or name")]
+        connection: String,
+        on: bool,
+        #[param("Keep printers, file shares and the router reachable")]
+        allow_local: Option<bool>,
     },
     /// How often a `WireGuard` tunnel tells its server it is there; 0 never.
     #[effect(job, row, idempotent, label = "Keepalive")]
@@ -321,7 +354,6 @@ struct WireguardForm {
     address: LocalState<String>,
     server_public_key: LocalState<String>,
     endpoint: LocalState<String>,
-    allowed_ips: LocalState<String>,
     dns: LocalState<String>,
     keepalive: LocalState<String>,
     private_key: Arc<Mutex<String>>,
@@ -339,7 +371,6 @@ impl Default for WireguardForm {
             address: LocalState::new(String::new()),
             server_public_key: LocalState::new(String::new()),
             endpoint: LocalState::new(String::new()),
-            allowed_ips: LocalState::new(ALL_ADDRESSES.into()),
             dns: LocalState::new(String::new()),
             keepalive: LocalState::new("25".into()),
             private_key: Arc::new(Mutex::new(String::new())),
@@ -384,6 +415,9 @@ pub(crate) struct VpnState {
     pub(super) errors: HashMap<String, String>,
     /// VPNs whose settings are being read.
     reading: HashSet<String>,
+    /// VPNs changed while their settings were being read: that read may
+    /// predate the change, so they are read again once it lands.
+    stale: HashSet<String>,
     /// VPNs being brought up or down.
     changing: HashSet<String>,
     wireguard: WireguardForm,
@@ -571,11 +605,24 @@ impl NetworkModel {
         );
     }
 
+    /// Read `uuid`'s settings as the device holds them after a change; a
+    /// read already under way may predate it, so it is read again after.
+    fn reread_vpn(&mut self, uuid: &str) {
+        if self.vpn.reading.contains(uuid) {
+            self.vpn.stale.insert(uuid.to_owned());
+        } else {
+            self.read_vpn(uuid);
+        }
+    }
+
     /// Take in `uuid`'s settings.
     pub(super) fn adopt_vpn_settings(&mut self, uuid: &str, settings: VpnProfileSettings) {
         self.vpn.reading.remove(uuid);
         self.vpn.errors.remove(uuid);
         self.vpn.settings.insert(uuid.to_owned(), settings);
+        if self.vpn.stale.remove(uuid) {
+            self.read_vpn(uuid);
+        }
         self.changed = true;
     }
 
@@ -698,6 +745,9 @@ impl NetworkModel {
             if let Some(mtu) = patch.mtu {
                 settings.mtu = mtu;
             }
+            if let Some(addresses) = &patch.allowed_ips {
+                settings.allowed_ips.clone_from(addresses);
+            }
         }
         Ok(self.change(
             NetworkChange::VpnProfile {
@@ -719,9 +769,36 @@ impl NetworkModel {
             .ok_or_else(|| t("net-vpn-settings-unread"))
     }
 
-    /// Bring `connection` up or down.
+    /// The addresses `connection`, a `WireGuard` tunnel, routes, as last
+    /// read.
+    fn vpn_routed(&self, connection: &str) -> Result<Vec<String>, String> {
+        let vpn = self.vpn(connection)?;
+        let settings = self
+            .vpn
+            .settings
+            .get(&vpn.uuid)
+            .ok_or_else(|| t("net-vpn-settings-unread"))?;
+        if settings.kind != "wireguard" {
+            return Err(t("net-vpn-allowed-wireguard"));
+        }
+        Ok(settings.allowed_ips.clone())
+    }
+
+    /// Bring `connection` up or down. Turning it off is on purpose: its
+    /// kill switch's block lifts, and one blocking while it is not up only
+    /// lifts.
     fn vpn_switch(&mut self, connection: &str, on: bool) -> Result<Begun, String> {
         let vpn = self.vpn(connection)?;
+        if !on {
+            self.release_profile(&vpn.uuid)?;
+            if !vpn.active && self.unblock(&vpn.uuid) {
+                self.notice = Some(t_args(
+                    "net-vpn-disconnected",
+                    &[("name", vpn.name.as_str().into())],
+                ));
+                return Ok(Begun::Done);
+            }
+        }
         if !self.vpn.changing.insert(vpn.uuid.clone()) {
             return Err(t_args(
                 "net-vpn-busy",
@@ -882,7 +959,9 @@ impl NetworkModel {
                         .unwrap_or_else(|| form.endpoint.get())
                         .trim()
                         .to_owned(),
-                    allowed_ips: list_of(&allowed_ips.unwrap_or_else(|| form.allowed_ips.get())),
+                    // A tunnel set up here routes everything; its profile
+                    // page edits what it routes.
+                    allowed_ips: list_of(allowed_ips.as_deref().unwrap_or(ALL_ADDRESSES)),
                     keepalive: (keepalive > 0).then_some(keepalive),
                 };
                 let text = tunnel.config()?;
@@ -1024,16 +1103,48 @@ impl NetworkModel {
                     ..VpnProfilePatch::default()
                 },
             ),
-            VpnEffect::SetVpnAllowedIps {
+            VpnEffect::AddVpnRoutedAddress {
                 connection,
-                addresses,
-            } => self.vpn_patch(
-                &connection,
-                VpnProfilePatch {
-                    allowed_ips: Some(list_of(&addresses)),
-                    ..VpnProfilePatch::default()
-                },
-            ),
+                address,
+            } => {
+                let address = address.trim();
+                if !is_routed_address(address) {
+                    return Err(t_args(
+                        "net-vpn-allowed-not-network",
+                        &[("address", address.into())],
+                    ));
+                }
+                let mut addresses = self.vpn_routed(&connection)?;
+                if !addresses.iter().any(|known| known == address) {
+                    addresses.push(address.to_owned());
+                }
+                self.vpn_patch(
+                    &connection,
+                    VpnProfilePatch {
+                        allowed_ips: Some(addresses),
+                        ..VpnProfilePatch::default()
+                    },
+                )
+            }
+            VpnEffect::RemoveVpnRoutedAddress {
+                connection,
+                address,
+            } => {
+                let mut addresses = self.vpn_routed(&connection)?;
+                addresses.retain(|known| known != address.trim());
+                self.vpn_patch(
+                    &connection,
+                    VpnProfilePatch {
+                        allowed_ips: Some(addresses),
+                        ..VpnProfilePatch::default()
+                    },
+                )
+            }
+            VpnEffect::SetKillSwitch {
+                connection,
+                on,
+                allow_local,
+            } => self.set_kill_switch(&connection, on, allow_local),
             VpnEffect::SetVpnKeepalive {
                 connection,
                 seconds,
@@ -1108,21 +1219,25 @@ impl NetworkModel {
             }
             (NetworkChange::VpnProfile { uuid, name, .. }, result) => match result {
                 Ok(()) => {
-                    // What `NetworkManager` made of it is read again.
-                    self.vpn.settings.remove(uuid);
-                    self.read_vpn(uuid);
+                    // What `NetworkManager` made of it is read again. The
+                    // settings shown already hold the change, so they stay
+                    // offered meanwhile: a second change can follow at once,
+                    // and the page does not empty and refill.
+                    self.reread_vpn(uuid);
                     Ok(t_args(
                         "net-notice-policy-ok",
                         &[("name", name.as_str().into())],
                     ))
                 }
                 Err(error) => {
+                    // What is shown holds a change the device refused.
                     self.vpn.settings.remove(uuid);
-                    self.read_vpn(uuid);
+                    self.reread_vpn(uuid);
                     Err(t_args("net-notice-policy-err", &[("error", error.into())]))
                 }
             },
             (NetworkChange::VpnDelete { uuid, name }, Ok(())) => {
+                self.forget_kill_switch(uuid);
                 self.vpns.retain(|vpn| &vpn.uuid != uuid);
                 self.vpn.settings.remove(uuid);
                 self.cx
@@ -1164,6 +1279,7 @@ impl NetworkModel {
         let asking =
             |effect: VpnEffect, asking: &[&str]| SettingsEffect::from(effect).bound_asking(asking);
         let connection = vpn.uuid.clone();
+        let on = self.set_to_connect(vpn);
         let mut row = LiveRow::new(
             format!("vpn.connection:{}", vpn.uuid),
             "vpn.connection",
@@ -1175,11 +1291,19 @@ impl NetworkModel {
         .operation(asking(
             VpnEffect::SetVpnConnected {
                 connection: connection.clone(),
-                on: !vpn.active,
+                on: !on,
             },
             &["on"],
         ))
-        .operation(offer(if vpn.active {
+        .operation(asking(
+            VpnEffect::SetKillSwitch {
+                connection: connection.clone(),
+                on: self.kill_switch(&vpn.uuid).is_none(),
+                allow_local: None,
+            },
+            &["on", "allow_local"],
+        ))
+        .operation(offer(if on {
             VpnEffect::Disconnect {
                 connection: connection.clone(),
             }
@@ -1264,19 +1388,28 @@ impl NetworkModel {
                     &["endpoint"],
                 ))
                 .operation(asking(
-                    VpnEffect::SetVpnAllowedIps {
+                    VpnEffect::AddVpnRoutedAddress {
                         connection: connection.clone(),
-                        addresses: settings.allowed_ips.join(", "),
+                        address: String::new(),
                     },
-                    &["addresses"],
+                    &["address"],
                 ))
                 .operation(asking(
                     VpnEffect::SetVpnKeepalive {
-                        connection,
+                        connection: connection.clone(),
                         seconds: settings.keepalive.unwrap_or(0),
                     },
                     &["seconds"],
                 ));
+            if let Some(address) = settings.allowed_ips.first() {
+                row = row.operation(asking(
+                    VpnEffect::RemoveVpnRoutedAddress {
+                        connection,
+                        address: address.clone(),
+                    },
+                    &["address"],
+                ));
+            }
         }
         row
     }
@@ -1310,7 +1443,7 @@ impl NetworkModel {
     /// The switch that brings `vpn` up or down.
     fn vpn_switch_control(&self, vpn: &VpnInfo, live: &ui::tilo_actions::Resource) -> Toggle {
         let connection = vpn.uuid.clone();
-        let toggle = Toggle::from_state(&LocalState::new(vpn.active))
+        let toggle = Toggle::from_state(&LocalState::new(self.set_to_connect(vpn)))
             .with_id(&format!("settings.network.vpn.switch.{}", vpn.uuid))
             .with_accessible_name(&vpn.name);
         let toggle = self.cx.bind_on_row(
@@ -1328,6 +1461,9 @@ impl NetworkModel {
     }
 
     fn vpn_state(&self, vpn: &VpnInfo) -> String {
+        if !self.vpn.changing.contains(&vpn.uuid) && !vpn.active && self.blocking(&vpn.uuid) {
+            return t("net-vpn-blocking");
+        }
         if self.vpn.changing.contains(&vpn.uuid) {
             t(if vpn.active {
                 "net-vpn-disconnecting-short"
@@ -1505,11 +1641,6 @@ impl NetworkModel {
                 &t("net-vpn-server"),
             ),
             Self::text_field(
-                &form.allowed_ips,
-                "network.vpn.wireguard.allowed",
-                &t("net-vpn-allowed"),
-            ),
-            Self::text_field(
                 &form.dns,
                 "network.vpn.wireguard.dns",
                 &t("net-dns-servers"),
@@ -1638,6 +1769,7 @@ impl NetworkModel {
             .secondary(self.vpn_kind(vpn))
             .trailing(Box::new(self.vpn_switch_control(vpn, &live))),
         )));
+        status.extend(self.kill_switch_rows(vpn, &live));
         let mut sections = vec![card(&t("net-status"), rows(status))];
         let settings = match (self.vpn.settings.get(uuid), self.vpn.errors.get(uuid)) {
             (Some(settings), _) => self.vpn_settings_rows(vpn, settings),
@@ -1649,6 +1781,12 @@ impl NetworkModel {
         };
         sections.push(card(&t("net-settings"), rows(settings)));
         if let Some(settings) = self.vpn.settings.get(uuid) {
+            if settings.kind == "wireguard" {
+                sections.push(card(
+                    &t("net-vpn-allowed"),
+                    rows(self.routed_rows(vpn, settings)),
+                ));
+            }
             sections.push(card(
                 &t("net-dns-servers"),
                 rows(self.dns_rows(vpn, settings)),
@@ -1861,7 +1999,56 @@ impl NetworkModel {
         out
     }
 
-    /// A `WireGuard` tunnel's own settings: its server and what it carries.
+    /// The addresses a `WireGuard` tunnel routes, each removable, and the
+    /// field to add one.
+    fn routed_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
+        let live = self.vpn_live(vpn).into_resource();
+        let uuid = vpn.uuid.as_str();
+        let mut out: Vec<Item> = settings
+            .allowed_ips
+            .iter()
+            .map(|address| {
+                let remove = self.cx.bind_row(
+                    Button::new(
+                        &format!("settings.network.vpn.allowed.remove.{address}"),
+                        &t("net-vpn-dns-remove"),
+                    ),
+                    &live,
+                    VpnEffect::RemoveVpnRoutedAddress {
+                        connection: uuid.to_owned(),
+                        address: address.clone(),
+                    },
+                );
+                row(Box::new(
+                    ListRow::new(format!("settings.network.vpn.allowed.{address}"), address)
+                        .trailing(Box::new(remove)),
+                ))
+            })
+            .collect();
+        if out.is_empty() {
+            out.push(note(&t("net-vpn-allowed-none")));
+        }
+        out.push(field_row(
+            &t("net-vpn-allowed-add"),
+            Box::new(
+                self.cx.bind_on_row(
+                    &live,
+                    TextInput::from_state(&LocalState::new(String::new()))
+                        .with_id(&format!("network.vpn.allowed.add.{uuid}"))
+                        .with_kind(ui::widget::TextInputKind::Code)
+                        .with_placeholder(t("net-vpn-allowed-add-placeholder")),
+                    effect(VpnEffect::ADD_VPN_ROUTED_ADDRESS).map({
+                        let uuid = uuid.to_owned();
+                        move |address: String| (uuid.clone(), address)
+                    }),
+                ),
+            ),
+        ));
+        out
+    }
+
+    /// A `WireGuard` tunnel's own settings: its server and how often it
+    /// tells it it is there; what it routes has a card of its own.
     fn wireguard_settings_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
         // Every setting here acts on the VPN's own row.
         let live = self.vpn_live(vpn).into_resource();
@@ -1889,21 +2076,6 @@ impl NetworkModel {
                     effect(VpnEffect::SET_VPN_SERVER).map({
                         let uuid = keyed(uuid);
                         move |endpoint: String| (uuid.clone(), endpoint)
-                    }),
-                )),
-            ),
-            field_row(
-                &t("net-vpn-allowed"),
-                Box::new(self.cx.bind_on_row(
-                    &live,
-                    text(
-                        "allowed",
-                        settings.allowed_ips.join(", "),
-                        t("net-vpn-allowed"),
-                    ),
-                    effect(VpnEffect::SET_VPN_ALLOWED_IPS).map({
-                        let uuid = keyed(uuid);
-                        move |addresses: String| (uuid.clone(), addresses)
                     }),
                 )),
             ),

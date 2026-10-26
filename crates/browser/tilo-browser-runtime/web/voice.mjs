@@ -26,7 +26,7 @@
  *   deafened person hears nothing of the call and is muted.
  *
  * `signalling` is the session side: `{join(call), leave(), show(camera,
- * screen, muted, deafened), onEvent(listener)}`
+ * screen, muted, deafened), reachable(), onEvent(listener)}`
  * where events are `{kind: 'granted', grant}` and `{kind: 'ended', call,
  * reason}` (`peer.voice` in peer.mjs adapts the wasm peer).
  */
@@ -98,6 +98,8 @@ export function createVoiceCall({
   let carrier;
   let carrierKey;
   let connecting;
+  /** What the carrier being opened is for (see `keyOf`). */
+  let connectingKey;
   let attempt = 0;
   let retryTimer;
   let grantTimer;
@@ -352,6 +354,7 @@ export function createVoiceCall({
     retryTimer = undefined;
     connecting?.abort();
     connecting = undefined;
+    connectingKey = undefined;
     unpublishVideo();
     const current = carrier;
     if (current && pause) pauseCapture();
@@ -369,15 +372,21 @@ export function createVoiceCall({
   function connect() {
     if (!grant || state.phase === 'idle' || state.phase === 'ended') return;
     if (carrier && carrierKey === keyOf(grant)) return;
+    // A grant renewed or re-sent while a carrier is being opened for the
+    // same participation leaves that opening be: started over, a slow
+    // handshake (a network just back) never finishes.
+    if (connecting && connectingKey === keyOf(grant)) return;
     closeCarrier();
     const opening = grant;
     const ticket = ++generation;
     const controller = new AbortController();
     connecting = controller;
+    connectingKey = keyOf(opening);
     update({phase: attempt === 0 && state.phase !== 'live' ? 'connecting' : 'reconnecting', carrier: 'connecting'});
     void transport.connect({grant: opening, signal: controller.signal}).then(session => {
       if (ticket !== generation) { session.close(); return; }
       connecting = undefined;
+      connectingKey = undefined;
       carrier = session;
       carrierKey = keyOf(opening);
       attempt = 0;
@@ -404,6 +413,7 @@ export function createVoiceCall({
     }, error => {
       if (ticket !== generation) return;
       connecting = undefined;
+      connectingKey = undefined;
       report({type: 'voice-carrier-error', error});
       if (error instanceof CarrierUnsupportedError) {
         unsupportedEnded(opening.call, error.message);
@@ -495,6 +505,9 @@ export function createVoiceCall({
   function admissionLost(call, reason) {
     if (call !== state.call) return;
     stopAll();
+    // The relay answered, so the host is reachable again: the session need
+    // not wait out its backoff to bring the fresh grant.
+    try { signalling.reachable?.(); } catch (error) { report({type: 'voice-signalling-error', error}); }
     update({phase: 'reconnecting', carrier: 'waiting', camera: false, screen: false, participants: []});
     startGrantDeadline(() => {
       if (state.call === call && !grant && state.phase !== 'idle' && state.phase !== 'ended') admissionEnded(call, reason);

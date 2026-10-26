@@ -94,6 +94,10 @@ pub enum RenderRequest {
         scroll_copies: Vec<crate::scroll_copy::DeviceCopy>,
         /// Resize, relayout, structure, or untracked overlay invalidation.
         full_redraw: bool,
+        /// The scene holds only what its damage needs (`crate::draw_cull`):
+        /// it must not be repainted beyond the damage, and a frame that must
+        /// be is not presented, but asks main for one drawn whole.
+        partial: bool,
         /// The backdrops the scene's floating surfaces were recorded over
         /// (`crate::backdrop`), in physical pixels. Empty draws no blur.
         backdrop: crate::backdrop::BackdropFrame,
@@ -159,8 +163,7 @@ impl PreparedRenderer {
 #[path = "render_retry.rs"]
 pub(crate) mod retry;
 
-#[path = "render_bump_recovery.rs"]
-mod bump_recovery;
+use crate::render_bump_recovery as bump_recovery;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameOutcome {
@@ -498,6 +501,7 @@ pub(crate) fn spawn_render_thread_deferred(
                     mut damage_regions,
                     scroll_copies,
                     full_redraw,
+                    partial,
                     cpu_frame_id,
                     backdrop,
                 ) = match msg {
@@ -509,6 +513,7 @@ pub(crate) fn spawn_render_thread_deferred(
                         damage_regions,
                         scroll_copies,
                         full_redraw,
+                        partial,
                         cpu_frame_id,
                         backdrop,
                         on_present,
@@ -522,6 +527,7 @@ pub(crate) fn spawn_render_thread_deferred(
                             damage_regions,
                             scroll_copies,
                             full_redraw,
+                            partial,
                             cpu_frame_id,
                             backdrop,
                         )
@@ -630,6 +636,7 @@ pub(crate) fn spawn_render_thread_deferred(
                     FrameRasterizers {
                         renderer: &mut renderer,
                         raster: &mut raster,
+                        damage_only: partial,
                     },
                     FrameContent {
                         scene: &scene,
@@ -739,6 +746,12 @@ pub(crate) fn spawn_render_thread_deferred(
                 }
                 // After the outcome is published, so main's per-frame
                 // accounting is untouched: a repaint is a later, ordinary frame.
+                // A scene drawn for its damage only that was not presented
+                // cannot be drawn again for more: the next frame is drawn
+                // whole.
+                if partial && outcome != FrameOutcome::Presented {
+                    request_full_repaint(&mut target_valid, &worker_full_repaint, wake.as_ref());
+                }
                 if poll_bump_recovery(&mut bump_recovery, &mut renderer, &render_cx, &surface) {
                     request_full_repaint(&mut target_valid, &worker_full_repaint, wake.as_ref());
                 }
@@ -971,6 +984,8 @@ struct FramePresentation<'a> {
 struct FrameRasterizers<'a> {
     renderer: &'a mut Renderer,
     raster: &'a mut RetainedRaster,
+    /// The scene holds only what its damage needs (`crate::draw_cull`).
+    damage_only: bool,
 }
 
 #[allow(
@@ -984,7 +999,11 @@ fn render_one_frame(
     frame: FrameContent<'_>,
     present: FramePresentation<'_>,
 ) -> FrameOutcome {
-    let FrameRasterizers { renderer, raster } = rasterizers;
+    let FrameRasterizers {
+        renderer,
+        raster,
+        damage_only,
+    } = rasterizers;
     let FrameContent {
         scene,
         width,
@@ -1051,15 +1070,16 @@ fn render_one_frame(
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-raster-start");
     }
-    let (rasterized, backdrop_stats) = raster.rasterize(
-        (&device_handle.device, &device_handle.queue),
-        renderer,
-        RetainedTarget {
-            texture: &surface.target_texture,
-            view: &surface.target_view,
-        },
-        frame,
-    );
+    let target = RetainedTarget {
+        texture: &surface.target_texture,
+        view: &surface.target_view,
+    };
+    let gpu = (&device_handle.device, &device_handle.queue);
+    let (rasterized, backdrop_stats) = if damage_only {
+        raster.rasterize_damage_only(gpu, renderer, target, frame)
+    } else {
+        raster.rasterize(gpu, renderer, target, frame)
+    };
     if present_dbg && let Some(stats) = backdrop_stats {
         eprintln!(
             "present-backdrop {frame_ix}: substituted={} skipped={} encode={}us",
@@ -1068,6 +1088,11 @@ fn render_one_frame(
     }
     let raster_pixels = match rasterized {
         Ok(pixels) => pixels,
+        // A scene drawn for its damage only that had to repaint more: the
+        // worker asks main for one drawn whole.
+        Err(err) if err == crate::retained_raster::DAMAGE_ONLY_REFUSED => {
+            return FrameOutcome::Skipped;
+        }
         Err(err) => {
             // A programmer bug (bad encoding / ran out of GPU resources); log and
             // skip rather than panic, which would tear down the app with no
@@ -1287,6 +1312,15 @@ fn bounded_present_damage(
             })
             .collect(),
     )
+}
+
+/// Whether the render worker repaints a frame of `width` × `height` with
+/// `damage` (physical pixels) from its scene region by region, never
+/// whole: what a frame drawn for its damage only needs
+/// (`crate::draw_cull`).
+pub(crate) fn renders_damage_alone(width: u32, height: u32, damage: &[Rect]) -> bool {
+    bounded_present_damage(width, height, damage).is_some()
+        && crate::retained_raster::repaints_alone(width, height, damage)
 }
 
 #[cfg(test)]

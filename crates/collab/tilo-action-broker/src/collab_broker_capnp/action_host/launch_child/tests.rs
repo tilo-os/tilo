@@ -778,7 +778,7 @@ fn production_invoke_revoked_at_durable_admission_never_launches_or_closes() {
                     .unwrap()
             });
             revoker.join().unwrap();
-            assert!(result.is_err());
+            assert!(crate::collab_broker_capnp::answered(result).is_err());
             assert_eq!(launcher.calls.load(Ordering::SeqCst), 0);
             let record = fixture.assert_signed(&request, true);
             assert!(matches!(

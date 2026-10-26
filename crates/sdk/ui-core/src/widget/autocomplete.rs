@@ -218,8 +218,9 @@ impl ListMetrics {
 /// its anchor near the window's bottom and shifts to stay inside it. Rows
 /// are menu rows with the armed-row lift, an optional leading icon and an
 /// optional trailing detail column. More suggestions than fit scroll, the
-/// armed row always in view. A status line (and a spinner while busy)
-/// stands in for rows while there are none.
+/// armed row always in view. While rows are on their way, the framework's
+/// placeholder stands where the first will be ([`crate::arriving`]); a
+/// status line stands in for rows when there are none.
 pub struct SuggestionList {
     suggestions: Vec<Suggestion>,
     highlight: Option<usize>,
@@ -228,8 +229,10 @@ pub struct SuggestionList {
     first: usize,
     max_visible: usize,
     status: Option<String>,
-    busy: bool,
-    spinner: crate::widget::Spinner,
+    /// Rows on their way: the timing of their placeholder.
+    arriving: Option<crate::arriving::ArrivalClock>,
+    /// The placeholder step the last paint drew.
+    drawn_step: Option<crate::arriving::Step>,
     anchor: Rect,
     viewport: Option<Rect>,
     /// What the rows' labels are (Body; Code for code completion).
@@ -256,8 +259,8 @@ impl SuggestionList {
             first: 0,
             max_visible: DEFAULT_MAX_VISIBLE,
             status: None,
-            busy: false,
-            spinner: crate::widget::Spinner::new(),
+            arriving: None,
+            drawn_step: None,
             anchor: Rect::ZERO,
             viewport: None,
             role: TextRole::Body,
@@ -291,7 +294,7 @@ impl SuggestionList {
         self.suggestions = suggestions;
         if !self.suggestions.is_empty() {
             self.status = None;
-            self.busy = false;
+            self.arriving = None;
         }
         if self.highlight.is_some_and(|h| h >= self.suggestions.len()) {
             self.highlight = None;
@@ -349,13 +352,39 @@ impl SuggestionList {
         self.status = status;
     }
 
-    /// Results are on their way: the status line carries a spinner.
-    pub fn set_busy(&mut self, busy: bool) {
-        self.busy = busy;
+    /// Rows are on their way, with `clock`'s timing (asked when, from
+    /// where): the framework's placeholder stands where the first will be.
+    /// `None` once they are in, or nothing is asked.
+    pub fn set_arriving(&mut self, clock: Option<crate::arriving::ArrivalClock>) {
+        self.arriving = clock;
     }
 
+    /// Whether rows are on their way.
     pub fn is_busy(&self) -> bool {
-        self.busy
+        self.arriving.is_some()
+    }
+
+    /// The placeholder step the list shows at `now`, while rows are on
+    /// their way and none is here.
+    fn arriving_step(&self, now: crate::time::Instant) -> Option<crate::arriving::Step> {
+        self.suggestions
+            .is_empty()
+            .then_some(self.arriving.as_ref())
+            .flatten()
+            .map(|clock| clock.step(now))
+    }
+
+    /// When the placeholder steps on next.
+    fn next_arriving_step(&self, now: crate::time::Instant) -> Option<crate::time::Instant> {
+        if !self.suggestions.is_empty() {
+            return None;
+        }
+        self.arriving.as_ref()?.next_step_at(now)
+    }
+
+    /// Whether the placeholder stepped on since the last paint.
+    fn arriving_moved(&self) -> bool {
+        self.arriving_step(crate::motion::frame_now()) != self.drawn_step
     }
 
     /// The rect the list opens from (a field, or the caret's line).
@@ -368,9 +397,10 @@ impl SuggestionList {
         self.viewport = Some(viewport);
     }
 
-    /// Whether there is anything to show: rows, a status line or a spinner.
+    /// Whether there is anything to show: rows, a status line or rows on
+    /// their way.
     pub fn has_content(&self) -> bool {
-        !self.suggestions.is_empty() || self.status.is_some() || self.busy
+        !self.suggestions.is_empty() || self.status.is_some() || self.arriving.is_some()
     }
 
     /// Clear rows, status and armed row.
@@ -380,7 +410,7 @@ impl SuggestionList {
         self.hover = None;
         self.first = 0;
         self.status = None;
-        self.busy = false;
+        self.arriving = None;
     }
 
     /// Keep the armed row in view.
@@ -534,25 +564,28 @@ impl SuggestionList {
         );
         crate::surface::panel(scene, transform, panel, radius, theme);
         let m = self.metrics;
+        self.drawn_step = self.arriving_step(crate::motion::frame_now());
         if self.suggestions.is_empty() {
             let row = self.row_in(panel, 0);
-            let mut x = row.x0 + m.pad;
-            if self.busy {
-                let edge = m.icon;
-                self.spinner.set_rect(Rect::new(
+            let x = row.x0 + m.pad;
+            if let Some(clock) = &self.arriving {
+                // Where the first row will be: the framework's placeholder,
+                // stepping on at its deadlines.
+                let mut ctx = PaintCtx::new(scene, transform, text, theme);
+                let line = ctx.line_box(self.role);
+                let slot = Rect::new(
                     x,
-                    row.center().y - edge / 2.0,
-                    x + edge,
-                    row.center().y + edge / 2.0,
-                ));
-                self.spinner.draw(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    &crate::presence::PresenceCtx::empty(),
+                    row.center().y - line / 2.0,
+                    row.x1 - m.pad,
+                    row.center().y + line / 2.0,
                 );
-                x += edge + m.spacing;
+                crate::widget::ArrivalFace::new(
+                    crate::widget::SkeletonShape::Text { lines: 1 },
+                    clock,
+                    crate::motion::frame_now(),
+                )
+                .paint(&mut ctx, slot);
+                return;
             }
             if let Some(status) = &self.status {
                 let style = theme.text(self.role);
@@ -720,15 +753,26 @@ impl SuggestionList {
             return Vec::new();
         };
         if self.suggestions.is_empty() {
-            return self
-                .status
+            let busy = self.arriving.is_some();
+            let arriving = self.arriving.as_ref().map(|clock| {
+                let now = crate::time::now();
+                crate::widget::ArrivalFace::new(
+                    crate::widget::SkeletonShape::Text { lines: 1 },
+                    clock,
+                    now,
+                )
+                .caption()
+                .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("arriving-loading"))
+            });
+            return arriving
+                .or_else(|| self.status.clone())
                 .iter()
                 .map(|status| {
                     AccessNode::new(Role::StaticText)
                         .with_name(status)
                         .with_live(Politeness::Polite)
                         .with_bounds(panel)
-                        .with_state(AccessState::new().busy(self.busy))
+                        .with_state(AccessState::new().busy(busy))
                 })
                 .collect();
         }
@@ -868,10 +912,12 @@ impl Autocomplete {
         self.list.set_status(status);
     }
 
-    /// Results are on their way: the status line carries a spinner and
-    /// tells assistive technology the list is busy.
-    pub fn set_busy(&mut self, busy: bool) {
-        self.list.set_busy(busy);
+    /// Results are on their way, with `clock`'s timing (asked when, from
+    /// where): the framework's placeholder stands where the first row will
+    /// be, and assistive technology hears the list is busy. `None` once
+    /// they are in.
+    pub fn set_arriving(&mut self, clock: Option<crate::arriving::ArrivalClock>) {
+        self.list.set_arriving(clock);
     }
 
     /// Opens the dropdown when the field is actively being edited (for
@@ -953,7 +999,7 @@ impl Autocomplete {
         self.open = false;
         self.list.set_highlight(None);
         self.list.set_status(None);
-        self.list.set_busy(false);
+        self.list.set_arriving(None);
     }
 
     /// Rising-edge read of how the most recent interaction ended.
@@ -1178,8 +1224,16 @@ impl Widget for Autocomplete {
         self.list.paint(scene, transform, text_renderer, theme);
     }
 
-    fn needs_animation_frame(&self) -> bool {
-        self.open && self.list.is_busy() && self.list.suggestions().is_empty()
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        // Rows on their way step their placeholder on at its deadlines;
+        // the rows' arrival wakes the window itself.
+        self.open
+            .then(|| self.list.next_arriving_step(crate::time::now()))
+            .flatten()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.open && self.list.arriving_moved()
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1807,8 +1861,11 @@ mod tests {
         let mut busy = SuggestionList::new();
         busy.set_anchor(Rect::new(0.0, 0.0, 200.0, 32.0));
         assert!(busy.rect().is_none());
-        busy.set_busy(true);
-        busy.set_status(Some("Searching…".into()));
+        let asked = crate::time::now();
+        busy.set_arriving(Some(crate::arriving::ArrivalClock::new(
+            asked,
+            crate::arriving::Source::host("Open-Meteo"),
+        )));
         assert!(busy.rect().is_some());
         let rows = busy.access_rows(|_| 0);
         assert_eq!(rows.len(), 1);
@@ -1823,10 +1880,21 @@ mod tests {
 
         let mut ac = Autocomplete::with_input(TextInput::local().with_placeholder("City"));
         ac.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 32.0));
-        ac.set_status(Some("Searching…".into()));
-        ac.set_busy(true);
+        ac.set_arriving(Some(crate::arriving::ArrivalClock::new(
+            asked,
+            crate::arriving::Source::host("Open-Meteo"),
+        )));
         ac.open();
         assert!(ac.list_rect().is_some());
-        assert!(Widget::needs_animation_frame(&ac));
+        assert!(
+            !Widget::needs_animation_frame(&ac),
+            "rows on their way draw no frames between their steps"
+        );
+        assert_eq!(
+            Widget::next_wake_deadline(&ac),
+            crate::arriving::ArrivalClock::new(asked, crate::arriving::Source::host("Open-Meteo"))
+                .next_step_at(crate::time::now()),
+            "the placeholder steps on at its deadline"
+        );
     }
 }

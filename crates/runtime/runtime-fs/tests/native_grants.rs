@@ -672,7 +672,7 @@ fn reads_and_entry_names_are_bounded_and_validated() {
     {
         for value in ["", ".", "..", "/", "a/b", "a\0b", "a/"] {
             assert!(matches!(
-                EntryName::new(value.into()),
+                EntryName::new(value.into()).map_err(FsError::from),
                 Err(FsError::InvalidName)
             ));
         }

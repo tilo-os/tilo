@@ -94,8 +94,9 @@
 //! permissions, history or undo. `APPLY` is for surfaces, agents and
 //! scripts, never a palette row; each value's own
 //! [`risk`](tilo_actions::Action::risk) decides whether it needs
-//! confirmation, so a destructive typed edit is confirmed exactly as a
-//! declared destructive action is.
+//! confirmation, so a destructive typed edit is treated exactly as a
+//! declared destructive action is: what Undo takes back runs at once and
+//! offers Undo, and only what it cannot is confirmed.
 
 // The derives name this crate by its path, here as in an app.
 extern crate self as tilo_resource;
@@ -111,6 +112,8 @@ pub mod content;
 mod cow;
 #[cfg(feature = "chrono")]
 mod dates;
+mod search_preview;
+pub use search_preview::SearchPreview;
 pub mod delta;
 pub mod derived;
 mod describe;
@@ -128,6 +131,7 @@ pub mod model;
 pub mod order;
 pub mod ordered;
 pub mod path;
+pub mod reactions;
 pub mod reader;
 pub mod replica;
 pub mod resource;
@@ -167,6 +171,10 @@ pub use model::{
 };
 pub use ordered::{Arranged, Ordered};
 pub use path::{At, Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};
+pub use reactions::{
+    Reaction, ReactionGroup, Reactions, Reactor, custom_emoji_name, reaction_emoji,
+    valid_custom_emoji_name,
+};
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
@@ -306,6 +314,9 @@ pub mod __private {
         pub by_arguments: bool,
         pub field: Option<&'static str>,
         pub destructive: bool,
+        /// It also loses what Undo cannot bring back
+        /// (`#[action(irreversible)]`).
+        pub irreversible: bool,
         /// A change about the record rather than to it
         /// (`#[action(housekeeping)]`).
         pub housekeeping: bool,
@@ -460,6 +471,9 @@ pub mod __private {
         }
         decl.field = verb.field;
         decl.destructive = verb.destructive;
+        if verb.irreversible {
+            decl.tags.push(tilo_actions::IRREVERSIBLE_TAG.to_owned());
+        }
         if verb.housekeeping {
             decl.tags.push(tilo_actions::HOUSEKEEPING_TAG.to_owned());
         }

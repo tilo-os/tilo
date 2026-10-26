@@ -25,6 +25,12 @@
 //! by the window's wake scheduler: a pending read draws no frames between
 //! its steps.
 //!
+//! A window whose first frame is not drawn yet is the same arrival at the
+//! scale of a tile ([`crate::widget::TileHost`]): its content says where
+//! that frame comes from ([`crate::widget::Widget::arrives_from`]), and,
+//! when what it waits on can measure itself (an app downloaded before it
+//! starts), how much of it has come ([`Progress`]).
+//!
 //! The answer lives in a [`LocalState`], so a bound view updates and an idle
 //! window wakes when it lands. [`Arriving::begin`] restarts the read and
 //! makes every older [`ArrivalCompletion`] stale ([`LatestTask`]'s rule), so a
@@ -86,6 +92,36 @@ impl Source {
             Self::Local => None,
             Self::Peer(name) | Self::Host(name) => Some(&**name).filter(|name| !name.is_empty()),
         }
+    }
+}
+
+/// How much of a pending answer has come, when what it waits on can
+/// measure itself (a download). The placeholder says it from its skeleton
+/// on ([`crate::widget::ArrivalFace::with_progress`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Progress {
+    /// Bytes received so far.
+    pub received: u64,
+    /// Bytes in all, when known.
+    pub total: Option<u64>,
+}
+
+impl Progress {
+    #[must_use]
+    pub const fn new(received: u64, total: Option<u64>) -> Self {
+        Self { received, total }
+    }
+
+    /// How full, `0..=1`, when the total is known.
+    #[must_use]
+    pub fn fraction(&self) -> Option<f32> {
+        let total = self.total.filter(|total| *total > 0)?;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a bar's fraction, drawn a few hundred pixels wide"
+        )]
+        let done = self.received.min(total) as f32 / total as f32;
+        Some(done)
     }
 }
 
@@ -266,6 +302,15 @@ impl ArrivalClock {
     #[must_use]
     pub fn source(&self) -> &Source {
         &self.from
+    }
+
+    /// The same read, its answer now coming from `from`: what stands in for
+    /// it changed (a window's place taken over by its app), and when it was
+    /// asked did not. An answer that already landed is forgotten with the
+    /// content it was for.
+    #[must_use]
+    pub fn answered_from(&self, from: Source) -> Self {
+        Self::with_budget(self.since, from, self.budget)
     }
 
     /// The answer (or a failure) landed at `at`. Only the first landing
@@ -476,6 +521,12 @@ impl<T, E> Arriving<T, E> {
         *self.began.lock_recover()
     }
 
+    /// Which read this is: the same for every clone of it, and for no other
+    /// read while it lives.
+    pub(crate) fn identity(&self) -> usize {
+        Arc::as_ptr(&self.began).addr()
+    }
+
     /// The timing of the read now pending; `None` once it settled.
     #[must_use]
     pub fn clock(&self) -> Option<ArrivalClock> {
@@ -515,6 +566,17 @@ impl<T, E> Arriving<T, E> {
     pub fn on_retry(self, retry: impl Fn(&Self) + Send + Sync + 'static) -> Self {
         *self.retry.lock_recover() = Some(Arc::new(retry));
         self
+    }
+
+    /// Say where the read stands, from the thread that holds its data (a
+    /// record the window follows), with no worker to publish through. A
+    /// read that settled and is pending again was asked now; one still
+    /// pending keeps when it was asked, now waiting on `from`.
+    pub fn stand(&self, arrival: Arrival<T, E>) {
+        if arrival.is_pending() && !self.with(Arrival::is_pending) {
+            self.mark_began();
+        }
+        self.task.state().set(arrival);
     }
 
     fn mark_began(&self) {

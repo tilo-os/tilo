@@ -105,7 +105,7 @@ impl App {
     fn local_pointer_key(&self) -> PresenceKey {
         match self.presence.pointer_space.clone() {
             Some(space) => PresenceKey::Pointer { space },
-            None => PresenceKey::local_surface_pointer(),
+            None => crate::presence::local_surface_pointer(),
         }
     }
 
@@ -392,7 +392,7 @@ impl App {
             return;
         }
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
-        let subset = crate::view::ViewSubset::from_view(&view);
+        let subset = crate::view::broadcast_subset(&view);
         if self.presence.last_view.as_ref() == Some(&subset) {
             return;
         }
@@ -814,6 +814,8 @@ impl App {
                 | CollabEvent::NearbyTransferCommandResult { .. }
                 | CollabEvent::NearbyTransferChanged
                 | CollabEvent::SpeakersChanged
+                | CollabEvent::DrivesChanged
+                | CollabEvent::ApplicationsChanged
                 | CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::ActionDirectoryPage { .. }
                 | CollabEvent::PublishedActionResolution { .. }
@@ -945,6 +947,8 @@ impl App {
             | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged
+            | CollabEvent::DrivesChanged
+            | CollabEvent::ApplicationsChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_) => {}
         }

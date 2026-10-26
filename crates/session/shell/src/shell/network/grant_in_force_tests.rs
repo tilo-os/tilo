@@ -117,6 +117,7 @@ fn question(room: RoomId, person: &str) -> AppActionConsentRequest {
         moderation: None,
         scope: None,
         draft: None,
+        preview: None,
     }
 }
 

@@ -433,9 +433,9 @@ impl ShellOverlayHost {
     }
 
     /// Settles the pending launch of any app now on screen, so it can be
-    /// opened again. Neither `Started` (forked, no window yet) nor an
-    /// adopted-but-not-presenting tab counts — what settles it is the app's
-    /// first frame or placeholder card, whichever shows first.
+    /// opened again. Neither `Started` (forked, no window yet) nor a window
+    /// still holding its first frame counts — what settles it is the app's
+    /// window standing: its first frame, or its place reserved for it.
     pub(crate) fn settle_launches_of_opened_windows(&self) -> bool {
         if self.desktop_controls.is_explicit() {
             return false;
@@ -458,10 +458,7 @@ impl ShellOverlayHost {
                 .flat_map(|g| g.tabs.iter())
                 .filter_map(|t| match &t.tile {
                     crate::shell::state::TileContent::Foreign { app_id, surface_id }
-                        if {
-                            let store = crate::compositor::foreign::store();
-                            store.is_presented(*surface_id) || store.is_opening(*surface_id)
-                        } =>
+                        if { crate::compositor::foreign::store().stands(*surface_id) } =>
                     {
                         Some(app_id.clone())
                     }
@@ -483,6 +480,27 @@ impl ShellOverlayHost {
             retired |= crate::shell::catalogue::take_pending_launch(&package_id);
         }
         retired
+    }
+
+    /// Escape on the permission prompt on screen answers it as its Deny
+    /// button does: dismissed, never allowed. The prompt holds the keyboard
+    /// while it is up, so without this a person who cannot point is stuck in
+    /// front of it. Returns whether there was a prompt to answer.
+    pub(super) fn dismiss_permission_prompt(&mut self) -> bool {
+        let (Some(chrome), Some(id)) = (self.chrome.clone(), self.permission_prompt_id) else {
+            return false;
+        };
+        if self.permission_prompt.is_none() {
+            return false;
+        }
+        let _ = crate::shell::search::providers::permission_prompts::answer_pending_prompt(
+            &mut chrome.borrow_mut(),
+            id,
+            ui::widget::PromptChoice::Deny,
+        );
+        self.permission_prompt = None;
+        self.permission_prompt_id = None;
+        true
     }
 
     pub fn pump_permission_prompt(&mut self) {

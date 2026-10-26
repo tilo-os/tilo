@@ -3,7 +3,7 @@ name = "tilo-feedback"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-license.workspace = true
+license = "MIT"
 description = "Reviewed feedback submissions and a durably acknowledged local outbox."
 
 [dependencies]

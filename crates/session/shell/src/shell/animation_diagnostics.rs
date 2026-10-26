@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-pub(crate) const HOST_SOURCE_NAMES: [&str; 29] = [
+pub(crate) const HOST_SOURCE_NAMES: [&str; 30] = [
     "root-transition",
     "quick-settings",
     "workspace-settings",
@@ -32,12 +32,13 @@ pub(crate) const HOST_SOURCE_NAMES: [&str; 29] = [
     "window-previews",
     "peer-sync",
     "directory-sheet",
-    "arrival-line",
     "tab-menu",
     "window-switcher",
     "dictation",
     "emoji-picker",
     "display-confirm",
+    "feedback-picker",
+    "control-hints",
 ];
 
 #[allow(
@@ -73,12 +74,14 @@ pub(crate) struct HostDemandInputs {
     pub window_previews: bool,
     pub peer_sync: bool,
     pub directory_sheet: bool,
-    pub arrival_line: bool,
     pub tab_menu: bool,
     pub window_switcher: bool,
     pub dictation: bool,
     pub emoji_picker: bool,
     pub display_confirm: bool,
+    /// Pointing at what is wrong, to report it.
+    pub feedback_picker: bool,
+    pub control_hints: bool,
 }
 
 /// The bit of [`host_bits`] that says the workspace content animates.
@@ -111,12 +114,13 @@ pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
         | (u32::from(inputs.window_previews) << 20)
         | (u32::from(inputs.peer_sync) << 21)
         | (u32::from(inputs.directory_sheet) << 22)
-        | (u32::from(inputs.arrival_line) << 23)
-        | (u32::from(inputs.tab_menu) << 24)
-        | (u32::from(inputs.window_switcher) << 25)
-        | (u32::from(inputs.dictation) << 26)
-        | (u32::from(inputs.emoji_picker) << 27)
-        | (u32::from(inputs.display_confirm) << 28)
+        | (u32::from(inputs.tab_menu) << 23)
+        | (u32::from(inputs.window_switcher) << 24)
+        | (u32::from(inputs.dictation) << 25)
+        | (u32::from(inputs.emoji_picker) << 26)
+        | (u32::from(inputs.display_confirm) << 27)
+        | (u32::from(inputs.feedback_picker) << 28)
+        | (u32::from(inputs.control_hints) << 29)
 }
 
 pub(crate) fn host_labels(bits: u32) -> impl Iterator<Item = &'static str> {
@@ -236,12 +240,13 @@ mod tests {
             window_previews: false,
             peer_sync: false,
             directory_sheet: false,
-            arrival_line: false,
             tab_menu: false,
             window_switcher: false,
             dictation: false,
             emoji_picker: false,
             display_confirm: false,
+            feedback_picker: false,
+            control_hints: false,
         };
         assert_eq!(host_bits(&inputs(false, false)), 0);
         assert_eq!(host_bits(&inputs(true, false)), 1);

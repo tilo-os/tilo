@@ -4,9 +4,13 @@
 //! The bar shows the File and Format menus and Bold in its row, and `AutoSum`,
 //! showing formulas and the document's settings in its menu. Each slot runs
 //! the same command the bar the sheet used to draw ran, with the document in
-//! hand. Search is the bar's own; the formula bar stays the sheet's.
+//! hand. The location names the workbook by its title or file and the sheet
+//! in view as its next level; a workbook never named is called by the sheet
+//! in view. Search is the bar's own; the formula bar stays the sheet's.
 
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
+use ui::window_toolbar::{
+    LocationSegment, ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar,
+};
 
 use super::chrome::{MenuRow, post};
 use super::{Edits, MenuItem, SheetsApp};
@@ -54,21 +58,56 @@ impl SheetsApp {
         commands.push(("autosum".into(), MenuItem::AutoSum));
         commands.push(("formulas".into(), MenuItem::ToggleFormulaView));
         commands.push(("settings".into(), MenuItem::OpenDocSettings));
-        // A workbook carries no name of its own: the bar names the sheet in
-        // view, as its tab does.
-        let sheet = self
-            .active_sheet_id()
-            .and_then(|id| self.workbook.sheet(&id))
-            .map_or_else(|| "Sheets".to_owned(), |sheet| sheet.name.0.clone());
+        // A workbook with a name of its own stands first; one never named
+        // is called by the sheet in view, as the model names it.
+        let mut segments: Vec<LocationSegment> = self
+            .workbook_name()
+            .map(|label| LocationSegment {
+                label,
+                value: String::new(),
+            })
+            .into_iter()
+            .collect();
+        if let Some(id) = self.active_sheet_id()
+            && let Some(sheet) = self.workbook.sheet(&id)
+        {
+            segments.push(LocationSegment {
+                label: sheet.name.0.clone(),
+                value: id.to_string(),
+            });
+        }
+        let label = segments
+            .first()
+            .map(|segment| segment.label.clone())
+            .unwrap_or_default();
         let toolbar = WindowToolbar {
-            location: Some(ui::window_toolbar::ToolbarLocation {
-                label: sheet,
-                ..ui::window_toolbar::ToolbarLocation::default()
+            location: Some(ToolbarLocation {
+                label,
+                segments,
+                ..ToolbarLocation::default()
             }),
             actions: std::mem::take(&mut actions),
             ..WindowToolbar::default()
         };
         (toolbar, commands)
+    }
+
+    /// The workbook's own name: its title, else its file's name without
+    /// the extension; none while it was never named or saved.
+    pub(super) fn workbook_name(&self) -> Option<String> {
+        self.workbook
+            .title
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                self.file
+                    .as_deref()
+                    .and_then(std::path::Path::file_stem)
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .filter(|stem| !stem.trim().is_empty())
+            })
     }
 
     /// The window bar's slots, as declared.

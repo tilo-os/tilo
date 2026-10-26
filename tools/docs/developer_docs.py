@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check and export the app-developer documentation published on tilo.so.
+"""Check and export the documentation books published on tilo.so.
 
 `docs/developers/pages.toml` lists the published pages, which stay where they
 are in the repository. `check` renders each of them and fails when a page is
@@ -47,6 +47,43 @@ class DocsError(Exception):
     pass
 
 
+class SourceTree:
+    def __init__(self, root: Path, git_dir: Path | None = None, revision: str = "HEAD"):
+        self.root = root
+        self.git_dir = git_dir
+        self.paths: set[str] | None = None
+        self.revision: str | None = None
+        if git_dir is not None:
+            self.revision = self.git("rev-parse", "--verify", f"{revision}^{{commit}}").strip()
+
+    def git(self, *args: str) -> str:
+        try:
+            return subprocess.check_output(
+                ["git", "--git-dir", str(self.git_dir), *args], text=True, stderr=subprocess.PIPE,
+            )
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise DocsError(f"cannot read documentation source from Git: {error}") from error
+
+    def exists(self, source: str) -> bool:
+        if self.git_dir is None:
+            return (self.root / source).exists()
+        if self.paths is None:
+            files = self.git("ls-tree", "-r", "--name-only", "-z", self.revision).split("\0")
+            files = [name for name in files if name]
+            self.paths = {"", *files}
+            for name in files:
+                self.paths.update(str(parent) for parent in Path(name).parents if str(parent) != ".")
+        return source in self.paths
+
+    def read_text(self, source: str) -> str:
+        if self.git_dir is not None:
+            return self.git("show", f"{self.revision}:{source}")
+        path = (self.root / source).resolve()
+        if not path.is_relative_to(self.root.resolve()):
+            raise DocsError(f"{source}: resolves outside the repository")
+        return path.read_text(encoding="utf-8")
+
+
 @dataclass(frozen=True)
 class Page:
     slug: str
@@ -68,6 +105,8 @@ class Manifest:
     api_path: str
     api_sources: frozenset[str]
     pages: tuple[Page, ...]
+    related_manifests: tuple[str, ...] = ()
+    path: str = MANIFEST
 
     def url(self, page: Page) -> str:
         return f"{self.base}{page.slug}/" if page.slug else self.base
@@ -82,15 +121,17 @@ class Rendered:
     problems: list[str] = field(default_factory=list)
 
 
-def load_manifest(root: Path) -> Manifest:
-    path = root / MANIFEST
+def load_manifest(root: Path, manifest_path: str = MANIFEST, tree: SourceTree | None = None) -> Manifest:
+    tree = tree or SourceTree(root)
+    if Path(manifest_path).is_absolute() or ".." in Path(manifest_path).parts:
+        raise DocsError("manifest must be a path inside the repository")
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        data = tomllib.loads(tree.read_text(manifest_path))
     except (OSError, tomllib.TOMLDecodeError) as error:
-        raise DocsError(f"{MANIFEST}: {error}") from error
+        raise DocsError(f"{manifest_path}: {error}") from error
     base = data.get("base", "")
     if not (base.startswith("/") and base.endswith("/")):
-        raise DocsError(f"{MANIFEST}: base must start and end with '/'")
+        raise DocsError(f"{manifest_path}: base must start and end with '/'")
     api = data.get("api", {})
     pages = []
     seen_slugs: set[str] = set()
@@ -98,7 +139,7 @@ def load_manifest(root: Path) -> Manifest:
     for entry in data.get("page", []):
         unknown = set(entry) - {"slug", "source", "section", "nav", "description"}
         if unknown:
-            raise DocsError(f"{MANIFEST}: unknown page keys {sorted(unknown)}")
+            raise DocsError(f"{manifest_path}: unknown page keys {sorted(unknown)}")
         page = Page(
             slug=entry.get("slug", ""),
             source=entry.get("source", ""),
@@ -106,19 +147,21 @@ def load_manifest(root: Path) -> Manifest:
             nav=entry.get("nav", ""),
             description=entry.get("description", ""),
         )
+        if Path(page.source).is_absolute() or ".." in Path(page.source).parts:
+            raise DocsError(f"{manifest_path}: page source must stay inside the repository")
         if page.slug and not SLUG.fullmatch(page.slug):
-            raise DocsError(f"{MANIFEST}: slug {page.slug!r} is not lowercase kebab case")
+            raise DocsError(f"{manifest_path}: slug {page.slug!r} is not lowercase kebab case")
         if page.slug in seen_slugs:
-            raise DocsError(f"{MANIFEST}: slug {page.slug!r} is listed twice")
+            raise DocsError(f"{manifest_path}: slug {page.slug!r} is listed twice")
         if page.source in seen_sources:
-            raise DocsError(f"{MANIFEST}: {page.source} is listed twice")
+            raise DocsError(f"{manifest_path}: {page.source} is listed twice")
         if not (page.source and page.section and page.nav and page.description):
-            raise DocsError(f"{MANIFEST}: page {page.slug!r} needs source, section, nav and description")
+            raise DocsError(f"{manifest_path}: page {page.slug!r} needs source, section, nav and description")
         seen_slugs.add(page.slug)
         seen_sources.add(page.source)
         pages.append(page)
     if not pages or pages[0].slug:
-        raise DocsError(f"{MANIFEST}: the first page must have slug = \"\" (the section's index)")
+        raise DocsError(f"{manifest_path}: the first page must have slug = \"\" (the section's index)")
     return Manifest(
         base=base,
         repository=data.get("repository", "").rstrip("/"),
@@ -126,6 +169,8 @@ def load_manifest(root: Path) -> Manifest:
         api_path=api.get("path", ""),
         api_sources=frozenset(api.get("sources", [])),
         pages=tuple(pages),
+        related_manifests=tuple(data.get("related_manifests", [])),
+        path=manifest_path,
     )
 
 
@@ -184,10 +229,22 @@ def anchors_of(markdown: str) -> set[str]:
 
 
 class Linker:
-    def __init__(self, root: Path, manifest: Manifest, commit: str | None):
+    def __init__(self, root: Path, manifest: Manifest, commit: str | None, tree: SourceTree | None = None):
         self.root = root
+        self.tree = tree or SourceTree(root)
         self.manifest = manifest
-        self.by_source = {page.source: page for page in manifest.pages}
+        books = [manifest, *(load_manifest(root, path, self.tree) for path in manifest.related_manifests)]
+        self.by_source: dict[str, Page] = {}
+        self.routes: dict[str, str] = {}
+        self.api_routes: dict[str, str] = {}
+        for book in books:
+            for page in book.pages:
+                route = book.url(page)
+                if page.source in self.routes and self.routes[page.source] != route:
+                    raise DocsError(f"{page.source}: published by more than one book")
+                self.by_source[page.source] = page
+                self.routes[page.source] = route
+            self.api_routes.update({source: book.base + book.api_path for source in book.api_sources})
         self.ref = f"commit/{commit}" if commit else "branch/main"
         self.anchors: dict[str, set[str]] = {}
 
@@ -208,20 +265,20 @@ class Linker:
         suffix = f"#{fragment}" if fragment else ""
         linked = self.by_source.get(repo_path)
         if linked is not None:
-            return self.manifest.url(linked) + suffix, self.check_anchor(repo_path, fragment)
-        if repo_path.rstrip("/") in self.manifest.api_sources:
-            return self.manifest.base + self.manifest.api_path, None
-        on_disk = self.root / repo_path
-        if not on_disk.exists():
+            return self.routes[repo_path] + suffix, self.check_anchor(repo_path, fragment)
+        if repo_path.rstrip("/") in self.api_routes:
+            return self.api_routes[repo_path.rstrip("/")], None
+        if not self.tree.exists(repo_path):
             return target, f"{target}: {repo_path or '.'} does not exist"
-        kind = "raw" if image and on_disk.is_file() else "src"
-        return f"{self.manifest.repository}/{kind}/{self.ref}/{repo_path}".rstrip("/") + suffix, None
+        kind = "raw" if image else "src"
+        problem = self.check_anchor(repo_path, fragment) if repo_path.endswith(".md") else None
+        return f"{self.manifest.repository}/{kind}/{self.ref}/{repo_path}".rstrip("/") + suffix, problem
 
     def check_anchor(self, source: str, fragment: str) -> str | None:
-        if not fragment or source not in self.by_source:
+        if not fragment:
             return None
         if source not in self.anchors:
-            text = (self.root / source).read_text(encoding="utf-8")
+            text = self.tree.read_text(source)
             self.anchors[source] = anchors_of(text)
         if fragment not in self.anchors[source]:
             return f"#{fragment}: no such heading in {source}"
@@ -260,10 +317,9 @@ class Linker:
         return re.sub(r"\0(\d+)\0", lambda match: spans[int(match.group(1))], rewritten)
 
     def render(self, page: Page) -> Rendered:
-        path = self.root / page.source
-        if not path.is_file():
-            return Rendered(page, "", "", set(), [f"{MANIFEST}: {page.source} does not exist"])
-        markdown = path.read_text(encoding="utf-8")
+        if not self.tree.exists(page.source):
+            return Rendered(page, "", "", set(), [f"{self.manifest.path}: {page.source} does not exist"])
+        markdown = self.tree.read_text(page.source)
         problems: list[str] = []
         found = headings(markdown)
         if not found or found[0][0] != 1:
@@ -278,9 +334,10 @@ class Linker:
         return Rendered(page, title, "\n".join(lines), anchors_of(markdown), problems)
 
 
-def render_all(root: Path, commit: str | None) -> tuple[Manifest, list[Rendered]]:
-    manifest = load_manifest(root)
-    linker = Linker(root, manifest, commit)
+def render_all(root: Path, commit: str | None, manifest_path: str = MANIFEST,
+               tree: SourceTree | None = None) -> tuple[Manifest, list[Rendered]]:
+    manifest = load_manifest(root, manifest_path, tree)
+    linker = Linker(root, manifest, commit, tree)
     return manifest, [linker.render(page) for page in manifest.pages]
 
 
@@ -290,9 +347,30 @@ def front_matter(values: dict[str, object]) -> str:
     return f"---\n{body}\n---\n"
 
 
-def export(root: Path, out: Path, commit: str | None) -> None:
-    manifest, rendered = render_all(root, commit)
+def export(root: Path, out: Path, commit: str | None, manifest_path: str = MANIFEST,
+           tree: SourceTree | None = None) -> None:
+    manifest, rendered = render_all(root, commit, manifest_path, tree)
     fail_on_problems(rendered)
+    destination = out.resolve()
+    books = [manifest, *(load_manifest(root, path, tree) for path in manifest.related_manifests)]
+    protected = [root / book.path for book in books]
+    protected.extend(root / page.source for book in books for page in book.pages)
+    repositories = []
+    if tree is not None and tree.git_dir is not None:
+        repositories.append(tree.git_dir.resolve())
+    elif (root / ".git").exists():
+        for option in ("--git-dir", "--git-common-dir"):
+            result = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--path-format=absolute", option],
+                capture_output=True, text=True,
+            )
+            if result.returncode:
+                raise DocsError("cannot identify Git metadata to protect the export destination")
+            repositories.append(Path(result.stdout.strip()).resolve())
+    protected.extend(repositories)
+    if any(destination == path.resolve() or destination in path.resolve().parents for path in protected) \
+            or any(path in destination.parents for path in repositories):
+        raise DocsError("export destination contains documentation sources or overlaps Git metadata")
     if out.exists():
         shutil.rmtree(out)
     (out / "pages").mkdir(parents=True)
@@ -319,7 +397,7 @@ def export(root: Path, out: Path, commit: str | None) -> None:
         "base": manifest.base,
         "commit": commit,
         "repository": manifest.repository,
-        "api": {"title": manifest.api_title, "url": manifest.base + manifest.api_path},
+        "api": {"title": manifest.api_title, "url": manifest.base + manifest.api_path} if manifest.api_path else None,
         "sections": sections,
     }
     (out / "manifest.json").write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -339,6 +417,9 @@ def head_commit(root: Path) -> str | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=ROOT)
+    parser.add_argument("--manifest", default=MANIFEST, help="repository-relative book manifest")
+    parser.add_argument("--git-dir", type=Path, help="read an immutable Git tree instead of a checkout")
+    parser.add_argument("--revision", default="HEAD", help="Git source revision (with --git-dir)")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("check", help="render every page and fail on a broken page or link")
     export_parser = commands.add_parser("export", help="write the pages and navigation for the site")
@@ -347,16 +428,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root = args.root.resolve()
     try:
+        revision = getattr(args, "commit", None) or args.revision
+        tree = SourceTree(root, args.git_dir, revision)
         if args.command == "check":
-            manifest, rendered = render_all(root, None)
-            fail_on_problems(rendered)
-            print(f"developer docs OK ({len(manifest.pages)} pages, links resolved)")
+            manifest = load_manifest(root, args.manifest, tree)
+            count = 0
+            for path in (args.manifest, *manifest.related_manifests):
+                book, rendered = render_all(root, tree.revision, path, tree)
+                fail_on_problems(rendered)
+                count += len(book.pages)
+            print(f"developer docs OK ({count} pages, links resolved)")
         else:
-            export(root, args.out, args.commit or head_commit(root))
+            commit = tree.revision or args.commit or head_commit(root)
+            export(root, args.out, commit, args.manifest, tree)
             print(f"developer docs exported to {args.out}")
     except DocsError as error:
         print(f"developer docs: {error}", file=sys.stderr)
-        print(f"FAIL: fix the pages or {MANIFEST}", file=sys.stderr)
+        print(f"FAIL: fix the pages or {args.manifest}", file=sys.stderr)
         return 1
     return 0
 

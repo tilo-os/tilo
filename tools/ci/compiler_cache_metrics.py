@@ -16,7 +16,19 @@ COUNTERS = ("cache_hits", "cache_misses", "cache_writes", "cache_read_errors",
             "cache_write_errors", "cache_timeouts", "compile_requests", "requests_executed")
 DURATIONS = ("cache_read_hit", "cache_read_miss", "cache_write")
 LIMIT = 65536
+# How long one stats read may take. A measured command must never wait on a
+# stuck cache server, so production keeps a short bound; a caller that tests
+# the bracketing, not the bound, passes one only a real hang would reach.
 TIMEOUT = 1.0
+TIMEOUT_ENV = "TILO_COMPILER_CACHE_STATS_TIMEOUT_SECS"
+
+
+def read_timeout():
+    try:
+        value = float(os.environ.get(TIMEOUT_ENV, TIMEOUT))
+    except ValueError:
+        return TIMEOUT
+    return value if 0 < value < float("inf") else TIMEOUT
 
 
 def count(value):
@@ -42,6 +54,7 @@ def snapshot():
     wrapper = os.environ.get("RUSTC_WRAPPER", "")
     if Path(wrapper).name != "sccache":
         return {"observed": False, "reason": "disabled"}
+    timeout = read_timeout()
     started = time.monotonic()
     process = None
     try:
@@ -51,7 +64,7 @@ def snapshot():
         with selectors.DefaultSelector() as ready:
             ready.register(process.stdout, selectors.EVENT_READ)
             while True:
-                left = TIMEOUT - (time.monotonic() - started)
+                left = timeout - (time.monotonic() - started)
                 if left <= 0 or not ready.select(left):
                     raise TimeoutError
                 chunk = os.read(process.stdout.fileno(), min(4096, LIMIT + 1 - len(data)))
@@ -60,7 +73,7 @@ def snapshot():
                 data.extend(chunk)
                 if len(data) > LIMIT:
                     raise ValueError
-            process.wait(timeout=max(0.001, TIMEOUT - (time.monotonic() - started)))
+            process.wait(timeout=max(0.001, timeout - (time.monotonic() - started)))
         if process.returncode:
             raise ValueError
         stats = json.loads(data)["stats"]

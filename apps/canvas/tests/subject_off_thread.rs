@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use canvas::App;
 use serde_json::json;
-use tilo_model_gateway::{Frame, Request, Response, SubjectMatte, read_frame, write_frame};
+use tilo_model_client::{Frame, Request, Response, SubjectMatte, read_frame, write_frame};
 use ui::prelude::TestApp;
 use ui::tilo_actions::{InvocationId, InvocationUpdate};
 
@@ -46,7 +46,7 @@ impl HeldModel {
         let (app, mut service) = UnixStream::pair().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(
-            tilo_model_gateway::SERVICE_FD_ENV,
+            tilo_model_client::SERVICE_FD_ENV,
             app.as_raw_fd().to_string(),
         );
         let (asked_by, asked) = channel();

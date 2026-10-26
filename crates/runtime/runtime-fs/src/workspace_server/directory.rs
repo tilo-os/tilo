@@ -1386,9 +1386,10 @@ mod replacement_pin_tests {
                 .create_file(EntryName::new("ordinary-file".into()).unwrap())
                 .unwrap();
             let ordinary = directory.job_for_transport_test(ordinary).unwrap();
-            let ordinary = crate::directory_client::NativeJobClient::for_transport_test(
-                job_client(server.clone(), ordinary),
-            );
+            let ordinary = crate::directory_client::NativeJobClient::from_raw(job_client(
+                server.clone(),
+                ordinary,
+            ));
             assert!(ordinary.pin_replacement().await.is_err());
             directory.check().unwrap();
             drop(ordinary);
@@ -1414,7 +1415,7 @@ mod replacement_pin_tests {
             let raw = client_rpc.bootstrap(rpc_twoparty_capnp::Side::Server);
             let stop_client = client_rpc.get_disconnector();
             let client_task = tokio::task::spawn_local(client_rpc);
-            let job = crate::directory_client::NativeJobClient::for_transport_test(raw);
+            let job = crate::directory_client::NativeJobClient::from_raw(raw);
             assert_connected_pin_custody(&job, &fixture, &directory, operation).await;
             drop(job);
             stop_client.await.unwrap();
@@ -1762,7 +1763,7 @@ mod pending_replacement_tests {
                     let stop_client = client_rpc.get_disconnector();
                     let client_task = tokio::task::spawn_local(client_rpc);
                     let pending =
-                        crate::directory_client::PendingReplacementClient::for_transport_test(raw);
+                        crate::directory_client::PendingReplacementClient::from_authenticated_source_capability(raw);
                     assert_pending_refuses_uncertified_start(
                         &pending,
                         &fixture,
@@ -2059,7 +2060,7 @@ mod created_temporary_tests {
                     let raw = client_rpc.bootstrap(rpc_twoparty_capnp::Side::Server);
                     let stop_client = client_rpc.get_disconnector();
                     let client_task = tokio::task::spawn_local(client_rpc);
-                    let job = crate::directory_client::NativeJobClient::for_transport_test(raw);
+                    let job = crate::directory_client::NativeJobClient::from_raw(raw);
                     let cap = job.created_temporary().await.unwrap();
                     assert_created_custody(&cap, &fixture, revoke_before_retire).await;
                     drop(cap);
@@ -2686,7 +2687,7 @@ mod pending_purpose_transport_tests {
                 let stop_client = client.get_disconnector();
                 let client_task = tokio::task::spawn_local(client);
                 let pending =
-                    crate::directory_client::PendingReplacementClient::for_transport_test(raw);
+                    crate::directory_client::PendingReplacementClient::from_authenticated_source_capability(raw);
                 assert!(
                     pending.observe().await.is_err(),
                     "valid generic native bytes cannot be relabelled AtomicSave by RPC metadata"
@@ -2871,7 +2872,7 @@ mod malformed_atomic_refusal_tests {
                 let server=RpcSystem::new(Box::new(network),Some(cap.client));let stop_server=server.get_disconnector();let server_task=tokio::task::spawn_local(server);
                 let (read,write)=b.into_split();let network=twoparty::VatNetwork::new(read.compat(),write.compat_write(),rpc_twoparty_capnp::Side::Client,capnp::message::ReaderOptions::default());
                 let mut client=RpcSystem::new(Box::new(network),None);let raw=client.bootstrap(rpc_twoparty_capnp::Side::Server);let stop_client=client.get_disconnector();let client_task=tokio::task::spawn_local(client);
-                let creator=crate::directory_client::CreatedTemporaryClient::for_transport_test(raw);
+                let creator=crate::directory_client::CreatedTemporaryClient::from_authenticated_source_capability(raw);
                 assert!(matches!(creator.prepare_atomic_save().await,Outcome::Unknown(_)),"Refused plus an actual reservation capability must never release the cleanup slot");
                 pending.check().unwrap();fixture.assert_original_entries();
                 drop(creator);let _=stop_client.await;let _=stop_server.await;let _=client_task.await.unwrap();let _=server_task.await.unwrap();

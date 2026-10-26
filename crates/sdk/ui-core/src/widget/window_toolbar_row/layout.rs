@@ -2,6 +2,8 @@
 //! decides what stays in the row and what goes into the overflow menu,
 //! the location's forms, and what the views and labels measure.
 
+use vello::kurbo::Vec2;
+
 use super::{
     COMFORTABLE_LOCATION_PX, CONTROL_GAP, CONTROL_PX, FieldFace, LOCATION_ICON_PX, MIN_LOCATION_PX,
     Point, Rect, SECTION_GAP, Theme, WindowToolbar, picker_width,
@@ -25,6 +27,11 @@ pub(crate) enum Slot {
     Notice(usize),
     /// The button whose menu holds the actions the row has no room for.
     Overflow,
+    /// Pill `n` of the window's reactions: the person's reaction with its
+    /// emoji, or taking it back.
+    Reaction(usize),
+    /// The add button after the reactions' pills: the emoji picker.
+    ReactionAdd,
 }
 
 /// Where each slot of one toolbar sits.
@@ -57,6 +64,11 @@ pub(crate) struct Slots {
     pub notice: Vec<Rect>,
     /// Which of the notice's buttons name themselves, not only their icon.
     pub notice_labelled: Vec<bool>,
+    /// The window's reactions' pills standing at the row's end, the first
+    /// of them (none: no reactions, or no room for any).
+    pub reactions: Vec<Rect>,
+    /// Their add button, after the pills (`Rect::ZERO`: none).
+    pub reaction_add: Rect,
 }
 
 /// What the row lays out beside the toolbar: the view switcher's size and
@@ -683,34 +695,59 @@ impl Slots {
     }
 
     pub(super) fn hit(&self, p: Point) -> Option<Slot> {
-        if self.sidebar.contains(p) {
-            return Some(Slot::Sidebar);
-        }
-        if self.back.contains(p) {
-            return Some(Slot::Back);
-        }
-        if self.forward.contains(p) {
-            return Some(Slot::Forward);
-        }
-        if let Some(i) = self.leading.iter().position(|r| r.contains(p)) {
-            return Some(Slot::Leading(i));
-        }
-        if let Some(i) = self.views.iter().position(|r| r.contains(p)) {
-            return Some(Slot::View(i));
-        }
-        if self.views_menu.contains(p) {
-            return Some(Slot::ViewsMenu);
-        }
-        if let Some(i) = self.actions.iter().position(|r| r.contains(p)) {
-            return Some(Slot::Action(i));
-        }
-        if let Some(i) = self.notice.iter().position(|r| r.contains(p)) {
-            return Some(Slot::Notice(i));
-        }
-        if self.overflow.contains(p) {
-            return Some(Slot::Overflow);
-        }
-        self.location.contains(p).then_some(Slot::Location)
+        self.hit_where(p, |_| Some(Vec2::ZERO))
+    }
+
+    /// The slot at `p` with each slot drawn `offset` from where it is laid
+    /// out (a slot gliding to its new place); a slot whose offset is `None`
+    /// is not looked at.
+    pub(super) fn hit_where(
+        &self,
+        p: Point,
+        offset: impl Fn(&Slot) -> Option<Vec2>,
+    ) -> Option<Slot> {
+        let at = |slot: Slot, rect: &Rect| {
+            offset(&slot)
+                .is_some_and(|offset| (*rect + offset).contains(p))
+                .then_some(slot)
+        };
+        at(Slot::Sidebar, &self.sidebar)
+            .or_else(|| at(Slot::Back, &self.back))
+            .or_else(|| at(Slot::Forward, &self.forward))
+            .or_else(|| {
+                self.leading
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, rect)| at(Slot::Leading(i), rect))
+            })
+            .or_else(|| {
+                self.views
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, rect)| at(Slot::View(i), rect))
+            })
+            .or_else(|| at(Slot::ViewsMenu, &self.views_menu))
+            .or_else(|| {
+                self.actions
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, rect)| at(Slot::Action(i), rect))
+            })
+            .or_else(|| {
+                self.notice
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, rect)| at(Slot::Notice(i), rect))
+            })
+            .or_else(|| at(Slot::Overflow, &self.overflow))
+            .or_else(|| {
+                self.reactions
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, rect)| at(Slot::Reaction(i), rect))
+            })
+            .or_else(|| at(Slot::ReactionAdd, &self.reaction_add))
+            .or_else(|| at(Slot::Location, &self.location))
     }
 }
 

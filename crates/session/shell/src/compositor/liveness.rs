@@ -37,21 +37,19 @@
 //! # Backtraces of other threads
 //!
 //! A thread cannot be unwound from outside. Each one is sent a real-time
-//! signal whose handler captures its own backtrace; the answering thread
-//! symbolizes them. Capturing allocates, which a signal handler may not do in
-//! general: a thread interrupted inside the allocator waits on itself, for
-//! ever, on the allocator lock it already holds, and every other thread that
-//! allocates from that arena joins it.
+//! signal whose handler records its own return addresses into a slot of its
+//! own ([`capture`]), allocating nothing and taking no lock; the answering
+//! thread symbolizes them. Every answer is kept, and a thread that did not
+//! answer is reported as such.
 //!
-//! That is not hypothetical. The heartbeat once dumped on every wake over its
-//! budget, and on a loaded machine a main loop merely busy for half a second
-//! is usually allocating: interrupted there, the probe froze the desktop it
-//! was measuring. So only a thread blocked inside a system call is
-//! interrupted (`/proc/<tid>/syscall` names one), and not one inside the
-//! memory system calls the allocator makes while it holds its lock. A thread
-//! that is running, faulting in a page, or allocating is reported by its state
-//! and wait channel alone, and the heartbeat does not dump at all while the
-//! main thread is still working. A thread that does not answer within
+//! Only a thread blocked inside a system call is interrupted
+//! (`/proc/<tid>/syscall` names one), and not one inside the memory system
+//! calls the allocator and the loader make while they hold their locks: the
+//! unwinder reads the loader's list of objects under the loader's lock, and a
+//! thread stopped holding a lock the rest of the process needs freezes the
+//! desktop being measured. A thread that is running, faulting in a page, or
+//! allocating is reported by its state and wait channel alone, and the
+//! heartbeat does not dump at all while the main thread is still working. A thread that does not answer within
 //! `DUMP_WAIT` is reported as such rather than waited for. A main thread
 //! initially observed running is sampled again within that same deadline:
 //! reporting its later epoll wait without the stack would hide which loop it
@@ -71,6 +69,7 @@ use parking_lot::{Condvar, Mutex};
 use serde::{Deserialize, Serialize};
 use smithay::reexports::calloop::{self, LoopHandle};
 
+mod capture;
 mod main_thread_files;
 mod wake_trace;
 
@@ -229,7 +228,10 @@ impl Answer {
         } else if *main_thread_starved_ms >= quarter || *main_thread_queued {
             StallKind::Starved
         } else if *main_thread_major_faults > 0
-            && halfway.as_ref().is_none_or(|thread| thread.state == "D")
+            // Thrashing, it alternates between waiting for a page (`D`) and
+            // the core it needs to take the next fault (`R`). Asleep (`S`)
+            // it waits on something else: a lock, a descriptor, a child.
+            && halfway.as_ref().is_none_or(|thread| thread.state != "S")
         {
             StallKind::Paging
         } else {
@@ -613,9 +615,7 @@ fn capture_signal() -> libc::c_int {
     libc::SIGRTMIN().saturating_add(4)
 }
 
-/// Backtraces the handler left, by thread. Reserved before the signals are
-/// sent so the handler never grows it.
-static CAPTURED: Mutex<Vec<(i32, Backtrace)>> = Mutex::new(Vec::new());
+/// One dump at a time: a thread answers the dump that asks it now.
 static ONE_DUMP_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 pub(super) fn gettid() -> i32 {
@@ -623,24 +623,15 @@ pub(super) fn gettid() -> i32 {
     i32::try_from(unsafe { libc::syscall(libc::SYS_gettid) }).unwrap_or(-1)
 }
 
-extern "C" fn capture_backtrace(_signal: libc::c_int) {
-    let tid = gettid();
-    let backtrace = Backtrace::force_capture();
-    if let Some(mut captured) = CAPTURED.try_lock()
-        && captured.len() < captured.capacity()
-    {
-        captured.push((tid, backtrace));
-    }
-}
-
 pub(super) fn install_capture_handler() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        capture::warm_up();
         // SAFETY: a zeroed `sigaction` is valid; the handler is an
         // `extern "C" fn(c_int)` and stays valid for the process's life.
         let status = unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
-            action.sa_sigaction = capture_backtrace as extern "C" fn(libc::c_int) as usize;
+            action.sa_sigaction = capture::answer as extern "C" fn(libc::c_int) as usize;
             action.sa_flags = libc::SA_RESTART;
             libc::sigemptyset(&raw mut action.sa_mask);
             libc::sigaction(capture_signal(), &raw const action, std::ptr::null_mut())
@@ -744,6 +735,23 @@ fn not_interruptible(syscall: &str) -> Option<String> {
     }
 }
 
+/// Why thread `tid` of this process may not be interrupted, or `None` when it
+/// may: [`not_interruptible`] from its system call, or
+/// [`not_interruptible_waiting_in`] from its wait channel when the system call
+/// cannot be read. A process that holds key material makes itself
+/// undumpable, which hands its `/proc` entries to root: `syscall` (0400) can
+/// no longer be read, `wchan` (0444) still can.
+fn why_not_interruptible(tid: i32) -> Option<String> {
+    match std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) {
+        Ok(syscall) => not_interruptible(&syscall),
+        Err(_) => not_interruptible_waiting_in(
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/wchan"))
+                .unwrap_or_default()
+                .trim(),
+        ),
+    }
+}
+
 /// [`not_interruptible`] for a thread whose system call cannot be read,
 /// from the kernel function it sleeps in (`/proc/<tid>/wchan`): only the
 /// waits a blocked thread makes on a lock, a condvar, its event loop, a timer,
@@ -830,105 +838,88 @@ fn report(tid: i32, backtrace: String) -> ThreadReport {
 /// for each one blocked where interrupting it is safe ([`not_interruptible`]),
 /// its backtrace.
 pub(super) fn dump_threads() -> Vec<ThreadReport> {
-    // One dump at a time: they share the capture slot.
     let _one = ONE_DUMP_AT_A_TIME.lock();
 
     // SAFETY: `getpid` takes no arguments and cannot fail.
     let pid = unsafe { libc::getpid() };
     let me = gettid();
     let tids = thread_ids();
-
-    {
-        let mut captured = CAPTURED.lock();
-        captured.clear();
-        captured.reserve(tids.len().saturating_add(8));
-    }
-    let mut signalled = 0usize;
+    let others: Vec<i32> = tids.iter().copied().filter(|&tid| tid != me).collect();
+    let ask = capture::Ask::new(&others);
+    let mut signalled = Vec::with_capacity(others.len());
+    let mut exited = Vec::new();
     let mut left_alone: Vec<(i32, String)> = Vec::new();
-    for &tid in tids.iter().filter(|&&tid| tid != me) {
-        // A process that holds key material makes itself undumpable, which
-        // hands its `/proc` entries to root: `syscall` (0400) can no longer
-        // be read, `wchan` (0444) still can.
-        let why = match std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall")) {
-            Ok(syscall) => not_interruptible(&syscall),
-            Err(_) => not_interruptible_waiting_in(
-                std::fs::read_to_string(format!("/proc/self/task/{tid}/wchan"))
-                    .unwrap_or_default()
-                    .trim(),
-            ),
-        };
-        if let Some(why) = why {
+    for &tid in &others {
+        if let Some(why) = why_not_interruptible(tid) {
             left_alone.push((tid, why));
             continue;
         }
-        // SAFETY: `tgkill` on a thread id of this process; the thread may have
-        // exited since the listing, which fails harmlessly.
-        let sent = unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, capture_signal()) };
-        if sent == 0 {
-            signalled = signalled.saturating_add(1);
+        if signal_capture(&ask, tid) {
+            signalled.push(tid);
+        } else {
+            exited.push(tid);
         }
     }
-    let own = Backtrace::force_capture();
+    let own = Backtrace::force_capture().to_string();
     let deadline = Instant::now()
         .checked_add(DUMP_WAIT)
         .unwrap_or_else(Instant::now);
-    wait_for_captures(pid, &mut signalled, &mut left_alone, deadline);
-    let captured = std::mem::take(&mut *CAPTURED.lock());
+    wait_for_captures(&ask, pid, &mut signalled, &mut left_alone, deadline);
     let mut own = Some(own);
 
     tids.iter()
         .map(|&tid| {
             let backtrace = if tid == me {
-                own.take().map(|bt| frames_of(&bt))
+                own.take().unwrap_or_default()
             } else if let Some((_, why)) = left_alone.iter().find(|(alone, _)| *alone == tid) {
-                Some(format!("not interrupted: {why}"))
+                format!("not interrupted: {why}")
+            } else if exited.contains(&tid) {
+                "no backtrace: the thread had exited".into()
+            } else if let Some(frames) = ask.frames(tid) {
+                frames
             } else {
-                captured
-                    .iter()
-                    .find(|(captured_tid, _)| *captured_tid == tid)
-                    .map(|(_, bt)| frames_of(bt))
+                unanswered()
             };
-            report(
-                tid,
-                backtrace.unwrap_or_else(|| {
-                    "no backtrace: the thread did not answer the capture signal, so it was \
-                     inside the allocator or loader, or had exited"
-                        .into()
-                }),
-            )
+            report(tid, backtrace)
         })
         .collect()
+}
+
+/// Send `tid` the capture signal for `ask`; `false` when it could not be
+/// sent (the thread has exited) or `ask` has no slot for it.
+fn signal_capture(ask: &capture::Ask, tid: i32) -> bool {
+    if !ask.has_room_for(tid) {
+        return false;
+    }
+    // SAFETY: `tgkill` on a thread id of this process; the thread may have
+    // exited since the listing, which fails harmlessly. The handler is
+    // installed before any dump.
+    unsafe { libc::syscall(libc::SYS_tgkill, libc::getpid(), tid, capture_signal()) == 0 }
+}
+
+/// What a signalled thread that never answered is reported as.
+fn unanswered() -> String {
+    format!(
+        "no backtrace: the thread did not answer the capture signal within {} ms, so it was \
+         inside the allocator or loader",
+        DUMP_WAIT.as_millis()
+    )
 }
 
 /// The backtrace of thread `tid` of this process, blocked in a system call
 /// the caller knows is safe to interrupt (one a seccomp listener holds), or
 /// `None` when it does not answer within [`DUMP_WAIT`].
-fn capture_thread(tid: i32) -> Option<Backtrace> {
+fn capture_thread(tid: i32) -> Option<String> {
     let _one = ONE_DUMP_AT_A_TIME.lock();
-    {
-        let mut captured = CAPTURED.lock();
-        captured.clear();
-        captured.reserve(1);
-    }
-    // SAFETY: `tgkill` on a thread of this process; the capture handler is
-    // installed before the audit arms.
-    let sent = unsafe { libc::syscall(libc::SYS_tgkill, libc::getpid(), tid, capture_signal()) };
-    if sent != 0 {
+    let ask = capture::Ask::new(&[tid]);
+    if !signal_capture(&ask, tid) {
         return None;
     }
     let deadline = Instant::now()
         .checked_add(DUMP_WAIT)
         .unwrap_or_else(Instant::now);
-    while Instant::now() < deadline {
-        {
-            let mut captured = CAPTURED.lock();
-            if let Some(index) = captured.iter().position(|(thread, _)| *thread == tid) {
-                return Some(captured.swap_remove(index).1);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    None
+    ask.wait(&[tid], deadline);
+    ask.frames(tid)
 }
 
 /// The main thread's state and, where it may be interrupted
@@ -936,94 +927,48 @@ fn capture_thread(tid: i32) -> Option<Backtrace> {
 fn sample_main_thread() -> ThreadReport {
     // SAFETY: `getpid` takes no arguments and cannot fail.
     let main = unsafe { libc::getpid() };
-    let syscall = std::fs::read_to_string(format!("/proc/self/task/{main}/syscall"));
-    let why = match &syscall {
-        Ok(syscall) => not_interruptible(syscall),
-        Err(_) => not_interruptible_waiting_in(
-            std::fs::read_to_string(format!("/proc/self/task/{main}/wchan"))
-                .unwrap_or_default()
-                .trim(),
-        ),
-    };
-    let frames = match why {
+    let frames = match why_not_interruptible(main) {
         Some(why) => format!("not interrupted: {why}"),
-        None => capture_thread(main).map_or_else(
-            || "no backtrace: the main thread did not answer the capture signal".into(),
-            |backtrace| frames_of(&backtrace),
-        ),
+        None => capture_thread(main).unwrap_or_else(|| {
+            "no backtrace: the main thread did not answer the capture signal".into()
+        }),
     };
-    let syscall = syscall.map_or_else(|_| "unreadable".to_string(), |line| line.trim().to_string());
+    let syscall = std::fs::read_to_string(format!("/proc/self/task/{main}/syscall"))
+        .map_or_else(|_| "unreadable".to_string(), |line| line.trim().to_string());
     report(main, format!("system call: {syscall}\n{frames}"))
 }
 
-/// Revisit a main thread initially observed running while other threads were
-/// being signalled. It can already be asleep by the time their stacks arrive.
-/// Keep the same allocator exclusions and the existing overall dump deadline.
+/// Wait until every thread in `signalled` has answered `ask` or `deadline`
+/// passes. A main thread initially left alone because it was running is
+/// revisited meanwhile: it can already be asleep by the time the others'
+/// stacks arrive, under the same allocator exclusions and deadline.
 fn wait_for_captures(
+    ask: &capture::Ask,
     main: i32,
-    signalled: &mut usize,
+    signalled: &mut Vec<i32>,
     left_alone: &mut Vec<(i32, String)>,
     deadline: Instant,
 ) {
     while Instant::now() < deadline {
         if let Some(index) = left_alone.iter().position(|(tid, _)| *tid == main) {
-            let why = match std::fs::read_to_string(format!("/proc/self/task/{main}/syscall")) {
-                Ok(syscall) => not_interruptible(&syscall),
-                Err(_) => not_interruptible_waiting_in(
-                    std::fs::read_to_string(format!("/proc/self/task/{main}/wchan"))
-                        .unwrap_or_default()
-                        .trim(),
-                ),
-            };
-            if let Some(why) = why {
+            if let Some(why) = why_not_interruptible(main) {
                 if let Some((_, note)) = left_alone.get_mut(index) {
                     *note = format!("initial capture deferred; latest observation: {why}");
                 }
             } else {
-                // SAFETY: this thread belongs to our process; an exited thread
-                // simply makes tgkill fail. The handler was installed before dumping.
-                let sent = unsafe {
-                    libc::syscall(libc::SYS_tgkill, libc::getpid(), main, capture_signal())
-                };
                 left_alone.remove(index);
-                if sent == 0 {
-                    *signalled = signalled.saturating_add(1);
+                if signal_capture(ask, main) {
+                    signalled.push(main);
                 }
             }
         }
-        if CAPTURED.lock().len() >= *signalled && !left_alone.iter().any(|(tid, _)| *tid == main) {
+        if signalled.iter().all(|&tid| ask.answered(tid))
+            && !left_alone.iter().any(|(tid, _)| *tid == main)
+        {
             break;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        std::thread::sleep(Duration::from_millis(1));
     }
-}
-
-/// The frames of a captured backtrace below the signal handler: the capture's
-/// own frames and the kernel's signal trampoline say nothing about the thread.
-fn frames_of(backtrace: &Backtrace) -> String {
-    let text = backtrace.to_string();
-    let lines: Vec<&str> = text.lines().collect();
-    let skip = lines
-        .iter()
-        .rposition(|line| {
-            line.contains("__restore_rt")
-                || line.contains("sigreturn")
-                || line.contains(": <unknown>")
-        })
-        .map_or(0, |index| index.saturating_add(1));
-    // A frame is `  N: symbol` possibly followed by an `at file:line` line;
-    // start at the first whole frame after the trampoline.
-    let start = lines
-        .iter()
-        .enumerate()
-        .skip(skip)
-        .find(|(_, line)| {
-            line.trim_start()
-                .split_once(':')
-                .is_some_and(|(number, _)| number.trim().parse::<u32>().is_ok())
-        })
-        .map_or_else(|| skip.min(lines.len()), |(index, _)| index);
-    lines.get(start..).unwrap_or_default().join("\n")
 }
 
 #[cfg(test)]
@@ -1141,6 +1086,19 @@ mod tests {
         let reading = waiting_for_a_page(0);
         assert!(!reading.stalled_but_working());
         assert!(render(&reading).contains("blocked"));
+        // Thrashing, the thread is as often runnable, between two faults.
+        let mut thrashing = waiting_for_a_page(1083);
+        if let Answer::Stalled { halfway, .. } = &mut thrashing {
+            *halfway = Some(main_thread_at_halfway("R", "0"));
+        }
+        assert!(thrashing.stalled_but_working());
+        assert!(render(&thrashing).contains("paging"));
+        // Asleep with a fault behind it, it waits on something else.
+        let mut asleep = waiting_for_a_page(1);
+        if let Answer::Stalled { halfway, .. } = &mut asleep {
+            *halfway = Some(main_thread_at_halfway("S", "futex_wait_queue"));
+        }
+        assert!(!asleep.stalled_but_working());
     }
 
     #[test]
@@ -1300,11 +1258,6 @@ mod tests {
         use std::sync::atomic::AtomicBool;
         install_capture_handler();
         let _one = ONE_DUMP_AT_A_TIME.lock();
-        {
-            let mut captured = CAPTURED.lock();
-            captured.clear();
-            captured.reserve(8);
-        }
         let park = Arc::new(AtomicBool::new(false));
         let worker_park = Arc::clone(&park);
         let (ready_tx, ready) = std::sync::mpsc::channel();
@@ -1338,20 +1291,18 @@ mod tests {
             }
             std::thread::yield_now();
         };
+        let ask = capture::Ask::new(&[tid]);
         let mut left_alone = vec![(tid, "it was running".into())];
-        let mut signalled = 0;
+        let mut signalled = Vec::new();
         park.store(true, Ordering::Release);
         wait_for_captures(
+            &ask,
             tid,
             &mut signalled,
             &mut left_alone,
             tilo_test_env::hang_deadline(),
         );
-        let frames = CAPTURED
-            .lock()
-            .iter()
-            .find(|(id, _)| *id == tid)
-            .map(|(_, backtrace)| frames_of(backtrace));
+        let frames = ask.frames(tid);
         drop(release_tx);
         worker.join().unwrap();
         assert!(
@@ -1386,6 +1337,115 @@ mod tests {
         );
     }
 
+    /// Threads parked in a `recv` until released, each named `name-N`.
+    fn parked_threads(
+        name: &str,
+        count: usize,
+        before_parking: impl Fn() + Send + Sync + Clone + 'static,
+    ) -> (
+        Vec<i32>,
+        Vec<std::sync::mpsc::Sender<()>>,
+        Vec<std::thread::JoinHandle<()>>,
+    ) {
+        let (ready_tx, ready) = std::sync::mpsc::channel::<i32>();
+        let mut releases = Vec::new();
+        let mut workers = Vec::new();
+        for index in 0..count {
+            let (release_tx, release) = std::sync::mpsc::channel::<()>();
+            let ready_tx = ready_tx.clone();
+            let before_parking = before_parking.clone();
+            workers.push(
+                std::thread::Builder::new()
+                    .name(format!("{name}-{index}"))
+                    .spawn(move || {
+                        before_parking();
+                        ready_tx.send(gettid()).unwrap();
+                        let _ = release.recv();
+                    })
+                    .unwrap(),
+            );
+            releases.push(release_tx);
+        }
+        let tids: Vec<i32> = (0..count)
+            .map(|_| tilo_test_env::recv("a parked thread's id", &ready))
+            .collect();
+        for &tid in &tids {
+            tilo_test_env::wait_until("the thread to block in its recv", || {
+                why_not_interruptible(tid).is_none()
+            });
+        }
+        (tids, releases, workers)
+    }
+
+    /// Every answer is kept while another thread's answer is still being
+    /// written: one thread stops mid-write, the others answer only once it
+    /// has, and it goes on after they have had time to.
+    #[test]
+    fn answers_arriving_while_another_is_being_written_are_all_kept() {
+        install_capture_handler();
+        let (tids, releases, workers) = parked_threads("liveness-many", 16, || {});
+        let held = capture::HeldWriter::hold(*tids.first().expect("parked threads"));
+        let release_later = std::thread::spawn(move || {
+            held.wait_until_writing();
+            // The window the other answers arrive in; what is kept does not
+            // depend on its length.
+            std::thread::sleep(Duration::from_millis(300));
+            held.release();
+        });
+        let threads = dump_threads();
+        release_later.join().unwrap();
+        drop(releases);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        for tid in tids {
+            let thread = threads
+                .iter()
+                .find(|thread| thread.tid == tid)
+                .expect("every parked thread is listed");
+            assert!(
+                thread.backtrace.contains("recv"),
+                "thread {tid} answered with where it waits:\n{}",
+                thread.backtrace
+            );
+        }
+    }
+
+    #[test]
+    fn a_thread_that_does_not_answer_is_told_apart_from_one_that_did() {
+        install_capture_handler();
+        let block_capture = || {
+            // SAFETY: a zeroed set with one signal added, masked on this
+            // thread alone.
+            unsafe {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&raw mut set);
+                libc::sigaddset(&raw mut set, capture_signal());
+                libc::pthread_sigmask(libc::SIG_BLOCK, &raw const set, std::ptr::null_mut());
+            }
+        };
+        let (deaf, deaf_releases, deaf_workers) = parked_threads("liveness-deaf", 1, block_capture);
+        let (heard, releases, workers) = parked_threads("liveness-heard", 8, || {});
+        let threads = dump_threads();
+        drop((deaf_releases, releases));
+        for worker in deaf_workers.into_iter().chain(workers) {
+            worker.join().unwrap();
+        }
+        let report = |tid: i32| {
+            threads
+                .iter()
+                .find(|thread| thread.tid == tid)
+                .map(|thread| thread.backtrace.clone())
+                .expect("listed")
+        };
+        for tid in deaf {
+            assert_eq!(report(tid), unanswered(), "the masked thread never answers");
+        }
+        for tid in heard {
+            assert!(report(tid).contains("recv"), "{}", report(tid));
+        }
+    }
+
     #[test]
     fn another_threads_stack_is_captured_through_the_signal() {
         install_capture_handler();
@@ -1402,11 +1462,7 @@ mod tests {
         // Only a thread blocked in a system call is interrupted: wait until
         // the worker is asleep in its `recv`, not still on its way there.
         tilo_test_env::wait_until("the worker to block in its recv", || {
-            not_interruptible(
-                &std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall"))
-                    .unwrap_or_default(),
-            )
-            .is_none()
+            why_not_interruptible(tid).is_none()
         });
         let threads = dump_threads();
         drop(parked);

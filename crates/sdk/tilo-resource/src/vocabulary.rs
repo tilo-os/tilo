@@ -36,6 +36,7 @@ trait AnyAction {
     fn write_json(&self, out: &mut Vec<u8>) -> Result<(), serde_json::Error>;
     fn need(&self) -> ActionNeed;
     fn risk(&self) -> RiskLevel;
+    fn undoable(&self) -> bool;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
@@ -60,6 +61,14 @@ impl<R: Resource> AnyAction for Typed<R> {
 
     fn risk(&self) -> RiskLevel {
         tilo_actions::Action::risk(&self.0)
+    }
+
+    fn undoable(&self) -> bool {
+        tilo_actions::undo_takes_back(
+            tilo_actions::Action::action_kind(&self.0),
+            tilo_actions::Action::change_kind(&self.0),
+            tilo_actions::Action::irreversible(&self.0),
+        )
     }
 
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
@@ -88,6 +97,12 @@ impl Built {
     #[must_use]
     pub fn risk(&self) -> RiskLevel {
         self.0.risk()
+    }
+
+    /// Whether Undo takes it back: a person's change of the document alone.
+    #[must_use]
+    pub fn undoable(&self) -> bool {
+        self.0.undoable()
     }
 
     /// Encoded under its resource's registry type id.
@@ -224,6 +239,8 @@ pub struct Vocabulary {
     pub action_type: &'static str,
     /// [`Resource::EDITS`].
     pub edits: bool,
+    /// [`Resource::RECORD_TABLE`].
+    pub(crate) record_table: Option<&'static crate::table::ModelTable>,
     pub(crate) type_id: fn() -> TypeId,
     pub(crate) shape: fn() -> Option<Shape>,
     pub(crate) op_schemas: fn() -> Vec<(String, serde_json::Value)>,
@@ -306,6 +323,7 @@ impl<R: Resource> VocabularyOf<R> {
         label: R::LABEL,
         action_type: R::ACTION_TYPE,
         edits: R::EDITS,
+        record_table: R::RECORD_TABLE,
         type_id: TypeId::of::<R>,
         shape: R::shape,
         op_schemas: R::op_schemas,

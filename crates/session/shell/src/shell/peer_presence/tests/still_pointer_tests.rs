@@ -17,7 +17,7 @@ fn a_still_peers_pointer_stays_until_it_is_taken_away() {
     let t0 = Instant::now();
     let heard = |anchored: &mut AnchoredPointers, presence: &mut PresenceCtx, at| {
         fold_inbound(
-            vec![arrived("bob", 7, room, (30.0, 20.0))],
+            vec![arrived(7, room, (30.0, 20.0))],
             anchored,
             presence,
             &unnamed,
@@ -46,7 +46,7 @@ fn a_still_peers_pointer_stays_until_it_is_taken_away() {
     );
 
     // Taken away from the room's windows: gone at once.
-    let mut gone = arrived("bob", 7, room, (0.0, 0.0));
+    let mut gone = arrived(7, room, (0.0, 0.0));
     gone.cleared = true;
     fold_inbound(
         vec![gone],

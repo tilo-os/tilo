@@ -11,7 +11,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
 
-use taffy::style_helpers::{length, percent};
+use taffy::style_helpers::percent;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -32,7 +32,14 @@ use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
-use crate::widget::{ArrivingRows, Element, SkeletonShape, TaffyTreeExt, Widget};
+use crate::widget::{ArrivingRows, Element, TaffyTreeExt, Widget};
+
+#[path = "virtual_list_remount.rs"]
+mod remount;
+use remount::row_kept;
+#[path = "virtual_list_shown.rs"]
+mod shown;
+use shown::ListShown;
 
 const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
 
@@ -358,25 +365,26 @@ pub struct VirtualList<M: ListModel> {
     request_dirty: bool,
     structure_dirty: bool,
     layout_dirty: bool,
+    /// The view moved since the rows were last placed: a layout pass places
+    /// them again, measuring nothing (as `Scrollable::scroll_dirty`).
+    scroll_dirty: bool,
     interaction: crate::interaction::InteractionEnvironment,
     /// The scroll offset the rows' layout was built at: a scroll that brings
     /// no row near moves them in `apply_layout`, without a rebuild.
     layout_offset: f64,
-    /// The rows mounted at the last reconcile, and whether a scroll since
-    /// brought others near: a rebuild that only mounts and lets go of rows
-    /// is one the frame's damage describes
+    /// The rows mounted at the last reconcile ([`Self::mount_window`]),
+    /// and whether a scroll since brought others near: a rebuild that only
+    /// mounts and lets go of rows is one the frame's damage describes
     /// ([`crate::widget::StructureChange::Described`]).
     mounted_range: Range<usize>,
     remount: bool,
+    /// The list's node in the layout it last built, where its host lays out
+    /// the rows a scroll brings near in place ([`Widget::remount_children`]).
+    layout_node: Option<NodeId>,
     /// What the frame being drawn shows, and what the last frame the host
     /// presented showed: a scroll between the two that changed nothing else
     /// is offered to the host as a copy ([`crate::scroll_copy::offer`]).
-    shown_drawing: Option<ListShown>,
-    shown_presented: Option<ListShown>,
-    /// How far the rows the last presented frame showed moved on screen in
-    /// the frame being drawn; `None` when it cannot be said (its first row
-    /// is gone, or nothing was presented).
-    shown_moved: Option<f64>,
+    shown: crate::scroll_copy::ShownFrames<ListShown>,
     /// Rows moving or fading after a change the person made, and a
     /// structural change waiting for the next frame to start their motion.
     row_motion: crate::collection_transition::RowMotions<M::Key>,
@@ -384,27 +392,12 @@ pub struct VirtualList<M: ListModel> {
     arrivals: ArrivingRows<M::Key>,
     /// The failed row whose retry was pressed, for the next update.
     retry_asked: Rc<Cell<Option<usize>>>,
-}
-
-/// Where a frame shows the rows: the offset, the list's box, the transform
-/// it is drawn with, whether the rows stand beside the bar, and what of the
-/// list's own paint (selection, focus, a reorder) the rows do not carry.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ListShown {
-    offset: f64,
-    rect: Rect,
-    transform: Affine,
-    beside_bar: bool,
-    chrome: u64,
-    /// Rows were drawn off their places (a list change moving): the frame
-    /// is not a copy of another, whatever else matches.
-    in_motion: bool,
-    /// The first row on screen: its index, its key's hash and its top in
-    /// the list. The next frame tells how far the rows moved on screen from
-    /// where it stands then, which is the scroll only while no row it showed
-    /// changed height; a row measured for the first time above it moves the
-    /// offset and the row alike.
-    first_shown: Option<(usize, u64, f64)>,
+    /// The mounted rows the last placement placed, when it placed only
+    /// those near the box ([`crate::widget::placing_again`]); the others
+    /// keep earlier boxes until they come near. `None`: every row.
+    placed: Option<Range<usize>>,
+    /// The rows near the box at the last placement, placed as they leave.
+    near_placed: Range<usize>,
 }
 
 impl<M: ListModel> VirtualList<M> {
@@ -499,12 +492,14 @@ impl<M: ListModel> VirtualList<M> {
             layout_offset: 0.0,
             mounted_range: 0..0,
             remount: false,
-            shown_drawing: None,
-            shown_presented: None,
-            shown_moved: None,
+            scroll_dirty: false,
+            layout_node: None,
+            shown: crate::scroll_copy::ShownFrames::default(),
             row_motion: crate::collection_transition::RowMotions::default(),
             arrivals: ArrivingRows::new(),
             retry_asked: Rc::new(Cell::new(None)),
+            placed: None,
+            near_placed: 0..0,
         };
         list.refresh_anchor();
         list
@@ -572,7 +567,7 @@ impl<M: ListModel> VirtualList<M> {
     fn reveal_in_progress(&self, now: Instant) -> bool {
         self.scroll_to.target().is_some()
             || self.scroll_to.is_moving(now)
-            || self.shown_drawing.is_some_and(|shown| shown.in_motion)
+            || self.shown.drawing().is_some_and(|shown| shown.in_motion)
     }
 
     /// Give this list a stable app-test/inspection id.
@@ -845,10 +840,9 @@ impl<M: ListModel> VirtualList<M> {
 
     pub fn set_scroll_offset(&mut self, offset: f64) {
         self.viewport.set_offset(offset);
-        // The rows move in `apply_layout`; rows the scroll brought near are
-        // mounted by the rebuild the layout pass asks for, which the
-        // frame's damage describes.
-        self.layout_dirty = true;
+        // The rows move in `apply_layout`, measured as they were; rows the
+        // scroll brought near mount in the pass after (`remount_rows`).
+        self.scroll_dirty = true;
         self.refresh_anchor();
     }
 
@@ -872,19 +866,6 @@ impl<M: ListModel> VirtualList<M> {
         hasher.finish()
     }
 
-    /// Where the frame being drawn shows the rows and how far they moved on
-    /// screen since the last presented frame, when only a scroll moved them.
-    fn scrolled_since_presented(&self) -> Option<(ListShown, f64)> {
-        let (drawing, presented) = (self.shown_drawing?, self.shown_presented?);
-        let moved = self.shown_moved?;
-        (drawing.rect == presented.rect
-            && drawing.transform == presented.transform
-            && drawing.beside_bar == presented.beside_bar
-            && drawing.chrome == presented.chrome
-            && moved.to_bits() != 0.0_f64.to_bits())
-        .then_some((drawing, moved))
-    }
-
     /// A stable hash of `key`, for telling a row again in a later frame.
     fn key_hash(key: &M::Key) -> u64 {
         use std::hash::{Hash, Hasher};
@@ -896,8 +877,9 @@ impl<M: ListModel> VirtualList<M> {
     /// The first mounted row on screen, as [`ListShown::first_shown`] holds
     /// it.
     fn first_shown_row(&self) -> Option<(usize, u64, f64)> {
+        let give = self.give();
         self.mounted.iter().find_map(|row| {
-            let top = self.viewport.item_view_top(row.index)?;
+            let top = self.viewport.item_view_top(row.index)? - give;
             let height = self.viewport.item_height(row.index)?;
             (top + height > 0.0).then(|| (row.index, Self::key_hash(&row.key), top))
         })
@@ -906,7 +888,7 @@ impl<M: ListModel> VirtualList<M> {
     /// How far the first row the last presented frame showed has moved on
     /// screen since, while it is still that row.
     fn moved_since_presented(&self) -> Option<f64> {
-        let (index, key, top) = self.shown_presented?.first_shown?;
+        let (index, key, top) = self.shown.presented()?.first_shown?;
         let still = self
             .model
             .key_at(index)
@@ -914,7 +896,13 @@ impl<M: ListModel> VirtualList<M> {
         if !still {
             return None;
         }
-        Some(self.viewport.item_view_top(index)? - top)
+        Some(self.viewport.item_view_top(index)? - self.give() - top)
+    }
+
+    /// How far past an end fingers pull the rows, as drawn: negative before
+    /// the start ([`crate::motion::RubberBand`]).
+    fn give(&self) -> f64 {
+        self.momentum.give(crate::motion::frame_now())
     }
 
     #[must_use]
@@ -1042,7 +1030,8 @@ impl<M: ListModel> VirtualList<M> {
 
     fn reconcile_mounted(&mut self) {
         let interaction = self.interaction;
-        let range = self.viewport.visible_range();
+        let range = self.mount_window();
+        let window = range.clone();
         if self.request_dirty || self.requested_range.as_ref() != Some(&range) {
             self.model.request_range(range.clone());
             self.requested_range = Some(range.clone());
@@ -1115,7 +1104,7 @@ impl<M: ListModel> VirtualList<M> {
         }
         self.arrivals.retain(now, |key| seen.contains(key));
         self.mounted = mounted;
-        self.mounted_range = self.viewport.visible_range();
+        self.mounted_range = window;
     }
 
     fn row_at_cursor(&self) -> Option<(usize, M::Key)> {
@@ -1505,7 +1494,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // else reconciles now.
         let scrolled_only = !self.structure_dirty
             && !self.request_dirty
-            && self.viewport.visible_range() != self.mounted_range;
+            && !self.mounted_covers(&self.viewport.visible_range());
         if !scrolled_only {
             self.reconcile_mounted();
         }
@@ -1537,6 +1526,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // out; rows it brings near mount through that layout's rebuild. It
         // is no change of the model, so it does not report one (as
         // `Scrollable::update`).
+        let offset = self.viewport.offset();
         if self.momentum.is_active() {
             let delta = self.momentum.advance(now);
             if !self.scroll_by(delta) {
@@ -1545,6 +1535,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         // A reveal in progress, like a glide, moves only the viewport.
         self.follow_scroll_to(crate::motion::frame_now());
+        if self.viewport.offset().to_bits() != offset.to_bits() {
+            crate::widget::note_placement_moved();
+        }
         if self.reorder.is_active() {
             let motion = self.reorder.tick(self.rect, elapsed, now);
             if motion.scroll_delta != 0.0 && self.scroll_by(motion.scroll_delta) {
@@ -1574,32 +1567,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.bleed = crate::chrome::row_bleed(theme);
         self.motion = theme.motion();
         self.reconcile_mounted();
-        // Rows stand one bleed in from the list's edges, so their lift (and
-        // a ListRow's) fills the list; beside the bar they leave its gutter.
-        self.rows_beside_bar = self.scroll_metrics().overflows();
-        let left = px(self.bleed);
-        let right = px(self.bleed
-            + if self.rows_beside_bar {
-                self.gutter
-            } else {
-                0.0
-            });
+        self.layout_offset = self.viewport.offset();
         let mut child_nodes = Vec::with_capacity(self.mounted.len());
         for row in &mut self.mounted {
             let child = row.widget.build_layout(taffy, theme, node_map);
-            let mut style = taffy.style(child).cloned().unwrap_or_default();
-            style.position = taffy::Position::Absolute;
-            style.inset.left = length(left);
-            style.inset.right = length(right);
-            style.inset.top = length(px(self
-                .viewport
-                .item_view_top(row.index)
-                .unwrap_or_default()));
-            style.size.width = Dimension::auto();
-            let _ = taffy.set_style(child, style);
             row.node = Some(child);
             child_nodes.push(child);
         }
+        self.place_rows(taffy);
         let node = taffy.parent_node(
             Style {
                 size: Size {
@@ -1621,8 +1596,19 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.structure_dirty = false;
         self.remount = false;
-        self.layout_offset = self.viewport.offset();
+        self.layout_node = Some(node);
         node
+    }
+
+    /// Rows a scroll brought near are mounted in place, and those it took
+    /// away let go of; the rows themselves carry out their own changes.
+    fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+        if self.remount {
+            return self.remount_rows(remount);
+        }
+        self.mounted
+            .iter_mut()
+            .all(|row| row.widget.remount_children(remount))
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1639,13 +1625,34 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             self.rect.x0,
             self.rect.y0 + self.layout_offset - self.viewport.offset(),
         );
-        let mut measurements = Vec::with_capacity(self.mounted.len());
-        for row in &mut self.mounted {
+        // Placed again from an unchanged layout (a scroll, a glide), only
+        // the rows near the list's box are placed, and those that were
+        // near it before, as they leave; the others measure as they did.
+        let near = self.mounted_near();
+        let again = crate::widget::placing_again(taffy);
+        let before = std::mem::replace(&mut self.near_placed, near.clone());
+        let placing: Vec<usize> = if again {
+            near.clone()
+                .chain(before.filter(|index| !near.contains(index)))
+                .collect()
+        } else {
+            (0..self.mounted.len()).collect()
+        };
+        self.placed = again.then_some(near);
+        let mut measurements = Vec::with_capacity(placing.len());
+        for at in placing {
+            let Some(row) = self.mounted.get_mut(at) else {
+                continue;
+            };
             let Some(child) = row.node else {
                 continue;
             };
             row.widget.apply_layout(taffy, child, child_origin);
-            measurements.push((row.index, row.key.clone(), row.widget.get_rect().height()));
+            // Placed again, a row keeps the height it was measured at when
+            // the layout it stands in was solved.
+            if !again {
+                measurements.push((row.index, row.key.clone(), row.widget.get_rect().height()));
+            }
         }
         // A row measured anew moves the rows after it: a rebuild no damage
         // describes. A row measured for the first time was not on screen
@@ -1684,9 +1691,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         // A scroll brought other rows near: the rebuild mounting them is
         // described by the frame's damage.
-        if self.viewport.visible_range() != self.mounted_range {
+        if !self.mounted_covers(&self.viewport.visible_range()) {
             self.remount = true;
         }
+        self.scroll_dirty = false;
     }
 
     fn draw(
@@ -1706,18 +1714,31 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.arrivals.mark_drawn(now);
         self.start_row_motion(theme.motion());
         self.motion = theme.motion();
+        self.momentum.set_view(
+            self.viewport.viewport(),
+            self.scroll_metrics().overflows(),
+            self.motion,
+        );
         // After a long reveal the rows fade in where they landed.
         let opacity = self.scroll_to.opacity(crate::motion::frame_now());
-        self.shown_drawing = Some(ListShown {
+        // How far the rows the last presented frame showed moved on screen:
+        // the frame stands that much further along than that one did.
+        let moved = self.moved_since_presented();
+        let presented = self.shown.presented().map(|shown| shown.position);
+        self.shown.note(ListShown {
             offset: self.viewport.offset(),
+            position: presented
+                .zip(moved)
+                .map_or(self.viewport.offset(), |(position, moved)| position - moved),
+            moved_known: moved.is_some(),
             rect: self.rect,
             transform: crate::scroll_copy::on_screen(transform),
             beside_bar: self.rows_beside_bar,
             chrome: self.chrome_fingerprint(),
             in_motion: !self.row_motion.is_empty() || opacity < 1.0,
             first_shown: self.first_shown_row(),
+            overlay: self.scrollbar_track(),
         });
-        self.shown_moved = self.moved_since_presented();
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -1726,11 +1747,24 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             &self.rect,
         );
         let accent = theme.tokens.colors.intent.accent_ink;
+        // Past an end, fingers pull the rows through the rubber band.
+        let frame_transform = transform;
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "kurbo Affine composition is floating-point matrix math"
+        )]
+        let transform = transform * Affine::translate((0.0, -self.give()));
         self.push_row_selection();
+        // Only the rows near the box: the list clips the others away.
+        let near = self.placed_near();
         let rects: Vec<Option<Rect>> = self
             .mounted
             .iter()
-            .map(|row| {
+            .enumerate()
+            .map(|(at, row)| {
+                if !near.contains(&at) {
+                    return None;
+                }
                 let top = self.viewport.item_view_top(row.index)?;
                 let height = self.viewport.item_height(row.index)?;
                 Some(self.lift_rect(top, height))
@@ -1749,6 +1783,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             .iter()
             .map(|row| self.row_motion.pose(&row.key, now))
             .collect();
+        let pending_shape = self.pending_shape();
+        let _kept = crate::draw_cull::keep_scope(scene, self.draw_keep(opacity, now));
+        let focused = self.focused_key.as_ref().filter(|_| self.is_focused);
         for (((row, row_rect), selection), (dy, alpha)) in self
             .mounted
             .iter_mut()
@@ -1759,6 +1796,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             let Some(row_rect) = row_rect else {
                 continue;
             };
+            // A row the frame keeps on screen, unchanged, is not drawn
+            // again: its selection, its ring and its widget are as they were.
+            let lift = (selection.selected && !self.delegate_selection).then_some(row_rect);
+            if focused != Some(&row.key) && row_kept(scene, transform, row.widget.as_ref(), lift) {
+                continue;
+            }
             let row_rect = row_rect + vello::kurbo::Vec2::new(0.0, dy);
             let row_transform = transform * Affine::translate((0.0, dy));
             let faded = alpha < 1.0;
@@ -1802,11 +1845,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             let slot = row.widget.get_rect() + vello::kurbo::Vec2::new(0.0, dy);
             self.arrivals.paint(
                 &row.key,
-                SkeletonShape::Row,
+                pending_shape,
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 slot,
                 now,
-                |ctx| {
+                &mut |ctx| {
                     row.widget
                         .draw(ctx.scene, row_transform, ctx.text, theme, presence);
                 },
@@ -1825,6 +1868,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             );
         }
         scene.pop_layer();
+        let transform = frame_transform;
 
         if let Some(track) = self.scrollbar_track() {
             scene.fill(
@@ -1868,12 +1912,15 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             return;
         }
         if !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
-            crate::widget::route_to_mounted(
-                &mut self.mounted,
-                |mounted| (&mut mounted.widget, mounted.node),
-                event,
-                ctx,
-            );
+            let reached = self.rows_reached(event);
+            if let Some(rows) = self.mounted.get_mut(reached) {
+                crate::widget::route_to_mounted(
+                    rows,
+                    |mounted| (&mut mounted.widget, mounted.node),
+                    event,
+                    ctx,
+                );
+            }
         }
         if *ctx.handled {
             return;
@@ -1970,9 +2017,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 self.last_tick = Some(crate::time::now());
                 *ctx.handled = match self.momentum.wheel(delta, *phase, self.reduce_motion) {
                     WheelStep::Scroll(delta) => {
-                        let moved = self.scroll_by(delta);
-                        self.momentum.wheel_applied(delta, moved);
-                        moved
+                        let before = self.viewport.offset();
+                        self.scroll_by(delta);
+                        let moved = self.viewport.offset() - before;
+                        self.momentum.wheel_applied(delta, moved)
                     }
                     WheelStep::Fling => true,
                     WheelStep::Ignored => false,
@@ -2014,6 +2062,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for row in &self.mounted {
+            visitor(row.widget.as_ref());
+        }
+    }
+
+    /// The rows near its box: the others are clipped away.
+    fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        for row in self.mounted.get(self.placed_near()).unwrap_or_default() {
             visitor(row.widget.as_ref());
         }
     }
@@ -2066,6 +2121,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     fn needs_animation_frame(&self) -> bool {
         let now = crate::time::now();
         self.momentum.is_active()
+            || self.momentum.give_needs_frame(crate::motion::frame_now())
             || self.reveal_in_progress(crate::motion::frame_now())
             || self.row_motion.is_moving(now)
             || self.arrivals.is_moving(now)
@@ -2094,8 +2150,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         use crate::widget::StructureChange;
         let mut change = if std::mem::take(&mut self.structure_dirty) {
             StructureChange::Rebuild
-        } else if std::mem::take(&mut self.remount) {
-            StructureChange::Described
+        } else if self.remount {
+            // Reported until the rows are mounted, in place where the host
+            // can ([`Widget::remount_children`]) or by a rebuild.
+            if self.layout_node.is_some() {
+                StructureChange::Children
+            } else {
+                StructureChange::Described
+            }
         } else {
             StructureChange::None
         };
@@ -2112,36 +2174,39 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         // Rows moving after a list change repaint the list every frame; a
         // frame of theirs is never a scroll copy.
-        let in_motion = self.shown_drawing.is_some_and(|shown| shown.in_motion);
-        if !in_motion && let Some((shown, delta)) = self.scrolled_since_presented() {
-            let overlays = self.scrollbar_track().into_iter().collect();
-            if crate::scroll_copy::offer(
-                self,
-                shown.rect,
-                vello::kurbo::Vec2::new(0.0, delta),
-                overlays,
-                shown.transform,
-            ) {
+        let in_motion = self.shown.drawing().is_some_and(|shown| shown.in_motion);
+        let shown_changed = match (self.shown.drawing(), self.shown.presented()) {
+            (Some(drawing), Some(presented)) => *drawing != *presented,
+            (drawing, presented) => drawing.is_some() != presented.is_some(),
+        };
+        if in_motion {
+            regions.push(self.rect);
+            return;
+        }
+        match self.shown.compare(self, regions) {
+            crate::scroll_copy::Since::Copied => {
                 let first = regions.len();
-                for row in &self.mounted {
+                // The rows away from the box are clipped away.
+                for row in self.mounted.get(self.placed_near()).unwrap_or_default() {
                     row.widget.collect_damage(regions);
                 }
                 if let Some(changed) = regions.get_mut(first..) {
                     for rect in changed {
-                        *rect = rect.intersect(shown.rect);
+                        *rect = rect.intersect(self.rect);
                     }
                 }
-                return;
             }
-        }
-        let shown_changed = self.shown_drawing != self.shown_presented;
-        if in_motion || shown_changed || self.needs_redraw() {
-            regions.push(self.rect);
+            crate::scroll_copy::Since::Still | crate::scroll_copy::Since::Repaint => {
+                if shown_changed || self.needs_redraw() {
+                    regions.push(self.rect);
+                }
+            }
         }
     }
 
     fn needs_redraw(&self) -> bool {
-        self.arrivals.needs_redraw(crate::motion::frame_now())
+        self.momentum.give_needs_frame(crate::motion::frame_now())
+            || self.arrivals.needs_redraw(crate::motion::frame_now())
             || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
@@ -2152,14 +2217,16 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     fn mark_drawn(&mut self) {
         // Not drawn this frame, what the screen shows where the list lies
         // is not known to be its rows: the next scroll repaints it.
-        self.shown_presented = self.shown_drawing.take();
+        self.shown.present();
         for row in &mut self.mounted {
             row.widget.mark_drawn();
         }
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.layout_dirty || self.mounted.iter().any(|row| row.widget.is_layout_dirty())
+        self.layout_dirty
+            || self.scroll_dirty
+            || self.mounted.iter().any(|row| row.widget.is_layout_dirty())
     }
 
     fn layout_needs_measure(&self) -> bool {
@@ -3425,3 +3492,7 @@ mod arrivals;
 #[cfg(test)]
 #[path = "virtual_list_arriving_tests.rs"]
 mod arriving_tests;
+
+#[cfg(test)]
+#[path = "virtual_list_mount_tests.rs"]
+mod mount_tests;

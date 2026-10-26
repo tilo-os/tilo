@@ -242,7 +242,10 @@ impl ShellOverlayHost {
             };
             let area = self.overlay_area();
             let inset = self.portal_dialogs.keyboard_inset(area);
+            let interaction = self.interaction;
             if let Some(prompt) = self.portal_dialogs.prompt_mut() {
+                // A PIN asked while touch is in use opens with its keypad.
+                ui::widget::Widget::set_interaction_environment(prompt, interaction);
                 prompt.set_keyboard_inset(inset);
                 // A password is asked with the one prompt every part of Tilo
                 // uses, sealed as the compositor's own.

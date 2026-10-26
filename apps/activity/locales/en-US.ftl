@@ -4,20 +4,19 @@ activity-place-whats-new = What's new
 activity-place-history = History
 activity-place-replay = Replay
 
-activity-reading = Reading the workspace's history
-activity-denied = You can't read this workspace's history
-activity-unreadable = The history couldn't be read
 
 activity-mark-viewed = Mark as viewed
 activity-title-catch-up = While you were away
 activity-sessions = Work sessions
 activity-caught-up = You're caught up
+activity-see-history = See history
 activity-history-pending = History is waiting for current edits to finish
 activity-summary-on-device = On-device summary
 activity-resume-heading = Where you left off
 activity-resume-context = { $app }, { $when }
 activity-resume-button = Resume
 activity-brief-open-explorer = Open this work session in History
+activity-brief-no-changes = No content differences in this work session
 activity-morning-heading = Morning sources
 activity-morning-refresh = Refresh source
 activity-morning-remove = Remove morning source

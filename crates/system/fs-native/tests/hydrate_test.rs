@@ -792,3 +792,120 @@ fn a_fetch_that_lands_after_its_reader_timed_out_still_releases_the_file() {
     assert_eq!(source.pattern.calls(), [(0, granule)]);
     h.stop();
 }
+
+/// A source that never delivers one content id until the fill is
+/// cancelled, as a peer does that went quiet, and serves every other at
+/// once. It gives up when cancelled, as the content plane's fetcher does.
+struct GivesUpWhenCancelled {
+    pattern: Arc<PatternFetcher>,
+    quiet: [u8; 32],
+    given_up: std::sync::atomic::AtomicU64,
+}
+
+impl fs_native::hydrate::Fetcher for GivesUpWhenCancelled {
+    fn fetch(&self, content: &[u8; 32], offset: u64, len: u64) -> std::io::Result<Vec<u8>> {
+        fs_native::hydrate::Fetcher::fetch(&*self.pattern, content, offset, len)
+    }
+
+    fn fill(
+        &self,
+        content: &[u8; 32],
+        range: std::ops::Range<u64>,
+        dest: std::os::fd::BorrowedFd<'_>,
+        _ahead: bool,
+        cancel: &fs_native::hydrate::Cancel,
+    ) -> std::io::Result<()> {
+        if *content == self.quiet {
+            let (cancelled, wait) = std::sync::mpsc::channel();
+            cancel.on_cancel(move || {
+                let _ = cancelled.send(());
+            });
+            let _ = wait.recv();
+            self.given_up.fetch_add(1, Ordering::Relaxed);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "nobody waits for these bytes any more",
+            ));
+        }
+        let bytes = self.fetch(content, range.start, range.end - range.start)?;
+        File::from(dest.try_clone_to_owned()?).write_all_at(&bytes, range.start)
+    }
+}
+
+/// With a single worker, a fill of bytes a quiet peer holds would occupy
+/// every worker there is. The access it serves fails at its bound, and that
+/// frees the worker: an access to another file queued behind it is served
+/// right after, and one made later at once, instead of failing at its own
+/// bound behind a peer that never answers.
+#[test]
+fn a_reader_given_up_on_frees_its_worker_for_other_files() {
+    let Some(s) = fanotify_scratch("hydrate_frees_worker") else {
+        return;
+    };
+    let bound = Duration::from_secs(1);
+    let granule = 256 * 1024;
+    let source = Arc::new(GivesUpWhenCancelled {
+        pattern: PatternFetcher::new(Duration::ZERO),
+        quiet: content_id(13),
+        given_up: std::sync::atomic::AtomicU64::new(0),
+    });
+    let h = Hydrator::start(
+        Arc::clone(&source) as Arc<dyn fs_native::hydrate::Fetcher>,
+        HydratorConfig {
+            granule,
+            workers: 1,
+            readahead_max: 0,
+            access_bound: bound,
+            ..HydratorConfig::default()
+        },
+    )
+    .unwrap();
+    let quiet = s.live.join("on-a-quiet-peer.bin");
+    let other = s.live.join("elsewhere.bin");
+    h.create_placeholder(&quiet, &spec(13, 4 * granule))
+        .unwrap();
+    h.create_placeholder(&other, &spec(14, 4 * granule))
+        .unwrap();
+
+    let stuck = std::thread::spawn(move || {
+        let started = Instant::now();
+        let mut buf = vec![0u8; 4096];
+        let result = File::open(&quiet).unwrap().read_at(&mut buf, 0);
+        (result, started.elapsed())
+    });
+    // Queued behind the quiet fill for half the bound: its own deadline is
+    // half a bound after the quiet reader's.
+    std::thread::sleep(bound / 2);
+    let started = Instant::now();
+    let mut buf = vec![0u8; 4096];
+    File::open(&other)
+        .unwrap()
+        .read_exact_at(&mut buf, 0)
+        .expect("an access queued behind the quiet fill is served once it gives up");
+    let queued_for = started.elapsed();
+    assert_eq!(buf, pattern(14, 0, 4096));
+    assert!(
+        queued_for < bound,
+        "an access queued behind the quiet fill waited {queued_for:?}"
+    );
+
+    let (result, waited) = stuck.join().unwrap();
+    let err = result.expect_err("bytes a quiet peer holds cannot be read");
+    assert_eq!(err.raw_os_error(), Some(libc::EIO), "{err}");
+    assert!(waited >= bound, "failed before the bound: {waited:?}");
+    assert_eq!(source.given_up.load(Ordering::Relaxed), 1);
+
+    // The quiet peer still answers nothing; the worker is free all the same.
+    let started = Instant::now();
+    File::open(&other)
+        .unwrap()
+        .read_exact_at(&mut buf, 2 * granule)
+        .expect("a later access is served");
+    let served_in = started.elapsed();
+    assert_eq!(buf, pattern(14, 2 * granule, 4096));
+    assert!(
+        served_in < bound / 2,
+        "a later access waited {served_in:?} with the quiet peer still quiet"
+    );
+    h.stop();
+}

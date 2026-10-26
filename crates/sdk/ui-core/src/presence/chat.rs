@@ -240,10 +240,14 @@ impl CursorChats {
 }
 
 /// The emoji `text` is, when it is exactly one (surrounding spaces aside):
-/// what makes a cursor-chat message a reaction rather than words.
+/// what makes a cursor-chat message a reaction rather than words. The
+/// `:name:` of an emoji the window's workspace has is one too.
 #[must_use]
 pub fn single_emoji(text: &str) -> Option<&str> {
     let text = text.trim();
+    if crate::workspace_emoji::emoji().resolve(text).is_some() {
+        return Some(text);
+    }
     let mut graphemes = crate::text_break::graphemes(text);
     let first = graphemes.next()?;
     (graphemes.next().is_none() && crate::text_render::grapheme_is_emoji(first)).then_some(first)
@@ -371,6 +375,24 @@ mod tests {
         );
         assert_eq!(single_emoji("\u{2764}\u{fe0f}"), Some("\u{2764}\u{fe0f}"));
         for words in ["ok", "\u{1f44d}\u{1f44d}", "\u{1f44d} nice", "", "1", "#"] {
+            assert_eq!(single_emoji(words), None, "{words:?}");
+        }
+    }
+
+    /// A workspace emoji's `:name:` alone is a reaction in a window whose
+    /// workspace has it; anywhere else it is words.
+    #[test]
+    fn a_workspace_emoji_alone_is_a_reaction_where_the_workspace_has_it() {
+        use crate::richtext::inline_emoji::tests::{Fixed, workspace};
+        assert_eq!(single_emoji(":tilo:"), None, "no window, no emoji");
+        let scope = crate::wake::WakeScope::new();
+        let _entry = scope.enter();
+        crate::workspace_emoji::register(
+            &scope.handle(),
+            std::rc::Rc::new(Fixed::new(workspace())),
+        );
+        assert_eq!(single_emoji(" :tilo: "), Some(":tilo:"));
+        for words in [":missing:", ":tilo: :tilo:", ":tilo: hi", "tilo"] {
             assert_eq!(single_emoji(words), None, "{words:?}");
         }
     }

@@ -31,7 +31,7 @@ impl ProviderAdministration {
     /// Capture the launcher's separately authorized administration capability.
     #[cfg(feature = "native")]
     pub fn from_launcher() -> Result<Self, ModelError> {
-        tilo_model_gateway::runtime_client::provider_admin_from_launcher().map(Self::new)
+        tilo_model_client::runtime_client::provider_admin_from_launcher().map(Self::new)
     }
 
     /// Launcher access requires native host services.
@@ -61,7 +61,7 @@ impl Models {
     /// Capture the launcher's authenticated capability and deliberate selection.
     #[cfg(feature = "native")]
     pub fn from_launcher() -> Result<Self, ModelError> {
-        tilo_model_gateway::runtime_client::from_launcher().map(Self::new)
+        tilo_model_client::runtime_client::from_launcher().map(Self::new)
     }
 
     /// Launcher access requires native host services.
@@ -71,6 +71,25 @@ impl Models {
     #[cfg(not(feature = "native"))]
     pub fn from_launcher() -> Result<Self, ModelError> {
         Err(ModelError::new(ErrorKind::Unavailable))
+    }
+
+    /// Bind a model gateway connection the host made on a component's
+    /// behalf, as a launcher makes one for an app, asking `model_id` of
+    /// `profile_id`: the host's own built-in components, which no launcher
+    /// starts, ask the model their settings choose this way.
+    ///
+    /// # Errors
+    /// A disconnected descriptor, or no app runtime to drive it.
+    #[cfg(all(feature = "native", unix))]
+    pub fn from_descriptor(
+        descriptor: std::os::fd::BorrowedFd<'_>,
+        profile_id: String,
+        model_id: String,
+    ) -> Result<Self, ModelError> {
+        tilo_model_client::runtime_client::from_descriptor_selection(
+            descriptor, profile_id, model_id,
+        )
+        .map(Self::new)
     }
 
     /// Stream presentation updates using only this host's capability.

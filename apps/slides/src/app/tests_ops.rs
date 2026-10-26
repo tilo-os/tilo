@@ -49,20 +49,18 @@ fn slide_ops_update_the_deck_and_the_current_slide() {
         "move down reordered it back"
     );
 
-    // Deleting is destructive: it waits for the person's confirmation, as a
-    // declared delete does, and changes nothing until then.
+    // Deleting changes only the deck, so Undo takes it back: it runs at
+    // once, nobody is asked first, and Undo restores the slide.
+    let current = bench.deck().slides[3].id.clone();
     bench.with(|app| app.apply_hit(Hit::DeleteSlide));
-    assert_eq!(bench.deck().slides.len(), n0 + 2, "held for confirmation");
-    let current = bench.deck().slides[2].id.clone();
-    bench
-        .app
-        .invoke_confirmed(
-            ui::tilo_resource::Invoke::apply(&actions::delete_slide_action(&current)).unwrap(),
-        )
-        .unwrap();
-    assert_eq!(bench.deck().slides.len(), n0 + 1);
+    assert_eq!(bench.deck().slides.len(), n0 + 1, "deleted at once");
+    assert!(
+        bench.deck().slides.iter().all(|slide| slide.id != current),
+        "the current slide is the one deleted"
+    );
     assert!(bench.undo(), "a delete is an undo step");
     assert_eq!(bench.deck().slides.len(), n0 + 2);
+    assert!(bench.deck().slides.iter().any(|slide| slide.id == current));
 }
 
 /// Inserting or navigating away must not redirect a live notes caret into
@@ -138,21 +136,28 @@ fn arrow_nudge_tab_cycle_and_delete_edit_the_deck() {
     assert!(x1 > x0 + 1.0, "ArrowRight nudged x ({x0} → {x1})");
 
     assert!(key(&mut bench, NamedKey::Tab));
-    assert_eq!(bench.read(|app| app.sel.clone()), Some(b), "Tab cycles");
+    assert_eq!(
+        bench.read(|app| app.sel.clone()),
+        Some(b.clone()),
+        "Tab cycles"
+    );
 
-    // Delete removes the selection: destructive, so held for the person's
-    // confirmation.
+    // Delete removes the selection at once: Undo takes it back, so nobody
+    // is asked first.
     let n = bench.deck().slides[0].elements.len();
     assert!(key(&mut bench, NamedKey::Delete));
     assert_eq!(
         bench.deck().slides[0].elements.len(),
-        n,
-        "held for confirmation"
+        n - 1,
+        "deleted at once"
     );
+    assert!(bench.deck().slides[0].element(&b).is_none());
     assert!(
         bench.read(|app| app.sel.is_none()),
         "selection clears after delete"
     );
+    assert!(bench.undo(), "a delete is an undo step");
+    assert!(bench.deck().slides[0].element(&b).is_some());
 }
 
 #[test]

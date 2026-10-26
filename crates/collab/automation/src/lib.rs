@@ -49,11 +49,12 @@ pub use check::{
     BindingOption, CheckError, CheckErrorKind, NoShortcuts, ShortcutResolver, binding_options,
     check, check_bot, values_at,
 };
-pub use grant::{StepGrant, action_rule, grant_answer, step_node};
+pub use grant::{StepGrant, action_rule, edit_reach, grant_answer, step_node, step_node_at};
 pub use path::StepPath;
 pub use run::{
-    AskRequest, ConfirmationRequest, RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest,
-    RunTrigger, STEP_FACET, StepFailure, StepRecord, StepStatus, invocation_id, run,
+    AskRequest, ConfirmationRequest, DEFAULT_STEP_TIMEOUT, RunHooks, RunId, RunMode, RunOutcome,
+    RunReport, RunRequest, RunTrigger, STEP_FACET, StepFailure, StepRecord, StepStatus, StopWatch,
+    invocation_id, run,
 };
 pub use shortcut::{
     ActorFilter, AiTransform, Binding, CatchUp, Condition, EVENT_INPUT, FOCUS_DO_NOT_DISTURB,

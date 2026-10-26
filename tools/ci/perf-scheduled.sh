@@ -63,13 +63,21 @@ case $group in
     exit "$status"
     ;;
   agent)
-    cargo build --locked --release -p shell --bin shell --features dev-overrides
+    cargo build --locked --release -p shell --bin shell --bin tilo-runtime-mcp \
+      --example agent_task_desktop --features dev-overrides
     test -r "$VK_DRIVER_FILES"
     env_json release lavapipe kvm > "$out/env.json"
     bash tools/with-test-environment.sh python3 scripts/perf/agent_rtt.py \
       --spawn "$target/release/shell" --samples 1000 --warmup 100 \
       --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
       --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/compositor.log"
+    # A whole task as an agent in the login runs it: a scripted, streamed
+    # model at 0 ms think time, through tilo-runtime-mcp and the agent door.
+    bash tools/with-test-environment.sh python3 scripts/perf/agent_task.py \
+      --spawn "$target/release/shell" --repetitions 30 --warmup 3 \
+      --transport "tilo-runtime-mcp --connect, agent door, headless, release + dev-overrides, thin LTO" \
+      --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/task-compositor.log" \
+      --client-log "$out/task-client.log"
     env_json release none kvm > "$out/env-pipeline.json"
     TILO_AGENT_NATIVE_REPS=30 TILO_AGENT_NATIVE_SAMPLES="$out/native" \
       cargo test --locked --release -p agent --lib native_task_benchmark -- --nocapture
@@ -131,15 +139,19 @@ case $group in
     env_json release lavapipe kvm > "$out/env.json"
     python3 scripts/perf/render_bench.py timing "$examples/ui-perf" "$examples/redraw_bench" \
       --env-json "$out/env.json" --out "$out" --strip-pan-bench "$examples/strip_pan_bench" \
-      --records "$out/render.jsonl"
+      --records "$out/render.jsonl" || status=$?
     for plan in "5000,50000 open framework-open" "5000 scroll framework-scroll" "500,1000,2500 focus framework-focus"; do
       read -r sizes action adapter <<< "$plan"
-      "$examples/framework-scaling" "$sizes" "$action" | tee "$out/$adapter.log"
-      python3 tools/perf/adapters.py "$adapter" --env-json "$out/env.json" "$out/$adapter.log" >> "$out/render.jsonl"
+      "$examples/framework-scaling" "$sizes" "$action" | tee "$out/$adapter.log" || status=$?
+      python3 tools/perf/adapters.py "$adapter" --env-json "$out/env.json" "$out/$adapter.log" >> "$out/render.jsonl" || status=$?
     done
-    "$examples/notes-latency" | tee "$out/notes-latency.log"
-    python3 tools/perf/adapters.py notes-latency --env-json "$out/env.json" "$out/notes-latency.log" >> "$out/render.jsonl"
-    python3 scripts/perf/render_bench.py counters "$examples/ui-perf" --out "$out/counters"
+    "$examples/notes-latency" | tee "$out/notes-latency.log" || status=$?
+    python3 tools/perf/adapters.py notes-latency --env-json "$out/env.json" "$out/notes-latency.log" >> "$out/render.jsonl" || status=$?
+    python3 scripts/perf/render_bench.py counters "$examples/ui-perf" --out "$out/counters" || status=$?
+    # A benchmark that fails is reported by its own exit status, and its group
+    # still compares the records the others left: a pipeline's last command is
+    # what a shell reports, so each step keeps its own.
+    exit "$status"
     ;;
   wakeups)
     cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark

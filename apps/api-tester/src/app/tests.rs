@@ -944,6 +944,194 @@ fn a_guests_send_is_asked_in_the_window_saying_who_decides() {
     .unwrap();
 }
 
+/// A server that answers one request with `head` and then `body`, and stops
+/// writing when the client hangs up.
+fn serve_once(head: String, body: Vec<u8>) -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(tilo_test_env::hang_bound()))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            if stream.read_exact(&mut byte).is_err() {
+                return;
+            }
+            request.push(byte[0]);
+        }
+        if stream.write_all(head.as_bytes()).is_err() {
+            return;
+        }
+        for chunk in body.chunks(64 * 1024) {
+            if stream.write_all(chunk).is_err() {
+                return;
+            }
+        }
+    });
+    format!("http://{address}/body")
+}
+
+/// Send the open request through the effect and wait for the response the
+/// pane shows.
+fn sent_response(url: String) -> ResponseData {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("Body proof");
+    request.url = url;
+    open(&mut app, &request);
+    app.start_effect(&ApiTesterEffect::Send).unwrap();
+    tilo_test_env::wait_until("the HTTP worker to answer", || {
+        app.settle();
+        app.effect_progress().iter().any(|update| {
+            matches!(
+                update,
+                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+                    | ui::tilo_actions::InvocationUpdate::Failed { .. }
+            )
+        })
+    });
+    app.with_surface::<ApiTesterApp, _>(|surface| surface.response.clone())
+        .unwrap()
+        .expect("the response is displayed")
+}
+
+/// Sending answers whoever sent the request with the response the pane
+/// shows: an agent or a script reads the status, headers and body without
+/// looking at the window.
+#[test]
+fn send_answers_its_caller_with_the_response() {
+    let body = "{\"ok\":true}";
+    let url = serve_once(
+        format!(
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nX-Request-Id: probe-7\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        ),
+        body.as_bytes().to_vec(),
+    );
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("Answer proof");
+    request.url = url;
+    open(&mut app, &request);
+    app.start_effect(&ApiTesterEffect::Send).unwrap();
+    tilo_test_env::wait_until("the HTTP worker to answer", || {
+        app.settle();
+        app.effect_progress()
+            .iter()
+            .any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. }))
+    });
+    let answer = app
+        .effect_progress()
+        .into_iter()
+        .find_map(|update| match update {
+            ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => output.value,
+            _ => None,
+        })
+        .expect("the request answers with its response");
+    assert_eq!(answer["status"], 201);
+    assert_eq!(answer["status_text"], "Created");
+    assert_eq!(answer["body"], body);
+    assert_eq!(answer["size_bytes"], body.len());
+    assert_eq!(answer["binary"], false);
+    assert!(
+        answer["headers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|header| header["name"] == "x-request-id" && header["value"] == "probe-7"),
+        "{answer}"
+    );
+}
+
+/// A response larger than the pane can lay out is downloaded only as far
+/// as it is shown, and the pane says so instead of holding gigabytes.
+#[test]
+fn a_huge_response_is_shown_in_part_without_downloading_it_whole() {
+    let total = 4 * crate::http::MAX_SHOWN_BODY_BYTES;
+    let response = sent_response(serve_once(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n".to_owned(),
+        vec![b'a'; total],
+    ));
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.len(), crate::http::MAX_SHOWN_BODY_BYTES);
+    assert_eq!(response.shown_bytes, crate::http::MAX_SHOWN_BODY_BYTES);
+    assert!(!response.binary);
+    assert!(
+        !response.size_exact,
+        "with no declared length, the size is what arrived before the download stopped"
+    );
+    assert!(response::size_caption(&response).starts_with("More than "));
+    assert!(
+        response::shown_caption(&response).is_some_and(|shown| shown.starts_with("First ")),
+        "the pane says it shows the start"
+    );
+
+    // With a declared length, the size is the body's own.
+    let response = sent_response(serve_once(
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+        ),
+        vec![b'a'; total],
+    ));
+    assert_eq!(response.size_bytes, total);
+    assert!(response.size_exact);
+    assert_eq!(response.shown_bytes, crate::http::MAX_SHOWN_BODY_BYTES);
+}
+
+/// A binary body is shown as hex at its true size, not as replacement
+/// characters whose count the size was taken from.
+#[test]
+fn a_binary_response_is_shown_as_hex_at_its_size() {
+    let png: Vec<u8> = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
+        .into_iter()
+        .chain((0..=255).cycle().take(1000))
+        .collect();
+    let response = sent_response(serve_once(
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            png.len()
+        ),
+        png.clone(),
+    ));
+    assert_eq!(
+        response.size_bytes,
+        png.len(),
+        "the size counts bytes received"
+    );
+    assert!(response.size_exact);
+    assert!(response.binary);
+    assert!(!response.is_json());
+    assert!(
+        response.body.starts_with(
+            "00000000  89 50 4e 47 0d 0a 1a 0a 00 01 02 03 04 05 06 07  .PNG............\n"
+        ),
+        "{}",
+        response.body.lines().next().unwrap_or_default()
+    );
+    assert_eq!(response.body.lines().count(), png.len().div_ceil(16));
+    assert!(!response.body.contains('\u{FFFD}'));
+    assert_eq!(
+        response::shown_caption(&response).as_deref(),
+        Some("Shown as hex")
+    );
+
+    // Text in another encoding stays text, with its stray bytes replaced.
+    let latin1 = b"caf\xe9".to_vec();
+    let response = sent_response(serve_once(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=iso-8859-1\r\nContent-Length: 4\r\nConnection: close\r\n\r\n".to_owned(),
+        latin1,
+    ));
+    assert!(!response.binary);
+    assert_eq!(response.body, "caf\u{FFFD}");
+    assert_eq!(response::shown_caption(&response), None);
+}
+
 #[test]
 
 fn a_failed_request_is_shown_in_the_response_pane() {

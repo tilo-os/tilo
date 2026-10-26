@@ -17,6 +17,7 @@ while [[ $# -gt 0 ]]; do
 done
 case "$profile" in
   release) cargo_profile=wasm-release artifact=wasm-release ;;
+  assert) cargo_profile=wasm-assert artifact=wasm-assert ;;
   dev) cargo_profile=dev artifact=debug ;;
   *) echo "unsupported profile: $profile" >&2; exit 2 ;;
 esac
@@ -35,5 +36,5 @@ cp crates/browser/tilo-browser-compute/web/compute-{worker,domains,protocol}.mjs
 node --input-type=module - "$out/pkg/compute/tilo_browser_compute_bg.wasm" "$profile" <<'JS'
 import {readFileSync} from 'node:fs';
 import {inspectArtifact} from './crates/browser/tilo-browser-compute/scripts/artifact.mjs';
-console.log('compute artifact:', inspectArtifact(readFileSync(process.argv[2]), {release:process.argv[3] === 'release'}));
+console.log('compute artifact:', inspectArtifact(readFileSync(process.argv[2]), {release:process.argv[3] !== 'dev'}));
 JS

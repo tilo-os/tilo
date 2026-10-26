@@ -630,8 +630,10 @@ impl tilo_actions::remote::ActionHost for PageHost {
         &self,
         _caller: &tilo_actions::remote::Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Result<(), tilo_actions::remote::ActionHostError> {
-        Err(tilo_actions::remote::ActionHostError::UnknownInvocation)
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(
+            tilo_actions::remote::ActionHostError::UnknownInvocation,
+        ))
     }
 }
 

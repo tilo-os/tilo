@@ -60,6 +60,12 @@ struct Inner {
     holds_frames: bool,
     /// Its pages carry an end mark, as a mail's document does.
     marks_page_end: bool,
+    /// Addresses that fail to load, and the network error each fails with.
+    failing: std::collections::HashMap<String, String>,
+    /// A test reported the page's focused field: the engine then takes an
+    /// input method's composition, as a ready host does.
+    composition: bool,
+    text_field: Option<super::TextField>,
 }
 
 pub struct TestEngine {
@@ -159,6 +165,14 @@ impl TestEngine {
         self.lock_inner().selection = text.into();
     }
 
+    /// Report the page's focused field (`None`: nothing editable has the
+    /// focus), as a host that takes compositions does.
+    pub fn set_text_field(&self, field: Option<super::TextField>) {
+        let mut inner = self.lock_inner();
+        inner.composition = true;
+        inner.text_field = field;
+    }
+
     /// Hold back every frame, as a renderer still laying out a page does,
     /// or paint the page at the view's current size now.
     pub fn hold_frames(&self, hold: bool) {
@@ -191,6 +205,7 @@ impl TestEngine {
             .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX));
         *self.lock_frames() = Some(Frame {
             trace_id: None,
+            damage: None,
             rgba: Arc::new([r, g, b, 0xFF].repeat(pixels)),
             width,
             height,
@@ -206,10 +221,19 @@ impl TestEngine {
             .saturating_mul(4);
         *self.lock_frames() = Some(Frame {
             trace_id: None,
+            damage: None,
             rgba: Arc::new(vec![0x80; bytes]),
             width,
             height,
         });
+    }
+
+    /// Make every load of `uri` fail with the network `error`
+    /// (`ERR_CONNECTION_REFUSED`), as an unreachable site does: the engine
+    /// reports the address, the failure and its history, and an owned
+    /// navigation's outcome carries the error.
+    pub fn fail_address(&self, uri: impl Into<String>, error: impl Into<String>) {
+        self.lock_inner().failing.insert(uri.into(), error.into());
     }
 
     /// Deliver `event` on the next drain, as the engine would on its own (a
@@ -309,6 +333,7 @@ impl TestEngine {
         }
         *self.lock_frames() = Some(Frame {
             trace_id: None,
+            damage: None,
             rgba: Arc::new(rgba),
             width,
             height,
@@ -321,11 +346,15 @@ impl TestEngine {
             return;
         };
         inner.events.push(WebViewEvent::UriChanged(uri.clone()));
-        inner
-            .events
-            .push(WebViewEvent::TitleChanged(format!("{uri} — test page")));
-        inner.events.push(WebViewEvent::LoadProgress(1.0));
-        inner.events.push(WebViewEvent::LoadFinished);
+        if let Some(error) = inner.failing.get(&uri).cloned() {
+            inner.events.push(WebViewEvent::LoadFailed { uri, error });
+        } else {
+            inner
+                .events
+                .push(WebViewEvent::TitleChanged(format!("{uri} — test page")));
+            inner.events.push(WebViewEvent::LoadProgress(1.0));
+            inner.events.push(WebViewEvent::LoadFinished);
+        }
         inner.events.push(WebViewEvent::HistoryChanged {
             can_go_back: inner.index > 0,
             can_go_forward: inner.index.saturating_add(1) < inner.history.len(),
@@ -440,6 +469,14 @@ impl WebViewEngine for TestEngine {
         self.lock_inner().measures_document
     }
 
+    fn supports_composition(&self) -> bool {
+        self.lock_inner().composition
+    }
+
+    fn text_field(&self) -> Option<super::TextField> {
+        self.lock_inner().text_field
+    }
+
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.lock_inner().new_tabs)
     }
@@ -496,6 +533,7 @@ impl WebViewEngine for TestEngine {
         });
         let error = self.navigate_locked(&mut inner, command).err();
         let uri = inner.history.get(inner.index).cloned().unwrap_or_default();
+        let error = error.or_else(|| inner.failing.get(&uri).cloned());
         inner.events.push(WebViewEvent::NavigationOutcome {
             request_id,
             uri,
@@ -632,6 +670,8 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ExtensionNotificationChosen { .. }
             | WebViewCommand::ExtensionOmnibox { .. }
             | WebViewCommand::ExtensionOpenSidePanel { .. }
+            | WebViewCommand::ExtensionSidePanelPage { .. }
+            | WebViewCommand::ExtensionCommandKey { .. }
             | WebViewCommand::DownloadDecision { .. }
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }
@@ -641,7 +681,12 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ReportDocumentSize(_)
             | WebViewCommand::CancelNativeDownload { .. }
             | WebViewCommand::RetryDownload { .. }
-            | WebViewCommand::CancelAllDownloads => {}
+            | WebViewCommand::CancelAllDownloads
+            | WebViewCommand::AnswerClipboardRead { .. }
+            | WebViewCommand::ImeComposition { .. }
+            | WebViewCommand::ImeCommit(_)
+            | WebViewCommand::ImeCancel
+            | WebViewCommand::ImeFinish => {}
             WebViewCommand::CopySelection { request_id } => {
                 let text = inner.selection.clone();
                 inner

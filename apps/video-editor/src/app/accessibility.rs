@@ -408,6 +408,16 @@ impl VideoEditorApp {
                     .with_state(AccessState::new().focusable(can).disabled(!can)),
             );
         }
+        // The preview hint's Go to clip, where it is drawn.
+        if let Some(rect) = self.go_to_clip_button(&self.regions()) {
+            buttons.push(
+                AccessNode::new(Role::Button)
+                    .with_name(super::go_to_clip::GO_TO_CLIP_LABEL)
+                    .with_bounds(rect)
+                    .with_key(ui::a11y::hash_key(&super::go_to_clip::GO_TO_CLIP_KEY))
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
         let mut node = VideoEditorApp::a11y_pane(Pane::Transport, buttons);
         // The playhead is a live readout: it changes without focus moving, so
         // it rides on the pane as a value the reader can re-read on demand.
@@ -495,6 +505,7 @@ impl VideoEditorApp {
                     .with_key(0),
             );
         }
+        tracks.extend(self.a11y_timeline_empty(&self.regions()));
         // The master strip, as the first thing in the pane. A reader meets
         // the mix's state before the lanes, which is the order the screen
         // puts it in — and when it has clipped, the node is a *button*,
@@ -1180,6 +1191,17 @@ impl VideoEditorApp {
                     .with_key(ui::a11y::hash_key(&"export.failure-details"))
                     .with_live(ui::a11y::Politeness::Assertive),
             );
+        } else if let Some(reason) = self.export_blocker() {
+            // Why Export is withdrawn, where the painted dialog says it too:
+            // the button is disabled, and a disabled button that names no
+            // reason is a wall.
+            kids.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Why export cannot run")
+                    .with_value(reason)
+                    .with_key(ui::a11y::hash_key(&"export.blocked"))
+                    .with_live(ui::a11y::Politeness::Polite),
+            );
         }
         AccessNode::new(Role::Dialog)
             .with_name("Export video")
@@ -1619,6 +1641,13 @@ impl VideoEditorApp {
         let Some(&key) = rest.first() else {
             return false;
         };
+        if key == hash_key(&super::go_to_clip::GO_TO_CLIP_KEY) {
+            return match action {
+                Action::Focus => true,
+                Action::Activate => self.go_to_clip(),
+                _ => false,
+            };
+        }
         // History first: its keys are hashed from the verb, so they cannot
         // collide with the transport's positional ones.
         for which in [ui::UndoRequest::Undo, ui::UndoRequest::Redo] {
@@ -1657,6 +1686,9 @@ impl VideoEditorApp {
         // The master strip's node. Activating it is the same walk the red
         // chip does under the pointer — one route, so a reader and a mouse
         // land in the same place.
+        if track_key == hash_key(&super::timeline_empty::TIMELINE_EMPTY_KEY) {
+            return self.a11y_timeline_empty_action(action, rest.get(1..).unwrap_or_default());
+        }
         if track_key == hash_key(&MIX_METER_KEY) {
             return match action {
                 Action::Focus => true,

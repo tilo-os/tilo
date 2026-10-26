@@ -4,9 +4,7 @@
 //! size, a redraw, the pointer's shape — comes from the surface.
 
 use super::*;
-use crate::damage::{
-    WidgetIdentity, boxes_covered_by_own_damage, changed_boxes, moved_boxes, widget_boxes,
-};
+use crate::damage::{WidgetIdentity, boxes_covered_by_own_damage, changed_boxes, widget_boxes};
 use crate::profiling::InputPhase;
 
 /// What an [`App`] needs from the surface it is shown on.
@@ -214,7 +212,8 @@ impl App {
             None
         } else {
             match &event {
-                WindowEvent::Touch(_) => Some(app.input.interaction.with_touch_modality()),
+                // The window's touch emulation switches to touch once the
+                // gesture has landed, so a touch hits what the person saw.
                 WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
                 | WindowEvent::MouseWheel { .. } => {
@@ -1012,8 +1011,7 @@ impl App {
         #[cfg(test)]
         drop(boxes_probe);
         let moved = match &boxes_after {
-            Some(after) if described => Some(changed_boxes(&boxes_before, after)),
-            Some(after) => moved_boxes(&boxes_before, after),
+            Some(after) => Some(changed_boxes(&boxes_before, after)),
             None if recomposed => None,
             None => Some(Vec::new()),
         };
@@ -1029,9 +1027,27 @@ impl App {
         ]
         .into_iter()
         .find_map(|(repaint, why)| repaint.then_some(why));
+        // A host that repaints only this frame's damage from its scene is
+        // drawn only what that damage needs (`crate::draw_cull`), unless the
+        // frame repaints whole or paints what its widgets' damage does not
+        // describe.
+        let culls = damage.culls
+            && full.is_none()
+            && self.history.is_none()
+            && self.history_layout.is_none()
+            && !crate::scene_parts::is_tracked(scene);
+        let mut culling = culls.then(|| std::mem::take(&mut self.layout.cull));
+        let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
         #[cfg(test)]
         let draw_probe = crate::profiling::frame_probe::span("frame.draw");
-        let drawn = draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        let drawn = draw_frame_content_with(
+            self,
+            scene,
+            (size.width, size.height),
+            scale_factor,
+            None,
+            culling.as_mut().map(|culling| &mut culling.scenes),
+        );
         #[cfg(test)]
         drop(draw_probe);
         // The surface a handled input left for this frame, now that its sync
@@ -1053,7 +1069,10 @@ impl App {
                 drawn.window_rect,
                 crate::time::now(),
             );
-            scene.append(peers.layer.scene(), None);
+            // Over the widgets: a culled frame composes them first.
+            if culling.is_none() {
+                scene.append(peers.layer.scene(), None);
+            }
             PeerFrame {
                 changed,
                 marks: peer_marks(&peers.layer, &mut peers.bounds, surface_rect),
@@ -1081,10 +1100,8 @@ impl App {
                 let (before, after) = (uncovered(&boxes_before), uncovered(after));
                 if covered.is_empty() {
                     Some(moved)
-                } else if described {
-                    Some(changed_boxes(&before, &after))
                 } else {
-                    moved_boxes(&before, &after).or(Some(moved))
+                    Some(changed_boxes(&before, &after))
                 }
             }
             (moved, _) => moved,
@@ -1119,6 +1136,7 @@ impl App {
         );
         #[cfg(test)]
         let damage_probe = crate::profiling::frame_probe::span("frame.damage");
+        let copies_before = damage.copies.len();
         damage.frame(full, &drawn, scale, peers.as_ref(), |regions| {
             let root = self.root_widget.as_ref();
             if !copying {
@@ -1159,6 +1177,34 @@ impl App {
         });
         #[cfg(test)]
         drop(damage_probe);
+        let copied = damage.copies.len() != copies_before;
+        if let Some(mut culling) = culling {
+            let left_out = cull_frame
+                .as_ref()
+                .is_some_and(crate::draw_cull::Frame::skipped_any);
+            let holds = cull_frame
+                .as_ref()
+                .is_none_or(|frame| frame.holds(damage.pending.as_deref()));
+            drop(cull_frame);
+            if !holds {
+                #[cfg(test)]
+                let _redraw_probe = crate::profiling::frame_probe::span("frame.redraw");
+                redraw_culled_widgets(self, &mut culling.scenes, &drawn);
+            }
+            culling.tally(left_out, !holds);
+            let secret = culling.shows_secret(self.floating.secret_on_screen, left_out && holds);
+            self.set_secret_on_screen(secret);
+            compose_culled(scene, &culling.scenes);
+            if let Some(peers) = &peer_layer {
+                scene.append(peers.layer.scene(), None);
+            }
+            culling.repainted(damage.pending.as_deref().unwrap_or_default(), copied);
+            self.layout.cull = culling;
+        } else if damage.culls {
+            self.layout
+                .cull
+                .repainted(damage.pending.as_deref().unwrap_or_default(), copied);
+        }
         if let Some(mut peers) = peer_layer {
             peers.layer.presented();
             damage.peers = Some(peers);
@@ -1245,6 +1291,9 @@ pub struct SurfaceDamage {
     copy_scale: f64,
     /// The collaborators' layer, when the surface paints it.
     peers: Option<Box<PeerLayer>>,
+    /// Whether the host repaints only each frame's damage from that
+    /// frame's scene ([`Self::drawing_only_damage`]).
+    culls: bool,
 }
 
 impl Default for SurfaceDamage {
@@ -1259,6 +1308,7 @@ impl Default for SurfaceDamage {
             copies: Vec::new(),
             copy_scale: 1.0,
             peers: None,
+            culls: false,
         }
     }
 }
@@ -1278,6 +1328,18 @@ impl SurfaceDamage {
     /// Whether this is for a host that copies ([`Self::copying`]).
     pub fn is_copying(&self) -> bool {
         self.copying
+    }
+
+    /// For a host that copies ([`Self::copying`]), takes after every frame
+    /// and repaints what [`Self::take_copying`] returns from that frame's
+    /// scene alone, over the pixels it presented last: never more of the
+    /// scene, and never the scene again later. The scene then holds only
+    /// what that damage needs: a scroll draws the strip it exposed and what
+    /// changed, not every row in view ([`crate::draw_cull`]).
+    #[must_use]
+    pub fn drawing_only_damage(mut self) -> Self {
+        self.culls = self.copying;
+        self
     }
 
     /// Paint collaborators' pointers, names and activity over the widgets,
@@ -1493,19 +1555,23 @@ mod tests {
         let label = KurboRect::new(0.0, 30.0, 50.0, 40.0);
         let grown = KurboRect::new(0.0, 0.0, 140.0, 20.0);
         assert_eq!(
-            moved_boxes(&[(a, field), (b, label)], &[(a, grown), (b, label)]),
-            Some(vec![field, grown])
+            changed_boxes(&[(a, field), (b, label)], &[(a, grown), (b, label)]),
+            vec![field, grown]
         );
         assert_eq!(
-            moved_boxes(&[(a, field), (b, label)], &[(a, field), (b, label)]),
-            Some(Vec::new())
+            changed_boxes(&[(a, field), (b, label)], &[(a, field), (b, label)]),
+            Vec::<KurboRect>::new()
         );
-        // Other widgets, or more of them: which pixels moved is unknown.
+        // Two widgets that swapped places repaint where each was and is.
         assert_eq!(
-            moved_boxes(&[(a, field), (b, label)], &[(b, field), (a, label)]),
-            None
+            changed_boxes(&[(a, field), (b, label)], &[(b, field), (a, label)]),
+            vec![label, field, field, label]
         );
-        assert_eq!(moved_boxes(&[(a, field)], &[(a, field), (b, label)]), None);
+        // One that came into view repaints where it is.
+        assert_eq!(
+            changed_boxes(&[(a, field)], &[(a, field), (b, label)]),
+            vec![label]
+        );
     }
 
     #[test]

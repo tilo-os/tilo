@@ -2,12 +2,7 @@ reason = "features that landed since the budgets were measured on 2026-10-15, fo
 run = "r3f98003a25"
 
 [apps."so.tilo.calendar"]
-x86_64 = 131072
 aarch64 = 65536
 
 [apps."so.tilo.sheets"]
-x86_64 = 65536
-aarch64 = 65536
-
-[apps."so.tilo.typst-editor"]
 aarch64 = 65536

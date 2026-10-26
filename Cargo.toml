@@ -25,6 +25,7 @@ exclude = [
     "vendor/wayland-backend",
     "vendor/pulldown-cmark",
     "vendor/regex-syntax",
+    "vendor/serde_json",
     # Built only by the OS image's bootc (os/Containerfile, bootc-builder).
     "vendor/zlink-macros",
     "vendor/web-transport-quinn",
@@ -159,6 +160,7 @@ members = [
     "crates/agent/agent-participant",
     "crates/agent/connector",
     "crates/agent/local-model-service",
+    "crates/agent/model-client",
     "crates/agent/model-gateway",
     "crates/agent/provider-config",
 
@@ -302,6 +304,7 @@ members = [
     "crates/platform/tilo-wake",
     "crates/platform/tilo-agent-models",
     "crates/platform/tilo-contact-directory",
+    "crates/platform/tilo-workspace-emoji",
     "crates/platform/tilo-dialogs",
     "crates/platform/tilo-files",
     "crates/platform/tilo-archive",
@@ -363,8 +366,10 @@ members = [
     "crates/runtime/engines/typst",
     "crates/runtime/engines/youtube",
     "crates/runtime/runtime-fs",
+    "crates/runtime/tilo-fs-client",
     "crates/runtime/runtime-fs-fuse",
     "crates/runtime/runtime-identity",
+    "crates/runtime/tilo-identity-client",
     "crates/runtime/runtime-portal",
     "crates/runtime/os-search",
     "crates/runtime/tilo-file-provider",
@@ -468,6 +473,7 @@ members = [
 
     # Text
     "crates/text/emoji",
+    "crates/text/emoji-catalogue",
     "crates/text/highlight",
     "crates/text/highlight-grammars",
     "crates/text/pim-lines",
@@ -767,6 +773,10 @@ rustix = "1.1.4"
 # ---------------------------------------------------------------------------
 # Diagnostics and utilities
 # ---------------------------------------------------------------------------
+# Another thread's stack, recorded by its own signal handler as bare return
+# addresses (nothing a handler may not do) and symbolized afterwards; std
+# symbolizes only the backtraces it captured itself.
+backtrace = "0.3.76"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 anyhow = "1.0.102"
@@ -805,6 +815,59 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+
+# Keep the renderer's math, scene encoding and GPU command processing optimised
+# even when application code is unoptimised. These run for every interactive
+# frame, including each password character on the lock screen. Package overrides
+# preserve debug assertions, overflow checks and line tables; GPU validation is
+# unchanged. Mirror test so build and test can reuse the same dependencies.
+[profile.dev.package.tilo-vello]
+opt-level = 3
+[profile.test.package.tilo-vello]
+opt-level = 3
+[profile.dev.package.tilo-vello-encoding]
+opt-level = 3
+[profile.test.package.tilo-vello-encoding]
+opt-level = 3
+[profile.dev.package.kurbo]
+opt-level = 3
+[profile.test.package.kurbo]
+opt-level = 3
+[profile.dev.package.peniko]
+opt-level = 3
+[profile.test.package.peniko]
+opt-level = 3
+[profile.dev.package.wgpu]
+opt-level = 3
+[profile.test.package.wgpu]
+opt-level = 3
+[profile.dev.package.wgpu-core]
+opt-level = 3
+[profile.test.package.wgpu-core]
+opt-level = 3
+[profile.dev.package.wgpu-hal]
+opt-level = 3
+[profile.test.package.wgpu-hal]
+opt-level = 3
+[profile.dev.package.taffy]
+opt-level = 3
+[profile.test.package.taffy]
+opt-level = 3
+
+# The compositor monomorphises UI traversal and search/serialization code that
+# dependency-only optimisation cannot speed up. Keep it lightly optimised with
+# full debugger information, assertions and overflow checks. Application and
+# toolkit code remain unoptimised; this is not the release profile.
+[profile.dev.package.shell]
+opt-level = 1
+debug = 2
+debug-assertions = true
+overflow-checks = true
+[profile.test.package.shell]
+opt-level = 1
+debug = 2
+debug-assertions = true
+overflow-checks = true
 
 # Optimise the CRDT dependencies in development and test builds; their generic
 # data structures are otherwise disproportionately slow in workspace tests.
@@ -1065,6 +1128,25 @@ strip = "symbols"
 inherits = "wasm-release"
 strip = "none"
 
+# `wasm-release` with the assertions the qualification surface is behind. A
+# measured release-speed bundle must still refuse what a dev build refuses
+# (`debug_assertions`, `cfg!(debug_assertions)` and the diagnostics that read
+# it, overflow checks), so qualification runs on this profile rather than on a
+# plain `release` that drops them. Debug information and the symbol table stay
+# out: a page streams this module.
+[profile.wasm-assert]
+inherits = "wasm-release"
+debug-assertions = true
+overflow-checks = true
+
+# `wasm-assert` with the symbol table kept, for the same reason `wasm-split`
+# keeps it: the desktop bundle is split into a start module and per-app
+# modules, and the splitter reads the linked module's function names and
+# relocations. The modules it writes are stripped.
+[profile.wasm-assert-split]
+inherits = "wasm-assert"
+strip = "none"
+
 # The browser bundles' quick development build (`build.sh --profile quick`).
 # Without debug information and with light optimisation, the linked desktop
 # module is a quarter of `dev`'s, and wasm-bindgen and the splitter take half
@@ -1187,6 +1269,12 @@ pulldown-cmark = { path = "vendor/pulldown-cmark" }
 # app process (regex is in the shared runtime). Generated by
 # tools/regex-syntax-tables.py; see vendor/regex-syntax/TILO-PATCH.md.
 regex-syntax = { path = "vendor/regex-syntax" }
+# A crate that reads, clones or extends a `serde_json::Value` compiles that
+# code once, in serde_json, instead of its own copy: the string parser a raw
+# value is read back with, the map's insertion, cloning and comparing, and
+# `Value`'s `Clone` and `PartialEq`. Every thin app carried all of them beside
+# the shared runtime's. See vendor/serde_json/TILO-PATCH.md.
+serde_json = { path = "vendor/serde_json" }
 # An idle endpoint wakes for nothing: no re-STUN tick and no home relay once
 # the relay map is empty, no wall-clock poll on Linux (a timerfd that the
 # kernel cancels on resume or a clock step replaces it), and no gossip cache

@@ -336,6 +336,7 @@ mod people;
 mod person;
 mod preview;
 mod query;
+mod reactions;
 mod reactive;
 mod record;
 pub mod reference;
@@ -355,6 +356,8 @@ pub mod testing;
 mod text;
 mod view;
 pub mod views;
+mod workspace;
+mod workspace_emoji;
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::definition_launch_spec;
@@ -364,7 +367,7 @@ pub use app::run;
 pub use app::{FileHistory, ResourceApp, SURFACE_FLAG, SeedCx, definition, run_helper};
 pub use attached::{AttachedView, OpenView};
 pub use chain::{Chain, Chained};
-pub use children::{ChildRecord, Children, child_resource_id};
+pub use children::{ChildRecord, Children, Listed, child_resource_id};
 pub use controls::{ActionControl, Actions};
 pub use delivery::HostDelivery;
 pub use dispatch::{DispatchGroup, Dispatcher, Landed, Refused, Submit};
@@ -381,7 +384,7 @@ pub use live::Live;
 pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;
-pub use query::{Answer, Query};
+pub use query::{Query, ReadFailure};
 pub use record::{Declare, OtherRecord, Records};
 pub use root::{reserved_action_ids, with_surface};
 pub use rows::LiveRow;
@@ -396,6 +399,7 @@ pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use ui_core::record::{chain_of_resource_id, chain_resource_id};
 pub use view::{Bindable, EffectsHandle, ViewCx};
+pub use workspace::WorkspaceRecord;
 
 /// Record content, canonical hashing and picture headers. Use the store
 /// borrowed through `SurfaceCx::content` or `LaunchInput::content` so the host

@@ -24,7 +24,9 @@ use tilo_actions::door::ActionAddress;
 use tilo_browser_peer::DocumentRoute;
 
 use crate::control::AgentControl;
-use crate::planner::{PlanContext, Planner, Reads, Step, observation, rendered_picture};
+use crate::planner::{
+    Obligations, PlanContext, PlanRole, Planner, Reads, Step, observation, rendered_picture,
+};
 
 /// One plan asked of the planner's thread.
 struct Job {
@@ -32,6 +34,7 @@ struct Job {
     text: String,
     context: PlanContext,
     continues: bool,
+    role: Option<PlanRole>,
 }
 
 /// A plan the planner's thread made.
@@ -52,6 +55,10 @@ pub(super) struct Planned {
     pub ready_at: Instant,
     /// Whether a model made it (not steps written out or stated outright).
     pub by_model: bool,
+    /// The checklist it declared.
+    pub obligations: Obligations,
+    /// Who made it, in a coordinated task.
+    pub role: Option<PlanRole>,
 }
 
 /// A read the planner's thread asks of the loop while it plans.
@@ -167,7 +174,9 @@ impl Planning {
                         found: Vec::new(),
                         rendered: Vec::new(),
                     };
-                    let steps = planner.plan_reading(&job.text, &job.context, &mut loop_reads);
+                    let steps = crate::model::as_role(job.role.clone(), || {
+                        planner.plan_reading(&job.text, &job.context, &mut loop_reads)
+                    });
                     let answer = Planned {
                         task: job.task,
                         text: job.text,
@@ -177,6 +186,8 @@ impl Planning {
                         rendered: loop_reads.rendered,
                         ready_at: Instant::now(),
                         by_model: planner.last_planned_by_model(),
+                        obligations: planner.take_obligations(),
+                        role: job.role,
                     };
                     if made.send(answer).is_err() {
                         return;
@@ -200,13 +211,13 @@ impl Planning {
     }
 
     /// Ask for the steps of `text` for task `task` (the rest of it when
-    /// `continues`).
+    /// `continues`), made by `role` in a coordinated task.
     pub(super) fn ask(
         &mut self,
-        task: String,
-        text: String,
+        (task, text): (String, String),
         context: PlanContext,
         continues: bool,
+        role: Option<PlanRole>,
     ) -> Result<(), String> {
         self.jobs
             .send(Job {
@@ -214,6 +225,7 @@ impl Planning {
                 text,
                 context,
                 continues,
+                role,
             })
             .map_err(|_| "the agent's planner stopped".to_string())?;
         self.pending = Some(task);
@@ -245,6 +257,8 @@ impl Planning {
                 rendered: Vec::new(),
                 ready_at: Instant::now(),
                 by_model: false,
+                obligations: Obligations::default(),
+                role: None,
             },
         };
         if self.pending.as_deref() == Some(planned.task.as_str()) {

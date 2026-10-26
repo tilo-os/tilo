@@ -79,6 +79,7 @@ impl PlanModel for Searches {
             then: Some("make the deck from it".into()),
             reply: None,
             wait: None,
+            ..Answer::default()
         })
     }
 }

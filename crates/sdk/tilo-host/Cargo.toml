@@ -3,7 +3,7 @@ name = "tilo-host"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "Host services a Tilo UI process borrows from whatever hosts it."
@@ -21,7 +21,7 @@ test-support = ["tilo-dialogs/test-support", "tilo-clock/test-support"]
 # The native desktop services (`native::services`): each platform crate's
 # system backend, speech, and the backends below. Without it the crate is the
 # host vocabulary only, and a host installs its own `host::HostServices`.
-native = ["dep:tokio", "dep:jni", "dep:ndk-context", "dep:tilo-files", "dep:tilo-model-gateway"]
+native = ["dep:tokio", "dep:jni", "dep:ndk-context", "dep:tilo-files", "dep:tilo-model-client"]
 # Screen capture through the XDG Desktop Portal. Linux only: the native
 # runner turns it on for Linux targets, and it enables nothing elsewhere.
 # File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,
@@ -37,8 +37,7 @@ x11 = ["tilo-clipboard/x11"]
 mpris = ["native", "dep:zbus", "dep:tilo-media"]
 
 [dependencies]
-# Native launcher binding lives in the gateway; the SDK only injects its backend.
-tilo-model-gateway = { default-features = false, features = ["runtime-client"], version = "0.1.0", path = "../../agent/model-gateway", optional = true }
+tilo-model-client = { default-features = false, features = ["runtime-client"], version = "0.1.0", path = "../../agent/model-client", optional = true }
 agent-provider-config = { version = "0.1.0", path = "../../agent/provider-config" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The authenticated host updates the app process's portable network hints.

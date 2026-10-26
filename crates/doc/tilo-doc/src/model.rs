@@ -2919,6 +2919,17 @@ impl DocMut<'_> {
         self.forget_order(&container, id);
     }
 
+    /// Remove block `id` from note `note_id` (the note counterpart of
+    /// [`Self::remove_block_in`]).
+    pub fn remove_note_block(&mut self, note_id: &str, id: &str) {
+        self.flush_bulk();
+        let Some(container) = note_blocks_obj(self.doc, self.c, note_id) else {
+            return;
+        };
+        let _ = self.doc.delete(&container, id);
+        self.forget_order(&container, id);
+    }
+
     /// Remove one structural block and leave a grow-only semantic tombstone in
     /// the same region container. Action replay uses this for delete-wins
     /// behavior against divergent edits of the removed object.
@@ -3105,6 +3116,80 @@ impl DocMut<'_> {
         self.flush_bulk();
         if let Some(obj) = region_block_obj(self.doc, self.c, region, block_id) {
             let _ = self.doc.put(&obj, BLOCK_KIND, kind);
+        }
+    }
+
+    /// Set the kind of a block living in note `note_id` (the note counterpart
+    /// of [`Self::set_kind_in`]).
+    pub fn set_note_kind(&mut self, note_id: &str, block_id: &str, kind: &str) {
+        self.flush_bulk();
+        let Some(container) = note_blocks_obj(self.doc, self.c, note_id) else {
+            return;
+        };
+        if let Some(obj) = block_obj(self.doc, &container, block_id) {
+            let _ = self.doc.put(&obj, BLOCK_KIND, kind);
+        }
+    }
+
+    /// Set an attribute of a block living in note `note_id` (the note
+    /// counterpart of [`Self::set_attr_in`]).
+    pub fn set_note_attr(
+        &mut self,
+        note_id: &str,
+        block_id: &str,
+        key: &str,
+        value: impl Into<ScalarValue>,
+    ) {
+        self.flush_bulk();
+        let Some(container) = note_blocks_obj(self.doc, self.c, note_id) else {
+            return;
+        };
+        let Some(value) = self.stage_attr(&container, block_id, key, value.into()) else {
+            return;
+        };
+        let Some(obj) = block_obj(self.doc, &container, block_id) else {
+            return;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), attrs))) = self.doc.get(&obj, BLOCK_ATTRS) else {
+            return;
+        };
+        let _ = self.doc.put(&attrs, key, value);
+    }
+
+    /// Remove an attribute of a block living in note `note_id` (the note
+    /// counterpart of [`Self::remove_attr_in`]).
+    pub fn remove_note_attr(&mut self, note_id: &str, block_id: &str, key: &str) {
+        self.flush_bulk();
+        let Some(container) = note_blocks_obj(self.doc, self.c, note_id) else {
+            return;
+        };
+        if self.unstage_attr(&container, block_id, key) {
+            return;
+        }
+        let Some(obj) = block_obj(self.doc, &container, block_id) else {
+            return;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), attrs))) = self.doc.get(&obj, BLOCK_ATTRS) else {
+            return;
+        };
+        if matches!(self.doc.get(&attrs, key), Ok(Some(_))) {
+            let _ = self.doc.delete(&attrs, key);
+        }
+    }
+
+    /// Remove a mark named `name` over `[start, end)` of a note block's text
+    /// (the note counterpart of [`Self::remove_mark_in`]).
+    pub fn remove_note_mark(
+        &mut self,
+        note_id: &str,
+        block_id: &str,
+        start: usize,
+        end: usize,
+        name: &str,
+    ) {
+        self.flush_bulk();
+        if let Some(tid) = self.note_text_obj(note_id, block_id) {
+            let _ = self.doc.unmark(&tid, name, start, end, ExpandMark::After);
         }
     }
 

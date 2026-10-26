@@ -207,8 +207,16 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
             state.overlays.overview = false;
             state.overlays.ws_settings = true;
         }
-        host.workspace_settings_overlay
-            .layout(Rect::new(0.0, 0.0, 960.0, 540.0));
+        // The General page is laid out by its draw, as in a real frame.
+        host.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
+        host.force_ws_settings_settled();
+        host.draw_overview_and_ws_settings_overlays(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            host.overlay_flags(),
+        );
         let root = host.accessibility().unwrap();
         let overlay = root
             .children

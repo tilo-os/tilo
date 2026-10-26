@@ -1043,7 +1043,7 @@ fn request_identities_keep_stale_responses_from_winning() {
         app.use_worker(crate::stream::StreamWorker::spawn_offline());
         app.catalogue_connected = true;
         app.ensure_home();
-        assert!(app.home_requested);
+        assert!(app.home_asked.is_some());
         assert!(
             app.home_is_loading(),
             "a Home request in flight reads as loading"
@@ -1078,7 +1078,7 @@ fn home_fetches_nothing_until_a_source_is_connected() {
     let mut doc = AutoCommit::new();
     draw_once(&mut app, &mut doc);
     assert!(
-        !app.home_requested && app.home.is_none(),
+        app.home_asked.is_none() && app.home.is_none(),
         "opening Home asked no provider for anything"
     );
     if !super::ONLINE_CATALOGUE {
@@ -1120,7 +1120,7 @@ fn home_fetches_nothing_until_a_source_is_connected() {
     // Once the person has connected one, Home comes from it.
     app.catalogue_connected = true;
     draw_once(&mut app, &mut doc);
-    assert!(app.home_requested, "a connected source fills Home");
+    assert!(app.home_asked.is_some(), "a connected source fills Home");
 }
 
 #[test]
@@ -2063,26 +2063,26 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         assert!(
-            app.lib.playlist("pl_focus").is_some(),
-            "nothing is deleted before the person agrees"
+            app.dispatcher
+                .as_ref()
+                .unwrap()
+                .take_asked()
+                .expect("what was asked builds")
+                .is_empty(),
+            "Undo takes the playlist back whole, so the host asks nothing"
         );
-        let asked = app
-            .dispatcher
-            .as_ref()
-            .unwrap()
-            .take_asked()
-            .expect("what was asked builds");
-        assert_eq!(asked.len(), 1, "the host asks to delete the playlist");
-        // Confirmed, the door applies what was asked.
-        let mut library = ui::tilo_resource::Replica::<Library>::from_doc(doc.clone());
-        for action in &asked {
-            library
-                .apply_action(action)
-                .expect("a confirmed change applies");
-        }
-        doc = library.doc().clone();
-        app.reload_library(&doc);
-        assert!(app.lib.playlist("pl_focus").is_none());
+        assert!(
+            app.lib.playlist("pl_focus").is_none(),
+            "the delete lands at once"
+        );
+        assert!(
+            ui::tilo_resource::Replica::<Library>::from_doc(doc.clone())
+                .state()
+                .unwrap()
+                .playlist("pl_focus")
+                .is_none(),
+            "and in the document"
+        );
     }
 
     // Phase `name_prompt_typing_and_enter_creates_playlist`.

@@ -763,6 +763,35 @@ fn any_motion_value_started_asks_the_clock_for_its_frames() {
     );
 }
 
+/// A motion jumped to its end mid-way (a shortcut landing what it changed,
+/// an owner letting it go) takes back its wish: the clock asks for no frame
+/// it would never draw, while another motion still moving keeps its own.
+#[test]
+fn a_motion_landed_mid_way_asks_for_no_more_frames() {
+    let start = crate::time::now();
+    let mut landed = MotionValue::new(0.0_f64);
+    let mut moving = MotionValue::new(0.0_f64);
+    landed.set(100.0, base_timing(), start);
+    moving.set(10.0, base_timing(), start);
+    assert!(frames_wanted(start));
+    landed.snap(100.0);
+    assert_eq!(
+        frames_until(),
+        moving.settles_at(),
+        "only the motion still moving asks"
+    );
+    moving.snap(10.0);
+    assert!(
+        !frames_wanted(start),
+        "both landed: no frame, not even one at rest, is owed by the clock"
+    );
+    // A retarget replaces the motion's wish rather than adding one.
+    let mut retargeted = MotionValue::new(0.0_f64);
+    retargeted.set(100.0, base_timing(), start);
+    retargeted.set(1.0, base_timing(), start);
+    assert_eq!(frames_until(), retargeted.settles_at());
+}
+
 /// A motion that asks the clock for frames is named while it moves: the
 /// place that started it, so a frame nobody can see in the widget tree
 /// (a menu an owner draws in its own pass) is still attributed.
@@ -1273,5 +1302,92 @@ fn a_workspace_switch_by_pointer_is_whole_view_motion_and_a_shortcut_lands() {
     assert!(
         (reduced_fade - fast).abs() < 1e-9,
         "reduced: a fast cross-fade"
+    );
+}
+
+#[test]
+fn a_coast_keeps_the_release_speed_and_stops_where_the_fling_projects() {
+    let start = crate::time::now();
+    let (from, velocity) = (100.0, 2400.0);
+    let rest = Snap::rest_for(from, velocity, on());
+    let timing = Snap::COAST.timing(Direction::Enter, on(), MotionSource::Gesture);
+    let mut v = MotionValue::new(from).with_tolerance(0.25);
+    v.release(rest, velocity, timing, start);
+    assert!(
+        (v.velocity(start) - velocity).abs() < 1e-6,
+        "it leaves at the fingers' speed"
+    );
+    // The speed decays exponentially at the coast's rate: after one coast
+    // time it is down to 1/e, and it never turns back.
+    let coast = Duration::from_millis(u64::from(Motion::default().gesture.fling_projection_ms));
+    let after = v.velocity(start + coast);
+    assert!(
+        (after - velocity / std::f64::consts::E).abs() < 1.0,
+        "{after} after one coast time"
+    );
+    let mut last = from;
+    let settles = v.settles_at().expect("a throw coasts");
+    let mut t = start;
+    while t < settles {
+        let x = v.get(t);
+        assert!(
+            x >= last && x <= rest + 1e-9,
+            "no overshoot, no turning back"
+        );
+        last = x;
+        t += Duration::from_millis(4);
+    }
+    assert_eq!(v.get(settles), rest, "it comes to rest on the projection");
+    for source in [MotionSource::Keyboard, MotionSource::Action] {
+        assert!(
+            Snap::COAST
+                .timing(Direction::Enter, on(), source)
+                .is_instant()
+        );
+    }
+    assert!(
+        Snap::COAST
+            .timing(Direction::Enter, reduced(), MotionSource::Gesture)
+            .is_instant(),
+        "reduced motion: a fling stops where the fingers left it"
+    );
+}
+
+#[test]
+fn a_motion_shifted_with_its_frame_keeps_its_path_on_screen() {
+    let start = crate::time::now();
+    let mut v = MotionValue::new(0.0_f64).with_tolerance(0.25);
+    v.set(300.0, base_timing(), start);
+    let mid = ms(start, 50);
+    let (was, speed) = (v.get(mid), v.velocity(mid));
+    let settles = v.settles_at();
+    v.shift_by(-120.0);
+    assert!((v.get(mid) - (was - 120.0)).abs() < 1e-9);
+    assert!((v.velocity(mid) - speed).abs() < 1e-9);
+    assert_eq!(v.target(), 180.0);
+    assert_eq!(v.settles_at(), settles, "the same motion, not a new one");
+}
+
+#[test]
+fn a_capture_samples_a_motion_at_a_chosen_point_of_its_run() {
+    let start = crate::time::now();
+    let mut v = MotionValue::new(0.0_f64).with_tolerance(0.25);
+    v.set(300.0, base_timing(), start);
+    let at = Duration::from_millis(70);
+    let (x, dx) = v.sampled_after(at);
+    assert!((x - v.get(start + at)).abs() < 1e-9);
+    assert!((dx - v.velocity(start + at)).abs() < 1e-9);
+    {
+        // The settled clock reads live frames at the end; a capture's pose
+        // is the point it asked for.
+        let _settled = testing::settled();
+        assert_eq!(v.get(start + at), 300.0);
+        assert_eq!(v.sampled_after(at).0, x);
+    }
+    v.snap(40.0);
+    assert_eq!(
+        v.sampled_after(at),
+        (40.0, 0.0),
+        "at rest it is where it rests"
     );
 }

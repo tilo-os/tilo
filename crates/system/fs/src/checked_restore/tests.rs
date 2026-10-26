@@ -1928,6 +1928,7 @@ async fn history_read_complete_paging_and_exact_parent_metadata() {
     let V::Version {
         scope: actual,
         version,
+        ..
     } = fixture
         .fs
         .read_file_history(

@@ -47,6 +47,13 @@ pub enum Mark {
     Transclusion(PageId),
     /// `[label](https://example.test)` — a host-opened external URI.
     ExternalLink(String),
+    /// A `link` whose target names another resource of this desktop: the
+    /// address `tilo://open#…` a reference is written as
+    /// ([`crate::RESOURCE_LINK_SCHEME`](crate::convert::RESOURCE_LINK_SCHEME)).
+    /// The marked text is the label shown — the resource's title or its kind
+    /// — and activating it opens the resource through its own app's `open`,
+    /// as a chip does. The address, not the label, is what it opens.
+    ResourceLink(String),
     /// `@Ada` — a reference to a participant, by the owning model's id; the
     /// marked text is the label shown. Renders bold in the participant's
     /// colours ([`MentionPaint`]), accent-coloured by default.
@@ -80,6 +87,7 @@ impl Mark {
                 | (Mark::Link(_), Mark::Link(_))
                 | (Mark::Transclusion(_), Mark::Transclusion(_))
                 | (Mark::ExternalLink(_), Mark::ExternalLink(_))
+                | (Mark::ResourceLink(_), Mark::ResourceLink(_))
                 | (Mark::Mention(_), Mark::Mention(_))
         )
     }
@@ -337,6 +345,8 @@ pub struct MarkSegment {
     pub strikethrough: bool,
     pub link: Option<PageId>,
     pub external_link: bool,
+    /// The `tilo://open#…` address a [`Mark::ResourceLink`] names.
+    pub resource_link: Option<String>,
     /// The participant a mention covering this segment refers to.
     pub mention: Option<String>,
 }
@@ -352,6 +362,7 @@ impl MarkSegment {
             strikethrough: false,
             link: None,
             external_link: false,
+            resource_link: None,
             mention: None,
         }
     }
@@ -401,6 +412,7 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
                     Mark::Strikethrough => seg.strikethrough = true,
                     Mark::Link(id) | Mark::Transclusion(id) => seg.link = Some(*id),
                     Mark::ExternalLink(_) => seg.external_link = true,
+                    Mark::ResourceLink(href) => seg.resource_link = Some(href.clone()),
                     Mark::Mention(id) => seg.mention = Some(id.clone()),
                 }
             }

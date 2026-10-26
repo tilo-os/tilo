@@ -77,8 +77,6 @@ const CALENDAR_ROW: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 const MONITOR_GLANCE: Size = Size::new(176.0, 40.0);
 const MONITOR_HEADER: f64 = ui::tokens::Layout::BASE.row_header as f64;
 const MONITOR_ROW: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
-/// A press that moves this far becomes a drag to another edge.
-const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
 
 /// How the Super surface was opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,13 +92,8 @@ pub enum SuperSurface {
     Pinned,
 }
 
-/// A press on a widget, and the drag it may become.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Press {
-    id: WidgetId,
-    at: Point,
-    dragging: bool,
-}
+/// A press on a widget, and the drag to another edge it may become.
+type Press = layout::EdgeDrag<WidgetId>;
 
 /// What the host keeps for the desk between frames.
 pub(crate) struct DeskState {
@@ -116,6 +109,9 @@ pub(crate) struct DeskState {
     /// (`ui::motion::Ambient`).
     shown: BTreeMap<WidgetId, ui::motion::Presence>,
     opened: BTreeMap<WidgetId, ui::motion::Presence>,
+    /// Whether another surface owned the screen at the last update: the
+    /// widgets coming back when it goes follow what closed it.
+    covered: bool,
     super_surface: Option<SuperSurface>,
     system_activities: Vec<Rect>,
     music_card: NowPlayingCard,
@@ -141,6 +137,7 @@ impl Default for DeskState {
             edges: BTreeMap::new(),
             shown: BTreeMap::new(),
             opened: BTreeMap::new(),
+            covered: false,
             super_surface: None,
             system_activities: Vec::new(),
             music_card: NowPlayingCard::new(),
@@ -484,6 +481,21 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Whether another surface owns the screen now, and what the widgets
+    /// showing move as: coming back as a surface over them closes, as that
+    /// close did (a key lands them at once, a click fades them in);
+    /// otherwise on their own.
+    fn desk_cover(&mut self) -> (bool, ui::tokens::MotionSource) {
+        let covered = self.desk_covered();
+        let uncovered = std::mem::replace(&mut self.desk.covered, covered) && !covered;
+        let source = if uncovered {
+            self.input_source
+        } else {
+            ui::tokens::MotionSource::Pointer
+        };
+        (covered, source)
+    }
+
     /// Lay the widgets out and decide their forms at `now`. Returns whether
     /// anything on the desk changed.
     pub(crate) fn update_desk(&mut self, now: Instant) -> bool {
@@ -498,7 +510,7 @@ impl ShellOverlayHost {
             self.end_super_surface();
         }
         self.desk.team_count = self.team_count();
-        let items: Vec<Item> = WidgetId::ALL
+        let items: Vec<Item<WidgetId>> = WidgetId::ALL
             .into_iter()
             .map(|id| {
                 let (glance, open, has_content) = self.widget_sizes(id, now);
@@ -542,7 +554,7 @@ impl ShellOverlayHost {
             .as_ref()
             .and_then(|chrome| chrome.borrow().active_strip_id())
             .map(|strip| strip.0);
-        let covered = self.desk_covered();
+        let (covered, shown_source) = self.desk_cover();
         let ctx = Context {
             now,
             prefs: &self.desk.prefs,
@@ -569,7 +581,7 @@ impl ShellOverlayHost {
                 .shown
                 .entry(slot.id)
                 .or_insert_with(ui::motion::Presence::closed)
-                .show(shown, shown_spec(slot.id, asked), motion, source, now);
+                .show(shown, shown_spec(slot.id, asked), motion, shown_source, now);
             // A card only ever opens on purpose: asked for.
             self.desk
                 .opened
@@ -674,15 +686,18 @@ impl ShellOverlayHost {
     /// A pointer sample at `p`, in desktop coordinates.
     pub(crate) fn desk_pointer(&mut self, p: Point, now: Instant) {
         self.desk.board.on_pointer(p, now, &self.desk.slots);
-        if let Some(press) = self.desk.press.as_mut()
-            && !press.dragging
-            && (p - press.at).hypot() > DRAG_SLOP
-        {
-            press.dragging = true;
+        if let Some(press) = self.desk.press.as_mut() {
+            press.moved(p);
         }
         if self.update_desk(now) || self.desk.press.is_some_and(|press| press.dragging) {
             self.bump_chrome();
         }
+    }
+
+    /// Where each desk widget waits in its quiet form: what else at the
+    /// edges (the pinned people overlay) steps past.
+    pub(super) fn desk_glances(&self) -> Vec<Rect> {
+        self.desk.slots.iter().map(|slot| slot.glance).collect()
     }
 
     pub(crate) fn desk_pointer_left(&mut self, now: Instant) {
@@ -725,19 +740,14 @@ impl ShellOverlayHost {
                 if form == Form::Open && self.desk_open_click(id, rect, p) {
                     return true;
                 }
-                self.desk.press = Some(Press {
-                    id,
-                    at: p,
-                    dragging: false,
-                });
+                self.desk.press = Some(Press::new(id, p));
                 true
             }
             ElementState::Released => {
                 let Some(press) = self.desk.press.take() else {
                     return false;
                 };
-                if press.dragging {
-                    let edge = layout::nearest_edge(self.overlay_area(), p);
+                if let Some(edge) = press.release(self.overlay_area(), p) {
                     self.set_widget_edge(press.id, edge);
                 } else if self.desk.board.form(press.id) == Form::Glance {
                     self.desk.board.open(press.id);
@@ -869,9 +879,8 @@ impl ShellOverlayHost {
         let drag = self
             .desk
             .press
-            .filter(|press| press.dragging)
             .zip(self.last_cursor)
-            .map(|(press, p)| (press.id, p - press.at));
+            .and_then(|(press, p)| Some((press.id, press.shift(p)?)));
         // The strip switcher's labels are where the person is looking: a
         // widget glance under them steps aside while they are open.
         let switcher_card = self
@@ -879,9 +888,11 @@ impl ShellOverlayHost {
             .is_open()
             .then(|| self.strip_navigator.switcher().layout().bounds);
         for slot in self.desk.slots.clone() {
-            let shown = self.desk.shown.get(&slot.id).map_or(0.0, |t| {
-                shown_opacity(slot.id, t.progress(now), self.desk.motion)
-            });
+            let shown = self
+                .desk
+                .shown
+                .get(&slot.id)
+                .map_or(0.0, |t| shown_opacity(t.progress(now)));
             if shown <= f32::EPSILON || switcher_card.is_some_and(|card| card.overlaps(slot.glance))
             {
                 continue;
@@ -1117,31 +1128,20 @@ fn team_card_height(people: usize) -> f64 {
     TEAM_HEADER + TEAM_ROW * ui::num::f64_of_usize(rows) + more + 8.0
 }
 
-/// How widget `id` comes and goes. The Team widget's faces are people, and
-/// a person shown faintly reads as a ghost: it appears with the standard
-/// Appear motion, whole within its first moments, and is otherwise hidden,
-/// never resting in between; it goes at once, as the others do, so a chord
-/// that cancels a held Super leaves no face fading out behind it. The others
-/// arrive as ambient chrome does.
+/// How widget `id` comes and goes: as ambient chrome does, by opacity in
+/// place, going at once. The Team widget's faces are people, and a person
+/// shown faintly reads as a ghost, so it always arrives as if asked for, at
+/// `fast`, whole as its motion ends and otherwise hidden, never on the slow
+/// unasked fade. Its motion is exactly its fade: a frame it asks for is a
+/// frame that changes.
 fn shown_spec(id: WidgetId, asked: bool) -> ui::motion::MotionSpec {
-    match id {
-        WidgetId::Team => ui::motion::MotionSpec {
-            exit: ui::motion::Pace::Instant,
-            ..ui::motion::Appear::SPEC
-        },
-        _ => ui::motion::Ambient::spec(asked),
-    }
+    ui::motion::Ambient::spec(asked || id == WidgetId::Team)
 }
 
-/// How much of widget `id` shows at `progress` of its coming and going
+/// How much of a widget shows at `progress` of its coming and going
 /// ([`shown_spec`]).
-fn shown_opacity(id: WidgetId, progress: f64, motion: ui::tokens::EffectiveMotion) -> f32 {
-    match id {
-        WidgetId::Team => {
-            ui::motion::Appear::pose(progress, vello::kurbo::Point::ORIGIN, motion).opacity
-        }
-        _ => ui::motion::unit_opacity(progress),
-    }
+fn shown_opacity(progress: f64) -> f32 {
+    ui::motion::unit_opacity(progress)
 }
 
 /// The ground every desk card stands on: the one floating card

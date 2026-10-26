@@ -30,6 +30,10 @@ history-edit-settle-failed = { $item } aus { $field } fehlgeschlagen: { $reason 
 history-edit-settle-failed-unnamed = Ein Eintrag aus { $field } fehlgeschlagen: { $reason }
 history-edit-forget = { $item } aus { $field } entfernt
 history-edit-forget-unnamed = Einen Eintrag aus { $field } entfernt
+history-edit-react = Mit { $new } auf { $item } reagiert
+history-edit-react-unnamed = Mit { $new } reagiert
+history-edit-unreact = Reaktion { $new } auf { $item } zurückgenommen
+history-edit-unreact-unnamed = Reaktion { $new } zurückgenommen
 history-edit = { $field } von { $item } geändert
 history-edit-unnamed = { $field } geändert
 
@@ -70,11 +74,12 @@ history-value-true = ein
 history-value-false = aus
 history-value-empty = nichts
 
+history-actor-via-task = { $person } über Aufgabe „{ $task }“
 history-actor-for = { $actor }, für { $for }
 history-actor-you = Du
 history-actor-you-for = Du, für { $for }
 history-actor-unknown = Jemand
-history-actor-agent = { $actor } · Agent
+history-actor-agent = { $actor } · Software
 history-actor-shortcut = { $actor } · Kurzbefehl
 history-actor-app = { $actor } · App
 history-actor-bot = { $actor } · Bot

@@ -54,10 +54,12 @@
 pub mod actions;
 pub mod agent_render;
 pub mod agent_timeline;
+pub mod angles;
 pub mod app;
 pub mod audio;
 pub mod curve;
 pub mod export;
+pub mod facts;
 mod files;
 pub mod gpu;
 pub(crate) mod layout;

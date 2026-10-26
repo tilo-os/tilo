@@ -13,6 +13,7 @@ import argparse
 import re
 from dataclasses import dataclass
 from pathlib import Path
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -79,7 +80,8 @@ def main() -> int:
         return 1
     print(
         "workflow action pins OK "
-        f"({len(workflow_files(args.workflows))} workflow/action definitions)"
+        f"({len(workflow_files(args.workflows))} workflow/action definitions)",
+        file=sys.stderr,
     )
     return 0
 

@@ -530,15 +530,19 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # bootupd goes with them, and that is a requirement of the sealed layout rather
     # than tidiness: bootc refuses to seal an image that still offers a bootupd
     # install path, because bootupd only ever plants GRUB. Its payload directory and
-    # the legacy ostree boot dir have to go too — bootc finds the path through either.
+    # the legacy ostree boot dir have to go too — bootc finds the path through either,
+    # and so does the base's preset link to bootupd's bootloader-update.service, which
+    # would otherwise point at nothing. os-prober is GRUB's helper for listing other
+    # systems in its menu; without GRUB nothing runs it, and it requires grub2-tools.
     # Nothing on this image needs it: with a UKI there is exactly one PE binary on the
     # boot path, /usr/libexec/tilo-secureboot signs it with tilo-crypto, and
     # tilo-secureboot-sign.path already watches /boot/EFI/Linux for a newly staged one.
     && dnf install -y --setopt=reposdir=/repo \
         systemd-boot-unsigned \
-    && rpm -qa | grep -E '^(shim-(x64|aa64)|grub2-)' | xargs -r rpm -e --nodeps \
+    && rpm -qa | grep -E '^(shim-(x64|aa64)|grub2-|os-prober-)' | xargs -r rpm -e --nodeps \
     && rpm -e --nodeps bootupd \
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
+    && rm -f /etc/systemd/system/multi-user.target.wants/bootloader-update.service \
     && dnf clean all \
     # The fedora-bootc base ships the NFS client and server stack. The Tilo kernel
     # has no NFS or rpc_pipefs (os/kernel/config-fragments/tilo.config: remote

@@ -166,6 +166,40 @@ pub struct NotificationStack {
     /// window bars' controls (maximise, close) under the corner stay
     /// reachable. Zero when the host has no windows to keep clear.
     clear_top: f64,
+    /// The windows' bars on screen: a banner never covers one, the stack
+    /// shifts below it instead ([`transient_slot`]).
+    window_bars: Vec<Rect>,
+}
+
+/// The least a banner is tall, for where the first one may start.
+const MIN_BANNER_H: f64 = 56.0;
+
+/// Where a transient goes (a banner, the follow bar): the reserved zone on
+/// the trailing side of `viewport`, the area under the top bar, inset from
+/// its corner, starting no higher than `top`, `size` wide and tall. A
+/// window's bar always wins: where the slot would cover one of
+/// `window_bars`, it shifts down below that bar, until it covers none.
+#[must_use]
+pub fn transient_slot(viewport: Rect, top: f64, size: (f64, f64), window_bars: &[Rect]) -> Rect {
+    let (width, height) = size;
+    let x1 = viewport.x1 - EDGE_INSET;
+    let mut y0 = top.max(viewport.y0 + EDGE_INSET);
+    // Each shift clears at least one bar, so this ends.
+    for _ in 0..=window_bars.len() {
+        let slot = Rect::new(x1 - width, y0, x1, y0 + height);
+        let below = window_bars
+            .iter()
+            .filter(|bar| bar.intersect(slot).area() > 0.0)
+            .map(|bar| bar.y1 + TOAST_GAP)
+            .fold(None, |most: Option<f64>, y| {
+                Some(most.map_or(y, |m| m.max(y)))
+            });
+        match below {
+            Some(y) if y > y0 => y0 = y,
+            _ => break,
+        }
+    }
+    Rect::new(x1 - width, y0, x1, y0 + height)
 }
 
 impl NotificationStack {
@@ -190,40 +224,26 @@ impl NotificationStack {
         self.clear_top = y;
     }
 
-    /// Keep the banners off `bars`, the window bars on screen: the first
-    /// banner starts below every bar it would otherwise cover, so a window's
-    /// controls under the corner (History, maximize, close) stay visible and
-    /// keep their clicks. Only bars under the stack's column and reaching
-    /// into its first slot count; a window further down keeps its banners
-    /// at the corner. Call after [`Self::set_viewport`], every frame the
-    /// windows may have moved.
-    pub fn keep_clear_of(&mut self, bars: &[Rect]) {
-        let x1 = self.viewport.x1 - EDGE_INSET;
-        let x0 = x1 - self.toast_width();
-        let mut under: Vec<Rect> = bars
-            .iter()
-            .copied()
-            .filter(|bar| bar.area() > 0.0 && bar.x0 < x1 && bar.x1 > x0)
-            .collect();
-        under.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-        let mut top = self.viewport.y0 + EDGE_INSET;
-        let mut clear = 0.0_f64;
-        for bar in under {
-            if bar.y0 >= top + TOAST_HEIGHT {
-                break;
-            }
-            if bar.y1 + TOAST_GAP > top {
-                clear = clear.max(bar.y1);
-                top = top.max(bar.y1 + TOAST_GAP);
-            }
+    /// Keep the windows' bars on screen clear: where the first banner
+    /// would cover one, the stack starts below it.
+    pub fn set_window_bars(&mut self, bars: Vec<Rect>) {
+        if self.window_bars != bars {
+            self.targets.cancel_pointer_press();
         }
-        self.set_clear_top(clear);
+        self.window_bars = bars;
     }
 
     /// Where the first banner's top sits: inset from the viewport's corner,
     /// and below the window bars the host keeps clear.
     fn first_top(&self) -> f64 {
-        (self.viewport.y0 + EDGE_INSET).max(self.clear_top + TOAST_GAP)
+        let top = (self.viewport.y0 + EDGE_INSET).max(self.clear_top + TOAST_GAP);
+        transient_slot(
+            self.viewport,
+            top,
+            (self.toast_width(), MIN_BANNER_H),
+            &self.window_bars,
+        )
+        .y0
     }
 
     /// Exactly what the last paint covered; zero when nothing was painted.
@@ -774,16 +794,28 @@ impl NotificationStack {
             self.on_screen.push(n.id);
             let (alpha, slide_dx) =
                 Self::animation_state(n, now, (self.reduce_motion, held), width);
+            let card_x0 = x0_rest + slide_dx;
+            let top = self.slot_top(n.id, y, now, held);
+            let card_rect = Rect::new(card_x0, top, card_x0 + width, top + height);
+            bounds.expand(card_rect.y0, card_rect.y1);
             if alpha <= 0.0 {
+                // A banner's fade starts the frame it first comes on screen,
+                // at no opacity. That frame still records its card, unseen,
+                // so it differs from the last one where the banner arrives:
+                // drawn as nothing, the frame matched the last and repainted
+                // nothing until a later frame happened to come.
+                ui::widget::toast::paint_card_surface(
+                    ctx.scene,
+                    ctx.transform,
+                    card_rect,
+                    0.0,
+                    ctx.theme,
+                );
                 y += height + TOAST_GAP;
                 continue;
             }
             let mut card = card;
             card.alpha = alpha;
-            let card_x0 = x0_rest + slide_dx;
-            let top = self.slot_top(n.id, y, now, held);
-            let card_rect = Rect::new(card_x0, top, card_x0 + width, top + height);
-            bounds.expand(card_rect.y0, card_rect.y1);
             let hit = ui::widget::toast::paint_card(
                 ctx.scene,
                 ctx.transform,
@@ -949,15 +981,16 @@ impl NotificationStack {
     /// other than the one the stack lives on, pinned top-right into
     /// `viewport` as the stack pins its own: the same cards at rest, newest
     /// first, without controls, hover or focus, which stay with the stack on
-    /// the display in use. Nothing while the session is locked. Returns what
-    /// the cards cover, zero when nothing was painted.
+    /// the display in use. Nothing while the session is locked. Like every
+    /// transient they never cover one of `window_bars`. Returns what the
+    /// cards cover, zero when nothing was painted.
     pub fn draw_machine_wide(
         host: &dyn NotificationHost,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        viewport: Rect,
+        (viewport, window_bars): (Rect, &[Rect]),
     ) -> Rect {
         if viewport.area() == 0.0 || host.session_locked() {
             return Rect::ZERO;
@@ -978,7 +1011,7 @@ impl NotificationStack {
         text_renderer.set_text_scale(1.0);
         let x0 = viewport.x1 - EDGE_INSET - width;
         let bottom = viewport.y1 - EDGE_INSET;
-        let mut y = viewport.y0 + EDGE_INSET;
+        let mut y = transient_slot(viewport, viewport.y0, (width, MIN_BANNER_H), window_bars).y0;
         let mut covered = Rect::ZERO;
         for n in banners {
             let card = ToastCard::new(&n.title, n.severity.toast_kind())
@@ -1399,6 +1432,30 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn the_frame_a_banner_arrives_differs_from_the_one_before() {
+        // The running clock: an arriving banner's fade is at its start.
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            for theme in [theme.clone().with_reduce_motion(true), theme] {
+                let host = TestHost::default();
+                let mut stack = NotificationStack::new();
+                stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+                let mut text = TextRenderer::new();
+                let mut before = Scene::new();
+                stack.draw(&host, &mut before, Affine::IDENTITY, &mut text, &theme);
+                host.push(Notification::new("Build finished", "it passed its tests"));
+                let mut arriving = Scene::new();
+                stack.draw(&host, &mut arriving, Affine::IDENTITY, &mut text, &theme);
+                assert_ne!(
+                    arriving.encoding().n_paths,
+                    before.encoding().n_paths,
+                    "the frame a banner arrives records it, though unseen"
+                );
+                assert!(!stack.rect().is_zero_area(), "it covers where it arrives");
+            }
+        }
+    }
+
+    #[test]
     fn scaled_attributed_banner_reserves_text_above_real_action_controls() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = ui::motion::testing::settled();
@@ -1525,6 +1582,23 @@ pub(super) mod tests {
         );
     }
 
+    /// A transient's slot shifts below any window bar it would cover, and
+    /// stays where nothing is under it.
+    #[test]
+    fn a_window_bar_wins_and_the_transient_shifts() {
+        let viewport = Rect::new(0.0, 40.0, 1600.0, 900.0);
+        let free = transient_slot(viewport, 0.0, (360.0, 60.0), &[]);
+        assert_eq!(free.y0, 40.0 + EDGE_INSET);
+        assert_eq!(free.x1, 1600.0 - EDGE_INSET);
+        let bars = [
+            Rect::new(900.0, 48.0, 1590.0, 92.0),
+            Rect::new(0.0, 48.0, 880.0, 400.0),
+        ];
+        let slot = transient_slot(viewport, 0.0, (360.0, 60.0), &bars);
+        assert!(bars.iter().all(|bar| bar.intersect(slot).area() <= 0.0));
+        assert_eq!(slot.y0, 92.0 + TOAST_GAP, "just below the bar it met");
+    }
+
     /// Banners start below the window bars the host keeps clear, so a
     /// window's maximise and close under the corner keep their clicks.
     #[test]
@@ -1569,16 +1643,16 @@ pub(super) mod tests {
         stack.set_viewport(viewport);
 
         // A window on the left half: its bar is not under the banners.
-        stack.keep_clear_of(&[Rect::new(0.0, 36.0, 700.0, 80.0)]);
+        stack.set_window_bars(vec![Rect::new(0.0, 36.0, 700.0, 80.0)]);
         assert!((stack.first_top() - corner).abs() < f64::EPSILON);
         // A window lower down, under the first slot: no bar to clear.
-        stack.keep_clear_of(&[Rect::new(0.0, 400.0, 1440.0, 444.0)]);
+        stack.set_window_bars(vec![Rect::new(0.0, 400.0, 1440.0, 444.0)]);
         assert!((stack.first_top() - corner).abs() < f64::EPSILON);
 
         // A window reaching the right edge, its bar with a toolbar row: the
         // banner starts below it.
         let bar = Rect::new(720.0, 36.0, 1428.0, 120.0);
-        stack.keep_clear_of(&[Rect::new(0.0, 36.0, 700.0, 80.0), bar]);
+        stack.set_window_bars(vec![Rect::new(0.0, 36.0, 700.0, 80.0), bar]);
         draw(&mut stack, &host, &Theme::dark());
         let (_, card, _) = stack
             .hit_rects
@@ -1596,7 +1670,7 @@ pub(super) mod tests {
         );
 
         // The window goes: the banners go back to the corner.
-        stack.keep_clear_of(&[]);
+        stack.set_window_bars(Vec::new());
         assert!((stack.first_top() - corner).abs() < f64::EPSILON);
     }
 

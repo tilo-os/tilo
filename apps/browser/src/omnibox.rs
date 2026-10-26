@@ -66,11 +66,14 @@ pub struct Row {
     pub kind: RowKind,
     /// The primary line: a page title, a query, or the address to open.
     pub title: String,
-    /// The secondary line: a page's address, or nothing.
+    /// The secondary line: a page's address (for [`RowKind::Go`] the one it
+    /// opens), or nothing.
     pub detail: String,
-    /// What choosing the row opens: an address for [`RowKind::Go`] and
-    /// [`RowKind::History`], the query for the search kinds, the keyword
-    /// and what it sends for [`RowKind::Extension`].
+    /// What choosing the row opens: the address as typed for
+    /// [`RowKind::Go`], so a scheme the Browser chose for it stays its
+    /// choice ([`address_target`]); the address for [`RowKind::History`], the
+    /// query for the search kinds, the keyword and what it sends for
+    /// [`RowKind::Extension`].
     pub url: String,
 }
 
@@ -417,8 +420,8 @@ pub fn build_rows(
         go = Some(Row {
             kind: RowKind::Go,
             title: display_url(&url),
-            detail: url.clone(),
-            url,
+            detail: url,
+            url: typed.to_owned(),
         });
     }
     let mut pages: Vec<Row> = Vec::new();
@@ -469,16 +472,18 @@ pub fn lead_with_address(rows: &mut Vec<Row>, address: &str) {
     let url = address_target(address);
     let shown = display_url(&url);
     let key = destination_key(&url);
-    rows.retain(|row| {
-        !matches!(row.kind, RowKind::Go | RowKind::History) || destination_key(&row.url) != key
+    rows.retain(|row| match row.kind {
+        RowKind::Go => destination_key(&address_target(&row.url)) != key,
+        RowKind::History => destination_key(&row.url) != key,
+        RowKind::Search | RowKind::Suggestion | RowKind::Extension => true,
     });
     rows.insert(
         0,
         Row {
             kind: RowKind::Go,
             title: shown,
-            detail: url.clone(),
-            url,
+            detail: url,
+            url: address.trim().to_owned(),
         },
     );
     rows.truncate(MAX_ROWS);
@@ -766,7 +771,8 @@ mod tests {
         let hits = idx.search("youtube.com", 8, NOW);
         let rows = build_rows("youtube.com", &hits, &[], "https://other.test/", MAX_ROWS);
         assert_eq!(rows[0].kind, RowKind::Go);
-        assert_eq!(rows[0].url, "https://youtube.com");
+        assert_eq!(rows[0].url, "youtube.com", "opened as typed");
+        assert_eq!(rows[0].detail, "https://youtube.com");
         // The visited page is the address typed: shown once, as "go to".
         assert_eq!(
             rows.iter().filter(|r| r.kind == RowKind::History).count(),
@@ -863,7 +869,8 @@ mod tests {
         assert_eq!(completion, "example.test/Reports/Annual?token=AbC");
         let mut rows = Vec::new();
         lead_with_address(&mut rows, &completion);
-        assert_eq!(rows[0].url, url);
+        assert_eq!(rows[0].detail, url);
+        assert_eq!(address_target(&rows[0].url), url);
         assert_eq!(display_url(url), "example.test/Reports/Annual?token=AbC");
         let hits = index.search("example.test/re", 8, NOW);
         assert_eq!(inline_completion("example.test/re", hits.first()), None);

@@ -326,6 +326,24 @@ pub(crate) fn person_dir() -> Option<PathBuf> {
         .map(|home| launcher::appdir::host_person_dir(&home, settings_sections::APP_ID))
 }
 
+/// Settings' committed surface: the one its package ships, which the
+/// session's shell carries because it keeps Settings' records itself.
+fn settings_surface() -> &'static [u8] {
+    static SURFACE: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../apps/settings/surface.toml"
+    ));
+    SURFACE
+}
+
+/// Name Settings' surface in this process as its built-in app's, unless a
+/// launched package of Settings already named its own: the person-record
+/// kinds it declares are what the broker admits its routes to the person's
+/// room for, and the session connects them.
+pub(crate) fn register_surface() {
+    ui::app_surface::register_built_in(settings_sections::APP_ID, settings_surface());
+}
+
 /// Where the session keeps the records of the apps it shows itself.
 pub(crate) fn session_apps() -> PathBuf {
     cli::data_home()
@@ -337,6 +355,9 @@ pub(crate) fn session_apps() -> PathBuf {
 /// in step with the person's other devices over their routes. What the
 /// session kept of them under `former` is taken in first.
 fn hold((dir, person): HeldFor, former: &Path) -> Result<Holder, String> {
+    // Before their routes connect: the broker admits each to the person's
+    // room by the kinds this surface declares.
+    register_surface();
     for taken in [
         take_in::<PersonAccounts>(former, &dir, &person),
         take_in::<ContactDirectory>(former, &dir, &person),

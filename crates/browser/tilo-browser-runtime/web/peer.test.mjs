@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
+import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const SEALED = 0x53;
@@ -113,7 +113,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
         const listeners = [];
         const durable = [];
         peer = {
-          config: JSON.parse(config), configText: config, custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0,
+          config: JSON.parse(config), configText: config, custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0, retries: 0,
           phase,
           records: [],
           admission: 'ready',
@@ -138,6 +138,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
           takeRemoteActionEvents: () => '[]',
           sendRemoteAction: () => {},
           reconnect: () => { peer.reconnects++; },
+          retryNow: () => { peer.retries++; },
           refresh: () => { peer.refreshes++; peer.onRefresh?.(); },
           reportFailure: (surface, asset, code, message) => {
             if (!['storage-transaction-failed', 'storage-quota', 'storage-denied', 'asset-unavailable', 'gpu-unavailable', 'gpu-device-lost', 'renderer-initialization-failed'].includes(code)) throw new Error(`unknown failure code ${code}`);
@@ -443,6 +444,27 @@ function profileFakes(runtime) {
 const hostCertOf = (user, device) => ({user_public_key: Array(32).fill(user), device_public_key: Array(32).fill(device)});
 const textOf = bytes => (bytes === undefined ? undefined : new TextDecoder().decode(bytes));
 const person = () => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)});
+
+test('a renewed device is a new key in a namespace of its own; what the old key kept is never opened for it', async () => {
+  const rows = new Map();
+  const namespaces = {getItem: key => rows.get(key) ?? null, setItem: (key, value) => rows.set(key, value)};
+  const profile = 'tilo-identity:ee@host.example:8443';
+  let destroyed = false;
+  const old = {slot: 1, created: false, destroy: async () => { destroyed = true; }};
+  const opened = [];
+  const open = async name => { opened.push(name); return {slot: 1, created: true}; };
+  const renewed = await renewDevice(old, profile, {open, namespaces, random: bytes => bytes.fill(0xab)});
+  assert.ok(destroyed, 'the old key is forgotten');
+  assert.deepEqual(opened, [profile]);
+  assert.equal(renewed.created, true);
+  assert.equal(profileDevice(profile, namespaces, 1), `${PROFILE_DEVICE}:${'ab'.repeat(16)}#1`);
+  assert.equal(profileDevice(profile, namespaces, 0), PROFILE_DEVICE, 'other slots stay where they were');
+  // Another tab took the freed slot first: the key opened instead is not
+  // new, and keeps its namespace.
+  const taken = await renewDevice({slot: 0, destroy: async () => {}}, profile, {open: async () => ({slot: 2, created: false}), namespaces});
+  assert.equal(taken.created, false);
+  assert.equal(profileDevice(profile, namespaces, 2), `${PROFILE_DEVICE}#2`);
+});
 
 test('a device the host set up again admitted keeps its state apart; what was kept for the previous host is never opened for it', async () => {
   const runtime = fakeRuntime();
@@ -843,7 +865,7 @@ test("a person's presence colour is the runtime's for who they are, whatever the
   await peer.dispose();
 });
 
-test('leaving the page leaves the live plane and its host session at once, so others take it down', async () => {
+test('leaving the page leaves the live plane and its host session at once, so others take it down; back online, the session retries now', async () => {
   const page = new EventTarget();
   globalThis.addEventListener = page.addEventListener.bind(page);
   globalThis.removeEventListener = page.removeEventListener.bind(page);
@@ -867,7 +889,12 @@ test('leaving the page leaves the live plane and its host session at once, so ot
     assert.ok(closed, 'its session closed, withdrawing its announcement');
     assert.deepEqual(beacons, [['https://host.example:8443/peer/v1/session/end', 'ce'.repeat(32)]],
       'the host hears the page went, its session token the body');
+    // Back online, the session tries again now instead of after its backoff.
+    page.dispatchEvent(new Event('online'));
+    assert.equal(runtime.peer.retries, 1);
     await peer.dispose();
+    page.dispatchEvent(new Event('online'));
+    assert.equal(runtime.peer.retries, 1, 'not once the page let the session go');
   } finally {
     delete globalThis.addEventListener;
     delete globalThis.removeEventListener;

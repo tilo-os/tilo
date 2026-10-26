@@ -1572,12 +1572,17 @@ impl ActionHost for SupervisorHost {
         self.0.ledger().get(caller, id).cloned()
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-        if self.0.ledger().get(caller, id).is_none() {
-            return Err(ActionHostError::UnknownInvocation);
-        }
-        Err(ActionHostError::NotCancellable {
-            reason: "agent control completes at once".into(),
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(if self.0.ledger().get(caller, id).is_none() {
+            Err(ActionHostError::UnknownInvocation)
+        } else {
+            Err(ActionHostError::NotCancellable {
+                reason: "agent control completes at once".into(),
+            })
         })
     }
 }

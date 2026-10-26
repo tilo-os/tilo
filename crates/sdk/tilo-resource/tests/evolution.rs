@@ -208,6 +208,27 @@ fn the_surface_lists_verbs_kinds_and_fields() {
     );
 }
 
+/// A group is undoable only when every member is: one that sends something
+/// away makes a deleting group ask, through any door, as that member alone
+/// does.
+#[test]
+fn a_group_holding_a_change_undo_cannot_take_back_asks_first() {
+    let mut contact = Replica::<Contact>::new();
+    let group = || {
+        tilo_resource::Invoke::group([
+            Contact::RENAME.with(("Ada".to_owned(), "King".to_owned())),
+            Contact::INVITE.invoke(),
+        ])
+    };
+    assert!(matches!(
+        contact.apply(group()),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert_eq!(contact.state().unwrap().outbox.len(), 0);
+    contact.apply_confirmed(group()).unwrap();
+    assert_eq!(contact.state().unwrap().outbox.len(), 1);
+}
+
 #[test]
 fn a_replica_acts_through_the_door() {
     let mut contact = Replica::<Contact>::new();

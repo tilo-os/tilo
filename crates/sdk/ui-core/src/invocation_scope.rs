@@ -48,6 +48,33 @@ impl ExternalModerationReply {
     }
 }
 
+/// The host's answer to naming the paths an invocation is about to write
+/// ([`ResourceInvocationScope::attribute_writes`]). Wait for it before
+/// writing, so the versions those writes make record who caused them.
+#[derive(Debug)]
+pub struct WriteAttributionReceipt(std::sync::mpsc::Receiver<Result<(), String>>);
+
+impl WriteAttributionReceipt {
+    #[cfg_attr(
+        not(feature = "broker-transport"),
+        allow(dead_code, reason = "only the broker lane answers a write attribution")
+    )]
+    pub(crate) fn new(receive: std::sync::mpsc::Receiver<Result<(), String>>) -> Self {
+        Self(receive)
+    }
+
+    /// Wait at most `timeout` for the host's answer. Whatever it is, the
+    /// writes go ahead: a refusal or no answer leaves them the person's.
+    ///
+    /// # Errors
+    /// Returns the host's refusal, or that it did not answer in time.
+    pub fn wait(self, timeout: std::time::Duration) -> Result<(), String> {
+        self.0
+            .recv_timeout(timeout)
+            .map_err(|_| "the host did not answer the write attribution".to_owned())?
+    }
+}
+
 /// A typed host check response, suitable for an existing effect worker.
 pub type ApprovedCheckFuture = std::pin::Pin<
     Box<
@@ -786,6 +813,39 @@ impl ResourceInvocationScope {
         #[cfg(not(feature = "broker-transport"))]
         {
             Err("external moderation requires the admitted native broker transport".into())
+        }
+    }
+
+    /// Name the paths this invocation is about to write (absolute paths; a
+    /// folder covers what is under it), so the host can record the agent
+    /// behind them. The host takes who acted from its own custody of this
+    /// invocation and names only an agent acting for the session's person;
+    /// `None` when this invocation is not an agent's, which spares a
+    /// person's writes the round trip. It grants nothing.
+    ///
+    /// # Errors
+    /// Refuses retired custody, invalid paths or an unavailable lane.
+    pub fn attribute_writes(
+        &self,
+        paths: Vec<String>,
+    ) -> Result<Option<WriteAttributionReceipt>, String> {
+        self.check()?;
+        if !self.lease.request.actor.starts_with("agent:") {
+            return Ok(None);
+        }
+        #[cfg(feature = "broker-transport")]
+        {
+            crate::collaboration::write_attribution_lane::enqueue(
+                &self.route().channel_id(),
+                self.invocation(),
+                paths,
+            )
+            .map(Some)
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            let _ = paths;
+            Ok(None)
         }
     }
 

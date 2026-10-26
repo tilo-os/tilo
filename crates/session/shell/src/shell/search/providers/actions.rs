@@ -24,13 +24,18 @@ mod enrollment_tokens;
 mod identity_admin;
 mod native_identity;
 mod quick_settings;
+mod shortcuts;
 mod strips;
 mod tabs;
+mod windows;
+mod workspaces;
 pub(crate) use quick_settings::{
     QS_AIRPLANE_ID, QS_BLUETOOTH_ID, QS_BRIGHTNESS_ID, QS_POWER_ID, QS_VOLUME_ID, QS_VPN_ID,
     QS_WIFI_ID, SharedQsActions, SharedQsDispatcher, ValidatedQsActions,
 };
 use quick_settings::{apply_quick_settings_effect, quick_settings_params, validated_percent};
+use shortcuts::ACTION_SHORTCUTS;
+pub(crate) use shortcuts::action_shortcut;
 
 use strips::{
     STRIP_CREATE_PARAMS, STRIP_MOVE_PARAMS, STRIP_REMOVE_PARAMS, STRIP_RENAME_PARAMS, create_strip,
@@ -40,6 +45,13 @@ pub(crate) use strips::{STRIP_NAME_MAX_CHARS, valid_strip_name};
 use tabs::{
     TAB_MOVE_TO_WORKSPACE_PARAMS, TAB_RENAME_PARAMS, move_focused_tab_to_workspace,
     rename_focused_tab,
+};
+use windows::{
+    GROUP_MOVE_TO_STRIP_ID, GROUP_MOVE_TO_STRIP_PARAMS, group_move_to_strip_params,
+    move_group_to_strip, no_window, request_group_shortcut, window_outcome,
+};
+use workspaces::{
+    WORKSPACE_DELETE_PARAMS, delete_workspace, move_workspace, workspace_delete_params,
 };
 
 use crate::shell::shared_display_actions;
@@ -201,10 +213,15 @@ const IDENTITY_SELECT_PARAMS: &[ActionParam] = &[
 
 /// The parameters `action` asks for now. Choosing the identity a workspace
 /// uses offers the identities this device has, each by its name and avatar;
-/// nobody types a fingerprint.
-fn live_params(action: &Action) -> Vec<ActionParam> {
-    if action.id != "identity.select" {
-        return action.params.to_vec();
+/// nobody types a fingerprint. Choosing a strip offers the active
+/// workspace's strips by name, and a deletion's confirmation reads as what
+/// it does.
+fn live_params(action: &Action, state: &ChromeState) -> Vec<ActionParam> {
+    match action.id {
+        "identity.select" => {}
+        GROUP_MOVE_TO_STRIP_ID => return group_move_to_strip_params(state),
+        "workspace.delete" => return workspace_delete_params(),
+        _ => return action.params.to_vec(),
     }
     let identities = crate::identity_registry::IdentityRegistryStore::from_env()
         .and_then(|store| store.load_reconciled_cached())
@@ -438,7 +455,13 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         // admitting it again.
         // The app leaves the device; what of the person's it held goes to
         // the Trash, never further.
-        BOT_REMOVE_ID | "agent.remove" | APP_UNINSTALL_ID | APP_REMOVE_FROM_APPS_ID => {
+        // The workspace leaves the person's list on every device; a room
+        // another device hosts is left, and joined again only through it.
+        BOT_REMOVE_ID
+        | "agent.remove"
+        | APP_UNINSTALL_ID
+        | APP_REMOVE_FROM_APPS_ID
+        | "workspace.delete" => {
             contract.kind = ActionKind::Outside;
             contract.risk = RiskLevel::Destructive;
             contract.confirmation = ConfirmationPolicy::Confirm;
@@ -459,6 +482,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "tab.move-to-new-group"
         | "tab.move-to-workspace"
         | "tab.close"
+        | "group.close"
         | "tab.reopen" => {
             contract.kind = ActionKind::Undoable;
             contract.reversible = true;
@@ -496,8 +520,11 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
         }
-        // Layout, undone by the opposite move.
-        id if WINDOW_LAYOUT_ACTION_IDS.contains(&id) => {
+        // Layout, and the order of the person's workspaces, undone by the
+        // opposite move.
+        id if WINDOW_LAYOUT_ACTION_IDS.contains(&id)
+            || matches!(id, "workspace.move-earlier" | "workspace.move-later") =>
+        {
             contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
@@ -1262,12 +1289,15 @@ const WINDOW_FOCUS_ACTION_IDS: &[&str] = &[
     "strip.focus-nth",
 ];
 
-/// Relative window-management actions that rearrange the desk.
+/// Window-management actions that rearrange the desk. Each tells its
+/// caller once the overlay host ran it whether anything changed
+/// ([`window_outcome`]).
 const WINDOW_LAYOUT_ACTION_IDS: &[&str] = &[
     "group.move-left",
     "group.move-right",
     "group.move-to-strip-previous",
     "group.move-to-strip-next",
+    GROUP_MOVE_TO_STRIP_ID,
     "group.move-to-display-previous",
     "group.move-to-display-next",
     "group.maximize",
@@ -1391,6 +1421,17 @@ impl Action {
             "search-action-emoji-picker",
             "search-action-emoji-picker-subtitle",
             |st, _| request_window_shortcut(st, ShortcutAction::EmojiPicker),
+        ),
+        // The same switch Super+Alt+Space makes, on the keyboard last typed on.
+        chrome(
+            "input.source.next",
+            "shortcut-name-next-input-source",
+            "search-action-next-input-source-subtitle",
+            |st, _| {
+                st.switch_to_next_input_source()
+                    .map(drop)
+                    .ok_or_else(|| ActionError::Explained(t("input-source-next-none")))
+            },
         ),
         chrome(
             "navigation.axis.enable",
@@ -2560,6 +2601,25 @@ impl Action {
             params: WORKSPACE_RENAME_PARAMS,
             apply: rename_workspace,
         },
+        Action {
+            id: "workspace.delete",
+            label: "search-action-workspace-delete",
+            subtitle: "search-action-workspace-delete-subtitle",
+            params: WORKSPACE_DELETE_PARAMS,
+            apply: delete_workspace,
+        },
+        chrome(
+            "workspace.move-earlier",
+            "search-action-workspace-move-earlier",
+            "search-action-workspace-move-earlier-subtitle",
+            |st, _| move_workspace(st, -1),
+        ),
+        chrome(
+            "workspace.move-later",
+            "search-action-workspace-move-later",
+            "search-action-workspace-move-later-subtitle",
+            |st, _| move_workspace(st, 1),
+        ),
         chrome(
             "workspace.previous",
             "search-action-workspace-previous",
@@ -2588,79 +2648,98 @@ impl Action {
             "group.move-left",
             "search-action-group-move-left",
             "search-action-group-move-left-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupLeft),
+            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupLeft),
         ),
         chrome(
             "group.move-right",
             "search-action-group-move-right",
             "search-action-group-move-right-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupRight),
+            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupRight),
         ),
         chrome(
             "group.move-to-strip-previous",
             "search-action-group-move-to-strip-previous",
             "search-action-group-move-to-strip-previous-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToPreviousStrip),
+            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToPreviousStrip),
         ),
         chrome(
             "group.move-to-strip-next",
             "search-action-group-move-to-strip-next",
             "search-action-group-move-to-strip-next-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToNextStrip),
+            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToNextStrip),
+        ),
+        Action {
+            id: GROUP_MOVE_TO_STRIP_ID,
+            label: "search-action-group-move-to-strip",
+            subtitle: "search-action-group-move-to-strip-subtitle",
+            params: GROUP_MOVE_TO_STRIP_PARAMS,
+            apply: move_group_to_strip,
+        },
+        chrome(
+            "group.close",
+            "search-action-group-close",
+            "search-action-group-close-subtitle",
+            |st, _| {
+                use crate::shell::window_actions::{TabActionError, close_active_group};
+                close_active_group(st).map_err(|err| match err {
+                    TabActionError::NoActiveTab => no_window(),
+                    other => ActionError::Explained(other.user_message()),
+                })
+            },
         ),
         chrome(
             "group.move-to-display-previous",
             "search-action-group-move-to-display-previous",
             "search-action-group-move-to-display-previous-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToPreviousDisplay),
+            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToPreviousDisplay),
         ),
         chrome(
             "group.move-to-display-next",
             "search-action-group-move-to-display-next",
             "search-action-group-move-to-display-next-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToNextDisplay),
+            |st, _| request_group_shortcut(st, ShortcutAction::MoveGroupToNextDisplay),
         ),
         chrome(
             "group.maximize",
             "search-action-group-maximize",
             "search-action-group-maximize-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::ToggleMaximize),
+            |st, _| request_group_shortcut(st, ShortcutAction::MaximizeWindow),
         ),
         chrome(
             "group.restore",
             "search-action-group-restore",
             "search-action-group-restore-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::RestoreWindow),
+            |st, _| request_group_shortcut(st, ShortcutAction::RestoreWindow),
         ),
         chrome(
             "group.fullscreen",
             "search-action-group-fullscreen",
             "search-action-group-fullscreen-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::ToggleFullscreen),
+            |st, _| request_group_shortcut(st, ShortcutAction::ToggleFullscreen),
         ),
         chrome(
             "group.narrower",
             "search-action-group-narrower",
             "search-action-group-narrower-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::ResizeNarrower),
+            |st, _| request_group_shortcut(st, ShortcutAction::ResizeNarrower),
         ),
         chrome(
             "group.wider",
             "search-action-group-wider",
             "search-action-group-wider-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::ResizeWider),
+            |st, _| request_group_shortcut(st, ShortcutAction::ResizeWider),
         ),
         chrome(
             "tab.move-to-group-previous",
             "search-action-tab-move-to-group-previous",
             "search-action-tab-move-to-group-previous-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::AttachTabLeft),
+            |st, _| request_group_shortcut(st, ShortcutAction::AttachTabLeft),
         ),
         chrome(
             "tab.move-to-group-next",
             "search-action-tab-move-to-group-next",
             "search-action-tab-move-to-group-next-subtitle",
-            |st, _| request_window_shortcut(st, ShortcutAction::AttachTabRight),
+            |st, _| request_group_shortcut(st, ShortcutAction::AttachTabRight),
         ),
         Action {
             id: "window.focus-nth",
@@ -4027,7 +4106,23 @@ impl ActionsProvider {
                         outcome
                     },
                 ) as Rc<crate::shell::search::OpenFn>;
-                (on_open, None)
+                // A rearrangement the overlay host carries out answers once
+                // it ran, with whether anything moved.
+                let on_begin_invoke = WINDOW_LAYOUT_ACTION_IDS.contains(&action_id).then(|| {
+                    let open = Rc::clone(&on_open);
+                    Rc::new(
+                        move |doc: &mut ui::widget::Edits<'_>,
+                              root: &automerge::ObjId,
+                              chrome: &Chrome,
+                              args: &ActionArgs| {
+                            let from = chrome.borrow().window_requests_queued();
+                            open(doc, root, chrome, args)?;
+                            let outcomes = chrome.borrow_mut().answer_window_requests_since(from);
+                            Ok(window_outcome(action_id, outcomes))
+                        },
+                    ) as Rc<crate::shell::search::BeginInvokeFn>
+                });
+                (on_open, on_begin_invoke)
             };
             Some(SearchResult {
                 facts: Vec::new(),
@@ -4040,7 +4135,7 @@ impl ActionsProvider {
                 subtitle: Some(subtitle),
                 badge: state_badge(action.id, ctx.chrome),
                 score,
-                params: live_params(action),
+                params: live_params(action, ctx.chrome),
                 contract: Some(shell_action_contract(action.id)),
                 on_open,
                 on_invoke: match action.id {
@@ -4876,6 +4971,8 @@ pub(crate) fn action_icon(id: &str) -> Option<ui::icons::Icon> {
         ("room.activity", Icon::History),
         ("record", Icon::FileText),
         ("tab.close", Icon::Trash2),
+        ("group.close", Icon::Trash2),
+        ("workspace.delete", Icon::Trash2),
         ("tab.rename", Icon::Pencil),
         ("tab.reopen", Icon::RotateCcw),
         ("tab.split-right", Icon::Columns2),
@@ -4917,87 +5014,6 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
     ) || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
         || LEVEL_STEPS.iter().any(|step| step.id == id)
         || id == QS_MUTE_ID
-}
-
-/// The shortcut that does what an action does, as the active keyboard
-/// layout spells it, when the desktop has one: the catalogue id in
-/// [`settings_store::keyboard_shortcuts`] and the action it matches.
-const ACTION_SHORTCUTS: &[(&str, &str)] = &[
-    ("overview.toggle", "workspace-overview"),
-    ("quick-settings.open", "quick-settings"),
-    ("quick-settings.clipboard", "clipboard-history"),
-    ("shortcut-help.toggle", "shortcut-help"),
-    ("window.focus-previous", "focus-previous-window"),
-    ("window.focus-next", "focus-next-window"),
-    ("tab.previous", "previous-tab"),
-    ("tab.next", "next-tab"),
-    ("tab.menu", "tab-menu"),
-    ("tab.reopen", "reopen-closed-tab"),
-    ("strip.focus-previous", "previous-strip"),
-    ("strip.focus-next", "next-strip"),
-    ("workspace.previous", "previous-workspace"),
-    ("workspace.next", "next-workspace"),
-    ("group.move-left", "move-group-left"),
-    ("group.move-right", "move-group-right"),
-    (
-        "group.move-to-strip-previous",
-        "move-group-to-previous-strip",
-    ),
-    ("group.move-to-strip-next", "move-group-to-next-strip"),
-    (
-        "group.move-to-display-previous",
-        "move-group-to-previous-display",
-    ),
-    ("group.move-to-display-next", "move-group-to-next-display"),
-    ("group.maximize", "toggle-maximize"),
-    ("group.restore", "restore-window"),
-    ("group.fullscreen", "toggle-fullscreen"),
-    ("group.narrower", "resize-narrower"),
-    ("group.wider", "resize-wider"),
-    ("window.new.terminal", "open-terminal"),
-    ("dictation.toggle", "dictation-toggle"),
-    ("dictation.finish", "dictation-finish"),
-    ("dictation.cancel", "dictation-cancel"),
-    ("capture.open", "fixed-capture-screenshot"),
-    ("room.activity.open", "fixed-workspace-history"),
-    ("lock", "lock"),
-    ("emoji.picker", "emoji-picker"),
-];
-
-/// `shortcut_id`'s current chord as the active layout's keycaps spell it,
-/// from `config`.
-pub(crate) fn shortcut_text(
-    config: &settings_store::hardware::ShortcutConfig,
-    shortcut_id: &str,
-) -> Option<String> {
-    // `entry` constructs every shortcut and its defaults before selecting one.
-    // A palette row needs only its current chord, not that entire catalogue.
-    if let Some(action) = ShortcutAction::ALL
-        .into_iter()
-        .find(|action| action.id() == shortcut_id)
-    {
-        return config
-            .bindings
-            .get(&action)
-            .map(crate::shell::keyboard_shortcuts::chord_text);
-    }
-    settings_store::keyboard_shortcuts::FIXED_SHORTCUTS
-        .iter()
-        .find(|shortcut| shortcut.id == shortcut_id)?
-        .chords()
-        .first()
-        .map(crate::shell::keyboard_shortcuts::chord_text)
-}
-
-/// The shortcut shown beside the action `id`, if it has one.
-pub(crate) fn action_shortcut(
-    config: &settings_store::hardware::ShortcutConfig,
-    id: &str,
-) -> Option<String> {
-    ACTION_SHORTCUTS
-        .iter()
-        .find(|(action, _)| *action == id)
-        .and_then(|(_, shortcut)| shortcut_text(config, shortcut))
 }
 
 /// A Quick Settings radio offered as a one-step toggle: the set-enabled
@@ -5545,7 +5561,7 @@ mod tests {
         )
     }
 
-    fn action_results(
+    pub(super) fn action_results(
         provider: &ActionsProvider,
         chrome: &Chrome,
     ) -> Vec<crate::shell::search::SearchResult> {
@@ -6614,28 +6630,6 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_text_matches_rebound_fixed_and_unassigned_chords() {
-        let mut config = settings_store::hardware::ShortcutConfig::default();
-        config.bindings.insert(
-            ShortcutAction::NextWorkspace,
-            settings_store::hardware::KeyChord::parse("Super+Alt+n").expect("valid test chord"),
-        );
-        config.bindings.remove(&ShortcutAction::PreviousWorkspace);
-        for entry in settings_store::keyboard_shortcuts::catalogue(&config) {
-            assert_eq!(
-                shortcut_text(&config, entry.id),
-                entry
-                    .chords
-                    .first()
-                    .map(crate::shell::keyboard_shortcuts::chord_text),
-                "{} keeps its configured, fixed or unassigned chord",
-                entry.id,
-            );
-        }
-        assert_eq!(shortcut_text(&config, "no.such.shortcut"), None);
-    }
-
-    #[test]
     fn workspace_action_invocations_do_not_rebuild_the_palette_catalogue() {
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
         use crate::shell::state::{Workspace, WorkspaceId};
@@ -7101,12 +7095,7 @@ mod tests {
             &ActionArgs::none(),
         );
         assert!(matches!(result, Err(ActionError::Explained(_))));
-        assert!(
-            chrome
-                .borrow_mut()
-                .take_shortcut_action_requests()
-                .is_empty()
-        );
+        assert!(chrome.borrow_mut().take_window_requests().is_empty());
     }
 
     #[test]

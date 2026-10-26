@@ -192,7 +192,9 @@ operate it. Companion to `docs/security/design-rationale.md`.
   SRPM come from their own snapshot, `os/Containerfile.kernel-buildroot`,
   instead of the OS frozen RPM snapshot. t's `image-kernel-buildroot-<arch>`
   checks resolve it natively on x86-64 and ARM64 against the mirrored base, checks the SRPM's
-  Fedora signature, records its checksum, the base and the package manifest,
+  Fedora signature, records its checksum, the base and the package manifest
+  (the x86-64 one also carries Fedora's aarch64 cross compiler and binutils,
+  refused unless their versions are the native ones'),
   deletes every repository file so a kernel build cannot fall back to the
   network, and stable signs each digest through the non-exportable release key.
   Both pins land in `os/kernel-buildroot-snapshot.env` through
@@ -209,11 +211,23 @@ operate it. Companion to `docs/security/design-rationale.md`.
   Promotion creates a deterministic,
   snapshot-bound automation branch and pull request rather than bypassing
   protected `main`; normal required checks and merge policy remain
-  authoritative. Each kernel builds FROM its signature-verified native
-  buildroot and its provenance binds that buildroot (and the base the
-  buildroot records), not `RPMS_REF`. Kernel CI therefore rebuilds only for
+  authoritative. Each kernel builds FROM the signature-verified buildroot of
+  the machine it builds on: its own architecture's, or, for an ARM64 kernel
+  cross-compiled on x86-64, the x86-64 one. Its provenance binds that
+  buildroot (and the base the buildroot records) and the architecture it was
+  built on, not `RPMS_REF`; the boot and Secure Boot acceptance always runs
+  on the kernel's own architecture. Kernel CI therefore rebuilds only for
   kernel inputs: the kernel sources, config and patches, the buildroot pin,
   the Rust module signer and the kernel build scripts.
+- **Kernel compiler cache.** A kernel build compiles through one ccache
+  directory, which `image-kernel-cache-<arch>` compiles from empty in the same
+  run and hands over as its output; no cache server, credential or other
+  job's writes reach it, and a trusted run takes it only from trusted runs.
+  It is keyed by the buildroot (the Fedora source and the toolchain), not the
+  patches or the configuration, so either recompiles only the objects it
+  changes. An object is
+  found only for the same compiler, flags and preprocessed source, so the
+  kernel is the one an uncached build makes.
 - **Pin promotion credentials.** Pin promotion pushes its automation branch
   with the job token but opens the pull request through
   `os/dev/open-snapshot-pr.py` with protected secret `RELEASE_TOKEN`. Forgejo

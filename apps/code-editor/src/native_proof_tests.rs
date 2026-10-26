@@ -470,9 +470,19 @@ fn stage_continuation_view(app: &mut CodeApp, doc: &mut ui::widget::Edits<'_>) {
     app.editor
         .force_geometry(Rect::new(200.0, 40.0, 800.0, 560.0), 8.0);
     app.editor.set_selection_lc((20, 3), (22, 5));
+    // Fingers scroll the view 9.75 lines down and rest there: a notch
+    // would glide the lines on past where it put them.
+    let line_h = app.editor.pixel_for_test(1, 0).y - app.editor.pixel_for_test(0, 0).y;
     for event in [
         ui::synthetic_input::cursor_moved(300.0, 100.0),
-        ui::synthetic_input::mouse_wheel(0.0, -3.25),
+        winit::event::WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
+                0.0,
+                -9.75 * line_h,
+            )),
+            phase: winit::event::TouchPhase::Moved,
+        },
     ] {
         app.editor.handle_event(
             &event,

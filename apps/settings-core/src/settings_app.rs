@@ -78,6 +78,10 @@ pub struct SettingsApp {
     reveal: Option<&'static settings_store::index::Setting>,
     /// The setting whose control the pane scrolls to after this layout.
     reveal_scroll: Option<&'static settings_store::index::Setting>,
+    /// The setting last shown, kept in sight until the person acts: what a
+    /// page shows once its reading lands (a battery's card and chart above
+    /// the shown control) would otherwise push the control out of view.
+    revealed: Option<&'static settings_store::index::Setting>,
     /// A capture's control to put the keyboard on once its pane is built.
     capture_focus: Option<&'static str>,
     /// The setting just shown and when: its row is marked for a moment, so
@@ -187,6 +191,7 @@ impl SettingsApp {
             setting_request: ui::LocalState::new(None),
             reveal: None,
             reveal_scroll: None,
+            revealed: None,
             capture_focus: None,
             highlight: None,
             pane_scroll: std::cell::RefCell::default(),
@@ -291,6 +296,7 @@ impl SettingsApp {
             self.keyboard_map_input.clear();
         }
         if self.selected != category {
+            self.revealed = None;
             self.selected = category;
             // Another pane opens on its first page.
             self.cx.pages().clear();
@@ -307,7 +313,7 @@ impl SettingsApp {
     /// minimum beside a settings page's (`NavShell`, `ContentKind::Page`).
     fn dock_width() -> f32 {
         let m = Metrics::BASE;
-        m.sidebar_min_width + ui::widget::ContentKind::Page.min_width(&m)
+        m.panel_min_width + ui::widget::ContentKind::Page.min_width(&m)
     }
 
     /// Whether the current frame resolves to the narrow (phone) layout.
@@ -1094,6 +1100,11 @@ impl Widget for SettingsApp {
             shell.apply_layout(taffy, shell_node, origin);
             if let Some(setting) = self.reveal_scroll.take() {
                 self.scroll_to_control(setting);
+                self.highlight = Some((setting, ui::time::now()));
+                self.revealed = Some(setting);
+            } else if let Some(setting) = self.revealed {
+                // Scrolls only once the control has left the view.
+                self.scroll_to_control(setting);
             }
         }
     }
@@ -1163,6 +1174,16 @@ impl Widget for SettingsApp {
             for child in widget.children_mut() {
                 observe_map(child, event);
             }
+        }
+        // The person acts: what they do decides what is in sight now.
+        if matches!(
+            event,
+            winit::event::WindowEvent::KeyboardInput { .. }
+                | winit::event::WindowEvent::MouseInput { .. }
+                | winit::event::WindowEvent::MouseWheel { .. }
+                | winit::event::WindowEvent::Touch(_)
+        ) {
+            self.revealed = None;
         }
         // The password prompt takes every event while it is open.
         if let Some(shown) = &mut self.secret {
@@ -1383,7 +1404,6 @@ impl SettingsApp {
         if let Some(shell) = &mut self.shell {
             reveal(shell, setting);
         }
-        self.highlight = Some((setting, ui::time::now()));
     }
 
     /// The row of the setting just shown, while it is marked.
@@ -1586,6 +1606,13 @@ mod tests {
             .expect("the real shared sidebar toggle is exposed");
         let pointer = |x, y| ui::synthetic_input::cursor_moved(x, y);
         harness.send(&pointer(1190.0, 690.0));
+        // The page at rest before the hover: the Network page's first scan
+        // lands on a thread of its own, and on a loaded machine it could
+        // otherwise land in the hover's frame and repaint the page with it.
+        assert!(
+            harness.settle_for_capture(tilo_test_env::hang_bound()),
+            "the page comes to rest"
+        );
         let mut renderer =
             ui::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(1200, 700)
                 .expect("the pixel oracle requires the production GPU fine rasterizer");

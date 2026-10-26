@@ -117,7 +117,8 @@ impl CapnpBrokerState {
         let question = run
             .question
             .filter(|question| question.answer == TrackerAnswer::Waiting)?;
-        let draft = serde_json::from_value::<tilo_actions::Draft>(question.draft).ok();
+        let (draft, preview) = super::super::services::confirmation_preview(&question);
+        let draft = (!draft.fields.is_empty()).then_some(draft);
         let asked = self.published_surfaces().into_iter().find_map(|surface| {
             (surface.app_id == question.app && surface.route.cluster_id == room)
                 .then(|| {
@@ -182,6 +183,10 @@ impl CapnpBrokerState {
             needs_confirmation: true,
             confirming: true,
             moderation: None,
+            // A question the tracker answered with `answered` settles a
+            // confirmed preview as it is: what it shows must not be
+            // editable here, or the person's edits would never reach it.
+            preview,
             scope: grant.is_some().then_some(run.title),
             draft,
         };

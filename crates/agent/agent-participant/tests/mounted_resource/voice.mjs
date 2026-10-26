@@ -101,11 +101,23 @@ async function action(tab, name, gesture = false) {
 const snapshot = tab => action(tab, 'call-status');
 const inactive = tab => tab.evaluate('!peer.voice.call.stats().captureActive');
 const resourcesClosed = tab => tab.evaluate('voiceEvidence.contexts.every(c=>c.state === "closed") && voiceEvidence.streams.every(s=>s.getTracks().every(t=>t.readyState === "ended")) && voiceEvidence.workers.every(w=>w.stopped)');
-async function activateMuteControl(tab) {
+// The call's microphone is Chat's action in the window bar, wherever the
+// call is shown: found by that action, it is named for what a press does
+// (Unmute while muted, Mute while heard).
+const microphoneControl = `Array.from(document.querySelectorAll('[data-tilo-semantic]')).find(element => {
+  try {return JSON.parse(element.dataset.tiloSemantic).at(-1) === 'window-toolbar-action:call-mute';} catch {return false;}
+})`;
+async function activateMicrophone(tab, outcome) {
+  try {
+    await tab.waitFor(`(mount.requestSemantics(), ${microphoneControl}?.getAttribute('aria-label') === ${JSON.stringify(outcome)})`, {timeout:10_000});
+  } catch {
+    const controls = await tab.evaluate(`Array.from(document.querySelectorAll('[data-tilo-semantic]')).map(element => [element.dataset.tiloSemantic, element.getAttribute('aria-label')])`);
+    process.stderr.write(`semantic controls: ${JSON.stringify(controls)}\n`);
+    throw Error(`actual Chat microphone control saying ${outcome} is missing`);
+  }
   const response = await tab.send('Runtime.evaluate', {expression:`(() => {
-    mount.requestSemantics();
-    const button = Array.from(document.querySelectorAll('[data-tilo-semantic]')).find(element => element.getAttribute('aria-label') === 'Mute microphone');
-    if (!button) throw Error('actual Chat microphone control is missing');
+    const button = ${microphoneControl};
+    if (button?.getAttribute('aria-label') !== ${JSON.stringify(outcome)}) throw Error('actual Chat microphone control is missing');
     button.click(); return true;
   })()`, returnByValue:true, userGesture:true});
   assert.equal(response.result?.exceptionDetails, undefined, 'native semantic microphone control must activate');
@@ -140,7 +152,7 @@ try {
   stage('actual-chat-joins-muted-without-capture');
   // The browser refuses the microphone: the person stays in the call,
   // muted, and the call says why; the other person is unaffected.
-  await activateMuteControl(second);
+  await activateMicrophone(second, 'Unmute');
   const refused = await waitReported(second, value => value.reported.issue === 'permission_denied');
   assert.equal(refused.reported.state, 'live', 'a refused microphone keeps the call');
   assert.equal(refused.reported.muted, true);
@@ -152,7 +164,7 @@ try {
   stage('actual-chat-refused-microphone-stays-in-the-call-muted');
   await microphone(second.browser, 'granted');
   await action(first, 'unmute', true);
-  await activateMuteControl(second);
+  await activateMicrophone(second, 'Unmute');
   for (const tab of pages) {
     await tab.waitFor('peer.voice.call.stats().captureActive === true', {timeout:10_000});
     await waitReported(tab, value => value.reported.capture_active && !value.reported.muted);
@@ -164,7 +176,7 @@ try {
   for (let index=0; index<pages.length; index++) {
     writeFileSync(join(evidence, `chat-call-${index}.png`), await pages[index].screenshot());
   }
-  await activateMuteControl(second);
+  await activateMicrophone(second, 'Mute');
   await waitReported(second, value => value.reported.muted && !value.reported.capture_active);
   assert.equal(await inactive(second), true);
   assert.equal(await first.evaluate('peer.voice.call.stats().captureActive'), true, 'one device mute must not mute the other');

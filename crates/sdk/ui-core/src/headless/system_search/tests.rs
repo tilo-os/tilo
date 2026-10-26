@@ -477,9 +477,26 @@ fn selected_action_collects_real_parameters_and_confirmation() {
     )));
     enter(&mut f);
     assert!(f.take_caller_operation().is_none());
+    // Cancel has the keyboard first; the name is typed in its field.
+    f.send_host_event(&crate::synthetic_input::key_input(
+        &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+        winit::event::ElementState::Pressed,
+    ));
     f.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit(
         "INSERT".into(),
     )));
+    // Return in the field stays the safe answer: the action's own button,
+    // past Cancel, goes ahead.
+    enter(&mut f);
+    assert!(f.take_caller_operation().is_none());
+    f.send_host_event(&crate::synthetic_input::key_input(
+        &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+        winit::event::ElementState::Pressed,
+    ));
+    f.send_host_event(&crate::synthetic_input::key_input(
+        &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+        winit::event::ElementState::Pressed,
+    ));
     enter(&mut f);
     let operation = f.take_caller_operation().unwrap();
     assert_eq!(

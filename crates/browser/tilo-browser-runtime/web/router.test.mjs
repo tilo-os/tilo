@@ -27,9 +27,25 @@ function fakeWindow(href) {
     get index() { return index; },
     addEventListener(type, fn) { listeners.set(type, fn); },
     removeEventListener(type) { listeners.delete(type); },
-    back() { index -= 1; return listeners.get('popstate')?.(); },
-    forward() { index += 1; return listeners.get('popstate')?.(); },
+    // A fragment typed into the address bar: a new entry, announced as a
+    // browser does (popstate, then hashchange).
+    edit(url) {
+      entries.splice(index + 1);
+      entries.push({url, state: null});
+      return traverse(index + 1, entries[index].url);
+    },
+    back() { return traverse(index - 1); },
+    forward() { return traverse(index + 1); },
   };
+  // As a browser goes back or forward within the page: popstate, and when
+  // the fragment changed, hashchange as well, in a task of its own that does
+  // not wait for what the popstate listener started.
+  function traverse(to, from = entries[index].url) {
+    index = to;
+    const heard = [listeners.get('popstate')?.()];
+    if (new URL(from).hash !== new URL(entries[index].url).hash) heard.push(listeners.get('hashchange')?.());
+    return Promise.all(heard);
+  }
   return window;
 }
 
@@ -162,6 +178,26 @@ test('Back shows the URL target without writing history', async () => {
   assert.deepEqual(router.route, {mode: 'app', target: first});
 });
 
+test('a move the browser announces twice shows its target once', async () => {
+  const shown = [];
+  const notes = {scope, app: 'so.tilo.notes'};
+  const message = {...chat, resource: {kind: 'chat.message', id: 'chat.message:1'}};
+  const window = fakeWindow(link.format({mode: 'desktop', target: notes}));
+  const router = startRouter({window, link, initial: {mode: 'desktop', target: notes}, show: async next => { shown.push(next.target); }});
+  // A link to a message, typed over the address: its view action runs once.
+  await window.edit(link.format({mode: 'desktop', target: message}));
+  assert.deepEqual(shown, [message]);
+  await window.back();
+  assert.deepEqual(shown, [message, notes], 'Back shows the window before, once');
+  await window.forward();
+  assert.deepEqual(shown, [message, notes, message], 'and Forward the message again, once');
+  // Coming back to an address shown before is a move of its own.
+  await router.open({mode: 'desktop', target: chat});
+  await window.back();
+  assert.deepEqual(shown, [message, notes, message, chat, message]);
+  router.stop();
+});
+
 test('an entry of the other mode loads that page', async () => {
   const window = fakeWindow(link.format({mode: 'desktop', target: chat}));
   window.history.pushState(null, '', link.format({mode: 'app', target: chat}));
@@ -176,4 +212,44 @@ test('history entries never hold a secret', async () => {
   await router.open({mode: 'app', target: {...chat, resource: {kind: 'chat.message', id: 'chat.message:1'}}});
   for (const entry of window.entries) assert.doesNotMatch(entry.url, /invite=|ticket=|token=/);
   assert.equal(router.url('desktop'), link.format({mode: 'desktop', target: router.route.target}));
+});
+
+test('a link that names a view is written as what it opened, not as the link it came from', async () => {
+  const bare = {scope, app: 'so.tilo.chat'};
+  const opened = {scope, app: 'so.tilo.chat', view: 'thread'};
+  const navigation = fakeNavigation(desk([['1', 'so.tilo.chat']], '1'));
+  // The page was opened with the view's link; the person has since been
+  // moved elsewhere, and Back comes to that link.
+  const window = fakeWindow(link.format({mode: 'desktop', target: bare}));
+  window.history.pushState(null, '', link.format({mode: 'desktop', target: opened}));
+  const router = startRouter({window, link, navigation, initial: {mode: 'desktop', target: opened},
+    show: async () => {
+      // `entry.mjs` shows the view, then names it in the address, as the
+      // link to it would: the route it was shown as carries no resource.
+      assert.equal(window.location.href, link.format({mode: 'desktop', target: bare}));
+      router.replace({mode: 'desktop', target: opened});
+    }});
+  window.writes.length = 0;
+  await window.back();
+  assert.deepEqual(window.writes, [['replace', link.format({mode: 'desktop', target: opened})]]);
+  assert.deepEqual(router.route.target, opened, 'the router reads the address it wrote, not the bare link');
+  router.stop();
+});
+
+test('windows the router itself opened never overwrite the view it named', async () => {
+  const navigation = fakeNavigation(desk([['1', 'so.tilo.notes']], '1'));
+  const window = fakeWindow(link.format({mode: 'desktop', target: {scope, app: 'so.tilo.notes'}}));
+  const router = startRouter({window, link, navigation,
+    initial: {mode: 'desktop', target: {scope, app: 'so.tilo.notes'}},
+    show: async () => {
+      navigation.emit(desk([['1', 'so.tilo.notes'], ['2', 'so.tilo.chat']], '2'));
+      router.replace({mode: 'desktop', target: {scope, app: 'so.tilo.chat'}});
+    }});
+  window.writes.length = 0;
+  await router.open({mode: 'desktop', target: {scope, app: 'so.tilo.chat'}});
+  // The open is one history entry, and the window it launched never wrote
+  // the address again: it already holds what the router wrote.
+  assert.deepEqual(window.writes, [['replace', link.format({mode: 'desktop', target: {scope, app: 'so.tilo.chat'}})]]);
+  assert.deepEqual(router.route.target, {scope, app: 'so.tilo.chat'});
+  router.stop();
 });

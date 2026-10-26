@@ -42,6 +42,9 @@ pub(super) struct InspectorLayout {
     pub(super) nums: Vec<(NumField, Rect)>,
     /// Picture-in-picture presets: label, corner in `-1..1`, and the button.
     pub(super) pip: Vec<(&'static str, (f64, f64), Rect)>,
+    /// The two halves of the frame, as the buttons that put a picture in
+    /// one — the arrangement two camera angles of one moment need.
+    pub(super) sides: Vec<(&'static str, Side, Rect)>,
     /// "Fill frame" — clears the transform back to the plain aspect-fit.
     pub(super) reset_transform: Option<Rect>,
     /// Baseline y of the "Crop" caption above the two crop rows.
@@ -610,6 +613,21 @@ impl VideoEditorApp {
             }
             y += 32.0;
             l.breaks.push(y);
+            // Side by side: one picture in each half, side by side rather than
+            // one over the other, which is what two angles of one moment want.
+            y += 16.0;
+            l.breaks.push(y);
+            let half = (x1 - x0 - S2) / 2.0;
+            for (i, (label, side)) in [("Left half", Side::Left), ("Right half", Side::Right)]
+                .into_iter()
+                .enumerate()
+            {
+                let bx = x0 + i as f64 * (half + S2);
+                l.sides
+                    .push((label, side, Rect::new(bx, y, bx + half, y + 26.0)));
+            }
+            y += 32.0;
+            l.breaks.push(y);
             l.reset_transform = Some(Rect::new(x0, y, x1, y + 26.0));
             y += 34.0;
             l.breaks.push(y);
@@ -925,6 +943,9 @@ impl InspectorLayout {
             *r = map(*r);
         }
         for (_, _, r) in &mut self.pip {
+            *r = map(*r);
+        }
+        for (_, _, r) in &mut self.sides {
             *r = map(*r);
         }
         for (_, r) in &mut self.anchor {

@@ -18,7 +18,9 @@ mod app_chooser;
 mod ask_agent;
 mod axis_navigation;
 mod bar_popovers;
+mod control_hints;
 mod cursor_chat;
+mod feedback_pick;
 mod feedback_point;
 pub(crate) use cursor_chat::ChatOut;
 mod arrival;
@@ -62,6 +64,7 @@ mod displays;
 mod emoji_layer;
 mod history;
 pub(crate) mod layers;
+mod live_shares;
 mod now_playing;
 mod overview_grid;
 mod palette_flow;
@@ -76,6 +79,7 @@ mod switcher_layer;
 mod tab_menu;
 mod task_import;
 mod top_bar_reveal;
+mod transient_zone;
 mod widget;
 mod window_toolbars;
 mod workspace_slide;
@@ -247,7 +251,9 @@ mod paint_top;
 mod palette_routing;
 mod palette_run;
 mod palette_search;
+mod people_overlay;
 use palette_search::LaunchpadMark;
+mod nested_shortcuts;
 mod peer_sync;
 mod portal_prompts;
 mod projection;
@@ -280,6 +286,7 @@ mod tree_harvest;
 mod wifi_password;
 mod window_focus;
 mod workspace_content;
+mod ws_emoji;
 mod ws_settings;
 
 use capture::{instant_screen_capture, instant_window_capture, magnifier_step};
@@ -305,10 +312,6 @@ use room_activity::{
 };
 use shortcut_config::{DesktopControlsSource, SHORTCUT_GUIDE_ROWS, ShortcutGuideFocus};
 
-/// How long the follow bar says "Stopped following" after the person's own
-/// input ended it.
-const FOLLOW_STOPPED_FOR: std::time::Duration = std::time::Duration::from_secs(1);
-
 /// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
 type PeerSyncBridge = std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<PeerSyncResponse, String>>;
@@ -317,6 +320,7 @@ type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<Strin
 /// relationship. Kept separate from [`FollowBridge`]: the latter is private
 /// local app control, while this one only paints a room-scoped cue remotely.
 type FollowPresenceBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
+pub use people_overlay::LiveLayoutBridge;
 type StatusPresenceBridge =
     std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<ui::LiveStatus>)>;
 type ActiveTabPresenceBridge =
@@ -476,11 +480,11 @@ pub struct ShellOverlayHost {
     shortcut_help_done_width: f64,
     desktop_controls: DesktopControlsSource,
     shortcut_help_drawn_rect: Rect,
-    /// The effective shortcut table for this compositor session.  Input is
-    /// routed to a focused foreign client before it reaches this host, so the
-    /// router must consult this same snapshot rather than reconstructing the
-    /// default chord set on its own.
+    /// Saved preferences, kept separate from windowed-session defaults so
+    /// editing an unrelated binding never writes those defaults to disk.
     shortcut_config: settings_store::hardware::ShortcutConfig,
+    /// Windowed-only effective bindings, shared by routing and shortcut hints.
+    nested_shortcuts: Option<settings_store::hardware::ShortcutConfig>,
     /// What starts saved shortcuts from a chord or on schedule.
     shortcut_triggers: shortcut_triggers::ShortcutTriggerState,
     content: Box<dyn Widget>,
@@ -511,13 +515,16 @@ pub struct ShellOverlayHost {
     /// The strip ribbon (grown into the strip switcher on intent) and the
     /// strip rail; see [`strip_switcher`].
     strip_navigator: tilo_desktop::strip_navigator::StripNavigator,
+    /// The desktop's control hints, and what the last frame showed them;
+    /// see [`control_hints`].
+    control_hints: tilo_desktop::control_hints::ControlHints,
+    control_hints_frame: tilo_desktop::control_hints::HintFrame,
     /// Chrome revision the switcher's model was built from.
     strip_switcher_revision: Option<u64>,
     /// Displays the compositor is painting across, pushed by `FrameBuilder`
     /// before layout. Empty in a bare `ui::App` host, where
     /// [`Self::strip_output_spans`] treats the window as the one display.
     outputs: Vec<OutputGeometry>,
-    keyboard_scope: String,
     palette: CommandPalette,
     palette_visible: bool,
     /// Search providers the palette fans out to. Built once at
@@ -732,6 +739,11 @@ pub struct ShellOverlayHost {
     session_action_policy: crate::shell::search::providers::SessionActionPolicy,
     /// When the top bar the person hides shows over the windows.
     top_bar_reveal: top_bar_reveal::TopBarReveal,
+    /// A fullscreen window's bar, shown over it when reached for.
+    fullscreen_bar_reveal: top_bar_reveal::FullscreenBarReveal,
+    /// A finger that came down on a display's top edge while something
+    /// hides there, and where: a swipe down from it reveals that.
+    top_edge_swipe: Option<(u64, Point)>,
     /// A direct strip pan (touchpad or touch) is in progress or settling.
     /// Its frames, and the frame it comes to rest on, are composited from
     /// layers drawn before it began, so the chrome they hold (the ribbon and
@@ -745,6 +757,9 @@ pub struct ShellOverlayHost {
     /// Workspace-settings transition, geometry, painting chrome, and typed
     /// hit targets. Policy outcomes are applied by this host.
     workspace_settings_overlay: WorkspaceSettingsOverlay,
+    /// The active workspace's emoji as workspace settings' Emoji tab holds
+    /// them, opened on first use.
+    ws_emoji: Option<ws_emoji::WsEmoji>,
     /// A rename submit owns its held Enter repeats and release after the draft closes.
     workspace_rename_submit_held: bool,
     palette_was_visible: bool,
@@ -798,7 +813,7 @@ pub struct ShellOverlayHost {
     /// The app the latched prompt asks for, so it opens over that app's
     /// window ([`Self::permission_prompt_surface`]).
     permission_prompt_app: Option<String>,
-    /// The portal's prompt queue, when the compositor serves portals.
+    /// The portal's capability queue, when the compositor serves portals.
     /// `drain_portal_prompts` empties it onto `chrome.pending_grants`.
     portal_prompts: Option<crate::portal::PromptQueueHandle>,
     /// Terminal tabs waiting for the person's answer about the device's own
@@ -859,9 +874,9 @@ pub struct ShellOverlayHost {
     peer_sync_overlay: PeerSyncOverlay,
     /// "Join a workspace…": the public workspaces, as a sheet in place.
     directory_sheet: crate::shell::directory_sheet::DirectorySheet,
-    /// The workspace a join just installed, and who is in it, for a moment
-    /// under the top bar.
-    arrival_line: crate::shell::arrival_line::ArrivalLine,
+    /// The faces the bar pulses for an arrival, until the frame bounces
+    /// them (`arrival::say_arrived`).
+    arrival_pulses: Vec<String>,
     /// Top-right notification stack, above content but below the
     /// permission prompt and modals.
     notification_stack: NotificationStack,
@@ -975,6 +990,17 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// The roster pinned out of the dropdown, floating over the windows at
+    /// an edge as a desk widget does.
+    people_overlay: tilo_desktop::people_overlay::PeopleOverlay,
+    /// Where each person's windows are, as the room's live presence says,
+    /// and where this person's are (`ShellNetwork`'s layouts).
+    live_layout_bridge: Option<LiveLayoutBridge>,
+    /// The layout last said, per room, so it goes out only on a change.
+    published_layout: Option<(
+        crate::shell::state::RoomId,
+        Option<tilo_relay_protocol::live::LiveLayout>,
+    )>,
     /// Who is here arriving from the bar and leaving (`motion::Appear`).
     collaborators_appearing: ui::motion::Appearing,
     /// The roster as it was last painted at rest, and its panel: what is
@@ -996,19 +1022,13 @@ pub struct ShellOverlayHost {
     /// from the live workspace prevents a later workspace switch from
     /// releasing the wrong set of local app views.
     followed_room: Option<crate::shell::state::RoomId>,
-    /// Keeps the local follow dock and its tether visible long enough to
-    /// arrive and release gracefully instead of snapping between states.
-    follow_transition: ui::motion::Presence,
-    /// Last resolved identity, retained only for the short exit animation.
-    follow_visual: Option<RosterRow>,
-    /// Persistent follow-mode banner painted while following.
-    follow_chip_rect: Rect,
-    /// When following stopped because the person did something of their
-    /// own: the bar says "Stopped following" for [`FOLLOW_STOPPED_FOR`].
-    follow_stopped: Option<Instant>,
-    /// Explicit stop target within [`Self::follow_chip_rect`]. The rest of
-    /// the banner is informative, not a surprising destructive target.
-    follow_stop_rect: Rect,
+    /// The "Following Ada" banner the browser paints too: it arrives and
+    /// leaves gracefully instead of snapping between states, and only its
+    /// Stop is a target.
+    follow_banner: tilo_desktop::follow_banner::FollowBanner,
+    /// The next end of following is the person's own input taking their
+    /// view back: the banner says "Stopped following" a moment.
+    follow_ended_by_own_input: bool,
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
@@ -1019,10 +1039,8 @@ pub struct ShellOverlayHost {
     cursor_chat: cursor_chat::CursorChatComposer,
     /// You, as the people in each workspace see you.
     self_presence: presence_self::SelfPresence,
-    /// The line under the top bar: arriving where people are, a wave.
+    /// Who was here when the bar last said someone arrived.
     presence_notices: arrival::PresenceNotices,
-    /// A press landed on that line: its release is the line's too.
-    presence_notice_press: bool,
     /// A capture shows the workspace on screen as public.
     #[cfg(feature = "hosted-test-control")]
     public_for_shots: bool,
@@ -1054,8 +1072,13 @@ pub struct ShellOverlayHost {
     /// A click that picked what a feedback report is about, waiting for the
     /// app under it to name the control there.
     feedback_point: crate::shell::feedback_entry::FeedbackPoint,
+    /// Pointing at what is wrong, to report it ("Report a problem…").
+    feedback_picker: crate::shell::feedback_pick::NativePicker,
     /// The slots Tilo apps declared for their windows' bars.
     window_toolbars: window_toolbars::WindowToolbars,
+    /// Windows shared live into a conversation: the menus offering it, the
+    /// sharing app's connections and the views windows embed.
+    live_shares: live_shares::NativeLiveShares,
     /// The tree revision the windows lent to apps the shell mounts were
     /// last matched against the tabs at ([`Self::sync_hosted_windows`]).
     hosted_windows_revision: Option<u64>,
@@ -1333,59 +1356,6 @@ const PAIRING_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// to prepend to every subtitle.
 /// The file manager Super+E opens.
 const FILES_PACKAGE: (&str, &str) = ("so.tilo.file-explorer", "Files");
-
-/// Make the next keyboard input source the active one in the session's
-/// settings, so it survives a settings reload and the next session, and
-/// return the keyboard group to select and the source's name. `None` with a
-/// single source.
-fn select_next_input_source(scope: &str) -> Option<(usize, String)> {
-    use crate::compositor::backend::drm::input_config::{KeyboardSettings, SECTION};
-    let section = settings_store::load_section(SECTION);
-    let mut base = settings_store::hardware::RichInputConfig::from_section(&section);
-    let mut config = settings_store::keyboard_sources::effective(&base, scope);
-    config.select_next_source()?;
-    let mut values = serde_json::Map::new();
-    if scope == settings_store::keyboard_sources::ALL {
-        values.insert(
-            "keyboard_layout".into(),
-            serde_json::Value::String(config.keyboard_layout.clone()),
-        );
-    } else {
-        let mut inherited = settings_store::keyboard_sources::KeyboardProfile::from_input(&base);
-        if let Some(defaults) = base
-            .keyboard_assignments
-            .get(settings_store::keyboard_sources::ALL)
-        {
-            inherited.options.clone_from(&defaults.options);
-        }
-        let mut assignments = base.keyboard_assignments.clone();
-        let profile = assignments.entry(scope.into()).or_insert(inherited);
-        profile.active.clone_from(&config.keyboard_layout);
-        values.insert(
-            "keyboard_assignments".into(),
-            serde_json::to_value(&assignments).ok()?,
-        );
-        base.keyboard_assignments = assignments;
-    }
-    if scope == settings_store::keyboard_sources::ALL {
-        base.keyboard_layout.clone_from(&config.keyboard_layout);
-    }
-    config = settings_store::keyboard_sources::effective(&base, scope);
-    if let Err(error) = settings_store::update_section(SECTION, values) {
-        tracing::warn!(%error, "input source choice could not be saved");
-        return None;
-    }
-    // The keyboard switches to an XKB group: the active layout, or the
-    // primary layout an input-method engine types on. The input-method
-    // arbiter picks the engine up from the saved choice.
-    let keyboard = KeyboardSettings::from_config(&config);
-    let group = keyboard.active_index;
-    let name = config.active_input_method().map_or_else(
-        || keyboard.source_label(group),
-        |engine| engine.label().to_string(),
-    );
-    Some((group, name))
-}
 
 // -- Lossy numeric casts, named and scoped one lint at a time --------
 //
@@ -1854,6 +1824,13 @@ mod people_motion_tests;
 
 #[cfg(test)]
 #[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+mod people_overlay_tests;
+
+#[cfg(test)]
+#[allow(
     clippy::float_cmp,
     reason = "exact modal curve endpoints are the behavior under test"
 )]
@@ -1903,6 +1880,10 @@ mod peer_cursor_tests;
 #[cfg(test)]
 #[path = "multi_display_tests.rs"]
 mod multi_display_tests;
+
+#[cfg(test)]
+#[path = "transient_zone_tests.rs"]
+mod transient_zone_tests;
 
 #[cfg(test)]
 #[path = "window_bar_location_tests.rs"]

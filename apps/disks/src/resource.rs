@@ -115,8 +115,9 @@ pub enum DisksEffect {
         #[param("Kernel name of the partition")]
         device: String,
     },
-    /// Format.
-    #[effect(job, destructive)]
+    /// Erase a drive or partition for good: every file on it is lost, and it
+    /// starts again empty.
+    #[effect(job, destructive, label = "Format")]
     Format {
         #[param("Kernel name of the drive or partition to erase")]
         device: String,
@@ -159,15 +160,50 @@ pub(crate) fn partition_row_id(leaf: &str) -> String {
     format!("partition:{leaf}")
 }
 
+/// What formatting `part` of `drive` (`None`: the whole drive) erases, in
+/// the words the confirmation asks with: the partitions and the files a
+/// person would lose, never only the action's name.
+fn format_loses(drive: &Drive, part: Option<&Partition>) -> String {
+    let Some(part) = part else {
+        return match drive.partitions.len() {
+            0 => "Everything on it is erased for good.".to_owned(),
+            1 => "Its partition and every file on it are erased for good.".to_owned(),
+            n => format!("Its {n} partitions and every file on them are erased for good."),
+        };
+    };
+    let on = part
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+        .map_or_else(
+            || "it".to_owned(),
+            |label| format!("\u{201c}{label}\u{201d}"),
+        );
+    match part.used.filter(|used| *used > 0) {
+        Some(used) => format!(
+            "The {} of files on {on} are erased for good.",
+            ui::format::size(used)
+        ),
+        None => format!("Every file on {on} is erased for good."),
+    }
+}
+
 /// `kind` on `device`, as a row offers it: unavailable, with the reason,
 /// when `offer` says so. Formatting asks the caller to type the device's
-/// name, as erasing it deserves.
-fn row_operation(kind: ActionKind, device: &str, offer: Offer) -> ui::tilo_actions::ActionSpec {
+/// name, as erasing it deserves, and says what is lost.
+fn row_operation(
+    kind: ActionKind,
+    device: &str,
+    offer: Offer,
+    lost: impl FnOnce() -> String,
+) -> ui::tilo_actions::ActionSpec {
     let mut spec = DisksEffect::operation(kind, device).bound();
     if kind.destructive() {
         spec.contract.confirmation = ConfirmationPolicy::Phrase {
             phrase: device.to_owned(),
         };
+        spec.description = Some(lost());
     }
     if let Offer::Unavailable(reason) = offer {
         spec.contract.availability = ui::tilo_actions::Availability::Unavailable {
@@ -189,7 +225,9 @@ fn operations(
     for &action in actions {
         let offer = offer::offer(drive, part, action);
         if offer.is_shown() {
-            row = row.operation(row_operation(action, device, offer));
+            row = row.operation(row_operation(action, device, offer, || {
+                format_loses(drive, part)
+            }));
         }
     }
     row
@@ -447,6 +485,22 @@ mod tests {
             },
             "erasing a drive asks for its name"
         );
+        assert_eq!(
+            format.description.as_deref(),
+            Some("Its 4 partitions and every file on them are erased for good."),
+            "the question says what erasing the drive loses"
+        );
+        let media = find(&resources, "partition:sdb1").expect("the media partition");
+        let format = media
+            .actions
+            .iter()
+            .find(|action| action.id == "format")
+            .unwrap();
+        assert_eq!(
+            format.description.as_deref(),
+            Some("The 1.5 TB of files on \u{201c}Media\u{201d} are erased for good."),
+            "the question names the partition and what it holds"
+        );
         let partition = find(&resources, "partition:nvme0n1p2").expect("a partition row");
         assert!(
             action_ids(partition)
@@ -662,5 +716,28 @@ mod tests {
                 .unwrap()
                 .contains("failed")
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::DisksShell::scenarios() {
+            let mut app = TestApp::<super::DisksShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

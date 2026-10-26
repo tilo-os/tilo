@@ -24,6 +24,14 @@ pub const MAX_FILL_BYTES: usize = 64 * 1024;
 pub const MAX_SELECT_VALUES: usize = 64;
 /// Upper bound on one option value or label.
 pub const MAX_SELECT_VALUE_BYTES: usize = 1024;
+/// Upper bound on the files one fill of a file input may choose.
+pub const MAX_FILE_PATHS: usize = 16;
+/// Upper bound on one chosen file's path.
+pub const MAX_FILE_PATH_BYTES: usize = 4096;
+/// Upper bound on the steps of one pointer gesture.
+pub const MAX_POINTER_STEPS: usize = 256;
+/// Upper bound on the button names a gesture may name.
+const POINTER_BUTTONS: &[&str] = &["left", "right"];
 const MAX_REF_BYTES: usize = 40;
 const MAX_MESSAGE_BYTES: usize = 1024;
 const MAX_CODE_BYTES: usize = 64;
@@ -48,6 +56,14 @@ pub enum PageRequest {
         element: String,
         values: Vec<String>,
     },
+    /// Choose the files of an `<input type=file>`, by absolute path.
+    ///
+    /// The caller has already checked each path is a regular file it may
+    /// read; the engine hands those files to the page as a person's own
+    /// picker would, dispatching `input` and `change`. A path that names no
+    /// readable regular file, or one the element's `accept` refuses, is
+    /// refused rather than silently dropped.
+    FillFiles { element: String, paths: Vec<String> },
     /// A trusted key press, after focusing `element` when one is named.
     Press {
         element: Option<String>,
@@ -75,6 +91,82 @@ pub enum PageRequest {
     /// Show the document's article alone in a reading layout (`enabled`), or
     /// put the page back as it was. A page without an article is refused.
     Reader { enabled: bool },
+    /// Move the pointer over the page as a hand does: `steps` in order, a
+    /// press and release of `button` where the page asks for one. A step
+    /// naming `element` is placed in that element's box, every other step is
+    /// a viewport position in CSS pixels. All of it is real input to the
+    /// page, so hover, drag and drop and drawing see what a person's hand
+    /// would have done, and the reply reports what changed.
+    Pointer {
+        steps: Vec<PointerStep>,
+        button: PointerButton,
+    },
+}
+
+/// One step of a [`PageRequest::Pointer`] gesture.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PointerStep {
+    pub kind: PointerStepKind,
+    /// Where the step happens, relative to `element`'s box when it names one.
+    pub at: PointerPoint,
+    /// The element the step is placed against. A gesture that keeps naming
+    /// the same element keeps stepping inside the same box.
+    pub element: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerStepKind {
+    Move,
+    Down,
+    Up,
+}
+
+impl PointerStepKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Move => "move",
+            Self::Down => "down",
+            Self::Up => "up",
+        }
+    }
+}
+
+/// Where a step happens: inside an element's box or at a viewport point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PointerPoint {
+    InElement { x: f64, y: f64 },
+    Viewport { x: f64, y: f64 },
+}
+
+impl PointerPoint {
+    pub const fn coordinates(self) -> (f64, f64) {
+        match self {
+            Self::InElement { x, y } | Self::Viewport { x, y } => (x, y),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerButton {
+    Left,
+    Right,
+}
+
+impl PointerButton {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+        }
+    }
+
+    /// The button a gesture names, left when the name is not one we know.
+    pub const fn parse(name: &str) -> Self {
+        match name.as_bytes() {
+            b"right" => Self::Right,
+            _ => Self::Left,
+        }
+    }
 }
 
 impl PageRequest {
@@ -84,6 +176,7 @@ impl PageRequest {
             Self::Click { .. } => "click",
             Self::Fill { .. } => "fill",
             Self::Select { .. } => "select",
+            Self::FillFiles { .. } => "fill_files",
             Self::Press { .. } => "press",
             Self::Submit { .. } => "submit",
             Self::Changes => "changes",
@@ -92,6 +185,7 @@ impl PageRequest {
             Self::Console { .. } => "console",
             Self::Network { .. } => "network",
             Self::Reader { .. } => "reader",
+            Self::Pointer { .. } => "pointer",
         }
     }
 
@@ -104,10 +198,12 @@ impl PageRequest {
             | Self::Settle { .. }
             | Self::Console { .. }
             | Self::Network { .. }
-            | Self::Reader { .. } => None,
+            | Self::Reader { .. }
+            | Self::Pointer { .. } => None,
             Self::Click { element }
             | Self::Fill { element, .. }
             | Self::Select { element, .. }
+            | Self::FillFiles { element, .. }
             | Self::Press {
                 element: Some(element),
                 ..
@@ -118,10 +214,13 @@ impl PageRequest {
 
     /// Whether every field is within the bounds an engine accepts.
     pub fn valid(&self) -> bool {
-        if self
-            .element()
-            .is_some_and(|element| !is_element_ref(element))
-        {
+        let refs: Vec<&str> = match self {
+            Self::Pointer { steps, .. } => {
+                steps.iter().filter_map(|s| s.element.as_deref()).collect()
+            }
+            _ => self.element().into_iter().collect(),
+        };
+        if refs.iter().any(|element| !is_element_ref(element)) {
             return false;
         }
         match self {
@@ -133,6 +232,13 @@ impl PageRequest {
                         .iter()
                         .all(|value| value.len() <= MAX_SELECT_VALUE_BYTES)
             }
+            Self::FillFiles { paths, .. } => {
+                !paths.is_empty()
+                    && paths.len() <= MAX_FILE_PATHS
+                    && paths
+                        .iter()
+                        .all(|path| path.len() <= MAX_FILE_PATH_BYTES && path.starts_with('/'))
+            }
             Self::Press { key, .. } => PageKey::parse(&key.chord()).as_ref() == Some(key),
             Self::At { x, y } => [x, y]
                 .iter()
@@ -143,6 +249,17 @@ impl PageRequest {
             } => {
                 (MIN_SETTLE_QUIET_MS..=MAX_SETTLE_MS).contains(quiet_ms)
                     && (*quiet_ms..=MAX_SETTLE_MS).contains(timeout_ms)
+            }
+            Self::Pointer { steps, button } => {
+                !steps.is_empty()
+                    && steps.len() <= MAX_POINTER_STEPS
+                    && POINTER_BUTTONS.contains(&button.as_str())
+                    && steps.iter().all(|step| {
+                        let (x, y) = step.at.coordinates();
+                        [x, y]
+                            .iter()
+                            .all(|v| v.is_finite() && (0.0..=MAX_COORDINATE).contains(v))
+                    })
             }
             Self::Outline
             | Self::Click { .. }
@@ -330,6 +447,7 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
             command["secret"] = (*secret).into();
         }
         PageRequest::Select { values, .. } => command["values"] = values.clone().into(),
+        PageRequest::FillFiles { paths, .. } => command["paths"] = paths.clone().into(),
         PageRequest::Press { key, .. } => {
             command["key"] = key.key.as_str().into();
             command["ctrl"] = key.modifiers.ctrl.into();
@@ -355,6 +473,24 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
             command["since"] = (*since).into();
         }
         PageRequest::Reader { enabled } => command["enabled"] = (*enabled).into(),
+        PageRequest::Pointer { steps, button } => {
+            command["button"] = button.as_str().into();
+            command["steps"] = steps
+                .iter()
+                .map(|step| {
+                    let (x, y) = step.at.coordinates();
+                    let mut encoded = serde_json::json!({
+                        "kind": step.kind.as_str(),
+                        "x": x,
+                        "y": y,
+                    });
+                    if let Some(element) = &step.element {
+                        encoded["element"] = element.as_str().into();
+                    }
+                    encoded
+                })
+                .collect();
+        }
         PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Changes => {}
     }
     command
@@ -488,6 +624,126 @@ mod tests {
                     element: "#submit".into()
                 }
                 .valid()
+            );
+            // A chosen file is an absolute path, so a relative one never reaches
+            // the engine to resolve against the browser's own working folder.
+            assert!(
+                PageRequest::FillFiles {
+                    element: element.clone(),
+                    paths: vec!["/var/home/you/scan.pdf".into()],
+                }
+                .valid()
+            );
+            for paths in [
+                Vec::new(),
+                vec!["scan.pdf".into()],
+                vec!["./scan.pdf".into()],
+                vec![format!("/{}", "x".repeat(MAX_FILE_PATH_BYTES))],
+                (0..=MAX_FILE_PATHS)
+                    .map(|n| format!("/var/home/you/{n}.pdf"))
+                    .collect(),
+            ] {
+                assert!(
+                    !PageRequest::FillFiles {
+                        element: element.clone(),
+                        paths,
+                    }
+                    .valid()
+                );
+            }
+        }
+        // phase: pointer_gestures_are_bounded_and_round_trip_to_the_wire
+        {
+            let inside = |kind, element: Option<&str>, x, y| PointerStep {
+                kind,
+                at: PointerPoint::InElement { x, y },
+                element: element.map(str::to_owned),
+            };
+            let gesture = |steps: Vec<PointerStep>, button| PageRequest::Pointer { steps, button };
+            let drag = gesture(
+                vec![
+                    inside(PointerStepKind::Down, Some("d1e2"), 4.0, 4.0),
+                    inside(PointerStepKind::Move, Some("d1e3"), 4.0, 4.0),
+                    PointerStep {
+                        kind: PointerStepKind::Up,
+                        at: PointerPoint::Viewport { x: 40.0, y: 90.0 },
+                        element: None,
+                    },
+                ],
+                PointerButton::Left,
+            );
+            assert!(drag.valid());
+            assert_eq!(drag.element(), None, "a gesture addresses many elements");
+            assert_eq!(
+                encode_request(13, &drag),
+                serde_json::json!({"op":"page","request_id":13,"action":"pointer","button":"left",
+                    "steps":[
+                        {"kind":"down","x":4.0,"y":4.0,"element":"d1e2"},
+                        {"kind":"move","x":4.0,"y":4.0,"element":"d1e3"},
+                        {"kind":"up","x":40.0,"y":90.0}]})
+            );
+            // A step naming no element is a viewport point, and it is
+            // written without the key rather than with a null.
+            assert!(
+                encode_request(14, &drag)["steps"][2]
+                    .get("element")
+                    .is_none()
+            );
+            let right = gesture(
+                vec![PointerStep {
+                    kind: PointerStepKind::Down,
+                    at: PointerPoint::Viewport { x: 1.0, y: 2.0 },
+                    element: None,
+                }],
+                PointerButton::Right,
+            );
+            assert_eq!(encode_request(15, &right)["button"], "right");
+            for bad in [
+                // A gesture is a movement of the hand, never empty.
+                gesture(Vec::new(), PointerButton::Left),
+                // A step the engine cannot place.
+                gesture(
+                    vec![PointerStep {
+                        kind: PointerStepKind::Down,
+                        at: PointerPoint::InElement {
+                            x: f64::INFINITY,
+                            y: 0.0,
+                        },
+                        element: None,
+                    }],
+                    PointerButton::Left,
+                ),
+                gesture(
+                    vec![PointerStep {
+                        kind: PointerStepKind::Down,
+                        at: PointerPoint::Viewport {
+                            x: 0.0,
+                            y: MAX_COORDINATE + 1.0,
+                        },
+                        element: None,
+                    }],
+                    PointerButton::Left,
+                ),
+                // A step that names something other than an element ref.
+                gesture(
+                    vec![inside(PointerStepKind::Move, Some("#menu"), 0.0, 0.0)],
+                    PointerButton::Left,
+                ),
+                // More steps than any gesture needs.
+                gesture(
+                    (0..=MAX_POINTER_STEPS)
+                        .map(|_| inside(PointerStepKind::Move, None, 0.0, 0.0))
+                        .collect(),
+                    PointerButton::Left,
+                ),
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+            assert_eq!(PointerButton::parse("right"), PointerButton::Right);
+            assert_eq!(
+                PointerButton::parse("middle"),
+                PointerButton::Left,
+                "an unknown button is the one a hand uses"
             );
         }
         // phase: wire_encoding_names_every_field

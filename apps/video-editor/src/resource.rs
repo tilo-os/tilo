@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use crate::app::{EMPTY_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use crate::model::{
-    ClipId, EffectKind, MAX_GAIN_DB, MIN_GAIN_DB, MediaItem, MediaKind, Project, TextSource, Track,
-    TrackKind, key,
+    ClipId, EffectKind, MAX_GAIN_DB, MIN_GAIN_DB, MediaItem, MediaKind, Project, Side,
+    SidePlacement, TextSource, Track, TrackKind, Transform, key,
 };
 use crate::param::Param;
 
@@ -43,6 +43,7 @@ fn instant(at: f64) -> Result<f64, Refusal> {
     params = video_project,
     search = crate::search::project_entries,
     read_content = crate::agent_timeline::read_timeline,
+    facts = crate::facts::facts,
     answer = crate::agent_timeline::answer,
 )]
 impl Project {
@@ -139,17 +140,19 @@ impl Project {
     }
 
     /// Restyle a title.
+    ///
+    /// Names the title by its id or by the words it shows.
     #[action(answers, item = media)]
     pub fn set_title(
         &mut self,
-        media: &Id,
+        #[param("The title's id, or the words it shows now")] media: &Id,
         #[param("New words; the bin name follows their first line")] text: Option<String>,
         #[param("The words' colour, #rrggbb or a colour word")] colour: Option<String>,
         #[param("Letter height as a fraction of the frame height, 0.02 to 0.5")] size: Option<f64>,
         #[param("left, center or right")] align: Option<String>,
     ) -> Result<(), Refusal> {
         self.agent_set_title(
-            media,
+            self.title_named(media.as_str())?,
             &crate::agent_timeline::TitleStyle {
                 text,
                 colour,
@@ -177,6 +180,9 @@ impl Project {
     #[action(id = "move-clip", answers, item = clips)]
     pub fn shift_clip(
         &mut self,
+        #[param(
+            "The clip's id, or its source's name; add @start when it is placed more than once"
+        )]
         clip: &Id,
         #[param("Seconds on the timeline where it starts")] at: f64,
         #[param("Another track of its kind, by id or name; its own when omitted")] track: Option<
@@ -191,6 +197,9 @@ impl Project {
     #[action(answers, item = clips)]
     pub fn set_clip(
         &mut self,
+        #[param(
+            "The clip's id, or its source's name; add @start when it is placed more than once"
+        )]
         clip: &Id,
         #[param("Seconds of fade from black (and silence) at its head")] fade_in: Option<f64>,
         #[param("Seconds of fade to black (and silence) at its tail")] fade_out: Option<f64>,
@@ -217,6 +226,9 @@ impl Project {
     #[action(id = "remove-clip", answers, item = clips, destructive)]
     pub fn remove_clip_closing(
         &mut self,
+        #[param(
+            "The clip's id, or its source's name; add @start when it is placed more than once"
+        )]
         clip: &Id,
         #[param("Close the gap it leaves by moving later clips on its track back")] ripple: Option<
             bool,
@@ -241,6 +253,68 @@ impl Project {
         let at = instant(at)?;
         let name = name.trim();
         self.add_marker(at, if name.is_empty() { "Marker" } else { name }, 1);
+        Ok(())
+    }
+
+    /// Place every clip covering `at` on the two sides of the frame: the
+    /// bottom-most visible video track on the left, the next one on the
+    /// right. Two angles of one moment then play together instead of one
+    /// covering the other, and nothing is tagged or named to make it work:
+    /// the track order is the arrangement.
+    #[action(id = "place-two-angles")]
+    pub fn place_side_by_side(
+        &mut self,
+        #[param("Seconds on the timeline where the two angles meet")] at: f64,
+    ) -> Result<(), Refusal> {
+        let at = instant(at)?;
+        let sides = self
+            .cut_sides(at)
+            .ok_or_else(|| Refusal::new("two pictures have to meet at that time"))?;
+        for side in [Side::Left, Side::Right] {
+            if let Some(clip) = sides.clip(side)
+                && !self.clip_editable(clip)
+            {
+                return Err(Refusal::new("the clip's track is locked"));
+            }
+        }
+        if self.place_angles(at).is_empty() {
+            return Err(Refusal::new(
+                "the two pictures already sit side by side there",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Give each clip back the picture it had before it was placed side by
+    /// side. A clip the person has since placed somewhere else is left as
+    /// they put it.
+    #[action(id = "unplace-two-angles")]
+    pub fn unplace_side_by_side(
+        &mut self,
+        #[param("Seconds on the timeline where the two angles meet")] at: f64,
+    ) -> Result<(), Refusal> {
+        let at = instant(at)?;
+        let sides = self
+            .cut_sides(at)
+            .ok_or_else(|| Refusal::new("two pictures have to meet at that time"))?;
+        let mut placements = Vec::new();
+        for side in [Side::Left, Side::Right] {
+            let Some(c) = sides.clip(side).and_then(|clip| self.clip(clip)) else {
+                continue;
+            };
+            if Some(c.transform) != side.placement() {
+                continue;
+            }
+            placements.push(SidePlacement {
+                clip: c.id,
+                side,
+                before: Transform::default(),
+            });
+        }
+        if placements.is_empty() {
+            return Err(Refusal::new("neither picture sits beside the other there"));
+        }
+        self.restore_angles(&placements);
         Ok(())
     }
 
@@ -323,7 +397,8 @@ impl Project {
         if self.track(track).is_none() {
             return Err(Refusal::new("no such track"));
         }
-        self.add_clip(track, uuid(media)?, instant(start)?)
+        let media = self.source_named(media.as_str())?.id;
+        self.add_clip(track, media, instant(start)?)
             .map(drop)
             .ok_or_else(|| Refusal::new("no such source"))
     }
@@ -331,8 +406,8 @@ impl Project {
     /// Delete a source and every clip of it.
     #[action(id = "delete-media", item = media, destructive)]
     pub fn remove_media(&mut self, media: &Id) -> Result<(), Refusal> {
-        let id = uuid(media)?;
-        if self.media.take(media).is_none() {
+        let id = self.source_named(media.as_str())?.id;
+        if self.media.take(&key(id)).is_none() {
             return Err(Refusal::new("no such source"));
         }
         self.clips.retain(|clip| clip.media != id);
@@ -342,7 +417,7 @@ impl Project {
     /// Use a source's frame size and rate for the project.
     #[action(id = "use-as-project-format", item = media)]
     pub fn adopt_media_format(&mut self, media: &Id) -> Result<(), Refusal> {
-        let source = self.media.find(media).cloned().ok_or("no such source")?;
+        let source = self.source_named(media.as_str())?.clone();
         if source.width == 0 || source.height == 0 {
             return Err(Refusal::new("the source has no picture size"));
         }
@@ -387,6 +462,9 @@ impl Project {
     #[action(id = "trim-in-clip", item = clips)]
     pub fn trim_head(
         &mut self,
+        #[param(
+            "The clip's id, or its source's name; add @start when it is placed more than once"
+        )]
         clip: &Id,
         #[param("Seconds on the timeline the clip starts at")] at: f64,
     ) -> Result<(), Refusal> {
@@ -402,6 +480,9 @@ impl Project {
     #[action(id = "trim-out-clip", item = clips)]
     pub fn trim_tail(
         &mut self,
+        #[param(
+            "The clip's id, or its source's name; add @start when it is placed more than once"
+        )]
         clip: &Id,
         #[param("Seconds on the timeline the clip ends at")] at: f64,
     ) -> Result<(), Refusal> {
@@ -596,7 +677,7 @@ impl Project {
         #[param("The clip to link it with")] other: Id,
     ) -> Result<(), Refusal> {
         let id = self.editable(clip)?;
-        let other = uuid(&other)?;
+        let other = self.clip_named(other.as_str())?;
         if self.clip(other).is_none() || other == id {
             return Err(Refusal::new("name another clip of this project"));
         }
@@ -613,12 +694,10 @@ impl Project {
 }
 
 impl Project {
-    /// The clip `id` names, when it may be edited.
+    /// The clip `clip` names ([`Project::clip_named`]), when it may be
+    /// edited.
     fn editable(&self, clip: &Id) -> Result<ClipId, Refusal> {
-        let id = uuid(clip)?;
-        if self.clip(id).is_none() {
-            return Err(Refusal::new("no such clip in this project"));
-        }
+        let id = self.clip_named(clip.as_str())?;
         if !self.clip_editable(id) {
             return Err(Refusal::new("the clip's track is locked"));
         }
@@ -824,3 +903,53 @@ impl ResourceApp for VideoEditor {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// The walk's slices: a drive of one scenario walks dozens of actions,
+    /// so each slice is its own test and they run side by side.
+    const SLICES: usize = 4;
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// every `SLICES`th scenario from `slice`: none is advertised yet
+    /// handled only by a click. The scenarios stage fixtures; the app
+    /// someone opens acts on this machine, so it is not walked.
+    fn walk(slice: usize) {
+        for scenario in super::VideoEditor::scenarios()
+            .iter()
+            .skip(slice)
+            .step_by(SLICES)
+        {
+            let mut app = TestApp::<super::VideoEditor>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_0() {
+        walk(0);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_1() {
+        walk(1);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_2() {
+        walk(2);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_3() {
+        walk(3);
+    }
+}

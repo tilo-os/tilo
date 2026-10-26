@@ -150,6 +150,7 @@ pub use wgpu;
 pub use image_source::ImageSource;
 pub use scene::{DrawGlyphs, Scene};
 pub use vello_encoding::ImageCacheStats;
+pub use vello_encoding::{ImageRect, image_delta, register_image_delta};
 pub use vello_encoding::{FontEmbolden, Glyph, NormalizedCoord};
 /// A stable identity of the compute shaders this build of vello creates
 /// pipelines from: a pipeline cache kept across processes is only valid for

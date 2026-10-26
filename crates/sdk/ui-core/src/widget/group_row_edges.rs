@@ -124,8 +124,11 @@ impl GroupRow {
             let last = shown
                 .get(k.saturating_add(1))
                 .is_none_or(|next| !adjacent(window, next));
-            let leading = Rect::new(r.x0, r.y0, r.x0 + RESIZE_HANDLE_PX, r.y1);
-            let trailing = Rect::new(r.x1 - RESIZE_HANDLE_PX, r.y0, r.x1, r.y1);
+            // An outer edge reaches as far out over the empty canvas as it
+            // does into the window, so it is as easy a target as a seam
+            // without taking any more of the window's content.
+            let leading = Rect::new(r.x0 - RESIZE_HANDLE_PX, r.y0, r.x0 + RESIZE_HANDLE_PX, r.y1);
+            let trailing = Rect::new(r.x1 - RESIZE_HANDLE_PX, r.y0, r.x1 + RESIZE_HANDLE_PX, r.y1);
             if first && leading.contains(p) {
                 return Some(EdgeGrab {
                     group: i,
@@ -169,8 +172,8 @@ impl GroupRow {
             || self.groups.iter().any(WindowGroup::drag_in_flight)
     }
 
-    /// Show which window a press at `p` would change: the owner's edge grip,
-    /// and with Shift held the grip of the window it would trade with.
+    /// Show which window a press at `p` would change: the owner's edge, and
+    /// with Shift held the edge of the window it would trade with.
     fn hover_edge(&mut self, p: Point, shift: bool) {
         let hover = if self.edge_resize_blocked() {
             None
@@ -180,6 +183,16 @@ impl GroupRow {
         if hover != self.edge_hover {
             self.edge_hover = hover;
             self.show_edge_hover();
+        }
+    }
+
+    /// A window that moved under a still pointer (a drag let go, the strip
+    /// settling) no longer lights an edge the pointer has left.
+    pub(super) fn recheck_edge_hover(&mut self) {
+        if self.edge_drag.is_none()
+            && let Some((_, shift)) = self.edge_hover
+        {
+            self.hover_edge(self.last_cursor, shift);
         }
     }
 
@@ -345,6 +358,11 @@ impl GroupRow {
         let Some(drag) = self.edge_drag.take() else {
             return;
         };
+        if commit {
+            crate::control_hints::performed::note(
+                crate::control_hints::performed::Performed::ResizedWindow,
+            );
+        }
         let mut settle = 0.0;
         for id in std::iter::once(drag.grabbed_id).chain(drag.other_id) {
             let Some(group) = self.groups.iter_mut().find(|g| g.id == id) else {
@@ -361,8 +379,8 @@ impl GroupRow {
                 settle = change;
             }
         }
-        let now = crate::time::now();
-        let omega = self.move_omega;
+        let now = crate::motion::frame_now();
+        let timing = self.move_timing(crate::tokens::MotionSource::Pointer);
         let reduce_motion = self.reduce_motion;
         let pan = self.pan_of_lane_mut(drag.lane);
         pan.scroll_x = if commit {
@@ -378,7 +396,7 @@ impl GroupRow {
         if reduce_motion {
             pan.jump_to(rest);
         } else if (rest - pan.scroll_x).abs() > super::SNAP_SETTLED_PX {
-            pan.glide_to(rest, now, omega);
+            pan.glide_to(rest, now, timing);
         }
         self.scroll_dirty = true;
         self.hover_edge(self.last_cursor, false);

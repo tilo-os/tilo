@@ -4,7 +4,8 @@
 //! [`crate::record::Workspace`] ([`crate::resource`]). Sending a request is an
 //! effect ([`ApiTesterEffect`]): it reaches the network from this device, and
 //! what it brings back is local, except the history entry its completion
-//! records through a verb. A credential — a request's token or password, a
+//! records through a verb. The response answers whoever sent the request (a
+//! person's button, an agent, a script), as the response pane shows it. A credential — a request's token or password, a
 //! secret variable's value — never enters the record or an action: it is set
 //! through an effect into the device's secret store, keyed by the record it
 //! belongs to.
@@ -44,10 +45,10 @@ pub enum ApiTesterEffect {
         snapshot: String,
     },
     /// Send request
-    #[effect(job)]
+    #[effect(job, returns, untrusted)]
     Send,
     /// Send saved request
-    #[effect(job)]
+    #[effect(job, returns, untrusted)]
     SendSaved {
         #[param("Id of the saved request")]
         request: String,

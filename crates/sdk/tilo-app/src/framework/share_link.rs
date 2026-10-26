@@ -386,6 +386,7 @@ fn render_at(
         record: Some(minting.record.clone()),
         resource: minting.resource.clone(),
         view: minting.view.clone(),
+        discuss: None,
     };
     Link {
         mode: minting.mode,

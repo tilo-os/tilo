@@ -11,6 +11,20 @@ merge-status-changes =
         [one] 1 change, { $resolved } resolved
        *[other] { $count } changes, { $resolved } resolved
     }
+diff-status-summary =
+    { $added } added, { $removed } removed, { $modified } modified, in { $blocks ->
+        [one] 1 change
+       *[other] { $blocks } changes
+    }
+diff-status-summary-at = { $added } added, { $removed } removed, { $modified } modified. Change { $current } of { $total }
+merge-status-summary =
+    { $count ->
+        [one] 1 change
+       *[other] { $count } changes
+    }, { $resolved } resolved, { $conflicts ->
+        [one] 1 conflict left
+       *[other] { $conflicts } conflicts left
+    }
 
 ## Resource labels
 merge-title = Merge of { $name }

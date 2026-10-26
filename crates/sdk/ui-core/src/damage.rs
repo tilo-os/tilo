@@ -73,7 +73,10 @@ pub(crate) fn coalesce_regions(mut regions: Vec<Region>) -> Vec<Region> {
 /// widget held at the start of its parent shares the parent's address).
 pub(crate) type WidgetIdentity = (*const (), usize);
 
-/// Every widget in tree order, by identity, with its layout box.
+/// Every widget that may paint in view, in tree order, by identity, with its
+/// layout box: in a long scrolled collection only the children near its
+/// viewport ([`crate::widget::Widget::for_each_child_in_clip`]), so the walk
+/// costs what is shown, not what is held.
 pub(crate) fn widget_boxes(root: &dyn crate::widget::Widget) -> Vec<(WidgetIdentity, Rect)> {
     fn walk(
         widget: &dyn crate::widget::Widget,
@@ -84,7 +87,7 @@ pub(crate) fn widget_boxes(root: &dyn crate::widget::Widget) -> Vec<(WidgetIdent
             (std::ptr::from_ref(widget).cast::<()>(), depth),
             widget.get_rect(),
         ));
-        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
+        widget.for_each_child_in_clip(&mut |child| walk(child, depth.saturating_add(1), out));
     }
     let mut out = Vec::new();
     walk(root, 0, &mut out);
@@ -105,38 +108,17 @@ pub(crate) fn boxes_covered_by_own_damage(
         if widget.damage_covers_own_box() {
             out.insert((std::ptr::from_ref(widget).cast::<()>(), depth));
         }
-        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
+        widget.for_each_child_in_clip(&mut |child| walk(child, depth.saturating_add(1), out));
     }
     let mut out = std::collections::HashSet::new();
     walk(root, 0, &mut out);
     out
 }
 
-/// The old and new box of every widget a relayout moved or resized, when
-/// `before` and `after` list the same widgets in the same order; `None`
-/// when they do not, and which pixels moved cannot be said.
-pub(crate) fn moved_boxes(
-    before: &[(WidgetIdentity, Rect)],
-    after: &[(WidgetIdentity, Rect)],
-) -> Option<Vec<Rect>> {
-    if before.len() != after.len() {
-        return None;
-    }
-    let mut moved = Vec::new();
-    for ((old_widget, old), (new_widget, new)) in before.iter().zip(after) {
-        if old_widget != new_widget {
-            return None;
-        }
-        if old != new {
-            moved.extend([*old, *new]);
-        }
-    }
-    Some(moved)
-}
-
-/// The old and new box of every widget that a rebuild and relayout moved,
-/// and the box of every widget that came or went, matched by identity.
-#[cfg(feature = "native")]
+/// The old and new box of every widget that a relayout (and any rebuild)
+/// moved, and the box of every widget that came or went, matched by
+/// identity: a row a scroll brought near the view comes, one it took away
+/// goes.
 pub(crate) fn changed_boxes(
     before: &[(WidgetIdentity, Rect)],
     after: &[(WidgetIdentity, Rect)],

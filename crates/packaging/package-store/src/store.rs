@@ -15,8 +15,9 @@
 //! holds ([`crate::lease`]) because it chose the tree and has not mounted it
 //! yet, is never removed: retiring it leaves it in place, and
 //! [`PackageStore::collect_orphans`] removes it once nothing holds it. The
-//! size sweep never evicts a running app. A tree leaves `pkgs/` in one
-//! rename into `tmp/` before any of its files is deleted, so a removal
+//! size sweep never evicts a running app, even one running a build an
+//! update replaced, nor one a launch is opening. A tree leaves `pkgs/` in
+//! one rename into `tmp/` before any of its files is deleted, so a removal
 //! stopped halfway never leaves a partial tree where a launch looks.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -853,7 +854,7 @@ impl PackageStore {
         // never open must not make it look freshly used. A row that never
         // recorded one (`0`) dates from the install as before.
         if let Some(previous) = previous.as_ref().filter(|row| row.last_used != 0) {
-            package.last_used = previous.last_used;
+            package.last_used = self.last_used(previous);
         }
         let replaced = registry.upsert(package.clone());
         registry.save(&self.layout.registry())?;
@@ -1151,6 +1152,18 @@ impl PackageStore {
         self.update_row(app_id, |row| row.pinned = pinned)
     }
 
+    /// When `row` was last used, in Unix seconds: the later of the use its
+    /// row records (an open) and the use a launch recorded on its tree's
+    /// lease (an open, and the close after it; [`lease::last_use`]).
+    #[must_use]
+    pub fn last_used(&self, row: &InstalledPackage) -> u64 {
+        let leased = self
+            .layout
+            .materialised_id(&row.payload_root)
+            .and_then(|id| lease::last_use(&self.layout, id));
+        leased.map_or(row.last_used, |at| at.max(row.last_used))
+    }
+
     /// Record a launch of `app_id` for least-recently-used eviction.
     ///
     /// # Errors
@@ -1247,7 +1260,7 @@ impl PackageStore {
     /// What each row of `registry` occupies, in one pass: each record's
     /// collection is read without replaying its signature, and each
     /// distinct blob's length is read once from a materialised file.
-    fn usage_index(registry: &Registry) -> UsageIndex {
+    fn usage_index(&self, registry: &Registry) -> UsageIndex {
         let mut sizes: BTreeMap<BlobHash, u64> = BTreeMap::new();
         let rows = registry
             .entries()
@@ -1256,7 +1269,7 @@ impl PackageStore {
                 let mut usage = UsageRow {
                     id: row.id.clone(),
                     pinned: row.pinned,
-                    last_used: row.last_used,
+                    last_used: self.last_used(row),
                     ..UsageRow::default()
                 };
                 let Ok(collection) = integrity::read_collection(&integrity::record_dir(row)) else {
@@ -1289,13 +1302,13 @@ impl PackageStore {
     ///
     /// Returns an error if the registry cannot be read.
     pub fn disk_usage(&self) -> Result<DiskUsage, StoreError> {
-        Ok(Self::usage_index(&self.registry()?).disk_usage())
+        Ok(self.usage_index(&self.registry()?).disk_usage())
     }
 
     /// Evict unpinned packages, least recently used first, until the
     /// store's distinct payload bytes are at most `max_bytes`. `0` disables
-    /// the sweep. A package a running app has mounted is never evicted.
-    /// Returns the app ids removed.
+    /// the sweep. A package a running app has mounted, or a launch is
+    /// opening, is never evicted. Returns the app ids removed.
     ///
     /// The whole sweep runs under the store's lock: usage is measured once,
     /// the evictions are planned from it, the registry is rewritten once and
@@ -1305,19 +1318,64 @@ impl PackageStore {
     ///
     /// Returns an error if usage cannot be measured or a removal fails.
     pub fn sweep(&self, max_bytes: u64) -> Result<Vec<String>, StoreError> {
+        self.sweep_keeping(max_bytes, &[])
+    }
+
+    /// Apps open on a tree an update replaced. The row names the new tree,
+    /// which no launch holds and no sandbox mounts yet, but the app runs on
+    /// the replaced one, whose lease its launch holds until the sandbox exits
+    /// (`crate::lease`): every held lease no row names is such a tree, and
+    /// its record says whose. Rare, so only those records are read.
+    fn open_on_replaced_trees(&self, registry: &Registry) -> BTreeSet<String> {
+        let named: BTreeSet<PackageId> = registry
+            .entries()
+            .iter()
+            .filter_map(|row| self.layout.materialised_id(&row.payload_root))
+            .collect();
+        let Ok(leases) = std::fs::read_dir(self.layout.root().join(crate::layout::LEASES_DIR))
+        else {
+            return BTreeSet::new();
+        };
+        leases
+            .filter_map(|entry| crate::layout::parse_id_hex(entry.ok()?.file_name().to_str()?))
+            .filter(|id| !named.contains(id) && lease::busy(&self.layout, *id).unwrap_or(true))
+            .filter_map(|id| {
+                let raw = std::fs::read_to_string(self.layout.manifest(id)).ok()?;
+                let manifest = tilo_app_package::Manifest::from_toml_str(&raw).ok()?;
+                Some(manifest.package.id)
+            })
+            .collect()
+    }
+
+    /// [`Self::sweep`], never evicting the apps `keep` names: what the
+    /// change the sweep follows just installed, which the person is about to
+    /// open and which no launch holds yet. A store whose kept and pinned
+    /// apps alone exceed `max_bytes` stays over it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::sweep`].
+    pub fn sweep_keeping(&self, max_bytes: u64, keep: &[&str]) -> Result<Vec<String>, StoreError> {
         if max_bytes == 0 {
             return Ok(Vec::new());
         }
         let _lock = self.lock()?;
         let mut registry = self.registry()?;
         let in_use = InUse::now();
-        let running: BTreeSet<String> = registry
-            .entries()
-            .iter()
-            .filter(|row| in_use.holds(&row.payload_root))
-            .map(|row| row.id.clone())
-            .collect();
-        let plan = plan_eviction(&Self::usage_index(&registry), max_bytes, &running);
+        let mut kept = BTreeSet::new();
+        for row in registry.entries() {
+            // A lease that cannot be probed counts as held: keeping an app
+            // too long costs less than evicting the one being opened.
+            let opening = self
+                .layout
+                .materialised_id(&row.payload_root)
+                .is_some_and(|id| lease::busy(&self.layout, id).unwrap_or(true));
+            if opening || keep.contains(&row.id.as_str()) || in_use.holds(&row.payload_root) {
+                kept.insert(row.id.clone());
+            }
+        }
+        kept.extend(self.open_on_replaced_trees(&registry));
+        let plan = plan_eviction(&self.usage_index(&registry), max_bytes, &kept);
         if plan.is_empty() {
             return Ok(plan);
         }
@@ -1399,7 +1457,7 @@ impl UsageIndex {
 /// distinct bytes left are at most `max_bytes`. Evicting a row frees its
 /// loose bytes and every blob no remaining row references; a blob another
 /// row still shares frees nothing. `0` plans nothing.
-fn plan_eviction(index: &UsageIndex, max_bytes: u64, running: &BTreeSet<String>) -> Vec<String> {
+fn plan_eviction(index: &UsageIndex, max_bytes: u64, kept: &BTreeSet<String>) -> Vec<String> {
     let mut plan = Vec::new();
     if max_bytes == 0 {
         return plan;
@@ -1409,7 +1467,7 @@ fn plan_eviction(index: &UsageIndex, max_bytes: u64, running: &BTreeSet<String>)
     let mut candidates: Vec<&UsageRow> = index
         .rows
         .iter()
-        .filter(|row| !row.pinned && !running.contains(&row.id))
+        .filter(|row| !row.pinned && !kept.contains(&row.id))
         .collect();
     candidates.sort_by_key(|row| row.last_used);
     for row in candidates {

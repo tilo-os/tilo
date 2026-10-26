@@ -68,26 +68,10 @@ pub struct HistoryAgent {
     pub person: String,
 }
 
-/// A delegated agent on a room's roster, as the session verified it: its
-/// own device key, the person whose root signed its delegation for exactly
-/// that device, and how it is shown. Only the session produces these, after
-/// checking that delegation; history uses them to name who wrote and never
-/// to decide what anyone may do.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RosterAgent {
-    /// The agent's own device key: the actor its signed changes carry.
-    pub device: [u8; 32],
-    /// The root key of the person it acts for.
-    pub person: [u8; 32],
-    /// That person's name as the room's governance records it.
-    pub person_name: String,
-    /// The delegation's stable agent id.
-    pub agent_id: String,
-    /// The agent's display name.
-    pub label: String,
-    /// Its cursor colour, sRGB.
-    pub color: [u8; 3],
-}
+/// A delegated agent on a room's roster, defined beside the history ids in
+/// the collaboration types so the session's services name it without the
+/// toolkit.
+pub use collab_types::history::RosterAgent;
 
 /// The directory key of a principal: the hex of its UTF-8, the actor id a
 /// process writing under that principal's handle has.
@@ -221,6 +205,30 @@ impl AuthorDirectory {
             .then(|| self.resolve_identity(&key))
     }
 
+    /// The author of a file version `device` signed for `person`, when the
+    /// device recorded which agent caused it (`attribution`, from the signed
+    /// record): that agent, on behalf of `person` — never anybody else's
+    /// person. Without a valid attribution, [`Self::resolve_file_actor`].
+    pub fn resolve_attributed_file_actor(
+        &self,
+        person: &[u8; 32],
+        device: &[u8; 32],
+        attribution: Option<&fs_protocol::FileAttributionV1>,
+    ) -> Option<HistoryAuthor> {
+        let Some(attribution) = attribution.filter(|attribution| attribution.validate().is_ok())
+        else {
+            return self.resolve_file_actor(person, device);
+        };
+        let [red, green, blue] = attribution.color;
+        let agent = HistoryAgent {
+            principal: attribution.actor.clone(),
+            label: attribution.label.clone(),
+            rgb: (red, green, blue),
+            person: hex::encode(person),
+        };
+        Some(self.agent_author(&hex::encode(device), &agent))
+    }
+
     /// The author a registered agent is: the agent, on behalf of its person,
     /// in the agent's own colour.
     fn agent_author(&self, actor_hex: &str, agent: &HistoryAgent) -> HistoryAuthor {
@@ -233,6 +241,7 @@ impl AuthorDirectory {
                 for_person: Some(&person),
                 for_reader: reader.as_deref() == Some(agent.person.as_str()),
                 is_reader: false,
+                task: None,
             })
         });
         author_coloured(name, short_id(actor_hex), agent.rgb)
@@ -335,13 +344,28 @@ impl AuthorDirectory {
             .as_deref()
             .map(|person| self.resolve(&hex::encode(person.as_bytes())).name);
         let for_reader = reader.is_some() && reader == invoker.on_behalf_of;
+        // The task the change was taken in names who did it: there are no
+        // separate agents, only tasks, so a person whose window ran a task
+        // reads as themselves through it, and an agent that ran one reads
+        // as its person through it.
+        let task = entry
+            .and_then(|entry| entry.group.as_ref())
+            .filter(|group| group.kind == crate::history_source::steps::TASK_RUN);
+        let task = task.map(|task| tilo_history::Task {
+            id: &task.id,
+            label: &task.label,
+        });
         let name = crate::history_source::sentence::with_reader(|words| {
             words.actor(&tilo_history::Who {
-                actor: &author.name,
+                actor: match &task {
+                    Some(_) => for_person.as_deref().unwrap_or(author.name.as_str()),
+                    None => author.name.as_str(),
+                },
                 kind: invoker.kind,
                 for_person: for_person.as_deref(),
                 for_reader,
                 is_reader: reads,
+                task: task.as_ref(),
             })
         });
         let attribution = invoker.kind.acts_for_someone().then(|| HistoryAttribution {
@@ -846,18 +870,11 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn the_local_identity_is_read_from_firstboot_json_or_left_unknown() {
-        // phase: local_identity_is_read_from_the_firstboot_json_shape
-        // An on-disk identity file is read and turned into an author.
-        //
-        // The record is minted by the writer `shell::firstboot` calls. This schema
-        // is declared twice on purpose
-        // (`tilo_identity_ceremony::IdentityRecord` serialises it,
-        // `runtime_identity` re-declares it rather than depending on `ui`), so
-        // so the fixture checks that the reader accepts the writer's output.
         {
             let (bytes, public_key) = firstboot_identity_bytes("Quinten", [0, 255, 0]);
 
-            let id = runtime_identity::load_from_bytes(&bytes).expect("firstboot shape parses");
+            let id =
+                runtime_identity_host::load_from_bytes(&bytes).expect("firstboot shape parses");
             assert_eq!(id.display_name(), "Quinten");
             assert_eq!(id.avatar_color(), [0, 255, 0]);
             assert_eq!(
@@ -887,11 +904,6 @@ mod tests {
             assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
             assert_eq!(author.identity_short.len(), SHORT_LEN);
         }
-        // phase: a_freshly_provisioned_identity_renders_as_unknown_rather_than_blank
-        // First boot writes an empty display name and neutral grey — the user
-        // names and colours themselves later. That record must still load, and
-        // must render as the unknown-participant label rather than as a
-        // blank row.
         {
             let (bytes, public_key) = firstboot_identity_bytes("", [128, 128, 128]);
 

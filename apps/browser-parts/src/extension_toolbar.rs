@@ -86,6 +86,9 @@ pub struct Access {
     pub hosts: Vec<String>,
     /// Where its declared content scripts run.
     pub scriptable: Vec<String>,
+    /// Where they run in a page's frames too (`all_frames`): of the frames
+    /// another site's process renders, only these may hold its world.
+    pub framed: Vec<String>,
     /// The token its service worker shows the engine
     /// ([`crate::extensions::prepare_tabs`]).
     pub token: Option<String>,
@@ -136,6 +139,7 @@ pub fn access(manifest: &Value) -> Access {
     let mut permissions = Vec::new();
     let mut hosts = strings(manifest.get("host_permissions"));
     let mut scriptable = Vec::new();
+    let mut framed = Vec::new();
     for entry in strings(manifest.get("permissions")) {
         if site(&entry) {
             if before_v3 {
@@ -151,9 +155,13 @@ pub fn access(manifest: &Value) -> Access {
         .into_iter()
         .flatten()
     {
-        scriptable.extend(strings(script.get("matches")));
+        let matches = strings(script.get("matches"));
+        if script.get("all_frames").and_then(Value::as_bool) == Some(true) {
+            framed.extend(matches.iter().cloned());
+        }
+        scriptable.extend(matches);
     }
-    for sites in [&mut hosts, &mut scriptable] {
+    for sites in [&mut hosts, &mut scriptable, &mut framed] {
         sites.sort();
         sites.dedup();
     }
@@ -161,6 +169,7 @@ pub fn access(manifest: &Value) -> Access {
         permissions,
         hosts,
         scriptable,
+        framed,
         token: None,
         commands: manifest
             .get("commands")
@@ -593,14 +602,20 @@ mod tests {
         let manifest = serde_json::json!({
             "permissions": ["tabs", "scripting", "https://old.example/*"],
             "host_permissions": ["*://*.example.com/*"],
-            "content_scripts": [{"matches": ["<all_urls>"], "js": ["c.js"]}, {"js": ["d.js"]}],
+            "content_scripts": [
+                {"matches": ["<all_urls>"], "js": ["c.js"]},
+                {"js": ["d.js"]},
+                {"matches": ["https://login.example/*"], "js": ["e.js"], "all_frames": true},
+            ],
         });
         assert_eq!(
             access(&manifest),
             Access {
                 permissions: vec!["tabs".into(), "scripting".into()],
                 hosts: vec!["*://*.example.com/*".into(), "https://old.example/*".into()],
-                scriptable: vec!["<all_urls>".into()],
+                scriptable: vec!["<all_urls>".into(), "https://login.example/*".into()],
+                // Only the script that runs in every frame reaches frames.
+                framed: vec!["https://login.example/*".into()],
                 token: None,
                 commands: None,
                 optional: ExtensionPermissionSet::default(),

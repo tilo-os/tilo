@@ -133,7 +133,6 @@ impl Navigation {
     }
 
     /// What the last link request on `message` came to.
-    #[cfg(test)]
     pub(crate) fn status(&self, message: &str) -> Option<&Result<(), String>> {
         self.status
             .as_ref()
@@ -154,6 +153,12 @@ impl Navigation {
             Some(Err(_)) => crate::i18n::t("chat-resource-link-unavailable"),
             None => crate::i18n::t("chat-resource-copy-link"),
         }
+    }
+
+    /// Whether [`Self::label`] is the catalogue's copy alone, without a
+    /// failure's own words.
+    pub(crate) fn label_is_copy(&self, message: &str) -> bool {
+        !matches!(self.outcome(message, false), Some(Err(_)))
     }
 
     /// The name `message`'s reference chip, which reads `label`, is
@@ -483,8 +488,8 @@ mod tests {
             &self,
             _: &Caller,
             _: &tilo_actions::InvocationId,
-        ) -> Result<(), ActionHostError> {
-            Ok(())
+        ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+            tilo_actions::remote::Pending::ready(Ok(()))
         }
     }
 

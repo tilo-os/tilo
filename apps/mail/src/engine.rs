@@ -1239,8 +1239,7 @@ pub mod live {
                 uids.into_iter().rev().take(PAGE as usize).collect()
             };
             synced.reset = true;
-            synced.messages =
-                fetch_uids(session, account, folder, validity, &uids, now_min).await?;
+            synced.receive(fetch_uids(session, account, folder, validity, &uids, now_min).await?);
             return Ok(synced);
         }
         if exists == 0 {
@@ -1256,11 +1255,15 @@ pub mod live {
                 // answers with the last message, even an older one: keep
                 // only the new.
                 let range = format!("{}:*", known.newest + 1);
-                synced.messages = fetch_set(session, account, folder, validity, &range, now_min)
-                    .await?
-                    .into_iter()
-                    .filter(|message| message.server.is_some_and(|at| at.uid > known.newest))
-                    .collect();
+                synced.receive(
+                    fetch_set(session, account, folder, validity, &range, now_min)
+                        .await?
+                        .into_iter()
+                        .filter(|(message, _)| {
+                            message.server.is_some_and(|at| at.uid > known.newest)
+                        })
+                        .collect(),
+                );
                 synced.flags = fetch_flags(session, known.oldest, known.newest).await?;
                 synced.window = Some((known.oldest, known.newest));
             }
@@ -1269,8 +1272,9 @@ pub mod live {
                 // start from the newest page.
                 synced.reset = true;
                 let first = exists.saturating_sub(PAGE - 1).max(1);
-                synced.messages =
-                    fetch_seq(session, account, folder, validity, first, exists, now_min).await?;
+                synced.receive(
+                    fetch_seq(session, account, folder, validity, first, exists, now_min).await?,
+                );
                 synced.has_older = Some(first > 1);
             }
             Want::Older { known } if known.uid_validity == validity => {
@@ -1290,15 +1294,17 @@ pub mod live {
                 };
                 let last = position - 1;
                 let first = last.saturating_sub(PAGE - 1).max(1);
-                synced.messages =
-                    fetch_seq(session, account, folder, validity, first, last, now_min).await?;
+                synced.receive(
+                    fetch_seq(session, account, folder, validity, first, last, now_min).await?,
+                );
                 synced.has_older = Some(first > 1);
             }
             Want::Older { .. } => {
                 synced.reset = true;
                 let first = exists.saturating_sub(PAGE - 1).max(1);
-                synced.messages =
-                    fetch_seq(session, account, folder, validity, first, exists, now_min).await?;
+                synced.receive(
+                    fetch_seq(session, account, folder, validity, first, exists, now_min).await?,
+                );
                 synced.has_older = Some(first > 1);
             }
         }
@@ -1313,7 +1319,7 @@ pub mod live {
         first: u32,
         last: u32,
         now_min: i64,
-    ) -> Result<Vec<Message>, String> {
+    ) -> Result<Vec<(Message, Vec<u8>)>, String> {
         let stream = session
             .fetch(format!("{first}:{last}"), FETCH_ITEMS)
             .await
@@ -1330,7 +1336,7 @@ pub mod live {
         validity: u32,
         uid_set: &str,
         now_min: i64,
-    ) -> Result<Vec<Message>, String> {
+    ) -> Result<Vec<(Message, Vec<u8>)>, String> {
         let stream = session
             .uid_fetch(uid_set, FETCH_ITEMS)
             .await
@@ -1347,7 +1353,7 @@ pub mod live {
         validity: u32,
         uids: &[u32],
         now_min: i64,
-    ) -> Result<Vec<Message>, String> {
+    ) -> Result<Vec<(Message, Vec<u8>)>, String> {
         if uids.is_empty() {
             return Ok(Vec::new());
         }
@@ -1419,8 +1425,13 @@ pub mod live {
                 .collect();
             uids.sort_unstable();
             let newest: Vec<u32> = uids.into_iter().rev().take(SEARCH_PAGE).collect();
-            let mut messages =
-                fetch_uids(session, account, folder, validity, &newest, now_min).await?;
+            // A search hit is shown, not kept: its bytes go no further.
+            let mut messages: Vec<Message> =
+                fetch_uids(session, account, folder, validity, &newest, now_min)
+                    .await?
+                    .into_iter()
+                    .map(|(message, _)| message)
+                    .collect();
             // Outside the window this device syncs: no server place, so a
             // refresh neither counts nor removes them.
             for message in &mut messages {
@@ -1434,13 +1445,14 @@ pub mod live {
     /// What a fetch asks for: the whole message, without marking it read.
     const FETCH_ITEMS: &str = "(UID FLAGS INTERNALDATE BODY.PEEK[])";
 
+    /// Each fetched message, read, beside the bytes its server sent.
     fn parse_all(
         fetches: &[async_imap::types::Fetch],
         account: &AccountConfig,
         folder: Folder,
         validity: u32,
         now_min: i64,
-    ) -> Vec<Message> {
+    ) -> Vec<(Message, Vec<u8>)> {
         fetches
             .iter()
             .filter_map(|fetch| {
@@ -1459,7 +1471,7 @@ pub mod live {
                     uid,
                     uid_validity: validity,
                 });
-                Some(message)
+                Some((message, body.to_vec()))
             })
             .collect()
     }
@@ -2028,6 +2040,13 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 let first = fetched(&events);
                 assert!(first.reset, "{layout:?}");
                 assert_eq!(first.messages.len(), 3);
+                // What the server sent for each message comes with it, for
+                // the person's other devices.
+                assert_eq!(first.originals.len(), 3);
+                for (id, original) in &first.originals {
+                    let read = crate::transport::parse_eml(original, 0, Folder::Inbox).unwrap();
+                    assert_eq!(read.id, *id);
+                }
                 let mut held = crate::model::Mailbox::default();
                 for message in first.messages {
                     held.insert(message);
@@ -2065,6 +2084,10 @@ Message-ID: <{id}@analytical.example>\nDate: Thu, 01 Jan 2026 09:00:00 +0000\n\n
                 assert!(!refresh.reset);
                 assert_eq!(refresh.messages.len(), 1, "{:?}", refresh.messages);
                 assert_eq!(refresh.messages[0].subject, "Fresh");
+                assert_eq!(refresh.originals.len(), 1);
+                assert!(
+                    String::from_utf8_lossy(&refresh.originals[0].1).contains("Subject: Fresh")
+                );
                 assert!(
                     refresh.flags.contains(&(1, true, false)),
                     "{:?}",

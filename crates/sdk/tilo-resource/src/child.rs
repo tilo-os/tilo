@@ -198,11 +198,17 @@ pub fn nested_resource_id(parent: &str, key: &str) -> String {
 /// each published beneath `parent` (the record's published id) with its
 /// actions applied as field edits of the resource `vocabulary` at `prefix`
 /// (the record's path) followed by the field's key.
+///
+/// A field of an item is labelled with its item's (`item`): "Body of
+/// Review v1". Every note's body would otherwise read "Body", and an agent
+/// choosing where to write, shown only the labels, could not tell one
+/// note's body from another's.
 pub(crate) fn nested_children(
     vocabulary: &'static crate::Vocabulary,
     shape: crate::Shape,
     parent: &str,
     prefix: &[crate::Segment],
+    item: Option<&str>,
 ) -> Vec<tilo_actions::Resource> {
     let mut children = Vec::new();
     for field in shape.fields() {
@@ -212,7 +218,11 @@ pub(crate) fn nested_children(
         let mut path = prefix.to_vec();
         path.push(crate::Segment::Field(field.key.to_owned()));
         let id = nested_resource_id(parent, field.key);
-        let resource = (nested.publish)(&id, field.title);
+        let label = item.filter(|label| !label.trim().is_empty()).map_or_else(
+            || field.title.to_owned(),
+            |item| format!("{} of {item}", field.title),
+        );
+        let resource = (nested.publish)(&id, &label);
         children.push(as_field_edits(
             resource,
             vocabulary,
@@ -235,7 +245,7 @@ pub(crate) fn nested_children_of(
     vocabulary: &'static crate::Vocabulary,
 ) -> Vec<tilo_actions::Resource> {
     match (vocabulary.shape)() {
-        Some(shape) => nested_children(vocabulary, shape, vocabulary.kind, &[]),
+        Some(shape) => nested_children(vocabulary, shape, vocabulary.kind, &[], None),
         None => Vec::new(),
     }
 }

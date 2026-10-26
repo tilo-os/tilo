@@ -36,6 +36,24 @@ int main() {
     assert(U32(routed.data()+5)==7 && U32(routed.data()+9)==2 && U32(routed.data()+13)==3 && routed.substr(17)==pixels);
     assert(FramePacket(1,2,3,pixels.data(),23).empty()); assert(FramePacket(0,2,3,pixels.data(),24).empty()); }
   { std::istringstream in(EncodePacket(99,"x")); Packet p; assert(ReadPacket(in,p)==ReadResult::Error); }
+  // A caret's blink goes as its own rect, not as the whole frame.
+  { std::string pixels(4*3*4,'\0');for(size_t i=0;i<pixels.size();++i)pixels[i]=static_cast<char>(i);
+    auto clipped=ClipDamage({{1,1,1,2},{9,0,1,1},{0,0,0,5}},4,3);
+    assert(clipped.size()==1 && clipped[0].x==1 && clipped[0].y==1 && clipped[0].width==1 && clipped[0].height==2);
+    auto packet=DamagePacket(7,4,3,pixels.data(),pixels.size(),clipped);
+    assert(packet.size()==kDamageRectsOffset+16+2*4 && U32(packet.data())==packet.size()-4 && packet[4]==4);
+    assert(U32(packet.data()+5)==7 && U32(packet.data()+9)==4 && U32(packet.data()+13)==3 && U32(packet.data()+17)==1);
+    assert(U32(packet.data()+21)==1 && U32(packet.data()+25)==1 && U32(packet.data()+29)==1 && U32(packet.data()+33)==2);
+    assert(packet.substr(37,4)==pixels.substr((1*4+1)*4,4) && packet.substr(41,4)==pixels.substr((2*4+1)*4,4));
+    // Rects past the frame are cut to it; half the frame or more goes whole.
+    auto edge=ClipDamage({{3,2,5,5}},4,3);assert(edge.size()==1 && edge[0].width==1 && edge[0].height==1);
+    assert(ClipDamage({{0,0,2,3}},4,3).empty());assert(ClipDamage({},4,3).empty());
+    // Many rects become their bounding box.
+    std::vector<DamageRect> many;for(uint32_t i=0;i<kMaxDamageRects+1;++i)many.push_back({i,0,1,1});
+    auto box=ClipDamage(many,64,64);assert(box.size()==1 && box[0].x==0 && box[0].width==kMaxDamageRects+1 && box[0].height==1);
+    assert(DamagePacket(7,4,3,pixels.data(),pixels.size(),{{3,0,2,1}}).empty());
+    assert(DamagePacket(7,4,3,pixels.data(),pixels.size()-1,clipped).empty());
+    assert(DamagePacket(0,4,3,pixels.data(),pixels.size(),clipped).empty()); }
   // A page's question is kept to its bound without cutting a character.
   assert(BoundedText("short",16)=="short");
   assert(BoundedText("abcdef",3)=="abc");

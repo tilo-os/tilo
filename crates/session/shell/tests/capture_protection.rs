@@ -113,8 +113,9 @@ fn frame(fb: &mut FrameBuilder) -> vello::Scene {
     fb.paint_settled()
 }
 
-/// Paint until the adopted client has latched as presented and its opening
-/// cross-fade is over, so samples measure the client and not the card.
+/// Paint until the adopted client has latched as presented and its first
+/// frame's cross-fade in is over, so samples measure the client and not the
+/// placeholder.
 fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
     let _ = frame(fb);
     let deadline = tilo_test_env::hang_deadline();
@@ -124,7 +125,7 @@ fn show_client(fb: &mut FrameBuilder, surface_id: u64) {
             store().publish_rgba(surface_id, &solid(bw, bh, CLIENT), bw, bh);
             published = true;
         }
-        let _ = fb.any_tile_opening();
+        let _ = fb.any_tile_arriving();
         let _ = frame(fb);
         if published && store().is_presented(surface_id) {
             break;
@@ -492,6 +493,7 @@ fn the_shells_secret_prompts_are_never_captured() {
                     rule: SecretFieldRule::WpaPassphrase,
                 }],
                 remember: Some(true),
+                sim: None,
             })
             .expect("the sheet is queued");
         fb.host_mut().pump_portal_dialogs();

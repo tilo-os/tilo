@@ -41,7 +41,8 @@ use ui::webview::{
 };
 use ui::widget::{
     AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
-    FloatingSurfaceProvider, IconDescriptor, MenuItem, Popover, WebView, Widget,
+    FloatingSurfaceProvider, IconDescriptor, MenuItem, Popover, RuleEdge, WebView, Widget,
+    paint_rule,
 };
 
 use crate::actions::history_resource_id;
@@ -53,6 +54,7 @@ use crate::library::Bookmarks;
 use crate::omnibox;
 use crate::resource::{Browser, bookmark_resource_id, browser};
 use crate::settings::{Settings, SettingsActionBindings, SettingsPane, SettingsPresentation};
+use load_failure::AddressProblem;
 use ui::lock::MutexRecover as _;
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::Resource as _;
@@ -61,7 +63,11 @@ use ui::tilo_resource::Resource as _;
 mod action_surface_tests;
 mod address_rows;
 mod continuity;
+mod http_fallback;
 mod library;
+mod load_failure;
+mod page_clipboard;
+mod page_find;
 pub(crate) mod personal;
 #[cfg(test)]
 mod regression_tests;
@@ -341,8 +347,9 @@ struct CompositionKey {
     hosted: bool,
     compact: bool,
     immersive: bool,
-    /// The extension whose side panel shows, and whether it docks.
-    side_panel: Option<(String, bool)>,
+    /// The extension whose side panel shows, whether it docks, and how wide
+    /// it stands.
+    side_panel: Option<(String, bool, f32)>,
 }
 
 /// Root widget for the browser app. See module docs.
@@ -407,6 +414,14 @@ pub struct BrowserWidget {
     /// or autofill panel, a permission or download question, or the no-video
     /// note.
     anchored_panel: Option<Box<dyn Widget>>,
+    /// The edge between the page and a docked side panel, which the person
+    /// drags to widen the panel (`side_panel.rs`), and its layout node: kept
+    /// across layouts so a drag goes on, replaced only in `build_layout`.
+    side_panel_edge: Option<Box<ui::widget::SplitHandle>>,
+    side_panel_edge_node: Option<NodeId>,
+    /// How the edge was last drawn (lit, where), to repaint it when that
+    /// changes.
+    side_panel_edge_drawn: Option<(bool, Rect)>,
     panel_dismissed: ui::LocalState<Option<PanelKind>>,
     pip_choice: ui::LocalState<Option<PipChoice>>,
     pending_chrome_focus: Option<(NodeId, &'static str)>,
@@ -504,6 +519,7 @@ pub struct BrowserWidget {
     bookmarks: Bookmarks,
     downloads: Downloads,
     download_picker: Option<(String, ui::portal::PortalChannel)>,
+    page_clipboard: page_clipboard::PageClipboard,
     download_picker_queue: std::collections::VecDeque<(String, String)>,
     download_save_due: Option<ui::time::Instant>,
     /// This window's engine session, which keys its downloads in the saved
@@ -563,6 +579,9 @@ pub struct BrowserWidget {
     resource_navigation_invocation: Option<ui::tilo_actions::InvocationId>,
     resource_navigation_request: Option<u32>,
     next_navigation_request: u32,
+    /// Where the typed address now opening over `https://` goes if that
+    /// fails (`http_fallback`).
+    http_fallback: Option<http_fallback::HttpFallback>,
     explicit_navigation_requested: bool,
     resource_navigation_result: Option<ui::tilo_actions::InvocationUpdate>,
     /// Navigations a later one replaced, settled and not yet read.
@@ -1129,6 +1148,16 @@ impl BrowserWidget {
         self.structure_dirty = true;
     }
 
+    /// Keep the widths the person drags extensions' side panels to in this
+    /// device's settings, starting from those kept there.
+    pub(crate) fn attach_side_panel_widths(
+        &mut self,
+        store: ui::storage::Settings<crate::extension_controller::SidePanelWidths>,
+    ) {
+        self.extensions.attach_side_panel_widths(store);
+        self.structure_dirty = true;
+    }
+
     pub(crate) fn attach_history(
         &mut self,
         record: ui::framework::PersonRecord<crate::history::BrowsingHistory>,
@@ -1267,6 +1296,9 @@ impl BrowserWidget {
             page_dialog_node: None,
             credentials: crate::credentials::Credentials::new(browsing_mode.is_private()),
             anchored_panel: None,
+            side_panel_edge: None,
+            side_panel_edge_node: None,
+            side_panel_edge_drawn: None,
             panel_dismissed: ui::LocalState::new(None),
             pip_choice: ui::LocalState::new(None),
             pending_chrome_focus: None,
@@ -1322,6 +1354,7 @@ impl BrowserWidget {
             bookmarks,
             downloads,
             download_picker: None,
+            page_clipboard: page_clipboard::PageClipboard::default(),
             download_picker_queue: std::collections::VecDeque::new(),
             download_save_due: None,
             download_session: crate::downloads::new_session(),
@@ -1355,6 +1388,7 @@ impl BrowserWidget {
             resource_navigation_invocation: None,
             resource_navigation_request: None,
             next_navigation_request: 0,
+            http_fallback: None,
             explicit_navigation_requested: false,
             resource_navigation_result: None,
             replaced_navigations: Vec::new(),
@@ -1598,12 +1632,14 @@ impl BrowserWidget {
                 return Err("Browser migration must use its resource action".into());
             }
             BrowserOperation::Back => {
+                self.expect_http_fallback(None, "");
                 self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
                 self.send_navigation(NavigationCommand::Back, owner)?;
             }
             BrowserOperation::Forward => {
+                self.expect_http_fallback(None, "");
                 self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
@@ -1621,6 +1657,7 @@ impl BrowserWidget {
                 } else {
                     NavigationCommand::Reload
                 };
+                self.expect_http_fallback(None, "");
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
                 self.send_navigation(command, owner)?;
@@ -1650,6 +1687,7 @@ impl BrowserWidget {
             }
             BrowserOperation::Navigate { url } => {
                 let target = self.navigation_target(url.trim())?;
+                self.expect_http_fallback(Some(url.as_str()), &target);
                 self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
                 self.show_library = false;
@@ -1842,6 +1880,35 @@ impl BrowserWidget {
         self.progress < 1.0 && !self.loading_stopped
     }
 
+    /// Choose files for a page upload.
+    ///
+    /// What an agent names here becomes files the page reads, so the rule is
+    /// the same one a person's file picker applies: every path must be
+    /// absolute, name a regular file this Browser may open, and the opened
+    /// descriptor is the only thing that decides. A relative path, a folder,
+    /// a missing file or one the sandbox refuses is an error naming that
+    /// path, never a silently dropped or guessed file. Inside the launcher's
+    /// sandbox the open itself is what Landlock and the mount namespace
+    /// answer; without one (a standalone development run) it answers the
+    /// host's own permission check. Nothing outside that rule is widened to
+    /// make an upload convenient.
+    fn checked_page_files(paths: &[String]) -> Result<Vec<String>, String> {
+        let mut checked = Vec::with_capacity(paths.len());
+        for path in paths {
+            let named = std::path::Path::new(path);
+            if !named.is_absolute() {
+                return Err(format!(
+                    "`{path}` is not an absolute path; a page file is named by its full path"
+                ));
+            }
+            let file = ui::portal::open_regular_file(named)
+                .map_err(|error| format!("{path} cannot be given to the page: {error}"))?;
+            drop(file);
+            checked.push(path.clone());
+        }
+        Ok(checked)
+    }
+
     /// Read and operate the page's content without its pixels: an outline
     /// whose interactive elements carry refs, and actions on those refs.
     fn start_page_operation(
@@ -1849,6 +1916,13 @@ impl BrowserWidget {
         invocation: ui::tilo_actions::InvocationId,
         request: PageRequest,
     ) -> Result<(), String> {
+        let request = match request {
+            PageRequest::FillFiles { element, paths } => PageRequest::FillFiles {
+                element,
+                paths: Self::checked_page_files(&paths)?,
+            },
+            other => other,
+        };
         if !request.valid() {
             return Err(format!(
                 "`{}` names no element of the page outline, or arguments the page cannot take",
@@ -2152,10 +2226,10 @@ impl BrowserWidget {
     fn navigation_target(&mut self, input: &str) -> Result<String, String> {
         let input = input.trim();
         if input.is_empty() {
-            return self.reject_navigation("Enter a web address or search terms.");
+            return self.reject_navigation(AddressProblem::Empty);
         }
         if input.len() > 8 * 1024 || input.chars().any(char::is_control) {
-            return self.reject_navigation("That address is not valid.");
+            return self.reject_navigation(AddressProblem::Invalid);
         }
 
         // An explicitly schemed address must satisfy the manifest boundary.
@@ -2163,11 +2237,10 @@ impl BrowserWidget {
         // cannot get rewritten into an apparent HTTPS address.
         if input.contains("://") {
             let Ok(url) = url::Url::parse(input) else {
-                return self.reject_navigation("That web address is malformed.");
+                return self.reject_navigation(AddressProblem::Invalid);
             };
             if !matches!(url.scheme(), "http" | "https") || url.host().is_none() {
-                return self
-                    .reject_navigation("Browser can open only http:// or https:// addresses.");
+                return self.reject_navigation(AddressProblem::NotWeb);
             }
             return Ok(input.to_string());
         }
@@ -2180,7 +2253,7 @@ impl BrowserWidget {
             // schemes, and WebKit internals.
             && !looks_like_bare_web_host(input)
         {
-            return self.reject_navigation("Browser can open only http:// or https:// addresses.");
+            return self.reject_navigation(AddressProblem::NotWeb);
         }
 
         let candidate =
@@ -2190,10 +2263,10 @@ impl BrowserWidget {
                 search_url(&self.settings.search_engine, input)
             };
         let Ok(parsed) = url::Url::parse(&candidate) else {
-            return self.reject_navigation("That web address is malformed.");
+            return self.reject_navigation(AddressProblem::Invalid);
         };
         if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
-            return self.reject_navigation("Browser can open only http:// or https:// addresses.");
+            return self.reject_navigation(AddressProblem::NotWeb);
         }
         Ok(candidate)
     }
@@ -2221,14 +2294,15 @@ impl BrowserWidget {
         }
     }
 
-    fn reject_navigation<T>(&mut self, message: &str) -> Result<T, String> {
-        self.show_navigation_error(message);
-        Err(message.into())
+    fn reject_navigation<T>(&mut self, problem: AddressProblem) -> Result<T, String> {
+        let message = problem.message();
+        self.show_navigation_error(&message);
+        Err(message)
     }
 
     fn show_navigation_error(&mut self, message: &str) {
         self.progress = 1.0;
-        self.title = "Couldn’t open this address".into();
+        self.title = load_failure::address_failed_title();
         self.load_error = Some(message.into());
         self.address_error_active = true;
         self.structure_dirty = true;
@@ -2694,9 +2768,14 @@ impl BrowserWidget {
                 self.engine_setup_shown.as_ref(),
             )
         } else if let Some(error) = &self.load_error {
-            let recovery = EmptyState::error("Couldn’t open this page", error)
+            let heading = if self.address_error_active {
+                load_failure::address_failed_title()
+            } else {
+                load_failure::page_failed_title()
+            };
+            let recovery = EmptyState::error(heading, error)
                 .with_icon(Icon::Wifi)
-                .with_action("Try again")
+                .with_action(crate::resource::CATALOG.t("browser-page-retry"))
                 .with_action_id("browser.retry");
             let recovery: Box<dyn Widget> =
                 Box::new(match self.unit_binding("browser.page", "reload") {
@@ -2847,6 +2926,7 @@ impl BrowserWidget {
             self.download_save_due = None;
         }
         self.poll_download_picker();
+        self.page_clipboard.answer_ready(&*self.engine);
         if let Some(view) = self.service_view.as_mut()
             && view.poll_timeout()
         {
@@ -2892,7 +2972,8 @@ impl BrowserWidget {
                 | WebViewEvent::ExtensionPermissionRequest { .. }
                 | WebViewEvent::ExtensionPermissions { .. }
                 | WebViewEvent::ExtensionSignIn { .. }
-                | WebViewEvent::ExtensionSidePanel { .. }) => {
+                | WebViewEvent::ExtensionSidePanel { .. }
+                | WebViewEvent::ExtensionShortcuts(_)) => {
                     self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
                 }
                 // What an extension suggests for its keyword in the address.
@@ -2966,6 +3047,7 @@ impl BrowserWidget {
                 }
                 event @ (WebViewEvent::PermissionRequested { .. }
                 | WebViewEvent::PermissionClosed { .. }
+                | WebViewEvent::ExtensionPermissionClosed { .. }
                 | WebViewEvent::NativeDownloadRequested { .. }
                 | WebViewEvent::DownloadUpdated { .. }
                 | WebViewEvent::DownloadRuntime { .. }
@@ -2975,6 +3057,7 @@ impl BrowserWidget {
                     self.structure_dirty = true;
                 }
                 WebViewEvent::UriChanged(uri) => {
+                    self.follow_http_fallback(&uri);
                     self.site.navigation(&uri);
                     let requests = self.credentials.navigation(&uri);
                     crate::credentials::Credentials::send(&self.engine, requests);
@@ -3065,6 +3148,13 @@ impl BrowserWidget {
                         self.structure_dirty = true;
                     }
                 }
+                WebViewEvent::ClipboardWrite { text, html, secret } => {
+                    page_clipboard::PageClipboard::copied(&text, html.as_deref(), secret);
+                }
+                WebViewEvent::ClipboardRead { request_id } => {
+                    self.page_clipboard.read(request_id);
+                    self.page_clipboard.answer_ready(&*self.engine);
+                }
                 WebViewEvent::FullscreenChanged(active) => {
                     if self.content_fullscreen != active {
                         self.content_fullscreen = active;
@@ -3112,6 +3202,7 @@ impl BrowserWidget {
                     if !self.forced_loading {
                         self.set_loading_progress(1.0);
                     }
+                    self.daily.page_loaded();
                     // Record the finished page in persistent history
                     // (real pages only — skip about:/data: and blanks).
                     if self.browsing_mode.persists_personal_state()
@@ -3141,6 +3232,9 @@ impl BrowserWidget {
                     self.page_navigation_settled(None);
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
+                    if self.retry_over_http(&uri, &error) {
+                        continue;
+                    }
                     self.site.navigation(&uri);
                     self.favicon = None;
                     self.favicon_png = None;
@@ -3157,8 +3251,8 @@ impl BrowserWidget {
                     self.address_navigation_value = None;
                     self.set_loading_progress(1.0);
                     tracing::warn!("load failed for {uri}: {error}");
-                    self.title = format!("Failed to load {uri}");
-                    self.load_error = Some(error.chars().take(240).collect());
+                    self.title = load_failure::page_failed_title();
+                    self.load_error = Some(load_failure::page_failed_message(&error));
                     self.structure_dirty = true;
                     self.page_navigation_settled(Some(&error));
                 }
@@ -3828,7 +3922,7 @@ impl BrowserWidget {
         self.focus_control(URL_INPUT_ID)
     }
 
-    fn focus_control(&mut self, id: &str) -> bool {
+    pub(crate) fn focus_control(&mut self, id: &str) -> bool {
         fn clear(widget: &mut dyn Widget) {
             widget.set_focus(false);
             for child in widget.children_mut() {
@@ -3848,6 +3942,11 @@ impl BrowserWidget {
                 }
             }
             true
+        }
+        // The side panel's edge is no control of the composed tree: it
+        // lets go of the keyboard as any of them does.
+        if let Some(edge) = self.side_panel_edge.as_deref_mut() {
+            edge.set_focused(false);
         }
         self.composed.element_mut().is_some_and(|composed| {
             clear(composed);
@@ -4345,12 +4444,13 @@ impl Widget for BrowserWidget {
                 .is_some_and(Widget::has_pending_visual_work)
     }
 
-    ui::provides!(
-        dyn ui::widget::Continuable,
-        dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::content_zoom::ContentZoom
-    );
+    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
+        self.provide_capabilities(request);
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
+        self.provide_capabilities_mut(request);
+    }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.sync_frame(state, path);
@@ -4433,6 +4533,8 @@ impl Widget for BrowserWidget {
             children.push(node);
             self.page_dialog_node = Some(node);
         }
+        self.side_panel_edge_node = self.build_side_panel_edge(taffy, theme, node_map);
+        children.extend(self.side_panel_edge_node);
         taffy.widget_node(style, &children, node_map, self)
     }
 
@@ -4463,6 +4565,7 @@ impl Widget for BrowserWidget {
         if let Some(r) = self.address_input_rect() {
             self.suggestions.set_anchor(r, self.rect);
         }
+        self.place_side_panel_edge();
         self.publish_content_rect();
         self.refresh_active_pip_region();
     }
@@ -4492,10 +4595,11 @@ impl Widget for BrowserWidget {
         if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
+        self.paint_side_panel_edge(scene, transform, theme);
         // One hairline under the toolbar row separates it from the page;
         // while the page loads, the loading line takes its place.
         if let Some(rect) = self.find_rect("browser.toolbar") {
-            ui::widget::toolbar::paint_band(scene, transform, theme, rect);
+            paint_rule(scene, transform, theme, rect, RuleEdge::Bottom, None);
             if let Some(face) = self.loading_face() {
                 let height = f64::from(theme.tokens.metrics.chrome_rule_px.max(1.0)) * 2.0;
                 face.paint(
@@ -4504,6 +4608,22 @@ impl Widget for BrowserWidget {
                 );
             }
         }
+    }
+
+    /// The page's damage, and the toolbar row's: what this widget paints
+    /// itself (the private tint, the band and loading line) is all in that
+    /// row, and its overlays are the window's top layer, which the window
+    /// repaints whole.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        let Some(composed) = self.composed.element() else {
+            regions.push(self.rect);
+            return;
+        };
+        composed.collect_damage(regions);
+        if let Some(toolbar) = self.find_rect("browser.toolbar") {
+            regions.push(toolbar);
+        }
+        regions.extend(self.side_panel_edge_damage());
     }
 
     /// The suggestion dropdown is a field, not a tree child, so paint it
@@ -4563,9 +4683,28 @@ impl Widget for BrowserWidget {
     /// The page holding a button pressed on it keeps the pointer: the
     /// window hands it the drag's moves and its release, wherever they land.
     fn wants_pointer_capture(&self) -> bool {
-        self.composed
-            .element()
-            .is_some_and(Widget::wants_pointer_capture)
+        self.side_panel_edge
+            .as_ref()
+            .is_some_and(|edge| edge.is_dragging())
+            || self
+                .composed
+                .element()
+                .is_some_and(Widget::wants_pointer_capture)
+    }
+
+    /// The side panel's edge lit or moved since it was drawn needs a frame,
+    /// as anything the composed tree, the popover or the dialog changed.
+    fn needs_redraw(&self) -> bool {
+        let children = self.children();
+        children.is_empty()
+            || self.side_panel_edge_damage().is_some()
+            || children.iter().any(|child| child.needs_redraw())
+    }
+
+    fn mark_drawn(&mut self) {
+        for child in self.children_mut() {
+            child.mark_drawn();
+        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -4776,6 +4915,11 @@ impl Widget for BrowserWidget {
                 return;
             }
         }
+        // The side panel's edge takes a press on it, the drag that follows
+        // and a keyboard step while it has focus.
+        if self.side_panel_edge_event(event, ctx) {
+            return;
+        }
         if self.handle_address_shortcut(event, *ctx.modifiers) {
             *ctx.handled = true;
             return;
@@ -4789,6 +4933,28 @@ impl Widget for BrowserWidget {
         if self.handle_browser_shortcut(event, *ctx.modifiers) {
             *ctx.handled = true;
             return;
+        }
+
+        // One of extensions' keyboard shortcuts, pressed while the address
+        // has the keyboard: its command runs over the page before the field
+        // sees the key, as in Chrome, after the Browser's own keys above. A
+        // key the page has is the engine's to look up.
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed
+            && self.url_input_focused()
+            && let Some(input) = ui::widget::WebView::map_key(&key.logical_key)
+        {
+            let held = ctx.modifiers.state();
+            let modifiers = ui::webview::KeyModifiers {
+                ctrl: held.control_key(),
+                shift: held.shift_key(),
+                alt: held.alt_key(),
+                meta: held.super_key(),
+            };
+            if self.extensions.command_key(&input, modifiers, &self.engine) {
+                *ctx.handled = true;
+                return;
+            }
         }
 
         // Cmd/Ctrl+F can be followed by text before the host rebuilds the bar.
@@ -4899,10 +5065,17 @@ impl Widget for BrowserWidget {
             return self.page_menu.accessibility();
         }
         if !self.back_menu.is_open() {
-            return self.suggestions.accessibility().map(|node| {
+            // The suggestions under the address, and the side panel's edge.
+            let nodes: Vec<_> = self
+                .suggestions
+                .accessibility()
+                .into_iter()
+                .chain(self.side_panel_edge_access())
+                .collect();
+            return (!nodes.is_empty()).then(|| {
                 AccessNode::new(Role::Group)
                     .with_name("Browser")
-                    .with_children(vec![node])
+                    .with_children(nodes)
             });
         }
         let direction = self.menu_direction?;
@@ -4949,6 +5122,9 @@ impl Widget for BrowserWidget {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
+        if self.side_panel_edge_action(target, action) {
+            return true;
+        }
         if self
             .suggestions
             .perform_accessibility_action(target, action)
@@ -5233,6 +5409,13 @@ impl BrowserWidget {
                 &["element", "values"][..],
             ),
             (
+                E::FillPageFiles {
+                    element: element.clone(),
+                    paths: Vec::new(),
+                },
+                &["element", "paths"][..],
+            ),
+            (
                 E::PressPage {
                     key: String::new(),
                     element: None,
@@ -5264,6 +5447,13 @@ impl BrowserWidget {
             ),
             (E::ReadPageConsole { since: None }, &["since"][..]),
             (E::ReadPageNetwork { since: None }, &["since"][..]),
+            (
+                E::PointerPage {
+                    steps: Vec::new(),
+                    button: None,
+                },
+                &["steps", "button"][..],
+            ),
         ] {
             let spec = spec.bound_asking(asking);
             page.actions.push(if web_page {
@@ -5637,6 +5827,8 @@ impl BrowserWidget {
         self.structure_dirty |= self.extensions.sync(&self.engine, &self.current_uri);
         self.structure_dirty |= self.page_popups.sync(&self.engine);
         self.structure_dirty |= self.page_dialogs.sync(&self.engine);
+        // Whichever engine shows the page now copies to the system clipboard.
+        self.engine.share_clipboard();
         self.structure_dirty |= self.page_dialogs.poll(&self.engine);
         self.structure_dirty |= self.daily.sync(&self.engine);
         let site_was_open = self.site.open;
@@ -6473,7 +6665,12 @@ mod architecture_tests {
             widget.apply_engine_events();
             assert_eq!(widget.address.get(), failed_uri);
             assert_eq!(widget.current_uri, failed_uri);
-            assert_eq!(widget.load_error.as_deref(), Some("ERR_UNSAFE_PORT"));
+            // The person reads what happened; the engine's error is logged.
+            assert_eq!(
+                widget.load_error.as_deref(),
+                Some(load_failure::page_failed_message("ERR_UNSAFE_PORT").as_str())
+            );
+            assert_eq!(widget.title, load_failure::page_failed_title());
             assert!((widget.progress - 1.0).abs() < f64::EPSILON);
             widget
                 .perform_browser_operation(BrowserOperation::Reload)
@@ -7456,6 +7653,7 @@ mod tests {
                 "click-page",
                 "fill-page",
                 "select-page",
+                "fill-page-files",
                 "press-page",
                 "submit-page",
                 "fill-page-secret",
@@ -7660,6 +7858,61 @@ mod tests {
                 3,
                 "refused requests reached the page"
             );
+        }
+
+        // Phase `a_page_file_is_a_checked_absolute_regular_file`.
+        {
+            let (engine, mut widget, mut doc, root) = page_on("https://shop.test/claim");
+            let folder =
+                std::env::temp_dir().join(format!("tilo-page-files-{}", std::process::id()));
+            std::fs::create_dir_all(&folder).unwrap();
+            let file = folder.join("proof of address.pdf");
+            std::fs::write(&file, b"%PDF-1.4").unwrap();
+            let shared = file.to_string_lossy().into_owned();
+            let chosen = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "fill-page-files",
+                &serde_json::json!({"element": "d4e1", "paths": [&shared]}),
+            )
+            .unwrap();
+            widget.sync(&doc, &root);
+            assert!(widget.poll_invocation(chosen).is_some());
+            assert_eq!(
+                page_requests(&engine),
+                vec![PageRequest::FillFiles {
+                    element: "d4e1".into(),
+                    paths: vec![shared],
+                }],
+                "a checked file reaches the page as the path it was named by"
+            );
+            // What a person's picker could not have produced is refused here,
+            // naming the path, so the page never sees a guess.
+            for (paths, why) in [
+                (vec!["proof of address.pdf".to_string()], "relative"),
+                (vec![folder.to_string_lossy().into_owned()], "folder"),
+                (
+                    vec![folder.join("missing.pdf").to_string_lossy().into_owned()],
+                    "missing",
+                ),
+            ] {
+                let refused = start(
+                    &mut widget,
+                    &mut doc,
+                    &root,
+                    "fill-page-files",
+                    &serde_json::json!({"element": "d4e1", "paths": paths}),
+                )
+                .unwrap_err();
+                assert!(refused.contains(&paths[0]), "{why}: {refused}");
+            }
+            assert_eq!(
+                page_requests(&engine).len(),
+                1,
+                "a refused file reached the page"
+            );
+            std::fs::remove_dir_all(&folder).unwrap();
         }
 
         // Phase `agent_reads_and_consented_writes_reach_the_engine_typed`.
@@ -8342,7 +8595,8 @@ mod tests {
             omnibox::RowKind::Go,
             "Enter opens the bar's text"
         );
-        assert_eq!(rows[0].url, "https://youtube.com");
+        assert_eq!(rows[0].url, "youtube.com");
+        assert_eq!(rows[0].detail, "https://youtube.com");
         assert!(
             rows.iter()
                 .any(|row| row.kind == omnibox::RowKind::History && row.title == "Cats - YouTube"),
@@ -8746,7 +9000,7 @@ mod tests {
             assert!(w.address_error_active);
             assert_eq!(
                 w.load_error.as_deref(),
-                Some("Browser can open only http:// or https:// addresses.")
+                Some(AddressProblem::NotWeb.message().as_str())
             );
 
             assert!(

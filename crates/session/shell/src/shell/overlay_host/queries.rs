@@ -372,6 +372,13 @@ impl ShellOverlayHost {
                 self.sync_top_bar_presence(now);
             }
         }
+        // And a fullscreen window's bar.
+        if let Some((display, bar)) = self.fullscreen_bar_geometry() {
+            let now = Instant::now();
+            if self.fullscreen_bar_reveal.on_motion(p, display, bar, now) {
+                self.sync_top_bar_presence(now);
+            }
+        }
     }
 
     /// Retire raw direct-touch contacts at a compositor ownership boundary
@@ -450,31 +457,6 @@ impl ShellOverlayHost {
     /// ([`GroupRow::set_scroll_quantum`]).
     pub fn set_strip_pan_quantum(&mut self, quantum: Option<f64>) {
         self.strip_pan_quantum = quantum;
-    }
-
-    /// Each window's bar on screen, from the window's top edge to where its
-    /// content starts: the band holding its tabs, location and window
-    /// controls (History, maximize or restore, close). A window showing no
-    /// bar (a fullscreen presentation) has none.
-    pub(super) fn window_bars_on_screen(&self) -> Vec<vello::kurbo::Rect> {
-        let mut bars = Vec::new();
-        for (_, ptr) in self.rows_on_screen() {
-            // SAFETY: same contract as every other `group_row_ptrs`
-            // accessor; read-only.
-            let row: &GroupRow = unsafe { &*ptr };
-            for group in &row.groups {
-                let window = ui::widget::Widget::get_rect(group);
-                let Some(content) = group.content_rect_for_tab(group.active_tab_id()) else {
-                    continue;
-                };
-                if content.y0 > window.y0 + 0.5 && window.width() > 0.0 {
-                    bars.push(vello::kurbo::Rect::new(
-                        window.x0, window.y0, window.x1, content.y0,
-                    ));
-                }
-            }
-        }
-        bars
     }
 
     /// The strips with a row on screen, top to bottom.

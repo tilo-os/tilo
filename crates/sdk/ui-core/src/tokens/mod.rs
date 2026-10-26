@@ -17,7 +17,7 @@ pub mod typography;
 pub use colors::{
     ColorRamp, Colors, Intents, MediaColors, NON_TEXT_MIN_CONTRAST, OnSurface, OverlayTiers,
     PresenceHue, PresencePalette, SemanticColors, Surfaces, TintedChip, Wash, WashStrength,
-    dark_overlays, light_overlays,
+    dark_overlays, light_overlays, nearest_presence_hue,
 };
 pub use density::{Density, RowHeights};
 pub use elevation::{Elevation, Shadow};

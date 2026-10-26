@@ -322,6 +322,37 @@ struct Cache {
 static CACHE: std::sync::LazyLock<Mutex<Cache>> = std::sync::LazyLock::new(Mutex::default);
 static REFRESHING: AtomicBool = AtomicBool::new(false);
 static WAKE: Mutex<Option<crate::session_runtime::Wake>> = Mutex::new(None);
+static REVISION: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::Sender::new(1));
+
+/// Move the revision Files waits on when the list it would be given
+/// differs from the one before, so an unchanged answer wakes nobody.
+fn announce(before: &[AppListItem], after: &[AppListItem]) {
+    if before == after {
+        return;
+    }
+    REVISION.send_modify(|revision| *revision = revision.wrapping_add(1).max(1));
+}
+
+/// Resolves once the list [`listed`] gives may have changed since `after`
+/// (0 at first, then what the previous wait returned), with the value to
+/// wait from next. While no app is added, removed or uninstalled it stays
+/// pending and costs no wakeup.
+pub fn changed(after: u64) -> impl std::future::Future<Output = u64> + Send + 'static {
+    let mut changes = REVISION.subscribe();
+    async move {
+        loop {
+            let current = *changes.borrow_and_update();
+            if current != after {
+                return current;
+            }
+            if changes.changed().await.is_err() {
+                // The revision outlives every wait and never closes.
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+}
 
 /// Wake the session's loop with `wake` when a question is asked, a read of
 /// the list lands or an uninstall finishes.
@@ -395,6 +426,7 @@ fn refresh_in_background() {
             let (built_for, mut items, measures) = read();
             {
                 let mut cache = CACHE.lock_recover();
+                announce(&cache.items, &items);
                 cache.built_for = Some(built_for);
                 cache.items = Arc::new(items.clone());
             }
@@ -407,6 +439,7 @@ fn refresh_in_background() {
             }
             let mut cache = CACHE.lock_recover();
             if cache.built_for == Some(built_for) {
+                announce(&cache.items, &items);
                 cache.items = Arc::new(items);
                 drop(cache);
                 wake();

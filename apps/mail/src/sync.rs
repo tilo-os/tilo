@@ -186,6 +186,21 @@ pub struct Synced {
     /// Whether the server has messages older than the oldest one held now;
     /// `None` when this sync did not find out.
     pub has_older: Option<bool>,
+    /// The bytes the server sent for each of `messages`, by its id: what the
+    /// person's other devices are handed so they need not ask the server
+    /// for it again ([`crate::copies`]).
+    pub originals: Vec<(crate::model::MessageId, Vec<u8>)>,
+}
+
+impl Synced {
+    /// Take `fetched` as messages new to the device, each beside the bytes
+    /// its server sent.
+    pub fn receive(&mut self, fetched: Vec<(Message, Vec<u8>)>) {
+        for (message, original) in fetched {
+            self.originals.push((message.id, original));
+            self.messages.push(message);
+        }
+    }
 }
 
 #[cfg(test)]

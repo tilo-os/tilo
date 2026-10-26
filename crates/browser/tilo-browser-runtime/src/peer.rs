@@ -34,8 +34,9 @@ use tilo_browser_peer::{
     SignFuture,
 };
 use tilo_relay_protocol::live::{
-    CursorChat, DragPhase, LiveAnchor, LiveFrame, LiveObject, LiveParticipant, LiveReaction,
-    LiveRecord, LiveWave, OpsFrame, ParticipantKind, PresenceFrame, PreviewOp,
+    CursorChat, DragPhase, LiveAnchor, LiveFrame, LiveLayout, LiveObject, LiveParticipant,
+    LiveReaction, LiveRecord, LiveWave, LiveWindow, OpsFrame, ParticipantKind, PresenceFrame,
+    PreviewOp,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use wasm_bindgen::prelude::*;
@@ -773,6 +774,64 @@ struct JsPresence {
     /// publisher.
     #[serde(default)]
     wave: Option<JsWave>,
+    /// Where the windows are: `{size, windows: [{app, record, rect,
+    /// focused}]}`, `record` the 16-hex short digest of its live record.
+    #[serde(default)]
+    layout: Option<JsLayout>,
+    /// Whose view this member follows: their publisher.
+    #[serde(default)]
+    following: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsLayout {
+    size: [u16; 2],
+    windows: Vec<JsWindow>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JsWindow {
+    app: String,
+    record: String,
+    rect: [u16; 4],
+    focused: bool,
+}
+
+fn layout_from_js(layout: JsLayout) -> Result<LiveLayout, JsError> {
+    let windows = layout
+        .windows
+        .into_iter()
+        .map(|window| {
+            let record = <[u8; 8]>::try_from(hex::decode(&window.record).map_err(js_error)?)
+                .map_err(|_| js_error("a layout window's record is 8 bytes"))?;
+            Ok(LiveWindow {
+                app: window.app,
+                record,
+                rect: window.rect,
+                focused: window.focused,
+            })
+        })
+        .collect::<Result<_, JsError>>()?;
+    Ok(LiveLayout {
+        size: layout.size,
+        windows,
+    })
+}
+
+fn layout_to_js(layout: LiveLayout) -> JsLayout {
+    JsLayout {
+        size: layout.size,
+        windows: layout
+            .windows
+            .into_iter()
+            .map(|window| JsWindow {
+                app: window.app,
+                record: hex::encode(window.record),
+                rect: window.rect,
+                focused: window.focused,
+            })
+            .collect(),
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -941,6 +1000,8 @@ fn presence_from_js(value: JsPresence) -> Result<PresenceFrame, JsError> {
             seq: wave.seq,
             target: wave.target,
         }),
+        layout: value.layout.map(layout_from_js).transpose()?,
+        following: value.following,
     })
 }
 
@@ -979,6 +1040,8 @@ fn presence_to_js(frame: PresenceFrame) -> JsPresence {
             seq: wave.seq,
             target: wave.target,
         }),
+        layout: frame.layout.map(layout_to_js),
+        following: frame.following,
     }
 }
 
@@ -1122,6 +1185,7 @@ struct JsHerePerson {
     sources: Vec<String>,
     generated: bool,
     updated_ms: u64,
+    profile_ms: u64,
 }
 
 #[derive(Serialize)]
@@ -1527,6 +1591,25 @@ pub struct WasmPeer {
     /// for a peer in no profile) and a queue opened at start, until a room
     /// is joined and replicated ([`crate::replication`]).
     replication: RefCell<Option<(PeerEvents, ReplicaStore)>>,
+    /// The room the person takes part in through this page, once joined
+    /// as a person rather than a spectator: the one that names them.
+    person_room: RefCell<Option<String>>,
+}
+
+/// Tell `room` its member, the page's person, goes by `name` from now on:
+/// what its member list and everyone's person lists show for them. Asked
+/// as the page joins and whenever the person renames themself, so a name
+/// the room recorded earlier is corrected on the next visit. A person who
+/// chose no name keeps the one they were admitted with.
+fn name_in_room(handle: &PeerHandle, room: &str, name: &str) {
+    if name.trim().is_empty() {
+        return;
+    }
+    let request = tilo_relay_protocol::rooms::RoomsRequest::Name {
+        room: room.to_owned(),
+        name: name.to_owned(),
+    };
+    let _ = handle.rooms_then(request, Box::new(|_| {}));
 }
 
 #[wasm_bindgen]
@@ -1655,6 +1738,7 @@ impl WasmPeer {
             handle,
             listeners,
             replication,
+            person_room: RefCell::default(),
         })
     }
 
@@ -1707,6 +1791,15 @@ impl WasmPeer {
             let device = hex::encode(self.device_key);
             crate::replication::open(self.id, device, self.handle.clone(), events, room, store)
                 .map_err(js_error)?;
+            // The room the page replicates is the one its person talks in
+            // privately; a page that only watches has no conversations.
+            if !self.handle.watching() {
+                crate::person_chat::install(self.handle.clone(), room);
+                if let Some(identity) = ui::local_identity::load() {
+                    name_in_room(&self.handle, room, &identity.display_name);
+                }
+                *self.person_room.borrow_mut() = Some(room.to_owned());
+            }
         }
         Ok(())
     }
@@ -2099,6 +2192,7 @@ impl WasmPeer {
                 sources: person.sources.iter().map(hex::encode).collect(),
                 generated: person.generated,
                 updated_ms: person.updated_ms,
+                profile_ms: person.profile_ms,
             })
             .collect();
         serde_json::to_string(&people).map_err(js_error)
@@ -2317,6 +2411,13 @@ impl WasmPeer {
         self.handle.reconnect().map_err(js_error)
     }
 
+    /// The network is back: a session waiting to reconnect tries now; a
+    /// connected one stays as it is.
+    #[wasm_bindgen(js_name = retryNow)]
+    pub fn retry_now(&self) -> Result<(), JsError> {
+        self.handle.retry_now().map_err(js_error)
+    }
+
     /// Ask the host for the joined rooms' shared state again.
     pub fn refresh(&self) -> Result<(), JsError> {
         self.handle.refresh().map_err(js_error)
@@ -2357,6 +2458,9 @@ impl WasmPeer {
     /// (empty for none).
     #[wasm_bindgen(js_name = setDisplayName)]
     pub fn set_display_name(&self, name: String) {
+        if let Some(room) = self.person_room.borrow().as_deref() {
+            name_in_room(&self.handle, room, &name);
+        }
         install_identity(&self.reporter_cert, name);
     }
 
@@ -2365,6 +2469,7 @@ impl WasmPeer {
         self.listeners.borrow_mut().clear();
         self.handle.close();
         crate::replication::close(self.id);
+        crate::person_chat::uninstall();
         ui::local_identity::install_source(None);
     }
 }

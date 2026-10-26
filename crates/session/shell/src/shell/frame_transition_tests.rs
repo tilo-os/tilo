@@ -120,11 +120,22 @@ fn overview_and_workspace_switch_request_their_frames() {
         );
     }
 
-    overview_toggle_requests_frames_before_draw();
-    workspace_switch_requests_frames_before_draw();
-    compositor_paint_run_is_not_host_demand();
-    latch_asks_the_compositor_for_eight_paints();
-    both_directions_carry_the_desktop();
+    // The motion clock keeps each thread's frame requests until the real
+    // clock passes them and a frame at rest is drawn, past the host that
+    // made them: a desk fade an earlier phase started would still ask for
+    // frames in the next phase's fresh desktop, or not, by how long the
+    // phases took. Each phase runs on a thread of its own.
+    for phase in [
+        overview_toggle_requests_frames_before_draw as fn(),
+        workspace_switch_requests_frames_before_draw,
+        compositor_paint_run_is_not_host_demand,
+        latch_asks_the_compositor_for_eight_paints,
+        both_directions_carry_the_desktop,
+    ] {
+        if let Err(panic) = std::thread::spawn(phase).join() {
+            std::panic::resume_unwind(panic);
+        }
+    }
 }
 
 #[test]

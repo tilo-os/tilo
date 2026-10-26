@@ -377,6 +377,7 @@ mod engine {
                     key,
                     down,
                     modifiers,
+                    ..
                 } => match key {
                     KeyInput::Named(key) => self.key(named(key), false, down, held(modifiers)),
                     KeyInput::Character(text) => self.character(&text, down, held(modifiers)),

@@ -65,8 +65,16 @@ class Finding:
     why: str
     fix: str
 
+    def headline(self) -> str:
+        """The finding, one line: what main prints on stdout."""
+        return f"{self.where}: {self.what}"
+
+    def detail(self) -> str:
+        """Why it matters and the fix: what main prints on stderr after the headline."""
+        return f"  why: {self.why}.\n  fix: {self.fix}\n  re-run: {RERUN}"
+
     def __str__(self) -> str:
-        return f"{self.where}: {self.what}\n  why: {self.why}.\n  fix: {self.fix}\n  re-run: {RERUN}"
+        return f"{self.headline()}\n{self.detail()}"
 
 
 def load(name: str, path: Path):
@@ -330,10 +338,13 @@ def main(argv: list[str] | None = None) -> int:
     findings = audit(args.repo.resolve())
     if findings:
         print(f"dev image contract failed ({len(findings)} problem(s)):\n", file=sys.stderr)
-        print("\n\n".join(map(str, findings)), file=sys.stderr)
+        for finding in findings:
+            sys.stderr.flush()
+            print(finding.headline(), flush=True)
+            print(finding.detail() + "\n", file=sys.stderr)
         return 1
     print(f"Dev image contract OK ({len(production_containerfiles(args.repo.resolve()))} production "
-          "Containerfiles carry nothing dev-only)")
+          "Containerfiles carry nothing dev-only)", file=sys.stderr)
     return 0
 
 

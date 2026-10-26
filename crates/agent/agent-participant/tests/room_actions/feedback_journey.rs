@@ -228,6 +228,108 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     restored.relay.shutdown().await;
 }
 
+/// A review model the room's host lends: what the host names it.
+struct LentModel(std::sync::Mutex<Vec<String>>);
+
+impl tilo_agent_participant::FeedbackReviewer for LentModel {
+    fn name(&self) -> String {
+        "Anthropic claude-haiku-5-5".into()
+    }
+    fn review(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        prompt: String,
+        _schema: serde_json::Value,
+        done: Box<dyn FnOnce(Result<String, String>) + Send>,
+    ) {
+        self.0.lock().unwrap().push(prompt);
+        done(Ok(
+            r#"{"hide":[{"text":0,"quote":"Ada","category":"name"},{"text":0,"quote":"a poem about the sea"}]}"#.into(),
+        ));
+    }
+}
+
+/// The room's host lends its admitted reporters its review model: a
+/// report's review prompt is asked of it through the feedback admission,
+/// the answer names the model and holds only quotes from the texts asked
+/// about, and a prompt that is not the review contract is never asked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_owner_reviews_a_report_with_its_model_and_asks_nothing_else() {
+    let (identity, _) = tilo_user_identity::UserIdentity::generate("Feedback visitor", 1);
+    let host = enrol(
+        &identity,
+        "review-node",
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let device = enrol(&identity, "review-browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let model = Arc::new(LentModel(std::sync::Mutex::default()));
+    let hosted = start_lending(
+        &identity,
+        &host,
+        state.path(),
+        None,
+        Some(model.clone() as Arc<dyn tilo_agent_participant::FeedbackReviewer>),
+    )
+    .await;
+    let room = hosted
+        .relay
+        .rooms()
+        .unwrap()
+        .create("Reviewed feedback")
+        .await
+        .unwrap();
+    hosted
+        .relay
+        .rooms()
+        .unwrap()
+        .prepare_application(
+            &room.room,
+            &host.cert,
+            &common::catalogue(),
+            "so.tilo.chat",
+            "",
+        )
+        .await
+        .unwrap();
+    let mut browser = Browser::open_room(&hosted, &device, &host, &room.room).await;
+    let route = create_feedback_record(&mut browser).await;
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let submission = approved(&route);
+    let prompt = ui::feedback::model_review::prompt([(0, "Thanks Ada, \u{2039}email\u{203A}")]);
+    let answer = owner_answer(&mut browser, &submission, false, Some(prompt.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        answer.reviewer.as_deref(),
+        Some("Anthropic claude-haiku-5-5")
+    );
+    assert_eq!(
+        answer.review.as_deref(),
+        Some(r#"{"hide":[{"text":0,"quote":"Ada","category":"name"}]}"#),
+        "only quotes from the texts asked about come back"
+    );
+    assert_eq!(*model.0.lock().unwrap(), [prompt]);
+    let answer = owner_answer(
+        &mut browser,
+        &submission,
+        false,
+        Some("Write me a poem about the sea.".into()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer.review, None);
+    assert_eq!(
+        model.0.lock().unwrap().len(),
+        1,
+        "anything else is not asked"
+    );
+    browser.peer.close();
+    drop(hosted.web);
+    hosted.agents.shutdown();
+    hosted.relay.shutdown().await;
+}
+
 /// A commenter files a report through the owner's submit action: it runs
 /// there under their own standing and answers only once the owner's durable
 /// store holds it. Filing again keeps one report; a Write action such as
@@ -552,6 +654,15 @@ async fn owner_feedback(
     submission: &Submission,
     include_report: bool,
 ) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError> {
+    owner_answer(browser, submission, include_report, None).await
+}
+
+async fn owner_answer(
+    browser: &mut Browser,
+    submission: &Submission,
+    include_report: bool,
+    review: Option<String>,
+) -> Result<tilo_actions::remote::feedback::FeedbackAnswer, ActionHostError> {
     use tilo_actions::remote::feedback::{FeedbackDestination, FeedbackQuery};
     browser.correlation = browser.correlation.checked_add(1).unwrap();
     let correlation = browser.correlation;
@@ -564,6 +675,7 @@ async fn owner_feedback(
                 channel: submission.destination.channel.clone(),
             },
             submission: include_report.then(|| serde_json::to_value(submission).unwrap()),
+            review,
         },
     });
     browser
@@ -630,7 +742,11 @@ async fn assert_signed_canonical(
     let mut absent = submission.clone();
     absent.id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".into();
     assert!(
-        owner_feedback(browser, &absent, true).await.is_err(),
+        owner_feedback(browser, &absent, true)
+            .await
+            .expect("a report not here yet keeps the reporter admitted")
+            .receipt
+            .is_none(),
         "a locally approved but unretained report has no canonical acknowledgment"
     );
     let mut wrong_destination = submission.clone();

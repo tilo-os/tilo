@@ -277,9 +277,14 @@ fn declared_actions_are_typed_and_apply_through_the_one_door() {
         assert_eq!(params, ["index"]);
         let delete = card.actions.get(2).unwrap();
         assert_eq!(
+            delete.contract.risk,
+            tilo_actions::RiskLevel::Destructive,
+            "a destructive item action still deletes"
+        );
+        assert_eq!(
             delete.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm,
-            "a destructive item action still asks"
+            tilo_actions::ConfirmationPolicy::None,
+            "but Undo takes it back, so it asks nothing"
         );
 
         // The record keeps the id-taking action for scripts and agents, but a
@@ -444,7 +449,14 @@ fn documents_replay_converge_version_index_and_migrate() {
             .unwrap();
         let entries = Board::search(&board.state().unwrap());
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].text.contains("Quarterly review"));
+        // Found by its text, which is no preview of it.
+        assert!(
+            entries[0]
+                .fields
+                .iter()
+                .any(|(text, _)| text.contains("Quarterly review"))
+        );
+        assert!(entries[0].text.is_empty() && entries[0].preview.is_none());
     }
     // phase: a_record_reads_documents_written_by_an_older_schema
     {

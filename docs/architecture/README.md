@@ -114,6 +114,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `agent-host.md` | agent MCP beside a local enrolled relay on a foreign Linux host (no desktop/OS) |
 | `bots.md` | bots and connectors: headless Shortcuts with identity, derived grants, the trigger dispatcher, the runner, appearance, the bot directory |
 | `discord-bridge.md` | the Discord connector and bridge bot, layout and role ownership, moderation mapping, and the persistent public room it bridges |
+| `slack-bridge.md` | the Slack connector and bridge bot: record, verbs and events, threads and emoji, layout and import, links, moderation |
 | `../system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |
 | `distribution.md` | how software, settings and content reach a machine |
 | `language-checking.md` | spelling, grammar, text actions |

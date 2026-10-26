@@ -779,32 +779,47 @@ pub trait AudioEnumerator: Send + Sync {
 pub struct RealEnumerator;
 
 impl AudioEnumerator for RealEnumerator {
-    #[cfg(not(target_arch = "wasm32"))]
     fn enumerate(&self) -> AudioGraph {
-        let Ok(out) = bounded_command::run(
-            "pw-dump",
-            &[],
-            None,
-            8 * 1024 * 1024,
-            Duration::from_secs(5),
-        ) else {
-            return AudioGraph::default();
-        };
-        if !out.status.success() {
-            return AudioGraph::default();
-        }
-        parse_pw_dump(&String::from_utf8_lossy(&out.stdout))
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn enumerate(&self) -> AudioGraph {
-        AudioGraph::default()
+        try_enumerate().unwrap_or_default()
     }
 }
 
 /// Convenience: enumerate the live graph once via [`RealEnumerator`].
 pub fn enumerate() -> AudioGraph {
     RealEnumerator.enumerate()
+}
+
+/// Read the live graph once with `pw-dump`, telling a read that failed apart
+/// from a graph with no devices in it.
+///
+/// # Errors
+///
+/// When `pw-dump` cannot run here, exits unsuccessfully, prints more than a
+/// graph can hold or does not finish in time.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn try_enumerate() -> Result<AudioGraph, String> {
+    let out = bounded_command::run(
+        "pw-dump",
+        &[],
+        None,
+        8 * 1024 * 1024,
+        Duration::from_secs(5),
+    )
+    .map_err(|error| format!("pw-dump: {error}"))?;
+    if !out.status.success() {
+        return Err(format!("pw-dump exited with {}", out.status));
+    }
+    Ok(parse_pw_dump(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// There is no audio graph to read on this target.
+///
+/// # Errors
+///
+/// Always.
+#[cfg(target_arch = "wasm32")]
+pub fn try_enumerate() -> Result<AudioGraph, String> {
+    Err("there is no audio graph on this target".into())
 }
 
 /// Shorthand for the boxed control the settings pane holds.

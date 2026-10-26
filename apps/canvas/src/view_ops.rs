@@ -1298,10 +1298,15 @@ fn selection_info(art: &Artwork) -> Option<Value> {
     let selection = art.selection.as_ref()?;
     let region = selection.region();
     let bounds = region.bounds().unwrap_or_default();
+    // The selection that covers the whole artboard selects every mark in it:
+    // that is where a participant who selected everything is.
+    let whole_artboard =
+        bounds.x0 <= 0.0 && bounds.y0 <= 0.0 && bounds.x1 >= art.width && bounds.y1 >= art.height;
     Some(json!({
         "bounds": [whole(bounds.x0), whole(bounds.y0), whole(bounds.width()), whole(bounds.height())],
         "area": whole(region.area()),
         "feather": selection.feather,
+        "selected_all": whole_artboard && !art.marks.is_empty(),
     }))
 }
 

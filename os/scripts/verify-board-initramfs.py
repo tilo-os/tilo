@@ -14,6 +14,10 @@ and requires:
   * every `boot_modules` entry that the kernel builds as a module, at the
     path it has under /usr/lib/modules/KVER (built-in ones must be listed in
     modules.builtin, so a renamed or dropped driver fails here too);
+  * for a profile whose internal keyboard is on an i2c bus, the bus, its HID
+    transport and the input layer built into the kernel (modules.builtin):
+    no dracut module loads them, so a modular driver leaves a prompt that
+    takes no key;
   * when the sibling-unlock unit is in the initramfs, what its network needs
     for Wi-Fi: NetworkManager, its Wi-Fi device plugin, wpa_supplicant and
     the D-Bus activation file NetworkManager starts it through. The dracut
@@ -45,6 +49,20 @@ WIFI_UNLOCK = {
     "NetworkManager's Wi-Fi device plugin": ("usr/lib*/NetworkManager/*/libnm-device-plugin-wifi.so",),
     "wpa_supplicant": ("usr/bin/wpa_supplicant", "usr/sbin/wpa_supplicant"),
     "wpa_supplicant's D-Bus activation": ("usr/share/dbus-1/system-services/fi.w1.wpa_supplicant1.service",),
+}
+# What an internal i2c keyboard needs built in, named as their objects are in
+# modules.builtin (prepare-hardware-profile.py reads it the same way), with
+# the Kconfig symbol each one is set through. Systemd reads keys through the
+# event device, and Fedora's kernel has every one of these as a module: the
+# GENI controller the X1E80100's buses are, the HID transport over it, HID
+# core, and the input layer.
+I2C_INPUT_BUILTIN = {
+    "i2c-qcom-geni": "CONFIG_I2C_QCOM_GENI",
+    "i2c-hid-of": "CONFIG_I2C_HID_OF",
+    "i2c-core": "CONFIG_I2C",
+    "hid-core": "CONFIG_HID",
+    "evdev": "CONFIG_INPUT_EVDEV",
+    "atkbd": "CONFIG_INPUT_KEYBOARD",
 }
 
 
@@ -80,11 +98,21 @@ def module_files(kernel: Path) -> dict[str, str]:
 
 
 def builtin_modules(kernel: Path) -> set[str]:
+    """The object names of what the kernel builds into itself."""
     builtin = kernel / "modules.builtin"
     if not builtin.is_file():
         return set()
     return {Path(line.strip()).name.removesuffix(".ko")
             for line in builtin.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()}
+
+
+def builtin_input_bus(definition: dict, builtin: set[str]) -> list[str]:
+    """The built-in drivers an internal keyboard's bus needs, and does not have."""
+    if not any(keyboard.get("bus") == "i2c" for keyboard in definition.get("internal_keyboards", [])):
+        return []
+    return [f"internal i2c keyboard: {symbol} is not built into the kernel, "
+            "so the initramfs has no driver to load at the unlock prompt"
+            for name, symbol in I2C_INPUT_BUILTIN.items() if name not in builtin]
 
 
 def problems(definition: dict, paths: set[str], root: Path, kver: str) -> list[str]:
@@ -102,6 +130,7 @@ def problems(definition: dict, paths: set[str], root: Path, kver: str) -> list[s
                 found.append(f"boot module {name} ({modules[name]}) is not in the initramfs")
         elif name not in builtin:
             found.append(f"boot module {name} is neither built into kernel {kver} nor installed for it")
+    found.extend(builtin_input_bus(definition, builtin))
     if SIBLING_UNLOCK_UNIT in paths:
         for what, patterns in WIFI_UNLOCK.items():
             if not any(fnmatch.filter(paths, pattern) for pattern in patterns):

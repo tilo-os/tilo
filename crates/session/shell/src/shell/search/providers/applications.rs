@@ -626,7 +626,12 @@ pub(crate) fn launch_installed_app(
             })
     });
     match app {
-        Ok(app) => launch_resolved_installed_app(chrome, &app),
+        Ok(app) => {
+            ui::control_hints::performed::note(
+                ui::control_hints::performed::Performed::OpenedWindow,
+            );
+            launch_resolved_installed_app(chrome, &app)
+        }
         Err(err) => Err(report_refused_launch(
             chrome,
             package_id,

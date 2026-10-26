@@ -109,6 +109,16 @@ export async function readEntry({mode, location, fetch = globalThis.fetch}) {
     ...(about ? {about} : {}), ...(embedder ? {embedder} : {})};
 }
 
+/** Send problem reports from the home workspace to the channel its
+ * entry names. The desktop does not wait for it: the owner's admission is
+ * a round trip of its own, and the desktop takes reports up once it is in. */
+export function configureFeedback(peer, home) {
+  const channel = home?.feedback?.channel;
+  if (!peer?.room || typeof channel !== 'string' || typeof peer.configureFeedback !== 'function') return;
+  peer.configureFeedback({room: peer.room, provider: 'record:so.tilo.chat:', channel})
+    .catch(error => console.warn('feedback:', error?.message ?? error));
+}
+
 /** The embedding site's origin, when `value` is exactly an https origin. */
 function embedderOrigin(value) {
   if (typeof value !== 'string') return null;
@@ -205,6 +215,16 @@ export async function present({route, peer, surface, mountDesktop, diagnostics =
 }
 
 /**
+ * The desktop link that says what is in front of the person: the app's
+ * window, and the view of its resource a link opened (`{scope, app,
+ * record?, view?}`). Secrets left the address before any module ran.
+ */
+export function shownLink(target) {
+  const {scope, app, record, view} = target ?? {};
+  if (!scope || app === undefined || app === null) return {mode: 'desktop', target: {scope}};
+  return {mode: 'desktop', target: {scope, app, ...(record ? {record} : {}), ...(view ? {view} : {})}};
+}
+/**
  * Boot an entry page. `deps` supplies the page host (`loadRuntime`,
  * `mountDesktop`) and the admission doors; the page wires the real ones.
  * `onStep` hears the steps of getting in: `join` while a host's door is
@@ -240,6 +260,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   deps.onScope?.({scope: route.target.scope, entry});
   const {peer} = await admit({
     scope: route.target.scope, secrets, tickets: entry.tickets,
+    home: entry.home ? workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home : null,
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
     onProgress: event => {
       onStep('join');
@@ -249,6 +270,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     },
   });
   if (peer) deps.onAdmitted?.(peer);
+  configureFeedback(peer, entry.home);
   // The app in front (a home workspace's, or the link's) downloads once the
   // page is in, while the desktop mounts, not when the desktop first opens
   // it. Not before: admission is a run of small round trips to the host,
@@ -284,7 +306,10 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
     window.location.replace(link.format({mode: shown.redirect, target: route.target}));
     return null;
   }
-  const router = startRouter({window, link, initial: route, navigation: shown.navigation,
+  // `show` reads the router it was given, so the address can name what a
+  // link opened once it is shown.
+  let router;
+  router = startRouter({window, link, initial: route, navigation: shown.navigation,
     show: next => {
       // Another room is another peer and another desktop (Back or Forward
       // across a switch of workspace, a hand-edited fragment): load it anew,
@@ -298,7 +323,14 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
         window.location.reload();
         return Promise.resolve();
       }
-      return openTarget({mount: shown.mount, navigation: shown.navigation, target: next.target, mode: next.mode});
+      return openTarget({mount: shown.mount, navigation: shown.navigation, target: next.target, mode: next.mode})
+        .then(() => {
+          // The resource a link opened is in front now: the address names it,
+          // as a link to that view would, until focus moves to another
+          // window (the router then writes that window instead).
+          if (!next.target.resource) return;
+          router.replace(shownLink({...next.target, view: next.target.view ?? null}));
+        });
     },
     onError: error => say(error?.message ?? String(error))});
   return {peer, mount: shown.mount, navigation: shown.navigation, router, link, entry, ...(install ? {install} : {})};

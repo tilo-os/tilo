@@ -8,12 +8,12 @@ use collab_types::{
     ArtifactKind, ChannelState, OpKind, RedactedMarker, SignedOp, ValidationError,
     validate_admitted_inbound_op, validate_replayed_inbound_op,
 };
+use runtime_collab::event::CollabEvent;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tilo_action_policy::Standing;
-use ui::collaboration::CollabEvent;
 
 /// A document op as the transport delivered it: the route its publishing
 /// host stamped, and the author's standing in the room.
@@ -175,7 +175,7 @@ fn accept(
 ) {
     let artifact = envelope.artifact;
     if let Ok(mut ch) = channels.lock() {
-        ch.record_history(&route.cluster_id, &envelope);
+        ch.record_history(route, &envelope);
         let state = ch.state_for(artifact);
         state.record_validated_op(envelope.clone());
         if envelope.kind == OpKind::Compaction

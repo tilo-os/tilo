@@ -75,8 +75,11 @@ impl NativeControl {
         kind: tilo_actions::OperationKind,
         handler: Box<dyn FnMut()>,
     ) -> (Self, tilo_actions::ActionBinding<()>) {
+        // The control's own verb, for agents and scripts: a person presses
+        // the control itself (`Button::on_effect`).
         let spec = tilo_actions::ActionSpec::operation("invoke", label, kind, NATIVE_INVOKE, &id)
-            .expect("a control id is always JSON serializable");
+            .expect("a control id is always JSON serializable")
+            .for_audience(tilo_actions::Audience::Agents);
         let resource =
             tilo_actions::Resource::new(format!("tilo.control:{id}"), "tilo.control", label)
                 .with_action(spec);

@@ -30,12 +30,25 @@ pub(crate) fn install_signed_package(
     version: &str,
     files: &[(&str, &[u8])],
 ) -> (std::path::PathBuf, std::path::PathBuf) {
+    install_signed_package_with(root, id, version, files, "")
+}
+
+/// [`install_signed_package`] with `manifest_tail` after the manifest's
+/// entrypoint: the services it speaks, say.
+#[cfg(test)]
+pub(crate) fn install_signed_package_with(
+    root: &std::path::Path,
+    id: &str,
+    version: &str,
+    files: &[(&str, &[u8])],
+    manifest_tail: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
     use ed25519_dalek::Signer as _;
     use std::fmt::Write as _;
     use tilo_app_package::{BlobHash, Collection, SignedRoot};
     let manifest = canonical_manifest(
         &format!("id = \"{id}\"\nversion = \"{version}\"\nkind = \"app\""),
-        "[entrypoint]\nbin = \"probe\"\ntype = \"gui\"\n",
+        &format!("[entrypoint]\nbin = \"probe\"\ntype = \"gui\"\n{manifest_tail}"),
     );
     let collection = Collection::from_entries(
         files

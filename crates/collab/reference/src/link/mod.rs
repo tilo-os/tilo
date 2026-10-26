@@ -448,6 +448,12 @@ pub struct LinkTarget {
     pub resource: Option<ResourceAddress>,
     /// A `ResourceViewSpec::id`; `None` is the primary view.
     pub view: Option<String>,
+    /// The published text a reader arrived from (`?discuss=<slug>`), which
+    /// the room keeps a discussion thread for. A link carrying it and naming
+    /// no place of its own opens that thread (see `discuss_thread` in the
+    /// strict reader); beside an app, record or item it only says where the
+    /// reader came from, and the link points where it was written.
+    pub discuss: Option<Slug>,
 }
 
 impl LinkTarget {
@@ -459,6 +465,7 @@ impl LinkTarget {
             record: None,
             resource: None,
             view: None,
+            discuss: None,
         }
     }
 
@@ -558,6 +565,9 @@ impl LinkTarget {
             encode::push_segment(out, &resource.id);
         }
         let mut params: Vec<String> = Vec::new();
+        if let Some(discuss) = &self.discuss {
+            params.push(format!("discuss={}", discuss.as_str()));
+        }
         if let Some(view) = &self.view {
             params.push(format!("view={}", encode::segment(view)));
         }
@@ -815,6 +825,93 @@ mod tests {
             same_origin.to_url(&tilo()).unwrap(),
             format!("https://tilo.so/#/w/{ROOM}")
         );
+    }
+
+    /// A reader arriving from a published text reaches its discussion
+    /// thread: the chat's channel named by the text's slug.
+    #[test]
+    fn a_discuss_alone_opens_that_text_s_thread() {
+        let room = ROOM;
+        let arrived = Link::parse(
+            &format!("https://tilo.so/#/w/{room}?discuss=quiet-software"),
+            &WebEntries::new(vec![tilo()]),
+        )
+        .unwrap();
+        let target = &arrived.target;
+        assert_eq!(target.app.as_ref().map(AppId::as_str), Some("so.tilo.chat"));
+        assert_eq!(target.record, Some(RecordSegment::Primary));
+        let resource = target.resource.as_ref().unwrap();
+        assert_eq!(resource.kind, "chat.channel");
+        assert_eq!(resource.id, "c_quiet_software");
+        let url = arrived.to_url(&tilo()).unwrap();
+        assert!(
+            url.ends_with("/so.tilo.chat/-/chat.channel/c_quiet_software?discuss=quiet-software"),
+            "{url}"
+        );
+        assert_eq!(
+            Link::parse(&url, &WebEntries::new(vec![tilo()]))
+                .unwrap()
+                .target,
+            *target
+        );
+    }
+
+    /// A reader arrives from a published text by `?discuss=<slug>`: the
+    /// page keeps it in the link it canonically shows, and only that link
+    /// carries it.
+    #[test]
+    fn a_discuss_parameter_names_the_published_text_a_reader_came_from() {
+        let mut target = LinkTarget::new(room("https://tilo.so"));
+        target.discuss = Some(Slug::parse("quiet-software").unwrap());
+        let link = plain(Mode::Desktop, target);
+        let url = link.to_url(&tilo()).unwrap();
+        assert!(url.ends_with("?discuss=quiet-software"), "{url}");
+        assert_eq!(
+            link.to_native().unwrap(),
+            format!("tilo://open#/@tilo.so/w/{ROOM}?discuss=quiet-software")
+        );
+        let read = Link::parse(&url, &WebEntries::new(vec![tilo()])).unwrap();
+        assert_eq!(
+            read.target.discuss.as_ref().map(Slug::as_str),
+            Some("quiet-software")
+        );
+        let bare = plain(Mode::Desktop, LinkTarget::new(room("https://tilo.so")));
+        assert!(!bare.to_url(&tilo()).unwrap().contains("discuss"));
+        // Its spelling is presentation, as a room's slug is: not any text.
+        assert!(
+            Link::parse(
+                &format!("https://tilo.so/#/w/{ROOM}?discuss=Quiet Software"),
+                &WebEntries::new(vec![tilo()])
+            )
+            .is_err()
+        );
+        // And it comes before a view, its only place among the params.
+        assert!(
+            Link::parse(
+                &format!("https://tilo.so/#/w/{ROOM}?view=x&discuss=a"),
+                &WebEntries::new(vec![tilo()])
+            )
+            .is_err()
+        );
+        let ordered = plain(Mode::Desktop, {
+            let mut target = LinkTarget::new(room("https://tilo.so"));
+            target.app = Some(AppId::new("so.tilo.chat").unwrap());
+            target.record = Some(RecordSegment::Primary);
+            target.discuss = Some(Slug::parse("a-post").unwrap());
+            target.view = Some("thread".into());
+            target
+        });
+        let ordered = ordered.to_url(&tilo()).unwrap();
+        assert!(
+            ordered.ends_with("?discuss=a-post&view=thread"),
+            "{ordered}"
+        );
+        let read = Link::parse(&ordered, &WebEntries::new(vec![tilo()])).unwrap();
+        assert_eq!(
+            read.target.discuss.as_ref().map(Slug::as_str),
+            Some("a-post")
+        );
+        assert_eq!(read.target.view.as_deref(), Some("thread"));
     }
 
     #[test]

@@ -703,13 +703,9 @@ impl EditForm {
             .section(emails)
             .section(addresses)
             .section(details);
-        let title = if self.is_new {
-            "New contact"
-        } else {
-            "Edit contact"
-        };
+        // The window bar's location names the person being written.
         Box::new(
-            FormPage::new(title, form)
+            FormPage::untitled(form)
                 .with_semantic_key("contacts.form")
                 .with_persisted_offset(std::rc::Rc::clone(&self.scroll)),
         )

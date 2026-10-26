@@ -22,6 +22,8 @@ use ui::permissions::{PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOpenError, RecordOwners};
 
 mod feedback_native;
+#[cfg(target_os = "linux")]
+mod feedback_review;
 #[cfg(test)]
 mod feedback_tests;
 pub mod messaging;
@@ -82,6 +84,22 @@ pub struct InProcessApps {
 pub type SessionBroker = Rc<dyn Fn(&str, &str) -> ui::collaboration::HostSessionConnector>;
 
 impl InProcessApps {
+    /// The records every app of `room` opens (the workspace's emoji), in
+    /// the store the apps mounted here share, changed as `author`: what a
+    /// host that is no app window, such as workspace settings, opens them
+    /// from, so it and the room's windows hold the one record.
+    pub(crate) fn workspace_records(
+        &self,
+        room: &str,
+        author: &str,
+    ) -> ui::record::workspace::WorkspaceRecords {
+        ui::record::workspace::WorkspaceRecords::in_room(
+            self.owners.clone(),
+            room.to_owned(),
+            UserId(author.to_owned()),
+        )
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn bind_messaging_network_prompts(
         &mut self,
@@ -568,6 +586,13 @@ impl InProcessApps {
         ) {
             context.provide_person_records(person.sharing(&held));
         }
+        // The records every app of the room opens (the workspace's emoji),
+        // in the owners every in-process app shares: one writer per room.
+        context.provide_workspace_records(ui::record::workspace::WorkspaceRecords::in_room(
+            self.owners.clone(),
+            room.to_owned(),
+            self.author.clone(),
+        ));
         if definition.app_id == "so.tilo.messages" {
             #[cfg(target_os = "linux")]
             if let Some(first) = &self.first_accounts {
@@ -609,7 +634,20 @@ impl InProcessApps {
         }
         startup
             .install(Rc::clone(&self.store), &mut self.feedback)
-            .map_err(|error| LaunchError::Operation(error.to_string()))
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        self.lend_review_model();
+        Ok(())
+    }
+
+    /// Lend the report composer the model the person's settings choose for
+    /// it, to look over reports before they are sent.
+    fn lend_review_model(&self) {
+        #[cfg(target_os = "linux")]
+        if let (Some(feedback), Some((models, name))) =
+            (&self.feedback, feedback_review::review_model())
+        {
+            feedback.services().set_models(models, name);
+        }
     }
 
     /// Bind a trusted host's already-admitted feedback adapter to this profile.
@@ -629,6 +667,7 @@ impl InProcessApps {
             tilo_desktop::feedback::PrivateFeedback::new(Rc::clone(&self.store), destination, host)
                 .map_err(|error| LaunchError::Operation(error.to_string()))?,
         );
+        self.lend_review_model();
         Ok(())
     }
 
@@ -640,6 +679,28 @@ impl InProcessApps {
             tracing::debug!(%error, "feedback subject not applied to the open composer");
         }
         self.feedback_subject = subject;
+    }
+
+    /// Whether reports have somewhere to go: "Report a problem…" is offered
+    /// only then.
+    pub(crate) fn feedback_configured(&self) -> bool {
+        self.feedback.is_some()
+    }
+
+    /// Start a report about what the person picked; the composer shows it
+    /// when it opens.
+    pub(crate) fn begin_feedback_report(
+        &self,
+        picked: tilo_app::feedback::PickedReport,
+    ) -> Result<(), String> {
+        let feedback = self
+            .feedback
+            .as_ref()
+            .ok_or("feedback has no destination here")?;
+        feedback
+            .services()
+            .begin_report(picked)
+            .map_err(|error| error.to_string())
     }
 
     /// Storage/transport wakes service the approved outbox, including while

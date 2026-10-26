@@ -148,6 +148,94 @@ pub struct WindowToolbar {
     /// it here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<ToolbarNotice>,
+    /// The reactions to what the window shows ([`show_reactions`]), at the
+    /// row's trailing end. The window's, as the notice is: [`shown`] puts
+    /// them here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reactions: Option<ToolbarReactions>,
+}
+
+/// The reactions to the one thing a window shows (a shared document), as
+/// its bar shows them: a pill per emoji, the person's own marked, and an
+/// add button where they may react. Pressing a pill sends
+/// [`reaction_action`] of its emoji, which takes the person's reaction back
+/// where they had one and adds it where not; the add button opens the
+/// shared emoji picker in the bar, and a pick sends the same. Whoever shows
+/// them takes the presses ([`take_reaction_presses`]); the app's slot
+/// events never carry them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolbarReactions {
+    /// One per emoji, the emoji reacted with first first, at most
+    /// [`MAX_REACTION_PILLS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pills: Vec<ToolbarReaction>,
+    /// The person may react: the pills press and the add button shows.
+    #[serde(default)]
+    pub can_react: bool,
+}
+
+/// Everyone who reacted with one emoji.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolbarReaction {
+    /// A Unicode emoji, or a workspace emoji as `:name:`.
+    pub emoji: String,
+    /// How many reacted with it.
+    pub count: u32,
+    /// The person is among them.
+    #[serde(default)]
+    pub mine: bool,
+    /// Who else they are, first first, at most [`MAX_REACTOR_NAMES`]: what
+    /// the pill's tooltip names after "You" ([`Self::mine`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+}
+
+/// The most pills a window's reactions carry: as many emoji as one thing
+/// holds reactions with.
+pub const MAX_REACTION_PILLS: usize = 20;
+
+/// The most names a pill's tooltip carries; the rest are counted.
+pub const MAX_REACTOR_NAMES: usize = 12;
+
+/// The longest emoji a pill carries, in bytes.
+const MAX_REACTION_EMOJI_BYTES: usize = 64;
+
+/// The longest name a pill's tooltip carries, in bytes.
+const MAX_REACTOR_NAME_BYTES: usize = 128;
+
+/// What a press on the pill of an emoji, or a pick of it in the picker,
+/// sends as [`ToolbarEvent::Action`]: a window's reactions own every id
+/// with this prefix.
+pub const REACTION_ACTION_PREFIX: &str = "window-reaction:";
+
+/// The action id a press on `emoji`'s pill sends.
+#[must_use]
+pub fn reaction_action(emoji: &str) -> String {
+    format!("{REACTION_ACTION_PREFIX}{emoji}")
+}
+
+impl ToolbarReactions {
+    /// Whether the bar shows nothing of them: no pill, and no add button.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.pills.is_empty() && !self.can_react
+    }
+
+    /// As the bar takes them: at most [`MAX_REACTION_PILLS`] pills, an
+    /// emoji no longer than an emoji is, at most [`MAX_REACTOR_NAMES`]
+    /// short names each.
+    fn bound(&mut self) {
+        self.pills.retain(|pill| {
+            !pill.emoji.is_empty() && pill.emoji.len() <= MAX_REACTION_EMOJI_BYTES && pill.count > 0
+        });
+        self.pills.truncate(MAX_REACTION_PILLS);
+        for pill in &mut self.pills {
+            pill.names.truncate(MAX_REACTOR_NAMES);
+            for name in &mut pill.names {
+                cut_to(name, MAX_REACTOR_NAME_BYTES);
+            }
+        }
+    }
 }
 
 /// What just happened, said in the window's bar for a while: an operation's
@@ -306,6 +394,12 @@ pub struct ToolbarLocation {
     /// the same. Every editor marks its unsaved document this one way.
     #[serde(default)]
     pub edited: bool,
+    /// The person may only look at what the location names: the bar says
+    /// "View only" after the label, in place of [`Self::edited`], and tells
+    /// assistive technology the same. Set by the window's framework from
+    /// what the person may do there ([`show_view_only`]), not by the app.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub view_only: bool,
 }
 
 /// One row of a location's picker.
@@ -491,10 +585,16 @@ impl ToolbarAction {
     /// outcome it names.
     #[must_use]
     pub fn new(id: impl Into<String>, icon: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new_owned(id.into(), icon.into(), name.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, icon: String, name: String) -> Self {
         Self {
-            id: id.into(),
-            icon: icon.into(),
-            name: name.into(),
+            id,
+            icon,
+            name,
             enabled: true,
             on: false,
             menu: false,
@@ -605,6 +705,12 @@ pub enum ToolbarEvent {
         with: String,
         all: bool,
     },
+    /// The search's options stand open over this much of the app's window,
+    /// in its coordinates (`None`: they closed): the current match is shown
+    /// clear of them ([`crate::widget::Findable::set_find_cover`]).
+    SearchCover {
+        cover: Option<WholeRect>,
+    },
     /// The window's History control was pressed: open History, or close it
     /// while it shows.
     History,
@@ -670,6 +776,47 @@ pub struct WindowOffer {
     /// shows its query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adopted: Option<AdoptedQuery>,
+}
+
+/// A rect in whole logical pixels, as the bar tells an app in its own
+/// process where something of the bar stands over it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WholeRect {
+    pub x0: i32,
+    pub y0: i32,
+    pub x1: i32,
+    pub y1: i32,
+}
+
+impl WholeRect {
+    /// The whole pixels `rect` touches.
+    #[must_use]
+    pub fn around(rect: vello::kurbo::Rect) -> Self {
+        let rect = rect.expand();
+        // A window's coordinates are a few thousand logical pixels.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "window coordinates are far inside i32 once rounded outward"
+        )]
+        let whole = |v: f64| v as i32;
+        Self {
+            x0: whole(rect.x0),
+            y0: whole(rect.y0),
+            x1: whole(rect.x1),
+            y1: whole(rect.y1),
+        }
+    }
+
+    /// The rect in logical pixels.
+    #[must_use]
+    pub fn rect(self) -> vello::kurbo::Rect {
+        vello::kurbo::Rect::new(
+            f64::from(self.x0),
+            f64::from(self.y0),
+            f64::from(self.x1),
+            f64::from(self.y1),
+        )
+    }
 }
 
 /// A find an app's document ran on its own (an action went to a match) that
@@ -773,6 +920,33 @@ impl WindowToolbar {
                 .as_ref()
                 .is_none_or(|views| views.choices.is_empty())
             && self.notice.is_none()
+            && self
+                .reactions
+                .as_ref()
+                .is_none_or(ToolbarReactions::is_empty)
+    }
+
+    /// Whether the slots are an overflow menu alone: actions, every one of
+    /// them in the menu, and nothing else. The window of an app that
+    /// declared no bar carries the desktop's own items this way, and its
+    /// title row keeps its title, with the menu button at its end.
+    #[must_use]
+    pub fn menu_only(&self) -> bool {
+        !self.actions.is_empty()
+            && self.actions.iter().all(|action| action.menu)
+            && self.sidebar.is_none()
+            && self.navigation.is_none()
+            && self.location.is_none()
+            && self.leading.is_empty()
+            && self
+                .views
+                .as_ref()
+                .is_none_or(|views| views.choices.is_empty())
+            && self.notice.is_none()
+            && self
+                .reactions
+                .as_ref()
+                .is_none_or(ToolbarReactions::is_empty)
     }
 
     /// The slots as the bar lays them out: the notice up, if any, in the
@@ -844,6 +1018,12 @@ impl WindowToolbar {
         }
         if let Some(notice) = &mut self.notice {
             notice.bound();
+        }
+        if let Some(reactions) = &mut self.reactions {
+            reactions.bound();
+            if reactions.is_empty() {
+                self.reactions = None;
+            }
         }
         if let Some(views) = &mut self.views {
             views.choices.truncate(MAX_VIEWS);
@@ -935,6 +1115,7 @@ impl ToolbarEvent {
             | Self::SearchStep { .. }
             | Self::SearchClose
             | Self::SearchOptions { .. }
+            | Self::SearchCover { .. }
             | Self::History => {}
         }
         self
@@ -942,8 +1123,12 @@ impl ToolbarEvent {
 }
 
 fn cut(text: &mut String) {
-    if text.len() > MAX_TEXT_BYTES {
-        let mut end = MAX_TEXT_BYTES;
+    cut_to(text, MAX_TEXT_BYTES);
+}
+
+fn cut_to(text: &mut String, most: usize) {
+    if text.len() > most {
+        let mut end = most;
         while !text.is_char_boundary(end) {
             end -= 1;
         }
@@ -958,6 +1143,9 @@ const MAX_PENDING: usize = 32;
 thread_local! {
     static DECLARED: RefCell<Option<WindowToolbar>> = const { RefCell::new(None) };
     static NOTICE: RefCell<Option<ToolbarNotice>> = const { RefCell::new(None) };
+    static REACTIONS: RefCell<Option<ToolbarReactions>> = const { RefCell::new(None) };
+    static VIEW_ONLY: Cell<bool> = const { Cell::new(false) };
+    static REACTION_PRESSES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static REVISION: Cell<u64> = const { Cell::new(0) };
     static EVENTS: RefCell<VecDeque<ToolbarEvent>> = const { RefCell::new(VecDeque::new()) };
     static NOTICE_PRESSES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -1004,8 +1192,15 @@ impl Drop for WindowScope {
 }
 
 /// The window of the app being run, if its host shows it in one.
-fn window() -> Option<crate::hosted_window::HostedWindow> {
+pub(crate) fn window() -> Option<crate::hosted_window::HostedWindow> {
     WINDOW.with(|current| current.borrow().clone())
+}
+
+/// The workspace of the window the app runs in, when its host put the
+/// window in one ([`crate::hosted_window::HostedWindow::set_workspace`]).
+#[must_use]
+pub fn workspace() -> Option<String> {
+    window().and_then(|window| window.workspace())
 }
 
 /// Which window this module's calls act on now: the one a host lent the app
@@ -1037,11 +1232,13 @@ pub fn declare(toolbar: Option<WindowToolbar>) {
     });
 }
 
-/// `toolbar` as a declaration: bounded, without a notice, which is the
-/// window's ([`notify`]) rather than any declaration's.
+/// `toolbar` as a declaration: bounded, without a notice or reactions,
+/// which are the window's ([`notify`], [`show_reactions`]) rather than any
+/// declaration's.
 pub(crate) fn declaration(toolbar: WindowToolbar) -> WindowToolbar {
     WindowToolbar {
         notice: None,
+        reactions: None,
         ..toolbar.bounded()
     }
 }
@@ -1119,24 +1316,133 @@ pub fn notice() -> Option<ToolbarNotice> {
     NOTICE.with(|notice| notice.borrow().clone())
 }
 
-/// What the window's bar shows: the slots declared, with the notice up.
+/// What the window's bar shows: the slots declared, with the notice up and
+/// the reactions shown.
 #[must_use]
 pub fn shown() -> Option<WindowToolbar> {
-    with_notice(declared(), notice())
+    with_window_owned(declared(), notice(), reactions(), view_only())
 }
 
-/// `toolbar` with `notice` up in it.
-pub(crate) fn with_notice(
-    toolbar: Option<WindowToolbar>,
+/// `toolbar` with `notice` up in it, `reactions` at its end and its
+/// location marked [`ToolbarLocation::view_only`] when `view_only`.
+pub(crate) fn with_window_owned(
+    mut toolbar: Option<WindowToolbar>,
     notice: Option<ToolbarNotice>,
+    reactions: Option<ToolbarReactions>,
+    view_only: bool,
 ) -> Option<WindowToolbar> {
-    match (toolbar, notice) {
-        (toolbar, None) => toolbar,
-        (toolbar, Some(notice)) => Some(WindowToolbar {
-            notice: Some(notice),
-            ..toolbar.unwrap_or_default()
-        }),
+    if view_only
+        && let Some(location) = toolbar
+            .as_mut()
+            .and_then(|toolbar| toolbar.location.as_mut())
+    {
+        location.view_only = true;
     }
+    if notice.is_none() && reactions.is_none() {
+        return toolbar;
+    }
+    Some(WindowToolbar {
+        notice,
+        reactions,
+        ..toolbar.unwrap_or_default()
+    })
+}
+
+/// Say in the window's bar whether its person may only look at what it
+/// shows ([`ToolbarLocation::view_only`]). Cheap when nothing changed.
+pub fn show_view_only(view_only: bool) {
+    if let Some(window) = window() {
+        window.show_view_only(view_only);
+        return;
+    }
+    VIEW_ONLY.with(|current| {
+        if current.replace(view_only) != view_only {
+            REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
+        }
+    });
+}
+
+/// Whether the window's bar says its person may only look.
+#[must_use]
+pub fn view_only() -> bool {
+    if let Some(window) = window() {
+        return window.view_only();
+    }
+    VIEW_ONLY.with(Cell::get)
+}
+
+/// Show `reactions` at the end of the window's bar (`None`: none), as the
+/// reactions to the one thing the window shows. Cheap when nothing changed.
+/// Whoever shows them takes the presses on them
+/// ([`take_reaction_presses`]).
+pub fn show_reactions(reactions: Option<ToolbarReactions>) {
+    let reactions = reactions
+        .map(|mut reactions| {
+            reactions.bound();
+            reactions
+        })
+        .filter(|reactions| !reactions.is_empty());
+    if let Some(window) = window() {
+        window.show_reactions(reactions);
+        return;
+    }
+    REACTIONS.with(|current| {
+        let mut current = current.borrow_mut();
+        if *current != reactions {
+            *current = reactions;
+            REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
+        }
+    });
+}
+
+/// The reactions shown in the window's bar.
+#[must_use]
+pub fn reactions() -> Option<ToolbarReactions> {
+    if let Some(window) = window() {
+        return window.reactions();
+    }
+    REACTIONS.with(|reactions| reactions.borrow().clone())
+}
+
+/// A press on the window's reactions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ReactionPress {
+    /// One that does nothing: the person may not react.
+    Inert,
+    /// The emoji whose pill it presses, or which the picker picked.
+    Emoji(String),
+}
+
+/// What `event` is to the window's `reactions`: `None` where it is no
+/// press on them (an event of the app's). Every press on them is the
+/// reactions' shower's ([`take_reaction_presses`]), never among the app's
+/// slot events.
+pub(crate) fn reaction_press(
+    reactions: Option<&ToolbarReactions>,
+    event: &ToolbarEvent,
+) -> Option<ReactionPress> {
+    let ToolbarEvent::Action { id } = event else {
+        return None;
+    };
+    let emoji = id.strip_prefix(REACTION_ACTION_PREFIX)?;
+    let reacts = reactions.is_some_and(|reactions| reactions.can_react)
+        && !emoji.is_empty()
+        && emoji.len() <= MAX_REACTION_EMOJI_BYTES;
+    Some(if reacts {
+        ReactionPress::Emoji(emoji.to_owned())
+    } else {
+        ReactionPress::Inert
+    })
+}
+
+/// The emoji pressed (or picked) among the window's reactions since the
+/// last call, oldest first.
+#[must_use]
+pub fn take_reaction_presses() -> Vec<String> {
+    if let Some(window) = window() {
+        return window.take_reaction_presses();
+    }
+    REACTION_PRESSES.with(|presses| std::mem::take(&mut *presses.borrow_mut()))
 }
 
 /// Bumped by every [`declare`] and [`notify`] that changed something, so a
@@ -1263,6 +1569,19 @@ pub fn deliver(event: ToolbarEvent) {
                 presses.push(id);
             }
         });
+        return;
+    }
+    if let Some(press) =
+        REACTIONS.with(|reactions| reaction_press(reactions.borrow().as_ref(), &event))
+    {
+        if let ReactionPress::Emoji(emoji) = press {
+            REACTION_PRESSES.with(|presses| {
+                let mut presses = presses.borrow_mut();
+                if presses.len() < MAX_PENDING {
+                    presses.push(emoji);
+                }
+            });
+        }
         return;
     }
     EVENTS.with(|events| {
@@ -1476,6 +1795,14 @@ mod tests {
                     mode: crate::widget::FindMode::Regex,
                 },
             },
+            ToolbarEvent::SearchCover {
+                cover: Some(WholeRect {
+                    x0: 120,
+                    y0: 0,
+                    x1: 300,
+                    y1: 168,
+                }),
+            },
             ToolbarEvent::SearchReplace {
                 with: "dog".into(),
                 all: true,
@@ -1487,7 +1814,7 @@ mod tests {
             deliver(event);
         }
         let taken = take_events();
-        assert_eq!(taken.len(), 10);
+        assert_eq!(taken.len(), 11, "every event reaches the app");
         assert_eq!(taken[0], ToolbarEvent::Back);
         assert!(take_events().is_empty());
         let wire = serde_json::to_string(&browser()).unwrap();
@@ -1499,6 +1826,82 @@ mod tests {
             browser().location.unwrap().edit_value(),
             "https://duckduckgo.com/?q=rust"
         );
+    }
+
+    #[test]
+    fn the_windows_reactions_are_its_own_and_their_presses_go_to_their_shower() {
+        let pill = |emoji: &str| ToolbarReaction {
+            emoji: emoji.into(),
+            count: 2,
+            mine: true,
+            names: (0..40).map(|n| format!("Person {n}")).collect(),
+        };
+        let mut toolbar = browser();
+        toolbar.reactions = Some(ToolbarReactions {
+            pills: vec![pill("👍")],
+            can_react: true,
+        });
+        declare(Some(toolbar));
+        assert_eq!(
+            declared().and_then(|toolbar| toolbar.reactions),
+            None,
+            "a declaration carries no reactions: they are the window's"
+        );
+        let before = revision();
+        show_reactions(Some(ToolbarReactions {
+            pills: (0..30)
+                .map(|n| pill(&format!("{}", char::from_u32(0x1F600 + n).unwrap())))
+                .collect(),
+            can_react: true,
+        }));
+        assert_ne!(revision(), before, "the bar is told");
+        let shown = shown()
+            .and_then(|toolbar| toolbar.reactions)
+            .expect("shown");
+        assert_eq!(shown.pills.len(), MAX_REACTION_PILLS);
+        assert!(
+            shown
+                .pills
+                .iter()
+                .all(|pill| pill.names.len() == MAX_REACTOR_NAMES)
+        );
+        let wire = serde_json::to_string(&shown).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ToolbarReactions>(&wire).unwrap(),
+            shown
+        );
+
+        let _ = take_events();
+        deliver(ToolbarEvent::Action {
+            id: reaction_action("🎉"),
+        });
+        deliver(ToolbarEvent::Action {
+            id: "reload".into(),
+        });
+        assert_eq!(take_reaction_presses(), vec!["🎉".to_owned()]);
+        assert_eq!(
+            take_events(),
+            vec![ToolbarEvent::Action {
+                id: "reload".into()
+            }],
+            "the app hears its own slots only"
+        );
+
+        show_reactions(Some(ToolbarReactions {
+            pills: vec![pill("👍")],
+            can_react: false,
+        }));
+        deliver(ToolbarEvent::Action {
+            id: reaction_action("👍"),
+        });
+        assert!(
+            take_reaction_presses().is_empty(),
+            "someone who may not react presses nothing"
+        );
+        assert!(take_events().is_empty(), "nor does the app hear it");
+        show_reactions(Some(ToolbarReactions::default()));
+        assert_eq!(reactions(), None, "nothing to show is none");
+        declare(None);
     }
 
     #[test]

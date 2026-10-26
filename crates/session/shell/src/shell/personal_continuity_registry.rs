@@ -254,7 +254,7 @@ impl ContinuationRegistry {
     pub(crate) fn drain_owner_views(
         &mut self,
     ) -> Vec<(
-        ui::collaboration::owner_view::OwnerView,
+        collab_types::handoff::OwnerView,
         Option<crate::shell::network::AuthenticatedPersonalRoute>,
     )> {
         self.owner_views.drain()

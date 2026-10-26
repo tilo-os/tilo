@@ -101,6 +101,9 @@ class HardwareProfileTests(unittest.TestCase):
             value["devicetree"] = None
             value.pop("wifi_wake_on_wlan")
             value.pop("internal_keyboards")
+            # No device tree reserves a ramoops region on such a board, so its
+            # panic record goes to an EFI variable.
+            value["crash_record"] = value["crash_record"] | {"storage": "efi-variable"}
             definition.write_text(json.dumps(value))
             self.data["id"] = value["id"]
             self.data["devicetree"] = self.data["devicetree_sha256"] = None

@@ -60,10 +60,15 @@ pub enum ChipStyle {
     /// measured on the washed body.
     Tinted(Tone),
     /// Something that wants your attention (an unread count, a mention,
-    /// something live): the one filled pill, in your colour
+    /// something live): a filled pill in your colour
     /// (`intent.you`) with ink measured on it, the same mark as a sidebar's
     /// unread count. Never danger red: red is an error or a failure.
     Live,
+    /// What you picked, numbered in the order you picked it: the accent
+    /// fill with its own label colour (`intent.accent`, `intent.on_accent`),
+    /// as a primary action's, so the number is the selection's colour and
+    /// reads white in every theme.
+    Accent,
 }
 
 /// The resolved colours of one pill.
@@ -123,6 +128,12 @@ impl ChipStyle {
                     lead: colors.ink_on(fill, tint, NON_TEXT_MIN_CONTRAST),
                 }
             }
+            Self::Accent => ChipColors {
+                fill: colors.intent.accent,
+                edge: None,
+                ink: colors.intent.on_accent,
+                lead: colors.intent.on_accent,
+            },
             Self::Live => {
                 let fill = colors.intent.you;
                 let ink = colors.on_surface_at(fill, ON_FILL_MIN_CONTRAST).ink;
@@ -627,9 +638,14 @@ pub struct Chip {
 
 impl Chip {
     pub fn new(label: impl Into<String>) -> Self {
+        Self::new_owned(label.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(label: String) -> Self {
         static STOCK: std::sync::LazyLock<PillMetrics> =
             std::sync::LazyLock::new(|| PillMetrics::of(&Theme::dark(), TextRole::Label));
-        let label = label.into();
         Self {
             activation: Activation::new(label.clone()),
             tooltip: None,
@@ -1372,6 +1388,12 @@ mod tests {
             assert_eq!(live.fill, theme.tokens.colors.intent.you);
             assert_ne!(live.fill, theme.tokens.colors.semantic.danger);
             assert!(crate::a11y::contrast_ratio(live.ink, live.fill) >= ON_FILL_MIN_CONTRAST);
+            // A numbered pick is the accent with its own label, as a
+            // primary action's: never ink measured onto a lighter fill.
+            let picked = ChipStyle::Accent.colors(&theme, ground, false, false);
+            assert_eq!(picked.fill, theme.tokens.colors.intent.accent);
+            assert_eq!(picked.ink, theme.tokens.colors.intent.on_accent);
+            assert!(crate::a11y::contrast_ratio(picked.ink, picked.fill) >= ON_FILL_MIN_CONTRAST);
             let neutral = ChipStyle::Neutral.colors(&theme, ground, false, false);
             assert_eq!(neutral.fill, theme.tokens.colors.surfaces.raised);
             // A chosen chip is the design system's selected treatment, the

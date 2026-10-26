@@ -38,7 +38,7 @@ case ${1:-} in
       --platform "$platform" --build-arg "BASE_REF=$BASE_REF"
     # Its architecture and base, its package manifest and no repository to fall back to,
     # exactly one signature-checked kernel SRPM whose recorded checksum still matches, and the
-    # build tools.
+    # build tools: on x86_64 also the aarch64 cross toolchain the aarch64 kernel builds with.
     bash tools/ci/publish/oci-run.sh "$out/image.oci.tar" sh -euc '
       test "$(cat /usr/lib/tilo/kernel-buildroot-arch)" = "$1"
       test "$(cat /usr/lib/tilo/kernel-buildroot-base)" = "$2"
@@ -47,7 +47,13 @@ case ${1:-} in
       test "$(find /usr/src/tilo-kernel -maxdepth 1 -name "kernel-*.src.rpm" | wc -l)" -eq 1
       cd /usr/src/tilo-kernel
       sed -n 2p /usr/lib/tilo/kernel-buildroot-srpm.txt | sha256sum --check --strict
-      command -v createrepo_c rpmbuild gcc clang cargo pahole >/dev/null
+      command -v createrepo_c rpmbuild gcc clang cargo pahole ccache >/dev/null
+      if [ "$1" = x86_64 ]; then
+        test "$(cat /usr/lib/tilo/kernel-buildroot-cross)" = "aarch64 aarch64-linux-gnu-"
+        command -v aarch64-linux-gnu-gcc aarch64-linux-gnu-ld aarch64-linux-gnu-strip >/dev/null
+      else
+        test ! -e /usr/lib/tilo/kernel-buildroot-cross
+      fi
       cat /usr/lib/tilo/kernel-buildroot-srpm.txt' sh "$arch" "$BASE_REF"
     ;;
   pins)

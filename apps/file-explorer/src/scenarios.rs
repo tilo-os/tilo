@@ -29,6 +29,7 @@ const ALL_SCENARIOS: &[&str] = &[
     "context-menu",
     "dropmove",
     "drives",
+    "empty",
     "error",
     "grid",
     "history",
@@ -71,6 +72,7 @@ const PORTABLE_SCENARIOS: &[&str] = &[
     "context-menu",
     "dropmove",
     "drives",
+    "empty",
     "error",
     "grid",
     "loading",
@@ -156,6 +158,8 @@ fn write_scene(root: &Path, scenario: Option<&str>) -> std::io::Result<Scene> {
             write_archive(&home)?;
             (home.join("Downloads"), Vec::new())
         }
+        // A standard place with nothing in it yet.
+        Some("empty") => (home.join("Videos"), Vec::new()),
         _ => (home.clone(), Vec::new()),
     };
     Ok(Scene {
@@ -196,10 +200,11 @@ fn make_dir(path: &Path) -> std::io::Result<()> {
     std::fs::File::open(path)?.set_modified(scene_time())
 }
 
-/// A believable home: the standard places, a project folder to pin, a
-/// template for the "New File" menu, and a handful of documents.
+/// A believable home: the standard places, some holding what they are
+/// for, a project folder to pin, a template for the "New File" menu, and
+/// a handful of documents.
 fn write_home(home: &Path) -> std::io::Result<()> {
-    for folder in [
+    const FOLDERS: [&str; 9] = [
         "Desktop",
         "Development",
         "Documents",
@@ -209,28 +214,39 @@ fn write_home(home: &Path) -> std::io::Result<()> {
         "Public",
         "Templates",
         "Videos",
-    ] {
-        make_dir(&home.join(folder))?;
+    ];
+    for folder in FOLDERS {
+        std::fs::create_dir_all(home.join(folder))?;
     }
-    write_file(
-        &home.join("Templates").join("Meeting notes.md"),
-        b"# Notes\n",
-    )?;
-    write_file(&home.join("Templates").join("Letter.odt"), b"")?;
-    for (name, body) in [
-        ("Budget 2026.ods", b"".as_slice()),
+    for (path, body) in [
+        ("Templates/Meeting notes.md", b"# Notes\n".as_slice()),
+        ("Templates/Letter.odt", b""),
+        ("Documents/Cover letter.md", b"Dear Ms Okafor,\n"),
+        ("Documents/Lease.pdf", b""),
+        ("Downloads/Train tickets.pdf", b""),
+        ("Development/README.md", b"# Garden planner\n"),
+        ("Budget 2026.ods", b""),
         ("Holiday plan.md", b"# Lisbon in May\n"),
         ("Notes.txt", b"Pick up the keys\n"),
         ("Quarterly report.pdf", b""),
         ("Reading list.txt", b"The Lantern-Keeper\n"),
         ("Recipes.md", b"# Bread\n"),
     ] {
-        write_file(&home.join(name), body)?;
+        write_file(&home.join(path), body)?;
     }
     write_file(
         &home.join("Screenshot 2026-09-14.png"),
         &gradient_png(320, 200, 1),
     )?;
+    write_file(
+        &home.join("Pictures").join("Lisbon tram.png"),
+        &gradient_png(320, 200, 2),
+    )?;
+    // Writing into a folder dates it now: each folder takes the scene's
+    // time once what it holds is written.
+    for folder in FOLDERS {
+        make_dir(&home.join(folder))?;
+    }
     std::fs::File::open(home)?.set_modified(scene_time())
 }
 

@@ -399,6 +399,18 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
             "`check_reads` and `check_items` say what a `check = path` reads",
         ));
     }
+    // A field named twice is not the label twice: the second mention would
+    // silently name no field, and the label would read as if it had.
+    let mut named: Vec<&str> = Vec::new();
+    for part in &options.label {
+        if named.contains(&part.as_str()) {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                format!("`label = \"..\"` names `{part}` twice"),
+            ));
+        }
+        named.push(part);
+    }
     Ok(options)
 }
 
@@ -1501,8 +1513,13 @@ fn is_action_cx(ty: &Type) -> bool {
 /// like the parameter, or the record's only one; `#[action(item = field)]`
 /// names it otherwise, and anything else does not compile.
 ///
-/// Action options: `label = "..."`, `destructive` (people confirm it, through
-/// any door), `housekeeping` (a change about the record rather than to it,
+/// Action options: `label = "..."`, `destructive` (it deletes or overwrites:
+/// when Undo takes it back, as it does any change of the document alone, it
+/// runs at once and offers Undo; otherwise people confirm it, through any
+/// door), `irreversible` (it also loses what Undo cannot bring back, such
+/// as a secret every device forgets: a destructive one is confirmed even
+/// though Undo reverts its document change), `housekeeping` (a change
+/// about the record rather than to it,
 /// such as a read marker), `external` (content from outside, nobody's undo
 /// step), `local` (an action of a record with a `queue` that queues nothing,
 /// so an undoable change rather than one reaching outside), `field = "..."` (an action that writes only that field is placed
@@ -1517,7 +1534,8 @@ fn is_action_cx(ty: &Type) -> bool {
 /// `scopes = path`, `read_content = path` (`fn(&Self, Option<&Id>) ->
 /// Result<serde_json::Value, String>`), `read_content_in_doc = path` (the same
 /// read, `fn(&Self, &Doc, Option<&Id>) -> ...`, for one that needs the
-/// document itself) and `views = path`.
+/// document itself), `facts = path` (`fn(&Self) -> Result<serde_json::Value,
+/// String>`, the compact summary `Resource::facts` states) and `views = path`.
 #[proc_macro_attribute]
 pub fn resource(attr: TokenStream, item: TokenStream) -> TokenStream {
     let options = match verbs::resource_options(attr) {

@@ -119,7 +119,205 @@ fn a_track(kind: TrackKind) -> &'static str {
     }
 }
 
+/// The most candidates a refusal lists, so it stays one readable line.
+const MOST_LISTED: usize = 12;
+
+/// `text` as a name is compared: case aside, any run of spaces as one.
+fn folded(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// A source's name with a start time written after it, as
+/// `shot-b.mp4@3` or `shot-b.mp4 at 3 s`: the name and the time.
+fn with_start(named: &str) -> Option<(&str, f64)> {
+    let (name, at) = if let Some(split) = named.rsplit_once('@') {
+        split
+    } else {
+        // ASCII lowercasing keeps every byte where it was.
+        let split = named.to_ascii_lowercase().rfind(" at ")?;
+        (named.get(..split)?, named.get(split.saturating_add(4)..)?)
+    };
+    let at = at.trim();
+    let at: f64 = at.strip_suffix('s').unwrap_or(at).trim().parse().ok()?;
+    let name = name.trim();
+    (at.is_finite() && at >= 0.0 && !name.is_empty()).then_some((name, at))
+}
+
+/// `entries` joined for a refusal, at most [`MOST_LISTED`] of them.
+fn listed(entries: Vec<String>) -> String {
+    let more = entries.len().saturating_sub(MOST_LISTED);
+    let mut shown: Vec<String> = entries.into_iter().take(MOST_LISTED).collect();
+    if more > 0 {
+        shown.push(format!("and {more} more"));
+    }
+    shown.join(", ")
+}
+
 impl Project {
+    /// The title `named` names: its id, the id of a clip showing it, or its
+    /// words (or their first line, its bin name), case and spacing aside,
+    /// when exactly one title has them. An agent names a title by what it
+    /// reads on it far more often than by the id `add-title` answered.
+    pub(crate) fn title_named(&self, named: &str) -> Result<Uuid, Refusal> {
+        let named = named.trim();
+        if let Ok(id) = named.parse::<Uuid>() {
+            if self.media(id).is_some() {
+                return Ok(id);
+            }
+            if let Some(clip) = self.clip(id)
+                && self.media(clip.media).is_some_and(|m| m.text.is_some())
+            {
+                return Ok(clip.media);
+            }
+        }
+        let wanted = folded(named);
+        let titles: Vec<&MediaItem> = self.media.iter().filter(|m| m.text.is_some()).collect();
+        let reads = |media: &MediaItem| {
+            folded(&media.name) == wanted
+                || media
+                    .text
+                    .as_ref()
+                    .is_some_and(|text| folded(&text.content) == wanted)
+        };
+        let matching: Vec<&MediaItem> = titles.iter().copied().filter(|m| reads(m)).collect();
+        let entry = |media: &&MediaItem| {
+            let words = media
+                .text
+                .as_ref()
+                .map_or(&media.name, |text| &text.content);
+            let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+            format!("“{words}” ({})", media.id)
+        };
+        match matching.as_slice() {
+            [one] => Ok(one.id),
+            [] if titles.is_empty() => Err(Refusal::new(format!(
+                "no title reads `{named}`: the project has no titles; make one with add-title"
+            ))),
+            [] => Err(Refusal::new(format!(
+                "no title reads `{named}`; the titles are {}",
+                listed(titles.iter().map(entry).collect())
+            ))),
+            several => Err(Refusal::new(format!(
+                "{} titles read `{named}`: {}; name one by its id",
+                several.len(),
+                listed(several.iter().map(entry).collect())
+            ))),
+        }
+    }
+
+    /// The clip `named` names: its id, or its source (by id, by name, or a
+    /// title by its words; case and spacing aside) when that source is on
+    /// the timeline once, or once starting at the time written after it
+    /// (`shot-b.mp4@3`). A picture and the sound linked to it are one
+    /// placement, named by the picture: every linked edit takes both.
+    pub(crate) fn clip_named(&self, named: &str) -> Result<ClipId, Refusal> {
+        let named = named.trim();
+        if let Ok(id) = named.parse::<Uuid>()
+            && self.clip(id).is_some()
+        {
+            return Ok(id);
+        }
+        let (source, at, mut placed) = match self.clips_of(named) {
+            placed if placed.is_empty() => match with_start(named) {
+                Some((source, at)) => (source, Some(at), self.clips_of(source)),
+                None => (named, None, placed),
+            },
+            placed => (named, None, placed),
+        };
+        if placed.is_empty() {
+            let all: Vec<&Clip> = self.clips.iter().collect();
+            return Err(Refusal::new(if all.is_empty() {
+                format!("`{named}` names no clip: the timeline is empty")
+            } else {
+                format!(
+                    "`{named}` names no clip; the clips are {}",
+                    self.clips_listed(all)
+                )
+            }));
+        }
+        let every = placed.clone();
+        if let Some(at) = at {
+            let slack = 0.5 / self.fps.max(1.0);
+            placed.retain(|clip| (clip.start - at).abs() <= slack);
+        }
+        let leads: Vec<&Clip> = placed
+            .iter()
+            .copied()
+            .filter(|clip| !self.follows_a_picture(clip, &placed))
+            .collect();
+        match (leads.as_slice(), at) {
+            ([one], _) => Ok(one.id),
+            ([], Some(at)) => Err(Refusal::new(format!(
+                "no clip of `{source}` starts at {at} s; its clips are {}",
+                self.clips_listed(every)
+            ))),
+            (several, _) => Err(Refusal::new(format!(
+                "`{source}` is on the timeline {} times: {}; name one by its id, or as \
+                 `{source}@<start>`",
+                several.len(),
+                self.clips_listed(several.to_vec())
+            ))),
+        }
+    }
+
+    /// The clips of the sources `named` names, by id, name or a title's
+    /// words, in timeline order.
+    fn clips_of(&self, named: &str) -> Vec<&Clip> {
+        let wanted = folded(named);
+        let sources: Vec<Uuid> = self
+            .media
+            .iter()
+            .filter(|media| {
+                media.id.to_string() == named
+                    || folded(&media.name) == wanted
+                    || media
+                        .text
+                        .as_ref()
+                        .is_some_and(|text| folded(&text.content) == wanted)
+            })
+            .map(|media| media.id)
+            .collect();
+        let mut placed: Vec<&Clip> = self
+            .clips
+            .iter()
+            .filter(|clip| sources.contains(&clip.media))
+            .collect();
+        placed.sort_by(|a, b| a.start.total_cmp(&b.start));
+        placed
+    }
+
+    /// Whether `clip` is sound linked to a picture among `placed`.
+    fn follows_a_picture(&self, clip: &Clip, placed: &[&Clip]) -> bool {
+        self.clip_kind(clip.id) == TrackKind::Audio
+            && self.link_group(clip.id).iter().any(|member| {
+                *member != clip.id
+                    && self.clip_kind(*member) == TrackKind::Video
+                    && placed.iter().any(|other| other.id == *member)
+            })
+    }
+
+    /// `clips` as a refusal lists them: what each shows, where, and its id.
+    fn clips_listed(&self, clips: Vec<&Clip>) -> String {
+        listed(
+            clips
+                .into_iter()
+                .map(|clip| {
+                    format!(
+                        "{} at {} s on {} ({})",
+                        self.media(clip.media).map_or("a clip", |m| m.name.as_str()),
+                        secs(clip.start),
+                        self.track(clip.track)
+                            .map_or("no track", |t| t.name.as_str()),
+                        clip.id
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// The bin source `named`, by id or by name (case aside).
     pub(crate) fn source_named(&self, named: &str) -> Result<&MediaItem, Refusal> {
         let named = named.trim();
@@ -459,7 +657,7 @@ impl Project {
     /// follows the first line of new words.
     pub(crate) fn agent_set_title(
         &mut self,
-        media: &Id,
+        media: Uuid,
         style: &TitleStyle,
     ) -> Result<(), Refusal> {
         if style.is_empty() {
@@ -469,7 +667,7 @@ impl Project {
         }
         let item = self
             .media
-            .find_mut(media)
+            .find_mut(&key(media))
             .ok_or_else(|| Refusal::new(format!("no such source: {IMPORT_HINT}")))?;
         let Some(text) = item.text.as_mut() else {
             return Err(Refusal::new(format!(
@@ -675,7 +873,7 @@ fn bad_colour(name: &str) -> Refusal {
 }
 
 /// The colour as `#rrggbb` (with alpha when not opaque).
-fn colour_hex(colour: [f64; 4]) -> String {
+pub(crate) fn colour_hex(colour: [f64; 4]) -> String {
     let byte = |v: f64| {
         let scaled = (v.clamp(0.0, 1.0) * 255.0).round();
         // In 0..=255 after the clamp.

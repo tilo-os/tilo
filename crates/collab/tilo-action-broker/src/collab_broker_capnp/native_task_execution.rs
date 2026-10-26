@@ -1,8 +1,8 @@
 //! Native runs are recoverable from the canonical approved task, not a queue grant.
 pub(super) use super::native_task_launch::NativeLaunch;
 use super::{
-    AdmissionProvenance, CapnpBrokerState, DurableContext, InvocationInputs, InvocationJob,
-    InvocationKey, InvocationOwner, PendingTaskRun, TaskRunEnvelope, durable_local_invocation,
+    AdmissionProvenance, CapnpBrokerState, DurableContext, InvocationInputs, InvocationKey,
+    InvocationOwner, PendingTaskRun, StagedJob, TaskRunEnvelope, durable_local_invocation,
 };
 use crate::services::NativeTaskBinding;
 use std::sync::Arc;
@@ -253,6 +253,9 @@ impl CapnpBrokerState {
                     (confirmation.is_some(), witness.as_deref()),
                 ),
             )
+            .map_err(capnp::Error::failed)?
+            .start(self)
+            .await
             .map_err(capnp::Error::failed)?;
         let update = self.invocation_status(job.id).ok_or_else(|| {
             capnp::Error::failed("accepted task action has no broker state".into())
@@ -447,7 +450,9 @@ impl CapnpBrokerState {
                     .lookup(&key)?
             };
             if let Some(record) = record {
-                self.cancel_durable_record(&record)?;
+                // The run has ended; nobody waits on its children's stop.
+                // Each hears of it only once durable (`invocation_cancellation`).
+                drop(self.cancel_durable_record(&record)?);
             }
         }
         Ok(())
@@ -460,7 +465,7 @@ impl CapnpBrokerState {
         invocation: tilo_actions::InvocationId,
         offered: (super::PublishedSurface, super::PublishedAction),
         (confirmed, witness): (bool, Option<&str>),
-    ) -> Result<InvocationJob, String> {
+    ) -> Result<StagedJob, String> {
         // Dispatch the exact contract checked by native task admission. A
         // concurrent publication must not replace it with a broader need.
         if offered.0.route.cluster_id != run.cluster_id {

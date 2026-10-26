@@ -198,6 +198,9 @@ impl NativeLaunch {
         clippy::too_many_lines,
         reason = "the launch's authorization, journal intent and admission run inside one host launch callback, in order"
     )]
+    /// Admit, launch and settle the activation. It waits for the journal and
+    /// the host's launcher, so it runs on a blocking thread, never the
+    /// broker's loop.
     pub(super) fn launch(
         &self,
         state: &CapnpBrokerState,
@@ -251,10 +254,14 @@ impl NativeLaunch {
                     }
                     let wire = state.invocation_id.fetch_add(1, Ordering::Relaxed);
                     let evidence = state.native_host_action_evidence(&self.caller, &key, &intent)?;
-                    if !journal.admit_with_evidence(key.clone(), intent, wire, Some(evidence))? {
+                    let (fresh, admitted) =
+                        journal.admit_with_evidence(key.clone(), intent, wire, Some(evidence))?;
+                    if !fresh {
                         return Err("native host activation already admitted".into());
                     }
                     drop(guard);
+                    // Nothing launches before the admission is durable.
+                    admitted.wait_blocking()?;
                     #[cfg(test)]
                     test_barrier::run(self.invocation);
                     // The owner still serializes the run, but disk custody is
@@ -303,16 +310,16 @@ impl NativeLaunch {
                             },
                         },
                     };
-                    let mut guard = state
+                    let finished = state
                         .journal
                         .lock()
-                        .map_err(|_| "launch journal unavailable")?;
-                    guard
+                        .map_err(|_| "launch journal unavailable")?
                         .as_mut()
                         .map_err(|error| error.clone())?
                         .as_mut()
                         .ok_or("durable launch journal absent")?
-                        .update(&key, update, false)?;
+                        .record_update(&key, update, false)?;
+                    finished.wait_blocking()?;
                     result
                 },
             )
@@ -371,15 +378,20 @@ impl NativeLaunch {
         Ok(())
     }
 
-    pub(super) async fn deliver(&self, state: &CapnpBrokerState, peer: u64) -> Result<u64, String> {
+    pub(super) async fn deliver(
+        &self,
+        state: &Arc<CapnpBrokerState>,
+        peer: u64,
+    ) -> Result<u64, String> {
         self.check(state)?;
         if self.bootstrap {
             let caller = Caller::local_agent(&self.run.agent_id).in_room(&self.run.cluster_id);
-            self.launch(
-                state,
-                &self.destination(state)?,
-                &state.launch_place(&caller, &self.run.cluster_id, None),
-            )?;
+            let destination = self.destination(state)?;
+            let place = state.launch_place(&caller, &self.run.cluster_id, None);
+            let (launch, launching) = (self.clone(), Arc::clone(state));
+            tokio::task::spawn_blocking(move || launch.launch(&launching, &destination, &place))
+                .await
+                .map_err(|error| format!("host activation worker stopped: {error}"))??;
             let key = self.launch_key(state)?;
             let guard = state
                 .journal
@@ -464,7 +476,7 @@ impl NativeLaunch {
             ),
             offered,
         )?;
-        Ok(job.id)
+        Ok(job.start(state).await?.id)
     }
 }
 

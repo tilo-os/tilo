@@ -162,9 +162,15 @@ pub struct FormSection {
 }
 impl FormSection {
     pub fn new(title: impl Into<String>) -> Self {
+        Self::new_owned(title.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(title: String) -> Self {
         let mut section = Self::untitled();
         section.parts.children.push(Box::new(
-            Text::new(&title.into())
+            Text::new(&title)
                 .with_role(TextRole::Heading)
                 .with_heading_level(2),
         ));

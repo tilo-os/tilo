@@ -31,7 +31,7 @@ required = ["network.http"]
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri", "notifications", "gpu"]
 
 [resources]
-kinds = ["mail.mailbox", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text"]
+kinds = ["mail.mailbox", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text", "mail.copies"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -66,8 +66,8 @@ file-chooser = "via-host"
 open-uri = "via-host"
 
 [sandbox.services]
-collab = "optional@8"
-tilo-fs = "optional@8"
+collab = "optional@10"
+tilo-fs = "optional@10"
 
 [entrypoint]
 bin             = "bin/mail"

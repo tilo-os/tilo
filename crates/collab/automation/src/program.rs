@@ -133,6 +133,7 @@ mod tests {
                     appearance: None,
                 },
             )],
+            step_timeout_secs: None,
             output: None,
             grant: Vec::new(),
             triggers: Vec::new(),

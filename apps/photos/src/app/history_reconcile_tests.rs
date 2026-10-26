@@ -638,3 +638,33 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
         assert!(!app.album_editor);
     }
 }
+
+/// Save in the details sheet stands disabled until the draft differs from
+/// what the sheet opened with, and a press then saves nothing.
+#[test]
+fn details_save_waits_for_a_change() {
+    let (mut app, mut doc, id) = setup();
+    app.begin_metadata_editor(&id);
+    assert!(
+        !app.metadata_draft_changed(),
+        "an untouched draft has nothing to save"
+    );
+    app.save_metadata_editor();
+    settle(&mut app, &mut doc);
+    assert!(
+        app.metadata_editor,
+        "Save does nothing while nothing changed"
+    );
+    app.metadata_tags_input.set_text("trip");
+    assert!(app.metadata_draft_changed(), "an edited field is a change");
+    app.metadata_tags_input.set_text("");
+    assert!(
+        !app.metadata_draft_changed(),
+        "a field typed back to how it opened is not"
+    );
+    app.clear_metadata_dimension(2);
+    assert!(
+        app.metadata_draft_changed(),
+        "a field marked to clear for every photo is"
+    );
+}

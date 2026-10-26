@@ -38,11 +38,11 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@8"
-tilo-fs = "optional@8"
+collab = "optional@10"
+tilo-fs = "optional@10"
 # Select subject asks the gateway's on-device segmentation model; the app
 # still has no network and never sees the model.
-model-gateway = "optional@8"
+model-gateway = "optional@10"
 
 [entrypoint]
 bin = "bin/canvas"

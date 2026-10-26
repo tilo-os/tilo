@@ -92,6 +92,9 @@ struct FrameCost {
 #[derive(Debug, Default)]
 struct Costs {
     frames: Vec<FrameCost>,
+    /// Frames that left out what they kept on screen, and those of them
+    /// whose widgets were drawn again in full ([`crate::draw_cull`]).
+    culled: (usize, usize),
 }
 
 fn percentile(mut values: Vec<f64>, percent: f64) -> f64 {
@@ -162,7 +165,7 @@ impl Costs {
         format!(
             "{name:<22} {cpu:>7.0} {layout:>7.0} {boxes:>6.0} {draw:>6.0} {damage:>6.0} \
              {shaped:>5.0}/{shaped_max:<5.0} {draws:>6.0} {runs:>5.0} {repainted:>8.0}/{repainted_max:<8.0} \
-             {copied:>8.0} {whole:>3}{why}",
+             {copied:>8.0} {whole:>3} {left_out:>4}/{redrawn:<4}{why}",
             cpu = self.p50(|f| f.cpu_us as f64),
             layout = self.p50(|f| f.layout_us as f64),
             boxes = self.p50(|f| f.boxes_us as f64),
@@ -175,12 +178,14 @@ impl Costs {
             repainted = self.p50(|f| f.repainted),
             repainted_max = self.max(|f| f.repainted),
             copied = self.p50(|f| f.copied),
+            left_out = self.culled.0,
+            redrawn = self.culled.1,
             why = why.map(|why| format!(" ({why})")).unwrap_or_default(),
         )
     }
 }
 
-const HEADER: &str = "scroller                cpu µs layout  boxes   draw damage shaped p50/max  draws  runs  repaint px p50/max   copied whole";
+const HEADER: &str = "scroller                cpu µs layout  boxes   draw damage shaped p50/max  draws  runs  repaint px p50/max   copied whole culled/redrawn";
 
 /// The pixels `rects` cover in the window, each counted once.
 fn covered(rects: &[Rect]) -> f64 {
@@ -276,7 +281,7 @@ fn frame(app: &mut App, scene: &mut Scene, damage: &mut SurfaceDamage, input: u6
 fn shown(root: Box<dyn Widget>) -> (App, Scene, SurfaceDamage) {
     let mut app = App::new_with_controlled_inputs(crate::state::State::new(), root);
     app.set_theme(Theme::dark());
-    let mut damage = SurfaceDamage::copying();
+    let mut damage = SurfaceDamage::copying().drawing_only_damage();
     let mut scene = Scene::new();
     for at in 0..6 {
         if at == 2 {
@@ -308,6 +313,7 @@ fn scrolled(root: Box<dyn Widget>) -> Costs {
             .frames
             .push(frame(&mut app, &mut scene, &mut damage, input));
     }
+    costs.culled = app.layout.cull.tally;
     costs
 }
 
@@ -330,6 +336,7 @@ fn glided(root: Box<dyn Widget>) -> Costs {
         app.surface_input(&Window, wheel(0.0, TouchPhase::Ended), false);
     });
     let _ = damage.take_copying();
+    let culled_before = app.layout.cull.tally;
     let mut costs = Costs::default();
     for _ in 0..240 {
         tick += 1;
@@ -340,6 +347,8 @@ fn glided(root: Box<dyn Widget>) -> Costs {
         }
         costs.frames.push(cost);
     }
+    let culled = app.layout.cull.tally;
+    costs.culled = (culled.0 - culled_before.0, culled.1 - culled_before.1);
     costs
 }
 
@@ -613,3 +622,184 @@ fn scroll_cost_of_every_scroller() {
     eprintln!("{}\n\n{}", report.join("\n"), glides.join("\n"));
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
+
+/// A glide moves the content in frames no input asked for: each frame that
+/// copies the rows on screen has placed them where the copy moves them.
+#[test]
+fn a_glide_places_the_rows_it_copies() {
+    /// The top of `row` (by its place in the column) and of the first row
+    /// in view.
+    fn rows(widget: &dyn Widget, at: Option<usize>, out: &mut (Option<f64>, Option<(usize, f64)>)) {
+        if widget.name() == "Scrollable" {
+            widget.for_each_child(&mut |column| {
+                let mut index = 0;
+                column.for_each_child(&mut |row| {
+                    let rect = row.get_rect();
+                    if Some(index) == at {
+                        out.0 = Some(rect.y0);
+                    }
+                    if out.1.is_none() && rect.y1 > 0.0 {
+                        out.1 = Some((index, rect.y0));
+                    }
+                    index += 1;
+                });
+            });
+            return;
+        }
+        widget.for_each_child(&mut |child| rows(child, at, out));
+    }
+    let row_top = |app: &App, at: usize| {
+        let mut out = (None, None);
+        rows(app.root_widget.as_ref(), Some(at), &mut out);
+        out.0.expect("the column has the row")
+    };
+    let first_in_view = |app: &App| {
+        let mut out = (None, None);
+        rows(app.root_widget.as_ref(), None, &mut out);
+        out.1.expect("the column shows a row").0
+    };
+    let (mut app, mut scene, mut damage) = shown(column(2000));
+    let start = crate::time::now();
+    let at = |frame: u64| start + std::time::Duration::from_nanos(frame * FRAME_NS);
+    let mut tick = 0;
+    for _ in 0..8 {
+        with_monotonic_time(at(tick), || {
+            app.surface_input(&Window, wheel(-24.0, TouchPhase::Moved), false);
+            scene.reset();
+            app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+        });
+        damage.take_copying();
+        tick += 1;
+    }
+    with_monotonic_time(at(tick), || {
+        app.surface_input(&Window, wheel(0.0, TouchPhase::Ended), false);
+    });
+    let lifted = first_in_view(&app);
+    let mut glided = 0.0;
+    for _ in 0..30 {
+        // A row mid-view before the frame, still in view after it: the rows
+        // the copy moves are the ones on screen.
+        let row = first_in_view(&app) + 20;
+        let top = row_top(&app, row);
+        tick += 1;
+        with_monotonic_time(at(tick), || {
+            scene.reset();
+            app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+        });
+        let copied: i32 = damage
+            .take_copying()
+            .map(|(copies, _)| copies.iter().map(|copy| copy.dy).sum())
+            .unwrap_or_default();
+        let now = row_top(&app, row);
+        assert_eq!(
+            f64::from(copied),
+            now - top,
+            "the rows moved as far as the copy moved their pixels"
+        );
+        glided += now - top;
+    }
+    assert!(
+        glided < 0.0 && first_in_view(&app) > lifted,
+        "the flick glided on: {glided} px, from row {lifted} to {}",
+        first_in_view(&app)
+    );
+}
+
+/// Rows a scroll brings into a `VirtualList` are laid out where they enter,
+/// without rebuilding the window's layout: every frame the list's tree
+/// stays the one it was, and each row it shows stands where its index puts
+/// it, the rows a copy moved as far as the copy moved their pixels.
+#[test]
+fn rows_entering_a_virtual_list_are_laid_out_in_place() {
+    /// The top of each row the list shows, by index: the rows it placed
+    /// near its box ([`Widget::for_each_child_in_clip`]); those mounted
+    /// further ahead stand where they are placed once they come near.
+    fn rows(widget: &dyn Widget, out: &mut Vec<(usize, f64)>) {
+        if widget.name() == "Text" {
+            let name = widget.accessibility().and_then(|node| node.name);
+            let index = name
+                .as_deref()
+                .and_then(|name| name.strip_prefix("Row "))
+                .and_then(|rest| rest.split(':').next())
+                .and_then(|index| index.parse().ok());
+            if let Some(index) = index {
+                out.push((index, widget.get_rect().y0));
+            }
+        }
+        widget.for_each_child_in_clip(&mut |child| rows(child, out));
+    }
+    fn list_rect(widget: &dyn Widget) -> Option<Rect> {
+        if widget.name() == "VirtualList" {
+            return Some(widget.get_rect());
+        }
+        let mut found = None;
+        widget.for_each_child(&mut |child| {
+            found = found.or_else(|| list_rect(child));
+        });
+        found
+    }
+    let shown_rows = |app: &App| {
+        let mut out = Vec::new();
+        rows(app.root_widget.as_ref(), &mut out);
+        out.sort_by_key(|(index, _)| *index);
+        out
+    };
+    let (mut app, mut scene, mut damage) = shown(virtual_list(2000));
+    let rebuilds = app.layout.rebuilds;
+    let mut before = shown_rows(&app);
+    for _ in 0..FRAMES {
+        app.surface_input(&Window, wheel(-STEP, TouchPhase::Moved), false);
+        scene.reset();
+        app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+        let copied: i32 = damage
+            .take_copying()
+            .map(|(copies, _)| copies.iter().map(|copy| copy.dy).sum())
+            .unwrap_or_default();
+        let now = shown_rows(&app);
+        assert!(!now.is_empty(), "the list shows rows");
+        // Every row is one line: measured, they stand one pitch apart.
+        let pitch = now[1].1 - now[0].1;
+        assert!(pitch > 0.0, "the rows stand down the list: {now:?}");
+        let origin = now[0].1 - now[0].0 as f64 * pitch;
+        for (index, top) in &now {
+            assert!(
+                (top - (origin + *index as f64 * pitch)).abs() < 0.01,
+                "row {index} stands where its index puts it: {now:?}"
+            );
+        }
+        let list = list_rect(app.root_widget.as_ref()).expect("the list is shown");
+        assert!(now[0].1 <= list.y0, "the rows reach the top: {now:?}");
+        let (last, bottom) = now[now.len() - 1];
+        assert!(
+            bottom + pitch >= list.y1,
+            "the rows reach the bottom: {now:?}"
+        );
+        assert_eq!(last + 1 - now[0].0, now.len(), "the rows are contiguous");
+        if copied != 0 {
+            let kept = before.iter().find_map(|(index, then)| {
+                now.iter()
+                    .find(|(at, _)| at == index)
+                    .map(|(_, top)| top - then)
+            });
+            assert_eq!(
+                kept,
+                Some(f64::from(copied)),
+                "the rows moved as far as the copy moved their pixels"
+            );
+        }
+        before = now;
+    }
+    assert!(
+        before[0].0 > 40,
+        "the scroll brought rows in: first row {}",
+        before[0].0
+    );
+    assert_eq!(
+        app.layout.rebuilds, rebuilds,
+        "the rows entered without rebuilding the layout"
+    );
+    assert!(app.layout.remounts > 0, "they were mounted in place");
+}
+
+#[path = "draw_cull_frame_tests.rs"]
+mod culled_frames;

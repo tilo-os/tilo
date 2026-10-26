@@ -62,8 +62,9 @@ pub fn items(command: &str, output: &[u8]) -> Vec<RunItem> {
     items
 }
 
-/// `text` without its escape sequences (CSI, OSC, other `ESC x`), carriage
-/// returns resolved to the last overwrite of each line.
+/// `text` without its escape sequences (CSI, OSC and the other strings,
+/// charset designations, other `ESC x`), carriage returns resolved to the
+/// last overwrite of each line.
 #[must_use]
 pub fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -78,7 +79,8 @@ pub fn strip_ansi(text: &str) -> String {
                         }
                     }
                 }
-                Some(']') => {
+                // OSC, and DCS, SOS, PM and APC: a string up to BEL or ST.
+                Some(']' | 'P' | 'X' | '^' | '_') => {
                     while let Some(next) = chars.next() {
                         if next == '\u{7}' {
                             break;
@@ -89,6 +91,14 @@ pub fn strip_ansi(text: &str) -> String {
                         }
                     }
                 }
+                // Intermediates, then one final byte: the charset
+                // designations `ESC ( B` (which `tput sgr0` prints),
+                // `ESC ) 0`, `ESC $ ( B` and the like.
+                Some(' '..='/') => {
+                    while chars.next_if(|next| (' '..='/').contains(next)).is_some() {}
+                    chars.next_if(|next| ('0'..='~').contains(next));
+                }
+                // Any other `ESC x`, such as `ESC 7` or `ESC =`.
                 _ => {}
             },
             '\r' => {

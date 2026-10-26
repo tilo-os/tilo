@@ -4958,6 +4958,7 @@ fn spawn_atspi_proxy(
             crate::sandbox::AtspiBindPlan {
                 host_socket: guard.socket_path().to_path_buf(),
                 sandbox_path: dbus_proxy::sandbox_atspi_path(uid),
+                read_only: dbus_proxy::atspi_read_only(),
             },
             guard,
         )),

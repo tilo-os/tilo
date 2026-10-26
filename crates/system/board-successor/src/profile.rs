@@ -33,13 +33,55 @@ const FIELDS: [&str; 5] = [
     "devicetree",
     "firmware",
 ];
-const OPTIONAL_V2: [&str; 6] = [
+const OPTIONAL_V2: [&str; 8] = [
     "boot_modules",
     "always_on",
     "kernel_args",
     "wifi_wake_on_wlan",
     "internal_keyboards",
     "firmware_exclude",
+    "crash_record",
+    "dmi",
+];
+/// The DMI system identity of a board whose firmware describes its devices,
+/// which has no device tree for a model-bound quirk to match on.
+const DMI_FIELDS: [&str; 2] = ["sys_vendor", "product_name"];
+/// Where the kernel keeps a record of a panic, what resets a hung machine,
+/// and which detector panics first. Every definition declares all three.
+const CRASH_RECORD_FIELDS: [&str; 3] = ["storage", "watchdog", "lockup"];
+const CRASH_BACKENDS: [&str; 4] = ["ramoops", "efi-variable", "block", "none"];
+const CRASH_WATCHDOGS: [&str; 3] = ["hardware", "module", "none"];
+const CRASH_LOCKUP: [&str; 3] = ["buddy", "nmi", "none"];
+/// Kernel arguments that make the watchdog reset a machine nobody feeds.
+const CRASH_WATCHDOG_ARGS: [&str; 3] =
+    ["systemd.watchdog_sec=", "sbsa_gwdt.action=1", "nowayout=1"];
+/// The argument that makes a stuck CPU panic rather than only log, per detector.
+const CRASH_LOCKUP_ARGS: [(&str, &[&str]); 2] = [
+    (
+        "buddy",
+        &[
+            "nmi_watchdog=panic",
+            "nmi_watchdog=1",
+            "softlockup_panic=1",
+            "hardlockup_panic=1",
+        ],
+    ),
+    (
+        "nmi",
+        &[
+            "nmi_watchdog=panic",
+            "softlockup_panic=1",
+            "hardlockup_panic=1",
+        ],
+    ),
+];
+/// Every argument any detector panics from, so a board that declares its stuck
+/// CPU only logs is refused when its own command line makes one panic.
+const CRASH_PANIC_ARGS: [&str; 4] = [
+    "nmi_watchdog=panic",
+    "nmi_watchdog=1",
+    "softlockup_panic=1",
+    "hardlockup_panic=1",
 ];
 const PROFILE_FIELDS: [&str; 6] = [
     "schema_version",
@@ -108,11 +150,12 @@ pattern!(MODULE_NAME, r"[a-z0-9][a-z0-9_-]{0,63}");
 pattern!(KEYBOARD_ID, r"[0-9A-F]{4}");
 pattern!(KEYBOARD_NAME, r"[A-Za-z0-9][A-Za-z0-9 :._()-]{0,79}");
 pattern!(COMPATIBLE, r"[a-z0-9][a-z0-9._-]*,[a-z0-9][a-z0-9._-]*");
+pattern!(DMI_VALUE, r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}");
 pattern!(KERNEL_VERSION, r"[A-Za-z0-9][A-Za-z0-9._+-]*");
 pattern!(DTB_DIGEST, r"[0-9a-f]{64}");
 pattern!(
     KERNEL_ARG,
-    r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})?"
+    r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})*"
 );
 
 /// The image root the profile is read from, and who must own its inputs
@@ -434,6 +477,7 @@ pub fn validate_definition(data: Value) -> Result<Map<String, Value>> {
             "Wi-Fi wake policy requires the Lenovo 83ED definition and disabled WoWLAN",
         )?;
     }
+    validate_dmi(&data)?;
     validate_internal_keyboards(&data)?;
     let kernel_args = optional_list(
         &data,
@@ -452,7 +496,95 @@ pub fn validate_definition(data: Value) -> Result<Map<String, Value>> {
         seen_args.len() == kernel_args.len(),
         "hardware definition kernel arguments must be unique",
     )?;
+    validate_crash_record(&data, &seen_args, schema_number == Some(2))?;
     Ok(data)
+}
+
+/// `validate_crash_record`: the board says where its crash record goes, what
+/// resets it and what panics first, and its kernel arguments agree.
+fn validate_crash_record(
+    data: &Map<String, Value>,
+    kernel_args: &BTreeSet<&str>,
+    required: bool,
+) -> Result<()> {
+    if !required {
+        // Schema 1 predates the record and is still accepted as-is; a board
+        // that moves to schema 2 states it.
+        return Ok(());
+    }
+    let record = match data.get("crash_record") {
+        Some(Value::Object(record)) if record.len() <= 16 => record,
+        _ => {
+            return Err(Error::value(
+                "hardware definition crash record must name a storage backend, a watchdog and a lockup detector",
+            ));
+        }
+    };
+    let present = keys(record);
+    require(
+        present.iter().all(|key| CRASH_RECORD_FIELDS.contains(key))
+            && CRASH_RECORD_FIELDS.iter().all(|key| present.contains(key)),
+        "hardware definition crash record has missing or unknown fields",
+    )?;
+    let text = |key: &str| record.get(key).and_then(Value::as_str).unwrap_or_default();
+    let storage = text("storage");
+    let watchdog = text("watchdog");
+    let lockup = text("lockup");
+    require(
+        CRASH_BACKENDS.contains(&storage),
+        "hardware definition crash record storage must name a supported backend",
+    )?;
+    require(
+        CRASH_WATCHDOGS.contains(&watchdog),
+        "hardware definition crash record watchdog must name a supported watchdog",
+    )?;
+    require(
+        CRASH_LOCKUP.contains(&lockup),
+        "hardware definition crash record lockup must name a supported detector",
+    )?;
+    // ramoops and pstore/blk are memory the board's own device tree reserves.
+    require(
+        !(matches!(storage, "ramoops" | "block")
+            && data.get("devicetree").unwrap_or(&Value::Null).is_null()),
+        "hardware definition crash record storage requires a device-tree board",
+    )?;
+    let feeds_watchdog = kernel_args.iter().any(|arg| {
+        CRASH_WATCHDOG_ARGS
+            .iter()
+            .any(|prefix| arg.starts_with(prefix))
+    });
+    require(
+        (watchdog != "none") == feeds_watchdog,
+        "hardware definition crash record watchdog must name the watchdog its arguments feed",
+    )?;
+    // A board whose detector only reports must not panic from a stuck CPU.
+    let panic_args: &[&str] = if lockup == "none" {
+        CRASH_PANIC_ARGS.as_slice()
+    } else {
+        CRASH_LOCKUP_ARGS
+            .iter()
+            .find(|(name, _)| *name == lockup)
+            .map_or(&[], |(_, args)| args)
+    };
+    let panics = panic_args.iter().any(|arg| kernel_args.contains(arg));
+    require(
+        (lockup != "none") == panics,
+        "hardware definition crash record lockup must name the detector its arguments panic from",
+    )?;
+    // The watchdog driver has to reach the initramfs to be fed from boot.
+    let modular_watchdog = optional_list(
+        data,
+        "boot_modules",
+        64,
+        "hardware definition boot modules must be a bounded name list",
+    )?
+    .iter()
+    .filter_map(Value::as_str)
+    .any(|name| name.ends_with("_wdt"));
+    require(
+        watchdog != "module" || modular_watchdog,
+        "hardware definition crash record watchdog module must be a boot module",
+    )
 }
 
 /// The firmware mapping, system firmware and removable firmware packages of
@@ -557,8 +689,10 @@ fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
         "hardware definition internal keyboards must be a bounded list",
     )?;
     require(
-        keyboards.is_empty() || !data.get("devicetree").unwrap_or(&Value::Null).is_null(),
-        "hardware definition internal keyboards require a device-tree board",
+        keyboards.is_empty()
+            || !data.get("devicetree").unwrap_or(&Value::Null).is_null()
+            || data.get("dmi").is_some(),
+        "hardware definition internal keyboards require a device-tree or DMI board",
     )?;
     let mut seen = BTreeSet::new();
     for keyboard in keyboards {
@@ -571,7 +705,9 @@ fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
             }
         };
         require(
-            keyboard.values().all(Value::is_string),
+            keyboard
+                .values()
+                .all(|value| value.is_string() || value.is_null()),
             "hardware definition internal keyboard fields must be strings",
         )?;
         let text = |key: &str| {
@@ -592,8 +728,17 @@ fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
             KEYBOARD_NAME.is_match(text("name")),
             "hardware definition internal keyboard name is invalid",
         )?;
+        // A device-tree board confines the quirk by its compatible; a
+        // firmware-described one has no compatible and is confined by the
+        // definition's DMI identity instead. Exactly one applies, so a quirk
+        // can never name an identity that cannot both apply and be true.
+        let board_has_devicetree = !data.get("devicetree").unwrap_or(&Value::Null).is_null();
         require(
-            COMPATIBLE.is_match(text("devicetree_compatible")),
+            if board_has_devicetree {
+                COMPATIBLE.is_match(text("devicetree_compatible"))
+            } else {
+                keyboard.get("devicetree_compatible") == Some(&Value::Null)
+            },
             "hardware definition internal keyboard device-tree compatible is invalid",
         )?;
         require(
@@ -602,6 +747,33 @@ fn validate_internal_keyboards(data: &Map<String, Value>) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// `validate_dmi`: the DMI system identity a firmware-described board matches
+/// on, kept out of a board that already has a device tree to name it.
+fn validate_dmi(data: &Map<String, Value>) -> Result<()> {
+    let Some(dmi) = data.get("dmi") else {
+        return Ok(());
+    };
+    let Value::Object(dmi) = dmi else {
+        return Err(Error::value(
+            "hardware definition DMI has missing or unknown fields",
+        ));
+    };
+    require(
+        keys(dmi) == names(&DMI_FIELDS),
+        "hardware definition DMI has missing or unknown fields",
+    )?;
+    for field in DMI_FIELDS {
+        require(
+            as_str(dmi.get(field).unwrap_or(&Value::Null)).is_some_and(|v| DMI_VALUE.is_match(v)),
+            format!("hardware definition DMI {field} is invalid"),
+        )?;
+    }
+    require(
+        data.get("devicetree").unwrap_or(&Value::Null).is_null(),
+        "hardware definition DMI requires a firmware-described board",
+    )
 }
 
 /// `validate_target_imgref(value, root=root)`: a development image's bound
@@ -978,6 +1150,7 @@ mod tests {
             &*KEYBOARD_NAME,
             &*COMPATIBLE,
             &*KERNEL_ARG,
+            &*DMI_VALUE,
             &*KERNEL_VERSION,
             &*DTB_DIGEST,
         ] {

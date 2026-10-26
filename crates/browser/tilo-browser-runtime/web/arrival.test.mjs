@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
+import vm from 'node:vm';
 import {existsSync} from 'node:fs';
 import {arrivalLines, arrivalLocale, createArrival, createRotation, doorCopy, failureMessage, FAILURES, fill, inviteLinkTarget, isCoffeeHost, lineParts, refusedByHost, waitListFailure,
   parseMessages, progressIn, SEGMENTS, segmentOf, STEP_NOTES, stoppedInside, visitLine} from './arrival.mjs';
@@ -29,7 +30,8 @@ test('a visit opens with a joke, mixes two jokes to a tip and never repeats a li
 });
 
 test('lines rotate every 2.5 s from the first second, and the last stays once all are shown', () => {
-  const arrival = createArrival({lines: {jokes: ['a', 'b'], tips: ['c']}, random: seeded(3)});
+  // A step that runs long says so instead (below); here none does.
+  const arrival = createArrival({lines: {jokes: ['a', 'b'], tips: ['c']}, random: seeded(3), slowMs: {}, stallMs: Infinity});
   assert.equal(arrival.update(opening, 0).line, null);
   assert.equal(arrival.update(opening, 999).line, null, 'nothing before a second');
   assert.equal(arrival.update(opening, 999).bar, false, 'no bar before a second either');
@@ -85,6 +87,39 @@ test('a first frame that is late says so instead of waiting in silence', () => {
   assert.equal(slow.note, 'Still starting graphics. Without a graphics card this takes longer.');
   assert.equal(slow.bar, true);
   assert.equal(arrival.update({arrival: 'done'}, 12_100).note, null);
+});
+
+// Catches a page left on "Loading Tilo…" (or opening, or starting
+// graphics) with nothing to do but wait when a step never finishes.
+test('a step that does not move on offers Try again and keeps waiting', () => {
+  const arrival = createArrival({lines: {jokes, tips}, slowNotes: {stalled: 'Dauert länger.'}});
+  let at = 0;
+  for (const step of [loading, {arrival: 'load', wasmFetched: true}, {arrival: 'join'}, {arrival: 'open'}]) {
+    assert.equal(arrival.update(step, at).stalled, false, `${step.arrival} starts unstalled`);
+    assert.equal(arrival.update(step, at + 29_999).stalled, false);
+    const stalled = arrival.update(step, at + 30_000);
+    assert.equal(stalled.stalled, true, step.arrival);
+    assert.equal(stalled.note, 'Dauert länger.');
+    assert.equal(stalled.bar, true, 'the bar stays: it is still waiting');
+    at += 40_000;
+  }
+  // Waiting for a person (to be let in) never stalls.
+  arrival.update({arrival: 'join', statusShown: true}, 200_000);
+  assert.equal(arrival.update({arrival: 'join', statusShown: true}, 900_000).stalled, false);
+  // Graphics stall when the runtime says so, not by the clock: its steps
+  // (device, pipelines, first frame) each get their own time.
+  arrival.update({arrival: 'draw'}, 1_000_000);
+  assert.equal(arrival.update({arrival: 'draw'}, 1_500_000).stalled, false);
+  assert.equal(arrival.update({arrival: 'draw', gpuStalled: true}, 1_500_001).stalled, true);
+  assert.equal(arrival.update({arrival: 'done', gpuStalled: true}, 1_500_002).stalled, false);
+});
+
+test('a slow start or opening says so too', () => {
+  const arrival = createArrival({lines: {jokes, tips}});
+  arrival.update({arrival: 'load', wasmFetched: true}, 2000);
+  assert.equal(arrival.update({arrival: 'load', wasmFetched: true}, 10_000).note, 'Still starting Tilo. This device may be busy.');
+  arrival.update({arrival: 'open'}, 11_000);
+  assert.equal(arrival.update({arrival: 'open'}, 19_000).note, 'Still opening the workspace.');
 });
 
 test('the bar follows the measured phases, creeps within one, and never runs backwards', () => {
@@ -365,7 +400,67 @@ test('both locales word the whole door, its wait list and signing in', () => {
   const door = [...en.keys()].filter(id => /^arrival-(door|wait|sign-in|invite)/.test(id));
   assert.ok(door.length >= 25, `${door.length} door messages`);
   for (const id of door) assert.ok(de.has(id), `de-DE: ${id}`);
-  for (const [id, arg] of [['arrival-wait-done', 'email'], ['arrival-wait-removal', 'contact'], ['arrival-sign-in-not-member', 'workspace']]) {
+  for (const [id, arg] of [['arrival-wait-inbox', 'email'], ['arrival-wait-listed', 'email'], ['arrival-wait-contact', 'contact'], ['arrival-sign-in-not-member', 'workspace']]) {
     for (const messages of [en, de]) assert.ok(messages.get(id).includes(`{ $${arg} }`), id);
+  }
+});
+
+/** stall.inline.js run against a page whose modules have not run: its
+ * root, status line and the listeners and timer it set. */
+function stallPage() {
+  const listeners = {};
+  const attributes = new Set();
+  const root = {dataset: {arrival: 'load'}, setAttribute: name => attributes.add(name)};
+  const status = {textContent: 'Loading Tilo…'};
+  let timer;
+  const page = {
+    document: {documentElement: root, getElementById: id => (id === 'status' ? status : null)},
+    addEventListener: (type, listener) => { (listeners[type] ??= []).push(listener); },
+    setTimeout: (fn, ms) => { timer = {fn, ms}; },
+    location: {reloads: 0, reload() { this.reloads++; }},
+  };
+  vm.runInNewContext(readFileSync(here('stall.inline.js'), 'utf8'), page);
+  const fire = (type, event) => { for (const listener of listeners[type] ?? []) listener(event); };
+  return {root, status, attributes, timer: () => timer, fire, location: page.location};
+}
+
+// Catches a page whose module failed to load sitting on "Loading Tilo…"
+// for good, with no script left to say so or to try again.
+test('a module that fails to load stops the page with Try again, which reloads', () => {
+  const page = stallPage();
+  page.fire('error', {target: {tagName: 'SCRIPT'}});
+  assert.equal(page.root.dataset.arrival, 'stopped');
+  assert.equal(page.root.dataset.entry, 'failed');
+  assert.match(page.status.textContent, /could not load/);
+  page.fire('click', {target: {id: 'arrival-retry'}});
+  assert.equal(page.location.reloads, 1);
+  // Once the arrival screen runs, a failing script is its page's to handle.
+  const running = stallPage();
+  running.root.dataset.arrivalProgress = '0.100';
+  running.fire('error', {target: {tagName: 'SCRIPT'}});
+  assert.equal(running.root.dataset.arrival, 'load');
+  const image = stallPage();
+  image.fire('error', {target: {tagName: 'IMG'}});
+  assert.equal(image.root.dataset.arrival, 'load');
+});
+
+test('modules still not running after a while offer Try again while they keep loading', () => {
+  const slow = stallPage();
+  assert.ok(slow.timer().ms <= 30_000);
+  slow.timer().fn();
+  assert.ok(slow.attributes.has('data-arrival-stalled'));
+  assert.equal(slow.root.dataset.arrival, 'load', 'still loading');
+  const started = stallPage();
+  started.root.dataset.arrivalProgress = '0.200';
+  started.timer().fn();
+  assert.ok(!started.attributes.has('data-arrival-stalled'));
+});
+
+test('every entry page inlines the stall fallback verbatim after the scrubber, and shows Try again when stalled', () => {
+  const fallback = readFileSync(here('stall.inline.js'), 'utf8');
+  for (const page of ['index.html', 'app/index.html']) {
+    const html = readFileSync(here(page), 'utf8');
+    assert.ok(html.includes(`</script>\n<script>\n${fallback}</script>`), `${page} must inline stall.inline.js unchanged`);
+    assert.match(html, /\[data-arrival-stalled\][^{]*#arrival-retry \{ display: block; \}/, page);
   }
 });

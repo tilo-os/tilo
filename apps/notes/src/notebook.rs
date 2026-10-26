@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, Refusal, Set, resource,
+    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, Reactions, Refusal, Set, resource,
 };
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
@@ -73,6 +73,18 @@ pub struct Page {
     pub body: RichText,
     /// Tags
     pub tags: Set<Id>,
+    /// Made by
+    ///
+    /// The person or agent whose action made the note; none for a note
+    /// made before notes kept it, or by a field edit. Only making the note
+    /// sets it.
+    #[model(readonly)]
+    #[model(default = None)]
+    pub creator: Option<Atom>,
+    /// Reactions
+    ///
+    /// What people answered the note with, shown under its title.
+    pub reactions: Reactions,
 }
 
 /// A named tag notes carry.
@@ -111,6 +123,18 @@ impl Page {
         }
     }
 
+    /// This note, made by whoever invoked the action `cx` applies.
+    #[must_use]
+    pub fn made(self, cx: &ActionCx) -> Self {
+        Self {
+            creator: cx
+                .author()
+                .filter(|author| !author.is_empty())
+                .map(|author| Atom(author.to_owned())),
+            ..self
+        }
+    }
+
     /// The body's paragraphs as the editor shows them, a block per
     /// paragraph, with their ids.
     #[must_use]
@@ -142,6 +166,35 @@ pub fn page_id(page: PageId) -> Id {
 /// (`notes.notebook/pages/<id>`).
 fn note_key(id: Id) -> Id {
     crate::actions::page_of_resource(id.as_str()).map_or(id, page_id)
+}
+
+/// The most titles a refusal names, so it stays one readable line.
+const MOST_TITLES: usize = 20;
+
+/// A title as notes are found by it: case aside, any run of spaces as one.
+fn folded(title: &str) -> String {
+    title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// `pages`' titles as a refusal names them.
+fn titles(pages: &[&Page]) -> String {
+    if pages.is_empty() {
+        return "none yet".to_owned();
+    }
+    let more = pages.len().saturating_sub(MOST_TITLES);
+    let mut named: Vec<String> = pages
+        .iter()
+        .take(MOST_TITLES)
+        .map(|page| format!("“{}”", page.title))
+        .collect();
+    if more > 0 {
+        named.push(format!("and {more} more"));
+    }
+    named.join(", ")
 }
 
 /// The note a stored id names, when it is one.
@@ -180,7 +233,7 @@ impl Notebook {
                 .ok_or("the note it goes under is gone")?;
         }
         let id = Id::from(cx.uuid().to_string());
-        self.pages.push(id, Page::titled(&title, parent));
+        self.pages.push(id, Page::titled(&title, parent).made(cx));
         Ok(())
     }
 
@@ -197,7 +250,7 @@ impl Notebook {
         self.pages.get(page).ok_or("no such note")?;
         let id = Id::from(cx.uuid().to_string());
         self.pages
-            .push(id, Page::titled(&title, Some(page.clone())));
+            .push(id, Page::titled(&title, Some(page.clone())).made(cx));
         Ok(())
     }
 
@@ -364,7 +417,11 @@ impl Notebook {
                 parent,
                 body: written(&blocks),
                 tags: original.tags.clone(),
-            };
+                creator: None,
+                // People reacted to the original; the copy starts unanswered.
+                reactions: Reactions::new(),
+            }
+            .made(cx);
             self.pages.insert(at, copy.clone(), page_copy);
             at = at.saturating_add(1);
         }
@@ -494,7 +551,7 @@ impl Notebook {
             crate::markdown::strip_matching_title_heading(&markdown.unwrap_or_default(), title);
         check_markdown_import(&markdown).map_err(Refusal::new)?;
         let id = Id::from(cx.uuid().to_string());
-        let page = Page::titled(title, None);
+        let page = Page::titled(title, None).made(cx);
         let new = page_of(&id);
         let blocks = crate::MainPanel::seed_blocks(&markdown, |target| {
             if target == page.title {
@@ -551,7 +608,8 @@ impl Notebook {
                 &title
             },
             None,
-        );
+        )
+        .made(cx);
         let new = page_of(&id);
         let blocks = crate::MainPanel::seed_blocks(&markdown, |target| {
             if target == page.title {
@@ -574,21 +632,27 @@ impl Notebook {
 
     /// Append to note
     ///
-    /// Add Markdown at the end of the note titled `title` (ignoring case),
-    /// a block per line: headings, bullets, `- [ ]` checklists, quotes and
-    /// code. An agent names notes by the titles it reads, so it need not
-    /// look the note's id up first; answers the note's id and resource.
+    /// Add Markdown at the end of a note, a block per line: headings,
+    /// bullets, `- [ ]` checklists, quotes and code. The note is the one
+    /// titled `title` (case and spacing aside); with no title, the one note
+    /// you made. An agent names notes by the titles it reads, so it need
+    /// not look the note's id up first; answers the note's id and resource.
     #[action(answers, audience = "agents")]
     pub fn append_to_note(
         &mut self,
-        #[param("The note's title, ignoring case")] title: String,
+        cx: &mut ActionCx,
+        #[param("The note's title, case and spacing aside; the one note you made when omitted")]
+        title: Option<String>,
         #[param("What to add, as Markdown")] markdown: String,
     ) -> Result<(), Refusal> {
         check_markdown_import(&markdown).map_err(Refusal::new)?;
         if markdown.trim().is_empty() {
             return Err(Refusal::new("give the Markdown to add"));
         }
-        let id = self.titled(&title)?;
+        let id = match title.as_deref().map(str::trim) {
+            Some(title) if !title.is_empty() => self.titled(title)?,
+            _ => self.made_by(cx.author())?,
+        };
         let note = self.pages.get_mut(&id).ok_or("no such note")?;
         note.body.perform(RichTextAction::InsertMarkdown {
             at: tilo_document::block_edit::Placement::End,
@@ -600,7 +664,9 @@ impl Notebook {
 
 impl Notebook {
     /// The note titled `title`: an exact title first, else the one title
-    /// equal ignoring case; refused when none or several are.
+    /// equal with case and spacing aside; refused, naming the notes, when
+    /// none or several are. Never another note in its place: an append
+    /// that lands on the wrong note reads as done.
     fn titled(&self, title: &str) -> Result<Id, Refusal> {
         let wanted = title.trim();
         if wanted.is_empty() {
@@ -609,21 +675,49 @@ impl Notebook {
         if let Some((id, _)) = self.pages.iter().find(|(_, page)| page.title == wanted) {
             return Ok(id.clone());
         }
-        let folded = wanted.to_lowercase();
-        let mut alike = self
+        let wanted_folded = folded(wanted);
+        let alike: Vec<(&Id, &Page)> = self
             .pages
             .iter()
-            .filter(|(_, page)| page.title.trim().to_lowercase() == folded);
-        match (alike.next(), alike.next()) {
-            (Some((id, _)), None) => Ok(id.clone()),
-            (Some(_), Some(_)) => Err(Refusal::new(format!(
-                "several notes are titled “{wanted}”: give its exact title"
+            .filter(|(_, page)| folded(&page.title) == wanted_folded)
+            .collect();
+        match alike.as_slice() {
+            [(id, _)] => Ok((*id).clone()),
+            [] => Err(Refusal::new(format!(
+                "no note is titled “{wanted}”; the notes are {}",
+                titles(&self.pages.iter().map(|(_, page)| page).collect::<Vec<_>>())
             ))),
-            (None, _) => Err(Refusal::new(format!(
-                "no note is titled “{wanted}”; read the notebook for the notes it holds"
+            several => Err(Refusal::new(format!(
+                "several notes are titled {}: give its exact title",
+                titles(&several.iter().map(|(_, page)| *page).collect::<Vec<_>>())
             ))),
         }
     }
+
+    /// The one note `author` made, for an append that names none. The note
+    /// open in a window, or the first, is someone's but not necessarily
+    /// the caller's, so with none or several the caller names one.
+    fn made_by(&self, author: Option<&str>) -> Result<Id, Refusal> {
+        let made: Vec<(&Id, &Page)> = self
+            .pages
+            .iter()
+            .filter(|(_, page)| {
+                author.is_some_and(|author| page.creator.as_ref().is_some_and(|by| by.0 == author))
+            })
+            .collect();
+        match made.as_slice() {
+            [(id, _)] => Ok((*id).clone()),
+            [] => Err(Refusal::new(format!(
+                "name the note by its title: you made none here; the notes are {}",
+                titles(&self.pages.iter().map(|(_, page)| page).collect::<Vec<_>>())
+            ))),
+            several => Err(Refusal::new(format!(
+                "name the note by its title: you made {}",
+                titles(&several.iter().map(|(_, page)| *page).collect::<Vec<_>>())
+            ))),
+        }
+    }
+
     /// The note `page` and every note under it, parents before their
     /// children, in notebook order.
     #[must_use]

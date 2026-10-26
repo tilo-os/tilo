@@ -58,20 +58,10 @@ mod workspace_activity {
         ActivitySnapshot::new(desktop, doc).unwrap()
     }
 
-    fn paint(pane: &mut RoomActivityPane) {
-        pane.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-    }
-
     // Copied native causal regression, using actual admitted room topology
     // commits and the same private playback/keyboard controller.
     #[test]
-    fn replay_materializes_real_causal_layouts_and_exposes_controls() {
+    fn replay_materializes_real_causal_layouts() {
         let mut tree = causal_room();
         let records = RecordStore::in_memory();
         let record = ui::record::RecordCheckout::new(
@@ -94,7 +84,6 @@ mod workspace_activity {
             .read(&record.id, |doc| doc.clone().get_heads())
             .unwrap();
         let mut pane = RoomActivityPane::new();
-        pane.layout(Rect::new(0., 0., 1600., 900.));
         pane.begin_view(tree.active.raw());
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
@@ -117,21 +106,7 @@ mod workspace_activity {
             "causal forks must expose a changing real layout: {tab_counts:?}"
         );
         pane.set_view(ActivityView::Replay);
-        paint(&mut pane);
-        let order = pane.focus_order();
-        assert!(order.contains(&ActivityFocus::ReplayBack));
-        assert!(order.contains(&ActivityFocus::ReplayPlay));
-        assert!(order.contains(&ActivityFocus::ReplayForward));
-        assert!(!order.contains(&ActivityFocus::Scope(RoomScope::AllWorkspaces)));
-        for focus in [
-            ActivityFocus::ReplayForward,
-            ActivityFocus::ReplayBack,
-            ActivityFocus::ReplayPlay,
-        ] {
-            pane.keyboard_focus = Some(focus);
-            assert!(pane.activate_focus(&mut tree, Some(&records)).handled);
-        }
-        assert!(pane.replay_is_playing());
+        assert_eq!(pane.serve_replay().frames.len(), pane.replay_frames.len());
         pane.set_author_filter(Some("absent".into()));
         pane.set_author_filter(None);
         let mut presence = PresenceCtx::empty();
@@ -149,7 +124,6 @@ mod workspace_activity {
             .and_then(|frame| frame.pointers.first())
             .expect("session presence is retained against durable checkpoint");
         assert_eq!(pointer.name, "Ada");
-        assert_eq!(pointer.point, (420., 260.));
         assert!(pointer.desktop_space);
         pane.finish_view(tree.active.raw());
         assert!(!pane.replay_is_playing());

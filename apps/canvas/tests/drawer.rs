@@ -1,5 +1,7 @@
-//! The inspector in a narrow window: a drawer over the artwork that holds
-//! its controls and the layers, none of them cut off by the window's edge.
+//! The inspector in a narrow window, docked beside the artwork where the
+//! artwork keeps its least width and a sheet over it where it would not:
+//! either holds its controls and the layers, none of them cut off by the
+//! window's edge.
 
 use canvas::App;
 use ui::prelude::TestApp;
@@ -15,13 +17,17 @@ fn the_inspector_drawer_holds_its_controls_inside_the_window() {
         .into_keys()
         .find(|name| name.ends_with("nav-shell-inspector"))
         .expect("a narrow window offers the inspector toggle");
-    app.harness()
-        .click_named(&toggle)
-        .expect("the toggle opens");
+    // At 600 px the artwork keeps its least width beside the inspector, so
+    // the inspector docks and stands open; only a closed one is opened.
+    if !app.harness().targets().contains_key("canvas-dock") {
+        app.harness()
+            .click_named(&toggle)
+            .expect("the toggle opens");
+    }
     assert!(
         app.harness()
             .settle_for_capture(tilo_test_env::hang_bound()),
-        "the drawer settles"
+        "the inspector settles"
     );
     let targets = app.harness().targets();
     let own: Vec<_> = targets

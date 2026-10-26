@@ -1280,8 +1280,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             self.at_host(eager, move |host, caller| host.query(caller, query)),
         )
         .await
-        .map_err(|_| BridgeError::from("TimedOut"))?
-        .ok_or_else(|| BridgeError::from("Unavailable"))?
+        .map_err(|_| {
+            BridgeError::from(format!(
+                "the desktop's actions did not answer within {} s",
+                HOST_ANSWER_WAIT.as_secs()
+            ))
+        })?
+        .ok_or_else(|| BridgeError::from("the desktop's actions stopped answering"))?
         .map_err(BridgeError::Host)
     }
     /// The answer `ask` gives the host as this bridge's caller. With
@@ -1518,6 +1523,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             view_resource: None,
             resource_name: None,
             provider: Some(provider),
+            app_id: None,
             parent_resource: (!parent.is_empty()).then_some(parent),
             // A host matches one substring; the longest word narrows most,
             // and the rest are matched here.
@@ -1769,6 +1775,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 let invocation = invocation_id(&a.invocation_id)?;
                 self.host()
                     .cancel(&self.caller(), &invocation)
+                    .await
+                    .ok_or("the host dropped the request")?
                     .map_err(BridgeError::Host)?;
                 self.status(invocation)
             }

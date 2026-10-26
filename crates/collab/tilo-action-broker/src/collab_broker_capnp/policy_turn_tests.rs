@@ -178,12 +178,26 @@ fn the_next_policy_change_is_the_first_grant_or_certificate_expiry() {
 /// grant's expiry with the policy clock, re-checks when that announces the
 /// expiry, and re-checks when a revocation is announced; in between its
 /// thread is not woken. The wall clock is held, so the expiry comes when the
-/// test moves it there and announces it as the policy clock would.
+/// test moves it there and announces it as the policy clock would; the test
+/// runs in a process of its own, so no other test reads the held time.
 #[cfg(target_os = "linux")] // the thread's wakeups are read from /proc
 #[test]
 fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation_and_sleeps_in_between() {
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation_and_sleeps_in_between",
+        an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation,
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation() {
     let start = tilo_clock::unix_now();
-    tilo_clock::freeze_wall(std::time::UNIX_EPOCH + Duration::from_secs(start));
+    tilo_clock::freeze_wall(
+        std::time::UNIX_EPOCH
+            .checked_add(Duration::from_secs(start))
+            .unwrap(),
+    );
     let directory = tempfile::tempdir().expect("temporary socket directory");
     super::tests::secure_socket_parent(directory.path()).expect("private socket directory");
     let socket = directory.path().join("policy.sock");
@@ -243,7 +257,11 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation_and_sleeps_in_betwee
     // The grant ends, and the policy clock announces it: one re-check, at
     // the expiry, which registers the next one.
     let before_expiry = owner.checks().len();
-    tilo_clock::freeze_wall(std::time::UNIX_EPOCH + Duration::from_secs(expiry));
+    tilo_clock::freeze_wall(
+        std::time::UNIX_EPOCH
+            .checked_add(Duration::from_secs(expiry))
+            .unwrap(),
+    );
     tilo_identity_host::policy_change::announce();
     tilo_test_env::wait_until("the re-check at the expiry", || {
         owner.checks().len() > before_expiry

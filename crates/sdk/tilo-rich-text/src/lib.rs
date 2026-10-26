@@ -51,7 +51,8 @@ pub use blocks::{
 };
 pub use composer::{ComposerFrame, RichTextComposer};
 pub use convert::{
-    clip_block, clip_of_content, content_of, content_of_clip, document_mark, editor_mark,
+    RESOURCE_LINK_SCHEME, clip_block, clip_of_content, content_of, content_of_clip, document_mark,
+    editor_mark, is_resource_link,
 };
 pub use draft::Draft;
 pub use source::{Hosted, PersonField, RichTextField, RichTextSource};

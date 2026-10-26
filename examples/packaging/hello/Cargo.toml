@@ -21,8 +21,8 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 hex.workspace = true
 runtime-collab = { path = "../../../crates/runtime/runtime-collab" }
-runtime-fs = { path = "../../../crates/runtime/runtime-fs" }
-runtime-identity = { path = "../../../crates/runtime/runtime-identity" }
+runtime-fs = { package = "tilo-fs-client", path = "../../../crates/runtime/tilo-fs-client" }
+runtime-identity = { package = "tilo-identity-client", path = "../../../crates/runtime/tilo-identity-client" }
 runtime-portal = { path = "../../../crates/runtime/runtime-portal" }
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../../crates/runtime/runtime-dylib", optional = true }

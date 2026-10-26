@@ -15,6 +15,7 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 
 mod cache;
 pub use cache::PreparedText;
+mod row_ink;
 use cache::{CacheKey, CacheQuery, TextCache};
 use tilo_lock::RwLockRecover as _;
 
@@ -2355,6 +2356,9 @@ impl TextRenderer {
     ) -> (f32, f32) {
         let scaled_style = self.scaled_style(input.style);
         let style = &scaled_style;
+        if let Some(label) = self.emoji_label(input.text, max_width, style) {
+            return (label.width(), label.height());
+        }
         let max_width = self.collapse_unused_max_width(input, max_width, style, warm_shape);
         self.measure_style_cached(input, max_width, style, warm_shape)
     }
@@ -2851,6 +2855,10 @@ impl TextRenderer {
     ) {
         let scaled_style = self.scaled_style(input.style);
         let style = &scaled_style;
+        if let Some(label) = self.emoji_label(input.text, max_width, style) {
+            self.draw_rich(scene, &label, transform, color);
+            return;
+        }
         let max_width = self.collapse_unused_max_width(input, max_width, style, true);
         let runs = self.shaped_query(input, max_width, style);
         self.paint_runs(scene, &runs, color, transform);
@@ -3348,6 +3356,7 @@ impl TextRenderer {
             let paint = RunPaint { color, paint: None };
             self.draw_rich_run(scene, &run, layout, transform, paint, None);
         }
+        layout.paint_inline_emoji(scene, transform);
 
         draw_rich_underlines(scene, layout, transform, color);
         draw_rich_strikes(scene, layout, transform, color);
@@ -3380,25 +3389,61 @@ impl TextRenderer {
         clip: Rect,
         paint: Option<&dyn Fn(usize) -> Option<Color>>,
     ) {
+        self.draw_rich_in_clip_painted_leaving_out(
+            scene,
+            layout,
+            transform,
+            color,
+            (clip, &[]),
+            paint,
+        );
+    }
+
+    /// [`Self::draw_rich_in_clip_painted`] inside `clip`, but for the rows
+    /// of the logical lines `leave_out` (ascending), whose pixels the frame
+    /// keeps ([`crate::draw_cull`]).
+    pub(crate) fn draw_rich_in_clip_painted_leaving_out(
+        &mut self,
+        scene: &mut Scene,
+        layout: &crate::richtext::RichTextLayout,
+        transform: Affine,
+        color: Color,
+        (clip, leave_out): (Rect, &[usize]),
+        paint: Option<&dyn Fn(usize) -> Option<Color>>,
+    ) {
         draw_rich_backgrounds(scene, layout, transform);
+        // Every row whose ink can reach the clip, however far it hangs past
+        // its band; the glyph batches whose own ink misses it drop below.
+        let reach = self.rich_ink_reach(layout);
         let rows: Box<dyn Iterator<Item = cosmic_text::LayoutRun<'_>>> =
             match clip_in_layout(transform, clip) {
-                Some((top, bottom)) => Box::new(layout.rows_within(top, bottom)),
+                Some((top, bottom, pad)) => Box::new(layout.rows_reaching(
+                    top,
+                    bottom,
+                    crate::richtext::InkReach {
+                        above: reach.above + pad,
+                        below: reach.below + pad,
+                    },
+                )),
                 None => Box::new(layout.buffer.layout_runs()),
             };
         for run in rows {
             // A long block repeats this for every page slice it spans; skip
             // whole visual lines before any per-glyph work or glyph encoding,
             // and stop at the first below the clip: rows run downward.
-            if rich_run_outside_clip(&run, transform, clip) {
-                if rich_run_below_clip(&run, transform, clip) {
+            if rich_run_outside_clip(&run, transform, clip, reach) {
+                if rich_run_below_clip(&run, transform, clip, reach) {
                     break;
                 }
+                continue;
+            }
+            if leave_out.binary_search(&run.line_i).is_ok() {
                 continue;
             }
             let paint_run = RunPaint { color, paint };
             self.draw_rich_run(scene, &run, layout, transform, paint_run, Some(clip));
         }
+        layout.paint_inline_emoji(scene, transform);
         draw_rich_underlines(scene, layout, transform, color);
         draw_rich_strikes(scene, layout, transform, color);
     }
@@ -3429,7 +3474,11 @@ impl TextRenderer {
         paint: RunPaint<'_>,
         clip: Option<Rect>,
     ) -> bool {
-        if layout.hanging_punctuation.first || layout.hanging_punctuation.last {
+        // An inline emoji's glyphs are left out for its picture.
+        if layout.hanging_punctuation.first
+            || layout.hanging_punctuation.last
+            || !layout.inline_emoji.is_empty()
+        {
             return false;
         }
         let Some(first) = run.glyphs.first() else {
@@ -3502,6 +3551,9 @@ impl TextRenderer {
                 continue;
             }
             let global_byte = layout.glyph_global_byte(run.line_i, g.start);
+            if layout.in_inline_emoji(global_byte) {
+                continue;
+            }
             let g_shift = layout.baseline_at(global_byte);
             let g_color = paint.at(global_byte, g);
             // Glyphs batch by face, shaped weight, color, size and baseline shift.
@@ -3668,10 +3720,6 @@ impl TextRenderer {
         };
         let cached = self.ink_bounds.entry(key).or_default();
         let entry_count = &mut self.ink_bounds_entries;
-        let coefficients = transform
-            .as_coeffs()
-            .iter()
-            .fold(1.0_f64, |m, v| m.max(v.abs()));
         glyphs.iter().all(|glyph| {
             let bounds = if let Some(bounds) = cached.get(&glyph.glyph_id) {
                 *bounds
@@ -3695,20 +3743,7 @@ impl TextRenderer {
             #[allow(clippy::arithmetic_side_effects, reason = "rectangle translation is floating-point arithmetic; nonfinite bounds are rejected below")]
             let local = bounds + vello::kurbo::Vec2::new(x, y);
             let projected = transform.transform_rect_bbox(local);
-            let magnitude = [
-                local.x0,
-                local.y0,
-                local.x1,
-                local.y1,
-                projected.x0,
-                projected.y0,
-                projected.x1,
-                projected.y1,
-            ]
-            .iter()
-            .fold(1.0_f64, |m, v| m.max(v.abs()));
-            // Include pixel coverage and accumulated f32 transform/position rounding.
-            let padding = 2.0 + 32.0 * f64::from(f32::EPSILON) * magnitude * coefficients;
+            let padding = ink_padding(local, projected, transform);
             let ink = projected.inflate(padding, padding);
             [ink.x0, ink.y0, ink.x1, ink.y1]
                 .iter()
@@ -3742,25 +3777,26 @@ impl TextRenderer {
 }
 
 /// Whether a visual line cannot put ink inside `clip` (final scene space),
-/// judged on its vertical extent only (alignment moves runs horizontally).
-/// The line box is widened by two line heights above and below, which covers
-/// ascenders, descenders and stacked marks; non-finite geometry and
-/// transforms that rotate or shear are never culled.
+/// judged on its vertical extent only (alignment moves runs horizontally):
+/// its band widened by how far any row's ink reaches past its own
+/// (`reach`, [`TextRenderer::rich_ink_reach`]) and by the pixels that ink
+/// covers. Non-finite geometry and transforms that rotate or shear are
+/// never culled.
 pub(crate) fn rich_run_outside_clip(
     run: &cosmic_text::LayoutRun<'_>,
     transform: Affine,
     clip: Rect,
+    reach: crate::richtext::InkReach,
 ) -> bool {
     let [_, shear_y, shear_x, _, _, _] = transform.as_coeffs();
     if shear_x != 0.0 || shear_y != 0.0 {
         return false;
     }
-    let margin = f64::from(run.line_height.max(1.0)) * 2.0;
     let local = Rect::new(
         0.0,
-        f64::from(run.line_top) - margin,
+        f64::from(run.line_top) - f64::from(reach.above),
         0.0,
-        f64::from(run.line_top + run.line_height) + margin,
+        f64::from(run.line_top + run.line_height) + f64::from(reach.below),
     );
     let screen = transform.transform_rect_bbox(local);
     // An invalid clip draws everything, as the per-glyph cull does.
@@ -3772,7 +3808,26 @@ pub(crate) fn rich_run_outside_clip(
     {
         return false;
     }
+    let screen = screen.inflate(0.0, ink_padding(local, screen, transform));
     screen.y1 < clip.y0 || screen.y0 > clip.y1
+}
+
+/// The pixels around ink bounds (`local`, drawn at `screen` through
+/// `transform`) that can still take coverage from it, with the f32 rounding
+/// of positions and transforms. The rounding grows with the coordinates on
+/// either side of `transform` and with its scale; its translation is
+/// already in the on-screen coordinates, so it does not scale the rounding
+/// again (a field scrolled far down would otherwise pad its rows and glyphs
+/// by thousands of pixels and draw ink far outside the clip).
+fn ink_padding(local: Rect, screen: Rect, transform: Affine) -> f64 {
+    let [a, b, c, d, _, _] = transform.as_coeffs();
+    let coefficients = [a, b, c, d].iter().fold(1.0_f64, |m, v| m.max(v.abs()));
+    let magnitude = [
+        local.x0, local.y0, local.x1, local.y1, screen.x0, screen.y0, screen.x1, screen.y1,
+    ]
+    .iter()
+    .fold(1.0_f64, |m, v| m.max(v.abs()));
+    2.0 + 32.0 * f64::from(f32::EPSILON) * magnitude * coefficients
 }
 
 /// The colour a rich run's glyphs paint in: their shaped colour over the
@@ -3803,15 +3858,15 @@ impl RunPaint<'_> {
     }
 }
 
-/// Whether `run` lies wholly below `clip` under an upright `transform`
-/// (no shear, no flip), so every later row of its paragraph does too.
 /// The rows `clip` (on screen) shows of a layout drawn with `transform`, as
-/// a span of the layout's y, when the transform keeps rows upright.
+/// a span of the layout's y, when the transform keeps rows upright, and the
+/// pixels ink covers around its bounds there ([`ink_padding`]) in the same
+/// units.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "on-screen offsets in logical pixels are far inside f32"
 )]
-fn clip_in_layout(transform: Affine, clip: Rect) -> Option<(f32, f32)> {
+fn clip_in_layout(transform: Affine, clip: Rect) -> Option<(f32, f32, f32)> {
     let [_, shear_y, shear_x, scale_y, _, translate_y] = transform.as_coeffs();
     // An invalid clip draws everything, as the per-row cull does.
     let valid = [clip.x0, clip.y0, clip.x1, clip.y1, translate_y, scale_y]
@@ -3820,19 +3875,29 @@ fn clip_in_layout(transform: Affine, clip: Rect) -> Option<(f32, f32)> {
         && clip.x0 <= clip.x1
         && clip.y0 <= clip.y1;
     (valid && shear_x == 0.0 && shear_y == 0.0 && scale_y > 0.0).then(|| {
-        (
-            ((clip.y0 - translate_y) / scale_y) as f32,
-            ((clip.y1 - translate_y) / scale_y) as f32,
-        )
+        let (top, bottom) = (
+            (clip.y0 - translate_y) / scale_y,
+            (clip.y1 - translate_y) / scale_y,
+        );
+        let local = Rect::new(0.0, top, 0.0, bottom);
+        let pad = ink_padding(local, clip, transform) / scale_y;
+        (top as f32, bottom as f32, pad as f32)
     })
 }
 
-fn rich_run_below_clip(run: &cosmic_text::LayoutRun<'_>, transform: Affine, clip: Rect) -> bool {
+/// Whether `run` lies wholly below `clip` under an upright `transform`
+/// (no shear, no flip), so every later row of its paragraph does too.
+fn rich_run_below_clip(
+    run: &cosmic_text::LayoutRun<'_>,
+    transform: Affine,
+    clip: Rect,
+    reach: crate::richtext::InkReach,
+) -> bool {
     let [_, shear_y, shear_x, scale_y, _, _] = transform.as_coeffs();
     shear_x == 0.0
         && shear_y == 0.0
         && scale_y > 0.0
-        && rich_run_outside_clip(run, transform, clip)
+        && rich_run_outside_clip(run, transform, clip, reach)
         && transform
             .transform_rect_bbox(Rect::new(
                 0.0,

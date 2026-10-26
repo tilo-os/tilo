@@ -98,6 +98,48 @@ fn surface_for(catalogue: &serde_json::Value, resource: &str, action: &str) -> O
         .as_u64()
 }
 
+/// Check that `page` is the answer to asking `host` for `provider`'s
+/// `wanted` resource in `room`: every row is a view of that resource, and
+/// the locator it names, if any, is this source's.
+///
+/// A page that found nothing — an application filter that cannot match the
+/// record's own, say — names no page to browse with, so it need not carry a
+/// locator. A page carrying rows does, and one naming a locator must name
+/// this source whether or not it found anything.
+fn resource_view_answer(
+    page: &tilo_actions::remote::CataloguePage,
+    room: RoomId,
+    host: &str,
+    provider: &str,
+    wanted: &tilo_actions::remote::ViewResourceQuery,
+) -> Result<(), String> {
+    match page.locator.as_ref() {
+        Some(locator)
+            if locator.room != room.to_string()
+                || locator.host_device != host
+                || locator.provider != provider =>
+        {
+            return Err("resource host answered outside the requested source".into());
+        }
+        None if !page.rows.is_empty() => {
+            return Err("resource host has no public browser locator".into());
+        }
+        _ => {}
+    }
+    if page.rows.iter().any(|row| {
+        row.provider != provider
+            || row.resource.id != wanted.id
+            || row.resource.kind != wanted.kind
+            || row
+                .action
+                .as_ref()
+                .is_none_or(|action| action.kind != tilo_actions::OperationKind::View)
+    }) {
+        return Err("resource host answered outside the requested source".into());
+    }
+    Ok(())
+}
+
 async fn invoke(
     commands: mpsc::Sender<NetCmd>,
     route: GovernorRoute,
@@ -271,25 +313,7 @@ impl ShellNetwork {
         {
             return Err("resource host or selected device changed".into());
         }
-        let locator = page
-            .locator
-            .as_ref()
-            .ok_or("resource host has no public browser locator")?;
-        if locator.room != room.to_string()
-            || locator.host_device != hex::encode(route.target)
-            || locator.provider != provider
-            || page.rows.iter().any(|row| {
-                row.provider != provider
-                    || row.resource.id != wanted.id
-                    || row.resource.kind != wanted.kind
-                    || row
-                        .action
-                        .as_ref()
-                        .is_none_or(|action| action.kind != tilo_actions::OperationKind::View)
-            })
-        {
-            return Err("resource host answered outside the requested source".into());
-        }
+        resource_view_answer(&page, room, &hex::encode(route.target), &provider, &wanted)?;
         Ok(page)
     }
 
@@ -421,6 +445,153 @@ impl ShellNetwork {
 
 #[cfg(test)]
 mod tests {
+    use tilo_actions::remote::{
+        CataloguePage, CatalogueRow, ResourceViewLocator, ViewResourceQuery,
+    };
+    use tilo_actions::{
+        ActionAddress, ActionContract, ActionDescriptor, ExecutionLocus, InputSpec,
+    };
+
+    use super::{RoomId, resource_view_answer};
+
+    const PROVIDER: &str = "record:so.tilo.chat:part-1";
+    const HOST: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+
+    fn room() -> RoomId {
+        RoomId::parse("2b2b2b2b-2b2b-2b2b-2b2b-2b2b2b2b2b2b").expect("a room id")
+    }
+
+    fn wanted() -> ViewResourceQuery {
+        ViewResourceQuery {
+            id: "chat.messages.messages:hello".into(),
+            kind: "chat.messages.messages".into(),
+        }
+    }
+
+    /// One view row for `wanted()`, as the host's answer carries it.
+    fn view_row() -> CatalogueRow {
+        let wanted = wanted();
+        CatalogueRow::for_action(
+            PROVIDER,
+            "so.tilo.chat",
+            ActionDescriptor {
+                semantic_identity: None,
+                address: ActionAddress::new(wanted.id, "open"),
+                resource_kind: wanted.kind,
+                resource_label: "Hello".into(),
+                action_label: "Open".into(),
+                description: None,
+                locus: ExecutionLocus::default(),
+                kind: tilo_actions::OperationKind::View,
+                contract: ActionContract::view(),
+                input: InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            },
+        )
+    }
+
+    /// The locator the host issues for `wanted()`'s page in `room()`.
+    fn locator() -> ResourceViewLocator {
+        ResourceViewLocator {
+            origin: "https://room.example".into(),
+            room: room().to_string(),
+            host_device: HOST.into(),
+            provider: PROVIDER.into(),
+            web_entry: None,
+        }
+    }
+
+    fn answer(page: &CataloguePage) -> Result<(), String> {
+        resource_view_answer(page, room(), HOST, PROVIDER, &wanted())
+    }
+
+    #[test]
+    fn a_matching_app_filtered_view_keeps_its_locator() {
+        let page = CataloguePage {
+            revision: "r1".into(),
+            rows: vec![view_row()],
+            locator: Some(locator()),
+            ..CataloguePage::default()
+        };
+        assert_eq!(answer(&page), Ok(()));
+    }
+
+    #[test]
+    fn a_mismatching_app_filtered_view_is_empty_and_names_no_locator() {
+        // The host narrowed to an application this record's row does not
+        // publish, so it found nothing: a legitimate answer, not an error.
+        let page = CataloguePage {
+            revision: "r1".into(),
+            ..CataloguePage::default()
+        };
+        assert_eq!(answer(&page), Ok(()));
+    }
+
+    #[test]
+    fn an_absent_app_filter_still_requires_a_locator_for_rows() {
+        let page = CataloguePage {
+            revision: "r1".into(),
+            rows: vec![view_row()],
+            ..CataloguePage::default()
+        };
+        assert_eq!(
+            answer(&page),
+            Err("resource host has no public browser locator".into())
+        );
+    }
+
+    #[test]
+    fn an_empty_answer_naming_another_source_is_still_refused() {
+        for claimed in [
+            ResourceViewLocator {
+                room: uuid::Uuid::nil().to_string(),
+                ..locator()
+            },
+            ResourceViewLocator {
+                host_device: "b2".repeat(32),
+                ..locator()
+            },
+            ResourceViewLocator {
+                provider: "record:so.tilo.notes:other".into(),
+                ..locator()
+            },
+        ] {
+            let page = CataloguePage {
+                revision: "r1".into(),
+                locator: Some(claimed),
+                ..CataloguePage::default()
+            };
+            assert_eq!(
+                answer(&page),
+                Err("resource host answered outside the requested source".into())
+            );
+        }
+    }
+
+    #[test]
+    fn a_row_outside_the_requested_view_is_refused() {
+        let mut elsewhere = view_row();
+        elsewhere.provider = "record:so.tilo.notes:other".into();
+        let mut other_kind = view_row();
+        other_kind.resource.kind = "notes.block".into();
+        let mut other_action = view_row();
+        other_action.action.as_mut().expect("a view row").kind =
+            tilo_actions::OperationKind::Effect;
+        for row in [elsewhere, other_kind, other_action] {
+            let page = CataloguePage {
+                revision: "r1".into(),
+                rows: vec![row],
+                locator: Some(locator()),
+                ..CataloguePage::default()
+            };
+            assert_eq!(
+                answer(&page),
+                Err("resource host answered outside the requested source".into())
+            );
+        }
+    }
+
     #[test]
     fn a_room_no_other_device_governs_is_opened_here() {
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();

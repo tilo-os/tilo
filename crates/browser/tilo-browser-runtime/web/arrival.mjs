@@ -134,24 +134,38 @@ export const STEP_NOTES = new Set([
   'Connecting…', 'Asking to join…', 'Joining…', 'Asking to pair this device…',
 ]);
 
-/** Said in place of the line when a step that waits on the network, or on
- * the GPU's first frame, runs long; the locale file may word them. */
+/** Said in place of the line when a step runs long; the locale file may
+ * word them. */
 export const SLOW_NOTES = {
   fetch: ['arrival-slow-loading', 'Still loading. Your network may be slow.'],
+  compile: ['arrival-slow-starting', 'Still starting Tilo. This device may be busy.'],
   join: ['arrival-slow-connecting', 'Still connecting. Your network may be slow.'],
+  open: ['arrival-slow-opening', 'Still opening the workspace.'],
   draw: ['arrival-slow-drawing', 'Still starting graphics. Without a graphics card this takes longer.'],
 };
 
+/** Said, with Try again beside it, once a step has not moved on for long:
+ * the page keeps waiting, since a busy device gets there in the end, and
+ * the person may start over instead. */
+export const STALLED = ['arrival-stalled', 'This is taking longer than it should. Keep waiting, or try again.'];
+
 /**
  * What the arrival screen shows at `now` (ms since the page started):
- * `{line, note, progress, bar}`. Feed it the page's state on every tick
- * (`{arrival, wasmFetched, statusShown}`; `statusShown` when `#status`
- * says something other than a step note). Lines rotate every `periodMs`
- * from `delayMs`; before that, nothing. A failed or stopped page shows no
- * line, note or bar: its status says what went wrong.
+ * `{line, note, progress, bar, stalled}`. Feed it the page's state on every
+ * tick (`{arrival, wasmFetched, statusShown, gpuStalled}`; `statusShown`
+ * when `#status` says something other than a step note, `gpuStalled` when
+ * the runtime says graphics start-up stopped moving on). Lines rotate every
+ * `periodMs` from `delayMs`; before that, nothing. A step that runs past
+ * `slowMs` says so; one that has not moved on for `stallMs` (graphics:
+ * once the runtime says so) is `stalled`, and the page offers Try again
+ * while it keeps waiting. `slowNotes` may word each note (`stalled` too).
+ * Nothing the page waits on a person for (being let in, a pairing code)
+ * stalls. A failed or stopped page shows no line, note or bar: its status
+ * says what went wrong.
  */
 export function createArrival({lines = {jokes: [], tips: []}, random = Math.random, reducedMotion = false,
-  delayMs = 1000, periodMs = 2500, slowMs = {fetch: 8000, join: 6000, draw: 10_000}, slowNotes = {}} = {}) {
+  delayMs = 1000, periodMs = 2500, slowMs = {fetch: 8000, compile: 8000, join: 6000, open: 8000, draw: 10_000},
+  stallMs = 30_000, slowNotes = {}} = {}) {
   let rotation = createRotation(lines, random);
   let line = null;
   let shownAt = null;
@@ -162,22 +176,25 @@ export function createArrival({lines = {jokes: [], tips: []}, random = Math.rand
     /** New lines (the locale file arrived): the next turn draws from them. */
     setLines(next) { rotation = createRotation(next, random); },
     get segment() { return segment; },
-    update({arrival, wasmFetched = false, statusShown = false}, now) {
+    update({arrival, wasmFetched = false, statusShown = false, gpuStalled = false}, now) {
       const current = segmentOf(arrival, wasmFetched);
       // The first segment runs from the page's start, before this module.
       if (current !== segment) { since = segment === null ? 0 : now; segment = current; }
-      if (segment === 'stopped') return {line: null, note: null, progress, bar: false};
+      if (segment === 'stopped') return {line: null, note: null, progress, bar: false, stalled: false};
       // Never backwards: a skipped step (no door to join) jumps forward.
       progress = Math.max(progress, progressIn(segment, now - since, {reducedMotion}));
-      if (segment === 'done' || now < delayMs) return {line: null, note: null, progress, bar: false};
+      if (segment === 'done') return {line: null, note: null, progress, bar: false, stalled: false};
+      // Graphics start-up has steps of its own, which only the runtime sees.
+      const stalled = !statusShown && (segment === 'draw' ? gpuStalled : now - since >= stallMs);
+      if (now < delayMs) return {line: null, note: null, progress, bar: false, stalled};
       const slow = slowMs[segment] !== undefined && now - since >= slowMs[segment] && !statusShown;
-      const note = slow ? (slowNotes[segment] ?? SLOW_NOTES[segment][1]) : null;
-      if (statusShown || slow) return {line: null, note, progress, bar: true};
+      const note = stalled ? (slowNotes.stalled ?? STALLED[1]) : slow ? (slowNotes[segment] ?? SLOW_NOTES[segment][1]) : null;
+      if (statusShown || slow || stalled) return {line: null, note, progress, bar: true, stalled};
       if (shownAt === null || now - shownAt >= periodMs) {
         const next = rotation.next();
         if (next !== null || line === null) { line = next; shownAt = next === null ? null : now; }
       }
-      return {line, note: null, progress, bar: true};
+      return {line, note: null, progress, bar: true, stalled: false};
     },
   };
 }
@@ -453,6 +470,7 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
         if (messages.has(id)) slowNotes[segment] = messages.get(id);
       }
       if (retry && messages.has('arrival-retry')) retry.textContent = messages.get('arrival-retry');
+      if (messages.has(STALLED[0])) slowNotes.stalled = messages.get(STALLED[0]);
     })
     .catch(() => { /* No lines: the bar alone. */ });
   let shownLine = null;
@@ -462,7 +480,9 @@ export function startArrival({mode = 'desktop', document = globalThis.document, 
     const step = root.dataset.arrival;
     const statusShown = status.textContent.trim() !== '' && !STEP_NOTES.has(status.textContent.trim());
     root.toggleAttribute('data-arrival-status', statusShown);
-    const view = arrival.update({arrival: step, wasmFetched, statusShown}, now());
+    const view = arrival.update({arrival: step, wasmFetched, statusShown, gpuStalled: root.hasAttribute('data-gpu-stalled')}, now());
+    // Try again shows beside a stalled step (index.html) while it keeps waiting.
+    root.toggleAttribute('data-arrival-stalled', view.stalled);
     if (arrival.segment !== logged) {
       logged = arrival.segment;
       console.debug(`arrival: ${logged} at ${Math.round(now())} ms`);

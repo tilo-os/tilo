@@ -35,7 +35,8 @@ impl Widget for WordProcessorWidget {
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::semantic_document_read::SemanticReaders
+        dyn ui::semantic_document_read::SemanticReaders,
+        dyn ui::widget::Findable
     );
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -66,7 +67,7 @@ impl Widget for WordProcessorWidget {
             if doc.styles_panel_full_window() {
                 doc.panel_scroll = next;
             } else {
-                doc.scroll_y = next;
+                doc.scroll_y = next - doc.find_inset;
             }
             doc.lifecycle.dirty = true;
         })
@@ -163,6 +164,7 @@ impl Widget for WordProcessorWidget {
             self.run_staged_scenario(edits, &scenario);
         }
         self.refresh_blocks(edits.doc());
+        self.apply_find_replacements(edits);
         // The editor's commands are the window bar's slots: what the person
         // did there runs with the document in hand, then the slots follow
         // the selection.
@@ -393,10 +395,6 @@ impl Widget for WordProcessorWidget {
             .draw(scene, transform, text_renderer, theme, presence);
         self.style_menu
             .draw(scene, transform, text_renderer, theme, presence);
-        if self.find.is_open() {
-            self.find
-                .draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
         self.color_picker.draw(
             crate::style_color_picker::DrawArgs {
                 scene,
@@ -549,7 +547,6 @@ impl Widget for WordProcessorWidget {
     }
     fn set_focus(&mut self, focused: bool) {
         self.lifecycle.focused = focused;
-        self.find.set_host_focused(focused);
         if !focused {
             // Blur any in-progress numeric edit; the next sync reloads the
             // persisted style values.
@@ -569,8 +566,6 @@ impl Widget for WordProcessorWidget {
                         && self.visible_styles_rect(slot.rect).is_some()
                 })
                 .and_then(|slot| Widget::ime_cursor_rect(&slot.input))
-        } else if self.find.is_open() {
-            self.find.ime_cursor_rect()
         } else {
             self.ime_rect
         }
@@ -584,8 +579,6 @@ impl Widget for WordProcessorWidget {
                         && self.visible_styles_rect(slot.rect).is_some()
                 })
                 .and_then(|slot| Widget::ime_content(&slot.input))
-        } else if self.find.is_open() {
-            self.find.ime_content()
         } else {
             Some(ui::ime::InputContent::TEXT)
         }

@@ -23,10 +23,35 @@ pub struct ExtensionInfo {
 
 #[derive(Debug)]
 pub enum ExtensionError {
+    /// The Web Store sent no package: unreachable, refused or redirected away.
     Download(String),
+    /// The Web Store has no package of the item for this browser, above all
+    /// a Manifest V2 extension, which Chrome no longer runs.
+    NoPackage,
+    /// The package is over a size or file-count limit.
+    TooLarge,
     Archive(String),
     Manifest(String),
     Io(std::io::Error),
+}
+
+impl ExtensionError {
+    /// What the person reads when adding an extension failed this way: what
+    /// happened and what to do, in their words. The detail [`Display`]
+    /// gives is for the log.
+    ///
+    /// [`Display`]: std::fmt::Display
+    #[must_use]
+    pub fn message(&self) -> String {
+        crate::CATALOG.t(match self {
+            Self::Download(_) => "browser-extension-store-failed",
+            Self::NoPackage => "browser-extension-no-version",
+            Self::TooLarge => "browser-extension-too-large",
+            Self::Archive(_) => "browser-extension-damaged",
+            Self::Manifest(_) => "browser-extension-broken",
+            Self::Io(_) => "browser-extension-not-saved",
+        })
+    }
 }
 
 /// Ad blockers carry their filter lists: Adblock Plus is 78 MB packed and
@@ -56,6 +81,8 @@ impl std::fmt::Display for ExtensionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Download(e) => write!(f, "download failed: {e}"),
+            Self::NoPackage => f.write_str("the store has no package for this browser"),
+            Self::TooLarge => f.write_str("extension package is over the size limit"),
             Self::Archive(e) => write!(f, "archive invalid: {e}"),
             Self::Manifest(e) => write!(f, "manifest invalid: {e}"),
             Self::Io(e) => write!(f, "io: {e}"),
@@ -63,14 +90,12 @@ impl std::fmt::Display for ExtensionError {
     }
 }
 
-fn package_error(error: ZipError) -> ExtensionError {
-    ExtensionError::Archive(match error {
-        ZipError::TooManyEntries { .. } => "extension package has too many files".into(),
-        error if error.is_limit_breach() => {
-            "extension package expands beyond the safety limit".into()
-        }
-        error => error.to_string(),
-    })
+fn package_error(error: &ZipError) -> ExtensionError {
+    if error.is_limit_breach() {
+        ExtensionError::TooLarge
+    } else {
+        ExtensionError::Archive(error.to_string())
+    }
 }
 
 impl From<std::io::Error> for ExtensionError {
@@ -99,9 +124,7 @@ fn install_package(
     expected_id: Option<&str>,
 ) -> Result<ExtensionInfo, ExtensionError> {
     if archive.len() > MAX_ARCHIVE_BYTES {
-        return Err(ExtensionError::Archive(
-            "extension package is too large".into(),
-        ));
+        return Err(ExtensionError::TooLarge);
     }
     let (zip_bytes, signed) = if crate::crx::is_crx(archive) {
         let verified = crate::crx::verify(archive)
@@ -115,8 +138,10 @@ fn install_package(
     } else {
         (archive, None)
     };
-    let mut zip = BoundedArchive::from_bytes(zip_bytes, ARCHIVE_LIMITS).map_err(package_error)?;
-    zip.check_declared_sizes().map_err(package_error)?;
+    let mut zip = BoundedArchive::from_bytes(zip_bytes, ARCHIVE_LIMITS)
+        .map_err(|error| package_error(&error))?;
+    zip.check_declared_sizes()
+        .map_err(|error| package_error(&error))?;
 
     // Manifest first, so a broken package never touches the disk.
     let manifest_text = zip
@@ -678,7 +703,7 @@ mod tests {
             let bytes = vec![0; MAX_ARCHIVE_BYTES + 1];
             assert!(matches!(
                 install_from_bytes(&bytes, std::path::Path::new("/unused")),
-                Err(ExtensionError::Archive(_))
+                Err(ExtensionError::TooLarge)
             ));
         }
     }
@@ -1877,12 +1902,12 @@ pub fn stage_file(bytes: Vec<u8>) -> Result<StagedPackage, ExtensionError> {
         return stage_package(bytes, &id);
     }
     if bytes.len() > MAX_ARCHIVE_BYTES {
-        return Err(ExtensionError::Archive(
-            "extension package is too large".into(),
-        ));
+        return Err(ExtensionError::TooLarge);
     }
-    let mut zip = BoundedArchive::from_bytes(&bytes, ARCHIVE_LIMITS).map_err(package_error)?;
-    zip.check_declared_sizes().map_err(package_error)?;
+    let mut zip = BoundedArchive::from_bytes(&bytes, ARCHIVE_LIMITS)
+        .map_err(|error| package_error(&error))?;
+    zip.check_declared_sizes()
+        .map_err(|error| package_error(&error))?;
     let manifest = zip
         .read_text("manifest.json", MAX_MANIFEST_BYTES)
         .map_err(|error| ExtensionError::Manifest(error.to_string()))?;
@@ -1906,9 +1931,7 @@ pub fn stage_file(bytes: Vec<u8>) -> Result<StagedPackage, ExtensionError> {
 /// `expected_id`, or its manifest is missing or invalid.
 pub fn stage_package(bytes: Vec<u8>, expected_id: &str) -> Result<StagedPackage, ExtensionError> {
     if bytes.len() > MAX_ARCHIVE_BYTES {
-        return Err(ExtensionError::Archive(
-            "extension package is too large".into(),
-        ));
+        return Err(ExtensionError::TooLarge);
     }
     let verified =
         crate::crx::verify(&bytes).map_err(|error| ExtensionError::Archive(error.to_string()))?;
@@ -1917,9 +1940,10 @@ pub fn stage_package(bytes: Vec<u8>, expected_id: &str) -> Result<StagedPackage,
             "package is signed for a different extension".into(),
         ));
     }
-    let mut zip =
-        BoundedArchive::from_bytes(verified.archive, ARCHIVE_LIMITS).map_err(package_error)?;
-    zip.check_declared_sizes().map_err(package_error)?;
+    let mut zip = BoundedArchive::from_bytes(verified.archive, ARCHIVE_LIMITS)
+        .map_err(|error| package_error(&error))?;
+    zip.check_declared_sizes()
+        .map_err(|error| package_error(&error))?;
     let manifest = zip
         .read_text("manifest.json", MAX_MANIFEST_BYTES)
         .map_err(|error| ExtensionError::Manifest(error.to_string()))?;

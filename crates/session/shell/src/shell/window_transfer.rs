@@ -18,7 +18,7 @@
 //! The order is what makes a move lossless:
 //!
 //! 1. Ask the running old instance for a checkpoint
-//!    ([`ui::collaboration::handoff`]): it makes what it shows durable now.
+//!    ([`collab_types::handoff`]): it makes what it shows durable now.
 //! 2. Read the source record as durable, rehome it into the destination
 //!    under a fresh id, and give the old instance's presentation to the new
 //!    one.
@@ -66,10 +66,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ChangeHash};
+use collab_types::handoff::{HandoffReport, HandoffRequest, Successor};
 use tokio::sync::oneshot;
 use ui::application::NativeProfile;
 use ui::application_view::SavedInstanceView;
-use ui::collaboration::handoff::{HandoffReport, HandoffRequest, Successor};
 use ui::record::transfer::{self, Origin, Retirement, TransferError};
 use ui::record::{RecordCheckout, RecordId};
 
@@ -296,7 +296,7 @@ pub struct WindowTransfers {
 }
 
 /// Reaches one application instance by its primary route with a handoff
-/// request ([`ui::collaboration::handoff`]). Its answer comes back through
+/// request ([`collab_types::handoff`]). Its answer comes back through
 /// [`report_handoff`].
 pub trait HandoffLink {
     fn request(&self, room: RoomId, app_id: &str, instance: u64, request: HandoffRequest);
@@ -1995,7 +1995,7 @@ fn carry_over(
                 instance: roots.instance,
                 retired_at: None,
             });
-            let Some(tab) = opening_card(st, plan) else {
+            let Some(tab) = pending_place(st, plan) else {
                 roll_back(
                     st,
                     plan,
@@ -2010,9 +2010,9 @@ fn carry_over(
     )
 }
 
-/// The destination's card for the window while its instance starts, or
+/// The destination's place for the window while its instance starts, or
 /// `None` when the destination workspace is gone.
-fn opening_card(st: &mut ChromeState, plan: &Plan) -> Option<TabId> {
+fn pending_place(st: &mut ChromeState, plan: &Plan) -> Option<TabId> {
     let strip = destination_strip(st, plan.destination.workspace)?;
     let id = st.tree().mint_id();
     Some(place_in(

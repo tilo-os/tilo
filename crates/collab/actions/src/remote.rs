@@ -34,11 +34,16 @@ use serde::{Deserialize, Serialize};
 pub const APPLICATION_ACTIVATE_ACTION: &str = "activate-window";
 /// Encoded operation of [`APPLICATION_ACTIVATE_ACTION`].
 pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
+/// Encoded operation of the shared view action that shows the item at an
+/// anchor, as picking that item's search hit does.
+pub const APPLICATION_OPEN_TYPE: &str = "tilo.app.open";
 
 mod catalogue;
 mod content_put;
+pub mod crash_records;
 pub mod feedback;
 pub mod home_relay_hosting;
+mod nodes;
 pub mod own_device;
 mod pending;
 mod wait;
@@ -51,6 +56,9 @@ pub use catalogue::{
 };
 pub use content_put::{
     CONTENT_PUTS_UNAVAILABLE, ContentPut, ContentPuts, MAX_CONTENT_PUT_CHUNK, MAX_OPEN_CONTENT_PUTS,
+};
+pub use nodes::{
+    NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use wait::{MAX_REMOTE_WAIT, UpdateMark, settle_with};
@@ -731,6 +739,10 @@ pub const WORKSPACE_PROVIDER: &str = "workspace";
 /// Resource prefix of a workspace's "open this application" actions.
 pub const APPLICATION_RESOURCE_PREFIX: &str = "app.";
 
+/// Resource kind of an installed Tilo application a workspace lists, which
+/// a catalogue query's `resource_name` answers whole.
+pub const APPLICATION_RESOURCE_KIND: &str = "applications.app";
+
 /// Action id that opens an application into a workspace.
 pub const APPLICATION_OPEN_ACTION: &str = "open";
 
@@ -1288,13 +1300,14 @@ pub trait ActionHost {
         None
     }
 
-    /// Ask a running invocation to stop.
+    /// Ask a running invocation to stop, answered once the host has kept
+    /// the request as durably as it keeps the invocation.
     ///
     /// # Errors
     ///
     /// Returns [`ActionHostError::UnknownInvocation`] for an id this caller
     /// does not own, or [`ActionHostError::NotCancellable`].
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError>;
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>>;
 
     /// Ask the person `caller` acts for to confirm `request` on their own
     /// device, as the host shows it to them. The answer is a
@@ -1348,7 +1361,7 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
         (**self).next_change(caller, id)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
         (**self).cancel(caller, id)
     }
 
@@ -1675,12 +1688,9 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
                 state: host.observe(caller, &invocation),
             })
         }
-        RemoteActionMessage::Cancel { invocation } => {
-            Pending::ready(RemoteActionMessage::CancelResponse {
-                invocation,
-                result: host.cancel(caller, &invocation),
-            })
-        }
+        RemoteActionMessage::Cancel { invocation } => host
+            .cancel(caller, &invocation)
+            .map(move |result| RemoteActionMessage::CancelResponse { invocation, result }),
         // A record is read by the device that keeps it, never through an
         // action host; a host asked for one says so.
         RemoteActionMessage::RecordRequest { correlation, .. } => {
@@ -2240,6 +2250,29 @@ mod tests {
         }
     }
 
+    impl CountingHost {
+        fn cancel_now(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+            let ledger = self.ledger.lock().unwrap();
+            let mut update = ledger
+                .get(caller, id)
+                .ok_or(ActionHostError::UnknownInvocation)?
+                .lock()
+                .unwrap();
+            if update.is_terminal() {
+                return Err(ActionHostError::NotCancellable {
+                    reason: "finished".into(),
+                });
+            }
+            *update = InvocationUpdate::Cancelled {
+                invocation: *id,
+                message: None,
+            };
+            drop(update);
+            drop(ledger);
+            Ok(())
+        }
+    }
+
     impl ActionHost for CountingHost {
         fn query(
             &self,
@@ -2286,25 +2319,12 @@ mod tests {
                 .map(|update| InvocationState::new(*id, update.lock().unwrap().clone()))
         }
 
-        fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-            let ledger = self.ledger.lock().unwrap();
-            let mut update = ledger
-                .get(caller, id)
-                .ok_or(ActionHostError::UnknownInvocation)?
-                .lock()
-                .unwrap();
-            if update.is_terminal() {
-                return Err(ActionHostError::NotCancellable {
-                    reason: "finished".into(),
-                });
-            }
-            *update = InvocationUpdate::Cancelled {
-                invocation: *id,
-                message: None,
-            };
-            drop(update);
-            drop(ledger);
-            Ok(())
+        fn cancel(
+            &self,
+            caller: &Caller,
+            id: &InvocationId,
+        ) -> Pending<Result<(), ActionHostError>> {
+            Pending::ready(self.cancel_now(caller, id))
         }
     }
 
@@ -2630,7 +2650,7 @@ mod tests {
         );
         assert_eq!(host.observe(&second, &id), None);
         assert_eq!(
-            host.cancel(&second, &id),
+            now(host.cancel(&second, &id)),
             Err(ActionHostError::UnknownInvocation)
         );
         let retained = first.clone();
@@ -2691,7 +2711,7 @@ mod tests {
         );
         assert_eq!(host.observe(&mallory(), &id), None);
         assert_eq!(
-            host.cancel(&mallory(), &id),
+            now(host.cancel(&mallory(), &id)),
             Err(ActionHostError::UnknownInvocation)
         );
         assert_eq!(host.runs(), 1);

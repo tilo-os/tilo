@@ -60,10 +60,15 @@ arrival-tip-operating-system = Tilo is an operating system. This one runs in you
 #   Wiggle your cursor next to someone to chat with them
 #   Strips as places
 
-## Said instead of a line when the network, or the first frame, is slow
+## Said instead of a line when a step of getting in is slow
 arrival-slow-loading = Still loading. Your network may be slow.
 arrival-slow-connecting = Still connecting. Your network may be slow.
+arrival-slow-starting = Still starting Tilo. This device may be busy.
+arrival-slow-opening = Still opening the workspace.
 arrival-slow-drawing = Still starting graphics. Without a graphics card this takes longer.
+# Said with Try again beside it once a step has not moved on for long; the
+# page keeps waiting meanwhile.
+arrival-stalled = This is taking longer than it should. Keep waiting, or try again.
 
 ## Said in the line's place when the page cannot get in or go on
 # { $workspace } is the workspace's name; a message ending in -unnamed is
@@ -92,9 +97,23 @@ arrival-door-wait-body = It’s an early alpha. Leave your email and we’ll sen
 arrival-wait-email = Email
 arrival-wait-placeholder = you@example.com
 arrival-wait-join = Join the wait list
-arrival-wait-done = You’re on the list. We’ll email you at { $email }.
+arrival-wait-inbox = Check your inbox: we sent a link to { $email } to confirm.
+arrival-wait-again-prompt = Didn’t get it?
+arrival-wait-again = Send it again
+arrival-wait-again-sent = Asked again. We send at most one link an hour, so check your spam folder too.
+arrival-wait-listed = You’re on the list ({ $email })
+arrival-wait-confirmed = You’re on the list.
+arrival-wait-invited = You’re invited: the link is in your inbox.
+arrival-wait-invited-no-mail = You’re invited: whoever invited you sends you the link.
+arrival-wait-expired = That link no longer works. Leave your address again.
+arrival-wait-change = Changed your mind?
+arrival-wait-leave = Take me off the list
+arrival-wait-left = You’re off the list.
+arrival-wait-leave-too-many = Too many tries from your network just now. Try again later.
 arrival-wait-privacy = We only use your email to send you an invite.
-arrival-wait-removal = To be taken off the list, write to { $contact }.
+arrival-wait-privacy-mail = We email you a link to confirm, then your invite. Nothing else.
+arrival-wait-no-mail = No email is sent from here: whoever invites you sends you the link.
+arrival-wait-contact = Questions or removal: { $contact }
 arrival-wait-invalid = That doesn’t look like an email address.
 arrival-wait-too-many = Too many sign-ups from your network just now. Try again later.
 arrival-wait-full = The wait list is full for now. Please try again in a few days.
@@ -111,3 +130,25 @@ arrival-failed-cooling-down = { $workspace } is not letting anyone in from your 
 arrival-failed-cooling-down-unnamed = This workspace is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.
 arrival-failed-custody-busy = Every device this browser keeps for { $workspace } is open in another tab. Close one of those tabs, then try again.
 arrival-failed-custody-busy-unnamed = Every device this browser keeps for the workspace is open in another tab. Close one of those tabs, then try again.
+
+## The reconnect screen: the page was not let in yet and tries again
+# { $time } is how long until the next try, such as "40 s" or "2 min 05 s".
+arrival-reconnect-unreachable = Can’t reach { $workspace }
+arrival-reconnect-unreachable-unnamed = Can’t reach the workspace
+arrival-reconnect-unreachable-body = It may be restarting. It opens here as soon as it’s back.
+arrival-reconnect-refused = Not in { $workspace } yet
+arrival-reconnect-refused-unnamed = Not in the workspace yet
+arrival-reconnect-refused-body = It turned this browser away for now. The next try asks as a new device of yours.
+arrival-reconnect-offline = You’re offline
+arrival-reconnect-offline-body = The workspace opens as soon as you’re back online.
+arrival-reconnect-busy = { $workspace } is busy
+arrival-reconnect-busy-unnamed = The workspace is busy
+arrival-reconnect-busy-body = A lot of people are getting in right now. It opens here once there’s room.
+arrival-reconnect-next = Trying again in { $time }
+arrival-reconnect-trying = Trying now…
+arrival-reconnect-waiting-online = Waiting for the network…
+arrival-reconnect-try-now = Try now
+arrival-reconnect-details = Technical details
+arrival-reconnect-copy = Copy details
+arrival-reconnect-copied = Copied
+arrival-reconnect-copy-failed = Couldn’t copy. Select the text instead.

@@ -54,11 +54,59 @@ impl ShellNetwork {
         sent
     }
 
+    /// Say on `cluster_id`'s live presence whose view this person follows:
+    /// `target` (a roster id; `None` to stop saying), as the device behind
+    /// it, so browser tabs show it on their roster as desktops do from the
+    /// mesh. Only where its people may see that this person is here;
+    /// returns whether a frame went out.
+    pub fn publish_following(&self, cluster_id: &str, target: Option<&str>) -> bool {
+        let Some(room) = RoomId::parse(cluster_id).filter(|room| {
+            !room.is_nil()
+                && self.person_root_of_room(*room).is_none()
+                && self.presence_visibility(cluster_id).shows_presence()
+        }) else {
+            return false;
+        };
+        let others: Vec<[u8; 32]> = self
+            .room_devices(room)
+            .iter()
+            .map(|d| *d.as_bytes())
+            .collect();
+        let following = target.and_then(|target| {
+            self.live_waves
+                .lock()
+                .ok()?
+                .device_of(target, &others)
+                .map(hex::encode)
+        });
+        let ws = room_topic_id(room);
+        let desktop = tilo_relay_protocol::live::LiveRecord {
+            app: tilo_desktop_model::ownership::DESKTOP_APP.into(),
+            record: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),
+        };
+        let frames = self.live_presence.lock().map_or_else(
+            |_| Vec::new(),
+            |mut live| {
+                let at = std::time::Instant::now();
+                live.follow(ws, desktop, Self::live_participant(), following, at)
+            },
+        );
+        let hosted = self.has_live_plane(cluster_id);
+        let mut sent = false;
+        for frame in frames
+            .iter()
+            .filter_map(|frame| self.seal_live(room, frame))
+        {
+            sent = self.send_live(ws, hosted, frame);
+        }
+        sent
+    }
+
     /// Send sealed live `frame` of the room on topic `ws`: on the workspace
     /// host's live plane when the room has one (`hosted`), else on the
     /// room's own topic, where its members read it as a live frame all the
     /// same ([`NeighbourMsg::LivePresence`]).
-    fn send_live(&self, ws: u64, hosted: bool, frame: Vec<u8>) -> bool {
+    pub(super) fn send_live(&self, ws: u64, hosted: bool, frame: Vec<u8>) -> bool {
         if hosted {
             return self
                 .cmd_tx
@@ -69,6 +117,14 @@ impl ShellNetwork {
             peer: self.local_peer_id_hash(),
             frame,
         };
-        self.join_topic(ws) && self.cmd_tx.try_send(NetCmd::Publish { ws, msg }).is_ok()
+        self.join_topic(ws)
+            && self
+                .cmd_tx
+                .try_send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
+                    ws,
+                    msg,
+                })
+                .is_ok()
     }
 }

@@ -34,7 +34,7 @@ class SdkServiceStagingTests(unittest.TestCase):
         original = (ROOT / "apps/file-explorer/tilo-app.toml").read_text()
         expected = tomllib.loads(original)
         expected["package"]["runtime"] = RUNTIME
-        expected["sandbox"]["services"]["identity"] = "optional@8"
+        expected["sandbox"]["services"]["identity"] = "optional@10"
         manifest = self.stamp(original)
         self.assertEqual(tomllib.loads(manifest.read_text()), expected)
         # Already-staged output is idempotent and retains publisher/trust inputs.
@@ -55,7 +55,7 @@ class SdkServiceStagingTests(unittest.TestCase):
                 staged = tomllib.loads(manifest.read_text())
                 self.assertEqual(
                     staged["sandbox"]["services"]["identity"],
-                    original.get("sandbox", {}).get("services", {}).get("identity", "optional@8"),
+                    original.get("sandbox", {}).get("services", {}).get("identity", "optional@10"),
                 )
 
     def test_authored_legacy_identity_contract_remains_legacy(self):
@@ -70,7 +70,7 @@ class SdkServiceStagingTests(unittest.TestCase):
         source = '[package]\nkind="app"\nruntime="tilo-runtime/2026.07"\n[sandbox]\nseccomp="tilo-default"\n'
         manifest = self.stamp(source)
         self.assertEqual(tomllib.loads(manifest.read_text())["sandbox"], {
-            "seccomp": "tilo-default", "services": {"identity": "optional@8"},
+            "seccomp": "tilo-default", "services": {"identity": "optional@10"},
         })
 
     def test_unbound_runtime_and_non_app_are_refused_without_mutation(self):

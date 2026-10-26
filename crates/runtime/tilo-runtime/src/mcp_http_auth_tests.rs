@@ -33,6 +33,73 @@ fn token_files_must_exist_and_contain_a_credential() {
     assert_eq!(read_token(&path).unwrap(), "secret");
 }
 
+/// A log line may repeat the endpoint's configuration, so an inert marker
+/// standing in for the credential must reach no log — neither as the config is
+/// printed, nor through a failed bind or an unreadable token file, whose errors
+/// name the address or the path and the reason, never the value.
+#[test]
+fn no_log_line_names_the_mcp_bearer_token() {
+    let marker = "synthetic-mcp-marker-4b1c";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("token");
+    std::fs::write(&path, format!("{marker}\n")).unwrap();
+    let config = Config {
+        address: "127.0.0.1:7391".parse().unwrap(),
+        token: Some(read_token(&path).unwrap()),
+        room: Some("0b0c8f0e-6f4a-4f2f-9d1c-2f2b0a5e11aa".into()),
+    };
+    let printed = [
+        format!("{config:?}"),
+        // The three startup paths that print something: the listener will not
+        // bind, the token file cannot be read, and a read from the environment.
+        format!(
+            "agent MCP endpoint: {}",
+            spawn_failure(&config, "0.0.0.1:1")
+        ),
+        format!(
+            "agent MCP endpoint: {}",
+            read_failure(&dir.path().join("absent"))
+        ),
+        format!(
+            "agent MCP endpoint: {}",
+            crate::mcp_http::Config::from_env()
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default()
+        ),
+    ];
+    for line in printed {
+        assert!(
+            !line.contains(marker),
+            "a log line named the credential: {line}"
+        );
+    }
+    // The redaction keeps the facts a log reader needs.
+    let shown = format!("{config:?}");
+    assert!(shown.contains("[redacted]"), "{shown}");
+    assert!(shown.contains("127.0.0.1:7391"), "{shown}");
+    assert!(shown.contains("0b0c8f0e"), "{shown}");
+}
+
+/// The line a start prints when the address cannot be bound: the socket's
+/// own error text, with the config beside it. Neither carries the token.
+fn spawn_failure(config: &Config, address: &str) -> String {
+    let mut displaced = config.clone();
+    displaced.address = address.parse().unwrap();
+    match std::net::TcpListener::bind(displaced.address) {
+        Ok(_) => String::new(),
+        Err(error) => format!("{displaced:?}: {error}"),
+    }
+}
+
+/// The error reading a token file gives: its path and the reason, no value.
+fn read_failure(path: &Path) -> String {
+    read_token(path)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default()
+}
+
 struct CountViewer(Arc<AtomicUsize>);
 impl crate::viewer::HostOperator for CountViewer {
     fn call(

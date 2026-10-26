@@ -55,6 +55,9 @@ struct Host {
     badge: bool,
     /// The tile drawn inside a translucent group.
     translucent: bool,
+    /// The tile, its edge and the collaborator's mark drawn inside a part
+    /// bounded by the whole scene, as a strip's lane holds its windows.
+    lane: bool,
 }
 
 fn lay_out(tile: &mut EmbeddedApp, theme: &Theme) {
@@ -94,6 +97,9 @@ fn section(
         None,
         &KurboRect::new(0.0, 0.0, SCENE.0, SCENE.1),
     );
+    if host.lane {
+        crate::scene_parts::begin(&mut scene, PartKey::new("test.lane", ()));
+    }
     let shape = RoundedRect::from_rect(REGION, 12.0);
     if host.translucent {
         scene.push_layer(
@@ -164,6 +170,9 @@ fn section(
         );
         vec![KurboRect::from_center_size(at, (20.0, 20.0))]
     });
+    if host.lane {
+        crate::scene_parts::end(&mut scene, vec![KurboRect::new(0.0, 0.0, SCENE.0, SCENE.1)]);
+    }
     if host.badge {
         scene.fill(
             Fill::NonZero,
@@ -186,6 +195,8 @@ struct Run {
     repainted: f64,
     /// Frames the host could not compare and repainted whole.
     whole: usize,
+    /// The damage of the frame that repainted most, in host pixels.
+    largest: (f64, Vec<KurboRect>),
 }
 
 /// The device pixels `rects` cover, each once, in a `size` target.
@@ -272,7 +283,11 @@ fn scroll(theme: &Theme, host: Host, scale: f64, runs: &[(f64, usize)]) -> Vec<R
                     crate::scene_parts::present_copies(&damage.copies, rects, &[], to_device, size);
                 if !plan.copies.is_empty() {
                     run.copied_frames += 1;
-                    run.repainted += covered(&plan.raster, size);
+                    let repainted = covered(&plan.raster, size);
+                    run.repainted += repainted;
+                    if repainted > run.largest.0 {
+                        run.largest = (repainted, damage.rects.clone());
+                    }
                 }
                 let _ = presented.render_copies_and_damage_gpu_wait(
                     &scene,
@@ -349,6 +364,22 @@ fn what_the_host_draws_over_the_app_outside_its_parts_is_repainted_and_matches()
     };
     let runs = scroll(&Theme::light(), host, 1.0, &[(40.0, 15)]);
     assert_copies(&runs[0], 1.0, "badge");
+}
+
+#[test]
+fn a_tile_inside_a_part_around_it_still_copies_and_matches() {
+    // What the lane draws after the tile (the tile's clip closing, its
+    // edge, the mark) is over the list only where it paints: the lane's
+    // bounds cover the tile too, so they say nothing about what is over it.
+    let host = Host {
+        peer: Some(Point::new(320.0, 260.0)),
+        lane: true,
+        ..Host::default()
+    };
+    for scale in [1.0, 2.0] {
+        let runs = scroll(&Theme::dark(), host, scale, &[(40.0, 15)]);
+        assert_copies(&runs[0], scale, &format!("lane {scale}x"));
+    }
 }
 
 #[test]

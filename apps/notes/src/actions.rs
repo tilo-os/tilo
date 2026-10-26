@@ -394,6 +394,26 @@ pub enum InlineMark {
     Mention {
         id: String,
     },
+    /// A link to a resource of this desktop, by the `tilo://open#…` address
+    /// it is written as: activating it opens the resource in its own app.
+    ///
+    /// Kept last: a stored mark names its variant by position, so a new one
+    /// goes at the end or old bytes read as another kind of mark. It sorts
+    /// beside the other links through [`InlineMarkSpan`]'s own ordering.
+    ResourceLink {
+        href: String,
+    },
+}
+
+/// What a `tilo://open#…` address names, as a resource's kind and id, taken
+/// from the link's own route so a hand-written and a machine-written address
+/// read the same. `None` for any other text — a web address, a broken link —
+/// which a note links as a plain URL.
+pub fn resource_address_in(href: &str) -> Option<ui::tilo_reference::link::ResourceAddress> {
+    ui::tilo_reference::link::Link::parse_native(href)
+        .ok()?
+        .target
+        .resource
 }
 
 /// A half-open UTF-8 byte range with one inline mark.
@@ -419,6 +439,7 @@ impl InlineMarkSpan {
                 page: page.to_string(),
             },
             Mark::ExternalLink(url) => InlineMark::ExternalLink { url: url.clone() },
+            Mark::ResourceLink(href) => InlineMark::ResourceLink { href: href.clone() },
             Mark::Mention(id) => InlineMark::Mention { id: id.clone() },
         };
         Self {
@@ -429,19 +450,21 @@ impl InlineMarkSpan {
     }
 
     pub fn to_ui(&self) -> Option<MarkSpan> {
-        let mark = match &self.mark {
-            InlineMark::Bold => Mark::Bold,
-            InlineMark::Italic => Mark::Italic,
-            InlineMark::Code => Mark::Code,
-            InlineMark::Underline => Mark::Underline,
-            InlineMark::Strikethrough => Mark::Strikethrough,
-            InlineMark::Link { page } => Mark::Link(page.parse().ok()?),
-            InlineMark::Transclusion { page } => Mark::Transclusion(page.parse().ok()?),
-            InlineMark::ExternalLink { url } => {
-                crate::markdown::safe_external_url(url).then(|| Mark::ExternalLink(url.clone()))?
-            }
-            InlineMark::Mention { id } => Mark::Mention(id.clone()),
-        };
+        let mark =
+            match &self.mark {
+                InlineMark::Bold => Mark::Bold,
+                InlineMark::Italic => Mark::Italic,
+                InlineMark::Code => Mark::Code,
+                InlineMark::Underline => Mark::Underline,
+                InlineMark::Strikethrough => Mark::Strikethrough,
+                InlineMark::Link { page } => Mark::Link(page.parse().ok()?),
+                InlineMark::Transclusion { page } => Mark::Transclusion(page.parse().ok()?),
+                InlineMark::ExternalLink { url } => crate::markdown::safe_external_url(url)
+                    .then(|| Mark::ExternalLink(url.clone()))?,
+                InlineMark::ResourceLink { href } => tilo_rich_text::is_resource_link(href)
+                    .then(|| Mark::ResourceLink(href.clone()))?,
+                InlineMark::Mention { id } => Mark::Mention(id.clone()),
+            };
         Some(MarkSpan::new(self.start..self.end, mark))
     }
 
@@ -454,7 +477,7 @@ impl InlineMarkSpan {
             InlineMark::Code => 4,
             InlineMark::Link { .. } => 5,
             InlineMark::Transclusion { .. } => 6,
-            InlineMark::ExternalLink { .. } => 7,
+            InlineMark::ExternalLink { .. } | InlineMark::ResourceLink { .. } => 7,
             InlineMark::Mention { .. } => 8,
         }
     }

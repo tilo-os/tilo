@@ -456,6 +456,7 @@ decorator_trait! {
         fn layout_info() -> Option<LayoutInfo>;
         fn children() -> Vec<&dyn Widget>;
         fn for_each_child(visitor: &mut dyn FnMut(&dyn Widget));
+        fn for_each_child_in_clip(visitor: &mut dyn FnMut(&dyn Widget));
         fn name() -> &str;
         fn test_id() -> Option<&str>;
         fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
@@ -488,7 +489,9 @@ decorator_trait! {
         fn ime_content() -> Option<crate::ime::InputContent>;
         fn ime_multiline() -> bool;
         fn presented() -> bool;
-        fn opening() -> bool;
+        fn arrives_from() -> crate::arriving::Source;
+        fn arrival_progress() -> Option<crate::arriving::Progress>;
+        fn arrival_shape() -> crate::widget::SkeletonShape;
         fn text_review() -> Option<(usize, String)>;
         fn nav_availability() -> crate::gesture::NavAvailability;
         fn dev_route() -> Option<crate::widget::router::RouteSnapshot>;

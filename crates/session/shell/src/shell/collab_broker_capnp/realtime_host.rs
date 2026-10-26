@@ -70,11 +70,11 @@ impl RealtimeBridge {
         }
     }
 
-    fn notify(&mut self, peer: u64, event: &ui::realtime_continuity::RealtimeEvent) -> bool {
+    fn notify(&mut self, peer: u64, event: &collab_types::realtime::RealtimeEvent) -> bool {
         let Ok(bytes) = serde_json::to_vec(event) else {
             return false;
         };
-        if bytes.len() > ui::realtime_continuity::MAX_REALTIME_WIRE_BYTES {
+        if bytes.len() > collab_types::realtime::MAX_REALTIME_WIRE_BYTES {
             return false;
         }
         let delivered = self
@@ -110,7 +110,7 @@ impl RealtimeBridge {
 }
 
 fn broker_realtime_controls(
-    controls: ui::realtime_continuity::RealtimeControlIntent,
+    controls: collab_types::realtime::RealtimeControlIntent,
 ) -> crate::shell::realtime_session::RealtimeControlState {
     crate::shell::realtime_session::RealtimeControlState {
         microphone_muted: controls.microphone_muted,
@@ -122,8 +122,8 @@ fn broker_realtime_controls(
 
 fn app_realtime_controls(
     controls: crate::shell::realtime_session::RealtimeControlState,
-) -> ui::realtime_continuity::RealtimeControlIntent {
-    ui::realtime_continuity::RealtimeControlIntent {
+) -> collab_types::realtime::RealtimeControlIntent {
+    collab_types::realtime::RealtimeControlIntent {
         microphone_muted: controls.microphone_muted,
         camera_muted: controls.camera_muted,
         screen_share_paused: controls.screen_share_paused,
@@ -267,7 +267,7 @@ fn teardown_imported_realtime_consent(realtime: &mut RealtimeBridge, session: &s
     realtime.consent_capabilities_issued.remove(session);
     let _ = realtime.notify(
         peer,
-        &ui::realtime_continuity::RealtimeEvent::Ended {
+        &collab_types::realtime::RealtimeEvent::Ended {
             session: session.to_string(),
         },
     );
@@ -560,7 +560,7 @@ impl RealtimeFabricAppBridge {
                 realtime.consent_capabilities_issued.remove(session);
                 let _ = realtime.notify(
                     peer,
-                    &ui::realtime_continuity::RealtimeEvent::Ended {
+                    &collab_types::realtime::RealtimeEvent::Ended {
                         session: session.to_string(),
                     },
                 );
@@ -654,7 +654,7 @@ impl RealtimeFabricAppBridge {
         }
         let delivered = realtime.notify(
             peer,
-            &ui::realtime_continuity::RealtimeEvent::CaptureAuthorized {
+            &collab_types::realtime::RealtimeEvent::CaptureAuthorized {
                 session: session.to_string(),
                 capture_authorizations: authorizations.clone(),
             },
@@ -756,13 +756,13 @@ impl NativeRealtimeState {
                     imported: true,
                 },
             );
-            let event = ui::realtime_continuity::RealtimeEvent::Offer {
+            let event = collab_types::realtime::RealtimeEvent::Offer {
                 session: token.clone(),
-                intent: ui::realtime_continuity::RealtimeResumeIntent {
+                intent: collab_types::realtime::RealtimeResumeIntent {
                     provider: intent.room.provider().to_string(),
                     room_id: intent.room.room_id().to_string(),
                     semantic_position: intent.semantic_position,
-                    media: ui::realtime_continuity::RealtimeMediaFacets {
+                    media: collab_types::realtime::RealtimeMediaFacets {
                         microphone: intent.media.microphone(),
                         camera: intent.media.camera(),
                         screen_share: intent.media.screen_share(),
@@ -788,7 +788,7 @@ impl NativeRealtimeState {
             }) {
                 realtime.notify(
                     peer,
-                    &ui::realtime_continuity::RealtimeEvent::StopSource { session: token },
+                    &collab_types::realtime::RealtimeEvent::StopSource { session: token },
                 );
             }
         }
@@ -810,11 +810,11 @@ impl NativeRealtimeState {
                     crate::shell::realtime_session::BrokerEventKind::RolledBackToSource { .. }
                 );
                 let app_event = if terminal {
-                    ui::realtime_continuity::RealtimeEvent::Ended {
+                    collab_types::realtime::RealtimeEvent::Ended {
                         session: token.clone(),
                     }
                 } else {
-                    ui::realtime_continuity::RealtimeEvent::RolledBack {
+                    collab_types::realtime::RealtimeEvent::RolledBack {
                         session: token.clone(),
                     }
                 };
@@ -967,7 +967,7 @@ impl NativeRealtimeState {
                 if failed.is_ok() {
                     realtime.notify(
                         owner_peer,
-                        &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                        &collab_types::realtime::RealtimeEvent::RolledBack {
                             session: token.clone(),
                         },
                     );
@@ -989,7 +989,7 @@ impl NativeRealtimeState {
                 }
                 realtime.notify(
                     owner_peer,
-                    &ui::realtime_continuity::RealtimeEvent::Ended {
+                    &collab_types::realtime::RealtimeEvent::Ended {
                         session: token.clone(),
                     },
                 );
@@ -1072,15 +1072,14 @@ impl NativeRealtimeServices {
         app_id: &str,
         workspace_id: &str,
         bytes: &[u8],
-    ) -> Result<ui::realtime_continuity::RealtimeReply, capnp::Error> {
+    ) -> Result<collab_types::realtime::RealtimeReply, capnp::Error> {
         let app = crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
             app_id,
             workspace_id,
         )
         .map_err(|error| capnp::Error::failed(error.to_string()))?;
         let local = self.state.local.clone();
-        let command: ui::realtime_continuity::RealtimeCommand = match serde_json::from_slice(bytes)
-        {
+        let command: collab_types::realtime::RealtimeCommand = match serde_json::from_slice(bytes) {
             Ok(command) => command,
             Err(error) => return Err(capnp::Error::failed(error.to_string())),
         };
@@ -1096,7 +1095,7 @@ impl NativeRealtimeServices {
         };
         let now = std::time::Instant::now();
         let reply = match command {
-            ui::realtime_continuity::RealtimeCommand::Register { intent } => {
+            collab_types::realtime::RealtimeCommand::Register { intent } => {
                 let mut facets = Vec::with_capacity(4);
                 if intent.media.microphone {
                     facets.push(crate::shell::realtime_session::RealtimeMediaFacet::Microphone);
@@ -1150,9 +1149,9 @@ impl NativeRealtimeServices {
                         imported: false,
                     },
                 );
-                ui::realtime_continuity::RealtimeReply::Registered { session: token }
+                collab_types::realtime::RealtimeReply::Registered { session: token }
             }
-            ui::realtime_continuity::RealtimeCommand::Accept {
+            collab_types::realtime::RealtimeCommand::Accept {
                 session,
                 capture_authorizations,
             } => {
@@ -1224,9 +1223,9 @@ impl NativeRealtimeServices {
                     binding.capture_leases = leases;
                 }
                 bridge.consent_capabilities_issued.remove(&session);
-                ui::realtime_continuity::RealtimeReply::Accepted
+                collab_types::realtime::RealtimeReply::Accepted
             }
-            ui::realtime_continuity::RealtimeCommand::MediaReady { session } => {
+            collab_types::realtime::RealtimeCommand::MediaReady { session } => {
                 let Some(binding) = bridge.sessions.get(&session) else {
                     return Err(capnp::Error::failed("unknown realtime session".into()));
                 };
@@ -1276,7 +1275,7 @@ impl NativeRealtimeServices {
                     release_realtime_capture_session(&bridge.capture, &app, &session, &local);
                     bridge.notify(
                         owner_peer,
-                        &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                        &collab_types::realtime::RealtimeEvent::RolledBack {
                             session: session.clone(),
                         },
                     );
@@ -1324,7 +1323,7 @@ impl NativeRealtimeServices {
                         release_realtime_capture_session(&bridge.capture, &app, &session, &local);
                         bridge.notify(
                             owner_peer,
-                            &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                            &collab_types::realtime::RealtimeEvent::RolledBack {
                                 session: session.clone(),
                             },
                         );
@@ -1334,14 +1333,14 @@ impl NativeRealtimeServices {
                 if directive.is_some_and(|directive| directive.stop_source) {
                     bridge.notify(
                         owner_peer,
-                        &ui::realtime_continuity::RealtimeEvent::StopSource {
+                        &collab_types::realtime::RealtimeEvent::StopSource {
                             session: session.clone(),
                         },
                     );
                 }
-                ui::realtime_continuity::RealtimeReply::MediaReady
+                collab_types::realtime::RealtimeReply::MediaReady
             }
-            ui::realtime_continuity::RealtimeCommand::TargetFailed { session } => {
+            collab_types::realtime::RealtimeCommand::TargetFailed { session } => {
                 let Some(binding) = bridge.sessions.get(&session) else {
                     return Err(capnp::Error::failed("unknown realtime session".into()));
                 };
@@ -1385,11 +1384,11 @@ impl NativeRealtimeServices {
                 release_realtime_capture_session(&bridge.capture, &app, &session, &local);
                 bridge.notify(
                     owner_peer,
-                    &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                    &collab_types::realtime::RealtimeEvent::RolledBack {
                         session: session.clone(),
                     },
                 );
-                ui::realtime_continuity::RealtimeReply::RolledBack
+                collab_types::realtime::RealtimeReply::RolledBack
             }
         };
         drop(bridge);
@@ -1465,16 +1464,16 @@ mod tests {
         let peer_id = 77;
         let app_id = "so.tilo.video";
         let workspace_id = "workspace-42";
-        let command = ui::realtime_continuity::RealtimeCommand::Register {
-            intent: ui::realtime_continuity::RealtimeResumeIntent {
+        let command = collab_types::realtime::RealtimeCommand::Register {
+            intent: collab_types::realtime::RealtimeResumeIntent {
                 provider: "tilo.video".into(),
                 room_id: "call-9".into(),
                 semantic_position: Some("participant-3".into()),
-                media: ui::realtime_continuity::RealtimeMediaFacets {
+                media: collab_types::realtime::RealtimeMediaFacets {
                     microphone: true,
                     ..Default::default()
                 },
-                controls: ui::realtime_continuity::RealtimeControlIntent::default(),
+                controls: collab_types::realtime::RealtimeControlIntent::default(),
             },
         };
         let reply = service
@@ -1485,7 +1484,7 @@ mod tests {
                 &serde_json::to_vec(&command).expect("encode command"),
             )
             .expect("native registration succeeds");
-        let ui::realtime_continuity::RealtimeReply::Registered { session } = reply else {
+        let collab_types::realtime::RealtimeReply::Registered { session } = reply else {
             panic!("registration must return a session capability");
         };
         {

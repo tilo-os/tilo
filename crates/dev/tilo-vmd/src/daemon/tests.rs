@@ -41,7 +41,8 @@ fn slot_show_reads_imported_provenance_and_keeps_it_after_failed_activation() {
     fs::write(&binary, "baseline").unwrap();
     let mut original = Provenance::local("shell");
     original.source_commit = Some("ab".repeat(20));
-    original.target = Some("x86_64-unknown-linux-gnu".into());
+    // Built for the machine the daemon runs on, as a real layer is.
+    original.target = Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
     original.cargo_lock_hash = Some("cd".repeat(32));
     let store = LayerStore::new(root.path());
     let (baseline, _) = store

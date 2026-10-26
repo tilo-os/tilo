@@ -220,6 +220,10 @@ impl FrameHarness {
                 "the window bar's search did not take {action:?} on {target} now"
             ));
         }
+        // What the action opened (the search, its options) is laid out
+        // before the app hears of it, as the next frame lays it out on the
+        // desktop: the app is told what the options cover.
+        self.paint_window_bar(&mut Scene::new(), Affine::IDENTITY, width);
         self.drive_window_search();
         Ok(())
     }
@@ -358,7 +362,7 @@ impl FrameHarness {
     }
 
     /// The window's title and app, as its tab shows them.
-    fn window_tab(&self) -> TabDescriptor {
+    pub(super) fn window_tab(&self) -> TabDescriptor {
         let bound = self
             .root
             .as_any()
@@ -563,9 +567,11 @@ impl FrameHarness {
         );
         let mut bar = self.window_bar(width);
         let title = self.window_tab().title;
+        let frame_top = self.frame_top();
         let search = &mut self.window_search;
         search.set_app_name(&title);
         place_search(&bar, search);
+        search.set_frame_origin(Point::new(0.0, frame_top));
         let ground = bar.ground_color(&self.theme);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -702,7 +708,11 @@ fn place_search(bar: &TabBar, search: &mut WindowSearch) {
     if let Some((row, reach)) = bar.toolbar_search_slot() {
         let x0 = row.x1 + gap;
         let y0 = row.center().y - px / 2.0;
-        search.place_trailing(Rect::new(x0, y0, x0 + px, y0 + px), reach.min(x0));
+        search.place_trailing(
+            Rect::new(x0, y0, x0 + px, y0 + px),
+            reach.min(x0),
+            row.x0.min(x0),
+        );
         return;
     }
     let row = bar.get_rect();
@@ -710,6 +720,7 @@ fn place_search(bar: &TabBar, search: &mut WindowSearch) {
     let y0 = row.center().y - px / 2.0;
     let limit = bar.window_controls().content_limit(row);
     search.place(Rect::new(x0, y0, x0 + px, y0 + px), limit.max(x0 + px));
+    search.set_cramped_start(bar.search_cramped_start());
 }
 
 #[cfg(test)]
@@ -1549,6 +1560,335 @@ mod tests {
     }
 
     /// Hosting is per thread: a test leaves it as it found it.
+    /// A text that shows its current match clear of what the window's
+    /// search covers of it, as it was told.
+    struct Covered {
+        text: String,
+        covers: Vec<Option<Rect>>,
+        /// What covered it when each match was revealed.
+        revealed_under: Vec<Option<Rect>>,
+    }
+
+    impl Widget for Covered {
+        crate::provides!(dyn crate::widget::Findable);
+        fn name(&self) -> &str {
+            "Covered"
+        }
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut taffy::TaffyTree<()>,
+            _: &crate::theme::Theme,
+            nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            use crate::widget::TaffyTreeExt as _;
+            tree.widget_leaf(taffy::Style::default(), nodes, self)
+        }
+    }
+
+    impl crate::widget::AppWidget for Covered {
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Files
+        }
+        fn app_title(&self) -> &str {
+            "Writer"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Glyph("W")
+        }
+    }
+
+    impl crate::widget::Findable for Covered {
+        fn find(
+            &mut self,
+            query: &str,
+            _options: crate::widget::find_bar::FindOptions,
+        ) -> Vec<crate::widget::find_bar::FindMatch> {
+            if query.is_empty() {
+                return Vec::new();
+            }
+            self.text
+                .match_indices(query)
+                .map(|(start, m)| crate::widget::find_bar::FindMatch::new(start, start + m.len()))
+                .collect()
+        }
+        fn reveal(&mut self, _index: usize) {
+            self.revealed_under
+                .push(self.covers.last().copied().flatten());
+        }
+        fn set_find_cover(&mut self, cover: Option<Rect>) {
+            self.covers.push(cover);
+        }
+        fn content_revision(&self) -> u64 {
+            u64::try_from(self.text.len()).unwrap_or(u64::MAX)
+        }
+    }
+
+    /// A document's slots in the bar: navigation, a location and actions,
+    /// which leave a narrow window's search little room before the location.
+    fn writer_slots() -> crate::window_toolbar::WindowToolbar {
+        use crate::window_toolbar::{
+            ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,
+        };
+        WindowToolbar {
+            navigation: Some(ToolbarNavigation {
+                back: true,
+                forward: true,
+            }),
+            location: Some(ToolbarLocation {
+                label: "Quarterly report".into(),
+                value: "Quarterly report".into(),
+                ..ToolbarLocation::default()
+            }),
+            actions: vec![
+                ToolbarAction::new("bold", "bold", "Bold"),
+                ToolbarAction::new("share", "upload", "Share"),
+            ],
+            ..WindowToolbar::default()
+        }
+    }
+
+    fn covered_window(width: u32) -> FrameHarness {
+        covered_window_with(width, Some(writer_slots()))
+    }
+
+    fn covered_window_with(
+        width: u32,
+        slots: Option<crate::window_toolbar::WindowToolbar>,
+    ) -> FrameHarness {
+        crate::window_toolbar::declare(slots);
+        let mut harness = FrameHarness::for_app(
+            crate::State::new(),
+            Covered {
+                text: "a report on the report".into(),
+                covers: Vec::new(),
+                revealed_under: Vec::new(),
+            },
+            (width, 800),
+            crate::theme::Theme::dark(),
+        );
+        harness.present_in_window_bar();
+        harness
+    }
+
+    fn query_rect(harness: &FrameHarness) -> Rect {
+        harness
+            .window_search
+            .test_rects()
+            .into_iter()
+            .find(|(name, _)| name == "window-search-query")
+            .expect("the query is shown")
+            .1
+    }
+
+    // In a narrow window the search reaches back over the app's slots
+    // rather than leave a query too narrow to type in; in a wide one it
+    // stops at the location, so Back and Forward stay.
+    #[test]
+    fn the_query_keeps_its_minimum_width_in_a_narrow_window() {
+        use crate::a11y::Action;
+        let _hosted = HostedReset;
+        let theme = crate::theme::Theme::dark();
+        for width in [420_u32, 1280] {
+            let mut harness = covered_window(width);
+            harness
+                .perform_semantic_named("window-search-open", None, &Action::Activate)
+                .unwrap();
+            harness
+                .perform_semantic_named("window-search-options", None, &Action::Expand)
+                .unwrap();
+            let query = query_rect(&harness);
+            assert!(
+                query.width() >= WindowSearch::query_min_width(&theme),
+                "{width}: the query is wide enough to type in: {query:?}"
+            );
+            let (row, reach) = harness
+                .window_bar(f64::from(width))
+                .toolbar_search_slot()
+                .expect("the app's slots are in the bar");
+            assert!(
+                query.x0 >= row.x0,
+                "{width}: the search stays on the app's slots: {query:?} {row:?}"
+            );
+            if width == 1280 {
+                assert!(query.x0 >= reach, "a wide window keeps the location");
+            }
+        }
+        // A window without slots: the search follows its title, and reaches
+        // back over it rather than past the app's icon.
+        let mut harness = covered_window_with(420, None);
+        harness
+            .perform_semantic_named("window-search-open", None, &Action::Activate)
+            .unwrap();
+        let query = query_rect(&harness);
+        assert!(
+            query.width() >= WindowSearch::query_min_width(&theme),
+            "after the title, the query is wide enough to type in: {query:?}"
+        );
+        let start = harness.window_bar(420.0).search_cramped_start();
+        assert!(
+            query.x0 >= start,
+            "the app's icon stays: {query:?} starts before {start}"
+        );
+        crate::window_toolbar::declare(None);
+    }
+
+    // The options open over the app: it is told what they cover, in its
+    // own coordinates (under the bar), before its current match is shown
+    // again; closed, they cover nothing.
+    #[test]
+    fn the_app_hears_what_the_open_options_cover_before_its_match_is_shown() {
+        use crate::a11y::Action;
+        let _hosted = HostedReset;
+        let mut harness = covered_window(420);
+        let mut perform =
+            |target: &str, action: Action| harness.perform_semantic_named(target, None, &action);
+        perform("window-search-open", Action::Activate).unwrap();
+        perform("window-search-query", Action::SetValue("report".into())).unwrap();
+        perform("window-search-options", Action::Expand).unwrap();
+        let panel = harness
+            .window_search
+            .options_rect()
+            .expect("the options are open");
+        let under_bar = panel - vello::kurbo::Vec2::new(0.0, f64::from(bar_height_px()));
+        let app = harness
+            .widget_mut::<Covered>()
+            .expect("the window holds the document");
+        assert_eq!(app.covers.last().copied().flatten(), Some(under_bar));
+        assert_eq!(
+            app.revealed_under.last().copied().flatten(),
+            Some(under_bar),
+            "the current match is shown again, knowing what covers it"
+        );
+        harness
+            .perform_semantic_named("window-search-options", None, &Action::Collapse)
+            .unwrap();
+        let app = harness
+            .widget_mut::<Covered>()
+            .expect("the window holds the document");
+        assert_eq!(
+            app.covers.last().copied(),
+            Some(None),
+            "closed, they cover nothing"
+        );
+        crate::window_toolbar::declare(None);
+    }
+
+    /// The colour of the frame's pixel at logical `(x, y)`.
+    fn pixel(harness: &FrameHarness, x: u32, y: u32) -> [u8; 4] {
+        let rgba = harness.render_rgba();
+        let at = usize::try_from((y * harness.viewport.0 + x) * 4).unwrap_or(usize::MAX);
+        rgba.get(at..at + 4)
+            .and_then(|px| <[u8; 4]>::try_from(px).ok())
+            .unwrap_or_default()
+    }
+
+    /// At compact width an app's palette stands under the window's bar,
+    /// across the window less its insets, and the bar keeps its controls:
+    /// they still take their presses. The window under the bar dims behind
+    /// the palette while it is open and not after, and a press on that
+    /// scrim closes it, as Escape does.
+    #[test]
+    fn a_compact_palette_keeps_the_window_bar_clear_over_a_scrim() {
+        let _hosted = HostedReset;
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let mut harness = FrameHarness::new_with_controlled_inputs(
+            crate::State::new(),
+            Box::new(crate::widget::Column::new()),
+            (420, 800),
+            theme,
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        harness.present_in_window_bar();
+        crate::window_toolbar::declare(Some(crate::window_toolbar::WindowToolbar {
+            actions: vec![crate::window_toolbar::ToolbarAction::new(
+                "new",
+                "plus",
+                "New event",
+            )],
+            ..crate::window_toolbar::WindowToolbar::default()
+        }));
+        harness.relayout();
+        let (w, h) = harness.viewport;
+        // Sampled in the inset beside where the card stands: always scrim.
+        let ground = pixel(&harness, 2, h - 40);
+
+        harness.open_caller_search("").expect("the palette opens");
+        harness.relayout();
+        let palette = harness
+            .caller_palette
+            .palette
+            .as_ref()
+            .expect("the palette is open");
+        let card = harness.window_rect(palette.rect());
+        let bar = Rect::new(0.0, 0.0, f64::from(w), harness.frame_top());
+        assert!(bar.height() > 0.0);
+        assert!(
+            card.y0 >= bar.y1,
+            "the card {card:?} stands under the bar {bar:?}"
+        );
+        assert!(
+            (card.width() - (f64::from(w) - 2.0 * inset)).abs() < 0.5,
+            "the card takes the window's width less its insets: {card:?}"
+        );
+        let scrim = palette.scrim_rect().expect("a scrim behind the palette");
+        assert!(
+            (harness.window_rect(scrim).y0 - bar.y1).abs() < 1e-9,
+            "the scrim dims the window under the bar, not the bar"
+        );
+        let dimmed = pixel(&harness, 2, h - 40);
+        assert!(
+            dimmed[..3].iter().map(|c| u32::from(*c)).sum::<u32>()
+                < ground[..3].iter().map(|c| u32::from(*c)).sum::<u32>(),
+            "the window behind the palette is dimmed: {ground:?} then {dimmed:?}"
+        );
+
+        let mut window_bar = harness.painted_window_bar(f64::from(w));
+        let (_, _, _, actions) = window_bar.toolbar_rects();
+        let at = actions
+            .first()
+            .expect("the action stands in the bar")
+            .center();
+        let row = window_bar.toolbar_row_mut();
+        assert!(row.press(at) && row.release(at), "the bar takes its press");
+        assert!(
+            window_bar
+                .take_toolbar_events()
+                .iter()
+                .any(|(_, event)| matches!(
+                    event,
+                    crate::window_toolbar::ToolbarEvent::Action { id } if id == "new"
+                )),
+            "the bar's control runs while the palette is open"
+        );
+
+        // In the inset beside the card: the scrim, wherever the card ends.
+        // Delivered as the platform delivers it, through the host's input
+        // policy, where the palette takes the window's pointer.
+        let scale = harness.input_scale;
+        harness.send_host_event(&crate::synthetic_input::cursor_moved(
+            2.0 * scale,
+            (f64::from(h) - 40.0) * scale,
+        ));
+        harness.send_host_event(&crate::synthetic_input::mouse_press());
+        harness.send_host_event(&crate::synthetic_input::mouse_release());
+        assert!(
+            harness.caller_palette.palette.is_none(),
+            "a press on the scrim closes the palette"
+        );
+        harness.relayout();
+        assert_eq!(
+            pixel(&harness, 2, h - 40),
+            ground,
+            "and the scrim is gone with it"
+        );
+        crate::window_toolbar::declare(None);
+    }
+
     struct HostedReset;
 
     impl Drop for HostedReset {

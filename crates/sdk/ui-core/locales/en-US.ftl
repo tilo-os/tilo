@@ -67,11 +67,15 @@ window-toolbar-more = More actions
 window-toolbar-views = View
 window-toolbar-suggestions = Suggestions
 window-toolbar-edited = Edited
+window-toolbar-view-only = View only
 segmented-choose = Choose
 window-toolbar-show-sidebar = Show sidebar
 window-toolbar-hide-sidebar = Hide sidebar
 window-toolbar-show-inspector = Show inspector
 window-toolbar-hide-inspector = Hide inspector
+# A window shared live into a conversation, from its own menu.
+window-share-to-channel = Share to channel…
+window-stop-sharing-in = Stop sharing in { $place }
 history-genesis = Created
 history-edited-field = { $more ->
     [0] Edited { $path }
@@ -125,8 +129,7 @@ history-mode-pending-held-unnamed = An action was held while History was open
 history-mode-continue = Continue
 history-mode-confirm = Confirm
 history-mode-cancel = Cancel
-history-mode-confirmation-unavailable = confirmation unavailable
-history-mode-type-to-confirm = Type { $phrase } to confirm
+history-mode-type-to-confirm = Type “{ $phrase }” to confirm
 history-mode-owner-gone = History owner is no longer available
 history-mode-custody-lost = The original component custody could not be recovered during History
 history-mode-control-owner-closed = The original registered control owner is closed
@@ -221,7 +224,7 @@ history-filters-clear = Clear filters
 history-entries = History entries
 history-author-anyone = Anyone
 history-work-task = Task
-history-work-agent-run = Agent run
+history-work-agent-run = Run
 history-work-shortcut = Shortcut
 history-selection-clear = Clear
 history-sync-finish-edit = Finish the current edit before receiving remote changes
@@ -230,14 +233,18 @@ history-sync-owner-changed = Document connection or owner changed while remote u
 history-sync-offline = Working offline. Changes will sync when you're back.
 arriving-loading = Loading
 arriving-from = From { $source }
+arriving-received-of = { $received } of { $total }
+arriving-received = { $received } received
 arriving-failed = Couldn’t load this
 arriving-retry = Try again
+content-unavailable = None of the connected devices has it
 room-sync-connecting = Connecting to { $workspace }…
 room-sync-connecting-unnamed = Connecting…
 room-sync-host-needs-update = This workspace’s host needs to update
 room-sync-host-needs-update-body = Nothing here syncs until it has. Your changes stay on this device and reach it then.
 room-sync-device-needs-update = Tilo needs to update to sync this workspace
 room-sync-device-needs-update-body = The update is on its way. Your changes stay on this device until then.
+room-sync-shell-gone = This window lost its connection to Tilo, so what this room holds can’t reach it. Open it again.
 history-local-action-not-saved = Couldn't save this change to your history.
 history-local-action-retry = Retry
 history-local-action-unrecorded = Your changes in this window are saved, but your history doesn't record them.
@@ -700,6 +707,11 @@ dictation-cancel = Cancel
 
 widget-sidebar-resize = Resize sidebar
 widget-inspector-resize = Resize inspector
+widget-inspector = Inspector
+widget-sheet-height = Height
+widget-sheet-peek = Lowered
+widget-sheet-half = Half height
+widget-sheet-full = Full height
 
 dictation-copy-transcript = Copy transcript
 dictation-discard-transcript = Discard transcript
@@ -757,6 +769,8 @@ approved-check-reports-disabled = Phase reports unavailable
 
 author-bot-chip = Bot
 author-via-chip = via { $service }
+author-from-service = From { $service }
+author-from-service-as = From { $service } as { $handle }
 author-bot-details = { $bot } (bot, added by { $installer })
 author-bot-details-as = { $name }, via { $bot } (bot, added by { $installer })
 author-bot-linked = Linked to { $person } on Tilo
@@ -847,6 +861,7 @@ block-a11y-table-row = Row { $row }
 block-a11y-table = Table
 block-a11y-open-link = Open linked note
 block-a11y-open-external = Open web link
+block-a11y-open-resource = Open { $label }
 block-a11y-block = { $kind } block { $position }
 block-a11y-level = Level { $level }
 block-a11y-document = Drag a block's handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; Escape, then Tab, leaves the editor.
@@ -911,3 +926,47 @@ signal-meter-weak = Weak signal
 signal-meter-fair = Fair signal
 signal-meter-good = Good signal
 signal-meter-strong = Strong signal
+
+# Reactions: the pills under a message or on a page, one per emoji. $emoji is
+# the emoji itself, or a workspace emoji written as :name:.
+reaction-strip-add = Add reaction
+reaction-strip-react = Add { $emoji } reaction
+reaction-strip-unreact = Remove { $emoji } reaction
+reaction-strip-count = { $count ->
+    [one] One reaction
+   *[other] { $count } reactions
+}
+# Who reacted, in the tooltip of a pill; $emoji is the emoji's name.
+reaction-strip-you = You
+reaction-strip-reacted-one = { $first } reacted with { $emoji }
+reaction-strip-reacted-two = { $first } and { $second } reacted with { $emoji }
+reaction-strip-reacted-three = { $first }, { $second } and { $third } reacted with { $emoji }
+reaction-strip-reacted-more = { $first }, { $second } and { $others ->
+    [one] one other
+   *[other] { $others } others
+} reacted with { $emoji }
+
+# The emoji picker: the workspace's own emoji, the recently used ones and
+# Unicode's groups as tabs.
+emoji-chooser-title = Emoji
+emoji-chooser-search = Search emoji
+emoji-chooser-groups = Emoji categories
+emoji-chooser-workspace = Workspace
+emoji-chooser-recent = Recently used
+emoji-chooser-results = Matching emoji
+emoji-chooser-no-results = No emoji found
+emoji-chooser-arriving = More emoji are on their way
+emoji-chooser-add = Add emoji
+emoji-chooser-tones = Skin tones
+emoji-chooser-tone-hint = Pick a skin tone
+emoji-chooser-toned = { $name }, { $tone }
+emoji-chooser-tone-light = light skin tone
+emoji-chooser-tone-medium-light = medium-light skin tone
+emoji-chooser-tone-medium = medium skin tone
+emoji-chooser-tone-medium-dark = medium-dark skin tone
+emoji-chooser-tone-dark = dark skin tone
+
+## The workspace's own emoji
+workspace-emoji-choose-title = Add an emoji
+workspace-emoji-choose-accept = Add
+workspace-emoji-image-files = Pictures

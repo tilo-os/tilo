@@ -209,6 +209,20 @@ impl DesktopHandle {
     }
 }
 
+/// The search chord [`is_search_chord`] answers to, as the keyboard spells
+/// it on `platform`: ⌘K on a Mac, where Ctrl+K does not open search, and
+/// Ctrl K elsewhere.
+pub fn search_chord_keys(platform: ui::platform::PlatformConventions) -> Vec<String> {
+    let keycaps = ui::keycaps::active();
+    if platform.platform() == ui::platform::Platform::MacOs {
+        keycaps
+            .on_family(ui::interaction::KeyboardFamily::Apple)
+            .chord_keys(["Super"], "k")
+    } else {
+        keycaps.chord_keys(["Ctrl"], "k")
+    }
+}
+
 /// The search chords: Super+K and Super+Space as in the native shell, and
 /// Ctrl+K where Ctrl is the platform's command key.
 fn is_search_chord(
@@ -548,7 +562,16 @@ impl DesktopSurface {
                 },
             }
         }
-        match (self.search.take_choice(), self.new_tab_into.take()) {
+        let choice = self.search.take_choice();
+        if matches!(choice, Some(Target::Launch { .. })) {
+            // The person opened something from search themselves: what
+            // the desktop opens on its own (a room's home app) teaches
+            // nothing.
+            ui::control_hints::performed::note(
+                ui::control_hints::performed::Performed::OpenedWindow,
+            );
+        }
+        match (choice, self.new_tab_into.take()) {
             (Some(Target::Launch { app }), Some((strip, group))) => {
                 self.open_tab_in_group(strip, group, &app);
             }
@@ -556,7 +579,11 @@ impl DesktopSurface {
             (None, into) => self.new_tab_into = into,
         }
         let open = self.search.is_open();
-        if !open {
+        if open {
+            ui::control_hints::performed::note(
+                ui::control_hints::performed::Performed::OpenedSearch,
+            );
+        } else {
             // The aim is for one choice; search opened otherwise opens
             // applications as their own windows again.
             self.new_tab_into = None;
@@ -732,7 +759,8 @@ impl DesktopSurface {
         self.search.palette().get_rect()
     }
 
-    /// The window a search over one window (`search_window`) stands over.
+    /// The window a search over one window (`search_window`) stands over,
+    /// under its bar, which the palette keeps clear.
     fn searched_window_rect(&self) -> Option<Rect> {
         let (strip, group) = self.search_window?;
         self.rows
@@ -740,7 +768,15 @@ impl DesktopSurface {
             .groups
             .iter()
             .find(|candidate| candidate.id == group)
-            .map(Widget::get_rect)
+            .map(|group| {
+                let window = group.get_rect();
+                Rect::new(
+                    window.x0,
+                    group.bar_rect().y1.clamp(window.y0, window.y1),
+                    window.x1,
+                    window.y1,
+                )
+            })
             .filter(|rect| rect.area() > 0.0)
     }
 
@@ -767,7 +803,7 @@ impl DesktopSurface {
         let mut style = taffy.style(node).cloned().unwrap_or_default();
         style.position = ui::taffy::Position::Absolute;
         if let Some(window) = self.searched_window_rect() {
-            let (origin, _) = ui::action_palette::placement(window);
+            let (origin, _) = ui::action_palette::placement(window, theme);
             let x0 = (window.center().x - width / 2.0)
                 .min(surface.x1 - width - PALETTE_EDGE)
                 .max(surface.x0 + PALETTE_EDGE);
@@ -860,6 +896,20 @@ mod tests {
             crate::notifications::source_label(&plain.notice("X", "")),
             None
         );
+    }
+
+    #[test]
+    fn the_chord_shown_is_the_one_that_opens_search() {
+        let linux = ui::platform::PlatformConventions::new(ui::platform::Platform::Linux);
+        let mac = ui::platform::PlatformConventions::new(ui::platform::Platform::MacOs);
+        let k = press(Key::Character("k".into()));
+        assert_eq!(search_chord_keys(mac), ["⌘", "K"]);
+        assert!(is_search_chord(&k, mods(ModifiersState::SUPER), mac));
+        let shown = search_chord_keys(linux);
+        assert_eq!(shown.len(), 2);
+        assert_eq!(shown[1], "K");
+        assert_eq!(shown[0], ui::keycaps::active().chord_keys(["Ctrl"], "k")[0]);
+        assert!(is_search_chord(&k, mods(ModifiersState::CONTROL), linux));
     }
 
     #[test]

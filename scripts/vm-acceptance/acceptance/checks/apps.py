@@ -353,16 +353,25 @@ def terminal(ctx, res):
     gid, procs, toasts0 = _lifecycle(ctx, res, "so.tilo.terminal", "applications", "A01-terminal", False)
     ready = core.wait_new_terminal_shell(ctx, shells, SHELL_READY_S)
     res.metrics["seconds_to_shell"] = ready
+    if ready is None:
+        # Nothing reads what is typed now. Enter on a Terminal whose environment
+        # cannot start takes its offer of the device's own shell, which asks the
+        # person first, so typing would only raise that prompt.
+        ctx.shot("A01-terminal-no-shell")
+        ctx.write("A01-ush.txt", core.ush_diagnostics(ctx))
+        refusal = core.ush_environment_refusal(ctx)
+        raise CheckFailed(f"no shell ran in Terminal's environment within {SHELL_READY_S} s "
+                          "of its window opening " + (f"(the shell runtime refused it: {refusal})"
+                                                      if refusal else
+                                                      "(A01-ush.txt shows the shell runtime)"))
     probe = f"acc-term-{int(time.time())}"
     ctx.vm.control("type", f"echo ok > ~/{probe}")
     ctx.vm.control("key", "Enter")
     found = wait_until(lambda: core.terminal_probe(ctx, probe), 8, 1)
     ctx.shot("A01-terminal-command")
     res.metrics["shell_ran_command"] = bool(found)
-    if ready is None or not found:
+    if not found:
         ctx.write("A01-ush.txt", core.ush_diagnostics(ctx))
-    expect(ready is not None, f"no shell ran in Terminal's environment within {SHELL_READY_S} s "
-                              "of its window opening (A01-ush.txt shows the shell runtime)")
     expect(found, "a command typed into Terminal (control-socket type + Enter) never ran")
     _close(ctx, res, "A01-terminal", gid, procs, toasts0)
     core.assert_terminal_shell_performance(ready)

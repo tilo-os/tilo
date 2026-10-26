@@ -76,6 +76,29 @@ def sources_at(root: Path, revision: str) -> dict[str, str]:
     return texts
 
 
+def sources_since(root: Path, base: str, before: dict[str, str]) -> dict[str, str]:
+    """What declares a format now: `before` (the sources at `base`) with the
+    files changed since, and the new ones git doesn't track yet, read again.
+    Only those: reading every file of the tree took most of the check on a
+    node whose disk is busy."""
+    def listed(*arguments: str) -> list[str]:
+        out = subprocess.run(
+            ["git", *arguments, "--", "*.rs"], cwd=root, capture_output=True, text=True, check=True
+        ).stdout
+        return [path for path in out.split("\0") if path]
+
+    texts = dict(before)
+    changed = listed("diff", "--name-only", "-z", "--no-renames", base)
+    for path in changed + listed("ls-files", "-z", "--others", "--exclude-standard"):
+        texts.pop(path, None)
+        file = root / path
+        if file.is_file():
+            text = file.read_text(errors="replace")
+            if "migration::Format" in text:
+                texts[path] = text
+    return texts
+
+
 def check(root: Path = ROOT) -> list[str]:
     problems = []
     for name, (path, oldest) in declarations(sources(root)).items():
@@ -89,8 +112,9 @@ def check(root: Path = ROOT) -> list[str]:
 
 def against(base: str, root: Path = ROOT) -> list[str]:
     problems = []
-    before = declarations(sources_at(root, base))
-    now = declarations(sources(root))
+    then = sources_at(root, base)
+    before = declarations(then)
+    now = declarations(sources_since(root, base, then))
     for name, (path, oldest) in before.items():
         if name not in now:
             problems.append(
@@ -114,9 +138,14 @@ def main(argv: list[str] | None = None) -> int:
     base = sub.add_parser("against")
     base.add_argument("base")
     args = parser.parse_args(argv)
-    problems = check() if args.command == "check" else against(args.base)
-    for problem in problems:
-        print(f"::error::{problem}", file=sys.stderr)
+    if args.command == "check":
+        problems = check()
+        for problem in problems:
+            print(problem)
+    else:
+        problems = against(args.base)
+        for problem in problems:
+            print(f"::error::{problem}", file=sys.stderr)
     return 1 if problems else 0
 
 

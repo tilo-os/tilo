@@ -21,6 +21,8 @@ use winit::keyboard::{Key, ModifiersState};
 
 use super::{Action, NullSink, ShellDriver, SnapshotSink};
 
+/// The rate films are recorded at: a 60 Hz display.
+pub const HZ: u32 = 60;
 /// One frame of the 60 Hz display films are recorded at.
 #[cfg(feature = "test-support")]
 const FRAME: Duration = Duration::from_nanos(16_666_667);
@@ -68,6 +70,9 @@ impl Film {
     /// Record at least `frames` frames.
     pub const fn at_least(mut self, frames: u32) -> Self {
         self.min_frames = frames;
+        if self.max_frames < frames {
+            self.max_frames = frames;
+        }
         self
     }
 }
@@ -112,6 +117,22 @@ pub enum Step {
     /// Print every named target on screen and its rect to stderr: the names
     /// a scenario can click or hover.
     LogTargets(&'static str),
+    /// A collaborator's pointer is heard at this point of the desktop.
+    PeerPointer {
+        who: &'static str,
+        at: vello::kurbo::Point,
+    },
+    /// Another member's terminal opens as a stream tile whose pictures have
+    /// not come yet.
+    PeerWindowOpens,
+    /// The terminal [`Step::PeerWindowOpens`] opened sends its first picture.
+    PeerWindowFirstPicture,
+    /// The start of `app_id`, whose place a launch holds, fails with
+    /// `detail`, as a start that exits or misses its deadline does.
+    LaunchFails {
+        app_id: &'static str,
+        detail: &'static str,
+    },
 }
 
 /// One painted frame of a film.
@@ -198,6 +219,15 @@ fn apply_step(driver: &mut ShellDriver, step: &Step) {
                 None => eprintln!("scenario: the strip rail has no segment {index}"),
             }
         }
+        Step::PeerPointer { who, at } => driver.peer_pointer_for_shots(who, *at),
+        Step::PeerWindowOpens => driver.open_room_member_window(),
+        Step::PeerWindowFirstPicture => driver.show_room_member_picture(),
+        Step::LaunchFails { app_id, detail } => driver.with_chrome(|st| {
+            if shell::shell::peer_windows::fail_launch_for_shots(&mut st.tree_mut(), app_id, detail)
+            {
+                st.bump();
+            }
+        }),
         Step::LogTargets(label) => {
             let mut targets: Vec<_> = driver.widget_registry().into_iter().collect();
             targets.sort_by(|a, b| a.0.cmp(&b.0));

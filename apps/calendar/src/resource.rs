@@ -1111,8 +1111,32 @@ fn local_path(target: &str) -> Result<std::path::PathBuf, String> {
 /// Importing the events and tasks of the iCalendar `source`, or `None` when
 /// it holds neither.
 pub(crate) fn import(source: &str) -> Option<Invoke<Calendar>> {
-    let (events, tasks) = crate::actions::import_payload(source)?;
-    Some(Calendar::IMPORT_ITEMS.with(calendar::ImportItems { events, tasks }))
+    import_reporting(source).map(|(import, _)| import)
+}
+
+/// [`import`], with the TZIDs in `source` that name no zone the calendar
+/// knows: their events keep the times as written.
+pub(crate) fn import_reporting(source: &str) -> Option<(Invoke<Calendar>, Vec<String>)> {
+    let parsed = crate::ics::parse_calendar(source);
+    let (events, tasks) = crate::actions::import_parsed(&parsed)?;
+    Some((
+        Calendar::IMPORT_ITEMS.with(calendar::ImportItems { events, tasks }),
+        parsed.unknown_zones,
+    ))
+}
+
+/// What an import says once it is done: which file, and, when a time zone
+/// it names is unknown, that its times stay as written.
+pub(crate) fn imported_status(file: &str, unknown_zones: &[String]) -> String {
+    match unknown_zones {
+        [] => format!("Imported calendar items from {file}"),
+        [zone] => format!(
+            "Imported calendar items from {file}. Times in {zone} stay as written, as that time zone is unknown"
+        ),
+        _ => format!(
+            "Imported calendar items from {file}. Times in unknown time zones stay as written"
+        ),
+    }
 }
 
 /// The search scope holding every event.
@@ -1385,3 +1409,26 @@ impl calendar::NewEvent {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::CalendarShell::scenarios() {
+            let mut app = TestApp::<super::CalendarShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

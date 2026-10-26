@@ -243,7 +243,12 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     )));
     assembly.values.profiler = Some((inputs.profiler)());
     assembly.values.native_input_probe = Some(None);
-    assembly.values.floating = Some(FloatingRuntime::new((inputs.floating_surface_client)()));
+    let floating = (inputs.floating_surface_client)();
+    if floating.is_some() {
+        // The shell says where this window's room stands.
+        crate::room_sync::hosted_by_shell();
+    }
+    assembly.values.floating = Some(FloatingRuntime::new(floating));
     // No callbacks or allocation remain in the transfer. Missing internal
     // slots retire before any extracted value can be dropped.
     let AppAssemblyValues {

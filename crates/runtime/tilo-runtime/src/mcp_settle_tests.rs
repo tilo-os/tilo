@@ -62,6 +62,17 @@ impl GatedHost {
     }
 }
 
+impl GatedHost {
+    fn cancel_now(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+        if !self.owns(caller, id) {
+            return Err(ActionHostError::UnknownInvocation);
+        }
+        self.cancelled.lock().unwrap().insert(*id);
+        self.wake();
+        Ok(())
+    }
+}
+
 impl ActionHost for GatedHost {
     fn query(
         &self,
@@ -128,13 +139,12 @@ impl ActionHost for GatedHost {
         Some(change)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-        if !self.owns(caller, id) {
-            return Err(ActionHostError::UnknownInvocation);
-        }
-        self.cancelled.lock().unwrap().insert(*id);
-        self.wake();
-        Ok(())
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(self.cancel_now(caller, id))
     }
 }
 

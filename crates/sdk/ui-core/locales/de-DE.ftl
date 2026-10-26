@@ -61,11 +61,14 @@ window-toolbar-more = Weitere Aktionen
 window-toolbar-views = Ansicht
 window-toolbar-suggestions = Vorschläge
 window-toolbar-edited = Bearbeitet
+window-toolbar-view-only = Nur ansehen
 segmented-choose = Auswählen
 window-toolbar-show-sidebar = Seitenleiste einblenden
 window-toolbar-hide-sidebar = Seitenleiste ausblenden
 window-toolbar-show-inspector = Inspektor einblenden
 window-toolbar-hide-inspector = Inspektor ausblenden
+window-share-to-channel = In Kanal teilen…
+window-stop-sharing-in = Teilen in { $place } beenden
 history-genesis = Erstellt
 history-edited-field = { $more ->
     [0] { $path } bearbeitet
@@ -119,8 +122,7 @@ history-mode-pending-held-unnamed = Eine Aktion wurde angehalten, während der V
 history-mode-continue = Fortfahren
 history-mode-confirm = Bestätigen
 history-mode-cancel = Abbrechen
-history-mode-confirmation-unavailable = Bestätigung nicht verfügbar
-history-mode-type-to-confirm = Gib { $phrase } ein, um zu bestätigen
+history-mode-type-to-confirm = Gib „{ $phrase }“ ein, um zu bestätigen
 history-mode-owner-gone = Der Besitzer des Verlaufs ist nicht mehr verfügbar
 history-mode-custody-lost = Die ursprüngliche Komponente konnte während des Verlaufs nicht wiederhergestellt werden
 history-mode-control-owner-closed = Der ursprünglich registrierte Besitzer des Steuerelements ist geschlossen
@@ -218,7 +220,7 @@ history-filters-clear = Filter zurücksetzen
 history-entries = Verlaufseinträge
 history-author-anyone = Alle
 history-work-task = Aufgabe
-history-work-agent-run = Agentenlauf
+history-work-agent-run = Lauf
 history-work-shortcut = Kurzbefehl
 history-selection-clear = Aufheben
 history-sync-finish-edit = Schließe die aktuelle Bearbeitung ab, bevor entfernte Änderungen empfangen werden
@@ -227,14 +229,18 @@ history-sync-owner-changed = Verbindung oder Besitzer des Dokuments hat sich ge�
 history-sync-offline = Offline. Änderungen werden synchronisiert, sobald du wieder verbunden bist.
 arriving-loading = Wird geladen
 arriving-from = Von { $source }
+arriving-received-of = { $received } von { $total }
+arriving-received = { $received } empfangen
 arriving-failed = Konnte nicht geladen werden
 arriving-retry = Erneut versuchen
+content-unavailable = Keines der verbundenen Geräte hat es
 room-sync-connecting = Verbinde mit { $workspace }…
 room-sync-connecting-unnamed = Verbinde…
 room-sync-host-needs-update = Der Host dieses Arbeitsbereichs muss aktualisieren
 room-sync-host-needs-update-body = Bis dahin wird hier nichts synchronisiert. Deine Änderungen bleiben auf diesem Gerät und erreichen ihn danach.
 room-sync-device-needs-update = Tilo muss aktualisieren, um diesen Arbeitsbereich zu synchronisieren
 room-sync-device-needs-update-body = Die Aktualisierung kommt. Bis dahin bleiben deine Änderungen auf diesem Gerät.
+room-sync-shell-gone = Dieses Fenster hat die Verbindung zu Tilo verloren, daher kann der Inhalt dieses Raums es nicht erreichen. Öffne es erneut.
 history-local-action-not-saved = Diese Änderung konnte nicht in deinem Verlauf gespeichert werden.
 history-local-action-retry = Erneut versuchen
 history-local-action-unrecorded = Deine Änderungen in diesem Fenster sind gespeichert, aber dein Verlauf zeichnet sie nicht auf.
@@ -693,6 +699,11 @@ filter-menu-no-matches = Keine Treffer
 
 widget-sidebar-resize = Breite der Seitenleiste ändern
 widget-inspector-resize = Breite des Inspektors ändern
+widget-inspector = Inspektor
+widget-sheet-height = Höhe
+widget-sheet-peek = Abgesenkt
+widget-sheet-half = Halbe Höhe
+widget-sheet-full = Volle Höhe
 
 dictation-record-once = Einmal aufnehmen
 dictation-finish = Fertig
@@ -751,6 +762,8 @@ approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
 
 author-bot-chip = Bot
 author-via-chip = über { $service }
+author-from-service = Aus { $service }
+author-from-service-as = Aus { $service } als { $handle }
 author-bot-details = { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-details-as = { $name }, über { $bot } (Bot, hinzugefügt von { $installer })
 author-bot-linked = Mit { $person } auf Tilo verknüpft
@@ -841,6 +854,7 @@ block-a11y-table-row = Zeile { $row }
 block-a11y-table = Tabelle
 block-a11y-open-link = Verlinkte Notiz öffnen
 block-a11y-open-external = Weblink öffnen
+block-a11y-open-resource = { $label } öffnen
 block-a11y-block = { $kind }-Block { $position }
 block-a11y-level = Ebene { $level }
 block-a11y-document = Ziehe den Griff eines Blocks, um ihn zu verschieben. Alt+Pfeil hoch und Alt+Pfeil runter verschieben den fokussierten Block. Tab rückt ihn unter den Block darüber ein, Umschalt+Tab wieder aus; Escape, dann Tab, verlässt den Editor.
@@ -905,3 +919,42 @@ signal-meter-weak = Schwaches Signal
 signal-meter-fair = Mittleres Signal
 signal-meter-good = Gutes Signal
 signal-meter-strong = Starkes Signal
+
+reaction-strip-add = Reaktion hinzufügen
+reaction-strip-react = Reaktion { $emoji } hinzufügen
+reaction-strip-unreact = Reaktion { $emoji } entfernen
+reaction-strip-count = { $count ->
+    [one] Eine Reaktion
+   *[other] { $count } Reaktionen
+}
+reaction-strip-you = Du
+reaction-strip-reacted-one = { $first } hat mit { $emoji } reagiert
+reaction-strip-reacted-two = { $first } und { $second } haben mit { $emoji } reagiert
+reaction-strip-reacted-three = { $first }, { $second } und { $third } haben mit { $emoji } reagiert
+reaction-strip-reacted-more = { $first }, { $second } und { $others ->
+    [one] eine weitere Person
+   *[other] { $others } weitere
+} haben mit { $emoji } reagiert
+
+emoji-chooser-title = Emoji
+emoji-chooser-search = Emoji suchen
+emoji-chooser-groups = Emoji-Kategorien
+emoji-chooser-workspace = Arbeitsbereich
+emoji-chooser-recent = Zuletzt verwendet
+emoji-chooser-results = Passende Emoji
+emoji-chooser-no-results = Keine Emoji gefunden
+emoji-chooser-arriving = Weitere Emoji kommen gleich
+emoji-chooser-add = Emoji hinzufügen
+emoji-chooser-tones = Hauttöne
+emoji-chooser-tone-hint = Hautton wählen
+emoji-chooser-toned = { $name }, { $tone }
+emoji-chooser-tone-light = heller Hautton
+emoji-chooser-tone-medium-light = mittelheller Hautton
+emoji-chooser-tone-medium = mittlerer Hautton
+emoji-chooser-tone-medium-dark = mitteldunkler Hautton
+emoji-chooser-tone-dark = dunkler Hautton
+
+## The workspace's own emoji
+workspace-emoji-choose-title = Emoji hinzufügen
+workspace-emoji-choose-accept = Hinzufügen
+workspace-emoji-image-files = Bilder

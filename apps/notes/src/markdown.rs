@@ -465,14 +465,19 @@ fn parse_external_link(
     let url_end = link_destination_end(bytes, label_end + 2)?;
     let label = line.get(at + 1..label_end)?;
     let url = line.get(label_end + 2..url_end)?;
-    (!label.is_empty() && safe_external_url(url)).then_some(())?;
+    (!label.is_empty() && (safe_external_url(url) || tilo_rich_text::is_resource_link(url)))
+        .then_some(())?;
     let label = parse_inline(label);
     let start = plain.len();
     plain.push_str(&label.text);
-    marks.push(MarkSpan::new(
-        start..plain.len(),
-        Mark::ExternalLink(url.to_string()),
-    ));
+    // A link to a resource of this desktop keeps the address it opens, so
+    // activating it reaches the app that keeps that resource.
+    let mark = if tilo_rich_text::is_resource_link(url) {
+        Mark::ResourceLink(url.to_string())
+    } else {
+        Mark::ExternalLink(url.to_string())
+    };
+    marks.push(MarkSpan::new(start..plain.len(), mark));
     marks.extend(label.marks.into_iter().map(|inner| {
         MarkSpan::new(
             (inner.range.start + start)..(inner.range.end + start),
@@ -580,8 +585,12 @@ fn mark_chrome(mark: &Mark) -> (&'static str, Option<&'static str>, u8) {
         Mark::Link(_) => ("[[", Some("]]"), 5),
         Mark::Transclusion(_) => ("![[", Some("]]"), 6),
         Mark::ExternalLink(_) => ("[", None, 7),
+        // A link to a resource of this desktop is a link: its text carries
+        // the label and its destination the address, so a reader that is not
+        // Notes still opens it.
+        Mark::ResourceLink(_) => ("[", None, 8),
         // Markdown has no mention syntax: the label is the text.
-        Mark::Mention(_) => ("", Some(""), 8),
+        Mark::Mention(_) => ("", Some(""), 9),
     }
 }
 
@@ -591,7 +600,7 @@ fn open_marker(mark: &Mark) -> &'static str {
 
 fn close_marker(mark: &Mark) -> std::borrow::Cow<'_, str> {
     match mark {
-        Mark::ExternalLink(url) => format!("]({url})").into(),
+        Mark::ExternalLink(url) | Mark::ResourceLink(url) => format!("]({url})").into(),
         mark => match mark_chrome(mark) {
             (_, Some(close), _) => close.into(),
             // Only [`Mark::ExternalLink`] omits a static close; handled above.
@@ -1647,6 +1656,24 @@ Last paragraph.
         assert_eq!(ambiguous.text, "bold *italic*");
         assert_eq!(serialize_inline(&ambiguous), "**bold \\*italic**\\*");
         assert_eq!(parse_inline(&serialize_inline(&ambiguous)), ambiguous);
+    }
+
+    #[test]
+    fn a_link_to_a_resource_keeps_the_address_it_opens() {
+        let href = "tilo://open#/me/so.tilo.calendar/-/calendar.event:e-1";
+        let md = format!("Meet on [Standup]({href}).");
+        let inline = parse_inline(&md);
+        assert_eq!(inline.text, "Meet on Standup.");
+        assert_eq!(
+            inline.marks,
+            [MarkSpan::new(8..15, Mark::ResourceLink(href.into()))],
+            "the mark carries the address, not the label"
+        );
+        assert_eq!(
+            serialize_inline(&inline),
+            md,
+            "a link to a resource round-trips through markdown"
+        );
     }
 
     #[test]

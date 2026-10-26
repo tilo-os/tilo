@@ -178,3 +178,27 @@ fn opening_an_anchor_may_be_refused() {
         "{gone:?}"
     );
 }
+
+#[test]
+fn each_labelled_item_is_its_own_index_entry_opening_at_that_item() {
+    let mut app = TestApp::<OpeningApp>::new().unwrap();
+    app.invoke(Bookmarks::ADD.with(("https://tilo.so".to_owned(), "Tilo".to_owned())))
+        .unwrap();
+    app.invoke(Bookmarks::ADD.with(("https://rust-lang.org".to_owned(), "Rust".to_owned())))
+        .unwrap();
+    let kept = app.search_index_entries();
+    let mut resources: Vec<&str> = kept.iter().map(|entry| entry.resource.as_str()).collect();
+    resources.sort_unstable();
+    let ids: Vec<String> = app
+        .state()
+        .bookmarks
+        .ids()
+        .map(ToString::to_string)
+        .collect();
+    let mut expected: Vec<String> = ids
+        .iter()
+        .map(|id| format!("test.bookmarks/bookmarks/{id}"))
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(resources, expected, "{kept:?}");
+}

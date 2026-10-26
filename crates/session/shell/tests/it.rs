@@ -165,6 +165,8 @@ mod maximize_persist_wireup_test;
 mod maximized_stays_maximized;
 #[path = "multi_output.rs"]
 mod multi_output;
+#[path = "non_latin_chord_wire.rs"]
+mod non_latin_chord_wire;
 #[path = "notification_center.rs"]
 mod notification_center;
 #[path = "onboarding_visual.rs"]

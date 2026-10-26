@@ -85,7 +85,7 @@ fn answer(peer: &mut UnixStream, text: &str) {
 }
 
 fn chat(client: &UnixStream) -> (ChatApp, crate::testing::Room) {
-    let backend = tilo_model_gateway::runtime_client::from_descriptor_selection(
+    let backend = tilo_model_client::runtime_client::from_descriptor_selection(
         client.as_fd(),
         "chat-profile".into(),
         "chat-model".into(),

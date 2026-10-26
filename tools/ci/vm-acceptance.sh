@@ -100,7 +100,7 @@ if [[ $mode == cohort ]]; then
 fi
 
 # A run of someone's tree checks what its changes reach; main checks all.
-only=${T_INPUT_ONLY:-}
+only=${T_INPUT_ONLY:-secrets}
 if [[ -z $only && -z ${T_TRIGGER:-} ]]; then
   mapfile -t paths < <({ git diff --name-only "$(git merge-base main HEAD)" HEAD; git diff --name-only HEAD; } | sort -u)
   (( ${#paths[@]} == 0 )) || only=$(python3 scripts/vm-acceptance/ci_select.py "${paths[@]}")
@@ -149,7 +149,9 @@ id "$run_user" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$run_
 uid=$(id -u "$run_user")
 install -d -m 0700 -o "$run_user" -g "$run_user" "/run/user/$uid"
 chmod 0666 /dev/kvm
-install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config/libvirt"
+# install -d gives -o only to the directories it names, so .config is named too: a
+# root-owned .config would leave the user unable to make tilo-vm's config and keys there.
+install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config" "/home/$run_user/.config/libvirt"
 # The micro-VM's /dev has no /dev/stdin to install from.
 printf 'max_core = 0\n' > "/home/$run_user/.config/libvirt/qemu.conf"
 chown "$run_user:" "/home/$run_user/.config/libvirt/qemu.conf"

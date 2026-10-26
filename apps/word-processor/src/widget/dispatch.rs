@@ -5,7 +5,6 @@
 use super::participants::note_participant_outcome;
 use crate::WpFormat;
 use crate::effects::WordProcessorEffect;
-use crate::find_bar::Blocks;
 use crate::i18n::t;
 use crate::num;
 use crate::word_processor::Caret;
@@ -484,9 +483,7 @@ impl WordProcessorWidget {
             if query.len() > crate::actions::editing::MAX_FIND_QUERY_BYTES {
                 return Err("the Find query is too long".into());
             }
-            let blocks = self.search_blocks(state);
-            let effect = self.find.open(Some(query), &mut Blocks(&blocks));
-            self.apply_find_effect(state, effect);
+            self.find_now(state, query);
             return Ok(());
         }
         let view = self.local_edit_view();
@@ -1292,8 +1289,7 @@ impl WordProcessorWidget {
                 return Ok(self.choose_where_to_save(cx));
             }
             WordProcessorEffect::Find => {
-                let doc = cx.document().ok_or("the document is not at hand")?.clone();
-                self.open_find(&doc);
+                ui::window_toolbar::open_search(ui::window_toolbar::SearchOpening::Find);
             }
             WordProcessorEffect::ZoomIn => {
                 self.zoom_by(0.1);

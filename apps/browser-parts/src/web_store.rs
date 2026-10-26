@@ -111,13 +111,12 @@ fn trusted_host(host: &str) -> bool {
 /// # Errors
 ///
 /// Returns [`ExtensionError::Download`] when the address is invalid, the
-/// service redirects off Google's hosts, the request fails, or the package
-/// exceeds the size limit. The package is not verified here.
+/// service redirects off Google's hosts or the request fails,
+/// [`ExtensionError::NoPackage`] when the store has none for this browser,
+/// and [`ExtensionError::TooLarge`] when the package exceeds the size limit.
+/// The package is not verified here.
 pub fn download(id: &str, chromium_version: &str) -> Result<Vec<u8>, ExtensionError> {
-    fetch(id, None, chromium_version)?.ok_or_else(|| {
-        // Above all a Manifest V2 extension, which Chrome no longer runs.
-        ExtensionError::Download(crate::CATALOG.t("browser-extension-no-version"))
-    })
+    fetch(id, None, chromium_version)?.ok_or(ExtensionError::NoPackage)
 }
 
 /// The package of a newer version of `id` than `installed`, or `None` when
@@ -163,7 +162,7 @@ fn fetch(
         .content_length()
         .is_some_and(|length| length > MAX_DOWNLOAD_BYTES)
     {
-        return Err(ExtensionError::Download("package is too large".into()));
+        return Err(ExtensionError::TooLarge);
     }
     let mut bytes = Vec::new();
     response
@@ -171,7 +170,7 @@ fn fetch(
         .read_to_end(&mut bytes)
         .map_err(|error| ExtensionError::Download(error.to_string()))?;
     if bytes.len() as u64 > MAX_DOWNLOAD_BYTES {
-        return Err(ExtensionError::Download("package is too large".into()));
+        return Err(ExtensionError::TooLarge);
     }
     // The service answers 204, nothing, for no package: an item with none
     // for this browser, or none newer than the one installed.

@@ -320,7 +320,7 @@ impl ShellOverlayHost {
                 }
                 LayerId::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
-                    let shortcuts = &self.shortcut_config;
+                    let shortcuts = self.shortcut_config();
                     let chord = |action| {
                         shortcuts
                             .bindings
@@ -380,6 +380,8 @@ impl ShellOverlayHost {
         root.children.extend(self.live_status_accessibility());
         // Last, so the overlay indices above keep their paths.
         root.children.extend(self.strip_switcher_accessibility());
+        // The control hint on screen, said politely.
+        root.children.extend(self.control_hint_accessibility());
         root
     }
 
