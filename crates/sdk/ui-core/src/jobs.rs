@@ -89,7 +89,9 @@ pub fn watch(wake: WakeHandle) -> Watch {
 }
 
 /// One test at a time: the registry is the process's, as the real one is,
-/// so two tests running at once would see each other's jobs.
+/// so two tests running at once would see each other's jobs. A failed job
+/// publishes to [`crate::attention`], so its tests hold this same lock: the
+/// stack and the ledger are one shared state with the jobs.
 #[cfg(test)]
 pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     use crate::lock::MutexRecover as _;
