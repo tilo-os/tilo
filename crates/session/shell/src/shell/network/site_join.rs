@@ -9,6 +9,7 @@ use super::{RoomId, ShellNetwork};
 use crate::network::invite::enrollment_driver::Via;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::WorkspaceId;
+use std::sync::Arc;
 
 /// A room held through the web, as the switcher shows it: which site it is
 /// the workspace of, and whether that site is this computer's community.
@@ -89,8 +90,10 @@ impl ShellNetwork {
     }
 
     fn join_site_with(&self, entry: &url::Url, background: bool) -> Result<SiteJoin, SiteError> {
-        let runtime = self.runtime_handle().map_err(SiteError::Unreachable)?;
-        let site = runtime.block_on(hosted_sites::resolve_site(entry))?;
+        let entry = entry.clone();
+        let site = self
+            .wait_on(async move { hosted_sites::resolve_site(&entry).await })
+            .map_err(SiteError::Unreachable)??;
         self.join_site_workspace(&site, background)
     }
 
@@ -148,7 +151,6 @@ impl ShellNetwork {
         site: &SiteWorkspace,
         background: bool,
     ) -> Result<SiteJoin, SiteError> {
-        let runtime = self.runtime_handle().map_err(SiteError::Unreachable)?;
         let tree = self.tree.clone();
         // The site's workspace held already needs no door; one this device
         // still holds a membership of (the person left it here and came
@@ -159,7 +161,11 @@ impl ShellNetwork {
             return Ok(join);
         }
         let (user, name) = self.site_person()?;
-        let answer = runtime.block_on(hosted_sites::admit(site, user, &name))?;
+        let answer = {
+            let (site, name) = (site.clone(), name.clone());
+            self.wait_on(async move { hosted_sites::admit(&site, user, &name).await })
+                .map_err(SiteError::Unreachable)??
+        };
         let invitation = tilo_peer_state::join::decode_and_verify_invitation_text(
             &answer.invitation,
             Some(user),
@@ -176,8 +182,12 @@ impl ShellNetwork {
             return Ok(join);
         }
         let http = HostHttp::new(&answer.origin).map_err(SiteError::Unreachable)?;
-        let host = runtime
-            .block_on(tilo_relay_client::https::host_info(http.as_ref()))
+        let host = self
+            .wait_on({
+                let http = Arc::clone(&http);
+                async move { tilo_relay_client::https::host_info(http.as_ref()).await }
+            })
+            .map_err(SiteError::Unreachable)?
             .map_err(|error| SiteError::Unreachable(error.to_string()))?
             .host_cert
             .device_public_key;
@@ -506,7 +516,6 @@ impl ShellNetwork {
         let entry = self
             .site_of_room(room)
             .ok_or("that workspace is not a site's")?;
-        let runtime = self.runtime_handle()?;
         let (user, name) = self.site_person().map_err(|error| error.to_string())?;
         let identity = self
             .host_identity
@@ -524,8 +533,7 @@ impl ShellNetwork {
             .origin(room)
             .ok_or("the workspace's host is unknown")?;
         let https = crate::network::actor::HttpsRoute(HostHttp::new(&origin)?);
-        runtime
-            .block_on(readmit(&entry, room, (user, name), device, &key))
+        self.wait_on(async move { readmit(&entry, room, (user, name), device, &key).await })?
             .map_err(|error| error.to_string())?;
         tracing::info!(%room, "joined a site's workspace again after its host let the person go");
         self.hosted_sites.end_join(room);
