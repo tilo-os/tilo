@@ -3172,7 +3172,7 @@ impl ChatApp {
     /// channels. Channel activity and voice membership are durable evidence;
     /// the local identity is included so a brand-new room remains a valid
     /// one-person surface.
-    fn room_people_from(
+    pub(crate) fn room_people_from(
         &self,
         chat: &crate::record::Chat,
         per_channel: &[(Id, Vec<Message>)],
@@ -3187,6 +3187,17 @@ impl ChatApp {
                 .map(|(_, messages)| messages);
             for message in messages.into_iter().flatten() {
                 ids.insert(message.author.clone());
+                // A member who writes only from a linked account on a
+                // bridged service is still this room's person: their
+                // bridged messages read as theirs, by their name and colour,
+                // never as a namesake from that service.
+                if let Some(linked) = message
+                    .appearance
+                    .as_ref()
+                    .and_then(|appearance| appearance.persona.as_ref()?.linked.as_deref())
+                {
+                    ids.insert(linked.to_owned());
+                }
                 for reaction in &message.reactions {
                     ids.extend(reaction.reactors.iter().map(|reactor| reactor.by.clone()));
                 }
