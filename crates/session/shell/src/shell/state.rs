@@ -1220,6 +1220,12 @@ impl WorkspaceTree {
         self.stewarded_rooms.contains(&room)
     }
 
+    /// Whether `room`'s replica is projected here, its records committed
+    /// documents or sealed channels: a held room, with its governance.
+    pub(crate) fn projects_room(&self, room: RoomId) -> bool {
+        self.commits_native_documents(room) || self.seals_records(room)
+    }
+
     /// Why no app opens a document in `room` on this device yet, as a
     /// catalogue id: it is still joining or being placed on its host and
     /// holds no records yet. Every room of a workspace here is held, joining
@@ -2222,7 +2228,8 @@ impl WorkspaceTree {
         let Some(current) = self.desktop.workspaces.iter_mut().find(|w| w.id == id) else {
             return false;
         };
-        if current.room() == room {
+        let replaced = current.room();
+        if replaced == room {
             return false;
         }
         let Ok(mut stored) = serde_json::to_value(&*current) else {
@@ -2243,6 +2250,11 @@ impl WorkspaceTree {
         let surrendered = joining && workspace.surrender_governance();
         *current = workspace;
         let _ = surrendered;
+        // The room it stood in waited to be placed as this workspace's own:
+        // no workspace is that room any more, so it waits no longer.
+        if !self.has_workspace(replaced) {
+            self.pending_placements.remove(&replaced);
+        }
         self.seed_doc_from_cache();
         self.queue_save();
         true
