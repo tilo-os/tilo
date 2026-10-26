@@ -161,6 +161,27 @@ pub fn service_label(service: &str) -> String {
     })
 }
 
+/// What a service mark says when hovered or read out: where the person is
+/// (`From Discord`), with their handle there when `account` is one rather
+/// than a bare numeric account id.
+#[must_use]
+pub fn service_tip(service: &str, account: &str) -> String {
+    let service = service_label(service);
+    let account = account.trim().trim_start_matches('@');
+    let numeric = account.bytes().all(|b| b.is_ascii_digit());
+    if account.is_empty() || numeric {
+        widget_format("author-from-service", &[("service", service.into())])
+    } else {
+        widget_format(
+            "author-from-service-as",
+            &[
+                ("service", service.into()),
+                ("handle", format!("@{account}").into()),
+            ],
+        )
+    }
+}
+
 impl<'a> Author<'a> {
     #[must_use]
     pub fn shown_name(&self) -> &'a str {
@@ -237,20 +258,7 @@ impl<'a> Author<'a> {
     #[must_use]
     pub fn service_tip(&self) -> Option<String> {
         let persona = self.persona()?;
-        let service = service_label(&persona.service);
-        let account = persona.account.trim().trim_start_matches('@');
-        let numeric = account.bytes().all(|b| b.is_ascii_digit());
-        Some(if account.is_empty() || numeric {
-            widget_format("author-from-service", &[("service", service.into())])
-        } else {
-            widget_format(
-                "author-from-service-as",
-                &[
-                    ("service", service.into()),
-                    ("handle", format!("@{account}").into()),
-                ],
-            )
-        })
+        Some(service_tip(&persona.service, &persona.account))
     }
 
     /// What a bot's chip reads: where a person it speaks for is from

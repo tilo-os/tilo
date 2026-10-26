@@ -14,8 +14,8 @@
 
 pub use tilo_clock::{
     Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH, freeze_wall, from_std,
-    local_zone_name, now, to_std, try_unix_now, try_unix_now_ms, try_unix_now_ns, unix_now,
-    unix_now_i64, unix_now_ms, unix_now_ms_i64, unix_now_ns, wall, wall_frozen,
+    is_synchronised, local_zone_name, now, to_std, try_unix_now, try_unix_now_ms, try_unix_now_ns,
+    unix_now, unix_now_i64, unix_now_ms, unix_now_ms_i64, unix_now_ns, wall, wall_frozen,
 };
 
 /// A file-system timestamp, as `std::fs::Metadata::modified` reports it, in

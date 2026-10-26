@@ -24,6 +24,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
+use ui::widget::conversation::{ConversationClock, DayBreaks, DayDividerFace};
 use ui::widget::{
     AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ControlSize,
     EmptyState, EmptyStateContent, ListRowFace, MediaArt, MediaAspect, MediaCardFace, MediaSize,
@@ -31,10 +32,7 @@ use ui::widget::{
 };
 
 use crate::app::{ChatApp, Hit, MenuTarget};
-use crate::model::{
-    self, AgentRoute, AgentStepOutcome, AgentWork, AgentWorkState, Attachment, Message, Presence,
-    User,
-};
+use crate::model::{self, AgentWork, Attachment, Message, Presence, User};
 use crate::paint::{band_at_least, elide, line_in, line_of, push_clip, text, width_of};
 
 /// How much of the participant's colour a mention *of you* keeps when it is
@@ -48,10 +46,10 @@ use ui::tokens::colors::NON_TEXT_MIN_CONTRAST as MENTION_BAND_CONTRAST;
 use ui::tokens::contrast::BODY_TEXT_MIN_CONTRAST as MENTION_TEXT_CONTRAST;
 
 #[derive(Clone, Copy)]
-struct MessageColumn {
-    area: Rect,
-    text_x: f64,
-    text_width: f32,
+pub(crate) struct MessageColumn {
+    pub(crate) area: Rect,
+    pub(crate) text_x: f64,
+    pub(crate) text_width: f32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -119,11 +117,17 @@ impl ChatApp {
         // column above the composer; the composer and the notes under it
         // below that, to the window's foot.
         let column = Rect::new(self.center_left(), area.y0, self.center_right(), area.y1);
+        let messages_phase = ui::tilo_resource::profiling::Phase::start("chat.draw.messages");
         parts.draw(scene, "chat-messages", column, |scene| {
             if area.width() > 0.0 && area.height() >= self.chrome.body_line {
                 push_clip(scene, tf, area);
                 if self.direct_person.is_some() {
-                    self.draw_person_messages(PaintCtx::new(scene, tf, tr, theme), presence, area);
+                    self.draw_person_messages(
+                        PaintCtx::new(scene, tf, tr, theme),
+                        presence,
+                        area,
+                        hits,
+                    );
                 } else {
                     self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
                 }
@@ -142,10 +146,19 @@ impl ChatApp {
                 );
             }
         });
+        messages_phase.end();
+        let _composer_phase = ui::tilo_resource::profiling::Phase::start("chat.draw.composer");
         let composer = Rect::new(column.x0, column.y1, column.x1, self.rect.y1);
         parts.draw(scene, "chat-composer", composer, |scene| {
             self.draw_composer(scene, tf, tr, theme, presence, hits);
         });
+        // The attachment the person opened sits over everything, the window's
+        // own bar included: it is the whole window's layer, not the column's.
+        if self.attachment_view.is_some() {
+            parts.draw(scene, "chat-attachment", self.rect, |scene| {
+                self.draw_attachment_viewer(scene, tf, tr, theme, hits);
+            });
+        }
     }
 
     /// The colours mentions are painted in on `theme`, for every participant
@@ -387,6 +400,37 @@ impl ChatApp {
         (end, line_h, line)
     }
 
+    /// A person's avatar and name, through both, open their card; a bot's
+    /// or an agent's message has none.
+    fn push_author_hit(
+        &self,
+        m: &Message,
+        parts: &crate::app::PaintedMessage,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        if m.author.starts_with("bot:")
+            || self.agent_authors.contains_key(&m.author)
+            || self.is_provider_output(m)
+        {
+            return;
+        }
+        let name = parts.author.as_ref().map(|(rect, _)| *rect);
+        let face = match (parts.avatar, name) {
+            (Some(avatar), Some(name)) => Some(avatar.union(name)),
+            (avatar, name) => avatar.or(name),
+        };
+        if let Some(face) = face {
+            ChatApp::push_hit(
+                hits,
+                face,
+                Hit::ShowPerson {
+                    person: m.author.clone(),
+                    place: m.id.clone(),
+                },
+            );
+        }
+    }
+
     pub(crate) fn message_author<'a>(
         &'a self,
         m: &'a Message,
@@ -446,12 +490,12 @@ impl ChatApp {
 
     /// Whether the pointer is over `rect`.
     pub(crate) fn hovered(&self, rect: Rect) -> bool {
-        rect.contains(self.last_mouse)
+        self.pointer_over(rect)
     }
 
     /// Whether an open context menu acts on `target`: its row stays lifted
     /// while the menu is open, so it is clear what the menu will change.
-    fn menu_targets(&self, target: &MenuTarget) -> bool {
+    pub(crate) fn menu_targets(&self, target: &MenuTarget) -> bool {
         self.menu
             .as_ref()
             .is_some_and(|menu| menu.target == *target)
@@ -544,6 +588,7 @@ impl ChatApp {
         mut paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         area: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
     ) {
         let gap = f64::from(paint.theme.tokens.spacing.s3);
         let width = (area.width() - 2.0 * self.chrome.gutter).max(1.0);
@@ -608,9 +653,20 @@ impl ChatApp {
                 y + heading_h,
             );
             let color = paint.theme.text_dim;
-            line_in(
+            let shown = line_in(
                 &mut paint, &author, &style, color, heading.x0, heading, width,
             );
+            // Each line's author opens their card, as in a channel.
+            if heading.y1 > area.y0 && heading.y0 < area.y1 {
+                ChatApp::push_hit(
+                    hits,
+                    Rect::new(heading.x0, heading.y0, heading.x0 + shown, heading.y1),
+                    Hit::ShowPerson {
+                        person: message.author.clone(),
+                        place: message.id.clone(),
+                    },
+                );
+            }
             if let Some((_, editor)) = self.person_body_views.get_mut(&message.id) {
                 let body = Rect::new(heading.x0, heading.y1, heading.x1, y + height - gap);
                 editor.layout(body, paint.theme, paint.text);
@@ -713,9 +769,9 @@ impl ChatApp {
             return;
         }
 
-        let groups = model::group_messages(&self.messages);
-        let divider_h = nav_row_height(theme);
-        let (rows, total) = self.measure_message_rows(tr, theme, &groups, text_w, divider_h);
+        let groups = self.timeline_groups();
+        let clock = ConversationClock::local();
+        let (items, total) = self.measure_message_rows(tr, theme, &groups, text_w, clock);
 
         // The origin is pinned to the newest edge. If a message arrives while
         // the reader is looking back through history, compensate for the new
@@ -736,17 +792,24 @@ impl ChatApp {
         let max_start = area.y0;
         let min_start = (area.y1 - total).min(area.y0);
         if self.reveal_scroll_pending {
-            // A message shown from search, or one opened in the editor.
-            if let Some(target) = self.revealed_message.as_deref().or(self.editing.as_deref())
-                && let Some(target_index) = rows.iter().position(|row| row.idx_id == target)
-            {
-                let before = rows
+            // A message shown from search, or one opened in the editor. The
+            // sum above the target counts the day dividers too, so the row
+            // lands where it is painted rather than a divider's height early.
+            let target = self.revealed_message.as_deref().or(self.editing.as_deref());
+            let target_index = target.and_then(|target| {
+                items.iter().position(|item| match item {
+                    TimelineItem::Row(row) => row.idx_id == target,
+                    TimelineItem::Divider { .. } => false,
+                })
+            });
+            if let Some(target_index) = target_index {
+                let before: f64 = items
                     .iter()
                     .take(target_index)
-                    .map(RowM::height)
-                    .sum::<f64>();
-                if let Some(row) = rows.get(target_index) {
-                    let target_mid = divider_h + before + row.height() / 2.0;
+                    .map(|item| Self::item_height(item, theme))
+                    .sum();
+                if let Some(TimelineItem::Row(row)) = items.get(target_index) {
+                    let target_mid = before + row.height() / 2.0;
                     self.scroll = area.center().y - start_y - target_mid;
                 }
             }
@@ -756,7 +819,7 @@ impl ChatApp {
             self.reveal_scroll_pending = false;
         }
         self.scroll = self.scroll.clamp(0.0, (total - area.height()).max(0.0));
-        let y = (start_y + self.scroll).clamp(min_start, max_start);
+        let mut y = (start_y + self.scroll).clamp(min_start, max_start);
         // Store the normalised (bounded) offset, not the raw wheel accumulator.
         // This prevents an unbounded value from leaking across a resize or a
         // channel switch, and gives sync an accurate read-edge answer.
@@ -775,24 +838,35 @@ impl ChatApp {
         self.timeline_at_end = at_end;
         self.timeline_total_height = total;
 
-        let mut y = self.draw_messages_date_divider(
-            PaintCtx::new(scene, tf, tr, theme),
-            area,
-            y,
-            divider_h,
-        );
-
         let first_row_hit = hits.len();
-        for rm in &rows {
-            self.draw_row(
-                PaintCtx::new(scene, tf, tr, theme),
-                presence,
-                rm,
-                column,
-                &mut y,
-                hits,
-            );
+        // Only what stands in view is painted; a row keeps its scene for
+        // the frames it stays there ([`crate::timeline`]).
+        self.begin_timeline_paint(theme, tf, column);
+        self.message_rows.clear();
+        self.message_bar.lifted = self.bar_message();
+        for item in &items {
+            let height = Self::item_height(item, theme);
+            if y >= area.y1 || y + height <= area.y0 {
+                y += height;
+                continue;
+            }
+            match item {
+                TimelineItem::Divider { label } => {
+                    y = self.draw_day_divider(PaintCtx::new(scene, tf, tr, theme), area, label, y);
+                }
+                TimelineItem::Row(rm) => {
+                    self.paint_row(
+                        PaintCtx::new(scene, tf, tr, theme),
+                        presence,
+                        rm,
+                        column,
+                        &mut y,
+                        hits,
+                    );
+                }
+            }
         }
+        self.end_timeline_paint();
         // A row scrolled half out of the timeline is clipped where it is
         // painted; so is what it answers to, never reaching the header.
         let rows_hits = hits.split_off(first_row_hit);
@@ -800,6 +874,7 @@ impl ChatApp {
             let clipped = rect.intersect(area);
             (clipped.width() > 0.0 && clipped.height() > 0.0).then_some((clipped, hit))
         }));
+        self.draw_message_bar(PaintCtx::new(scene, tf, tr, theme), area, hits);
         if !self.timeline_at_end {
             self.draw_jump_to_latest(scene, tf, tr, theme, area, hits);
         }
@@ -840,90 +915,62 @@ impl ChatApp {
         ChatApp::push_hit(hits, rect, Hit::JumpToLatest);
     }
 
-    /// Measure every row across every group (divider + rows), returning the
-    /// per-row measurements and the total timeline height.
+    /// Measure every row across every group, with a day divider wherever the
+    /// local day changes — not only at the oldest loaded message — returning
+    /// the timeline's items and its total height.
     fn measure_message_rows(
         &self,
         tr: &mut TextRenderer,
         theme: &Theme,
         groups: &[model::MessageGroup],
         text_w: f32,
-        divider_h: f64,
-    ) -> (Vec<RowM>, f64) {
-        let mut total = divider_h;
-        let mut rows: Vec<RowM> = Vec::new();
+        clock: ConversationClock,
+    ) -> (Vec<TimelineItem>, f64) {
+        let mut total = 0.0;
+        let mut items: Vec<TimelineItem> = Vec::new();
+        let mut days = DayBreaks::new();
         for g in groups {
             for (gi, &idx) in g.message_indices.iter().enumerate() {
                 let Some(m) = self.messages.get(idx) else {
                     continue;
                 };
-                let rm = self.measure_row(tr, theme, m, gi == 0, text_w);
+                let day = clock.day(m.ts);
+                if days.begins(day) {
+                    let height = DayDividerFace::height(theme);
+                    total += height;
+                    items.push(TimelineItem::Divider {
+                        label: clock.day_label(day),
+                    });
+                }
+                let rm = self.measure_row_kept(tr, theme, m, gi == 0, text_w);
                 total += rm.height();
-                rows.push(rm);
+                items.push(TimelineItem::Row(rm));
             }
         }
-        (rows, total)
+        (items, total)
     }
 
-    /// The day the first message was sent, centred between two hairlines.
-    /// Returns the cursor `y` for the first message row beneath it.
-    fn draw_messages_date_divider(
-        &self,
-        paint: PaintCtx<'_>,
-        area: Rect,
-        y: f64,
-        divider_h: f64,
-    ) -> f64 {
-        let PaintCtx {
-            scene,
-            transform: tf,
-            text: tr,
-            theme,
-        } = paint;
-        let label = self.messages.first().map_or_else(
-            || ui::format::near_day(0).unwrap_or_default(),
-            |m| day_label(m.ts),
-        );
-        let style = theme.text(TextRole::Caption);
-        let w = width_of(tr, &label, &style);
-        let band = Rect::new(area.x0, y, area.x1, y + divider_h);
-        let gap = f64::from(theme.tokens.spacing.s3);
-        let ground = theme.tokens.colors.surfaces.content;
-        let cx = band.center().x;
-        let x0 = area.x0 + self.chrome.gutter;
-        let x1 = area.x1 - self.chrome.gutter;
-        ui::surface::separator(
-            scene,
-            tf,
-            x0,
-            cx - w / 2.0 - gap,
-            band.center().y,
-            0.0,
-            ground,
-        );
-        ui::surface::separator(
-            scene,
-            tf,
-            cx + w / 2.0 + gap,
-            x1,
-            band.center().y,
-            0.0,
-            ground,
-        );
-        let mut ctx = PaintCtx::new(scene, tf, tr, theme);
-        line_in(
-            &mut ctx,
-            &label,
-            &style,
-            theme.text_dim,
-            cx - w / 2.0,
-            band,
-            w + 1.0,
-        );
-        y + divider_h
+    /// One timeline item's height: a divider's row, or a message's.
+    fn item_height(item: &TimelineItem, theme: &Theme) -> f64 {
+        match item {
+            TimelineItem::Divider { .. } => DayDividerFace::height(theme),
+            TimelineItem::Row(rm) => rm.height(),
+        }
     }
 
-    fn measure_row(
+    /// One day divider, in the toolkit's face: the same band, rules and
+    /// centring Messages draws, so a day reads the same in both apps.
+    fn draw_day_divider(&self, mut paint: PaintCtx<'_>, area: Rect, label: &str, y: f64) -> f64 {
+        let theme = paint.theme;
+        let height = DayDividerFace::height(theme);
+        let band = Rect::new(area.x0, y, area.x1, y + height);
+        let leading = area.x0 + self.chrome.gutter;
+        let trailing = area.x1 - self.chrome.gutter;
+        DayDividerFace::new(label).paint(&mut paint.reborrow(), band, leading, trailing);
+        y + height
+    }
+
+    pub(crate) fn measure_row(
         &self,
         tr: &mut TextRenderer,
         theme: &Theme,
@@ -1040,7 +1087,8 @@ impl ChatApp {
         }
     }
 
-    fn draw_row(
+    /// Paint the row `rm` from `*y`; returns where it drew its texts.
+    pub(crate) fn draw_row(
         &mut self,
         paint: PaintCtx<'_>,
         presence: &PresenceCtx,
@@ -1048,7 +1096,7 @@ impl ChatApp {
         column: MessageColumn,
         y: &mut f64,
         hits: &mut Vec<(Rect, Hit)>,
-    ) {
+    ) -> crate::app::PaintedMessage {
         let PaintCtx {
             scene,
             transform: tf,
@@ -1056,28 +1104,26 @@ impl ChatApp {
             theme,
         } = paint;
         let area = column.area;
+        let mut parts = crate::app::PaintedMessage::default();
         let Some(m) = self.message(&rm.idx_id).cloned() else {
-            return;
+            return parts;
         };
         let revealed = self.revealed_message.as_deref() == Some(m.id.as_str());
-        let targeted = self.menu_targets(&MenuTarget::Message(m.id.clone()));
-        if revealed || targeted {
-            let s2 = f64::from(theme.tokens.spacing.s2);
+        let lifted = self.row_lifted(&m.id);
+        let s2 = f64::from(theme.tokens.spacing.s2);
+        let row = Rect::new(area.x0 + s2, *y, area.x1 - s2, *y + rm.height());
+        if revealed || lifted {
             chrome::paint_row_selection(
                 scene,
                 tf,
-                Rect::new(area.x0 + s2, *y, area.x1 - s2, *y + rm.height()),
-                SelectionState::new(revealed, targeted, false),
+                row,
+                SelectionState::new(revealed, lifted, false),
                 theme.tokens.colors.surfaces.content,
                 theme,
             );
         }
         *y += rm.top_gap;
         let content_top = *y;
-        // Only a row that shows notes where its texts are: one scrolled out
-        // costs nothing more.
-        let shown = *y < area.y1 && *y + rm.height() - rm.top_gap > area.y0;
-        let mut parts = crate::app::PaintedMessage::default();
 
         if rm.show_header {
             self.draw_row_header(
@@ -1145,8 +1191,9 @@ impl ChatApp {
                 Hit::MessageMenu { msg: m.id.clone() },
             );
         }
-        if shown {
-            self.note_painted(&m.id, parts, !rm.editing, area);
+        self.push_author_hit(&m, &parts, hits);
+        if !rm.editing {
+            parts.lines = self.body_lines(&m.id);
         }
         if rm.resource_h > 0.0 && m.share.is_some() {
             let place = (column.text_x, f64::from(column.text_width), column.area);
@@ -1156,6 +1203,7 @@ impl ChatApp {
         }
         self.draw_row_footer(PaintCtx::new(scene, tf, tr, theme), rm, &m, column, y, hits);
         *y += rm.pad;
+        parts
     }
 
     /// The button that shows or hides the reasoning an agent's provider
@@ -1191,18 +1239,9 @@ impl ChatApp {
         *y += rm.reasoning_h;
     }
 
-    /// Keep where a shown message drew its texts, its body's lines read off
-    /// the view when `body` was drawn, cut to the timeline's `area`.
-    fn note_painted(
-        &mut self,
-        id: &str,
-        mut parts: crate::app::PaintedMessage,
-        body: bool,
-        area: Rect,
-    ) {
-        if body {
-            parts.lines = self.body_lines(id);
-        }
+    /// Keep where a shown message drew its texts, cut to the timeline's
+    /// `area`.
+    pub(crate) fn note_painted(&mut self, id: &str, parts: crate::app::PaintedMessage, area: Rect) {
         let parts = parts.clipped(area);
         if !parts.is_empty() {
             self.painted_messages.insert(id.to_owned(), parts);
@@ -1439,12 +1478,25 @@ impl ChatApp {
         }
 
         if let Some(att) = &m.attachment {
-            self.draw_attachment(
+            let card = self.draw_attachment(
                 PaintCtx::new(scene, tf, tr, theme),
                 att,
                 Point::new(text_x, *y),
                 f64::from(text_w),
             );
+            // A shared picture opens: a card nobody can enlarge is a card
+            // that answers nothing ([`crate::attachment_view`]). Recorded
+            // after the row's menu target, so a click on the card opens it.
+            if self.embed_allowed(att.blob()) {
+                ChatApp::push_hit(
+                    hits,
+                    card,
+                    Hit::Attachment {
+                        msg: m.id.clone(),
+                        action: ui::widget::conversation::AttachmentAction::OpenFullSize,
+                    },
+                );
+            }
             *y += rm.att_h;
         }
 
@@ -1595,7 +1647,10 @@ impl ChatApp {
             };
             ChatApp::push_hit(hits, rect, hit);
         }
-        let hover = (self.menu.is_none() && !self.emoji_open).then_some(self.last_mouse);
+        // The strip lifts the chip under the pointer: the row asks about
+        // each of them.
+        self.note_pointer_probes(laid.targets().into_iter().map(|(rect, _)| rect));
+        let hover = (self.menu.is_none() && !self.emoji_open).then_some(self.pointer_in_row());
         strip.paint(&mut PaintCtx::new(scene, tf, tr, theme), hover, None);
         height
     }
@@ -1726,7 +1781,13 @@ impl ChatApp {
         face.height(tr, theme, w) + gap
     }
 
-    fn draw_attachment(&self, paint: PaintCtx<'_>, att: &Attachment, origin: Point, max_w: f64) {
+    fn draw_attachment(
+        &self,
+        paint: PaintCtx<'_>,
+        att: &Attachment,
+        origin: Point,
+        max_w: f64,
+    ) -> Rect {
         let PaintCtx {
             scene,
             transform: tf,
@@ -1739,7 +1800,7 @@ impl ChatApp {
         // cannot open.
         if !self.embed_allowed(att.blob()) {
             let icon = attachment_icon(att);
-            paint_file_card(
+            let card = paint_file_card(
                 &mut ctx,
                 origin,
                 max_w,
@@ -1747,11 +1808,11 @@ impl ChatApp {
                 att.name(),
                 &crate::i18n::t("chat-attachment-no-access"),
             );
-            return;
+            return card;
         }
         match att {
             Attachment::File { name, size, .. } => {
-                paint_file_card(
+                let card = paint_file_card(
                     &mut ctx,
                     origin,
                     max_w,
@@ -1759,6 +1820,8 @@ impl ChatApp {
                     name,
                     &format_bytes(*size),
                 );
+                self.paint_attachment_open(&mut ctx, att, card);
+                card
             }
             Attachment::Image { blob, .. } => {
                 let image = self.images.get(&crate::images::blob_key(blob));
@@ -1773,10 +1836,10 @@ impl ChatApp {
                 };
                 let (w, face) = media_face(att, art, &meta, max_w, theme);
                 let h = face.height(ctx.text, theme, w);
-                face.paint(
-                    &mut ctx,
-                    Rect::new(origin.x, origin.y, origin.x + w, origin.y + h),
-                );
+                let card = Rect::new(origin.x, origin.y, origin.x + w, origin.y + h);
+                face.paint(&mut ctx, card);
+                self.paint_attachment_open(&mut ctx, att, card);
+                card
             }
             Attachment::Video { blob, .. } => {
                 // A frame needs the media engine's decoder, so the card shows
@@ -1789,12 +1852,22 @@ impl ChatApp {
                 let meta = media_meta(att);
                 let (w, face) = media_face(att, art, &meta, max_w, theme);
                 let h = face.height(ctx.text, theme, w);
-                face.paint(
-                    &mut ctx,
-                    Rect::new(origin.x, origin.y, origin.x + w, origin.y + h),
-                );
+                let card = Rect::new(origin.x, origin.y, origin.x + w, origin.y + h);
+                face.paint(&mut ctx, card);
+                self.paint_attachment_open(&mut ctx, att, card);
+                card
             }
         }
+    }
+
+    /// The badge that says a card opens, on the card the pointer is over.
+    fn paint_attachment_open(&self, paint: &mut PaintCtx<'_>, att: &Attachment, card: Rect) {
+        let summary = self.attachment_summary(att);
+        ui::widget::conversation::attachment::AttachmentFace::new(&summary).paint_open_badge(
+            paint,
+            card,
+            self.hovered(card),
+        );
     }
 
     // ------------------------------------------------------------ composer
@@ -2665,7 +2738,22 @@ impl ChatApp {
                 }
                 let row_h = face.height(ctx.text, theme);
                 let row = Rect::new(body.x0 + inset, y, body.x1 - inset, y + row_h);
-                face.paint(&mut ctx, row);
+                face.interaction(ui::widget::Interaction {
+                    hovered: !person.is_agent && self.hovered(row),
+                    ..ui::widget::Interaction::default()
+                })
+                .paint(&mut ctx, row);
+                // A person's row opens their card; an agent has none.
+                if !person.is_agent {
+                    ChatApp::push_hit(
+                        hits,
+                        row,
+                        Hit::ShowPerson {
+                            person: person.id.clone(),
+                            place: format!("member:{}", person.id),
+                        },
+                    );
+                }
                 y += row_h;
             }
         }
@@ -2964,20 +3052,17 @@ pub(crate) fn typing_line(
     }
 }
 
-/// The local time of `ts` as `HH:MM`.
+/// The local time of `ts` as the person reads clocks: the toolkit's clock, the
+/// same one Messages shows on every line.
 fn clock_label(ts: i64) -> String {
-    model::clock(ts + local_offset())
+    ConversationClock::local().clock(ts)
 }
 
-/// "Today", "Yesterday" or "N days ago" for `ts`, against the local date.
+/// "Today", "Yesterday", the weekday, or the date: the toolkit's day label,
+/// the same rule Messages uses for its dividers.
 fn day_label(ts: i64) -> String {
-    let offset = local_offset();
-    model::day_label(ts + offset, ui::clock::local_now().timestamp() + offset)
-}
-
-/// Seconds the local time zone is ahead of UTC now.
-fn local_offset() -> i64 {
-    i64::from(ui::clock::local_now().offset().local_minus_utc())
+    let clock = ConversationClock::local();
+    clock.day_label(clock.day(ts))
 }
 
 /// The icon that says what kind of file an attachment is.
@@ -3054,7 +3139,7 @@ fn paint_file_card(
     icon: Icon,
     name: &str,
     detail: &str,
-) {
+) -> Rect {
     let theme = ctx.theme;
     let w = file_card_width(max_w, theme);
     let h = file_card_height(ctx.text, theme);
@@ -3095,6 +3180,7 @@ fn paint_file_card(
         Point::new(tx, body.y0 + name_h),
         None,
     );
+    rect
 }
 
 /// Line box of a message-group header (author name + time) plus the gap to
@@ -3108,183 +3194,26 @@ fn thread_bar_h(theme: &Theme) -> f64 {
     nav_row_height(theme)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AgentWorkLineStyle {
-    Summary,
-    Rationale,
-    Step,
-}
+mod agent_work;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct AgentWorkLine {
-    text: String,
-    style: AgentWorkLineStyle,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct AgentWorkPresentation {
-    summary: String,
-    details: Vec<AgentWorkLine>,
-}
-
-/// The same recorded evidence read aloud in the conversation tree.
-pub(crate) fn agent_work_accessible_description(work: &AgentWork) -> String {
-    let presentation = AgentWorkPresentation::from(work);
-    std::iter::once(presentation.summary)
-        .chain(presentation.details.into_iter().map(|line| line.text))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-impl From<&AgentWork> for AgentWorkPresentation {
-    fn from(work: &AgentWork) -> Self {
-        use crate::i18n::{t, t_args};
-        let state = work
-            .stream
-            .as_ref()
-            .and_then(|stream| stream.finish)
-            .map_or_else(
-                || work.state.clone(),
-                |outcome| AgentWorkState::ProviderFinished { outcome },
-            );
-        let summary = match &state {
-            AgentWorkState::ProviderFinished { outcome } => {
-                use crate::agent_stream::AgentFinish;
-                t(match outcome {
-                    AgentFinish::Complete => "chat-agent-complete",
-                    AgentFinish::Truncated => "chat-agent-truncated",
-                    AgentFinish::Refused => "chat-agent-refused",
-                    AgentFinish::Cancelled => "chat-agent-cancelled",
-                    AgentFinish::Failed => "chat-agent-failed",
-                })
-            }
-            AgentWorkState::Taken => t("chat-agent-work-taken"),
-            AgentWorkState::Waiting { app } => {
-                t_args("chat-agent-work-waiting", &[("app", app.into())])
-            }
-            AgentWorkState::Doing { did, about } if about.trim().is_empty() => {
-                t_args("chat-agent-work-intent", &[("action", did.into())])
-            }
-            AgentWorkState::Doing { did, about } => t_args(
-                "chat-agent-work-intent-about",
-                &[("action", did.into()), ("about", about.into())],
-            ),
-            AgentWorkState::Done { did } => {
-                t_args("chat-agent-work-done", &[("action", did.into())])
-            }
-            AgentWorkState::Refused => t("chat-agent-work-refused"),
-        };
-        let mut details = Vec::new();
-        if let Some(reasoning) = &work.reasoning {
-            let route = match reasoning.route {
-                AgentRoute::Model => t("chat-agent-work-model-rationale"),
-                AgentRoute::Floor => t("chat-agent-work-rule-match"),
-            };
-            let text = if reasoning.why.trim().is_empty() {
-                match reasoning.route {
-                    AgentRoute::Model => t("chat-agent-work-model-choice"),
-                    AgentRoute::Floor => t("chat-agent-work-rule-choice"),
-                }
-            } else {
-                t_args(
-                    "chat-agent-work-rationale",
-                    &[("route", route.into()), ("why", (&reasoning.why).into())],
-                )
-            };
-            details.push(AgentWorkLine {
-                text,
-                style: AgentWorkLineStyle::Rationale,
-            });
-        }
-        for step in &work.trace {
-            // The dispatch record retains the exact resource address for the
-            // action reader. The conversation uses the app's readable label.
-            let target = step.label.clone();
-            let text = match &step.outcome {
-                AgentStepOutcome::Asked => t_args(
-                    "chat-agent-work-step-requested",
-                    &[("target", target.into())],
-                ),
-                AgentStepOutcome::Applied => {
-                    t_args("chat-agent-work-step-applied", &[("target", target.into())])
-                }
-                AgentStepOutcome::NoChange => t_args(
-                    "chat-agent-work-step-no-change",
-                    &[("target", target.into())],
-                ),
-                AgentStepOutcome::Refused { why } if why.trim().is_empty() => {
-                    t_args("chat-agent-work-step-refused", &[("target", target.into())])
-                }
-                AgentStepOutcome::Refused { why } => t_args(
-                    "chat-agent-work-step-refused-why",
-                    &[("target", target.into()), ("why", why.into())],
-                ),
-            };
-            details.push(AgentWorkLine {
-                text,
-                style: AgentWorkLineStyle::Step,
-            });
-        }
-        Self { summary, details }
-    }
-}
-
-fn agent_work_text_style(style: AgentWorkLineStyle, theme: &Theme) -> ui::TextStyle {
-    match style {
-        AgentWorkLineStyle::Summary => theme.text(TextRole::Body).strong(),
-        AgentWorkLineStyle::Rationale | AgentWorkLineStyle::Step => theme.text(TextRole::Caption),
-    }
-}
-
-fn measure_agent_work(tr: &mut TextRenderer, theme: &Theme, work: &AgentWork, width: f32) -> f64 {
-    let presentation = AgentWorkPresentation::from(work);
-    let inset = f64::from(theme.tokens.spacing.s3);
-    let gap = f64::from(theme.tokens.spacing.s2);
-    let text_width = (width - ui::num::f32_of_f64(2.0 * inset)).max(0.0);
-    let mut height = 2.0 * inset;
-    height += f64::from(
-        tr.measure_style(
-            &presentation.summary,
-            Some(text_width),
-            &agent_work_text_style(AgentWorkLineStyle::Summary, theme),
-        )
-        .1,
-    );
-    for line in presentation.details {
-        height += gap;
-        height += f64::from(
-            tr.measure_style(
-                &line.text,
-                Some(text_width),
-                &agent_work_text_style(line.style, theme),
-            )
-            .1,
-        );
-    }
-    height + gap
-}
-
-fn draw_agent_work_line(
-    paint: &mut PaintCtx<'_>,
-    value: &str,
-    style: AgentWorkLineStyle,
-    at: Point,
-    width: f32,
-) -> f64 {
-    let text_style = agent_work_text_style(style, paint.theme);
-    let color = match style {
-        AgentWorkLineStyle::Summary => paint.theme.tokens.colors.text_primary,
-        AgentWorkLineStyle::Rationale | AgentWorkLineStyle::Step => {
-            paint.theme.tokens.colors.text_dim
-        }
-    };
-    f64::from(text(paint, value, &text_style, color, at, Some(width)).1)
-}
-
+pub(crate) use agent_work::agent_work_accessible_description;
+use agent_work::{
+    AgentWorkLineStyle, AgentWorkPresentation, draw_agent_work_line, measure_agent_work,
+};
 /// Per-row measured heights for the timeline layout.
-struct RowM {
-    idx_id: String,
-    show_header: bool,
+/// One thing the timeline paints, in order: a day divider, or a message.
+enum TimelineItem {
+    /// The day changed here: the shared divider band, labelled.
+    Divider {
+        label: String,
+    },
+    Row(RowM),
+}
+
+#[derive(Clone)]
+pub(crate) struct RowM {
+    pub(crate) idx_id: String,
+    pub(crate) show_header: bool,
     /// Space above the row: a group's first row stands apart from the one
     /// before it; a continuation row follows closely.
     top_gap: f64,
@@ -3295,19 +3224,19 @@ struct RowM {
     body_h: f64,
     work_h: f64,
     reasoning_h: f64,
-    resource_h: f64,
+    pub(crate) resource_h: f64,
     att_h: f64,
     react_h: f64,
     edited_h: f64,
     thread_h: f64,
     /// This row is the message being edited inline: its body is the editor
     /// field (padded) plus a controls row.
-    editing: bool,
+    pub(crate) editing: bool,
     edit_ctrl_h: f64,
 }
 
 impl RowM {
-    fn height(&self) -> f64 {
+    pub(crate) fn height(&self) -> f64 {
         let header = if self.show_header { self.header_h } else { 0.0 };
         let body = if self.editing {
             self.body_h + 2.0 * self.pad + self.pad + self.edit_ctrl_h
@@ -3355,13 +3284,75 @@ fn composer_slot(slots: &[Rect], index: usize) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentWorkLineStyle, AgentWorkPresentation, RowM, media_face, media_meta};
+    use super::{
+        AgentWorkLineStyle, AgentWorkPresentation, RowM, TimelineItem, media_face, media_meta,
+    };
     use crate::model::{
         AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
         Attachment,
     };
     use ui::theme::Theme;
     use ui::widget::{MediaArt, MediaSize};
+
+    /// A conversation that crosses midnight gets a divider at the crossing,
+    /// not only at the oldest message: scrolling to a line from three days ago
+    /// must show which day it belongs to.
+    #[test]
+    fn a_divider_appears_wherever_the_day_changes() {
+        use crate::model::Message;
+        let theme = Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let identity = crate::identity::LocalIdentity::demo();
+        let doc = automerge::AutoCommit::new();
+        let mut app = crate::ChatApp::new(
+            identity,
+            crate::app::ChatRuntime::Unavailable,
+            tilo_content::ContentStore::memory(),
+        );
+        app.attach_framework(ui::framework::Dispatcher::detached(
+            "so.tilo.chat",
+            &app.me.id.clone(),
+        ));
+        let line = |id: &str, ts: i64| Message {
+            id: id.into(),
+            channel: "c".into(),
+            author: "u_ada".into(),
+            ts,
+            text: "x".into(),
+            body: Vec::new(),
+            edited: false,
+            history: Vec::new(),
+            parent: None,
+            reactions: Vec::new(),
+            mentions: Vec::new(),
+            reference: None,
+            source_provider: None,
+            attachment: None,
+            pinned: false,
+            work: None,
+            appearance: None,
+            share: None,
+        };
+        // Two hours apart across midnight, and one three days later.
+        let start = 1_782_828_300_i64;
+        app.messages = vec![
+            line("a", start),
+            line("b", start.saturating_add(3_600)),
+            line("c", start.saturating_add(4 * 86_400)),
+        ];
+        let groups = crate::model::group_messages(&app.messages);
+        let clock = ui::widget::ConversationClock::at(0, start);
+        let (items, _) = app.measure_message_rows(&mut text, &theme, &groups, 400.0, clock);
+        let dividers = items
+            .iter()
+            .filter(|item| matches!(item, TimelineItem::Divider { .. }))
+            .count();
+        assert_eq!(
+            dividers, 2,
+            "one divider for the first day and one where the day changes"
+        );
+        let _ = doc;
+    }
 
     #[test]
     fn media_cards_keep_the_picture_shape_inside_a_regular_card() {

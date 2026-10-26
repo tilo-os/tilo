@@ -473,6 +473,13 @@ impl WaitList {
         })
     }
 
+    /// Private cancellation identity, without disclosing a pending mailbox.
+    pub(super) fn removal_contact(&self, removal: [u8; 32], now_ns: u64) -> Option<[u8; 32]> {
+        self.live(now_ns)
+            .find(|entry| entry.removals.contains(&removal))
+            .map(|entry| key_sha256(&entry.contact))
+    }
+
     /// Whether `request_id` is on the list, confirmed.
     pub(super) fn has(&self, request_id: [u8; 32], now_ns: u64) -> bool {
         self.live(now_ns)
@@ -541,6 +548,18 @@ impl WaitList {
                 entry.invite_mailed_at_ns = Some(now_ns);
             }
             Ok((mailbox, secret))
+        })
+    }
+
+    /// Release only this failed enqueue's reservation, leaving newer ones
+    /// and all removal tokens intact.
+    pub(super) fn mail_failed(&mut self, removal: [u8; 32], now_ns: u64) -> Result<(), String> {
+        self.changed(now_ns, |entries| {
+            for entry in entries {
+                if entry.removals.last() == Some(&removal) {
+                    entry.invite_mailed_at_ns = None;
+                }
+            }
         })
     }
 

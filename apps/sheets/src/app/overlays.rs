@@ -94,6 +94,8 @@ impl SheetsApp {
     pub(super) fn close_overlays(&mut self) {
         self.tab_menu.close();
         self.tab_menu_target = None;
+        self.cell_menu.close();
+        self.cell_menu_target = None;
         self.tab_colour.close();
         self.settings_panel = SettingsPanel::None;
         self.pending.redraw = true;
@@ -269,6 +271,13 @@ impl SheetsApp {
     /// modal: while one is open it takes every event. Returns whether the
     /// event was consumed.
     pub(super) fn route_overlays(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        if self.cell_menu.is_open() {
+            self.cell_menu
+                .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+            self.drain_cell_menu(&mut ctx.state);
+            *ctx.handled = true;
+            return true;
+        }
         if self.tab_colour.is_open() {
             self.tab_colour
                 .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
@@ -589,6 +598,8 @@ impl SheetsApp {
         presence: &PresenceCtx,
     ) {
         self.tab_menu
+            .draw_overlay(scene, transform, tr, theme, presence);
+        self.cell_menu
             .draw_overlay(scene, transform, tr, theme, presence);
         if self.tab_colour.is_open() {
             self.sync_tab_colour_picker(theme);

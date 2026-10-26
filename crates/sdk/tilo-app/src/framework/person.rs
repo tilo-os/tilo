@@ -69,6 +69,14 @@ impl<P: Resource> Shared<P> {
             }
             None => false,
         };
+        if !moved
+            && self.live.unreadable().is_none()
+            && let Some(Err(error)) = self.record.read(|doc| self.live.reread(doc))
+        {
+            // The record is small and read whole, so a change it cannot
+            // read is noticed here rather than by whoever publishes it.
+            unreadable_person_record(P::KIND, &error);
+        }
         // Views of the record follow it whole: it is small.
         let _ = self.live.take_change();
         if moved {
@@ -89,6 +97,15 @@ impl<P: Resource> PersonRecord<P> {
     /// Read the current state.
     pub fn with<T>(&self, read: impl FnOnce(&P::State) -> T) -> T {
         read(&self.get())
+    }
+
+    /// Why the record stopped reading as `P`, if it did: the state is then
+    /// the last one that read, and a view shows this instead of it. Its
+    /// published actions say the same.
+    #[must_use]
+    pub fn unreadable(&self) -> Option<String> {
+        self.shared.refresh();
+        self.shared.live.unreadable().map(|why| why.reason)
     }
 
     /// The state as view state that follows every change, for a control
@@ -222,6 +239,11 @@ pub(crate) struct PersonState {
     /// The open records' undo and redo, as the palette and agents reach
     /// them.
     published: RefCell<Vec<Published>>,
+    /// The records that could not be opened as views asked for them, by
+    /// what they are, with what they publish: their declared actions,
+    /// unavailable for why. Those views are told now, and never again for
+    /// the same record.
+    unavailable: RefCell<HashMap<(String, &'static str), tilo_actions::Resource>>,
 }
 
 /// One open record as the root publishes it.
@@ -339,6 +361,7 @@ impl PersonState {
             owners: Rc::default(),
             refreshers: RefCell::default(),
             published: RefCell::default(),
+            unavailable: RefCell::default(),
         }
     }
 
@@ -369,12 +392,12 @@ impl PersonState {
         edits: bool,
         publish: bool,
     ) -> Option<PersonRecord<P>> {
-        let open = |record: StoredRecord| -> Option<Opened> {
+        let open = |record: StoredRecord| -> Result<Opened, String> {
             let shared = self.shared_of::<P>(record, (!edits).then_some(owner))?;
             let held = Rc::new(held::<P>(&shared, edits));
             *shared.held.borrow_mut() = Some(Rc::clone(&held));
             let weak = Rc::downgrade(&shared);
-            Some(Opened {
+            Ok(Opened {
                 shared: shared as Rc<dyn Any>,
                 door: held,
                 step: Box::new(move |undo, _| {
@@ -385,10 +408,8 @@ impl PersonState {
                 }),
             })
         };
-        let shared = self.open_kind(
+        let shared = self.open_kind::<P>(
             owner,
-            P::KIND,
-            P::LABEL,
             &|doc| P::initialize(doc).map_err(|error| error.to_string()),
             &open,
             publish,
@@ -403,21 +424,27 @@ impl PersonState {
     /// `open` makes of it, created by `initialize` where it does not exist
     /// yet, kept and (for this app's own, when `publish`) published: the
     /// part of opening a person record that does not depend on its type.
-    fn open_kind(
+    fn open_kind<P: Resource>(
         &self,
         owner: &'static str,
-        kind: &'static str,
-        label: &'static str,
         initialize: &dyn Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
-        open: &dyn Fn(StoredRecord) -> Option<Opened>,
+        open: &dyn Fn(StoredRecord) -> Result<Opened, String>,
         publish: bool,
     ) -> Option<Rc<dyn Any>> {
+        let (kind, label) = (P::KIND, P::LABEL);
         let key = (owner, kind.to_owned());
         if let Some(open) = self.opened.borrow().get(&key) {
             return Some(Rc::clone(open));
         }
-        let record = open_record(&self.records_of(owner)?, kind.to_owned(), kind, initialize)?;
-        let Opened { shared, door, step } = open(record)?;
+        let records = self.records_of(owner)?;
+        let record = match open_record(&records, kind.to_owned(), kind, initialize) {
+            Ok(record) => record,
+            Err(reason) => return self.note_unavailable::<P>(owner, &reason, publish),
+        };
+        let Opened { shared, door, step } = match open(record) {
+            Ok(opened) => opened,
+            Err(reason) => return self.note_unavailable::<P>(owner, &reason, publish),
+        };
         if owner != self.app_id || !publish {
             self.opened.borrow_mut().insert(key, Rc::clone(&shared));
             return Some(shared);
@@ -436,25 +463,34 @@ impl PersonState {
     }
 
     /// `record` read as `P`, followed from now on.
+    ///
+    /// # Errors
+    /// Why the record does not read as `P`: it could not be migrated to the
+    /// storage version the app reads, or what it holds is not a `P`.
     fn shared_of<P: Resource>(
         &self,
         record: StoredRecord,
         owner: Option<&'static str>,
-    ) -> Option<Rc<Shared<P>>> {
+    ) -> Result<Rc<Shared<P>>, String> {
         // An older record is brought up to the resource's storage version
         // before it is read, as the app's record is when it opens: once, as
         // the same housekeeping change on every device, nobody's undo step.
-        if record.read(tilo_resource::evolution::stored_version)? < P::VERSION
+        let stored = record
+            .read(tilo_resource::evolution::stored_version)
+            .ok_or_else(|| "the record cannot be read".to_owned())?;
+        if stored < P::VERSION
             && let Err(error) = record.edit(false, |doc| {
                 tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
             })
         {
-            person_record_not_migrated(P::KIND, &error);
+            return Err(format!(
+                "it could not be brought up to this app's storage version: {error}"
+            ));
         }
         let reader = record
-            .read(tilo_resource::Reader::<P>::read)?
-            .map_err(|error| unreadable_person_record(P::KIND, &error))
-            .ok()?;
+            .read(tilo_resource::Reader::<P>::read)
+            .ok_or_else(|| "the record cannot be read".to_owned())?
+            .map_err(|error| format!("it does not read: {error}"))?;
         let live = Live::new(reader);
         self.owners.borrow_mut().push(record.history_owner());
         let shared = Rc::new(Shared::<P> {
@@ -471,7 +507,7 @@ impl PersonState {
         self.refreshers.borrow_mut().push(Box::new(move || {
             weak.upgrade().is_some_and(|shared| shared.refresh())
         }));
-        Some(shared)
+        Ok(shared)
     }
 
     /// The settings section `kind` held as a record of the person's, opened
@@ -539,6 +575,39 @@ impl PersonState {
             .ok()?;
         others.insert(owner, records.clone());
         Some(records)
+    }
+
+    /// Note that the record `P` that `owner` keeps could not be opened, for
+    /// `reason`: the root publishes it with its declared actions
+    /// unavailable for that reason, rather than the record going quietly
+    /// missing from the surface.
+    fn note_unavailable<P: Resource>(
+        &self,
+        owner: &'static str,
+        reason: &str,
+        publish: bool,
+    ) -> Option<Rc<dyn Any>> {
+        unreadable_person_record(P::KIND, &reason);
+        // Only the record this app would have published is published for
+        // the reason: one another app keeps and this one reads is that
+        // app's surface, which registers the actions its own record has.
+        if owner == self.app_id && publish {
+            let published = tilo_resource::resource::unreadable_parts::<P>(
+                &resource_id(P::KIND),
+                P::LABEL,
+                reason,
+            );
+            self.unavailable
+                .borrow_mut()
+                .insert((owner.to_owned(), P::KIND), published);
+        }
+        None
+    }
+
+    /// Every record a view asked for that could not be opened, as it is
+    /// published: its declared actions, unavailable for why.
+    pub(crate) fn unavailable(&self) -> Vec<tilo_actions::Resource> {
+        self.unavailable.borrow().values().cloned().collect()
     }
 
     /// Keep the record opened under `key`, publishing its door and its undo
@@ -639,18 +708,21 @@ impl PersonState {
     }
 }
 
-/// Open the record `kind` of `records`, created by `initialize` where it does
-/// not exist yet; a failure is logged for the resource `of`.
+/// The record `kind` that `records` keeps, made by `initialize` where it
+/// does not exist yet.
+///
+/// # Errors
+/// Why the record cannot be opened: the store refused it, or it cannot be
+/// created.
 fn open_record(
     records: &PersonRecords,
     kind: String,
     of: &str,
     initialize: &dyn Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
-) -> Option<StoredRecord> {
+) -> Result<StoredRecord, String> {
     records
         .open_record(RecordKind::new(kind), initialize)
-        .map_err(|error| tracing::warn!(kind = of, %error, "person record unavailable"))
-        .ok()
+        .map_err(|error| format!("{of}'s record cannot be opened: {error}"))
 }
 
 /// The record `shared` as views and the door edit it: read into a state of
@@ -709,12 +781,4 @@ impl Drop for PersonState {
 #[inline(never)]
 fn unreadable_person_record(kind: &'static str, error: &dyn std::fmt::Display) {
     tracing::warn!(kind, %error, "person record unreadable");
-}
-
-/// Log that the person's record of `kind` was not migrated, as
-/// [`unreadable_person_record`].
-#[cold]
-#[inline(never)]
-fn person_record_not_migrated(kind: &'static str, error: &dyn std::fmt::Display) {
-    tracing::warn!(kind, %error, "person record not migrated");
 }

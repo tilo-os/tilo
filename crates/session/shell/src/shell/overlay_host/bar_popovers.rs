@@ -535,6 +535,8 @@ impl ShellOverlayHost {
             // Someone else's card is not opened from the native bar yet.
             ProfileChoice::Link(_)
             | ProfileChoice::Unlink(_)
+            | ProfileChoice::Accept(_)
+            | ProfileChoice::Decline(_)
             | ProfileChoice::Follow(_)
             | ProfileChoice::Message(_) => {
                 return;

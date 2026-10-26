@@ -338,6 +338,7 @@ async fn bridged_room(rooms: &Rooms, cert: &DeviceCert) -> (String, String) {
                     origin: ::discord::Origin::Discord,
                     persona: None,
                     root: None,
+                    picture: None,
                 });
                 seen.write_changed_fields(
                     &current,

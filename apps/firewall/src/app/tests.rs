@@ -369,14 +369,14 @@ fn the_row_delete_button_opens_the_confirmation() {
 }
 
 /// Applying now runs through the same door as the palette and reports how
-/// it ended; with the live apply not armed it only checks the changes.
+/// it ended; a unit test plans the same commands without touching the host.
 #[test]
 fn apply_now_reports_the_checked_changes() {
     let mut app = hosted();
     app.effect(&FirewallEffect::ApplyConfig).unwrap();
     app.settle();
     let frame = app.harness().inspection_json().unwrap();
-    assert!(frame.contains("changes checked"), "{frame}");
+    assert!(frame.contains("changes"), "{frame}");
 }
 
 /// The rules are one list, allows first; pressing a header sorts by that

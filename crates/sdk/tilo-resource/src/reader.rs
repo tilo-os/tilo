@@ -313,6 +313,23 @@ impl<R: Resource> Reader<R> {
         self.core.loads = self.core.loads.wrapping_add(1);
         Ok(true)
     }
+
+    /// Read the state whole from `doc`, whatever the last sync saw move: so a
+    /// change this reader could not apply as a delta is reported
+    /// ([`Self::unreadable`]) rather than passed over, which a resource kept
+    /// small enough to read whole can afford on every sync. Returns whether
+    /// the state changed.
+    ///
+    /// # Errors
+    /// Returns [`ModelError`] when the document no longer holds this
+    /// resource; the state is left as it was last read successfully.
+    pub fn reread_whole(&mut self, doc: &Doc) -> Result<bool, ModelError> {
+        let before = self.core.revision;
+        self.core.stale = true;
+        self.core
+            .sync(&OpsOf::<R>::OPS, &mut Held::<R>(&mut self.state), doc)?;
+        Ok(self.core.revision != before)
+    }
 }
 
 impl Following {

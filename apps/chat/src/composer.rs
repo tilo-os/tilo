@@ -700,8 +700,11 @@ impl<S: RichTextSource + 'static> Composer<S> {
         doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         // Show the draft as it is now first, so the edit is made against it.
+        let before = ui::tilo_resource::profiling::Phase::start("chat.composer.sync_before");
         self.host.sync(doc, &automerge::ROOT);
+        before.end();
         let mut handled = false;
+        let edit = ui::tilo_resource::profiling::Phase::start("chat.composer.edit");
         self.host.handle_event(
             event,
             scale,
@@ -710,6 +713,8 @@ impl<S: RichTextSource + 'static> Composer<S> {
             &automerge::ROOT,
             &mut handled,
         );
+        edit.end();
+        let _after = ui::tilo_resource::profiling::Phase::start("chat.composer.sync_after");
         self.host.sync(doc, &automerge::ROOT);
         handled
     }

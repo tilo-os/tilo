@@ -10,12 +10,15 @@
 
 use ui::tilo_resource::{self, Effect};
 use ui::webview::{
-    KeyModifiers, PageKey, PageRequest, PointerButton, PointerPoint, PointerStep, PointerStepKind,
+    FrameId, KeyModifiers, PageKey, PageRequest, PointerButton, PointerPoint, PointerStep,
+    PointerStepKind,
 };
 
 /// How long a settle waits for the page to go quiet, and at most, by default.
 const PAGE_SETTLE_QUIET_MS: u32 = 500;
 const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
+/// Moves the pointer makes between a drag's two ends by default.
+const PAGE_DRAG_STEPS: u32 = 8;
 
 /// One `kind=move x=10 y=10 element=d1e4` step of a pointer gesture, or
 /// nothing when a field is missing or unreadable; the engine then refuses
@@ -23,6 +26,7 @@ const PAGE_SETTLE_TIMEOUT_MS: u32 = 10_000;
 fn pointer_step(text: &str) -> Option<PointerStep> {
     let mut kind = None;
     let mut element = None;
+    let mut frame = None;
     let mut x = None;
     let mut y = None;
     for field in text.split_whitespace() {
@@ -30,6 +34,7 @@ fn pointer_step(text: &str) -> Option<PointerStep> {
         match name {
             "kind" => kind = Some(value),
             "element" if !value.is_empty() => element = Some(value.to_string()),
+            "frame" if !value.is_empty() => frame = Some(page_frame(Some(value.to_string()))?),
             "x" => x = value.parse::<f64>().ok(),
             "y" => y = value.parse::<f64>().ok(),
             _ => return None,
@@ -49,7 +54,12 @@ fn pointer_step(text: &str) -> Option<PointerStep> {
     } else {
         PointerPoint::Viewport { x, y }
     };
-    Some(PointerStep { kind, at, element })
+    Some(PointerStep {
+        kind,
+        at,
+        element,
+        frame,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -255,6 +265,14 @@ pub enum BrowserEffect {
     /// Clear library filter
     #[effect(view, row)]
     ClearLibraryFilter,
+    /// Forget one visited page
+    ///
+    /// Removes this one page from your browsing history. Bookmarks are kept.
+    #[effect(row, returns, destructive)]
+    ForgetVisit {
+        #[param("The page's address")]
+        url: String,
+    },
     /// Clear browsing history
     ///
     /// Your saved browsing history will be removed. Bookmarks are kept.
@@ -332,15 +350,26 @@ pub enum BrowserEffect {
     ResetZoom,
     /// Read page content
     ///
-    /// Answers with the page's outline: its elements and their refs.
+    /// Answers with the page's outline: its elements and their refs. A frame
+    /// carries the id that addresses its own document.
     #[effect(row, job, returns, idempotent, audience = "agents", untrusted)]
-    ReadPage,
+    ReadPage {
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
+    },
     /// What changed on the page
     ///
     /// Answers with the outline lines added and removed since the last read,
     /// or the whole outline when the document is new.
     #[effect(row, job, returns, idempotent, audience = "agents", untrusted)]
-    ReadPageChanges,
+    ReadPageChanges {
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
+    },
     /// Element at a page point
     ///
     /// Answers with what a click at the point would hit, through overlays
@@ -351,6 +380,10 @@ pub enum BrowserEffect {
         x: f64,
         #[param("Viewport y in CSS pixels from the page's top edge")]
         y: f64,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Wait for the page to settle
     ///
@@ -362,6 +395,10 @@ pub enum BrowserEffect {
         quiet_ms: Option<u32>,
         #[param("Longest wait, milliseconds (default 10000, at most 20000)")]
         timeout_ms: Option<u32>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Page console messages
     ///
@@ -390,6 +427,58 @@ pub enum BrowserEffect {
     ClickPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
+    },
+    /// Move the pointer over a page element
+    ///
+    /// Applies the page's hover styles there, such as a menu that opens
+    /// when the pointer rests on its trigger, and answers with what the
+    /// pointer is over now and what changed in the outline.
+    #[effect(row, job, returns, audience = "agents", untrusted)]
+    HoverPage {
+        #[param("Element ref from the page outline, such as d1e5")]
+        element: Option<String>,
+        #[param("Viewport x in CSS pixels from the page's left edge, when no element is named")]
+        x: Option<f64>,
+        #[param("Viewport y in CSS pixels from the page's top edge, when no element is named")]
+        y: Option<f64>,
+    },
+    /// Drag a page element or point
+    ///
+    /// Presses the pointer, moves it and releases it, as a person dragging
+    /// does, so reordering lists and dropped targets receive the drag.
+    #[effect(row, job, returns, audience = "agents", untrusted)]
+    DragPage {
+        #[param("Element ref to pick up, such as d1e5")]
+        from: Option<String>,
+        #[param("Viewport x in CSS pixels to pick up from, when no element is named")]
+        from_x: Option<f64>,
+        #[param("Viewport y in CSS pixels to pick up from, when no element is named")]
+        from_y: Option<f64>,
+        #[param("Element ref to drop on, such as d1e7")]
+        to: Option<String>,
+        #[param("Viewport x in CSS pixels to drop at, when no element is named")]
+        to_x: Option<f64>,
+        #[param("Viewport y in CSS pixels to drop at, when no element is named")]
+        to_y: Option<f64>,
+        #[param("How many moves the pointer makes between the two ends (default 8, at most 64)")]
+        steps: Option<u32>,
+    },
+    /// Draw a pointer path on a page element
+    ///
+    /// Presses the pointer at the first point, moves it through the rest and
+    /// releases it at the last, as drawing a signature on a canvas does.
+    #[effect(row, job, returns, audience = "agents", untrusted)]
+    PointerPath {
+        #[param("Element ref to draw on, such as d1e5")]
+        element: Option<String>,
+        #[param(
+            "Points as [x, y] pairs, measured from the element's top left corner when an element is named, otherwise from the viewport's"
+        )]
+        points: Vec<[f64; 2]>,
     },
     /// Fill page field
     ///
@@ -400,6 +489,10 @@ pub enum BrowserEffect {
         element: String,
         #[param("Text that replaces the field's contents")]
         text: String,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Fill page password field
     ///
@@ -414,6 +507,10 @@ pub enum BrowserEffect {
             "Password or card number for the field; kept out of logs and history"
         )]
         text: String,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Choose page options
     #[effect(row, job, returns, audience = "agents", untrusted)]
@@ -422,6 +519,10 @@ pub enum BrowserEffect {
         element: String,
         #[param("Option values or visible labels to choose")]
         values: Vec<String>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Choose files for a page upload
     ///
@@ -437,6 +538,10 @@ pub enum BrowserEffect {
         element: String,
         #[param("Absolute paths of the files to choose, in order")]
         paths: Vec<String>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Press key on page
     #[effect(row, job, returns, audience = "agents", untrusted)]
@@ -445,6 +550,10 @@ pub enum BrowserEffect {
         key: String,
         #[param("Element ref to focus first; otherwise the focused element")]
         element: Option<String>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Submit page form
     ///
@@ -457,6 +566,10 @@ pub enum BrowserEffect {
         element: String,
         #[param("Allow sending the form to another site than the page's own (default false)")]
         cross_origin: Option<bool>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Answer the page's question
     ///
@@ -477,6 +590,19 @@ pub enum BrowserEffect {
     DismissPageDialog {
         #[param("The question's id")]
         dialog: u32,
+    },
+    /// Answer the site's permission request
+    ///
+    /// What its Allow or Block button does: the site's request for a
+    /// capability, such as its location, is granted or refused, and the page
+    /// goes on from there. Granting or refusing reaches the site's own
+    /// privacy boundary, so it is asked first like the person's prompt is.
+    #[effect(row, privileged, returns)]
+    AnswerPermission {
+        #[param("The request's id from the page's outline")]
+        request: u32,
+        #[param("Allow the site the capability (true) or refuse it (false)")]
+        allow: bool,
     },
     /// Move the pointer on the page
     ///
@@ -537,6 +663,15 @@ pub enum BrowserEffect {
         #[param("First displayed ordered item")]
         offset: u32,
     },
+}
+
+/// A frame id taken from the page outline, which every engine then checks
+/// against the bounds it accepts. The frame is named only when the caller
+/// named one: an absent frame is the page itself.
+fn page_frame(frame: Option<String>) -> Option<FrameId> {
+    frame
+        .filter(|frame| !frame.is_empty())
+        .map(|frame| FrameId::parse(&frame).unwrap_or_else(FrameId::malformed))
 }
 
 impl BrowserEffect {
@@ -628,6 +763,7 @@ impl BrowserEffect {
             Self::ShowSettings => BrowserOperation::ShowSettings,
             Self::SetLibraryFilter { query } => BrowserOperation::SetLibraryFilter { query },
             Self::ClearLibraryFilter => BrowserOperation::ClearLibraryFilter,
+            Self::ForgetVisit { url } => BrowserOperation::ForgetVisit { url },
             Self::ClearHistory => BrowserOperation::ClearHistory,
             Self::RequestSiteDataClear => BrowserOperation::RequestWebsiteDataClear,
             Self::TogglePause => BrowserOperation::ToggleHistoryPause,
@@ -648,15 +784,28 @@ impl BrowserEffect {
                 accept: false,
                 text: None,
             },
-            Self::ReadPage => page(PageRequest::Outline),
-            Self::ReadPageChanges => page(PageRequest::Changes),
-            Self::ReadPageElementAt { x, y } => page(PageRequest::At { x, y }),
+            Self::AnswerPermission { request, allow } => {
+                BrowserOperation::AnswerPermission { request, allow }
+            }
+            Self::ReadPage { frame } => page(PageRequest::Outline {
+                frame: page_frame(frame),
+            }),
+            Self::ReadPageChanges { frame } => page(PageRequest::Changes {
+                frame: page_frame(frame),
+            }),
+            Self::ReadPageElementAt { x, y, frame } => page(PageRequest::At {
+                x,
+                y,
+                frame: page_frame(frame),
+            }),
             Self::WaitPageSettled {
                 quiet_ms,
                 timeout_ms,
+                frame,
             } => page(PageRequest::Settle {
                 quiet_ms: quiet_ms.unwrap_or(PAGE_SETTLE_QUIET_MS),
                 timeout_ms: timeout_ms.unwrap_or(PAGE_SETTLE_TIMEOUT_MS),
+                frame: page_frame(frame),
             }),
             Self::ReadPageConsole { since } => page(PageRequest::Console {
                 since: since.unwrap_or(0),
@@ -664,34 +813,101 @@ impl BrowserEffect {
             Self::ReadPageNetwork { since } => page(PageRequest::Network {
                 since: since.unwrap_or(0),
             }),
-            Self::ClickPage { element } => page(PageRequest::Click { element }),
-            Self::FillPage { element, text } => page(PageRequest::Fill {
+            Self::ClickPage { element, frame } => page(PageRequest::Click {
+                element,
+                frame: page_frame(frame),
+            }),
+            Self::HoverPage { element, x, y } => {
+                let element = element.filter(|element| !element.is_empty());
+                let point = x.zip(y);
+                page(match (element, point) {
+                    (None, Some(point)) => PageRequest::Hover {
+                        element: None,
+                        point: Some(point),
+                    },
+                    (element, _) => PageRequest::Hover {
+                        element,
+                        point: None,
+                    },
+                })
+            }
+            Self::DragPage {
+                from,
+                from_x,
+                from_y,
+                to,
+                to_x,
+                to_y,
+                steps,
+            } => page(PageRequest::Drag {
+                from: from.filter(|element| !element.is_empty()),
+                from_point: from_x.zip(from_y),
+                to: to.filter(|element| !element.is_empty()),
+                to_point: to_x.zip(to_y),
+                steps: u8::try_from(steps.unwrap_or(PAGE_DRAG_STEPS)).unwrap_or(u8::MAX),
+            }),
+            Self::PointerPath { element, points } => page(PageRequest::Path {
+                element: element.filter(|element| !element.is_empty()),
+                points: points.into_iter().map(|[x, y]| (x, y)).collect(),
+            }),
+            Self::FillPage {
+                element,
+                text,
+                frame,
+            } => page(PageRequest::Fill {
                 element,
                 text,
                 secret: false,
+                frame: page_frame(frame),
             }),
-            Self::FillPageSecret { element, text } => page(PageRequest::Fill {
+            Self::FillPageSecret {
+                element,
+                text,
+                frame,
+            } => page(PageRequest::Fill {
                 element,
                 text,
                 secret: true,
+                frame: page_frame(frame),
             }),
-            Self::SelectPage { element, values } => page(PageRequest::Select { element, values }),
-            Self::FillPageFiles { element, paths } => {
-                page(PageRequest::FillFiles { element, paths })
-            }
-            Self::PressPage { key, element } => page(PageRequest::Press {
+            Self::SelectPage {
+                element,
+                values,
+                frame,
+            } => page(PageRequest::Select {
+                element,
+                values,
+                frame: page_frame(frame),
+            }),
+            Self::FillPageFiles {
+                element,
+                paths,
+                frame,
+            } => page(PageRequest::FillFiles {
+                element,
+                paths,
+                frame: page_frame(frame),
+            }),
+            Self::PressPage {
+                key,
+                element,
+                frame,
+            } => page(PageRequest::Press {
                 element: element.filter(|element| !element.is_empty()),
                 key: PageKey::parse(&key).unwrap_or_else(|| PageKey {
                     key,
                     modifiers: KeyModifiers::default(),
                 }),
+                frame: page_frame(frame),
             }),
             Self::SubmitPage {
                 element,
                 cross_origin,
+                frame,
             } => page(PageRequest::Submit {
                 element,
                 cross_origin: cross_origin.unwrap_or(false),
+                frame: page_frame(frame),
             }),
             Self::PointerPage { steps, button } => page(PageRequest::Pointer {
                 steps: steps.iter().filter_map(|step| pointer_step(step)).collect(),
@@ -782,6 +998,10 @@ pub enum BrowserOperation {
     ClearLibraryFilter,
     ShowSettings,
     ShowPage,
+    /// Forget one visited page (`forget_visit`).
+    ForgetVisit {
+        url: String,
+    },
     ClearHistory,
     RequestWebsiteDataClear,
     TogglePictureInPicture,
@@ -810,6 +1030,12 @@ pub enum BrowserOperation {
         dialog: u32,
         accept: bool,
         text: Option<String>,
+    },
+    /// Answer the site's permission request `request`: allow it when
+    /// `allow`, else deny it.
+    AnswerPermission {
+        request: u32,
+        allow: bool,
     },
     Extension(ExtensionRequest),
     /// Offer the Web Store item on the page, as Add to Tilo Browser does.

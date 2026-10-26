@@ -64,6 +64,7 @@ pub(crate) fn layout_children(widget: &dyn Widget, visitor: &mut dyn FnMut(&dyn 
 pub(crate) type Roots<'a> = &'a dyn Fn(&mut dyn FnMut(&dyn Widget));
 
 /// Every widget of the trees `roots` hands over, parents first.
+#[cfg(debug_assertions)]
 #[inline(never)]
 fn walk(roots: Roots<'_>, visit: &mut dyn FnMut(&dyn Widget)) {
     fn descend(widget: &dyn Widget, visit: &mut dyn FnMut(&dyn Widget)) {
@@ -73,11 +74,51 @@ fn walk(roots: Roots<'_>, visit: &mut dyn FnMut(&dyn Widget)) {
     roots(&mut |root| descend(root, visit));
 }
 
+/// Every widget of the trees `roots` hands over, parents first, each with
+/// how many widgets lie under it, into `walked`.
+#[inline(never)]
+fn record(roots: Roots<'_>, walked: &mut Vec<(Identity, usize)>) {
+    fn descend(widget: &dyn Widget, walked: &mut Vec<(Identity, usize)>) {
+        let at = walked.len();
+        walked.push((identity(widget), 0));
+        layout_children(widget, &mut |child| descend(child, walked));
+        let under = walked.len().saturating_sub(at).saturating_sub(1);
+        if let Some(entry) = walked.get_mut(at) {
+            entry.1 = under;
+        }
+    }
+    roots(&mut |root| descend(root, walked));
+}
+
+/// Remove every node under each of `relaid` from `taffy` and `nodes`: their
+/// widgets may be gone, and are laid out again in place under it. Returns
+/// the nodes removed, for the host's bindings to forget.
+pub(crate) fn let_go_under(
+    relaid: &[NodeId],
+    taffy: &mut taffy::TaffyTree<()>,
+    nodes: &mut std::collections::HashMap<NodeId, *mut (dyn Widget + 'static)>,
+) -> Vec<NodeId> {
+    let mut removed = Vec::new();
+    let mut pending: Vec<NodeId> = relaid
+        .iter()
+        .flat_map(|&node| taffy.children(node).unwrap_or_default())
+        .collect();
+    while let Some(node) = pending.pop() {
+        pending.extend(taffy.children(node).unwrap_or_default());
+        nodes.remove(&node);
+        let _ = taffy.remove(node);
+        removed.push(node);
+    }
+    removed
+}
+
 /// The walk a layout map was admitted against.
 #[derive(Default)]
 pub(crate) struct Adopted {
-    /// Each widget the walk met, in walk order.
-    walked: Vec<Identity>,
+    /// Each widget the walk met, in walk order, with how many widgets the
+    /// walk met under it: a subtree laid out again in place
+    /// ([`Widget::relaid_layout_node`]) is skipped as one.
+    walked: Vec<(Identity, usize)>,
     /// Each node's widget as first admitted: its registered pointer,
     /// identity and size, kept so a later build's check never reads a
     /// pointer that may have gone stale.
@@ -110,8 +151,7 @@ impl Adopted {
         taffy: &taffy::TaffyTree<()>,
     ) {
         self.walked.clear();
-        let walked = &mut self.walked;
-        walk(roots, &mut |widget| walked.push(identity(widget)));
+        record(roots, &mut self.walked);
         #[cfg(debug_assertions)]
         {
             // SAFETY: per the caller.
@@ -124,13 +164,39 @@ impl Adopted {
     /// Whether the trees `roots` hands over are still the ones admitted,
     /// widget by widget. Only then may the map be called through.
     #[inline(never)]
-    pub(crate) fn still_live(&self, roots: Roots<'_>) -> bool {
-        let (mut at, mut same) = (0, true);
-        walk(roots, &mut |widget| {
-            if same {
-                same = self.walked.get(at) == Some(&identity(widget));
-                at += 1;
+    ///
+    /// A widget whose children are laid out again in place
+    /// ([`Widget::relaid_layout_node`]) names none of them to the walk: its
+    /// admitted subtree is skipped, and its node handed to `relaid`, so the
+    /// host lets go of every node under it before the map is called through.
+    pub(crate) fn still_live(&self, roots: Roots<'_>, relaid: &mut Vec<NodeId>) -> bool {
+        fn check(
+            widget: &dyn Widget,
+            walked: &[(Identity, usize)],
+            at: &mut usize,
+            relaid: &mut Vec<NodeId>,
+        ) -> bool {
+            let Some(&(admitted, under)) = walked.get(*at) else {
+                return false;
+            };
+            if admitted != identity(widget) {
+                return false;
             }
+            *at += 1;
+            if let Some(node) = widget.relaid_layout_node() {
+                *at += under;
+                relaid.push(node);
+                return true;
+            }
+            let mut same = true;
+            layout_children(widget, &mut |child| {
+                same = same && check(child, walked, at, relaid);
+            });
+            same
+        }
+        let (mut at, mut same) = (0, true);
+        roots(&mut |root| {
+            same = same && check(root, &self.walked, &mut at, relaid);
         });
         same && at == self.walked.len()
     }
@@ -157,7 +223,7 @@ impl Adopted {
                 (registered, identity(widget), std::mem::size_of_val(widget))
             });
         }
-        let met: HashSet<Identity> = self.walked.iter().copied().collect();
+        let met: HashSet<Identity> = self.walked.iter().map(|&(widget, _)| widget).collect();
         let mut extents = Vec::new();
         // A widget listed twice (by two parents, or by a parent that also
         // routes to it another way) is walked twice: harmless to this check,

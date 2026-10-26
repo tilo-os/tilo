@@ -203,11 +203,20 @@ pub trait YtBackend: Send + Sync {
     /// backend that can reach a real extractor (yt-dlp) produces one. The UI
     /// degrades to the poster when this fails.
     ///
+    /// `max_height` is the height the person chose (`Some(480)` for 480p,
+    /// `None` for the best available): a backend that can choose a format
+    /// stays at or under it, so choosing a smaller size spends less data
+    /// rather than being silently ignored.
+    ///
     /// # Errors
     ///
     /// Returns `Err` unless overridden by a backend that can resolve a
     /// playable source.
-    fn resolve_playback_source(&self, _id: &str) -> Result<PlaybackSource, BackendError> {
+    fn resolve_playback_source(
+        &self,
+        _id: &str,
+        _max_height: Option<u32>,
+    ) -> Result<PlaybackSource, BackendError> {
         Err(BackendError(
             "this backend cannot resolve a playback source".into(),
         ))

@@ -124,6 +124,7 @@ def run_check(ctx, chk: Check) -> Result:
         res.detail = _join(res.detail, f"{type(exc).__name__}: {exc}")
         (ctx.out / "errors").mkdir(exist_ok=True)
         (ctx.out / "errors" / f"{chk.id}.txt").write_text(traceback.format_exc())
+    leave_running(ctx, chk, res)
     leave_unlocked(ctx, chk, res)
     leave_no_dialog(ctx, chk, res)
     restarted = session_restart(ctx, chk.id)
@@ -133,6 +134,41 @@ def run_check(ctx, chk: Check) -> Result:
     res.seconds = round(time.monotonic() - started, 2)
     ctx.current = None
     return res
+
+
+LEFT_STOPPED = "left no slot session answering"
+# How long a session that is not answering after a check is given to come back by itself
+# (systemd's Restart= after a crash, a session still starting) before the harness restarts it.
+SESSION_RETURN_S = 60
+
+
+def leave_running(ctx, chk: Check, res: Result) -> None:
+    """No check may hand the next one a slot whose session does not answer: every later
+    check would fail on a missing control socket instead of its subject (after A17 ended
+    the session on purpose and the next one died too, R04 and W01-W07 all failed so). A
+    session that does not answer is waited for until its control socket answers again,
+    as long as systemd may still be bringing it back; one still silent after that is
+    restarted by the harness and the check fails, however it ended."""
+    def answering():
+        try:
+            return ctx.state()
+        except VmError:
+            return None
+
+    if answering() is not None:
+        return
+    if wait_until(answering, SESSION_RETURN_S, 2.0) is not None:
+        return
+    res.status = "fail"
+    ctx.facts.setdefault("session_recovered_after", []).append(chk.id)
+    try:
+        ctx.vm.restart_session()
+    except VmError as exc:
+        res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s, and restarting "
+                                       f"the slot session failed: {exc.reason()}")
+        return
+    res.detail = _join(res.detail, f"{LEFT_STOPPED} within {SESSION_RETURN_S} s; the harness "
+                                   "restarted the slot session")
 
 
 LEFT_LOCKED = "left the session locked"
@@ -429,6 +465,62 @@ def session_log_mark(ctx) -> int:
     out = ctx.vm.exec(f'wc -l < "{SESSION_LOG}" 2>/dev/null || echo 0', check=False)
     digits = [l.strip() for l in out.splitlines() if l.strip().isdigit()]
     return int(digits[0]) if digits else 0
+
+
+# The compositor warns with this line, its phase timings attached, whenever the work
+# it does before a paint holds input up.
+PUMP_STALL = "pre-paint pump"
+
+
+def parse_cpu_ticks(stat: str) -> tuple[int, int] | None:
+    """(total, steal) jiffies of all CPUs from `/proc/stat`'s first line."""
+    for line in stat.splitlines():
+        parts = line.split()
+        if parts and parts[0] == "cpu":
+            values = [int(v) for v in parts[1:9] if v.isdigit()]
+            if len(values) < 8:
+                return None
+            return sum(values), values[7]
+    return None
+
+
+def cpu_ticks(ctx) -> tuple[int, int] | None:
+    """The guest's (total, steal) CPU jiffies now; `steal_percent` compares two."""
+    return parse_cpu_ticks(ctx.vm.exec("head -n 1 /proc/stat", check=False) or "")
+
+
+def steal_percent(before: tuple[int, int] | None, after: tuple[int, int] | None) -> float | None:
+    """The share of the guest's CPU time the host took (steal) between two readings."""
+    if not before or not after:
+        return None
+    total = after[0] - before[0]
+    if total <= 0:
+        return None
+    return round(100.0 * (after[1] - before[1]) / total, 1)
+
+
+def pump_lines_after(ctx, mark: int) -> list[str]:
+    """The compositor's pre-paint pump stall lines since session-log line `mark`."""
+    out = ctx.vm.exec(f'tail -n +{mark + 1} "{SESSION_LOG}" 2>/dev/null '
+                      f'| grep -a "{PUMP_STALL}"; true', check=False) or ""
+    return [line.strip() for line in out.splitlines() if PUMP_STALL in line]
+
+
+def frame_pacing_evidence(ctx, check_id: str, log_mark: int, cpu_before) -> str:
+    """What a failed frame-pacing scenario leaves to tell its stalls apart: the
+    compositor's per-phase pump breakdown for every pump that held input up since
+    `log_mark` (all of them in `<check_id>-pump.log`) and the share of the guest's CPU
+    the host took meanwhile. A sentence fragment for the failure message."""
+    steal = steal_percent(cpu_before, cpu_ticks(ctx))
+    lines = pump_lines_after(ctx, log_mark)
+    ctx.write(f"{check_id}-pump.log", "\n".join(lines) + "\n")
+    steal_text = "unreadable" if steal is None else f"{steal}%"
+    if not lines:
+        pumps = "no pre-paint pump stall line in the session log"
+    else:
+        shown = "; ".join(line[-320:] for line in lines[-3:])
+        pumps = f"{len(lines)} pre-paint pump stall line(s), the last: {shown}"
+    return f" [guest CPU steal over the scenario {steal_text}; {pumps}; {check_id}-pump.log has them all]"
 
 
 def switch_lines_after(ctx, mark: int) -> list[dict]:
@@ -739,6 +831,26 @@ def region_stats(img, rect) -> dict:
     crop = img.crop((x, y, min(img.width, x + max(1, w)), min(img.height, y + max(1, h)))).convert("L")
     st = ImageStat.Stat(crop)
     return {"mean": round(st.mean[0] / 255, 3), "stddev": round(st.stddev[0] / 255, 3)}
+
+
+def region_ink(img, rect, inset: int = 2, spread: float = 0.08) -> int:
+    """Pixels of `rect` (x, y, w, h), `inset` px in from its edges, whose luminance is more
+    than `spread` (0-1) away from the region's most common one: what a client drew on its
+    background. A flat fill has none; a terminal's one-line prompt has a few hundred."""
+    x, y, w, h = (int(round(v)) for v in rect)
+    box = (max(0, x + inset), max(0, y + inset),
+           min(img.width, x + w - inset), min(img.height, y + h - inset))
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return 0
+    return histogram_ink(img.crop(box).convert("L").histogram(), spread)
+
+
+def histogram_ink(hist, spread: float = 0.08) -> int:
+    """Of a 256-bin luminance histogram, the pixels more than `spread` (0-1) away from
+    its most common value."""
+    mode = max(range(len(hist)), key=hist.__getitem__)
+    reach = spread * 255
+    return sum(count for value, count in enumerate(hist) if abs(value - mode) > reach)
 
 
 def region_diff(a, b, rect) -> float:
@@ -1096,6 +1208,18 @@ def ush_environment_refusal(ctx) -> str | None:
     except VmError:
         return None
     return environment_refusal(journal)
+
+
+def ush_journal_tail(ctx, lines: int = 4) -> str | None:
+    """The last `lines` lines the slot's `tilo-ush` logged, joined with " | ", or None: what a
+    Terminal with no shell, and no refusal to quote, can still say in its detail."""
+    try:
+        journal = ctx.vm.exec("journalctl --user -u tilo-ush.service --no-pager -o cat -n 200 2>&1",
+                              timeout=60, check=False)
+    except VmError:
+        return None
+    said = [_ANSI.sub("", line).strip() for line in journal.splitlines() if line.strip()]
+    return " | ".join(said[-lines:]) or None
 
 
 def ush_diagnostics(ctx) -> str:

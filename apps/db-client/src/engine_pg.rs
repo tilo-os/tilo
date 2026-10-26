@@ -652,7 +652,7 @@ impl PostgresEngine {
                     elapsed_ms: elapsed_ms(start),
                     rows_affected: Some(affected as i64),
                     is_select: false,
-                    truncated: false,
+                    truncation: None,
                 })
             }
             Ok(stmt) => {
@@ -666,19 +666,19 @@ impl PostgresEngine {
                     .query_raw(&stmt, std::iter::empty::<&str>())
                     .map_err(|e| e.to_string())?;
                 let mut rows = Vec::new();
-                let mut truncated = false;
+                let mut truncation: Option<crate::model::Truncation> = None;
                 let mut retained_bytes = 0usize;
                 let mut retained_cells = 0usize;
                 while let Some(row) = cursor.next().map_err(|e| e.to_string())? {
                     if rows.len() == MAX_QUERY_ROWS {
-                        truncated = true;
+                        truncation = Some(crate::model::Truncation::RowLimit);
                         break;
                     }
                     let cells = (0..row.len())
                         .map(|i| pg_stream_cell(&row, i))
                         .collect::<Result<Vec<_>, _>>()?;
                     if !can_retain_result_row(retained_bytes, retained_cells, &cells) {
-                        truncated = true;
+                        truncation = Some(crate::model::Truncation::Payload);
                         break;
                     }
                     retained_bytes += row_retained_bytes(&cells);
@@ -691,7 +691,7 @@ impl PostgresEngine {
                     elapsed_ms: elapsed_ms(start),
                     rows_affected: None,
                     is_select: true,
-                    truncated,
+                    truncation,
                 })
             }
             Err(error) => Err(format!(

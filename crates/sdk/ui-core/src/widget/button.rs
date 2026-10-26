@@ -1502,7 +1502,9 @@ impl Button {
                 hint: face.shortcut.as_ref().map(shortcut_text),
                 // A painted face fills the rect its host gave it.
                 flush: false,
-                filled_icon: face.on && face.icon.is_some_and(fills_when_on),
+                filled_icon: face
+                    .icon
+                    .is_some_and(|icon| icon.is_brand() || (face.on && fills_when_on(icon))),
                 menu: false,
             },
             metrics: &metrics,
@@ -1823,7 +1825,9 @@ impl Widget for Button {
                 badge: self.badge.as_deref(),
                 label: &label,
                 hint,
-                filled_icon: on && self.icon.is_some_and(fills_when_on),
+                filled_icon: self
+                    .icon
+                    .is_some_and(|icon| icon.is_brand() || (on && fills_when_on(icon))),
                 menu: self.opens_menu,
             },
             metrics: &metrics,

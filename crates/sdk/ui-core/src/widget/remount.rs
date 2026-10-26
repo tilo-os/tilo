@@ -49,6 +49,12 @@ impl<'a> Remount<'a> {
         self.taffy
     }
 
+    /// The theme the tree is laid out with.
+    #[must_use]
+    pub fn theme(&self) -> &'a Theme {
+        self.theme
+    }
+
     /// Build `child`'s layout into the tree, for the widget remounting,
     /// whose node is `owner`, to place under its own nodes through
     /// [`Self::set_children`]. Returns its node.
@@ -56,6 +62,24 @@ impl<'a> Remount<'a> {
         let node = child.build_layout(self.taffy, self.theme, self.node_map);
         self.mounted.push((owner, node));
         node
+    }
+
+    /// [`Self::mount`] for a widget that builds what it places under
+    /// `owner` itself (`build`, with the tree, the theme and the node map, as
+    /// [`Widget::build_layout`] has them): the node it returns is mounted;
+    /// `None` mounts nothing.
+    pub fn mount_with(
+        &mut self,
+        owner: NodeId,
+        build: impl FnOnce(
+            &mut TaffyTree<()>,
+            &Theme,
+            &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> Option<NodeId>,
+    ) -> Option<NodeId> {
+        let node = build(self.taffy, self.theme, self.node_map)?;
+        self.mounted.push((owner, node));
+        Some(node)
     }
 
     /// Remove `node`, a child the widget remounting lets go of, and

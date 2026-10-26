@@ -191,6 +191,7 @@ const SCENARIOS: &[&str] = &[
     "narrow",
     "narrow-graph2d",
     "narrow-functions",
+    "narrow-functions-page",
     "narrow-graph3d",
     "long-formula",
     "error",

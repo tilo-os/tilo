@@ -725,18 +725,57 @@ fn phrase(action: &HereAction) -> String {
     }
 }
 
-/// "Working on Welcome note in Notes": present tense without turning an
-/// app's past-tense action title into a verb form it may not have. A record
-/// named like its app (a chat's one record, "Chat") is said once: "Working
-/// in Chat", never "Working on Chat in Chat".
+/// What someone is doing now, from their newest step: "Writing in
+/// #general", "Editing ‘Launch plan’ in Notes". The verb comes from the
+/// step's title (an app's past-tense history sentence, "Posted a message",
+/// "Edited the text") where it says plainly what kind of work it was, else
+/// it is "Working on". A record named like its app (a chat's one record,
+/// "Chat") is said once: "Working in Chat", never "Working on Chat in Chat".
 fn working_on(action: &HereAction) -> String {
-    match (action.resource.trim(), action.app.trim()) {
-        ("", "") => action.action.trim().to_owned(),
-        ("", app) => format!("Working in {app}"),
-        (resource, app) if resource.eq_ignore_ascii_case(app) => format!("Working in {app}"),
-        (resource, "") => format!("Working on {resource}"),
-        (resource, app) => format!("Working on {resource} in {app}"),
+    let doing = doing(&action.action);
+    let resource = action.resource.trim();
+    let app = action.app.trim();
+    if resource.is_empty() && app.is_empty() {
+        return action.action.trim().to_owned();
     }
+    // In the app as a whole, or in a channel, named as the app shows it.
+    if resource.is_empty() || resource.eq_ignore_ascii_case(app) || resource.starts_with('#') {
+        let place = if resource.starts_with('#') {
+            resource
+        } else {
+            app
+        };
+        return format!("{} in {place}", doing.unwrap_or("Working"));
+    }
+    let doing = doing.map_or_else(|| "Working on".to_owned(), str::to_owned);
+    if app.is_empty() {
+        format!("{doing} ‘{resource}’")
+    } else {
+        format!("{doing} ‘{resource}’ in {app}")
+    }
+}
+
+/// The present-tense verb for a step's title, where its first word says
+/// what kind of work it was: writing, editing, drawing, reviewing.
+fn doing(title: &str) -> Option<&'static str> {
+    let first = title
+        .split_whitespace()
+        .next()?
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_lowercase();
+    Some(match first.as_str() {
+        "post" | "posted" | "send" | "sent" | "reply" | "replied" | "write" | "wrote"
+        | "answer" | "answered" | "message" | "messaged" => "Writing",
+        "edit" | "edited" | "change" | "changed" | "type" | "typed" | "rename" | "renamed"
+        | "format" | "formatted" | "rewrite" | "rewrote" => "Editing",
+        "draw" | "drew" | "sketch" | "sketched" | "paint" | "painted" => "Drawing",
+        "comment" | "commented" | "review" | "reviewed" | "resolve" | "resolved" | "suggest"
+        | "suggested" => "Reviewing",
+        "add" | "added" | "create" | "created" | "make" | "made" | "insert" | "inserted" => {
+            "Adding to"
+        }
+        _ => return None,
+    })
 }
 
 /// At most `max` characters, an ellipsis marking a cut.
@@ -961,7 +1000,7 @@ mod tests {
         assert_eq!(person.user, USER);
         assert_eq!(person.label, "Ada");
         assert_eq!(person.window, Some(4));
-        assert_eq!(person.status, "Working on Welcome note in Notes");
+        assert_eq!(person.status, "Editing ‘Welcome note’ in Notes");
         assert_eq!(
             person.recent,
             "Opened in Welcome note; Edited in Welcome note"
@@ -1003,13 +1042,27 @@ mod tests {
 
     #[test]
     fn a_record_named_like_its_app_is_said_once() {
-        let mut chat = action(1, "Sent a message", "Chat", 1);
+        let mut chat = action(1, "Opened", "Chat", 1);
         chat.app = "Chat".into();
         assert_eq!(working_on(&chat), "Working in Chat");
         chat.resource = "chat".into();
         assert_eq!(working_on(&chat), "Working in Chat", "whatever the case");
-        chat.resource = "General".into();
-        assert_eq!(working_on(&chat), "Working on General in Chat");
+    }
+
+    #[test]
+    fn the_line_says_what_kind_of_work_and_where() {
+        let mut chat = action(1, "Posted a message", "#general", 1);
+        chat.app = "Chat".into();
+        assert_eq!(working_on(&chat), "Writing in #general");
+        chat.resource = "Chat".into();
+        assert_eq!(working_on(&chat), "Writing in Chat");
+        // A step titled by its action's bare verb reads the same.
+        chat.action = "Post".into();
+        assert_eq!(working_on(&chat), "Writing in Chat");
+        let note = action(2, "Edited the text", "Launch plan", 2);
+        assert_eq!(working_on(&note), "Editing ‘Launch plan’ in Notes");
+        let opened = action(3, "Opened", "Launch plan", 3);
+        assert_eq!(working_on(&opened), "Working on ‘Launch plan’ in Notes");
     }
 
     #[tokio::test]
@@ -1106,7 +1159,7 @@ mod tests {
         ] {
             let person = ask(&refused, ids).await;
             assert!(!person.generated, "{refused} was shown");
-            assert_eq!(person.status, "Working on Welcome note in Notes");
+            assert_eq!(person.status, "Editing ‘Welcome note’ in Notes");
         }
         let fenced = format!("```json\n{}\n```", model_answer("Polishing the note", &[6]));
         let person = ask(&fenced, &[5, 6]).await;
@@ -1123,7 +1176,7 @@ mod tests {
             10,
         );
         assert!(!reply.people[0].generated);
-        assert_eq!(reply.people[0].status, "Working on Canvas in Notes");
+        assert_eq!(reply.people[0].status, "Working on ‘Canvas’ in Notes");
     }
 
     #[test]

@@ -14,11 +14,9 @@
     "crate::shell::launcher",
 ]
 
-# The network bridge writes trusted-identity projections and pending placements into the
-# launcher and answers invitations with an overlay type. These go when the launcher and
-# the overlay read the bridge's events instead.
+# The network bridge answers invitations with an overlay type. This goes when the overlay
+# reads the bridge's events instead.
 "src/shell/network.rs" = [
-    "crate::shell::launcher",
     "crate::shell::overlay_host",
 ]
 
@@ -240,3 +238,4 @@ grandfathered = [
 "tilo-system-stats" = "The typed system information service the session serves to apps, and the readings its own System monitor desk widget shows"
 "host-fs" = "Uninstalling an app (shell::app_list) moves its program file and a Flatpak's data to the Trash, never deleting them; host-fs is the one Trash implementation, which Files and Backups already use, and brings only the trash crate and tilo-paths with it"
 "tilo-winit-x11" = "The hosted backend's winit with X11 turned on, split out so hakari keeps X11 out of the shared app runtime; it adds no code beyond winit, which the shell already depends on as tilo-winit"
+"tilo-room-host" = "Every device hosts the rooms placed on it with the same host a relay embeds (docs/architecture/hosting.md): the room governance, member sessions and retained store live in tilo-room-host, built without its agents or web features, and the shell keeps only what ties it to this device, its router's deferred handlers (network::local_host) and placing its own workspaces on the host (shell::network::embedded_host), which reads the shell's workspace tree and network and so cannot move below it; a crate between the two would add a hop and leave the shell's graph the same"

@@ -269,14 +269,6 @@ def quote(value: str) -> str:
 # check hot-plugs it; without the port the loop only waits.
 SHELL_SCRIPT = f"""#!/usr/bin/bash
 # signin-e2e check, this throwaway disk only: a root shell on {SHELL_PORT}.
-# Who runs chcon on this system: its parent and arguments, for the evidence.
-if command -v auditctl >/dev/null 2>&1; then
-  auditctl -a always,exit -F arch=b64 -S execve -F path=/usr/bin/chcon -k chcon \
-    && echo 'tilo-e2e-shell: chcon audit rule installed' \
-    || echo 'tilo-e2e-shell: the chcon audit rule could not be installed'
-else
-  echo 'tilo-e2e-shell: this image has no auditctl'
-fi
 echo 'tilo-e2e-shell: waiting for {SHELL_PORT}'
 while :; do
   if [ -e /dev/virtio-ports/{SHELL_PORT} ]; then
@@ -316,6 +308,7 @@ class Run:
         self.baseline: dict = {}
         self.items: dict[str, dict] = {}
         self.avcs: dict[str, list[str]] = {}
+        self.boot_denials: dict[str, dict] = {}
         self.facts: dict = {"variant": variant, "cycle": self.cycle.name}
         self.shell: Shell | None = None
 
@@ -506,21 +499,43 @@ class Run:
 
     def live_shell(self) -> Shell:
         """The live installer's tty2 recovery tools: option 5 is a root shell. Its first command
-        starts the loop that serves a shell on the hot-plugged port."""
+        starts the loop that serves a shell on the hot-plugged port. The menu is an idle unit
+        that hangs up its tty when it starts, so each step waits for its prompt on screen:
+        keys typed before then are flushed."""
         c = self.cycle
         c.hotplug_shell()
         c.keys("ctrl-alt-f2")
-        time.sleep(4)
+        self.wait_tty_text("live-recovery-menu", "Choice:", 180)
         c.type("5")
         c.keys("ret")
-        time.sleep(3)
+        self.wait_tty_text("live-recovery-shell", "Type exit to return", 60)
+        time.sleep(1)
         c.type(f"setsid -f sh -c 'while :; do test -e /dev/virtio-ports/{SHELL_PORT} && bash -c "
                f"\"exec <>/dev/virtio-ports/{SHELL_PORT} >&0 2>&0; exec bash\"; sleep 1; done' "
                "</dev/null >/dev/null 2>&1")
         c.keys("ret")
         time.sleep(2)
+        try:
+            sh = Shell(c.shell_socket, 120)
+        except Failed:
+            path, text = c.screen("live-recovery-no-shell")
+            c.keep_screen("live-recovery-no-shell", path, text)
+            raise
         c.keys("ctrl-alt-f1")
-        return Shell(c.shell_socket, 120)
+        return sh
+
+    def wait_tty_text(self, name: str, wanted: str, limit: float) -> None:
+        c = self.cycle
+        deadline = time.monotonic() + limit
+        path, text = None, ""
+        while time.monotonic() < deadline:
+            path, text = c.screen(name)
+            if wanted.lower() in text.lower():
+                return
+            time.sleep(3)
+        c.keep_screen(name, path, text)
+        raise Failed(f"the live installer's tty2 never showed {wanted!r} "
+                     f"(read: {' '.join(text.split())[:200]})")
 
     def prepare_target(self, sh: Shell) -> None:
         code, dev = sh.run(f"lsblk -lnpo NAME,PARTTYPE /dev/vdb | awk 'tolower($2)==\"{TILO_ROOT_TYPE}\" {{print $1}}'")
@@ -685,9 +700,8 @@ cryptsetup close e2e-target
         "failed": "systemctl --failed --no-pager --plain --no-legend; "
                   "systemctl status --no-pager tilo-authd.socket tilo-authd.service greetd | tail -n 60",
         "sessions": "loginctl list-sessions --no-pager",
-        "chcon": "{ journalctl -b -u tilo-e2e-shell -o cat | grep -i 'audit\\|auditctl'; "
-                 "ausearch -k chcon -i 2>/dev/null || journalctl -b --no-pager -o short-monotonic "
-                 "_TRANSPORT=audit | grep -E -A4 'key=\"chcon\"'; } | tail -n 160",
+        "tpm2-setup": "systemctl show -P ActiveState -P Result systemd-tpm2-setup.service "
+                      "| paste -sd ' '",
         "initrd": "journalctl -b --no-pager -o short-monotonic | grep -E "
                   "'tilo-root-discover|tilo-boot-signin|tilo-auth|systemd-cryptsetup|plymouth' "
                   "| head -n 300",
@@ -705,6 +719,14 @@ cryptsetup close e2e-target
             self.save(f"signin-{label}-{name}.txt", text)
             if name == "avc":
                 self.avcs[label] = parse_avcs(text)
+                denials = [line for line in text.splitlines() if "denied" in line]
+                read = not text.startswith("not collected")
+                self.boot_denials.setdefault(label, {}).update({
+                    "chcon_mac_admin": any("mac_admin" in d and 'comm="chcon"' in d
+                                           for d in denials) if read else None,
+                    "tpm2_measure_log": any("tpm2-measure.log" in d for d in denials) if read else None})
+            if name == "tpm2-setup":
+                self.boot_denials.setdefault(label, {})["systemd_tpm2_setup"] = text.strip()
         try:
             state = console.state(self.cycle.console, 10)
         except Exception as reason:  # no greeter or installer answers once a session runs
@@ -848,7 +870,6 @@ cryptsetup close e2e-target
         session = self.wait_session(300)
         prompts = self.watch_greeter_prompts(label, 25)
         again = self.classify(self.cycle.screen()[1]) == "disk-prompt"
-        _, pending = self.guest("test -e /etc/tilo/firstboot-autologin-pending && echo pending || echo consumed")
         _, greetd = self.guest("journalctl -b -u greetd --no-pager -o cat | tail -n 40", quiet=True)
         self.save("first-boot-greetd.txt", greetd)
         _, sessions = self.guest("loginctl list-sessions --no-pager; systemctl --failed --no-pager "
@@ -858,10 +879,14 @@ cryptsetup close e2e-target
         self.cycle.keep_screen("first-boot-after-unlock", path, text)
         custody = self.lockout_custody(wait=240)
         hardened = custody["reset_auth_set"] is True and custody["harden_file"] == "root:600"
+        _, pending = self.guest("test -e /etc/tilo/firstboot-autologin-pending && echo pending || echo consumed; "
+                                "systemctl show -P ActiveState -P Result tilo-firstboot-autologin-cleanup; "
+                                "journalctl -b -u tilo-firstboot-autologin-cleanup --no-pager -o cat | tail -n 5")
+        consumed = pending.strip().startswith("consumed")
         evidence = {"disk_prompts_answered": typed, "user_session": session,
                     "greeter_prompts": prompts, "disk_prompt_again": again,
                     "firstboot_autologin_marker": pending.strip(), "lockout_custody": custody}
-        if typed == 1 and session and not prompts and not again and hardened:
+        if typed == 1 and session and not prompts and not again and hardened and consumed:
             self.item("1", "passed", "one disk prompt at first boot, then the session started "
                       "without the greeter asking", **evidence)
         else:
@@ -876,6 +901,9 @@ cryptsetup close e2e-target
                 why.append("the disk prompt came back")
             if not hardened:
                 why.append(f"the TPM reset authorisation was not set by harden: {custody}")
+            if not consumed:
+                why.append("the one-boot autologin handoff was not consumed, so the next boot "
+                           f"logs in without the greeter again: {pending.strip()}")
             self.item("1", "failed", "; ".join(why), **evidence)
         self.power_off(label)
 
@@ -1116,6 +1144,7 @@ cryptsetup close e2e-target
             self.cycle.keep_screen(f"boot-sign-in-wrong-{attempt}", path, text)
             found = re.search(r"(\d+)\s+tr(?:y|ies)\s+left", text, re.I)
             notes.append({"screen": self.classify(text), "tries_left": int(found.group(1)) if found else None,
+                          "already_tried": "already tried" in text.lower(),
                           "text": " ".join(text.split())[:200]})
         self.cycle.type(self.account)
         self.cycle.keys("ret")
@@ -1129,7 +1158,11 @@ cryptsetup close e2e-target
         self.wait_session(180)
         after = self.lockout()
         evidence = {"notes": notes, "lockout_before": before, "lockout_after": after}
-        reported = all(n["tries_left"] is not None for n in notes)
+        # The repeat may be refused before it reaches the TPM ("You already tried that
+        # password"); either way it must not cost a second try, which the counter shows.
+        first, repeat = notes
+        reported = first["tries_left"] is not None and (
+            repeat["already_tried"] or repeat["tries_left"] == first["tries_left"])
         if before is None:
             self.item("4", "failed", "no lockout counter was read before the wrong entries", **evidence)
         else:
@@ -1140,7 +1173,8 @@ cryptsetup close e2e-target
                             recovery_interval_s=interval)
             problems = []
             if not reported:
-                problems.append("the screen did not say how many tries are left "
+                problems.append("the first wrong entry did not say how many tries are left, or the "
+                                "repeat neither kept that count nor said it was already tried "
                                 f"(read: {[n['text'] for n in notes]})")
             if delta != 1:
                 if delta == 0 and interval and elapsed >= interval:
@@ -1151,8 +1185,10 @@ cryptsetup close e2e-target
             if problems:
                 self.item("4", "failed", "; ".join(problems), **evidence)
             else:
-                self.item("4", "passed", f"tries left shown ({notes[0]['tries_left']}, then "
-                          f"{notes[1]['tries_left']}); the same wrong entry twice cost one TPM try",
+                again = ("refused as already tried" if repeat["already_tried"]
+                         else f"{repeat['tries_left']} tries left again")
+                self.item("4", "passed", f"{first['tries_left']} tries left after the first wrong "
+                          f"entry, the repeat {again}; the same wrong entry twice cost one TPM try",
                           **evidence)
         self.pam_surfaces()
         self.power_off(label)
@@ -1379,6 +1415,15 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
     new = sorted({d for found in avcs.values() for d in found if not known_avc(d)})
     lines += ["", "AVC denials during boot and sign-in, beyond those already filed:",
               *([f"- {d}" for d in new] or ["- none"])]
+    boots = {f"{r.variant}/{label}": facts for r in runs for label, facts in r.boot_denials.items()}
+    document["boot_denials"] = boots
+    seen = {True: "present", False: "absent", None: "not read"}
+    boot_lines = [f"- {where}: chcon mac_admin denial {seen[f.get('chcon_mac_admin')]}, "
+                  f"tpm2-measure.log denial {seen[f.get('tpm2_measure_log')]}, "
+                  f"systemd-tpm2-setup.service {f.get('systemd_tpm2_setup') or 'not read'}"
+                  for where, f in sorted(boots.items())]
+    lines += ["", "Boot denials and TPM setup, per boot:",
+              *(boot_lines or ["- no boot reached the test shell"])]
     lines += ["", "Screenshots:", *[f"- {p}" for p in document["screenshots"]]]
     if withheld:
         lines += ["", "Withheld (held a secret, emptied):", *[f"- {p}" for p in document["withheld"]]]

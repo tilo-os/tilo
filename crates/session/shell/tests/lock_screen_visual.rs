@@ -12,6 +12,7 @@
 //! Set `TILO_LOCK_SHOT_QUICK=1` for the portrait accessibility matrix,
 //! secondary-output composition, and animation phases only.
 
+use shell::compositor::lock_controller::{LockPrompt, refusal_line};
 use shell::compositor::lock_screen::{
     LockOutput, LockView, draw_lock_scene, draw_lock_scene_at_time,
 };
@@ -27,6 +28,23 @@ fn shot_dir() -> std::path::PathBuf {
     )
 }
 
+/// A prompt as the lock controller leaves it, for the whole review run.
+fn prompt(typed: &str, busy: bool, error: Option<&str>) -> &'static LockPrompt {
+    let prompt: &'static LockPrompt = Box::leak(Box::new(LockPrompt::new()));
+    let mut shown = prompt.borrow_mut();
+    if let Some(field) = shown.field_mut(ui::widget::FieldRole::Secret) {
+        field.set_text(typed);
+    }
+    if busy {
+        shown.set_busy(Some("Verifying…".to_owned()));
+    }
+    if let Some(error) = error {
+        shown.reject(refusal_line(error));
+    }
+    drop(shown);
+    prompt
+}
+
 fn states() -> [(&'static str, LockView<'static>); 4] {
     [
         (
@@ -34,6 +52,7 @@ fn states() -> [(&'static str, LockView<'static>); 4] {
             LockView {
                 clock: "21:47",
                 date: "Saturday, September 5",
+                prompt: Some(prompt("", false, None)),
                 ..LockView::default()
             },
         ),
@@ -42,6 +61,7 @@ fn states() -> [(&'static str, LockView<'static>); 4] {
             LockView {
                 clock: "21:47",
                 date: "Saturday, September 5",
+                prompt: Some(prompt("", false, Some("Incorrect username or password"))),
                 error: Some("Incorrect username or password"),
                 ..LockView::default()
             },
@@ -51,7 +71,7 @@ fn states() -> [(&'static str, LockView<'static>); 4] {
             LockView {
                 clock: "21:47",
                 date: "Saturday, September 5",
-                password_len: 12,
+                prompt: Some(prompt("", true, None)),
                 verifying: true,
                 ..LockView::default()
             },
@@ -61,7 +81,7 @@ fn states() -> [(&'static str, LockView<'static>); 4] {
             LockView {
                 clock: "21:47",
                 date: "Saturday, September 5",
-                password_len: 8,
+                prompt: Some(prompt("password", false, None)),
                 notification_count: 12,
                 ..LockView::default()
             },

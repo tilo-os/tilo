@@ -8,6 +8,8 @@
 //! what the person chooses, folds, asks a menu of and renames there comes
 //! back as the window's own hits and actions.
 
+use std::collections::BTreeMap;
+
 use ui::icons::Icon;
 use ui::widget::{Element, NavAction, NavFeed, NavItem, NavList, NavSection, WindowBarLink};
 
@@ -93,7 +95,10 @@ impl ChatApp {
                 .person_contacts
                 .iter()
                 .map(|contact| {
-                    NavItem::new(person_place(&contact.public_key), &contact.display_name)
+                    NavItem::new(
+                        person_place(&contact.public_key),
+                        self.contact_name(contact),
+                    )
                 })
                 .collect();
             sections.push(NavSection::new(
@@ -102,13 +107,17 @@ impl ChatApp {
                 contacts,
             ));
         }
-        sections.push(NavSection::untitled(CHANNELS, self.channel_items("")));
+        let drafts = self.draft_lines();
+        sections.push(NavSection::untitled(
+            CHANNELS,
+            self.channel_items("", &drafts),
+        ));
         let keeps_layout = self.keeps_layout();
         for category in self.sidebar_categories() {
             let mut section = NavSection::new(
                 category_place(&category.id),
                 &category.name,
-                self.channel_items(&category.id),
+                self.channel_items(&category.id, &drafts),
             )
             .collapsible()
             .with_menu();
@@ -140,14 +149,43 @@ impl ChatApp {
 
     /// The channels of one category (`""` for those outside any), each
     /// voice channel holding the people in its call.
-    fn channel_items(&self, category: &str) -> Vec<NavItem> {
+    fn channel_items(&self, category: &str, drafts: &BTreeMap<String, String>) -> Vec<NavItem> {
         self.category_channels(category)
             .into_iter()
-            .map(|channel| self.channel_item(channel))
+            .map(|channel| self.channel_item(channel, drafts))
             .collect()
     }
 
-    fn channel_item(&self, channel: &Channel) -> NavItem {
+    /// What the person has not sent, in every channel that has something:
+    /// read once, so a channel's row costs a lookup rather than a document
+    /// read.
+    ///
+    /// A draft is shown where its channel is listed, so a half-written
+    /// message is found again rather than lost in a composer the person has
+    /// to remember to open.
+    fn draft_lines(&self) -> BTreeMap<String, String> {
+        let Some(record) = &self.drafts_record else {
+            return BTreeMap::new();
+        };
+        let keys: Vec<String> = record.get().drafts.keys().cloned().collect();
+        record
+            .record()
+            .read(|doc| {
+                keys.into_iter()
+                    .filter_map(|key| {
+                        // A thread's draft is keyed `channel::t::message`; the
+                        // channel's own row speaks for it.
+                        let channel = key.split_once("::").map_or(key.as_str(), |(at, _)| at);
+                        let text = crate::projection::draft_text(doc, &key);
+                        let line = crate::drafts::line(&text)?;
+                        Some((channel.to_owned(), line))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn channel_item(&self, channel: &Channel, drafts: &BTreeMap<String, String>) -> NavItem {
         let voice = channel.kind == ChannelKind::Voice;
         let mut item = NavItem::new(channel_place(&channel.id), &channel.name)
             .icon(if voice { Icon::Volume2 } else { Icon::Hash })
@@ -155,6 +193,9 @@ impl ChatApp {
             .unread(channel.unread > 0 && !voice);
         if channel.mentions > 0 && !voice {
             item = item.live_count(channel.mentions);
+        }
+        if let Some(draft) = drafts.get(&channel.id) {
+            item = item.secondary(draft.clone());
         }
         if self.keeps_layout() {
             item = item.editable_label();

@@ -326,7 +326,7 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
     });
     assert_eq!(app.message_author_name(&message), "Discord bridge");
     let label = app.model_message_label(&message);
-    assert!(label.starts_with("Dana (via Discord): "), "{label}");
+    assert!(label.starts_with("Dana, from Discord: "), "{label}");
     assert!(!label.contains("Someone"), "{label}");
 
     // A member named alike: an unlinked persona says where it is from, one
@@ -341,7 +341,7 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
     });
     let label = app.model_message_label(&message);
     assert!(
-        label.starts_with("Dana · Discord (via Discord): "),
+        label.starts_with("Dana · Discord, from Discord: "),
         "{label}"
     );
     if let Some(persona) = message
@@ -352,7 +352,7 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
         persona.linked = Some("u_dana".into());
     }
     let label = app.model_message_label(&message);
-    assert!(label.starts_with("Dana (via Discord): "), "{label}");
+    assert!(label.starts_with("Dana, from Discord: "), "{label}");
     // One person, one colour: the bridged tile wears the linked member's.
     let name = app.message_author_name(&message);
     let ui::author::Author::Bot { linked_color, .. } =
@@ -365,6 +365,56 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
         app.identity_colour("u_dana"),
         app.identity_colour(&message.author),
         "not the bridge's own colour"
+    );
+}
+
+/// A member who has only ever written from their linked Discord account is
+/// still one of the room's people: their bridged message is theirs, by
+/// their name with Discord's mark, never "Dana · Discord" as if a namesake
+/// wrote it.
+#[test]
+fn a_member_writing_only_from_a_linked_account_reads_as_themselves() {
+    let (mut app, mut doc) = chat(backend("Answer"));
+    let start = app.model_command("c_chat", "ask").unwrap();
+    pump(&mut app, &mut doc);
+    let mut base = reply(&doc, &start["reply"]);
+    base.work = None;
+    let channel = base.channel.clone();
+    let mut record = crate::record::Chat::default();
+    for (id, name) in [("u_dana", "Dana"), ("u_other_dana", "Dana")] {
+        record.people.push(crate::record::Person {
+            id: ui::tilo_resource::Atom(id.to_owned()),
+            name: name.into(),
+            ..crate::record::Person::default()
+        });
+    }
+    let mut other = base.clone();
+    other.author = "u_other_dana".into();
+    let mut bridged = base;
+    bridged.author = "bot:bridge-installation".into();
+    bridged.appearance = Some(tilo_actions::Appearance {
+        name: "Dana".into(),
+        avatar: None,
+        persona: Some(tilo_actions::Persona {
+            service: "discord".into(),
+            account: "3001".into(),
+            linked: Some("u_dana".into()),
+        }),
+    });
+    app.users = app.room_people_from(&record, &[(channel, vec![other, bridged.clone()])]);
+    assert!(
+        app.users.iter().any(|user| user.id == "u_dana"),
+        "the linked member is one of the room's people"
+    );
+    let members: Vec<&str> = app.users.iter().map(|user| user.name.as_str()).collect();
+    let name = app.message_author_name(&bridged);
+    let author = app.message_author(&bridged, &name, "", None);
+    assert_eq!(author.label(&members), "Dana");
+    assert!(author.chip_label().is_none(), "no text tag");
+    assert!(author.service_mark().is_some(), "Discord's mark instead");
+    assert_eq!(
+        author.linked_line().as_deref(),
+        Some("Linked to Dana on Tilo")
     );
 }
 

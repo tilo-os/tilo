@@ -422,6 +422,20 @@ pub struct Settings {
     pub autoplay: bool,
     pub show_comments: bool,
     pub preferred_quality: String,
+    /// How fast the video plays: 1.0 is the video's own speed. The speeds a
+    /// person can choose are [`PLAYBACK_SPEEDS`](crate::app::PLAYBACK_SPEEDS).
+    #[serde(default = "default_speed")]
+    pub playback_speed: f32,
+    /// The caption track the person chose, by language code, or `None` for no
+    /// captions. A video without that track plays without captions rather
+    /// than with the wrong ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption_language: Option<String>,
+}
+
+/// serde default for the playback speed: a video's own speed.
+fn default_speed() -> f32 {
+    1.0
 }
 
 /// serde default helper (a `#[serde(default)]` bool defaults to `false`; several
@@ -457,6 +471,8 @@ impl Default for Settings {
             autoplay: true,
             show_comments: true,
             preferred_quality: "1080p".to_string(),
+            playback_speed: default_speed(),
+            caption_language: None,
         }
     }
 }
@@ -576,6 +592,29 @@ pub struct TubeModel {
     /// it ([`crate::history::WatchHistory`]); never part of the shared library.
     /// Ids without loaded metadata stay, so a refresh cannot drop history.
     pub history: Vec<VideoId>,
+    /// Where each video in that history was left, in milliseconds: what makes
+    /// "continue watching" the minute you stopped at, and what the history
+    /// page's rows say. An empty entry is a video watched to its end.
+    #[serde(default)]
+    pub history_positions: BTreeMap<VideoId, u64>,
+    /// The caption tracks the open video offers.
+    #[serde(default)]
+    pub caption_tracks: Vec<crate::captions::CaptionTrack>,
+    /// The caption lines of the open video, when a track is on and loaded.
+    #[serde(default)]
+    pub captions: Vec<crate::captions::CaptionCue>,
+    /// The video `captions` belong to, so a page can never show one video's
+    /// words over another's picture.
+    #[serde(default)]
+    pub captions_of: VideoId,
+    /// Why the captions are not on screen when the person asked for them
+    /// (loading, none offered, the track would not download).
+    #[serde(default)]
+    pub captions_notice: Option<String>,
+    /// The quality label of the stream actually playing (`720p`), so the page
+    /// can say what the choice got rather than repeat what was asked for.
+    #[serde(default)]
+    pub stream_quality: String,
     /// Shown when the watch history could not be stored.
     #[serde(default)]
     pub history_notice: Option<String>,
@@ -681,6 +720,12 @@ impl Default for TubeModel {
             subscriptions: Vec::new(),
             queue: Vec::new(),
             history: Vec::new(),
+            history_positions: BTreeMap::new(),
+            caption_tracks: Vec::new(),
+            captions: Vec::new(),
+            captions_of: String::new(),
+            captions_notice: None,
+            stream_quality: String::new(),
             history_notice: None,
             settings: Settings::default(),
             route: Route::Home,
@@ -863,6 +908,41 @@ impl TubeModel {
             .iter()
             .filter_map(|id| self.video(id))
             .collect()
+    }
+
+    /// Where `video` was left, in milliseconds, when reopening it should
+    /// continue rather than start at the beginning.
+    #[must_use]
+    pub fn resume_at_ms(&self, video: &str) -> Option<u64> {
+        let position = self.history_positions.get(video).copied()?;
+        let duration = self.video(video).map(|v| u64::from(v.duration) * 1000);
+        // A video left within the tolerance of its end is watched: replaying
+        // it should start at the beginning, not at the credits.
+        duration
+            .is_none_or(|duration| {
+                duration == 0
+                    || position.saturating_add(crate::history::RESUME_TOLERANCE_MS) < duration
+            })
+            .then_some(position)
+            .filter(|position| *position > 0)
+    }
+
+    /// How far into `video` the playhead is, as a fraction of it, for a row
+    /// that says "12:34 of 1:02:00" and a bar that shows how much is left.
+    #[must_use]
+    pub fn watched_fraction(&self, video: &str) -> Option<f64> {
+        let position = self.resume_at_ms(video)?;
+        let duration = self.video(video).map(|v| f64::from(v.duration))?;
+        (duration > 0.0).then(|| (position as f64 / 1000.0 / duration).clamp(0.0, 1.0))
+    }
+
+    /// The caption track the person chose, from the ones this video offers.
+    #[must_use]
+    pub fn chosen_caption_track(&self) -> Option<&crate::captions::CaptionTrack> {
+        let language = self.settings.caption_language.as_deref()?;
+        self.caption_tracks
+            .iter()
+            .find(|track| track.language == language)
     }
 
     /// Insert or update a video by id, preserving any `SponsorBlock` segments /

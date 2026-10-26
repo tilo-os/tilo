@@ -816,6 +816,43 @@ how many are left (§9.13).
 
 ---
 
+## 8a. Conversations: one substrate, two apps
+
+Chat and Messages both talk to people and they stay two apps, because their
+primary object differs: Chat's is a **channel** — a room with a history, a
+membership and a mood, many-to-many and public-ish — and Messages' is a
+**person** — a private thread that may arrive by SMS, Signal or WhatsApp.
+Neither is a subset of the other. Merging them by surface similarity (both have
+a composer, both have a timeline) would produce one app that does neither job.
+
+What they do not differ in is the *mechanics*: when a day starts, what time a
+line was said, whether it arrived, what happens to a draft, which key sends, and
+what an attachment does when you touch it. Those live once, in
+[`widget::conversation`](src/widget/conversation/mod.rs), and an app that invents
+its own is a defect of the same class as a hand-rolled text field (§8).
+
+| Piece | The rule |
+|---|---|
+| `ConversationClock`, `DayBreaks`, `DayDividerFace` | A divider appears before the first line of each local day and never otherwise, labelled "Today", "Yesterday", the weekday inside the week, then the date. Every line can name its own time. No conversation may show a clock with no day anywhere near it. |
+| `DeliveryState` / `DeliveryFace` | One vocabulary — Queued, Sending, Submitted, Sent, Delivered, Read, Failed, Uncertain — from one table of steps, with one glyph and one tone each. A transport renames its states into `DeliveryStep`; it never invents a word of its own, and "unknown" is a state rather than a silence. |
+| `AttachmentSummary`, `AttachmentAction` | The ladder: the inline preview, the picture at full size, a copy saved where the person says, and the saved copy shown in the file manager. Rungs that cannot be offered are absent, with the reason where they would have been. |
+| `DraftBook`, `draft::line` | A draft is per conversation, blank is not a draft, sending clears it only while it is still what was sent, and the words are shown wherever the conversation is listed ("Draft: …"). A draft you cannot find is a draft you have lost. |
+| `ComposerRule` | Enter sends, Shift+Enter breaks the line, Escape lets the draft go. One rule, both apps; a comment field inside a document is the one other rule (`ModEnter`). |
+| `ConversationList` | The message list for a widget-tree app: the same day breaks, the same clock, the same delivery line, measured by the same code as the pieces above. A painting app composes its own rows from the same pieces. |
+
+Consequences a person feels: a screenshot in Chat opens full size, a message in
+Messages has a time, a draft in either app is visible in the list, and Enter
+sends in both. What each app keeps is its own: a channel still shows authors,
+avatars, threads and presence; a private thread still shows one person, their
+transport and their account.
+
+The module's labels (the delivery words, the attachment ladder's names) ship in
+its own catalogue beside it (`src/widget/conversation/locales/en-US.ftl`,
+namespaced `conversation-*`), so an app can override any of them without a
+toolkit change.
+
+---
+
 ## 9. The shell chrome design language
 
 Sections 1–8 govern **apps**. This section governs the **shell** — the surfaces
@@ -1722,6 +1759,161 @@ Not automated yet; grep a diff for these:
 `ui` primitive, link the primitive from the relevant section so the rule and its
 enforcement stay together.*
 
+## 10. Truth: every value carries its measure and its as-of
+
+A number on screen is a claim. `ui::fact::Fact` keeps the claim and its
+provenance together so a view cannot draw the number without answering
+"measured how?", "from where?" and "when?".
+
+- **Measure first.** A `Fact` has a `Measure` naming what the number counts
+  (`Memory in use`, `Memory (RSS)`, `Packets dropped`) and its unit when it has
+  one. Two values called "Memory" are two different claims; name them
+  differently on screen as well as in the model.
+- **Provenance is the caption line under the value, always.** Use
+  `Fact::value_or_dash()` in the value position and `Fact::caption(now)` under
+  it. The caption carries the source and the age ("measured 2 s ago · this
+  device"). It is never beside the value and never omitted.
+- **Age makes the claim honest.** `Fact::is_stale(now)` is true when the
+  reading is older than the interval it was measured for. Dim the caption, not
+  the value: dimming a good number teaches people to distrust good data.
+- **Unknown is a designed state.** `Fact::unknown(measure, reason)` renders an
+  em dash (`—`) plus why, and the app offers the action that would resolve it.
+  Zero is a measurement, not a stand-in for "we did not measure". Do not show
+  a healthy state, a count or a rate you did not read.
+- **A sparkline states its period and its scale.** A shape with no time span
+  and no axis is not a reading. Put "last 2 min" and the top of the scale in
+  the caption (or in the chart's axis labels) so the person can answer "when
+  did that spike happen" and "how large is it".
+
+## 11. Capability: privilege is granted, never inferred
+
+A privileged verb declares the capability it needs. Before a view draws a
+control for it, it asks `ui::capability_door` for the resolution and draws one
+of exactly three faces:
+
+| Resolution | The surface draws |
+|---|---|
+| `Granted` | the real control, doing the real thing |
+| `Grantable` | the control plus an explicit grant step, in the person's words ("Tilo needs your permission to change firewall rules") |
+| `Unavailable` | no control at all: one sentence of why, and what would make it available ("the firewall service isn't running — start it") |
+
+- **No inert control may exist.** A switch, Apply button or menu item for a
+  privileged act is drawn only in the granted face. If it would not do the
+  thing, it is not drawn. An unavailable surface has no disabled switches
+  standing in for the truth.
+- **Ask for the grant once, in words.** `Door::grantable` carries the words the
+  grant step says. The grant is object-scoped ("change firewall rules", not
+  "manage the system"), so revoking one privileged act does not silently take
+  away another.
+- **Discovery is not resolution.** `which()`, `$PATH` and environment variables
+  are test seams (`#[cfg(test)]`, `testing`), never how a product decides what
+  it can do. An app may ask the platform or the person; it may not infer
+  privilege from its environment.
+- **A preview is a person's choice, not a hidden mode.** If a flow offers a
+  preview, it is an apply/discard diff the person selected. It is never a mode
+  in which "Apply" silently does nothing.
+- **Draw through `Door::face`.** `Door::control()` is the shorthand for the
+  granted face only; the grantable and unavailable faces need their own grant
+  step or sentence.
+
+---
+
 ## Form composition
 
 For content-first account/settings forms, use `FormPage`, `Form`, `FormSection` and `Field`; see [automatic and guided forms](FORM_COMPOSITION.md) for the API, independent override/reset rules and runnable primitive comparison. Manual composition remains supported with the same standard controls.
+
+## 10. Jobs: long work has a body, and outlives its window
+
+Anything that can take longer than a breath is a **job**, and a job is the
+toolkit's (`ui::jobs`), not the app's. Nine apps improvising "Installing…",
+"Scanning…", "Connecting…" produced nine progress stories, none of them
+cancellable and most of them dead the moment the person left the page.
+
+**The five fields.** Every job has a title in the person's words ("Installing
+LibreOffice"), a subject (what it is about, and where **Show me** goes), a
+progress, a way out, and an outcome:
+
+| Field | Rule |
+|---|---|
+| title | what is happening, as the person would say it — not a code, not an id |
+| subject | the app (icon *and* name) and the thing; `opens` carries what **Show me** opens |
+| progress | determinate when a total is known (`312 MB of 480 MB`), honest when it is not (`Reading 12,480 files`) — never a bare spinner, never a fake percentage |
+| Stop | present only when the worker honours it (`Spec::stoppable`). A job whose stopping would not be honoured shows no Stop: a Stop that does nothing is worse than none |
+| outcome | done (one sentence), failed **with the reason**, or stopped |
+
+**The surface.** One row per job, built by `ui::jobs::Band` (the window's foot,
+`NavShell::bottom_band`) or `ui::jobs::Pane` (the Jobs surface). A row is a
+`ListRow`: the app's icon leading, the title, the live line as the secondary,
+the percentage as the value, and the controls trailing — **Stop** while it
+runs and can be stopped, **Show me** and **Read** once it has ended. The bar
+of a job's progress goes under its row in the pane, and facts are never joined
+into one string with a separator glyph.
+
+**The registry is the process's, not the window's.** Starting a job puts it
+where every window reads it, so leaving the page, closing the panel or opening
+another window does not end the work: the next surface reads the same rows.
+An app keeps a `jobs::Presses` beside the widget and answers what was pressed
+in its update (`ui::jobs::apply`): **Stop** calls the worker's way out,
+**Read** takes the row away, **Show me** gets the subject and navigates.
+
+**A failure is not just a row.** `Running::failed` raises an attention item
+with the reason and a **Show me** action, and reading the job's row takes that
+item back (`attention::dismissed(Target::Job)`). A failure nobody can decide
+about is a ledger entry, not a failure.
+
+**What an app never does.** Draw its own progress bar beside a long
+operation, refuse every other action "while one is in progress" (jobs are
+concurrent by construction), or time out a job's notice. Reachable from
+anywhere: `ui::jobs::CHORD` (Ctrl+Shift+J) and `ui::jobs::open` ask for the
+surface; a host resolves the request with `take_opening`.
+
+## 11. Attention and the ledger: one raised hand, one record
+
+Everything the system says about itself goes to exactly one of two places,
+and `ui::attention::publish` is the one call that decides:
+
+* **it needs a person** → an item in the waiting stack (`Notice::needs`, with
+  the `Action` it waits on);
+* **it does not** → the ledger (`Notice::did`), append-only, attributed,
+  never on a timer.
+
+There is no third place. In particular there is no toast: a notice that
+expires is a claim that something matters now and will not matter in four
+seconds, and the timer teaches people to stop reading.
+
+**An item.** `Item::new(owner, title, action)`: an owner with a face (icon
+*and* name — never the icon alone), what happened, what it is about, why,
+since when, how urgent, and **one** action. The action is not optional in the
+type, because a row a person cannot act on is not a row.
+
+**Three states, deliberately distinct.** Unseen counts on the bar
+(`attention::unseen`, `attention::pill`), seen stops counting and keeps the
+row, deferred puts it out of the way and **stays counted** (`attention::deferred`,
+and the stack says "4 put aside" under itself). Nothing expires: an item
+leaves when it is acted on or when the app that raised it takes it back
+(`dismissed`).
+
+**Order.** By what it costs to leave (Blocking, then Waiting, then Noted), and
+within that by age — the first row is the one that costs most to ignore.
+Groups get a `SectionHeader` naming the urgency, never a colour alone.
+
+**Keys.** `Presses::key`: Up and Down move the choice, Home and End go to the
+ends, Enter acts on the chosen row, Escape puts it aside. The chosen row is
+selected (the lift, §9.3). Acting reports the verb once
+(`attention::apply` → `Acted`), and the app performs it.
+
+**The surface.** `ui::attention::Stack` — the waiting stack as a widget, kept
+by the app that shows it. Reachable from anywhere: `ui::attention::CHORD`
+(Ctrl+Shift+A) and `ui::attention::open`, which a host resolves.
+
+**The ledger.** `ui::attention::entries` — every outcome that needed nobody,
+with the app that did it, when, and what it was about. Activity's History
+lists it beside the workspace's changes, found by the same find
+(`entry.matches`), and nothing about it steals the focus: it is read when
+someone looks. `MAX_ENTRIES` is a bound on memory, never a lifetime.
+
+**What an app never does.** Its own notice with its own severity vocabulary
+and its own lifetime; a badge count collected and never drawn; a failure that
+vanishes; a success that interrupts. `tools/policy/check_no_transient_cards.py`
+keeps the notification card the shell's; this section keeps the outcomes the
+system's.

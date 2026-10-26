@@ -24,10 +24,17 @@ def native_4k_tests() -> set[str]:
     return names
 
 
+PEER_SYNC_TESTS = SHELL / "shell" / "network" / "one_host_tests"
+
+
 def peer_sync_budget_tests() -> set[str]:
-    source = (SHELL.parent / "tests" / "peer_sync_test.rs").read_text(encoding="utf-8")
-    pattern = re.compile(r"^\s*async\s+fn\s+([a-zA-Z0-9_]+_budget)\s*\(", re.MULTILINE)
-    return {f"peer_sync_test::{name}" for name in pattern.findall(source)}
+    """Latency budgets of an edit crossing devices, as the shell's unit-test paths."""
+    names: set[str] = set()
+    pattern = re.compile(r"^\s*(?:async\s+)?fn\s+([a-zA-Z0-9_]+_budget)\s*\(", re.MULTILINE)
+    for source in sorted(PEER_SYNC_TESTS.rglob("*.rs")):
+        module = "::".join(source.relative_to(SHELL).with_suffix("").parts)
+        names.update(f"{module}::{name}" for name in pattern.findall(source.read_text(encoding="utf-8")))
+    return names
 
 
 def effective_overrides(config: dict, profile_name: str) -> list[dict]:

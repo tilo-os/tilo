@@ -146,8 +146,11 @@ impl InvocationJournal {
         update: InvocationUpdate,
         request: &OwnerCommitRequest,
     ) -> Result<PreparedEffect, String> {
+        let at = self.position(key).ok_or("unknown prepared invocation")?;
+        let started = self.snapshot.records.get(at).cloned();
         let (prepared, durable) = self.stage_prepared_effect(key, update, request)?;
-        durable.wait_blocking()?;
+        let started = started.ok_or("unknown prepared invocation")?;
+        self.settle(at, started, durable)?;
         Ok(prepared)
     }
 
@@ -158,8 +161,11 @@ impl InvocationJournal {
         key: &InvocationKey,
         prepared: &PreparedEffect,
     ) -> Result<DurableInvocation, String> {
+        let at = self.position(key).ok_or("unknown prepared invocation")?;
+        let started = self.snapshot.records.get(at).cloned();
         let (record, durable) = self.stage_finished_effect(key, prepared)?;
-        durable.wait_blocking()?;
+        let started = started.ok_or("unknown prepared invocation")?;
+        self.settle(at, started, durable)?;
         Ok(record)
     }
 

@@ -485,6 +485,55 @@ impl PhotosApp {
         commands.push(Command::icon(Hit::Copy, tr("photos-copy"), Icon::Copy));
         commands.push(Command::icon(Hit::Share, tr("photos-share"), Icon::Send));
         commands.push(Command::icon(Hit::Save, tr("photos-save"), Icon::Download));
+        // The picture's size, said the way every app says a zoom: the level
+        // itself while it is not the frame's own, so "Actual size" is where a
+        // person expects it (Ctrl+0 reaches the same thing).
+        let zoom = self.viewer_zoom.clone();
+        commands.push(Command::icon(
+            Hit::ZoomOut,
+            tr("photos-zoom-out"),
+            Icon::Minus,
+        ));
+        commands.push(Command::icon(
+            Hit::ZoomReset,
+            zoom.label(&tr("photos-zoom-actual")),
+            Icon::Maximize2,
+        ));
+        commands.push(Command::icon(Hit::ZoomIn, tr("photos-zoom-in"), Icon::Plus));
+        commands.push(
+            Command::icon(
+                Hit::Present,
+                if self.presenting {
+                    tr("photos-present-exit")
+                } else {
+                    tr("photos-present")
+                },
+                if self.presenting {
+                    Icon::Minimize2
+                } else {
+                    Icon::Maximize2
+                },
+            )
+            .toggled(self.presenting),
+        );
+        if !self.library_mode {
+            commands.push(
+                Command::icon(
+                    Hit::SlideShow,
+                    if self.slide_show_running() {
+                        tr("photos-slide-show-stop")
+                    } else {
+                        tr("photos-slide-show")
+                    },
+                    if self.slide_show_running() {
+                        Icon::Pause
+                    } else {
+                        Icon::Play
+                    },
+                )
+                .toggled(self.slide_show_running()),
+            );
+        }
         commands
     }
 

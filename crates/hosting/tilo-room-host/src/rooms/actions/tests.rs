@@ -715,3 +715,106 @@ fn connector_secrets_are_the_known_ones_and_request_inputs_are_text() {
     );
     assert!(args(json!({})).text_map("inputs").unwrap().is_empty());
 }
+
+/// The room chooses the version of an app every member runs. An Editor by
+/// role alone may not; a member the owner lets install apps (a developer)
+/// installs their own build, which the room records with who signed and
+/// installed it, and taking the choice back lets each member run their own.
+#[tokio::test]
+async fn a_developer_chooses_the_version_of_an_app_the_whole_room_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
+    let (room, workspace, host) = governed(rooms).await;
+    let ada = admit(rooms, &room, &owner, 1).await;
+    let release = |version: &str, surface: u8| {
+        json!({
+            "app": "so.tilo.notes",
+            "version": version,
+            "surface": hex::encode([surface; 32]),
+            "package": hex::encode([surface ^ 0xff; 32]),
+            "publisher": hex::encode(ada.user_public_key),
+            "dev": true,
+        })
+    };
+
+    assert!(
+        !offered(&host, workspace, &caller(&ada))
+            .await
+            .iter()
+            .any(|verb| verb == governance::INSTALL_APP)
+    );
+    assert!(matches!(
+        invoke(
+            &host,
+            workspace,
+            &caller(&ada),
+            request(&room, governance::INSTALL_APP, release("1.5.0-dev.1", 1)),
+        )
+        .await,
+        Err(ActionHostError::UnknownAction)
+    ));
+    assert!(rooms.app_versions(&room).await.unwrap().is_empty());
+
+    grant(rooms, &room, &owner, &ada, governance::INSTALL_APP).await;
+    let answer = invoke(
+        &host,
+        workspace,
+        &caller(&ada),
+        request(&room, governance::INSTALL_APP, release("1.5.0-dev.1", 1)),
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer["running"]["release"]["version"], "1.5.0-dev.1");
+    assert_eq!(answer["running"]["release"]["dev"], true);
+    assert_eq!(
+        answer["running"]["installed_by"],
+        hex::encode(ada.user_public_key)
+    );
+
+    // The next push replaces it: one version runs at a time.
+    invoke(
+        &host,
+        workspace,
+        &caller(&ada),
+        request(&room, governance::INSTALL_APP, release("1.5.0-dev.2", 2)),
+    )
+    .await
+    .unwrap();
+    let running = rooms.app_versions(&room).await.unwrap();
+    assert_eq!(running.len(), 1, "{running:?}");
+    assert_eq!(running[0].release.version, "1.5.0-dev.2");
+    assert_eq!(running[0].release.surface, hex::encode([2; 32]));
+
+    // A release names its hashes in full.
+    assert!(matches!(
+        invoke(
+            &host,
+            workspace,
+            &caller(&ada),
+            request(
+                &room,
+                governance::INSTALL_APP,
+                json!({ "app": "so.tilo.notes", "version": "1", "surface": "ab", "package": "cd", "publisher": "ef" }),
+            ),
+        )
+        .await,
+        Err(ActionHostError::InvalidRequest { .. })
+    ));
+
+    invoke(
+        &host,
+        workspace,
+        &caller(&owner),
+        request(
+            &room,
+            super::UNINSTALL_APP,
+            json!({ "app": "so.tilo.notes" }),
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(rooms.app_versions(&room).await.unwrap().is_empty());
+    relay.shutdown().await;
+}

@@ -16,7 +16,6 @@ fn contract() -> ActionContract {
         confirmation: ConfirmationPolicy::Phrase {
             phrase: "erase everything".into(),
         },
-        reversible: false,
         execution: ExecutionMode::Background { cancellable: true },
         tags: vec!["bulk".into(), "irreversible".into()],
         ..ActionContract::default()

@@ -37,13 +37,14 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::{
-    Button, ColorSwatchPicker, ContextMenu, EditOutcome, EditableLabel, Popover, PopoverSide,
-    TextInput, Widget,
+    Button, ColorSwatchPicker, ContextMenu, EditOutcome, EditableLabel, FindBar, MenuItem as Row,
+    Popover, PopoverSide, TextInput, Widget,
 };
 
 mod annotations;
 mod chrome;
 mod content_files;
+mod find;
 mod overlays;
 #[cfg(test)]
 mod polish_tests;
@@ -237,6 +238,38 @@ enum TabAction {
     SetColor(Option<u32>),
 }
 
+/// A row of a cell's context menu. The menu names what it will act on (a
+/// range, a count) and each row runs one workbook verb, so an insert or a
+/// delete of several rows is one undo step.
+#[derive(Clone, Copy, PartialEq)]
+enum CellMenuRow {
+    Cut,
+    Copy,
+    Paste,
+    InsertRowsAbove,
+    InsertRowsBelow,
+    DeleteRows,
+    InsertColumnsLeft,
+    InsertColumnsRight,
+    DeleteColumns,
+    ClearContents,
+    Bold,
+    Format(CellFormat),
+    ClearFormat,
+}
+
+/// One match the workbook's find found: which sheet, which cell, and the
+/// byte range of the cell's raw input it covers. Search runs over the input
+/// (formulas included), which is what replace can edit; the grid shows the
+/// cell it belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FoundCell {
+    sheet: usize,
+    addr: Addr,
+    start: usize,
+    end: usize,
+}
+
 #[derive(Clone)]
 enum AnnotationClick {
     Open(Addr),
@@ -361,6 +394,29 @@ pub struct SheetsApp {
     tab_colour: Popover<ColorSwatchPicker>,
     /// The tab and colour the popover's picker was last built for.
     tab_colour_shown: Option<(usize, Option<usize>)>,
+    /// Right-click menu on a cell: the menu, what each row runs, and the
+    /// cell that was under the pointer when it opened.
+    cell_menu: ContextMenu,
+    cell_menu_rows: Vec<Option<CellMenuRow>>,
+    cell_menu_target: Option<Addr>,
+    /// Find and replace over the workbook: the band, whether it is open,
+    /// the matches it found, and the one shown. The band is the toolkit's
+    /// `FindBar` driven by this app as its `Findable`.
+    find: FindBar,
+    find_open: bool,
+    find_matches: Vec<FoundCell>,
+    find_current: Option<usize>,
+    find_rect: Rect,
+    /// Whether the band has room for the replace row's two buttons and a
+    /// field. When it does not, the band is query-only and Ctrl+H opens the
+    /// window bar's search, whose panel keeps the replacement at any width.
+    find_replace_roomy: bool,
+    /// A replacement the bar asked for, waiting for the next frame's edit
+    /// path: `Findable::replace` has no document handle.
+    pending_find_replace: Vec<(usize, Addr, String)>,
+    /// The window's size changed: the next sync keeps the active cell in
+    /// view once the grid's new metrics and data are in.
+    pending_ensure_visible: bool,
     /// Whether the active cell is bold, for the Bold command's toggle state.
     active_cell_bold: bool,
     /// A screenshot scenario's menu or sheet, waiting for the first measured
@@ -530,6 +586,17 @@ impl SheetsApp {
             tab_colour: Popover::with_content(ColorSwatchPicker::new(Vec::new(), 1))
                 .side(PopoverSide::Above),
             tab_colour_shown: None,
+            cell_menu: ContextMenu::new(),
+            cell_menu_rows: Vec::new(),
+            cell_menu_target: None,
+            find: FindBar::new(),
+            find_open: false,
+            find_matches: Vec::new(),
+            find_current: None,
+            find_rect: Rect::ZERO,
+            find_replace_roomy: true,
+            pending_find_replace: Vec::new(),
+            pending_ensure_visible: false,
             active_cell_bold: false,
             staged_overlay: None,
             tab_rename: None,
@@ -1024,7 +1091,10 @@ impl SheetsApp {
             self.grid.select_only(addr);
         }
         match scenario {
-            Some(name @ ("docsettings" | "tabmenu" | "tabcolour" | "tabrename")) => {
+            Some(
+                name
+                @ ("docsettings" | "tabmenu" | "tabcolour" | "tabrename" | "find" | "cellmenu"),
+            ) => {
                 self.staged_overlay = Some(name.to_owned());
             }
             Some("editing") => self.grid.begin_edit_in_place(),
@@ -1093,6 +1163,27 @@ impl SheetsApp {
         match name.as_str() {
             "docsettings" => self.open_doc_settings(),
             "tabmenu" => self.open_tab_menu(0),
+            "find" => {
+                self.open_find(false);
+                self.find.set_query("a");
+                let mut find = std::mem::replace(&mut self.find, FindBar::new());
+                find.drive(self);
+                self.find = find;
+                // Show the fourth of the workbook's matches, as stepping
+                // through the band does: reveal each so the counter and the
+                // grid agree.
+                for _ in 0..3 {
+                    self.find.next();
+                    let mut find = std::mem::replace(&mut self.find, FindBar::new());
+                    find.drive(self);
+                    self.find = find;
+                }
+            }
+            "cellmenu" => {
+                self.grid.select_only((1, 1));
+                let anchor = self.grid.cell_screen_rect(1, 1).center();
+                self.open_cell_menu(anchor);
+            }
             "tabrename" => self.begin_tab_rename(0),
             // The popover opens over tabs that already carry a colour.
             "tabcolour" => {
@@ -2677,6 +2768,7 @@ fn file_label(path: &std::path::Path) -> String {
 impl Widget for SheetsApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
+        dyn ui::widget::Findable,
         dyn ui::presence::capability::PublishesPresence
     );
 
@@ -2693,6 +2785,10 @@ impl Widget for SheetsApp {
             self.global = locale.get();
         }
         self.reload();
+        if self.pending_ensure_visible {
+            self.pending_ensure_visible = false;
+            self.grid.ensure_active_visible();
+        }
         self.current_active_format = self.format_of_active();
         self.active_cell_bold = self.grid.cell_is_bold(self.grid.active());
         // Say the composed label in the window's bar when it changes — a
@@ -2729,7 +2825,11 @@ impl Widget for SheetsApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let area = ui::widget::layout_rect(taffy, node, origin);
+        if area != self.rect {
+            self.pending_ensure_visible = true;
+        }
+        self.rect = area;
         self.relayout();
     }
 
@@ -2745,6 +2845,12 @@ impl Widget for SheetsApp {
         // Measure first, so this frame's chrome (and the hit-rects it leaves
         // behind) is laid out from the renderer that is about to paint it.
         self.refresh_chrome_metrics(text_renderer, theme);
+        // A resize that arrived without a sync still keeps the active cell in
+        // view: the draw is the first moment the new metrics are settled.
+        if self.pending_ensure_visible {
+            self.pending_ensure_visible = false;
+            self.grid.ensure_active_visible();
+        }
         // A staged menu or sheet opens once the chrome is measured, so it
         // anchors to what is painted (and the More menu knows whether the bar
         // overflowed).
@@ -2756,7 +2862,30 @@ impl Widget for SheetsApp {
         let tr = text_renderer;
         let mut parts = PaintParts::new(scene);
         self.draw_chrome(&mut parts, scene, transform, tr, theme, presence);
+        if self.find_open {
+            self.find.layout(self.find_rect, theme, tr);
+            self.find.paint(scene, transform, tr, theme, presence);
+        }
         self.grid.draw(&mut parts, scene, transform, tr, theme);
+        parts.draw(scene, "sheet-find-matches", self.grid_rect, |scene| {
+            let body = self.grid.body_rect();
+            for (index, found) in self.find_matches.iter().enumerate() {
+                if found.sheet != self.active_sheet {
+                    continue;
+                }
+                let cell = self.grid.cell_screen_rect(found.addr.0, found.addr.1);
+                let visible = cell.intersect(body);
+                if visible.area() > 0.0 {
+                    ui::widget::paint_find_match(
+                        scene,
+                        transform,
+                        visible,
+                        self.find_current == Some(index),
+                        theme,
+                    );
+                }
+            }
+        });
         parts.draw(scene, "sheet-comment-markers", window, |scene| {
             self.draw_comment_markers(scene, transform, theme);
         });
@@ -2859,6 +2988,60 @@ impl Widget for SheetsApp {
     fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = event_ctx.logical(position);
+        }
+        // Find and replace are one gesture whichever band has the keyboard:
+        // the open band refocuses, it never types "f" into its own query.
+        if let WindowEvent::KeyboardInput { event: key, .. } = event {
+            let ctrl = event_ctx.modifiers.state().control_key()
+                || event_ctx.modifiers.state().super_key();
+            let shift = event_ctx.modifiers.state().shift_key();
+            if key.state == ElementState::Pressed
+                && ctrl
+                && !self.palette.is_open()
+                && self.settings_panel == SettingsPanel::None
+                && self.name_box_edit.is_none()
+                && self.tab_rename.is_none()
+                && let winit::keyboard::Key::Character(character) = &key.logical_key
+            {
+                if character.eq_ignore_ascii_case("f") && !shift {
+                    self.open_find(false);
+                    *event_ctx.handled = true;
+                    return;
+                }
+                if character.eq_ignore_ascii_case("h") {
+                    self.open_find(true);
+                    *event_ctx.handled = true;
+                    return;
+                }
+            }
+        }
+        if self.find_open {
+            self.find.handle_event(event, event_ctx);
+            let mut find = std::mem::replace(&mut self.find, FindBar::new());
+            find.drive(self);
+            self.find = find;
+            self.drain_find_replace(&mut event_ctx.state);
+            if self.find.take_close_requested() {
+                self.close_find();
+                *event_ctx.handled = true;
+                return;
+            }
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                }
+            ) && !self.find_rect.contains(self.last_mouse)
+            {
+                // A press back in the grid gives the keyboard back to the
+                // cells; the band stays open for the next match.
+                self.find.set_focus(false);
+            }
+            if *event_ctx.handled {
+                self.pending.redraw = true;
+                return;
+            }
         }
         // A menu or popover over the sheet is modal and takes the event first.
         if self.route_overlays(event, event_ctx) {
@@ -2967,12 +3150,18 @@ impl Widget for SheetsApp {
 
     /// A cell being edited takes input-method composition.
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
+        if self.find_open {
+            return self.find.ime_content();
+        }
         self.grid
             .is_editing()
             .then_some(ui::ime::InputContent::TEXT)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
+        if self.find_open {
+            return self.find.ime_cursor_rect();
+        }
         self.grid.ime_cell_rect()
     }
 
@@ -3229,21 +3418,27 @@ impl Widget for SheetsApp {
                     }))
                     .collect(),
             );
+        let mut children = vec![
+            AccessNode::new(Role::Toolbar)
+                .with_name("Spreadsheet actions")
+                .with_children(toolbar_controls),
+            AccessNode::new(Role::TabBar)
+                .with_name("Sheets")
+                .with_children(tabs),
+            sheet,
+            annotations,
+        ];
+        if self.find_open
+            && let Some(find) = self.find.accessibility()
+        {
+            children.push(find);
+        }
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Spreadsheet")
                 .with_description("Editable workbook with formula bar and sheet tabs")
                 .with_state(AccessState::new().focusable(true))
-                .with_children(vec![
-                    AccessNode::new(Role::Toolbar)
-                        .with_name("Spreadsheet actions")
-                        .with_children(toolbar_controls),
-                    AccessNode::new(Role::TabBar)
-                        .with_name("Sheets")
-                        .with_children(tabs),
-                    sheet,
-                    annotations,
-                ]),
+                .with_children(children),
         )
     }
 
@@ -3252,8 +3447,13 @@ impl Widget for SheetsApp {
         target: &str,
         action: &ui::a11y::Action,
         state: &mut Edits<'_>,
-        _path: &ModelPath,
+        path: &ModelPath,
     ) -> bool {
+        if self.find_open && target.starts_with("find-") {
+            return self
+                .find
+                .perform_semantic_action(target, action, state, path);
+        }
         let activates = matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus);
         if activates {
             match target {
@@ -3809,7 +4009,280 @@ impl SheetsApp {
             self.open_tab_menu(idx);
             self.pending.redraw = true;
             *handled = true;
+            return;
         }
+        // Right-click on a cell opens the cell menu. Pressing a cell outside
+        // the selection makes it the selection first, as a right-press does
+        // in every spreadsheet; a press inside one keeps the range so a
+        // multi-row delete is one action.
+        if let Some(addr) = self.cell_under(p) {
+            if !self.grid.selected_cells().contains(&addr) {
+                self.grid.select_only(addr);
+            }
+            self.open_cell_menu(p);
+            self.pending.redraw = true;
+            *handled = true;
+        }
+    }
+
+    /// Open the cell context menu at `p`, naming the range and the count each
+    /// structural edit will act on.
+    fn open_cell_menu(&mut self, p: Point) {
+        self.close_overlays();
+        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        let rows = span(r0, r1);
+        let cols = span(c0, c1);
+        let plural = |n: u32, one: &str, many: &str| {
+            if n == 1 {
+                one.to_owned()
+            } else {
+                format!("{n} {many}")
+            }
+        };
+        let first_col = crate::model::col_to_letters(c0);
+        let last_col = crate::model::col_to_letters(c1);
+        let all_bold = self
+            .grid
+            .selected_cells()
+            .iter()
+            .all(|addr| self.grid.cell_is_bold(*addr));
+        let mut context = ContextMenu::new();
+        let mut rows_out: Vec<Option<CellMenuRow>> = Vec::new();
+        macro_rules! row {
+            ($label:expr, $item:expr) => {{
+                context.push(Row::selection($label));
+                rows_out.push(Some($item));
+            }};
+        }
+        macro_rules! destructive {
+            ($label:expr, $item:expr) => {{
+                context.push(Row::destructive_selection($label));
+                rows_out.push(Some($item));
+            }};
+        }
+        macro_rules! separator {
+            () => {{
+                context.push(Row::separator());
+                rows_out.push(None);
+            }};
+        }
+        row!("Cut", CellMenuRow::Cut);
+        row!("Copy", CellMenuRow::Copy);
+        row!("Paste", CellMenuRow::Paste);
+        separator!();
+        row!(
+            format!("Insert {} above", plural(rows, "row", "rows")),
+            CellMenuRow::InsertRowsAbove
+        );
+        row!(
+            format!("Insert {} below", plural(rows, "row", "rows")),
+            CellMenuRow::InsertRowsBelow
+        );
+        destructive!(
+            format!("Delete {}", plural(rows, "row", "rows")),
+            CellMenuRow::DeleteRows
+        );
+        separator!();
+        row!(
+            format!(
+                "Insert {} left of {}",
+                plural(cols, "column", "columns"),
+                first_col
+            ),
+            CellMenuRow::InsertColumnsLeft
+        );
+        row!(
+            format!(
+                "Insert {} right of {}",
+                plural(cols, "column", "columns"),
+                last_col
+            ),
+            CellMenuRow::InsertColumnsRight
+        );
+        destructive!(
+            format!("Delete {}", plural(cols, "column", "columns")),
+            CellMenuRow::DeleteColumns
+        );
+        separator!();
+        row!("Clear contents", CellMenuRow::ClearContents);
+        context.push(Row::selection(if all_bold { "Regular" } else { "Bold" }));
+        rows_out.push(Some(CellMenuRow::Bold));
+        let currency = self.default_currency();
+        row!(
+            "Format as currency",
+            CellMenuRow::Format(CellFormat::Currency(currency))
+        );
+        row!(
+            "Format as percent",
+            CellMenuRow::Format(CellFormat::Percent)
+        );
+        row!("Clear formatting", CellMenuRow::ClearFormat);
+        context.set_align(ui::widget::PanelAlign::Leading);
+        context.open_at_clamped([p.x as f32, p.y as f32], self.float_bounds());
+        self.cell_menu = context;
+        self.cell_menu_rows = rows_out;
+        self.cell_menu_target = self.cell_under(p);
+        self.pending.redraw = true;
+    }
+
+    /// Run the row the open cell menu reported, if any.
+    fn drain_cell_menu(&mut self, doc: &mut Edits<'_>) {
+        if let Some(choice) = self.cell_menu.take_selection() {
+            let row = self.cell_menu_rows.get(choice).copied().flatten();
+            if let Some(row) = row {
+                self.run_cell_menu_row(doc, row);
+            }
+            self.cell_menu_target = None;
+        }
+        if !self.cell_menu.is_open() {
+            self.cell_menu_target = None;
+        }
+        self.pending.redraw = true;
+    }
+
+    /// One cell-menu command. Structural edits reach the workbook as a single
+    /// verb with the range's count or rows, so undo takes the whole change
+    /// back in one step; cell contents and formats go through the app's
+    /// grouped write path, which is also one step.
+    fn run_cell_menu_row(&mut self, doc: &mut Edits<'_>, row: CellMenuRow) {
+        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        let Some(sheet) = self.active_sheet_id() else {
+            return;
+        };
+        match row {
+            CellMenuRow::Cut => {
+                self.copy_selection(true);
+                self.status = "Cut selection".into();
+            }
+            CellMenuRow::Copy => {
+                self.copy_selection(false);
+                self.status = "Copied selection".into();
+            }
+            CellMenuRow::Paste => {
+                self.paste(doc);
+            }
+            CellMenuRow::InsertRowsAbove => {
+                let count = span(r0, r1);
+                self.submit(
+                    doc,
+                    Workbook::INSERT_ROWS.with(verbs::InsertRows {
+                        sheet,
+                        at: r0.saturating_add(1),
+                        count: Some(count),
+                    }),
+                );
+                self.reload();
+                self.status = format!(
+                    "Inserted {} above row {}",
+                    if count == 1 {
+                        "row".to_owned()
+                    } else {
+                        format!("{count} rows")
+                    },
+                    r0.saturating_add(1)
+                );
+            }
+            CellMenuRow::InsertRowsBelow => {
+                let count = span(r0, r1);
+                let at = r1.saturating_add(2);
+                self.submit(
+                    doc,
+                    Workbook::INSERT_ROWS.with(verbs::InsertRows {
+                        sheet,
+                        at,
+                        count: Some(count),
+                    }),
+                );
+                self.reload();
+                self.status = format!(
+                    "Inserted {} below row {}",
+                    if count == 1 {
+                        "row".to_owned()
+                    } else {
+                        format!("{count} rows")
+                    },
+                    r1.saturating_add(1)
+                );
+            }
+            CellMenuRow::DeleteRows => {
+                let rows: Vec<u32> = (r0..=r1).map(|r| r.saturating_add(1)).collect();
+                let count = rows.len();
+                self.submit(
+                    doc,
+                    Workbook::DELETE_ROWS.with(verbs::DeleteRows { sheet, rows }),
+                );
+                self.reload();
+                self.status = format!(
+                    "Deleted {}",
+                    if count == 1 {
+                        "row".to_owned()
+                    } else {
+                        format!("{count} rows")
+                    }
+                );
+            }
+            CellMenuRow::InsertColumnsLeft => {
+                let count = span(c0, c1);
+                let at = crate::model::col_to_letters(c0);
+                self.submit(
+                    doc,
+                    Workbook::INSERT_COLUMNS.with(verbs::InsertColumns {
+                        sheet,
+                        at: at.clone(),
+                        count: Some(count),
+                    }),
+                );
+                self.reload();
+                self.status = format!("Inserted {count} column(s) left of {at}");
+            }
+            CellMenuRow::InsertColumnsRight => {
+                let count = span(c0, c1);
+                let at = crate::model::col_to_letters(c1.saturating_add(1));
+                self.submit(
+                    doc,
+                    Workbook::INSERT_COLUMNS.with(verbs::InsertColumns {
+                        sheet,
+                        at: at.clone(),
+                        count: Some(count),
+                    }),
+                );
+                self.reload();
+                self.status = format!("Inserted {count} column(s) right of {at}");
+            }
+            CellMenuRow::DeleteColumns => {
+                let columns: Vec<String> = (c0..=c1).map(crate::model::col_to_letters).collect();
+                let count = columns.len();
+                self.submit(
+                    doc,
+                    Workbook::DELETE_COLUMNS.with(verbs::DeleteColumns { sheet, columns }),
+                );
+                self.reload();
+                self.status = format!(
+                    "Deleted {}",
+                    if count == 1 {
+                        "column".to_owned()
+                    } else {
+                        format!("{count} columns")
+                    }
+                );
+            }
+            CellMenuRow::ClearContents => {
+                let writes: Vec<(Addr, String, Option<CellFormat>)> = self
+                    .grid
+                    .selected_cells()
+                    .into_iter()
+                    .map(|addr| (addr, String::new(), None))
+                    .collect();
+                let count = writes.len();
+                self.write_raw(doc, writes);
+                self.reload();
+                self.status = format!("Cleared {count} cell(s)");
+            }
+            CellMenuRow::Bold => self.toggle_bold(doc),
+            CellMenuRow::Format(format) => self.apply_format(doc, format),
+            CellMenuRow::ClearFormat => self.clear_format(doc),
+        }
+        self.pending.redraw = true;
     }
 
     fn handle_cursor_moved(&mut self, x: f64, y: f64, scale_factor: f64, handled: &mut bool) {
@@ -3892,6 +4365,22 @@ impl SheetsApp {
         // the window bar has room for.
         if let WindowEvent::KeyboardInput { event: ke, .. } = event {
             let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+            let shift = modifiers.state().shift_key();
+            if ke.state.is_pressed()
+                && ctrl
+                && let winit::keyboard::Key::Character(c) = &ke.logical_key
+            {
+                if c.as_str().eq_ignore_ascii_case("f") && !shift {
+                    self.open_find(false);
+                    *handled = true;
+                    return;
+                }
+                if c.as_str().eq_ignore_ascii_case("h") {
+                    self.open_find(true);
+                    *handled = true;
+                    return;
+                }
+            }
             if ke.state.is_pressed()
                 && ctrl
                 && !self.grid.is_editing()
@@ -4194,6 +4683,54 @@ impl SheetsApp {
             }
             EditOutcome::None => return,
         }
+        self.pending.redraw = true;
+    }
+
+    // --- find and replace --------------------------------------------------
+
+    /// The toolkit find row's replace labels, in the person's locale, so the
+    /// app's room test measures the same buttons the band paints.
+    pub(super) fn find_replace_label() -> &'static str {
+        "Replace"
+    }
+
+    pub(super) fn find_replace_label_all() -> &'static str {
+        "Replace all"
+    }
+
+    /// Open the app's find band, replacing when `replace` is set. The
+    /// toolkit's `FindBar` is the band; this app is the `Findable` it drives.
+    fn open_find(&mut self, replace: bool) {
+        // The window bar's search keeps the replacement usable when this
+        // band cannot: at a phone width with large text its two localised
+        // buttons leave no field. The band stays a query-only find there.
+        if replace && !self.find_replace_roomy && ui::window_toolbar::is_hosted() {
+            ui::window_toolbar::open_search(ui::window_toolbar::SearchOpening::Replace);
+            return;
+        }
+        self.close_overlays();
+        self.find_open = true;
+        self.find.set_focus(true);
+        if replace {
+            self.find.focus_replace();
+        } else {
+            self.find.focus_query();
+        }
+        self.find.refresh();
+        self.relayout();
+        self.pending.redraw = true;
+    }
+
+    /// Close the band and stop painting its matches.
+    fn close_find(&mut self) {
+        if !self.find_open {
+            return;
+        }
+        self.find_open = false;
+        self.find.set_query("");
+        self.find_matches.clear();
+        self.find_current = None;
+        self.relayout();
         self.pending.redraw = true;
     }
 

@@ -39,6 +39,7 @@ mod chrome;
 pub mod fetch;
 pub mod gemtext;
 pub mod html;
+pub mod i18n;
 mod list_pane;
 pub mod modal;
 pub mod model;

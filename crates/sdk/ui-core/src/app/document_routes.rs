@@ -31,22 +31,69 @@ pub(super) fn outbound_failure(
 }
 
 fn live_document_owners(root: &dyn Widget) -> Vec<crate::history_mode::HistoryOwner> {
-    fn collect(root: &dyn Widget, owners: &mut Vec<crate::history_mode::HistoryOwner>) {
-        for owner in root.history_owner().into_iter().chain(root.record_owners()) {
-            if !owners.iter().any(|known| known.same_owner(&owner)) {
-                owners.push(owner);
+    LiveOwners::of(root).all
+}
+
+/// The live document owners of a window's widgets, by role.
+struct LiveOwners {
+    /// Every record a widget holds: those its views show, and those kept
+    /// beside them.
+    all: Vec<crate::history_mode::HistoryOwner>,
+    /// The records its views show ([`Widget::history_owner`]).
+    shown: Vec<crate::history_mode::HistoryOwner>,
+    /// The records kept beside what the views show
+    /// ([`Widget::record_owners`]: the person's, the workspace's emoji).
+    beside: Vec<crate::history_mode::HistoryOwner>,
+}
+
+impl LiveOwners {
+    fn of(root: &dyn Widget) -> Self {
+        fn push(
+            owners: &mut Vec<crate::history_mode::HistoryOwner>,
+            owner: &crate::history_mode::HistoryOwner,
+        ) {
+            if !owners.iter().any(|known| known.same_owner(owner)) {
+                owners.push(owner.clone());
             }
         }
-        for child in root.children() {
-            collect(child, owners);
+        fn collect(root: &dyn Widget, owners: &mut LiveOwners) {
+            let shown = root.history_owner();
+            let beside = root.record_owners();
+            if let Some(owner) = &shown {
+                push(&mut owners.shown, owner);
+            }
+            for owner in &beside {
+                push(&mut owners.beside, owner);
+            }
+            for owner in shown.iter().chain(beside.iter()) {
+                push(&mut owners.all, owner);
+            }
+            for child in root.children() {
+                collect(child, owners);
+            }
         }
+        let mut current = Self {
+            all: vec![],
+            shown: vec![],
+            beside: vec![],
+        };
+        collect(root, &mut current);
+        crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
+            collect(live, &mut current);
+        });
+        current
     }
-    let mut current = vec![];
-    collect(root, &mut current);
-    crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
-        collect(live, &mut current);
-    });
-    current
+
+    /// Whether `entry` syncs only records kept beside what the views show.
+    /// Such a record takes no part in the window's controls, so neither
+    /// the surface the window publishes nor an invocation of one of its
+    /// actions acts through it, and neither waits for its route.
+    fn keeps_only_beside(&self, entry: &crate::history_mode::routes::OwnerRoute) -> bool {
+        entry.owners.iter().all(|owner| {
+            self.beside.iter().any(|kept| kept.same_owner(owner))
+                && !self.shown.iter().any(|shown| shown.same_owner(owner))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -255,6 +302,9 @@ impl App {
             self.autosave_generation,
             &self.state.doc,
         );
+        // The routes an accepted invocation of this window's actions waits
+        // to be current on before it runs: never one only kept beside.
+        let live = LiveOwners::of(self.root_widget.as_ref());
         let routes = self
             .document_routes
             .witness
@@ -264,6 +314,7 @@ impl App {
                 self.document_routes
                     .owners
                     .iter()
+                    .filter(|entry| !live.keeps_only_beside(entry))
                     .map(|owner| owner.route.clone()),
             )
             .collect();
@@ -294,23 +345,24 @@ impl App {
             .witness
             .as_ref()
             .map(|witness| &witness.route);
-        live_document_owners(self.root_widget.as_ref())
-            .iter()
-            .all(|owner| {
-                self.document_routes.owners.iter().any(|entry| {
-                    entry
-                        .owners
-                        .iter()
-                        .any(|installed| installed.same_owner(owner))
-                })
+        let live = LiveOwners::of(self.root_widget.as_ref());
+        live.all.iter().all(|owner| {
+            self.document_routes.owners.iter().any(|entry| {
+                entry
+                    .owners
+                    .iter()
+                    .any(|installed| installed.same_owner(owner))
             })
-            && self.collaboration.manager.document_route_ready(route)
+        }) && self.collaboration.manager.document_route_ready(route)
             && self.document_routes.owners.iter().all(|entry| {
-                // A record held only for a tree (a chat's next part) syncs
-                // on its own; the surface the person acts through never
-                // waits for its route to open, or every input meanwhile
-                // would act through a stale one.
+                // A record held only for a tree (a chat's next part) or kept
+                // beside the shown ones (the person's, the workspace's
+                // emoji) syncs on its own; the surface the person acts
+                // through never waits for its route to open, or every input
+                // meanwhile would act through a stale one, or through none
+                // while that route never opens.
                 self.document_routes.holds_only_tree_records(entry)
+                    || live.keeps_only_beside(entry)
                     || self
                         .collaboration
                         .manager

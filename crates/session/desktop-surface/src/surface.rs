@@ -590,6 +590,9 @@ pub struct DesktopSurface {
     shown: Option<StripId>,
     rect: Rect,
     structure_dirty: bool,
+    /// The shown strip moved (a pan, a window brought into view): the next
+    /// frame lays it out again in the nodes it keeps.
+    relayout: bool,
     close_reports: Vec<ui::application::ComponentCloseReport>,
     /// A launched window to pan into view once it has been laid out.
     reveal: Option<(StripId, GroupId)>,
@@ -805,6 +808,7 @@ impl DesktopSurface {
             shown: None,
             rect: Rect::ZERO,
             structure_dirty: true,
+            relayout: false,
             close_reports: Vec::new(),
             reveal: None,
             unbuilt: Vec::new(),
@@ -1116,7 +1120,6 @@ impl DesktopSurface {
         };
         let started = ui::time::now();
         let shared = self.shared.borrow();
-        let mut built = false;
         let mut waiting = Vec::new();
         let mut queue = std::mem::take(&mut self.unbuilt).into_iter();
         for (strip, tab) in queue.by_ref() {
@@ -1134,17 +1137,17 @@ impl DesktopSurface {
             }) else {
                 continue;
             };
-            let mut rebuilt = build_tile(
+            let rebuilt = build_tile(
                 self.tiles.as_mut(),
                 self.controls.as_ref(),
                 workspace,
                 model,
             );
             // A window that held an app's place (its code or record still
-            // coming) hands its arrival to what is built there now.
-            rebuilt.continue_arrival(host);
-            *host = rebuilt;
-            built = true;
+            // coming) hands its arrival, and its place in the layout, to
+            // what is built there now: the window says how its layout
+            // changes, so the rest of the desktop's is kept.
+            host.take_place_of(rebuilt);
             if ui::time::now().duration_since(started) >= BUILD_BUDGET {
                 break;
             }
@@ -1152,7 +1155,6 @@ impl DesktopSurface {
         waiting.extend(queue);
         drop(shared);
         self.unbuilt = waiting;
-        self.structure_dirty |= built;
     }
 
     /// Bring the rows to a replaced tree, keeping live content by tab id.
@@ -1582,7 +1584,7 @@ impl DesktopSurface {
                         && let Some(row) = self.rows.get_mut(&strip)
                         && pan_row(row, offset)
                     {
-                        self.structure_dirty = true;
+                        self.relayout = true;
                     }
                 }
                 RowOp::Scroll(strip, group, action) => {
@@ -2077,6 +2079,20 @@ impl DesktopSurface {
 /// Pan `row` to `offset` the way the shell's direct strip pan does, within
 /// the legal range, and keep it there when the strip's geometry changes. A
 /// strip showing a maximized window stays at home.
+/// The shown strip's node style over the row's `own`: tiled windows keep
+/// wallpaper under them, so their bottom border and corners show; a
+/// maximized one takes the band.
+fn strip_style(row: &GroupRow, own: Style) -> Style {
+    let bottom = if row.groups.iter().any(|group| group.maximized) {
+        0.0
+    } else {
+        STRIP_BOTTOM_GUTTER_PX
+    };
+    let mut style = own;
+    style.margin.bottom = ui::taffy::LengthPercentageAuto::length(ui::num::f32_of_f64(bottom));
+    style
+}
+
 fn pan_row(row: &mut GroupRow, offset: f64) -> bool {
     if row.groups.iter().any(|g| g.maximized) {
         return false;
@@ -2381,16 +2397,7 @@ impl Widget for DesktopSurface {
         self.present();
         let row: Option<NodeId> = self.shown_row().map(|row| {
             let node = row.build_layout(taffy, theme, node_map);
-            // Tiled windows keep wallpaper under them, so their bottom
-            // border and corners show; a maximized one takes the band.
-            let bottom = if row.groups.iter().any(|group| group.maximized) {
-                0.0
-            } else {
-                STRIP_BOTTOM_GUTTER_PX
-            };
-            let mut style = taffy.style(node).cloned().unwrap_or_default();
-            style.margin.bottom =
-                ui::taffy::LengthPercentageAuto::length(ui::num::f32_of_f64(bottom));
+            let style = strip_style(row, taffy.style(node).cloned().unwrap_or_default());
             let _ = taffy.set_style(node, style);
             node
         });
@@ -2590,7 +2597,7 @@ impl Widget for DesktopSurface {
             // A window clicked while partly off screen comes into view, as
             // focusing it from the keyboard brings it.
             self.reveal = Some((strip, group));
-            self.structure_dirty = true;
+            self.relayout = true;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
             && !*ctx.handled
@@ -2747,9 +2754,47 @@ impl Widget for DesktopSurface {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let row = self.shown_row().is_some_and(Widget::take_structure_dirty);
-        own || row
+        self.take_structure_change().rebuilds()
+    }
+
+    /// A change the shown strip's windows carry out in place stays in
+    /// place; the surface's own changes rebuild.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        use ui::widget::StructureChange;
+        let own = StructureChange::of(std::mem::take(&mut self.structure_dirty));
+        let relayout = if std::mem::take(&mut self.relayout) {
+            StructureChange::Children
+        } else {
+            StructureChange::None
+        };
+        let row = self
+            .shown_row()
+            .map_or(StructureChange::None, Widget::take_structure_change);
+        own.join(relayout).join(row)
+    }
+
+    /// The shown strip lays out again in the nodes it keeps, under the gutter
+    /// the surface leaves below it.
+    fn remount_children(&mut self, remount: &mut ui::widget::Remount<'_>) -> bool {
+        if !self
+            .children_mut()
+            .into_iter()
+            .all(|child| child.remount_children(remount))
+        {
+            return false;
+        }
+        if let Some(row) = self.shown_row_ref()
+            && let Some(node) = row.layout_node()
+        {
+            let style = strip_style(
+                row,
+                remount.taffy().style(node).cloned().unwrap_or_default(),
+            );
+            if remount.taffy().style(node).ok() != Some(&style) {
+                let _ = remount.taffy().set_style(node, style);
+            }
+        }
+        true
     }
 }
 

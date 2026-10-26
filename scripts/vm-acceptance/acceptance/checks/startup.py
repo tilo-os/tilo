@@ -66,8 +66,12 @@ except Exception as e:
     print(json.dumps({"error": error}))
     sys.exit(0)
 
-# AtspiRole's list. AccessKit has no role-name method; roles are numbers.
+# AtspiRole's list and table. AccessKit has no role-name method; roles are numbers. Files'
+# listing is the toolkit's file table (a row per entry, named for its file); a plain list
+# names its items the same way.
 ROLE_LIST = 31
+ROLE_TABLE = 55
+LISTING_ROLES = (ROLE_LIST, ROLE_TABLE)
 
 def text(reply):
     # gdbus quotes a string in single quotes, or double quotes when it holds one.
@@ -84,7 +88,7 @@ def walk(client, limit=800):
         name = text(client.property(path, "Name"))
         names.append(name)
         children = m.PATH_RE.findall(client.call(path, "org.a11y.atspi.Accessible.GetChildren"))
-        if name == list_name and client.role(path) == ROLE_LIST:
+        if name == list_name and client.role(path) in LISTING_ROLES:
             return names, [text(client.property(c, "Name")) for c in children]
         pending += [c for c in children if c not in seen]
     return names, None

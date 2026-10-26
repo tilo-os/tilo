@@ -75,8 +75,9 @@ pub(super) struct BarInputs {
     actions: Vec<ToolbarAction>,
     favicon: Option<Vec<u8>>,
     suggestions: Vec<LocationSuggestion>,
-    /// The Library's place while it is shown.
-    library: Option<Vec<(&'static str, &'static str)>>,
+    /// The Library's place while it is shown: its name, then its section's,
+    /// each with the place it commits.
+    library: Option<Vec<(String, &'static str)>>,
 }
 
 /// The address field's mark for how the page arrived: a lock over
@@ -114,6 +115,8 @@ fn suggestion(row: &Row, engine: &str) -> LocationSuggestion {
     let icon = match row.kind {
         RowKind::Go => "globe",
         RowKind::History => "history",
+        // The toolbar's mark for a saved page.
+        RowKind::Bookmark => "star",
         RowKind::Search | RowKind::Suggestion => "search",
         RowKind::Extension => "box",
     };
@@ -121,6 +124,11 @@ fn suggestion(row: &Row, engine: &str) -> LocationSuggestion {
         // A visited page's address under its title; the extension a
         // keyword's row goes to.
         RowKind::History | RowKind::Extension => row.detail.clone(),
+        // A saved page says it is one, and where it leads.
+        RowKind::Bookmark => crate::resource::CATALOG.t_args(
+            "browser-suggestion-bookmark",
+            &[("url", ui::i18n::ArgValue::Text(row.detail.clone()))],
+        ),
         // The typed words: which engine they go to.
         RowKind::Search => crate::resource::CATALOG.t_args(
             "browser-suggestion-search",
@@ -323,7 +331,7 @@ impl BrowserWidget {
             .library_segments()
             .into_iter()
             .map(|(label, value)| LocationSegment {
-                label: label.to_owned(),
+                label,
                 value: value.to_owned(),
             })
             .collect();
@@ -332,7 +340,7 @@ impl BrowserWidget {
                 .last()
                 .map(|segment| segment.label.clone())
                 .unwrap_or_default(),
-            name: "Library".to_owned(),
+            name: t("browser-library-title"),
             segments,
             ..ToolbarLocation::default()
         }

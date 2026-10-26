@@ -1319,6 +1319,8 @@ const SCENARIOS: &[&str] = &[
     "charts",
     "comments",
     "bold",
+    "find",
+    "cellmenu",
 ];
 
 /// When the sample workbook of the annotated scenarios was written.

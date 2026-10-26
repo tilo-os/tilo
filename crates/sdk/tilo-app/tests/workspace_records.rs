@@ -149,3 +149,46 @@ fn the_rooms_grants_on_the_owners_resource_decide_from_any_app() {
     // No app keeps it but its owner.
     assert!(notes.workspace::<WorkspaceEmoji>(NotesApp::ID).is_none());
 }
+
+/// The first emoji added in a fresh room, from a refresh that runs while
+/// something reads the record's store (as a browser page's frame can):
+/// the action waits for the store instead of failing, and is applied, in
+/// the order asked for, once the store is free.
+#[test]
+fn an_action_asked_for_while_the_store_is_in_use_waits_for_it() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let mut chat = TestApp::<ChatApp>::in_room(ROOM).unwrap();
+    let kept = chat.workspace::<WorkspaceEmoji>(emoji::OWNER).unwrap();
+    assert!(names(&kept).is_empty(), "a fresh room has none yet");
+    let settled = Rc::new(RefCell::new(Vec::new()));
+    kept.record()
+        .read(|_| {
+            // Asked for at once, the store in use refuses it, saying why.
+            let refused = kept
+                .invoke(&WorkspaceEmoji::ADD_EMOJI.with(add("party")))
+                .unwrap_err();
+            assert!(refused.to_string().contains("in use"), "{refused}");
+            for name in ["party", "ship_it"] {
+                let settled = Rc::clone(&settled);
+                kept.invoke_then(&WorkspaceEmoji::ADD_EMOJI.with(add(name)), move |added| {
+                    settled.borrow_mut().push((name, added.is_ok()));
+                });
+            }
+            // Refreshes while the store stays in use keep them waiting.
+            let _ = kept.revision();
+            assert!(settled.borrow().is_empty());
+        })
+        .unwrap();
+    // The window's next refresh applies them, in order.
+    assert_eq!(names(&kept), ["party", "ship_it"]);
+    assert_eq!(*settled.borrow(), [("party", true), ("ship_it", true)]);
+
+    // One the record refuses settles as refused, without waiting.
+    kept.invoke_then(&WorkspaceEmoji::ADD_EMOJI.with(add("party")), {
+        let settled = Rc::clone(&settled);
+        move |added| settled.borrow_mut().push(("again", added.is_ok()))
+    });
+    assert_eq!(settled.borrow().last(), Some(&("again", false)));
+}

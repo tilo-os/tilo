@@ -867,6 +867,17 @@ impl StructureChange {
     pub fn join(self, other: Self) -> Self {
         self.max(other)
     }
+
+    /// Every one of `children`'s changes, joined: for a container that adds
+    /// no structure of its own, so a change a child carries out in place
+    /// ([`Self::Children`]) stays one. Each child's change is taken, none
+    /// skipped.
+    #[must_use]
+    pub fn of_children(children: Vec<&mut (dyn Widget + '_)>) -> Self {
+        children.into_iter().fold(Self::None, |change, child| {
+            change.join(child.take_structure_change())
+        })
+    }
 }
 
 /// Optional cross-device continuation capability for an app root.
@@ -2397,6 +2408,17 @@ pub trait Widget {
         StructureChange::of(self.take_structure_dirty())
     }
 
+    /// This widget's own layout node while the widgets under it are laid
+    /// out again in place, in it, by the coming
+    /// [`Self::remount_children`]: it then names none of them through
+    /// [`Self::for_each_layout_child`], and the host lets go of every node
+    /// under this one, as their widgets may be gone. `None` (the default)
+    /// otherwise.
+    #[doc(hidden)]
+    fn relaid_layout_node(&self) -> Option<NodeId> {
+        None
+    }
+
     /// Carry out a [`StructureChange::Children`] this widget or one under it
     /// reported, in the retained layout tree, through `remount` (see
     /// [`remount`](crate::widget::remount)). Returns `false` when it cannot be
@@ -3217,7 +3239,9 @@ pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
 pub mod floating_surface;
 pub mod primitives;
-pub use context_menu::{ContextMenu, MenuButton, MenuItem};
+pub use context_menu::{
+    ContextMenu, MenuButton, MenuItem, note_shift, shift_held, shift_skips_confirmation,
+};
 mod row_menu;
 pub use primitives::{
     BarControlFace, DensityRegion, DisclosureGroup, DisclosureRow, DisclosureState, Fact, Facts,
@@ -3248,6 +3272,8 @@ pub mod edge_resize;
 pub use edge_resize::{EdgeGrab, ResizeMode, WidthLimits, WindowEdge};
 mod resize_handle;
 pub use resize_handle::{HANDLE_HIT_HALF_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle};
+mod overflow_door;
+pub use overflow_door::{DoorPlan, OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
     CrossStripDetach, GroupRow, GroupTopology, HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan,
@@ -3479,6 +3505,13 @@ pub mod banner;
 pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
 pub mod chip;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
+pub mod conversation;
+pub use conversation::{
+    AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,
+    ComposerRule, ConversationClock, ConversationDay, ConversationLine, ConversationList,
+    ConversationRole, DayBreaks, DayDividerFace, DeliveryFace, DeliveryState, DeliveryStep,
+    DraftBook, ListFace, SavedCopy, UploadProgress,
+};
 pub mod card;
 mod tone;
 pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};

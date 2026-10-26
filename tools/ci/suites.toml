@@ -136,6 +136,7 @@ suites = [
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/rollback_luks_device.sh",
   "os/tests/firstboot_user_selinux.sh",
+  "os/tests/boot_selinux_domains.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/esp_generator.sh",
   "os/tests/deployment_dual_esp.sh",
@@ -354,7 +355,7 @@ inputs = [
   "crates/session/install-profile-model/locales.txt",
   "docs/recovery.md", "docs/security/boot-chain.md", "docs/security/repair-mode.md",
   "docs/security/rollback.md", "docs/windows-presentation.md", "docs/windows-vm.md",
-  "keys/cosign.pub", "keys/extensions.pub", "keys/tpm2-pcr-signing.public.pem",
+  "keys/cosign.pub", "keys/cosign-dev.pub", "keys/extensions.pub", "keys/tpm2-pcr-signing.public.pem",
   "scripts/browser/build-host.py", "scripts/browser/cef-lock.json",
   "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py",
   "tools/ci/install-xwayland-satellite.sh", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py",
@@ -552,6 +553,7 @@ suites = [
   "scripts/vm-acceptance/test_dialog_guard.py",
   "scripts/vm-acceptance/test_device_fidelity.py",
   "scripts/vm-acceptance/test_session_restart.py",
+  "scripts/vm-acceptance/test_session_guard.py",
   "scripts/vm-acceptance/test_ui.py",
   "scripts/vm-acceptance/test_vm_actions.py",
 ]
@@ -887,7 +889,10 @@ package = "tilo-relay"
 # The room's bot runner is tested with the Discord bridge's program as it
 # ships, the import it plans resuming after the room refused part of a run.
 inputs = ["apps/discord/bridge/program.json"]
-readers = ["crates/hosting/tilo-relay/src/room_bots/tests.rs"]
+readers = [
+  "crates/hosting/tilo-relay/src/room_bots/tests.rs",
+  "crates/hosting/tilo-relay/tests/governed_rooms/app_push.rs",
+]
 
 [[cargo]]
 package = "tilo-esp-write"

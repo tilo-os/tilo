@@ -1,7 +1,7 @@
 //! Environment configuration; see README.md.
 use anyhow::{Context, Result, ensure};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::limits::TrustedProxies;
@@ -138,6 +138,9 @@ pub struct PersistentConfig {
     pub root_file: PathBuf,
     /// The Discord bot token, when the bridge runs.
     pub discord_token_file: Option<PathBuf>,
+    /// Signing in with Discord to link an account, when the operator set
+    /// up the Discord application for it.
+    pub discord_sign_in: Option<crate::discord_sign_in::SignInConfig>,
     /// The model API key the room's moderation agent asks with, when it
     /// runs; mounted from the operator's encrypted secrets. The same model
     /// looks over members' feedback reports before they are sent.
@@ -448,6 +451,28 @@ fn public_origins(
 }
 
 /// The persistent room's settings, when `TILO_ROOMS_PERSISTENT` names one.
+/// The file `name` points at, else the secret `mounted` under
+/// `/run/secrets` when the operator mounted it.
+fn secret_file(
+    var: &impl Fn(&str) -> Option<String>,
+    name: &str,
+    mounted: &str,
+) -> Option<PathBuf> {
+    let mounted = Path::new("/run/secrets").join(mounted);
+    var(name)
+        .map(PathBuf::from)
+        .or_else(|| mounted.is_file().then_some(mounted))
+}
+
+/// Signing in with Discord, when the operator set up its application; the
+/// callback is on the room's public API.
+fn discord_sign_in(
+    var: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<crate::discord_sign_in::SignInConfig>> {
+    let api = var("TILO_ROOMS_PUBLIC_API").unwrap_or_else(|| "http://localhost:8790".into());
+    crate::discord_sign_in::SignInConfig::from_vars(var, &api)
+}
+
 fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<PersistentConfig>> {
     let Some(name) = var("TILO_ROOMS_PERSISTENT") else {
         return Ok(None);
@@ -486,8 +511,6 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         "TILO_ROOMS_MAX_SPECTATORS must be 1-100000"
     );
     let (guest_joins, spectator_joins) = join_rates(var)?;
-    let token = PathBuf::from("/run/secrets/discord-bot-token");
-    let moderation_key = PathBuf::from("/run/secrets/moderation-model-key");
     let moderation_model = moderation_model(var)?;
     let seed_apps = if var("TILO_ROOMS_SEED_APPS").is_some() {
         list("TILO_ROOMS_SEED_APPS", ',')
@@ -530,12 +553,13 @@ fn persistent(var: &impl Fn(&str) -> Option<String>) -> Result<Option<Persistent
         },
         root_file: var("TILO_ROOMS_ROOT_FILE")
             .map_or_else(|| PathBuf::from("/run/secrets/room-root"), PathBuf::from),
-        discord_token_file: var("TILO_ROOMS_DISCORD_TOKEN_FILE")
-            .map(PathBuf::from)
-            .or_else(|| token.is_file().then_some(token)),
-        moderation_key_file: var("TILO_ROOMS_MODERATION_KEY_FILE")
-            .map(PathBuf::from)
-            .or_else(|| moderation_key.is_file().then_some(moderation_key)),
+        discord_token_file: secret_file(var, "TILO_ROOMS_DISCORD_TOKEN_FILE", "discord-bot-token"),
+        discord_sign_in: discord_sign_in(var)?,
+        moderation_key_file: secret_file(
+            var,
+            "TILO_ROOMS_MODERATION_KEY_FILE",
+            "moderation-model-key",
+        ),
         moderation_model,
         max_spectators,
         guest_joins,
@@ -629,6 +653,11 @@ pub struct MailConfig {
     /// Where mail is posted (`TILO_ROOMS_RESEND_URL`): Resend's API unless
     /// set, which only a test changes, to a loopback stand-in.
     pub resend_url: String,
+    /// The directory the mails' words are read from
+    /// (`TILO_ROOMS_MAIL_TEMPLATES`), or `None` for the ones built in. A
+    /// directory that is missing or holds a template this mail cannot fill
+    /// stops the service: it never falls back to the built-in words.
+    pub templates: Option<PathBuf>,
 }
 
 /// Resend's endpoint for sending one mail.
@@ -660,14 +689,6 @@ fn mail(
         web_entry.is_some(),
         "the door mails links to its page: mail needs TILO_ROOMS_WEB_ENTRY"
     );
-    let address = from
-        .rsplit_once('<')
-        .map_or(from.as_str(), |(_, rest)| rest.trim_end_matches('>'));
-    ensure!(
-        tilo_relay_protocol::rooms::contact_address(address).is_ok()
-            && !from.chars().any(char::is_control),
-        "TILO_ROOMS_MAIL_FROM is an address or Name <address>"
-    );
     let resend_url = set("TILO_ROOMS_RESEND_URL").unwrap_or_else(|| RESEND_URL.to_owned());
     let loopback = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
         .iter()
@@ -676,11 +697,43 @@ fn mail(
         resend_url.starts_with("https://") || loopback,
         "TILO_ROOMS_RESEND_URL is an https URL"
     );
+    let templates = set("TILO_ROOMS_MAIL_TEMPLATES").map(PathBuf::from);
+    sender(&from)?;
     Ok(Some(MailConfig {
         from,
         resend_key_file: PathBuf::from(key),
         resend_url,
+        templates,
     }))
+}
+
+/// `from` as a mail service's sender: `Name <address>` or an address, with
+/// no line break, control character or second angle-bracketed address that
+/// could become another header.
+fn sender(from: &str) -> Result<()> {
+    ensure!(
+        !from.chars().any(char::is_control),
+        "TILO_ROOMS_MAIL_FROM is an address or Name <address>, on one line"
+    );
+    let address = match from.rsplit_once('<') {
+        Some((name, rest)) => {
+            ensure!(
+                !name.contains(['<', '>', '"']) && !name.trim().is_empty(),
+                "TILO_ROOMS_MAIL_FROM is an address or Name <address>"
+            );
+            rest.strip_suffix('>').with_context(
+                || "TILO_ROOMS_MAIL_FROM is an address or Name <address>, closed with >",
+            )?
+        }
+        None => from,
+    };
+    ensure!(
+        !address.contains(['<', '>', '"']) && !address.chars().any(char::is_whitespace),
+        "TILO_ROOMS_MAIL_FROM is an address or Name <address>"
+    );
+    tilo_relay_protocol::rooms::contact_address(address)
+        .map(|_| ())
+        .map_err(|_| anyhow::anyhow!("TILO_ROOMS_MAIL_FROM is an address or Name <address>"))
 }
 
 /// `TILO_ROOMS_CONTACT`: an email address or an `https://` page, if set.
@@ -1234,6 +1287,7 @@ mod tests {
                 from: from.1.into(),
                 resend_key_file: PathBuf::from(key.1),
                 resend_url: RESEND_URL.into(),
+                templates: None,
             }
         );
         let local = config(&[
@@ -1271,6 +1325,67 @@ mod tests {
         ] {
             assert!(config(&bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_sender_that_could_be_more_headers_is_refused() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+            ("TILO_ROOMS_WEB_ENTRY", "https://app.example/"),
+        ];
+        let key = ("TILO_ROOMS_RESEND_KEY_FILE", "/run/secrets/resend-key");
+        for from in [
+            "Tilo <hello@tilo.example>\r\nBcc: evil@example.net",
+            "Tilo <hello@tilo.example> <evil@example.net>",
+            "Tilo <hello@tilo.example",
+            "<hello@tilo.example>",
+            "Tilo <>",
+            "hello@tilo.example, evil@example.net",
+            "hello@tilo.example>",
+        ] {
+            let mail = ("TILO_ROOMS_MAIL_FROM", from);
+            assert!(
+                config(&[base[0], base[1], base[2], mail, key]).is_err(),
+                "{from:?}"
+            );
+        }
+        for from in [
+            "hello@tilo.example",
+            "Tilo <hello@tilo.example>",
+            "Tilo B <hello@tilo.example>",
+        ] {
+            let mail = ("TILO_ROOMS_MAIL_FROM", from);
+            assert!(
+                config(&[base[0], base[1], base[2], mail, key]).is_ok(),
+                "{from:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_door_reads_its_words_from_a_configured_directory_when_it_names_one() {
+        let base = [
+            ("TILO_ROOMS_PERSISTENT", "plaza"),
+            ("TILO_ROOMS_LOCAL", "1"),
+            ("TILO_ROOMS_WEB_ENTRY", "https://app.example/"),
+            ("TILO_ROOMS_MAIL_FROM", "hello@tilo.example"),
+            ("TILO_ROOMS_RESEND_KEY_FILE", "/run/secrets/resend-key"),
+        ];
+        let templates = (
+            "TILO_ROOMS_MAIL_TEMPLATES",
+            "/usr/local/share/tilo/room-mail",
+        );
+        let mail = config(&[base[0], base[1], base[2], base[3], base[4], templates])
+            .unwrap()
+            .persistent
+            .unwrap()
+            .mail
+            .unwrap();
+        assert_eq!(
+            mail.templates.as_deref(),
+            Some(std::path::Path::new("/usr/local/share/tilo/room-mail"))
+        );
     }
 
     #[test]

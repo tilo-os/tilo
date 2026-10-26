@@ -25,8 +25,39 @@ use super::{
     wheel_pixels,
 };
 
+/// The open photograph's own scale, for `Ctrl+=` / `Ctrl+-` / `Ctrl+0`,
+/// `Ctrl+scroll` and a pinch: the picture zooms, not the window's text. In the
+/// library the gesture is left to the window, which is what a grid wants.
+impl ui::content_zoom::ContentZoom for PhotosApp {
+    fn zoom_content(&mut self, step: ui::content_zoom::ZoomStep) -> Option<f32> {
+        if self.library_mode || self.viewer.is_none() {
+            return None;
+        }
+        Some(self.zoom_photo(step))
+    }
+}
+
+/// Showing photographs to a room: the window goes full screen while the
+/// person presents, and leaving full screen any other way ends it.
+impl ui::widget::FullscreenProvider for PhotosApp {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        Some(self.presenting)
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        if !active {
+            self.presenting = false;
+            self.slide_show = None;
+        }
+    }
+}
+
 impl Widget for PhotosApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::content_zoom::ContentZoom,
+        dyn ui::widget::FullscreenProvider
+    );
 
     /// The system's back gesture lowers or puts away an editor's sheet
     /// before anything navigates ([`PhotosApp::sheet_back`]).
@@ -168,6 +199,12 @@ impl Widget for PhotosApp {
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         if self.copy.failed() {
             self.notice = Some(tr("photos-copy-failed"));
+        }
+        // The slide show moves on to the next photograph while the window is
+        // awake for it, and the picture's own wheel zoom is what the bar says.
+        self.tick_slide_show();
+        if let Some(viewer) = self.viewer.as_ref() {
+            self.viewer_zoom.adopt(viewer.zoom());
         }
         self.apply_window_toolbar();
         self.open_chosen_places();
@@ -534,11 +571,14 @@ impl Widget for PhotosApp {
         self.show_places();
     }
 
+    /// The slide show is a timed presentation: the window sleeps until the
+    /// next photograph is due rather than repainting while it waits.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.children()
             .into_iter()
             .filter_map(Widget::next_wake_deadline)
             .chain(self.notice_said.deadline())
+            .chain(self.slide_show)
             .min()
     }
 
@@ -1514,6 +1554,48 @@ impl Widget for PhotosApp {
             }
             *ctx.handled = true;
             return;
+        }
+        // The photograph has the screen: the keys that show it to a room are
+        // here, where the picture is — full screen, the slide show, and
+        // stepping through the collection. Ctrl+= / Ctrl+- / Ctrl+0 reach the
+        // picture through `ContentZoom` before any widget sees them.
+        if !self.library_mode
+            && self.viewer.is_some()
+            && let winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+            && !ctx.modifiers.state().control_key()
+            && !ctx.modifiers.state().alt_key()
+            && !ctx.modifiers.state().super_key()
+        {
+            match &key.logical_key {
+                Key::Named(NamedKey::ArrowRight | NamedKey::PageDown) => {
+                    self.step_photo(true);
+                    *ctx.handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::ArrowLeft | NamedKey::PageUp) => {
+                    self.step_photo(false);
+                    *ctx.handled = true;
+                    return;
+                }
+                Key::Character(value) if value.eq_ignore_ascii_case("f") => {
+                    self.toggle_presentation();
+                    *ctx.handled = true;
+                    return;
+                }
+                Key::Character(value) if value == " " || value.eq_ignore_ascii_case("p") => {
+                    self.toggle_slide_show();
+                    *ctx.handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Escape) if self.slide_show_running() || self.presenting => {
+                    self.slide_show = None;
+                    self.presenting = false;
+                    *ctx.handled = true;
+                    return;
+                }
+                _ => {}
+            }
         }
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         if let (Some(v), Some(&canvas)) = (self.viewer.as_mut(), children.get(1)) {
