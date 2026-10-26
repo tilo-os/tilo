@@ -166,6 +166,32 @@ struct Gateway {
     intents: Option<u64>,
 }
 
+/// The bot's standing over the guild's emoji: Create Expressions (upload,
+/// and rename or delete what it uploaded), Manage Expressions (any emoji),
+/// and the guild's emoji slots, as its boost level gives them.
+#[derive(Debug)]
+struct Expressions {
+    create: bool,
+    manage: bool,
+    slots: usize,
+}
+
+impl Default for Expressions {
+    fn default() -> Self {
+        Self {
+            create: true,
+            manage: false,
+            slots: EMOJI_SLOTS,
+        }
+    }
+}
+
+/// The bot's own role, which Discord makes when the bot joins.
+const BOT_ROLE: &str = "1200";
+
+/// The emoji slots of a guild without boosts.
+pub const EMOJI_SLOTS: usize = 50;
+
 #[derive(Default)]
 struct State {
     token: String,
@@ -179,6 +205,9 @@ struct State {
     bans: Vec<String>,
     /// The guild's custom emoji, as Discord's emoji objects.
     emojis: Vec<Value>,
+    /// What the bot's role may do with the guild's emoji, and how many
+    /// the guild holds.
+    expressions: Expressions,
     bot_reactions: Vec<(String, String)>,
     audit: Vec<Value>,
     cdn: HashMap<String, (String, Vec<u8>)>,
@@ -660,6 +689,48 @@ impl FakeDiscord {
     #[must_use]
     pub fn emojis(&self) -> Vec<Value> {
         self.shared.lock().emojis.clone()
+    }
+
+    /// Whether the bot's role holds Create Expressions and Manage
+    /// Expressions, and how many emoji the guild has room for. A change to
+    /// the role's permissions dispatches `GUILD_ROLE_UPDATE`, as granting
+    /// or revoking them in the server's settings does.
+    pub fn set_expressions(&self, create: bool, manage: bool, slots: usize) {
+        const CREATE: u64 = 1 << 43;
+        const MANAGE: u64 = 1 << 30;
+        let mut state = self.shared.lock();
+        let before = (state.expressions.create, state.expressions.manage);
+        state.expressions = Expressions {
+            create,
+            manage,
+            slots,
+        };
+        if before == (create, manage) {
+            return;
+        }
+        let Some(role) = state.roles.iter_mut().find(|role| role["id"] == BOT_ROLE) else {
+            return;
+        };
+        let held: u64 = role["permissions"]
+            .as_str()
+            .and_then(|bits| bits.parse().ok())
+            .unwrap_or_default();
+        let held = (held & !(CREATE | MANAGE))
+            | if create { CREATE } else { 0 }
+            | if manage { MANAGE } else { 0 };
+        role["permissions"] = json!(held.to_string());
+        let update = json!({"guild_id": GUILD, "role": role.clone()});
+        state.dispatch("GUILD_ROLE_UPDATE", update);
+    }
+
+    /// The picture uploaded for emoji `id`.
+    #[must_use]
+    pub fn emoji_picture(&self, id: &str) -> Option<Vec<u8>> {
+        self.shared
+            .lock()
+            .cdn
+            .get(&format!("emojis/{id}"))
+            .map(|(_, bytes)| bytes.clone())
     }
 
     /// A user starts a thread on `message` in `parent`; returns the thread

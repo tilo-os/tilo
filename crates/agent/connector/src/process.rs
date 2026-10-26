@@ -139,6 +139,16 @@ impl ConnectorProcess {
         Ok(Self { shared, supervisor })
     }
 
+    /// Keep `bytes` in the host's content store this connector reads, for
+    /// an op that names them in its `attach` list (a picture the room
+    /// holds in a record rather than as content). Their BLAKE3 hex hash.
+    ///
+    /// # Errors
+    /// The store refused or failed, as a message for the host's log.
+    pub fn keep(&self, bytes: &[u8]) -> Result<String, String> {
+        self.shared.blobs.store(bytes)
+    }
+
     /// Perform one queued op: an outbox entry's value, `{"op": <the op the
     /// worker performs>, "publish": [..], "attach": [..]}`. The blob lists
     /// are the host's business, so only the inner op reaches the worker.

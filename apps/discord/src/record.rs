@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 use discord_wire::event::{ChannelInfo, EmojiInfo, OverwriteInfo, RoleInfo};
 use discord_wire::event::{LINK_TTL_MS, link_check};
 use discord_wire::op::{
-    AnswerInteractionOp, ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelOp, DeleteOp,
-    DeleteRoleOp, DiscordOp, DiscordResult, EditOp, FetchAssetOp, MemberOp, MemberRolesOp,
-    OverwriteKind, OverwriteOp, Queued, ReactOp, RoleSpec, SendOp, StartThreadOp,
+    AnswerInteractionOp, ChannelKind, ChannelSpec, CreateWebhookOp, DeleteChannelOp, DeleteEmojiOp,
+    DeleteOp, DeleteRoleOp, DiscordOp, DiscordResult, EditOp, EmojiSpec, FetchAssetOp, MemberOp,
+    MemberRolesOp, OverwriteKind, OverwriteOp, Queued, ReactOp, RoleSpec, SendOp, StartThreadOp,
 };
 use ui::tilo_resource::{
     self, ActionCx, Id, Identified, JsonSchema, Keyed, Model, Outbox, Refusal, Set, Settled,
@@ -85,6 +85,10 @@ pub struct Guild {
     /// Why the bridge cannot carry a voice channel's call now, as Discord
     /// refused it (a permission the bot lacks there); none while it can.
     pub voice_problem: Option<String>,
+    /// Why the workspace's emoji do not reach the server now, as Discord
+    /// answered the last upload (the bot may not create emoji there, or
+    /// the server's emoji slots are full); none while they do.
+    pub emoji_problem: Option<String>,
 }
 
 #[derive(
@@ -135,6 +139,9 @@ pub enum MappedKind {
     Webhook,
     /// A Tilo role's Discord role (`tilo` is the role name).
     Role,
+    /// The custom emoji the bridge uploaded to the server for a workspace
+    /// emoji (`tilo` is the emoji's name).
+    Emoji,
 }
 
 impl MappedKind {
@@ -146,6 +153,7 @@ impl MappedKind {
             Self::Message => "message",
             Self::Webhook => "webhook",
             Self::Role => "role",
+            Self::Emoji => "emoji",
         }
     }
 }
@@ -218,6 +226,10 @@ pub struct Mapping {
     /// For a message posted as a reply in Tilo: its thread root, because Tilo
     /// threads are one level deep.
     pub root: Option<String>,
+    /// For an emoji the bridge uploaded: the content address of its
+    /// picture, so a workspace emoji renamed keeps its Discord emoji and one
+    /// given another picture is uploaded again.
+    pub picture: Option<String>,
 }
 
 impl Identified for Mapping {
@@ -611,6 +623,7 @@ impl Guild {
                 origin,
                 persona,
                 root,
+                picture: None,
             },
         );
         Ok(())
@@ -1280,6 +1293,117 @@ impl Guild {
         Ok(())
     }
 
+    /// Upload a workspace emoji to the server, or rename one the bridge
+    /// uploaded.
+    #[action]
+    pub fn apply_emoji(
+        &mut self,
+        cx: &mut ActionCx,
+        outbox: &mut Outbox<Queued, DiscordResult>,
+        op: EmojiSpec,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        if !crate::emoji::valid_discord_name(&op.name) {
+            return Err(Refusal::new(
+                "a Discord emoji's name is 2 to 32 letters, digits and underscores",
+            ));
+        }
+        if let Some(id) = &op.id {
+            self.uploaded_emoji(id)?;
+        }
+        // A rename carries the picture too: an emoji deleted in Discord
+        // meanwhile is uploaded again.
+        let attach = match &op.picture {
+            Some(picture) if is_content_address(picture) => vec![picture.clone()],
+            _ => {
+                return Err(Refusal::new(
+                    "an emoji op names its picture's content address",
+                ));
+            }
+        };
+        outbox.push(
+            cx.id(),
+            Queued {
+                op: self.admit(DiscordOp::ApplyEmoji(op))?,
+                publish: Vec::new(),
+                attach,
+            },
+        );
+        Ok(())
+    }
+
+    /// Delete an emoji the bridge uploaded.
+    #[action]
+    pub fn delete_emoji(
+        &mut self,
+        cx: &mut ActionCx,
+        outbox: &mut Outbox<Queued, DiscordResult>,
+        op: DeleteEmojiOp,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        self.uploaded_emoji(&op.emoji)?;
+        queue(cx, outbox, self.admit(DiscordOp::DeleteEmoji(op))?);
+        Ok(())
+    }
+
+    /// Record what became of an emoji upload, rename or delete.
+    ///
+    /// The emoji the server holds for a workspace emoji now, or why it
+    /// holds none, said on the bridge's page until an emoji reaches the
+    /// server again.
+    #[action]
+    pub fn settle_emoji(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The workspace emoji's name")] tilo: String,
+        #[param("What the emoji op settled with")] result: DiscordResult,
+        #[param("The picture's content address, for an upload or rename")] picture: Option<String>,
+        #[param("The workspace emoji's name before a rename")] was: Option<String>,
+        #[param("The op deleted the emoji")] deleted: Option<bool>,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        let DiscordResult::Emoji {
+            emoji_id, problem, ..
+        } = result
+        else {
+            return Err(Refusal::new("that is not what an emoji op settles with"));
+        };
+        if let Some(problem) = problem {
+            if problem.is_empty() || problem.chars().count() > MAX_PROBLEM_CHARS {
+                return Err(Refusal::new("an emoji problem is 1 to 300 characters"));
+            }
+            self.emoji_problem = Some(problem);
+            return Ok(());
+        }
+        self.emoji_problem = None;
+        if deleted == Some(true) {
+            self.map
+                .take(&Id::from_raw(map_key(MappedKind::Emoji, &tilo)));
+            return Ok(());
+        }
+        if emoji_id.is_empty() || !crate::emoji::valid_discord_name(&tilo) {
+            return Err(Refusal::new("an uploaded emoji has an id and a name"));
+        }
+        if let Some(was) = was.filter(|was| *was != tilo) {
+            self.map
+                .take(&Id::from_raw(map_key(MappedKind::Emoji, &was)));
+        }
+        upsert(
+            &mut self.map,
+            Mapping {
+                key: map_key(MappedKind::Emoji, &tilo),
+                kind: MappedKind::Emoji,
+                tilo,
+                discord: emoji_id,
+                origin: Origin::Tilo,
+                persona: None,
+                root: None,
+                picture: picture.filter(|picture| is_content_address(picture)),
+            },
+        );
+        Ok(())
+    }
+
     /// Say why the bridge cannot carry voice now, or that it can again.
     ///
     /// The room's host reports what Discord answered when the bridge
@@ -1394,6 +1518,18 @@ impl Guild {
         }
     }
 
+    /// An emoji the bridge uploaded itself: the server's own are never
+    /// renamed or deleted.
+    fn uploaded_emoji(&self, discord: &str) -> Result<(), Refusal> {
+        if self.by_discord(MappedKind::Emoji, discord).is_some() {
+            Ok(())
+        } else {
+            Err(Refusal::new(
+                "the bridge changes only emoji it uploaded, never the server's own",
+            ))
+        }
+    }
+
     fn linked(&self, user: &str) -> Result<(), Refusal> {
         if self.links.find(&Id::from_raw(user)).is_some() {
             Ok(())
@@ -1403,6 +1539,11 @@ impl Guild {
             ))
         }
     }
+}
+
+/// A content-store blob's address: 64 hex digits.
+fn is_content_address(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn bot_or_person(cx: &ActionCx) -> Result<(), Refusal> {

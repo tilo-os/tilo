@@ -200,7 +200,7 @@ async fn control(
             let url = fake.put_cdn(&arg("path"), &arg("type"), &body);
             (200, json!({ "url": url }))
         }
-        ("POST", "/react" | "/unreact") | (_, "/reactions" | "/emojis") => {
+        ("POST", "/react" | "/unreact" | "/expressions") | (_, "/reactions" | "/emojis") => {
             (200, reactions(fake, &method, &path, &arg))
         }
         ("POST", "/voice/join") => {
@@ -227,7 +227,7 @@ async fn control(
         ("GET", "/voice/state") => (200, fake.voice_state_json()),
         _ => (
             404,
-            json!({ "error": "use /post, /edit, /delete, /messages, /slash, /replies, /react, /unreact, /reactions, /emojis or /voice/..." }),
+            json!({ "error": "use /post, /edit, /delete, /messages, /slash, /replies, /react, /unreact, /reactions, /emojis, /expressions or /voice/..." }),
         ),
     };
     Response::builder()
@@ -301,6 +301,12 @@ fn reactions(
             json!(fake.emojis())
         }
         (_, "/emojis") => json!(fake.emojis()),
+        ("POST", "/expressions") => {
+            let yes = |name: &str| matches!(arg(name).as_str(), "1" | "true");
+            let slots = arg("slots").parse().unwrap_or(fake_discord::EMOJI_SLOTS);
+            fake.set_expressions(yes("create"), yes("manage"), slots);
+            json!({})
+        }
         _ => json!(fake.bot_reactions_on(&arg("message"))),
     }
 }

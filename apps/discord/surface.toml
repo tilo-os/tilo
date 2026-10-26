@@ -37,6 +37,7 @@ fields = [
   { path = "map.*.origin", type = "Origin" },
   { path = "map.*.persona", type = "Option<String>" },
   { path = "map.*.root", type = "Option<String>" },
+  { path = "map.*.picture", type = "Option<String>" },
   { path = "links", type = "Keyed<Link>", stored = "keyed" },
   { path = "links.*.discord_user", type = "String", readonly = true },
   { path = "links.*.person", type = "String" },
@@ -66,6 +67,7 @@ fields = [
   { path = "discord_only", type = "Set<String>" },
   { path = "outbox", type = "Outbox<Queued, DiscordResult>", unit = true },
   { path = "voice_problem", type = "Option<String>" },
+  { path = "emoji_problem", type = "Option<String>" },
 ]
 
 [[resources.verbs]]
@@ -93,7 +95,7 @@ params = [
 id = "map"
 kind = "undoable"
 params = [
-  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "channel" }, { type = "string", const = "category" }, { type = "string", const = "thread" }, { type = "string", const = "message" }, { type = "string", const = "webhook" }, { type = "string", const = "role" }] } },
+  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "channel" }, { type = "string", const = "category" }, { type = "string", const = "thread" }, { type = "string", const = "message" }, { type = "string", const = "webhook" }, { type = "string", const = "role" }, { type = "string", const = "emoji" }] } },
   { name = "tilo", required = true, schema = { type = "string" } },
   { name = "discord", required = true, schema = { type = "string" } },
   { name = "origin", required = true, schema = { type = "string", enum = ["tilo", "discord"] } },
@@ -105,7 +107,7 @@ params = [
 id = "unmap"
 kind = "undoable"
 params = [
-  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "channel" }, { type = "string", const = "category" }, { type = "string", const = "thread" }, { type = "string", const = "message" }, { type = "string", const = "webhook" }, { type = "string", const = "role" }] } },
+  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "channel" }, { type = "string", const = "category" }, { type = "string", const = "thread" }, { type = "string", const = "message" }, { type = "string", const = "webhook" }, { type = "string", const = "role" }, { type = "string", const = "emoji" }] } },
   { name = "tilo", required = true, schema = { type = "string" } },
   { name = "keep_apart", required = false, schema = { type = ["boolean", "null"] } },
 ]
@@ -327,6 +329,31 @@ id = "finish-import"
 kind = "undoable"
 params = [
   { name = "tilo_only", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "apply-emoji"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = ["string", "null"] }, picture = { type = ["string", "null"] }, tilo = { type = "string" } }, required = ["name", "tilo"] } },
+]
+
+[[resources.verbs]]
+id = "delete-emoji"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { emoji = { type = "string" }, tilo = { type = "string" } }, required = ["emoji", "tilo"] } },
+]
+
+[[resources.verbs]]
+id = "settle-emoji"
+kind = "undoable"
+params = [
+  { name = "tilo", required = true, schema = { type = "string" } },
+  { name = "result", required = true, schema = { oneOf = [{ type = "object", additionalProperties = false, properties = { message_id = { type = "string" }, result = { type = "string", const = "message" }, tilo = { type = "string" } }, required = ["result", "message_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "thread" }, thread_id = { type = "string" }, tilo = { type = "string" } }, required = ["result", "thread_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "webhook" }, tilo = { type = "string" }, webhook_id = { type = "string" } }, required = ["result", "webhook_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { channel_id = { type = "string" }, result = { type = "string", const = "channel" }, tilo = { type = "string" } }, required = ["result", "channel_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "role" }, role_id = { type = "string" }, tilo = { type = "string" } }, required = ["result", "role_id", "tilo"] }, { type = "object", additionalProperties = false, properties = { emoji_id = { type = "string" }, problem = { type = ["string", "null"] }, result = { type = "string", const = "emoji" }, tilo = { type = "string" } }, required = ["result", "tilo"] }, { type = "object", additionalProperties = false, properties = { attachment = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name"] }, blob = { type = "string" }, content_type = { type = "string" }, result = { type = "string", const = "asset" }, size = { type = "integer", minimum = 0 } }, required = ["result", "blob", "size", "content_type"] }, { type = "object", additionalProperties = false, properties = { result = { type = "string", const = "done" } }, required = ["result"] }] } },
+  { name = "picture", required = false, schema = { type = ["string", "null"] } },
+  { name = "was", required = false, schema = { type = ["string", "null"] } },
+  { name = "deleted", required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]

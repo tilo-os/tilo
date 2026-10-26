@@ -1442,3 +1442,228 @@ fn seed_channels(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// A picture an emoji may keep: a PNG's signature and `fill`.
+fn picture(fill: u8) -> Vec<u8> {
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend(std::iter::repeat_n(fill, 64));
+    png
+}
+
+impl Bridge {
+    /// Ada changes the workspace's emoji (Chat's workspace record, which
+    /// every app of the room opens) from her own device: `change` makes the
+    /// invocation, applied to the record as the room holds it now.
+    async fn ada_emoji(
+        &self,
+        change: impl FnOnce() -> Invoke<ui::tilo_workspace_emoji::WorkspaceEmoji>,
+    ) {
+        let record = collab_types::workspace_record_id(ui::tilo_workspace_emoji::KIND);
+        let saved = self
+            .room
+            .rooms
+            .record_document(&self.room.id, CHAT, &record)
+            .await
+            .unwrap();
+        let bytes = self.emoji_changed(&record, saved, change());
+        self.room
+            .rooms
+            .author_room_record(
+                &self.room.id,
+                &self.room.cert,
+                (CHAT, record.as_str()),
+                move |doc| {
+                    tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
+                        .map(drop)
+                        .map_err(|error| error.to_string())
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    /// The emoji record `saved` with Ada's `invoke` applied, saved.
+    fn emoji_changed(
+        &self,
+        record: &str,
+        saved: Option<Vec<u8>>,
+        invoke: Invoke<ui::tilo_workspace_emoji::WorkspaceEmoji>,
+    ) -> Vec<u8> {
+        use ui::tilo_workspace_emoji::{KIND, WorkspaceEmoji};
+        let mut doc = saved
+            .map(|bytes| AutoCommit::load(&bytes).unwrap())
+            .unwrap_or_default();
+        ui::record::init_scoped(
+            &mut doc,
+            &ui::record::RecordId::parse(record).unwrap(),
+            &ui::record::RecordKind::new(KIND),
+            CHAT,
+            Some(&self.room.id),
+        );
+        let mut replica = Replica::<WorkspaceEmoji>::from_doc(doc)
+            .as_invoker(&self.ada)
+            .in_app(CHAT, "Chat");
+        replica.apply_confirmed(invoke).unwrap();
+        replica.doc_mut().save()
+    }
+
+    async fn ada_adds_emoji(&self, name: &str, fill: u8) {
+        use ui::tilo_workspace_emoji::workspace_emoji::AddEmoji;
+        use ui::tilo_workspace_emoji::{EmojiImage, WorkspaceEmoji};
+        self.ada_emoji(|| {
+            WorkspaceEmoji::ADD_EMOJI.with(AddEmoji {
+                name: name.into(),
+                image: EmojiImage(picture(fill)).to_base64(),
+            })
+        })
+        .await;
+    }
+
+    async fn ada_removes_emoji(&self, name: &str) {
+        use ui::tilo_workspace_emoji::WorkspaceEmoji;
+        use ui::tilo_workspace_emoji::workspace_emoji::RemoveEmoji;
+        self.ada_emoji(|| WorkspaceEmoji::REMOVE_EMOJI.with(RemoveEmoji { name: name.into() }))
+            .await;
+    }
+
+    /// The id of the server's emoji `name` the bot uploaded.
+    fn uploaded(&self, name: &str) -> Option<String> {
+        self.fake
+            .emojis()
+            .iter()
+            .find(|e| {
+                e.get("name").and_then(Value::as_str) == Some(name)
+                    && e.pointer("/user/id").and_then(Value::as_str) == Some(fake_discord::BOT_USER)
+            })
+            .and_then(|e| e.get("id").and_then(Value::as_str).map(str::to_owned))
+    }
+}
+
+/// The workspace's emoji reach the server as emoji the bridge uploads,
+/// renames and deletes, and stand for `:name:` in reactions and messages;
+/// the server's own emoji are never touched; a permission the bot lacks or
+/// a full server is said on the bridge's record, and reactions carry on.
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_emoji_are_uploaded_renamed_and_deleted_in_the_server() {
+    let (bridge, mut runner) = Bridge::start().await;
+    // The server has an emoji of its own named like a workspace emoji.
+    bridge.fake.set_emojis(&[("party", "55", false)]);
+    settle(&mut runner, "server emoji observed", || async {
+        (bridge.room.guild().await.emoji("party") == Some("55")).then_some(())
+    })
+    .await;
+
+    // Added in Tilo: uploaded, with its picture, under its name.
+    bridge.ada_adds_emoji("tilo_wave", 1).await;
+    bridge.ada_adds_emoji("party", 2).await;
+    let wave = settle(&mut runner, "uploaded", || async {
+        let id = bridge.uploaded("tilo_wave")?;
+        let mapped = bridge.discord_of(MappedKind::Emoji, "tilo_wave").await?;
+        (mapped == id).then_some(id)
+    })
+    .await;
+    assert_eq!(bridge.fake.emoji_picture(&wave), Some(picture(1)));
+    // The server's own `party` stands for the workspace's: nothing else is
+    // uploaded, and it is left as it was.
+    assert_eq!(bridge.uploaded("party"), None);
+    assert_eq!(bridge.discord_of(MappedKind::Emoji, "party").await, None);
+
+    // Text and reactions from Tilo use the server's emoji.
+    let first = bridge.ada_says("hi :tilo_wave: and :party:").await;
+    let sent = settle(&mut runner, "post", || async {
+        bridge.discord_of(MappedKind::Message, &first).await
+    })
+    .await;
+    assert!(
+        bridge
+            .in_discord(&format!("hi <:tilo_wave:{wave}> and <:party:55>"))
+            .is_some(),
+        "{:#?}",
+        bridge.fake.messages_in(CHANNEL_GENERAL)
+    );
+    bridge.ada_reacts(&first, ":tilo_wave:", true).await;
+    settle(&mut runner, "reaction", || async {
+        (bridge.fake.bot_reactions_on(&sent) == [format!("tilo_wave:{wave}")]).then_some(())
+    })
+    .await;
+
+    // Renamed in Tilo (removed and added again with its picture): the same
+    // Discord emoji, renamed.
+    bridge.ada_removes_emoji("tilo_wave").await;
+    bridge.ada_adds_emoji("hello", 1).await;
+    settle(&mut runner, "renamed", || async {
+        (bridge.uploaded("hello").as_deref() == Some(wave.as_str())
+            && bridge
+                .discord_of(MappedKind::Emoji, "hello")
+                .await
+                .as_deref()
+                == Some(wave.as_str())
+            && bridge
+                .discord_of(MappedKind::Emoji, "tilo_wave")
+                .await
+                .is_none())
+        .then_some(())
+    })
+    .await;
+
+    // Removed in Tilo: deleted in Discord; the server's own stays.
+    bridge.ada_removes_emoji("hello").await;
+    bridge.ada_removes_emoji("party").await;
+    settle(&mut runner, "deleted", || async {
+        (bridge
+            .fake
+            .emojis()
+            .iter()
+            .all(|e| e["id"] != wave.as_str())
+            && bridge
+                .discord_of(MappedKind::Emoji, "hello")
+                .await
+                .is_none())
+        .then_some(())
+    })
+    .await;
+    assert!(bridge.fake.emojis().iter().any(|e| e["id"] == "55"));
+    assert!(
+        !calls(&bridge.fake.requests())
+            .iter()
+            .any(|call| call.contains("/emojis/55")),
+        "the server's own emoji is never changed"
+    );
+
+    // Without Create Expressions: said on the bridge's record, nothing
+    // uploaded, and the bridge carries on.
+    bridge.fake.set_expressions(false, false, 50);
+    bridge.ada_adds_emoji("cat", 3).await;
+    settle(&mut runner, "permission problem", || async {
+        (bridge.room.guild().await.emoji_problem.as_deref()
+            == Some(discord_worker::perform::EMOJI_PERMISSION_PROBLEM))
+        .then_some(())
+    })
+    .await;
+    assert_eq!(bridge.uploaded("cat"), None);
+    // Once granted (Discord reports the role's change), it is brought over
+    // and the line is cleared.
+    bridge.fake.set_expressions(true, false, 50);
+    settle(&mut runner, "uploaded once allowed", || async {
+        (bridge.uploaded("cat").is_some() && bridge.room.guild().await.emoji_problem.is_none())
+            .then_some(())
+    })
+    .await;
+
+    // A full server: said, and a reaction with the emoji stays in Tilo.
+    bridge.fake.set_expressions(true, false, 2);
+    bridge.ada_adds_emoji("dog", 4).await;
+    settle(&mut runner, "full", || async {
+        (bridge.room.guild().await.emoji_problem.as_deref()
+            == Some(discord_worker::perform::EMOJI_FULL_PROBLEM))
+        .then_some(())
+    })
+    .await;
+    assert_eq!(bridge.uploaded("dog"), None);
+    bridge.ada_reacts(&first, ":dog:", true).await;
+    let calls = quiet(&mut runner, &bridge, "after dog").await;
+    assert!(
+        !calls.iter().any(|call| call.contains("/reactions/")),
+        "{calls:?}"
+    );
+}

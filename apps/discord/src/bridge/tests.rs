@@ -42,6 +42,7 @@ fn planned_in(guild: &Guild, room: &Value, event: &Value) -> BridgePlan {
             chat: &chat(),
             context: &Context::default(),
             room,
+            emoji: None,
         },
         event,
     )
@@ -276,6 +277,7 @@ fn a_tilo_reaction_is_routed_to_its_message_and_becomes_the_bots() {
                 chat,
                 context: &Context::default(),
                 room: &Value::Null,
+                emoji: None,
             },
             event,
         )
@@ -345,6 +347,7 @@ fn read_with_report(guild: &Guild, event: &Value) -> BridgePlan {
             chat: &with_report(),
             context: &Context::default(),
             room: &Value::Null,
+            emoji: None,
         },
         event,
     )

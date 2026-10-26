@@ -24,6 +24,10 @@ use crate::record::{Guild, LinkOffer};
 /// The connector's effects.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "discord.effects")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "an effect is decoded once per call and matched at once, never stored in bulk"
+)]
 pub enum DiscordEffect {
     /// Connect my Discord account
     ///
@@ -112,6 +116,8 @@ pub enum DiscordEffect {
         context: Option<Context>,
         #[param("The room's members with their roles")]
         room: Option<Value>,
+        #[param("The workspace's emoji: emoji [{name, picture}]")]
+        emoji: Option<Value>,
     },
 }
 
@@ -137,12 +143,14 @@ pub fn plan(guild: &Guild, effect: &DiscordEffect) -> Option<Value> {
             chat,
             context,
             room,
+            emoji,
         } => serde_json::to_value(bridge::plan(
             bridge::Reading {
                 guild,
                 chat,
                 context: &context.clone().unwrap_or_default(),
                 room: room.as_ref().unwrap_or(&Value::Null),
+                emoji: emoji.as_ref(),
             },
             event,
         ))

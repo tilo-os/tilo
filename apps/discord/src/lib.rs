@@ -8,6 +8,7 @@
 pub mod bridge;
 pub mod effects;
 pub mod emoji;
+pub mod emoji_sync;
 pub mod guard;
 pub mod import;
 pub mod inbound;

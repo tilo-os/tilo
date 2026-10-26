@@ -28,6 +28,8 @@ use crate::{import, layout, roles};
 pub const CHAT_KIND: &str = "chat.workspace";
 /// The kind of the parts Chat keeps its messages in, beside its record.
 pub const MESSAGES_KIND: &str = "chat.messages";
+/// The workspace's own emoji, which the bridge uploads to the server.
+pub const EMOJI_KIND: &str = "tilo.workspace.emoji";
 /// The room record kind whose role changes the bridge mirrors.
 pub const ROOM_KIND: &str = "tilo.room";
 /// Chat's verb filing a feedback report in a channel.
@@ -74,6 +76,12 @@ pub struct BridgePlan {
     pub apply_roles: Vec<Value>,
     /// `set-overwrite`.
     pub overwrites: Vec<Value>,
+    /// `delete-emoji`, then `settle-emoji`: an emoji the bridge uploaded
+    /// whose workspace emoji is gone or has another picture.
+    pub delete_emojis: Vec<Value>,
+    /// `apply-emoji`, then `settle-emoji`: a workspace emoji uploaded to
+    /// the server, or the one uploaded for it renamed.
+    pub apply_emojis: Vec<Value>,
     pub member_roles: Vec<Value>,
     /// `kick`: a linked person was removed from the room.
     pub kicks: Vec<Value>,
@@ -156,6 +164,8 @@ enum Fired<'e> {
         verbs: Vec<String>,
         event: &'e Value,
     },
+    /// The workspace's emoji changed.
+    Emoji,
     /// A change to the bridged guild record itself, such as a Moderator's
     /// `block-persona`.
     Guild {
@@ -189,6 +199,7 @@ fn fired(event: &Value) -> Fired<'_> {
             event,
         },
         Some(ROOM_KIND) => Fired::Room { verbs, event },
+        Some(EMOJI_KIND) => Fired::Emoji,
         Some(crate::KIND) => Fired::Guild { verbs, event },
         _ => Fired::Other,
     }
@@ -372,6 +383,10 @@ pub struct Reading<'a> {
     /// "role"}]}`), for a Discord-side moderator's standing in Tilo; `null`
     /// when the host binds none, which treats nobody as a moderator.
     pub room: &'a Value,
+    /// The workspace's emoji as the host hands them (`{"emoji": [{"name",
+    /// "picture"}]}`), or `None` when it binds none, which leaves the
+    /// server's emoji alone.
+    pub emoji: Option<&'a Value>,
 }
 
 /// Everything `event` means.
@@ -417,6 +432,7 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
                 guild_change(&mut plan, read, verb, event);
             }
         }
+        Fired::Emoji => emoji(&mut plan, read),
         Fired::Discord { source, payload } => discord_event(&mut plan, read, source, payload),
         Fired::Other => {}
     }
@@ -512,6 +528,16 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>) {
         plan.apply_roles.extend(values(roles.apply));
         plan.overwrites.extend(values(roles.overwrites));
     }
+}
+
+/// Bring the server's emoji in line with the workspace's.
+fn emoji(plan: &mut BridgePlan, read: Reading<'_>) {
+    let Some(wanted) = crate::emoji_sync::wanted(read.emoji) else {
+        return;
+    };
+    let emoji = crate::emoji_sync::plan(read.guild, &wanted);
+    plan.delete_emojis.extend(values(emoji.deletes));
+    plan.apply_emojis.extend(values(emoji.applies));
 }
 
 fn room_change(plan: &mut BridgePlan, guild: &Guild, verb: &str, event: &Value) {
@@ -621,6 +647,9 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
     observed.observe_emojis(layout.emojis.clone());
     if observed == *read.guild {
         reconcile(plan, read);
+        // On every start too: the workspace's emoji made while the bridge
+        // was away, or that the server had no room or permission for.
+        emoji(plan, read);
     } else {
         plan.observe.push(json!({
             "bot_user": layout.bot_user,
