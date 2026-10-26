@@ -1426,8 +1426,9 @@ fn until_or_say<T>(
         }
         assert!(
             Instant::now() < bound,
-            "timed out waiting for {what}{}",
-            standing()
+            "timed out waiting for {what}{}\n  what became of requests to rooms' hosts:{}",
+            standing(),
+            crate::network::actor::room_governance::trace::said()
         );
         let next = devices
             .iter()

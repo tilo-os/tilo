@@ -357,7 +357,7 @@ pub fn verify_room(
             },
             authority: tilo_peer_state::room::AuthorityPin::Device(&pinned),
             contents: tilo_peer_state::room::ContentOwnership::Registry,
-            caps_now: 0,
+            now_ns: 0,
         },
         &doc,
     )

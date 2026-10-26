@@ -3817,7 +3817,7 @@ impl CapnpBrokerState {
         pending: &PendingInvocation,
         update: &tilo_actions::InvocationUpdate,
     ) -> Result<(), capnp::Error> {
-        if !(self.durable_owner_required || self.publisher.requires_owner_for(&pending.cluster_id))
+        if !(self.durable_owner_required || self.publisher.records_effects_for(&pending.cluster_id))
             || !update.is_terminal()
         {
             return Ok(());
@@ -3920,7 +3920,7 @@ impl CapnpBrokerState {
         pending: &PendingInvocation,
         update: &tilo_actions::InvocationUpdate,
     ) {
-        if self.durable_owner_required || self.publisher.requires_owner_for(&pending.cluster_id) {
+        if self.durable_owner_required || self.publisher.records_effects_for(&pending.cluster_id) {
             return;
         }
         if pending.operation_kind != tilo_actions::OperationKind::Effect {
@@ -10058,7 +10058,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             || self
                 .state
                 .publisher
-                .requires_owner_for(&surface.route.cluster_id)
+                .records_effects_for(&surface.route.cluster_id)
         {
             context.purpose = None;
             let receipt = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
@@ -20933,7 +20933,7 @@ impl CapnpBrokerState {
         let requires_owner = state.durable_owner_required
             || owner_room
                 .as_ref()
-                .is_some_and(|room| state.publisher.requires_owner_for(room));
+                .is_some_and(|room| state.publisher.records_effects_for(room));
         let _owner_order = if requires_owner {
             Some(state.owner_commit_order.lock().await)
         } else {

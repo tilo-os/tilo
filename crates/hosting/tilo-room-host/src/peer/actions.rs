@@ -186,19 +186,32 @@ fn serve_locally(
     let to_device_public_key = peer.device_public_key;
     let from_device_public_key = *session.own_device_public_key;
     let from_user_public_key = *session.own_user_public_key;
+    // The answer is all the asker waits for: it waits for room in the
+    // connection's queue rather than being dropped when the room's own
+    // traffic filled it. It ends with the connection.
+    let runtime = tokio::runtime::Handle::current();
     reply.then(move |reply| {
         let Some(frame) = reply.and_then(|reply| RemoteActionFrame::new(reply).encode().ok())
         else {
             return;
         };
-        let _ = outbound.try_send(Envelope::RemoteAction {
+        let answer = Envelope::RemoteAction {
             workspace_id,
             version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
             to_device_public_key,
             from_device_public_key,
             from_user_public_key,
             frame,
-        });
+        };
+        if let Err(mpsc::error::TrySendError::Full(answer)) = outbound.try_send(answer) {
+            tracing::info!(
+                workspace_id,
+                "an answer to a member waits for room in its connection's queue"
+            );
+            runtime.spawn(async move {
+                let _ = outbound.send(answer).await;
+            });
+        }
     });
     Ok(None)
 }
