@@ -94,49 +94,50 @@ fn the_agent_surface_matches_its_golden_file_and_budget() {
 }
 
 fn assert_header_inventory(surface: &serde_json::Value, app: &mut TestApp<App>) {
-    // Header controls remain real AT controls even where the artwork also
-    // exposes their canonical commands. Suppressing their semantic leaves
-    // creates orphan bindings; their public UI door is chiefly native focus.
-    let header = [
-        "canvas%2Dadd%2Dpicture",
-        "canvas%2Dexport%2Dtitle",
-        "canvas%2Dmenu",
-        "canvas%2Dzoom%2Dfit",
-        "canvas%2Dzoom%2Din",
-        "canvas%2Dzoom%2Dout",
-        "undo",
-        "redo",
-    ];
+    // The artwork's commands are the window bar's slots now, not a row of
+    // buttons inside the window: the app's own surface holds no header
+    // control, so none of them mints a second door onto a document edit.
     let rows = surface.as_array().unwrap();
-    let controls: std::collections::BTreeSet<_> = rows
+    let controls: Vec<_> = rows
         .iter()
         .filter(|row| row["resource_kind"] == "tilo.ui.control")
         .filter_map(|row| row["resource"].as_str())
         .filter(|resource| !resource.contains("nav%2Dshell%2D"))
         .collect();
-    let expected: std::collections::BTreeSet<_> = header
-        .iter()
-        .map(|id| format!("ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3A{id}"))
-        .collect();
     assert_eq!(
         controls,
-        expected
-            .iter()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>(),
-        "exact native header inventory, with no unrelated controls"
+        Vec::<&str>::new(),
+        "the window bar holds the artwork's commands, not the body"
     );
-    for resource in &controls {
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row["resource"] == *resource
-                    && row["action"] == "focus"
-                    && row["operation"] == "View")
-                .count(),
-            1,
-            "each header control has exactly one actual focus door: {resource}"
-        );
+    let declared = ui::window_toolbar::declared().expect("the window declares its slots");
+    let ids: Vec<&str> = declared
+        .actions
+        .iter()
+        .flat_map(|action| {
+            std::iter::once(action.id.as_str())
+                .chain(action.items.iter().map(|item| item.id.as_str()))
+        })
+        .collect();
+    for wanted in [
+        "canvas.menu",
+        "canvas.undo",
+        "canvas.redo",
+        "canvas.add-picture",
+        "canvas.export",
+        "canvas.zoom",
+        "canvas.zoom-in",
+        "canvas.zoom-out",
+        "canvas.zoom-fit",
+        "canvas.zoom-actual",
+        "canvas.tools",
+    ] {
+        assert!(ids.contains(&wanted), "{wanted} is a slot in {ids:?}");
     }
+    let location = declared.location.expect("the artwork is the location");
+    assert!(
+        location.editable,
+        "the artwork's title is renamed in place, as the header's field did"
+    );
     let documents: Vec<_> = rows
         .iter()
         .filter(|row| row["operation"] == "Document")
@@ -159,14 +160,8 @@ fn assert_header_inventory(surface: &serde_json::Value, app: &mut TestApp<App>) 
         documents
             .iter()
             .all(|row| row["resource_kind"] != "tilo.ui.control"),
-        "native header controls never mint alternate document mutation doors"
+        "bar slots never mint alternate document mutation doors"
     );
-    let bindings = ui::widget::controls::control_action_bindings(app.harness().root_widget());
-    for command in ["undo", "redo"] {
-        assert!(bindings.iter().any(|binding| binding.control_id == command && matches!(
-            &binding.kind, ui::widget::ControlBindingKind::Action(address) if address.action == command
-        )), "the actual header retains canonical {command}: {bindings:#?}");
-    }
     let audit = app.harness().native_app_audit();
     assert!(
         audit.is_certified(),

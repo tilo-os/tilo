@@ -224,6 +224,9 @@ pub struct Tools {
     /// How far the canvas is zoomed: screen pixels per artwork unit, as
     /// the canvas last showed it.
     pub zoom: LocalState<f64>,
+    /// The artwork's title, as the canvas last read it: what the window's
+    /// bar shows as the window's location.
+    pub title: LocalState<String>,
     /// A change of view asked for from outside the canvas (the zoom
     /// buttons), carried out by the canvas on its next frame.
     pub view: LocalState<Option<ViewRequest>>,
@@ -447,6 +450,7 @@ impl Default for Tools {
             preview: LocalState::new(None),
             checkpoint_name: LocalState::new(String::new()),
             zoom: LocalState::new(1.0),
+            title: LocalState::new(String::new()),
             view: LocalState::new(None),
             keys: LocalState::new(Vec::new()),
             sidebar: LocalState::new(true),

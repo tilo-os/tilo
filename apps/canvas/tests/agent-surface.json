@@ -2093,6 +2093,8 @@
                 "remove-row",
                 "remove-column",
                 "settle",
+                "react",
+                "unreact",
                 "rich"
               ]
             }
@@ -2359,6 +2361,8 @@
                               "remove-row",
                               "remove-column",
                               "settle",
+                              "react",
+                              "unreact",
                               "rich"
                             ]
                           }
@@ -3870,6 +3874,8 @@
                 "remove-row",
                 "remove-column",
                 "settle",
+                "react",
+                "unreact",
                 "rich"
               ]
             }
@@ -3925,28 +3931,10 @@
     ]
   },
   {
-    "resource": "tilo.control:canvas-add-picture",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Add picture",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
     "resource": "tilo.control:canvas-dock-fold",
     "action": "invoke",
     "resource_kind": "tilo.control",
     "label": "Fold the layers and history away",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "tilo.control:canvas-export-title",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Export a picture",
     "description": null,
     "operation": "View",
     "params": []
@@ -4020,42 +4008,6 @@
     ]
   },
   {
-    "resource": "tilo.control:canvas-zoom-fit",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Fit to window",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "tilo.control:canvas-zoom-in",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Zoom in",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "tilo.control:canvas-zoom-out",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Zoom out",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "tilo.control:nav-shell-inspector",
-    "action": "invoke",
-    "resource_kind": "tilo.control",
-    "label": "Hide inspector",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
     "resource": "tilo.host:search",
     "action": "open",
     "resource_kind": "tilo.host.search",
@@ -4084,104 +4036,5 @@
         "description": "A system action the app prepares for the person to confirm, as JSON: {\"action\": id, \"arguments\": {name: text}}"
       }
     ]
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dadd%2Dpicture",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dexport%2Dtitle",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dmenu",
-    "action": "activate",
-    "resource_kind": "tilo.ui.control",
-    "label": "Activate",
-    "description": null,
-    "operation": "Effect",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dmenu",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dzoom%2Dfit",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dzoom%2Din",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dzoom%2Dout",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Anav%2Dshell%2Dhistory",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Anav%2Dshell%2Dinspector",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Aredo",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
-  },
-  {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Aundo",
-    "action": "focus",
-    "resource_kind": "tilo.ui.control",
-    "label": "Focus",
-    "description": null,
-    "operation": "View",
-    "params": []
   }
 ]

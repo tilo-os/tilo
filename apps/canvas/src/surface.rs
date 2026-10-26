@@ -1708,25 +1708,32 @@ impl CanvasSurface {
 
     /// The view keys: zoom in and out, to fit, to 100 %, to the selection,
     /// and the overview of the keys.
+    ///
+    /// `Ctrl+=`, `Ctrl+-` and `Ctrl+0` zoom the artwork, as they zoom any
+    /// content with a size of its own (`ui::content_zoom`), and the bare keys
+    /// do the same. Alt keeps its own meaning throughout, and a chord the
+    /// system reserves for something else is not a zoom: the artwork is not
+    /// the only thing on the screen that a key can speak to.
     fn view_key(&mut self, key: &Key, modifiers: ModifiersState) -> bool {
         let Key::Character(ch) = key else {
             return false;
         };
         let command = modifiers.control_key() || modifiers.super_key();
-        match (ch.as_str(), command, modifiers.shift_key()) {
+        let alt = modifiers.alt_key();
+        match (ch.as_str(), command, modifiers.shift_key(), alt) {
             // The keys, which a keyboard may report as Shift and slash.
-            ("?", false, _) | ("/", false, true) => {
+            ("?", false, _, false) | ("/", false, true, false) => {
                 return crate::panels::files::window_key(&self.tools, "?", modifiers);
             }
-            ("+" | "=", _, _) => self.zoom_by(ZOOM_STEP, None),
-            ("-" | "_", _, _) => self.zoom_by(1.0 / ZOOM_STEP, None),
-            ("0", true, _) | ("!" | "1", false, true) => self.zoom_to_fit(),
-            ("1", true, _) | ("0" | ")", false, true) => {
+            ("+" | "=", _, _, false) => self.zoom_by(ZOOM_STEP, None),
+            ("-" | "_", _, _, false) => self.zoom_by(1.0 / ZOOM_STEP, None),
+            ("0", true, _, false) | ("!" | "1", false, true, false) => self.zoom_to_fit(),
+            ("1", true, _, false) | ("0" | ")", false, true, false) => {
                 self.zoom_motion = None;
                 self.viewport.set_zoom(1.0);
                 self.moved_by_hand = true;
             }
-            ("2" | "@", false, true) => self.zoom_to_selection(),
+            ("2" | "@", false, true, false) => self.zoom_to_selection(),
             _ => return false,
         }
         true
@@ -3465,6 +3472,11 @@ impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
             self.text = None;
         }
         self.art = Rc::clone(state);
+        // The window's bar says where the window is: the artwork's name, as
+        // the canvas reads it here, so a rename by anyone shows at once.
+        if self.tools.title.with(|shown| *shown != state.title) {
+            self.tools.title.set(state.title.clone());
+        }
         // What the window shows is what the magic wand finds colour in.
         crate::author::see(&self.tools.renderer, &self.art);
     }

@@ -111,24 +111,33 @@ pub fn header(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) -
 pub(crate) fn add_picture(tools: &Tools, size: ControlSize) -> Element {
     let picking = tools.picking.clone();
     let name = ui::i18n::I18nManager::lookup_plain("canvas-add-picture");
-    let title = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-title");
-    let confirm = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-confirm");
-    let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
     Box::new(
         Button::icon_only("canvas-add-picture", Icon::Image, &name)
             .control_size(size)
             .on_view(move || {
-                let request = ui::portal::PickRequest::open(&title, &confirm)
-                    .filter(
-                        ui::portal::FileFilter::new(&kinds)
-                            .mimetype("image/png")
-                            .mimetype("image/jpeg")
-                            .mimetype("image/webp"),
-                    )
-                    .send_contents();
-                *picking.borrow_mut() = Some(request);
+                *picking.borrow_mut() = Some(pick_request());
             }),
     )
+}
+
+/// The chooser that places a picture on the artwork, as the window bar's slot
+/// and the header's button both ask for it.
+pub(crate) fn pick_picture(tools: &Tools) {
+    *tools.picking.borrow_mut() = Some(pick_request());
+}
+
+fn pick_request() -> ui::portal::ContentsChannel {
+    let title = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-title");
+    let confirm = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-confirm");
+    let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
+    ui::portal::PickRequest::open(&title, &confirm)
+        .filter(
+            ui::portal::FileFilter::new(&kinds)
+                .mimetype("image/png")
+                .mimetype("image/jpeg")
+                .mimetype("image/webp"),
+        )
+        .send_contents()
 }
 
 /// What of the artwork the strip over the canvas follows: whether there is
