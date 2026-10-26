@@ -731,6 +731,114 @@ mod tests {
         }
     }
 
+    /// Every sampled coordinate of every curve, as raw bits, in draw order.
+    fn sampled_bits(screen: &Graph2dScreen) -> Vec<(usize, Vec<(u64, u64)>)> {
+        screen
+            .curve_cache
+            .paths
+            .iter()
+            .map(|curve| {
+                let points = curve
+                    .path
+                    .elements()
+                    .iter()
+                    .filter_map(|element| match element {
+                        vello::kurbo::PathEl::MoveTo(p) | vello::kurbo::PathEl::LineTo(p) => {
+                            Some((bits(p.x), bits(p.y)))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                (curve.series, points)
+            })
+            .collect()
+    }
+
+    /// Sampling is a pure function of the functions, the view and the canvas:
+    /// the same inputs give the same bits, in the same order, in a screen built
+    /// from scratch and in one re-sampled after its cached geometry is dropped.
+    ///
+    /// This is what makes two runs of one binary draw one curve. A frame can
+    /// still differ between two runs by one antialiased pixel, but that tie is
+    /// the rasteriser's segment order (see `ui::offscreen`'s module docs), not
+    /// an unstable sample: nothing here reads a clock, a map's iteration order
+    /// or a second thread.
+    #[test]
+    fn the_same_view_samples_the_same_curve_bits() {
+        let model = CalcModel::seeded();
+        // The tablet preset's plot: the canvas the capture writes at 768x1024
+        // with the functions panel docked at the theme's 1x width.
+        let canvas = Rect::new(432.0, 0.0, 768.0, 1024.0);
+        let sample = |screen: &mut Graph2dScreen| {
+            screen.canvas = canvas;
+            screen.ensure_curves(&model);
+            sampled_bits(screen)
+        };
+
+        let mut first = Graph2dScreen::default();
+        let once = sample(&mut first);
+        assert!(
+            !once.is_empty() && once[0].1.len() > 100,
+            "the plot samples"
+        );
+
+        let mut second = Graph2dScreen::default();
+        assert_eq!(once, sample(&mut second), "a fresh screen samples one way");
+
+        // A cache hit replays the cached paths untouched, and a rebuild from
+        // the same key reproduces them bit for bit.
+        first.ensure_curves(&model);
+        assert_eq!(
+            first.curve_cache.rebuilds, 1,
+            "the second call reused the cache"
+        );
+        assert_eq!(once, sampled_bits(&first), "the cache replay kept the bits");
+        first.curve_cache.key = None;
+        first.ensure_curves(&model);
+        assert_eq!(
+            once,
+            sampled_bits(&first),
+            "re-sampling reproduced the bits"
+        );
+    }
+
+    /// The columns are an integer step from the canvas edge, and a line lands
+    /// on itself: `y = x` sampled on a 300x200 plot gives the points a person
+    /// can compute by hand, exactly — no accumulated float drift, and the last
+    /// column is reachable. A sampler that walked `while sx <= x1` in floats,
+    /// or accumulated `sx += 1.5`, would miss that here.
+    #[test]
+    fn a_line_samples_at_exact_columns_and_lands_on_the_line() {
+        let mut screen = Graph2dScreen::default();
+        screen.canvas = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let model = CalcModel {
+            funcs: vec![crate::model::PlotFn {
+                expr: "x".into(),
+                visible: true,
+            }],
+            ..CalcModel::default()
+        };
+        screen.ensure_curves(&model);
+        let curve = &screen.curve_cache.paths[0].path;
+        let points: Vec<Point> = curve
+            .elements()
+            .iter()
+            .filter_map(|element| match element {
+                vello::kurbo::PathEl::MoveTo(p) | vello::kurbo::PathEl::LineTo(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        // 300 / 1.5 = 200 steps, and the step at the right edge is sampled too.
+        assert_eq!(points.len(), 201);
+        for (step, point) in points.iter().enumerate() {
+            let column = step as f64 * 1.5;
+            // The plot's centre is (150, 100) and the view is `scale` 64 about
+            // the origin, so screen y = 100 - (column - 150) = 250 - column.
+            assert_eq!(point.x.to_bits(), column.to_bits(), "column {step}");
+            assert_eq!(point.y.to_bits(), (250.0 - column).to_bits(), "row {step}");
+        }
+    }
+
     /// Every curve of the lived-in plot gets its own colour: no two of the
     /// first four series repeat.
     #[test]
