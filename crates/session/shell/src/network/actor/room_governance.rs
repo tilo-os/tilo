@@ -239,7 +239,7 @@ impl Waiting {
                 Sessions::Closed => {
                     trace::note(|| {
                         format!(
-                            "held {} failed: ws {} has no session",
+                            "held {:?} failed: ws {} has no session",
                             request.invoke.invocation, request.ws
                         )
                     });
@@ -278,7 +278,7 @@ impl Waiting {
         self.entries.retain(|invocation, waiter| {
             let keep = now.saturating_duration_since(waiter.since) < FORGET_AFTER;
             if !keep {
-                trace::note(|| format!("forgot {invocation}"));
+                trace::note(|| format!("forgot {invocation:?}"));
             }
             keep
         });
@@ -351,7 +351,7 @@ impl Waiting {
             .is_some_and(|waiter| waiter.ws == ws && waiter.host == author);
         trace::note(|| {
             format!(
-                "receipt for {} from {author} on ws {ws}: {}, {:?}",
+                "receipt for {:?} from {author} on ws {ws}: {}, {:?}",
                 receipt.invocation,
                 if ours { "ours" } else { "not ours" },
                 receipt.status
