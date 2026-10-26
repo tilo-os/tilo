@@ -548,7 +548,7 @@ impl PagePeople {
             .and_then(PinnedRoster::peeked)
             .and_then(|id| frame.rows.iter().find(|row| row.id == id));
         self.follow_lane(peeked, frame.persons);
-        refresh_contacts(frame.persons);
+        refresh_contacts(frame.persons, frame.rows);
         let (messages, unavailable) = self.lane_messages();
         let sent = match self
             .sending
@@ -793,21 +793,45 @@ impl ui::widget::Widget for PagePeople {
     }
 }
 
-/// Someone is here whom the room's last list of people did not have: ask
-/// for it again, so Chat's direct conversations list them too. The native
-/// host hears of new members from the room itself; a page sees them here.
-fn refresh_contacts(persons: &[(String, String)]) {
+/// Someone is here whom the room's last list of people did not have, or
+/// who goes by another name now than that list says (they renamed
+/// themselves, which the room keeps): ask for it again, so Chat's direct
+/// conversations list them, by the name they go by, also once they left.
+/// The native host hears of new members from the room itself; a page sees
+/// them here.
+fn refresh_contacts(persons: &[(String, String)], rows: &[RosterRow]) {
     let contacts = ui::person_chat::contacts_snapshot();
     let own = ui::local_identity::load().map(|own| hex::encode(own.group_public_key));
-    let unknown = persons.iter().any(|(_, user)| {
-        own.as_deref() != Some(user.as_str())
-            && !contacts
-                .iter()
-                .any(|contact| contact.public_key.eq_ignore_ascii_case(user))
+    let stale = persons.iter().any(|(device, user)| {
+        if own.as_deref() == Some(user.as_str()) {
+            return false;
+        }
+        let Some(contact) = contacts
+            .iter()
+            .find(|contact| contact.public_key.eq_ignore_ascii_case(user))
+        else {
+            return true;
+        };
+        rows.iter()
+            .find(|row| row.id == *device)
+            .is_some_and(|row| renamed(&contact.display_name, &row.label))
     });
-    if unknown {
+    if stale {
         ui::person_chat::refresh_contacts();
     }
+}
+
+/// Whether the name a person goes by here (`live`, numbered when someone
+/// else here goes by it too: "Ada (2)") is another than the one the room's
+/// list has for them (`listed`).
+fn renamed(listed: &str, live: &str) -> bool {
+    let live = live.trim();
+    let listed = listed.trim();
+    !live.is_empty()
+        && !listed.eq_ignore_ascii_case(live)
+        && !live
+            .strip_prefix(listed)
+            .is_some_and(|rest| rest.trim_start().starts_with('('))
 }
 
 /// The person `row` is a device of: as the host said, else the contact
@@ -897,6 +921,16 @@ mod tests {
     use super::*;
     use tilo_desktop::here::{Screen, ScreenWindow};
     use tilo_desktop_model::IdMinter;
+
+    /// A person who renamed themself has the room's list asked again; a
+    /// namesake's number or the same name in other letters is no rename.
+    #[test]
+    fn a_rename_is_told_from_a_namesakes_number() {
+        assert!(super::renamed("Swift Lynx", "Ada"));
+        assert!(!super::renamed("Swift Lynx", "swift lynx"));
+        assert!(!super::renamed("Ada", "Ada (2)"));
+        assert!(!super::renamed("Ada", ""));
+    }
 
     /// A window on someone's screen showing a record this page shows too
     /// stands for theirs, with its title and live picture; any other shows
