@@ -459,6 +459,9 @@ struct Mount {
     /// The last frame's layout failed and was skipped
     /// ([`ui::headless::FrameHarness::skip_frame`]).
     skipped_frame: bool,
+    /// Who is here changed since the last frame, which puts them on their
+    /// windows before it lays out ([`Mount::apply_here`]).
+    here_stale: bool,
     /// The peer this mount replicates through, and whether a peer's change
     /// reached it since the last frame.
     peer: Option<u32>,
@@ -625,23 +628,6 @@ impl Desktop {
 }
 
 impl Mount {
-    /// Put who is here on the windows they are in. Remote carets clear a
-    /// member's registrations as they move, so this runs after each.
-    fn apply_here(&mut self) {
-        let Some(desktop) = &self.desktop else {
-            return;
-        };
-        let tree = desktop.handle.read(Clone::clone);
-        let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
-        let mut here = desktop.here.borrow_mut();
-        here.show_waves(self.frame.presence_mut());
-        here.register_windows(&people, self.frame.presence_mut());
-        drop(here);
-        self.frame.relayout();
-        self.pending = true;
-        self.window.request_redraw();
-    }
-
     fn service_owner_models(&mut self) {
         self.feedback_retry = None;
         if let Some(desktop) = &self.desktop
@@ -1771,6 +1757,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         error: None,
         oversized_scene: false,
         skipped_frame: false,
+        here_stale: false,
         peer: config.peer,
         replica_changed,
         focus_presence: RefCell::new(None),
@@ -2529,6 +2516,8 @@ impl Mount {
             }
             host_changed = true;
         }
+        // Presence that arrived since the last frame, laid out by this one.
+        self.place_here();
         // A frame whose semantics will be built draws every window: one it
         // replayed instead (a pan frame may) would have to be drawn again
         // before its tree could be read.
@@ -3314,6 +3303,7 @@ mod desktop_exports;
 mod fonts;
 mod live_layout;
 mod live_signals;
+mod remote_presence;
 mod session_asks;
 use crate::first_frame::{self, GpuStep};
 pub(crate) mod pointers;
@@ -3321,66 +3311,6 @@ mod retained;
 use retained::Retained;
 #[cfg(debug_assertions)]
 use retained::check_retained;
-
-/// A room member's presence from the page's live layer: `publisher` (the
-/// member's device, hex) with its participant `label` and `kind` (`person`
-/// or `agent`), and its caret or selection as the live anchors (hex) it
-/// published, or none when it has no selection. Editors draw the caret,
-/// labelled, in the next frame. Its colour is the room's to settle
-/// ([`tilo_desktop::here::HereState::colors`]), never the one it publishes,
-/// so two people here at once are never drawn alike.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "wasm-bindgen receives optional JavaScript strings only as owned values"
-)]
-pub fn remote_presence(
-    id: u64,
-    publisher: &str,
-    label: &str,
-    kind: &str,
-    anchor: Option<String>,
-    head: Option<String>,
-) -> Result<(), JsValue> {
-    use ui::collaboration::PresencePayload;
-    let range = anchor.zip(head).and_then(|(anchor, head)| {
-        let anchor = tilo_relay_protocol::live::LiveAnchor {
-            cursor: hex::decode(anchor).ok()?,
-        };
-        let head = tilo_relay_protocol::live::LiveAnchor {
-            cursor: hex::decode(head).ok()?,
-        };
-        tilo_browser_peer::transport::read_presence_anchors(&anchor, &head)
-    });
-    with_mount(id, |m| {
-        let user = UserId(publisher.to_owned());
-        let presence = m.frame.presence_mut();
-        presence.set_participant_kind(&user, kind == "agent");
-        if !label.is_empty() {
-            presence.set_display_name(user, label);
-        }
-        match range {
-            Some((key, start, end)) => {
-                let payload = if start == end {
-                    PresencePayload::Caret { pos: start }
-                } else {
-                    PresencePayload::Selection { start, end }
-                };
-                presence.apply_remote_presence(publisher.to_owned(), key, payload);
-            }
-            None => presence.unregister_peer(publisher),
-        }
-        m.apply_here();
-        m.frame.relayout();
-        m.pending = true;
-        m.window.request_redraw();
-        Ok(())
-    })
-}
 
 /// Who is in the room's live layer now: `{own: {publisher, label, user},
 /// members: [{publisher, kind, label, focus, activity, place}] | null}`,
@@ -3629,57 +3559,6 @@ pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
 pub fn presence_color(id: &str) -> String {
     let (r, g, b) = ui::presence::user_color(id);
     format!("#{r:02x}{g:02x}{b:02x}")
-}
-
-/// A member left the room: forget its carets and name.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn remote_presence_gone(id: u64, publisher: &str) -> Result<(), JsValue> {
-    with_mount(id, |m| {
-        m.frame.presence_mut().unregister_peer(publisher);
-        m.apply_here();
-        m.frame.relayout();
-        m.pending = true;
-        m.window.request_redraw();
-        Ok(())
-    })
-}
-
-/// Name the people of the mount's room, `[{id, name}]`, `id` each person's
-/// key as their actions record it (what `cx.me()` and `ActionCx::author`
-/// answer). Live presence names devices; a page that knows who belongs to
-/// the room (its door admitted them) names the people, so an app shows
-/// `cx.people().name(author)` as the person's name rather than their key.
-///
-/// # Errors
-///
-/// Rejects malformed JSON or a closed mount.
-#[wasm_bindgen]
-pub fn set_people(id: u64, people: &str) -> Result<(), JsValue> {
-    #[derive(serde::Deserialize)]
-    struct Person {
-        id: String,
-        name: String,
-    }
-    let people: Vec<Person> =
-        serde_json::from_str(people).map_err(|error| JsValue::from_str(&error.to_string()))?;
-    with_mount(id, |m| {
-        let presence = m.frame.presence_mut();
-        for person in people {
-            let name = person.name.trim();
-            if !person.id.is_empty() && !name.is_empty() {
-                presence.set_display_name(UserId(person.id), name);
-            }
-        }
-        m.apply_here();
-        m.frame.relayout();
-        m.pending = true;
-        m.window.request_redraw();
-        Ok(())
-    })
 }
 
 /// Take accepted writes for the page to commit (`[{key, bytes, actor,
