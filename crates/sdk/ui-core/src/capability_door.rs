@@ -280,18 +280,22 @@ mod tests {
         let grantable = Door::grantable(Capability::FIREWALL, "allow changing firewall rules");
         assert_eq!(grantable.control(|| "apply"), None);
         assert_eq!(
-            grantable.face(|| "control", |words| words, |_, _| "none"),
+            grantable.face(
+                || "control".to_owned(),
+                str::to_owned,
+                |_, _| "none".to_owned()
+            ),
             "allow changing firewall rules"
         );
 
         let unavailable = Door::unavailable(Capability::FIREWALL, "firewalld isn't running").face(
-            || "control",
-            |_| "grant",
-            |reason, remedy| (reason, remedy),
+            || ("control".to_owned(), None),
+            |_| ("grant".to_owned(), None),
+            |reason, remedy| (reason.to_owned(), remedy.map(str::to_owned)),
         );
         assert_eq!(
             unavailable,
-            ("firewalld isn't running", None),
+            ("firewalld isn't running".to_owned(), None),
             "unavailable draws no control"
         );
     }
