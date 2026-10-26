@@ -451,6 +451,14 @@ pub struct TileHost {
     /// tile's node shape changed even though no hosted widget reported
     /// anything.
     structure_dirty: bool,
+    /// The tile's own layout node, as last built; `None` while it has none.
+    node: Option<NodeId>,
+    /// The content took the place of a placeholder in this tile's retained
+    /// node ([`Self::take_place_of`]) and is laid out under it in place
+    /// ([`Widget::remount_children`]), not by rebuilding the host's tree.
+    /// Until then the tile names none of its content to the retained
+    /// layout's check: none of it is in the tree yet.
+    remount: bool,
     /// Latched: once this tile has shown something, its window stays on
     /// screen for good. Must survive [`TileHost::replace_content`] — a
     /// peer's already-open window arrives as a card, then gets replaced
@@ -776,9 +784,63 @@ impl TileHost {
         found
     }
 
+    /// The style of the tile's own node: one holding its app, or a leaf
+    /// for a card drawn by the tile itself.
+    fn node_style(holds_app: bool) -> Style {
+        let fill = Size {
+            width: Dimension::percent(1.0),
+            height: Dimension::percent(1.0),
+        };
+        if !holds_app {
+            return Style {
+                size: fill,
+                ..Default::default()
+            };
+        }
+        Style {
+            size: fill,
+            // The window gives its app its room; what the app shows never
+            // sets a floor under it. With the automatic minimum, a page whose
+            // document was taller than the window kept the tile from making
+            // way for the window's bar, and pushed the window past its strip.
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::length(0.0),
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Build the app's layout (in its History's composition, when it has
+    /// one) for the tile's node to hold; `None` for a card, which has none.
+    fn build_content(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> Option<NodeId> {
+        self.live_callback_node = None;
+        let TileContent::App(w) = &mut self.content else {
+            return None;
+        };
+        let child = if let Some(history) = &mut self.history {
+            history.build_composition(w.as_mut(), taffy, theme, node_map)
+        } else {
+            w.build_layout(taffy, theme, node_map)
+        };
+        self.live_callback_node = self
+            .history
+            .as_ref()
+            .map_or(Some(child), |history| history.live_layout_node());
+        Some(child)
+    }
+
     /// Inactive retained tiles have no nodes in the current Taffy tree.
     pub(crate) fn discard_layout_nodes(&mut self) {
         self.live_callback_node = None;
+        self.node = None;
+        // With no node to lay the content out under, the next build does.
+        self.structure_dirty |= std::mem::take(&mut self.remount);
         if let Some(history) = &mut self.history {
             history.discard_layout_nodes();
         }
@@ -854,6 +916,8 @@ impl TileHost {
             record_creation_refused: false,
             announced: None,
             structure_dirty: false,
+            node: None,
+            remount: false,
             was_presented: std::cell::Cell::new(false),
             content_was_presented: std::cell::Cell::new(false),
             panic_scope: std::cell::Cell::new(None),
@@ -1099,6 +1163,19 @@ impl TileHost {
     /// still stood for content not shown, this host goes on with that
     /// arrival, so its placeholder keeps its timing and the app cross-fades
     /// in over it instead of the window cutting or starting over.
+    /// Stand where this tile stands from now on: `next`, built for the same
+    /// window (an app whose code or record arrived where a placeholder held
+    /// its place), goes on with the arrival ([`Self::continue_arrival`])
+    /// and takes this tile's retained layout node: the app is laid out under
+    /// that node in place and the rest of the host's tree is kept.
+    pub fn take_place_of(&mut self, mut next: Self) {
+        next.continue_arrival(self);
+        next.node = self.node;
+        next.remount = self.node.is_some();
+        next.structure_dirty = !next.remount;
+        *self = next;
+    }
+
     pub fn continue_arrival(&mut self, previous: &Self) {
         let Some(standing) = previous
             .arrival
@@ -2453,6 +2530,10 @@ impl Widget for TileHost {
     }
     /// The app also while History keeps it inert.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        // Content waiting to be laid out in place is in no layout yet.
+        if self.remount {
+            return true;
+        }
         if let Some(history) = &self.history {
             visitor(history.as_ref());
         }
@@ -2629,48 +2710,12 @@ impl Widget for TileHost {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let _running = self.running();
-        self.live_callback_node = None;
-        let node = match &mut self.content {
-            TileContent::App(w) => {
-                let child = if let Some(history) = &mut self.history {
-                    history.build_composition(w.as_mut(), taffy, theme, node_map)
-                } else {
-                    w.build_layout(taffy, theme, node_map)
-                };
-                self.live_callback_node = self
-                    .history
-                    .as_ref()
-                    .map_or(Some(child), |history| history.live_layout_node());
-                taffy.parent_node(
-                    Style {
-                        size: Size {
-                            width: Dimension::percent(1.0),
-                            height: Dimension::percent(1.0),
-                        },
-                        // The window gives its app its room; what the app
-                        // shows never sets a floor under it. With the
-                        // automatic minimum, a page whose document was taller
-                        // than the window kept the tile from making way for
-                        // the window's bar, and pushed the window past its
-                        // strip.
-                        min_size: Size {
-                            width: Dimension::length(0.0),
-                            height: Dimension::length(0.0),
-                        },
-                        ..Default::default()
-                    },
-                    &[child],
-                )
-            }
-            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => taffy
-                .leaf_node(Style {
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                }),
+        let node = match self.build_content(taffy, theme, node_map) {
+            Some(child) => taffy.parent_node(Self::node_style(true), &[child]),
+            None => taffy.leaf_node(Self::node_style(false)),
         };
+        self.node = Some(node);
+        self.remount = false;
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         // This build composed the current content and admission, so a change
         // flagged before it (a rebind, a replacement) is satisfied. A host
@@ -2683,6 +2728,10 @@ impl Widget for TileHost {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let _running = self.running();
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        // Content waiting to be laid out in place has no nodes yet.
+        if self.remount {
+            return;
+        }
         if let TileContent::App(w) = &mut self.content {
             // Guards a structural mismatch: content is `App` but the taffy
             // node has no child yet (build_layout ran while content was
@@ -3069,14 +3118,75 @@ impl Widget for TileHost {
         }
     }
     fn take_structure_dirty(&mut self) -> bool {
-        // Both flags drained, not short-circuited, so neither can be left
-        // set behind the other.
+        self.take_structure_change().rebuilds()
+    }
+    /// The window's content is laid out again in place under the tile's
+    /// retained node ([`StructureChange::Children`](crate::widget::StructureChange)):
+    /// content that took a placeholder's place, and an app that replaced
+    /// widgets of its own, so the rest of the host's tree is kept. Only a
+    /// change of the tile itself rebuilds. Both flags are drained, so
+    /// neither is left set behind the other.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        use crate::widget::StructureChange;
         let swapped = std::mem::take(&mut self.structure_dirty);
         let inner = match &mut self.content {
-            TileContent::App(w) => w.take_structure_dirty(),
-            _ => false,
+            // Built whole when it is laid out in place.
+            TileContent::App(w) if self.remount => {
+                let _ = w.take_structure_dirty();
+                StructureChange::None
+            }
+            TileContent::App(w) => w.take_structure_change(),
+            _ => StructureChange::None,
         };
-        swapped || inner
+        if self.remount {
+            return StructureChange::Children;
+        }
+        let rebuilds =
+            swapped || matches!(inner, StructureChange::Described | StructureChange::Rebuild);
+        match (rebuilds, self.node) {
+            // The tile's content, its History or the app's own widgets were
+            // replaced: they are built again under the tile's node, and
+            // nothing outside it.
+            (true, Some(_)) => {
+                // The host lets go of every node under the tile's own.
+                self.remount = true;
+                self.live_callback_node = None;
+                if let Some(history) = &mut self.history {
+                    history.discard_layout_nodes();
+                }
+                StructureChange::Children
+            }
+            (true, None) => StructureChange::Rebuild,
+            (false, _) => inner,
+        }
+    }
+    fn relaid_layout_node(&self) -> Option<NodeId> {
+        if self.remount { self.node } else { None }
+    }
+    /// Lay the content that took a placeholder's place out under the
+    /// tile's retained node; otherwise carry out the app's own change.
+    fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+        if !self.remount {
+            return self
+                .children_mut()
+                .into_iter()
+                .all(|child| child.remount_children(remount));
+        }
+        let Some(node) = self.node else {
+            return false;
+        };
+        let _running = self.running();
+        self.remount = false;
+        for child in remount.taffy().children(node).unwrap_or_default() {
+            remount.unmount(child);
+        }
+        let child = remount.mount_with(node, |taffy, theme, node_map| {
+            self.build_content(taffy, theme, node_map)
+        });
+        let _ = remount
+            .taffy()
+            .set_style(node, Self::node_style(child.is_some()));
+        remount.set_children(node, child.as_slice()).is_ok()
     }
     fn needs_animation_frame(&self) -> bool {
         let _running = self.running();

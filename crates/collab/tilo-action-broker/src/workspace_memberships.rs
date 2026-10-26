@@ -76,6 +76,13 @@ impl CapnpBrokerState {
                 let (action, argument) = bot_invocation(command)?;
                 (WORKSPACE.into(), action, Some(argument))
             }
+            WorkspaceMembershipCommand::InstallApp(_)
+            | WorkspaceMembershipCommand::UninstallApp { .. } => {
+                return Err(
+                    "a room's app version is chosen on its host, through the room's `install-app`"
+                        .into(),
+                );
+            }
         };
         self.invoke_workspace_person_action(
             room,
@@ -1105,6 +1112,7 @@ mod tests {
                     entry: "so.tilo.bots.standup".into(),
                     version: "1.2.0".into(),
                     inputs: std::collections::BTreeMap::new(),
+                    program: None,
                 }
             )
         );

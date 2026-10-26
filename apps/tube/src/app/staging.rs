@@ -4,7 +4,7 @@
 //! none of these; they exist so a review or a test sees real content without a
 //! network.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::widget::VideoPlayer;
@@ -214,9 +214,10 @@ impl TubeApp {
         self.model.route = Route::Settings;
         self.device_sync = crate::sync::DeviceSync::visual_sample();
         // Scroll to the end of the form: the device section is the last one.
-        self.scroll_cells
-            .borrow_mut()
-            .insert("settings".into(), Rc::new(Cell::new((0.0, f32::MAX))));
+        self.scroll_cells.borrow_mut().insert(
+            "settings".into(),
+            Rc::new(std::cell::Cell::new((0.0, f32::MAX))),
+        );
     }
 
     /// `--live-shots` hook: open the shared player on a real, directly-playable

@@ -327,6 +327,10 @@ pub struct MemberChanged {
     /// The member's names, when the event carries them.
     #[serde(default)]
     pub user: Option<UserName>,
+    /// Their Discord avatar hash, when the event carries their user and
+    /// they set one.
+    #[serde(default)]
+    pub avatar: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

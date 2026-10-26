@@ -10,7 +10,8 @@
 
 use ui::tilo_resource::{self, Effect};
 use ui::webview::{
-    KeyModifiers, PageKey, PageRequest, PointerButton, PointerPoint, PointerStep, PointerStepKind,
+    FrameId, KeyModifiers, PageKey, PageRequest, PointerButton, PointerPoint, PointerStep,
+    PointerStepKind,
 };
 
 /// How long a settle waits for the page to go quiet, and at most, by default.
@@ -25,6 +26,7 @@ const PAGE_DRAG_STEPS: u32 = 8;
 fn pointer_step(text: &str) -> Option<PointerStep> {
     let mut kind = None;
     let mut element = None;
+    let mut frame = None;
     let mut x = None;
     let mut y = None;
     for field in text.split_whitespace() {
@@ -32,6 +34,7 @@ fn pointer_step(text: &str) -> Option<PointerStep> {
         match name {
             "kind" => kind = Some(value),
             "element" if !value.is_empty() => element = Some(value.to_string()),
+            "frame" if !value.is_empty() => frame = Some(page_frame(Some(value.to_string()))?),
             "x" => x = value.parse::<f64>().ok(),
             "y" => y = value.parse::<f64>().ok(),
             _ => return None,
@@ -51,7 +54,12 @@ fn pointer_step(text: &str) -> Option<PointerStep> {
     } else {
         PointerPoint::Viewport { x, y }
     };
-    Some(PointerStep { kind, at, element })
+    Some(PointerStep {
+        kind,
+        at,
+        element,
+        frame,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -342,15 +350,26 @@ pub enum BrowserEffect {
     ResetZoom,
     /// Read page content
     ///
-    /// Answers with the page's outline: its elements and their refs.
+    /// Answers with the page's outline: its elements and their refs. A frame
+    /// carries the id that addresses its own document.
     #[effect(row, job, returns, idempotent, audience = "agents", untrusted)]
-    ReadPage,
+    ReadPage {
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
+    },
     /// What changed on the page
     ///
     /// Answers with the outline lines added and removed since the last read,
     /// or the whole outline when the document is new.
     #[effect(row, job, returns, idempotent, audience = "agents", untrusted)]
-    ReadPageChanges,
+    ReadPageChanges {
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
+    },
     /// Element at a page point
     ///
     /// Answers with what a click at the point would hit, through overlays
@@ -361,6 +380,10 @@ pub enum BrowserEffect {
         x: f64,
         #[param("Viewport y in CSS pixels from the page's top edge")]
         y: f64,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Wait for the page to settle
     ///
@@ -372,6 +395,10 @@ pub enum BrowserEffect {
         quiet_ms: Option<u32>,
         #[param("Longest wait, milliseconds (default 10000, at most 20000)")]
         timeout_ms: Option<u32>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Page console messages
     ///
@@ -400,6 +427,10 @@ pub enum BrowserEffect {
     ClickPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Move the pointer over a page element
     ///
@@ -458,6 +489,10 @@ pub enum BrowserEffect {
         element: String,
         #[param("Text that replaces the field's contents")]
         text: String,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Fill page password field
     ///
@@ -472,6 +507,10 @@ pub enum BrowserEffect {
             "Password or card number for the field; kept out of logs and history"
         )]
         text: String,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Choose page options
     #[effect(row, job, returns, audience = "agents", untrusted)]
@@ -480,6 +519,10 @@ pub enum BrowserEffect {
         element: String,
         #[param("Option values or visible labels to choose")]
         values: Vec<String>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Choose files for a page upload
     ///
@@ -495,6 +538,10 @@ pub enum BrowserEffect {
         element: String,
         #[param("Absolute paths of the files to choose, in order")]
         paths: Vec<String>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Press key on page
     #[effect(row, job, returns, audience = "agents", untrusted)]
@@ -503,6 +550,10 @@ pub enum BrowserEffect {
         key: String,
         #[param("Element ref to focus first; otherwise the focused element")]
         element: Option<String>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Submit page form
     ///
@@ -515,6 +566,10 @@ pub enum BrowserEffect {
         element: String,
         #[param("Allow sending the form to another site than the page's own (default false)")]
         cross_origin: Option<bool>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
     },
     /// Answer the page's question
     ///
@@ -595,6 +650,15 @@ pub enum BrowserEffect {
         #[param("First displayed ordered item")]
         offset: u32,
     },
+}
+
+/// A frame id taken from the page outline, which every engine then checks
+/// against the bounds it accepts. The frame is named only when the caller
+/// named one: an absent frame is the page itself.
+fn page_frame(frame: Option<String>) -> Option<FrameId> {
+    frame
+        .filter(|frame| !frame.is_empty())
+        .map(|frame| FrameId::parse(&frame).unwrap_or_else(FrameId::malformed))
 }
 
 impl BrowserEffect {
@@ -707,15 +771,25 @@ impl BrowserEffect {
                 accept: false,
                 text: None,
             },
-            Self::ReadPage => page(PageRequest::Outline),
-            Self::ReadPageChanges => page(PageRequest::Changes),
-            Self::ReadPageElementAt { x, y } => page(PageRequest::At { x, y }),
+            Self::ReadPage { frame } => page(PageRequest::Outline {
+                frame: page_frame(frame),
+            }),
+            Self::ReadPageChanges { frame } => page(PageRequest::Changes {
+                frame: page_frame(frame),
+            }),
+            Self::ReadPageElementAt { x, y, frame } => page(PageRequest::At {
+                x,
+                y,
+                frame: page_frame(frame),
+            }),
             Self::WaitPageSettled {
                 quiet_ms,
                 timeout_ms,
+                frame,
             } => page(PageRequest::Settle {
                 quiet_ms: quiet_ms.unwrap_or(PAGE_SETTLE_QUIET_MS),
                 timeout_ms: timeout_ms.unwrap_or(PAGE_SETTLE_TIMEOUT_MS),
+                frame: page_frame(frame),
             }),
             Self::ReadPageConsole { since } => page(PageRequest::Console {
                 since: since.unwrap_or(0),
@@ -723,7 +797,10 @@ impl BrowserEffect {
             Self::ReadPageNetwork { since } => page(PageRequest::Network {
                 since: since.unwrap_or(0),
             }),
-            Self::ClickPage { element } => page(PageRequest::Click { element }),
+            Self::ClickPage { element, frame } => page(PageRequest::Click {
+                element,
+                frame: page_frame(frame),
+            }),
             Self::HoverPage { element, x, y } => {
                 let element = element.filter(|element| !element.is_empty());
                 let point = x.zip(y);
@@ -757,33 +834,64 @@ impl BrowserEffect {
                 element: element.filter(|element| !element.is_empty()),
                 points: points.into_iter().map(|[x, y]| (x, y)).collect(),
             }),
-            Self::FillPage { element, text } => page(PageRequest::Fill {
+            Self::FillPage {
+                element,
+                text,
+                frame,
+            } => page(PageRequest::Fill {
                 element,
                 text,
                 secret: false,
+                frame: page_frame(frame),
             }),
-            Self::FillPageSecret { element, text } => page(PageRequest::Fill {
+            Self::FillPageSecret {
+                element,
+                text,
+                frame,
+            } => page(PageRequest::Fill {
                 element,
                 text,
                 secret: true,
+                frame: page_frame(frame),
             }),
-            Self::SelectPage { element, values } => page(PageRequest::Select { element, values }),
-            Self::FillPageFiles { element, paths } => {
-                page(PageRequest::FillFiles { element, paths })
-            }
-            Self::PressPage { key, element } => page(PageRequest::Press {
+            Self::SelectPage {
+                element,
+                values,
+                frame,
+            } => page(PageRequest::Select {
+                element,
+                values,
+                frame: page_frame(frame),
+            }),
+            Self::FillPageFiles {
+                element,
+                paths,
+                frame,
+            } => page(PageRequest::FillFiles {
+                element,
+                paths,
+                frame: page_frame(frame),
+            }),
+            Self::PressPage {
+                key,
+                element,
+                frame,
+            } => page(PageRequest::Press {
                 element: element.filter(|element| !element.is_empty()),
                 key: PageKey::parse(&key).unwrap_or_else(|| PageKey {
                     key,
                     modifiers: KeyModifiers::default(),
                 }),
+                frame: page_frame(frame),
             }),
             Self::SubmitPage {
                 element,
                 cross_origin,
+                frame,
             } => page(PageRequest::Submit {
                 element,
                 cross_origin: cross_origin.unwrap_or(false),
+                frame: page_frame(frame),
             }),
             Self::PointerPage { steps, button } => page(PageRequest::Pointer {
                 steps: steps.iter().filter_map(|step| pointer_step(step)).collect(),

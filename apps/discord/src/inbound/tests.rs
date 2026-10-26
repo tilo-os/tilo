@@ -688,8 +688,47 @@ fn a_member_seen_renamed_updates_the_link() {
             discord_user: "u7".into(),
             user_name: "ada.lovelace".into(),
             display_name: String::new(),
+            avatar: String::new(),
         }]
     );
+}
+
+#[test]
+fn a_linked_accounts_new_avatar_is_fetched_as_its_picture() {
+    let mut g = Guild::default();
+    g.links.push(Link {
+        discord_user: "u7".into(),
+        person: "p_ada".into(),
+        user_name: "ada.l".into(),
+        avatar: Some("old".into()),
+        photo: Some("data:image/png;base64,AAAA".into()),
+        photo_avatar: Some("old".into()),
+        ..Link::default()
+    });
+    let seen = |avatar: Option<&str>| MemberChanged {
+        user_id: "u7".into(),
+        user: Some(named("ada.l", None)),
+        avatar: avatar.map(str::to_owned),
+        ..MemberChanged::default()
+    };
+    let same = plan_member(&g, &seen(Some("old")), &json!({}));
+    assert!(same.renames.is_empty() && same.photos.is_empty());
+    let plan = plan_member(&g, &seen(Some("new")), &json!({}));
+    assert_eq!(plan.renames[0].avatar, "new");
+    assert_eq!(plan.photos, [link_photo("u7", "new")]);
+    assert_eq!(plan.photos[0].op.url, "avatars/u7/new.png?size=64");
+    assert!(plan.photos[0].op.inline);
+    let dropped = plan_member(&g, &seen(None), &json!({}));
+    assert_eq!(dropped.renames[0].avatar, "");
+    assert!(dropped.photos.is_empty());
+    assert!(
+        plan_link_photos(&g).is_empty(),
+        "the picture is of the avatar"
+    );
+    g.links
+        .iter_mut()
+        .for_each(|l| l.avatar = Some("new".into()));
+    assert_eq!(plan_link_photos(&g), [link_photo("u7", "new")]);
 }
 
 #[test]

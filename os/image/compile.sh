@@ -6,10 +6,12 @@
 # build compiles: this runs as an ordinary build action, with the compiler
 # cache, warm build directories and keys every other build of the workspace has.
 #
-# usage: compile.sh OUT | --dev OUT
+# usage: compile.sh OUT | --dev OUT | --chromium OUT
 #   CARGO_TARGET_DIR   the build directory (default target/)
 #   TILO_RUST_LTO      thin (published images) or off (integration and development)
 #   TILO_WITH_BROWSER  1 to build the browser's engine host, 0 not to
+#   TILO_CHROMIUM_ENGINE  what `--chromium` left: the engine taken from there
+#                      instead of built again
 #   TILO_GITHUB_ASSET_CACHE  the checksum-pinned external assets (default
 #                      os/external-assets/cache), for the CEF distribution
 #
@@ -18,6 +20,33 @@
 # sccache over SCCACHE_DIR, which os/dev/build-image.sh keeps between local builds;
 # TILO_COMPILER_CACHE=off compiles with none and refuses any it is given.
 set -euo pipefail
+
+# The browser's engine host and its runtime tree (scripts/browser/build-host.py) into
+# DEST/chromium-engine, built in WORK from the pinned CEF SDK in ASSETS.
+chromium_engine() {
+  local dest=$1 work=$2 assets=$3 cef_platform cef_version
+  case "$(uname -m)" in
+    x86_64) cef_platform=linux64 ;;
+    aarch64) cef_platform=linuxarm64 ;;
+    *) echo "no Chromium engine for $(uname -m)" >&2; return 1 ;;
+  esac
+  cef_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["chromium_version"])' scripts/browser/cef-lock.json)" \
+    && python3 scripts/browser/build-host.py --platform "$cef_platform" \
+         --sdk-archive "$assets/cef-${cef_version}-${cef_platform}-minimal.tar.bz2" \
+         --runtime "$dest"/chromium-engine --work "$work" --jobs "${TILO_CARGO_BUILD_JOBS:-$(nproc)}" \
+    && test -x "$dest"/chromium-engine/chromium/tilo-chromium-host
+}
+
+# --chromium: the browser's engine alone, which changes with its own sources, not with the
+# workspace's; a compile given it (TILO_CHROMIUM_ENGINE) takes it as it is.
+if [[ ${1:-} == --chromium ]]; then
+  out=${2:?usage: compile.sh --chromium OUT}
+  mkdir -p "$out"
+  out=$(cd "$out" && pwd)
+  export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$(pwd)/target} LC_ALL=C.UTF-8 TZ=UTC CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=0
+  chromium_engine "$out" "$CARGO_TARGET_DIR" "${TILO_GITHUB_ASSET_CACHE:-$(pwd)/os/external-assets/cache}"
+  exit 0
+fi
 # --dev: the development components instead (os/scripts/install-components.py --dev names them,
 # with their dev features), for the dev image (os/Containerfile.dev).
 if [[ ${1:-} == --dev ]]; then
@@ -372,17 +401,13 @@ case "$TILO_RUST_LTO" in \
          && cp "${LIBSTD}" "$out"/; \
        fi \
     && build_phase chromium-engine \
-    && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
-         case "$(uname -m)" in \
-           x86_64) cef_platform=linux64 ;; \
-           aarch64) cef_platform=linuxarm64 ;; \
-           *) echo "no Chromium engine for $(uname -m)" >&2; exit 1 ;; \
-         esac \
-         && cef_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["chromium_version"])' scripts/browser/cef-lock.json)" \
-         && python3 scripts/browser/build-host.py --platform "$cef_platform" \
-              --sdk-archive "$assets/cef-${cef_version}-${cef_platform}-minimal.tar.bz2" \
-              --runtime "$out"/chromium-engine --work "$target" --jobs "${TILO_CARGO_BUILD_JOBS:-$(nproc)}" \
+    && if [ "${TILO_WITH_BROWSER}" = 0 ]; then \
+         :; \
+       elif [ -n "${TILO_CHROMIUM_ENGINE:-}" ]; then \
+         cp -a "$TILO_CHROMIUM_ENGINE"/chromium-engine "$out"/ \
          && test -x "$out"/chromium-engine/chromium/tilo-chromium-host; \
+       else \
+         chromium_engine "$out" "$target" "$assets"; \
        fi \
     && if [ "$TILO_CARGO_FRESHNESS" = content ]; then \
          sh os/scripts/cargo-freshness.sh --built "$built_sources"; \
@@ -392,6 +417,7 @@ case "$TILO_RUST_LTO" in \
          find "$target" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; \
        fi
 
+build_phase elf-hardening
 os/scripts/verify-elf-hardening.sh "$out" \
     && { [ "${TILO_PREBUILT_APPS}" = 1 ] \
          || os/scripts/verify-elf-hardening.sh "$out"/thin-apps; } \

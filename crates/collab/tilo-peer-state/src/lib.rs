@@ -22,8 +22,8 @@ pub use installation::{AppearancePolicy, ArmedRecord, DirectoryRef, Installation
 mod verified_certificate;
 pub use state::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
-    GovernedAgent, GovernedDelegateRow, GovernedMember, HELD_FOR_SURFACE, InstalledBot,
-    LocalRecoveryReservation, MAX_HELD_BYTES, MAX_HELD_INPUTS, MemberAuthority,
+    GovernedAgent, GovernedDelegateRow, GovernedMember, HELD_FOR_SURFACE, InstalledApp,
+    InstalledBot, LocalRecoveryReservation, MAX_HELD_BYTES, MAX_HELD_INPUTS, MemberAuthority,
     NativePublicationCut, OpenedRecord, PeerDeliveryPolicy, PeerDeliveryPolicyError,
     PeerDocumentCapture, PeerDocumentRead, PeerDocumentReadError, PeerGovernance,
     PeerGovernanceMut, PeerLimits, PeerMediaCall, PeerMediaGovernance, PeerMediaGovernanceMut,

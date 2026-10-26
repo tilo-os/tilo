@@ -715,6 +715,131 @@ async fn a_message_crosses_the_bridge_both_ways_under_its_authors_name() {
     );
 }
 
+/// Ada links her Discord account: the room's host fetches its avatar small,
+/// for her Tilo profile to wear, and what she writes in Tilo shows in
+/// Discord as her name with her handle, under the same picture.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_linked_account_lends_its_picture_and_handle() {
+    use discord_wire::event::{link_check, link_proof};
+    let (bridge, mut runner) = Bridge::start().await;
+    let png = picture(7);
+    let _ = bridge
+        .fake
+        .put_cdn("avatars/4001/f00d.png", "image/png", &png);
+    // The bridge offers the account, as `/link` has it, and Ada takes it.
+    bridge
+        .room
+        .rooms
+        .author_application(
+            &bridge.room.id,
+            &bridge.room.cert,
+            &bridge.room.catalogue,
+            APP,
+            "",
+            {
+                let owner = hex::encode(bridge.room.cert.user_public_key);
+                move |doc| {
+                    let mut replica = Replica::<Guild>::from_doc(std::mem::take(doc))
+                        .as_bot_for("bridge-test", &owner)
+                        .in_app(APP, "Discord");
+                    let applied = replica
+                        .apply(Guild::OFFER_LINK.with(guild::OfferLink {
+                            check: link_check(&link_proof("ADA-TOKEN")),
+                            discord_user: "4001".into(),
+                            user_name: "ada.l".into(),
+                            display_name: None,
+                            avatar: Some("f00d".into()),
+                            interaction: None,
+                        }))
+                        .map(drop);
+                    std::mem::swap(doc, replica.doc_mut());
+                    applied.map_err(|error| format!("{error:?}"))
+                }
+            },
+        )
+        .await
+        .unwrap();
+    bridge
+        .room
+        .rooms
+        .author_application(
+            &bridge.room.id,
+            &bridge.room.cert,
+            &bridge.room.catalogue,
+            APP,
+            "",
+            {
+                let ada = bridge.ada.clone();
+                move |doc| {
+                    let mut replica = Replica::<Guild>::from_doc(std::mem::take(doc))
+                        .as_invoker(&ada)
+                        .in_app(APP, "Discord");
+                    let applied = replica
+                        .apply_confirmed(Guild::COMPLETE_LINK.with(guild::CompleteLink {
+                            proof: link_proof("ADA-TOKEN"),
+                        }))
+                        .map(drop);
+                    std::mem::swap(doc, replica.doc_mut());
+                    applied.map_err(|error| error.to_string())
+                }
+            },
+        )
+        .await
+        .unwrap();
+    let photo = settle(&mut runner, "the link's picture", || async {
+        let guild = bridge.room.guild().await;
+        let link = guild.links.find(&Id::from_raw("4001"))?;
+        link.photo.clone().zip(link.photo_avatar.clone())
+    })
+    .await;
+    use base64::Engine as _;
+    assert_eq!(
+        photo,
+        (
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(&png)
+            ),
+            "f00d".to_owned()
+        ),
+        "the avatar as the profile's picture, of the hash it is"
+    );
+    let fetched = bridge
+        .fake
+        .requests()
+        .into_iter()
+        .find(|request| request.path.contains("/avatars/4001/"))
+        .expect("the room's host fetched the avatar");
+    assert!(
+        fetched
+            .query
+            .iter()
+            .any(|(key, value)| key == "size" && value == "64"),
+        "small: {:?}",
+        fetched.query
+    );
+
+    bridge.ada_says("hello as myself").await;
+    let sent = settle(&mut runner, "Tilo to Discord", || async {
+        bridge.in_discord("hello as myself")
+    })
+    .await;
+    assert_eq!(sent["author"]["username"], "Ada (@ada.l)", "{sent:#}");
+    let executed = bridge
+        .fake
+        .requests_to("POST", "/webhooks/")
+        .into_iter()
+        .find(|request| request.json["content"] == "hello as myself")
+        .expect("the webhook was executed")
+        .json;
+    assert!(
+        executed["avatar_url"]
+            .as_str()
+            .is_some_and(|url| url.contains("/avatars/4001/f00d.")),
+        "the webhook wears the same picture: {executed:#}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     let (bridge, mut runner) = Bridge::start().await;

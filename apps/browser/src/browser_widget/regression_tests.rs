@@ -502,6 +502,7 @@ fn a_question_the_page_asks_is_answered_from_its_dialog() {
             click,
             BrowserOperation::Page(PageRequest::Click {
                 element: "d1e5".into(),
+                frame: None,
             }),
         )
         .unwrap();
@@ -651,6 +652,7 @@ fn a_page_action_while_the_page_waits_on_its_question_answers_at_once() {
     let click = |element: &str| {
         BrowserOperation::Page(PageRequest::Click {
             element: element.into(),
+            frame: None,
         })
     };
 

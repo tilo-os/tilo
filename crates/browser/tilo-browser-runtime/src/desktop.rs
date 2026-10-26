@@ -511,7 +511,7 @@ impl Shared {
         };
         let shared = self.clone();
         let fetched = Arc::clone(notify);
-        wasm_bindgen_futures::spawn_local(async move {
+        let mut fetch = Box::pin(async move {
             let loaded = ui::application::registry::load(id).await.is_some();
             // Code that arrives after the bound is registered all the same,
             // so opening the window again shows the app at once.
@@ -519,6 +519,14 @@ impl Shared {
                 shared.settle_load(id, loaded, &fetched);
             }
         });
+        // Polled once here, the page's loader starts fetching the module in
+        // this call: a spawned task first runs after the frame that asked
+        // for the app, so its fetch waited behind that frame's layout and
+        // paint. The task takes the fetch over from there.
+        let mut asked = std::task::Context::from_waker(std::task::Waker::noop());
+        if fetch.as_mut().poll(&mut asked).is_pending() {
+            wasm_bindgen_futures::spawn_local(fetch);
+        }
         // A fetch that never ends must not leave its windows holding their
         // place for ever: past the bound they say it could not be loaded.
         let shared = self.clone();

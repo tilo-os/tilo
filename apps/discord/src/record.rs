@@ -253,6 +253,11 @@ pub struct Link {
     /// The `/link` whose reply says what came of it, when the link was
     /// made from Discord.
     pub interaction: Option<String>,
+    /// The avatar as a small picture (a `data:` URL), which the person's
+    /// Tilo profile shows until they upload their own.
+    pub photo: Option<String>,
+    /// The avatar hash `photo` is of.
+    pub photo_avatar: Option<String>,
 }
 
 impl Identified for Link {
@@ -312,6 +317,29 @@ pub fn map_key(kind: MappedKind, tilo: &str) -> String {
 /// A display name as the bridge passes it, empty for none.
 fn shown(display_name: String) -> Option<String> {
     (!display_name.is_empty()).then_some(display_name)
+}
+
+/// The longest picture a link keeps: what a Tilo profile's photo holds.
+pub const MAX_PHOTO_CHARS: usize = 48 * 1024;
+
+/// A base64 `data:` URL of a PNG, JPEG or WebP, short enough for a profile.
+fn is_photo(photo: &str) -> bool {
+    let Some(data) = ["image/png", "image/jpeg", "image/webp"]
+        .iter()
+        .find_map(|kind| {
+            photo
+                .strip_prefix("data:")?
+                .strip_prefix(kind)?
+                .strip_prefix(";base64,")
+        })
+    else {
+        return false;
+    };
+    photo.len() <= MAX_PHOTO_CHARS
+        && !data.is_empty()
+        && data
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
 }
 
 /// Insert `item`, or replace the item with its id.
@@ -1134,6 +1162,8 @@ impl Guild {
                 display_name: offer.display_name,
                 avatar: offer.avatar,
                 interaction: offer.interaction,
+                photo: None,
+                photo_avatar: None,
             },
         );
         Ok(())
@@ -1200,7 +1230,39 @@ impl Guild {
             link.display_name = display_name.and_then(shown);
             if let Some(avatar) = avatar {
                 link.avatar = shown(avatar);
+                if link.avatar.is_none() {
+                    link.photo = None;
+                    link.photo_avatar = None;
+                }
             }
+        }
+        Ok(())
+    }
+
+    /// Keep a linked account's avatar as its picture.
+    ///
+    /// The bridge fetched the avatar small; the person's Tilo profile shows
+    /// it until they upload their own.
+    #[action(housekeeping)]
+    pub fn set_link_photo(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The Discord account")] discord_user: String,
+        #[param("The avatar hash the picture is of")] avatar: String,
+        #[param("The picture, a data: URL of a PNG, JPEG or WebP")] photo: String,
+    ) -> Result<(), Refusal> {
+        guard::bot(cx)?;
+        if !is_photo(&photo) {
+            return Err(Refusal::new(
+                "a picture is a base64 data: URL of a PNG, JPEG or WebP",
+            ));
+        }
+        // A picture of an avatar the account no longer has is dropped.
+        if let Some(link) = self.links.find_mut(&Id::from_raw(discord_user.as_str()))
+            && link.avatar.as_deref() == Some(avatar.as_str())
+        {
+            link.photo = Some(photo);
+            link.photo_avatar = Some(avatar);
         }
         Ok(())
     }

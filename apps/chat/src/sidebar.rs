@@ -97,7 +97,7 @@ impl ChatApp {
                 .map(|contact| {
                     NavItem::new(
                         person_place(&contact.public_key),
-                        &self.contact_name(contact),
+                        self.contact_name(contact),
                     )
                 })
                 .collect();
