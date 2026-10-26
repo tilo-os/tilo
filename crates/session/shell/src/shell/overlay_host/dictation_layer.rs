@@ -1,6 +1,9 @@
 //! Local speech controls on the existing shell overlay stack. A request opens
 //! one-shot consent; neither a shortcut nor an action grants microphone access.
-use super::layers::{LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer};
+use super::layers::{
+    Anchor, LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Material, Modality, Role,
+    Routed, ShellLayer, Surface,
+};
 use crate::compositor::dictation_status::{DictationError, DictationStatus, SessionId};
 use crate::shell::i18n::{t, t_args};
 use ui::a11y::AccessNode;
@@ -381,6 +384,19 @@ fn error_key(error: crate::compositor::dictation_status::RuntimeError) -> &'stat
 impl ShellLayer for DictationSurface {
     fn id(&self) -> LayerId {
         LayerId::Dictation
+    }
+
+    /// Microphone consent and status under the caret it dictates into,
+    /// window-modal while it is open: the field it dictates into keeps its
+    /// focus, and nothing else on the desktop may be worked meanwhile.
+    fn surface(&self) -> Option<Surface> {
+        Some(Surface::shell(
+            Role::Overlay,
+            Anchor::BottomCenter(None),
+            Modality::WindowModal,
+            Material::SeeThrough,
+            self.prompt.is_some(),
+        ))
     }
     fn is_open(&self) -> bool {
         self.prompt.is_some()
