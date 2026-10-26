@@ -1168,6 +1168,7 @@ shell-workspace-renamed = Arbeitsbereich umbenannt
 shell-tab-menu-close = Tab schließen
 shell-tab-menu-split-right = Rechts abtrennen
 shell-tab-menu-new-group = In neue Gruppe verschieben
+shell-window-menu-reveal = Zu diesem Fenster gehen
 shell-window-menu-full-screen = Vollbild
 shell-window-menu-exit-full-screen = Vollbild beenden
 shell-window-menu-maximize = Maximieren

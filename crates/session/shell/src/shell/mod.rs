@@ -18,6 +18,7 @@ pub mod app_notice_card;
 pub mod app_opens;
 pub mod app_tabs;
 pub(crate) mod app_versions;
+pub mod attention;
 pub(crate) mod audio_output;
 pub(crate) mod audio_writer;
 pub mod automation_folders;
@@ -605,6 +606,13 @@ pub fn to_ui_window_group_with_inputs(
                     title: t.title.clone(),
                     app_kind: Some(kind),
                     icon: crate::app_icons::for_tile(&t.tile),
+                    attention: crate::shell::attention::is_asking(
+                        t.id,
+                        match &t.tile {
+                            state::TileContent::Foreign { surface_id, .. } => Some(*surface_id),
+                            _ => None,
+                        },
+                    ),
                 },
                 to_ui_tile_for_tab_with_inputs(&t.tile, t.id, inputs),
             )
