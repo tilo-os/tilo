@@ -435,6 +435,61 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
     );
 }
 
+/// The published id and action id of the notebook's "New note".
+fn new_note_on_the_door() -> (String, String) {
+    let descriptor = Room::surveyed()
+        .into_iter()
+        .find(|d| {
+            d.resource_kind == "tl.so.tilo.lang.notes.Notebook" && d.action_label == "New note"
+        })
+        .expect("the notebook publishes New note");
+    (descriptor.address.resource, descriptor.address.action)
+}
+
+#[test]
+fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
+    let mut room = Room::new("notes");
+    let (notebook, new_note) = new_note_on_the_door();
+    // An agent's task makes a note: the window stays where the person left it.
+    room.applies_as(Some(task()), &notebook, &new_note, &Json::Null)
+        .unwrap();
+    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), 1);
+    assert_eq!(
+        room.window.detail_target(),
+        None,
+        "the agent's note did not open"
+    );
+    // So does a script on the control socket, which acts as the person but not at the window.
+    let script = ActionInvoker::actor("ada".to_owned());
+    room.applies_as(Some(script), &notebook, &new_note, &Json::Null)
+        .unwrap();
+    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), 2);
+    assert_eq!(
+        room.window.detail_target(),
+        None,
+        "the script's note did not open"
+    );
+    // The person pressing New note in the window opens what it made, whatever was made before.
+    room.header_action("New note");
+    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), 3);
+    let opened = room
+        .window
+        .detail_target()
+        .cloned()
+        .expect("the person's note opened");
+    let theirs = room
+        .shown()
+        .into_iter()
+        .map(|row| row.item)
+        .filter(|item| *item == opened)
+        .count();
+    assert_eq!(theirs, 1, "it is a note of the list");
+    // And an agent's note after that leaves the person's open.
+    room.applies_as(Some(task()), &notebook, &new_note, &Json::Null)
+        .unwrap();
+    assert_eq!(room.window.detail_target(), Some(&opened));
+}
+
 #[test]
 fn a_new_conversation_shows_the_groups_avatar_until_someone_writes() {
     let mut room = Room::new("chat");
