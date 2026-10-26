@@ -26,11 +26,14 @@ fn krate() -> Tokens {
 /// * a struct with named fields is a map, one key per field;
 /// * a newtype struct is its inner value;
 /// * an enum of unit variants is a string naming the variant; the variant
-///   marked `#[default]` is the value of an absent slot;
+///   marked `#[default]` or `#[model(default)]` is the value of an absent slot
+///   (`#[model(default)]` also marks a variant that carries fields);
 /// * an enum whose variants carry fields is a map: the variant's name under
 ///   `$variant` and each field under its own key (a tuple variant's as `0`,
 ///   `1`, …), so edits of one variant merge field by field and a change of
-///   variant is last writer wins.
+///   variant is last writer wins. A field path names its variant first
+///   (`shape.rect.width`); fields the new variant does not carry stay as
+///   unused history for a later change back.
 ///
 /// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
 /// stored; the containing type's `Default` on read), `#[model(atom)]` on a
@@ -163,6 +166,8 @@ struct FieldOptions {
     resource: bool,
     /// `default = expr`: what an absent field reads as.
     default: Option<Expr>,
+    /// `default` without a value: the variant an absent data enum reads as.
+    default_variant: bool,
     /// `trust = "sensitive" | "weakening"`: the `Trust` variant it names.
     trust: Option<syn::LitStr>,
     /// `weaker = "higher" | "lower" | bool | ["strongest", .., "weakest"]`:
@@ -298,7 +303,11 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else if meta.path.is_ident("resource") {
                 options.resource = true;
             } else if meta.path.is_ident("default") {
-                options.default = Some(meta.value()?.parse()?);
+                if meta.input.peek(syn::Token![=]) {
+                    options.default = Some(meta.value()?.parse()?);
+                } else {
+                    options.default_variant = true;
+                }
             } else if meta.path.is_ident("trust") {
                 options.trust = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("weaker") {
@@ -559,10 +568,11 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 let key = options
                     .rename
                     .unwrap_or_else(|| snake_case(&variant.ident.to_string()));
-                if variant
-                    .attrs
-                    .iter()
-                    .any(|attr| attr.path().is_ident("default"))
+                if options.default_variant
+                    || variant
+                        .attrs
+                        .iter()
+                        .any(|attr| attr.path().is_ident("default"))
                 {
                     default = Some(variant.ident.clone());
                 }

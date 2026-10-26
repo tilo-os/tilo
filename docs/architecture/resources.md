@@ -59,7 +59,7 @@ want, not only for the value you hold.
 | `Reactions` | map of each reaction, keyed by emoji and who reacted | per person and emoji; changed only by `react`/`unreact`, which record whoever invokes them |
 | `Outbox<T>` | queue of entries settled by the owning device | see §2.4 |
 | `Option<T>`, `Box<T>`, nested `Model` structs | as the inner type | as the inner type |
-| enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, its fields beside it | per field of one variant; a change of variant is last writer wins |
+| enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, its fields beside it | per field of one variant; a change of variant is last writer wins, and fields the new variant does not carry stay as unused history (an explicit path `shape.rect.width` can edit an inactive variant's field) |
 | `serde_json::Value` | an object as a map, an array as a list, everything else a scalar | per key of an object, by position in an array; only for JSON another party shapes (an account type's settings, a binding's literal value, a parameter's JSON Schema) |
 
 A type with a layout the table does not cover implements `Model` by hand. That

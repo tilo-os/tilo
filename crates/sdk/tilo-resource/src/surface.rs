@@ -44,21 +44,33 @@ fn stored(shape: Shape) -> &'static str {
         // A map is published as the value it is written as.
         Shape::Value | Shape::Map(_) => "value",
         Shape::Record(_) => "record",
+        Shape::Variant(_) => "variant",
         Shape::Collection(_) => "collection",
         Shape::Keyed(_) => "keyed",
     }
 }
 
 fn fields_of(shape: Shape, prefix: &str, out: &mut Vec<FieldSurface>) {
-    let (fields, item) = match shape {
-        Shape::Record(fields) => (fields, false),
+    let fields = match shape {
+        Shape::Record(fields) => fields,
+        Shape::Variant(variants) => {
+            // A data enum names the branch before its fields, the way an
+            // edit does (`shape.rect.x`), so variants never share a path.
+            for variant in variants {
+                fields_of(
+                    Shape::Record(variant.fields),
+                    &format!("{prefix}{}.", variant.key),
+                    out,
+                );
+            }
+            return;
+        }
         Shape::Collection(item) | Shape::Keyed(item) => {
             fields_of(*item, &format!("{prefix}*."), out);
             return;
         }
         Shape::Value | Shape::Map(_) => return,
     };
-    let _ = item;
     for field in fields {
         let path = format!("{prefix}{}", field.key);
         out.push(FieldSurface {

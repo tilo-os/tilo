@@ -104,6 +104,12 @@ fn object_at(
                     .map_or(Shape::Value, |field| field.shape);
                 obj = child(doc, &obj, key)?;
             }
+            (Shape::Variant(variants), Segment::Field(key)) => {
+                let variant = variants.iter().find(|variant| variant.key == key)?;
+                // A variant names the branch its next field is stored in;
+                // the fields themselves sit in the map `$variant` is in.
+                shape = Shape::Record(variant.fields);
+            }
             (Shape::Collection(item), Segment::Item(id)) => {
                 let entry = child(doc, &obj, id.as_str())?;
                 obj = child(doc, &entry, crate::collection::VALUE)?;

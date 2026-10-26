@@ -243,6 +243,16 @@ pub trait PublishedItems: crate::collection::ItemList + ItemSource + 'static {
     const ITEM_TABLE: &'static ModelTable;
 }
 
+/// One variant of a data enum, as its derived `__VARIANTS` lists it.
+pub struct VariantDesc {
+    /// The name stored under [`crate::VARIANT_KEY`].
+    pub key: &'static str,
+    /// The Rust variant's name.
+    pub name: &'static str,
+    /// Its stored fields.
+    pub fields: &'static [FieldDesc],
+}
+
 /// One field of a record, as [`RecordDesc`] lists it.
 pub struct FieldDesc {
     /// The key it is stored under.
@@ -1380,7 +1390,8 @@ pub fn write_changed_fields(
 ///
 /// # Errors
 /// The document's write error, located at `key`.
-pub(crate) fn write_key_changed(
+#[doc(hidden)]
+pub fn write_key_changed(
     table: &ModelTable,
     (now, was): (&dyn Any, &dyn Any),
     doc: &mut Doc,
@@ -1396,6 +1407,99 @@ pub(crate) fn write_key_changed(
             (ops.store_changed)(table, now, was, doc, Slot::Key(obj, key), dirty).located(key)
         }
     }
+}
+
+/// Write the value a [`FieldDesc`] holds under its key of the map `obj`.
+///
+/// # Errors
+/// Returns the document's write error.
+#[doc(hidden)]
+pub fn store_field(
+    field: &FieldDesc,
+    doc: &mut Doc,
+    obj: &ObjId,
+    value: &dyn Any,
+) -> Result<(), ModelError> {
+    (field.table.ops.store)(field.table, value, doc, Slot::Key(obj, field.key)).located(field.key)
+}
+
+/// [`Model::stores_as`] of the value a [`FieldDesc`] holds: the comparison
+/// a data enum makes field by field.
+#[doc(hidden)]
+#[must_use]
+pub fn stores_as_field(table: &ModelTable, value: &dyn Any, before: &dyn Any) -> bool {
+    (table.ops.stores_as)(table, value, before)
+}
+
+/// [`Model::diff`] of the value a [`FieldDesc`] holds.
+#[doc(hidden)]
+pub fn diff_field(
+    table: &ModelTable,
+    before: &dyn Any,
+    after: &dyn Any,
+    path: &[Segment],
+    out: &mut Vec<Edit<()>>,
+) {
+    (table.ops.diff)(table, before, after, path, out);
+}
+
+/// [`Model::edit`] of the value a [`FieldDesc`] holds, for a data enum's
+/// field edit.
+///
+/// # Errors
+/// Returns why the path or operation does not fit, or a refusal.
+#[doc(hidden)]
+pub fn edit_field(
+    table: &ModelTable,
+    doc: &mut Doc,
+    slot: Slot<'_>,
+    path: &[Segment],
+    op: &EditOp,
+    cx: &mut ActionCx,
+) -> Result<(), ModelError> {
+    (table.ops.edit)(table, doc, slot, path, op, cx)
+}
+
+/// [`Model::check`] of the value a [`FieldDesc`] holds.
+///
+/// # Errors
+/// Returns the first refusal.
+#[doc(hidden)]
+pub fn check_field(table: &ModelTable, value: &dyn Any) -> Result<(), Refusal> {
+    (table.ops.check)(table, value)
+}
+
+/// [`Model::get_at`] of the value a [`FieldDesc`] holds.
+#[doc(hidden)]
+#[must_use]
+pub fn field_at<'a>(
+    table: &ModelTable,
+    value: &'a dyn Any,
+    path: &[Segment],
+) -> Option<&'a dyn Any> {
+    (table.ops.get_at)(table, value, path)
+}
+
+/// The value of `field` read from the document, into `out` an `Option` of
+/// its type.
+///
+/// # Errors
+/// Why it does not read.
+#[doc(hidden)]
+pub fn load_field(
+    field: &FieldDesc,
+    doc: &Doc,
+    obj: &ObjId,
+    out: &mut dyn Any,
+) -> Result<(), ModelError> {
+    let slot = crate::model::get_slot(doc, obj, field.key).located(field.key)?;
+    load_slot(
+        field.table,
+        doc,
+        slot.as_ref().map(|(value, id)| (value, id)),
+        out,
+    )
+    .located(field.key)
 }
 
 /// [`Model::store_changed`] of a record.

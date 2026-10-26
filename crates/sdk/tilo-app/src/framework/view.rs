@@ -850,13 +850,30 @@ fn locate<T: Model + 'static, I: 'static>(
         prefix: &mut Vec<Segment>,
         target: *const u8,
     ) -> bool {
+        if let tilo_resource::Shape::Variant(variants) = shape {
+            for variant in variants {
+                prefix.push(Segment::Field(variant.key.to_owned()));
+                if walk(
+                    value,
+                    tilo_resource::Shape::Record(variant.fields),
+                    prefix,
+                    target,
+                ) {
+                    return true;
+                }
+                prefix.pop();
+            }
+            return false;
+        }
         for field in shape.fields() {
             prefix.push(Segment::Field(field.key.to_owned()));
             let found = match field.shape {
                 tilo_resource::Shape::Collection(_) => value
                     .get_at(prefix)
                     .is_some_and(|at| std::ptr::eq(std::ptr::from_ref(at).cast::<u8>(), target)),
-                tilo_resource::Shape::Record(_) => walk(value, field.shape, prefix, target),
+                tilo_resource::Shape::Record(_) | tilo_resource::Shape::Variant(_) => {
+                    walk(value, field.shape, prefix, target)
+                }
                 tilo_resource::Shape::Value
                 | tilo_resource::Shape::Keyed(_)
                 | tilo_resource::Shape::Map(_) => false,

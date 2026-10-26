@@ -192,6 +192,27 @@ fn restore_node(shape: Shape) -> HistoryRestoreNode {
                 .collect(),
             None,
         ),
+        Shape::Variant(variants) => {
+            let mut fields = vec![HistoryMapField {
+                key: tilo_resource::VARIANT_KEY,
+                required: false,
+                node: whole,
+            }];
+            let mut seen: Vec<&str> = Vec::new();
+            for variant in variants {
+                for field in variant.fields {
+                    if !seen.contains(&field.key) {
+                        seen.push(field.key);
+                        fields.push(HistoryMapField {
+                            key: field.key,
+                            required: false,
+                            node: restore_node(field.shape),
+                        });
+                    }
+                }
+            }
+            overlay(fields, None)
+        }
         Shape::Record(_) | Shape::Value | Shape::Map(_) => whole,
         Shape::Keyed(item) => overlay(
             Vec::new(),

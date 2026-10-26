@@ -18,6 +18,12 @@ pub enum Shape {
     Value,
     /// A map of named fields, each with its own shape.
     Record(&'static [FieldShape]),
+    /// An enum whose variants carry fields: the variant's name under
+    /// [`VARIANT_KEY`](crate::VARIANT_KEY), and the active variant's fields
+    /// beside it. Each variant has its own fields, so an edit names the
+    /// variant it belongs to (`shape.rect.x`) and a change of variant is one
+    /// write of the name.
+    Variant(&'static [VariantShape]),
     /// A keyed, ordered [`Collection`](crate::Collection) of items of one
     /// shape. Each item is stored under its id as an entry map holding its
     /// order key ([`ENTRY_ORDER_KEY`]) and its value ([`ENTRY_VALUE_KEY`]).
@@ -65,7 +71,19 @@ impl Trust {
     }
 }
 
-/// One named field of a [`Shape::Record`].
+/// One variant of a [`Shape::Variant`]: the name stored under
+/// [`VARIANT_KEY`](crate::VARIANT_KEY) and the fields it carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VariantShape {
+    /// The name stored under [`VARIANT_KEY`](crate::VARIANT_KEY).
+    pub key: &'static str,
+    /// The Rust variant's name.
+    pub name: &'static str,
+    /// Its fields, in declaration order.
+    pub fields: &'static [FieldShape],
+}
+
+/// One named field of a [`Shape::Record`] or [`Shape::Variant`].
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is one independent field attribute"
@@ -228,7 +246,22 @@ impl Shape {
     pub const fn fields(&self) -> &'static [FieldShape] {
         match self {
             Self::Record(fields) => fields,
-            Self::Value | Self::Collection(_) | Self::Keyed(_) | Self::Map(_) => &[],
+            Self::Value
+            | Self::Variant(_)
+            | Self::Collection(_)
+            | Self::Keyed(_)
+            | Self::Map(_) => &[],
+        }
+    }
+
+    /// The variants of a data enum; none for any other shape.
+    #[must_use]
+    pub const fn variants(&self) -> &'static [VariantShape] {
+        match self {
+            Self::Variant(variants) => variants,
+            Self::Value | Self::Record(_) | Self::Collection(_) | Self::Keyed(_) | Self::Map(_) => {
+                &[]
+            }
         }
     }
 
@@ -254,6 +287,25 @@ impl Shape {
                         field.unit && matches!(field.shape, Self::Collection(_) | Self::Keyed(_));
                     if field.unit && !items_are_units {
                         unit.clone_from(&walked);
+                    }
+                }
+                (Self::Variant(variants), Segment::Field(key)) => {
+                    if let Some(variant) = variants.iter().find(|variant| variant.key == key) {
+                        // The variant step names a branch, not a stored key.
+                        shape = Self::Record(variant.fields);
+                    } else if let Some(field) = variants
+                        .iter()
+                        .flat_map(|variant| variant.fields)
+                        .find(|field| field.key == key)
+                    {
+                        shape = field.shape;
+                        items_are_units = field.unit
+                            && matches!(field.shape, Self::Collection(_) | Self::Keyed(_));
+                        if field.unit && !items_are_units {
+                            unit.clone_from(&walked);
+                        }
+                    } else {
+                        break;
                     }
                 }
                 (Self::Collection(item) | Self::Keyed(item), Segment::Item(_)) => {
@@ -292,6 +344,21 @@ impl Shape {
                         walk(field.shape, &path, out, depth.saturating_add(1));
                     }
                 }
+                Shape::Variant(variants) => {
+                    for variant in variants {
+                        for field in variant.fields {
+                            let path = if prefix.is_empty() {
+                                format!("{}.{}", variant.key, field.key)
+                            } else {
+                                format!("{prefix}.{}.{}", variant.key, field.key)
+                            };
+                            if field.quiet_remove {
+                                out.push(path.clone());
+                            }
+                            walk(field.shape, &path, out, depth.saturating_add(1));
+                        }
+                    }
+                }
                 Shape::Collection(item) | Shape::Keyed(item) | Shape::Map(item) => {
                     walk(*item, &format!("{prefix}.*"), out, depth.saturating_add(1));
                 }
@@ -326,6 +393,21 @@ impl Shape {
                         walk(field.shape, &path, out, depth.saturating_add(1));
                     }
                 }
+                Shape::Variant(variants) => {
+                    for variant in variants {
+                        for field in variant.fields {
+                            let path = if prefix.is_empty() {
+                                format!("{}.{}", variant.key, field.key)
+                            } else {
+                                format!("{prefix}.{}.{}", variant.key, field.key)
+                            };
+                            if field.trust != Trust::Ordinary {
+                                out.push((path.clone(), field.trust));
+                            }
+                            walk(field.shape, &path, out, depth.saturating_add(1));
+                        }
+                    }
+                }
                 Shape::Collection(item) | Shape::Keyed(item) | Shape::Map(item) => {
                     walk(*item, &format!("{prefix}.*"), out, depth.saturating_add(1));
                 }
@@ -353,6 +435,20 @@ impl Shape {
                     trust = trust.max(field.trust);
                     shape = field.shape;
                 }
+                (Self::Variant(variants), Segment::Field(key)) => {
+                    if let Some(variant) = variants.iter().find(|variant| variant.key == key) {
+                        shape = Self::Record(variant.fields);
+                    } else if let Some(field) = variants
+                        .iter()
+                        .flat_map(|variant| variant.fields)
+                        .find(|field| field.key == key)
+                    {
+                        trust = trust.max(field.trust);
+                        shape = field.shape;
+                    } else {
+                        break;
+                    }
+                }
                 (
                     Self::Collection(item) | Self::Keyed(item) | Self::Map(item),
                     Segment::Item(_) | Segment::Key(_),
@@ -378,6 +474,22 @@ impl Shape {
                         return true;
                     }
                     shape = field.shape;
+                }
+                (Self::Variant(variants), Segment::Field(key)) => {
+                    if let Some(variant) = variants.iter().find(|variant| variant.key == key) {
+                        shape = Self::Record(variant.fields);
+                    } else if let Some(field) = variants
+                        .iter()
+                        .flat_map(|variant| variant.fields)
+                        .find(|field| field.key == key)
+                    {
+                        if field.readonly {
+                            return true;
+                        }
+                        shape = field.shape;
+                    } else {
+                        return false;
+                    }
                 }
                 (Self::Collection(item) | Self::Keyed(item), Segment::Item(_)) => shape = *item,
                 _ => return false,
