@@ -115,8 +115,8 @@ fn touch_route(
         TouchRoute::for_cursor(fb.chrome_cursor_at(point))
     };
     // A finger's route decides whether chrome under it ever sees a click;
-    // rare enough to say every time.
-    tracing::info!(x, y, taken, ?route, "touch contact routed");
+    // rare enough to say every time, in the log a device keeps.
+    tracing::info!(target: tilo_startup_metrics::INPUT_ROUTE_TARGET, x, y, taken, ?route, "touch contact routed");
     route
 }
 
