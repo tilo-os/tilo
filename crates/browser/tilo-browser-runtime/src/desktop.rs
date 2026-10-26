@@ -1684,11 +1684,16 @@ fn layout_value(
     workspace: u64,
 ) -> Option<serde_json::Value> {
     let mut desktop = handle.read(|tree| {
-        let held = tree
+        let held = match tree
             .workspaces
             .iter()
-            .find(|candidate| candidate.id.0 == workspace)?
-            .clone();
+            .find(|candidate| candidate.id.0 == workspace)
+        {
+            Some(held) => held.clone(),
+            // A profile that names no room keeps the workspace in front.
+            None if workspace == 0 => tree.active_workspace()?.clone(),
+            None => return None,
+        };
         let mut live = std::collections::HashSet::new();
         let mut strips = std::collections::HashSet::new();
         for strip in &held.strips {
