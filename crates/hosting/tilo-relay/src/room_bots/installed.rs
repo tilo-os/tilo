@@ -68,6 +68,11 @@ pub struct InstalledBot {
     pub inputs: Map<String, Value>,
     /// When it was installed, ms since the epoch.
     pub installed_at_ms: i64,
+    /// The version it runs, as the room asked for it (empty for a program
+    /// file, whose text is what runs): a request for another one replaces
+    /// the program and keeps the installation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub release: String,
 }
 
 impl InstalledBot {
@@ -943,54 +948,60 @@ const ROOM_APP: &str = "so.tilo.desktop";
 pub async fn install(
     dir: &Path,
     entry: &str,
+    inputs: Map<String, Value>,
+) -> Result<InstalledBot, String> {
+    install_release(dir, entry, inputs, None).await
+}
+
+/// [`install`], running `program` (a developer's own program for `entry`,
+/// at the `version` input) instead of the listed one when given. A kept
+/// installation asked for another version runs it from now on and stays
+/// the same bot: its installation, name, inputs and install time are kept,
+/// and [`super::membership::keep_member`] moves the room's row to the new
+/// program and its grants.
+///
+/// # Errors
+/// As [`install`].
+pub async fn install_release(
+    dir: &Path,
+    entry: &str,
     mut inputs: Map<String, Value>,
+    program: Option<&str>,
 ) -> Result<InstalledBot, String> {
     let kept = dir.join("bot.json");
-    let file = Path::new(entry).is_file().then(|| program_file(entry));
+    let version = inputs.remove("version");
+    let release = version
+        .as_ref()
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    // A program given or shipped as a file on this host runs as it is now.
+    let local = match program {
+        Some(text) => Some(program_text(entry, text.as_bytes())),
+        None => Path::new(entry).is_file().then(|| program_file(entry)),
+    };
     if let Ok(bytes) = std::fs::read(&kept) {
         let mut bot: InstalledBot = serde_json::from_slice(&bytes)
             .map_err(|error| format!("{}: {error}", kept.display()))?;
         if bot.entry == entry {
-            let Some(file) = file else {
-                return Ok(bot);
-            };
             // The name stays: the bot's device certificate carries it, and
             // a renewal keeps the same certificate.
-            let (_, program) = file?;
-            if bot.program != program {
+            let program = match local {
+                Some(local) => local?.1,
+                None if bot.release == release => return Ok(bot),
+                None => fetch_listed(entry, &release).await?.1,
+            };
+            if bot.program != program || bot.release != release {
                 bot.program = program;
+                bot.release = release;
                 keep_installed(dir, &kept, &bot)?;
             }
             return Ok(bot);
         }
     }
-    let version = inputs.remove("version");
-    let (name, program) = if let Some(file) = file {
-        file?
-    } else {
-        let version = version
-            .as_ref()
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                format!("{entry}: a directory bot is installed at a version (version=…)")
-            })?
-            .to_owned();
-        let entry_id = entry.to_owned();
-        let listed = tokio::task::spawn_blocking(move || {
-            let registries = app_cli::config::load_registries();
-            let registry = registries
-                .enabled()
-                .next()
-                .ok_or_else(|| "no registry is enabled on this host".to_owned())?;
-            tilo_bot_directory::fetch_listed_bot(registry, &entry_id, &version)
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())??;
-        (
-            listed.entry.name.resolve("en").unwrap_or(entry).to_owned(),
-            listed.program_text,
-        )
+    let (name, program) = match local {
+        Some(local) => local?,
+        None => fetch_listed(entry, &release).await?,
     };
     let bot = InstalledBot {
         installation: uuid::Uuid::new_v4().to_string(),
@@ -999,15 +1010,48 @@ pub async fn install(
         program,
         inputs,
         installed_at_ms: tilo_clock::unix_now_ms_i64(),
+        release,
     };
     keep_installed(dir, &kept, &bot)?;
     Ok(bot)
 }
 
+/// The name and program of directory entry `entry` at `version`, fetched
+/// and verified from the first enabled registry.
+async fn fetch_listed(entry: &str, version: &str) -> Result<(String, String), String> {
+    if version.is_empty() {
+        return Err(format!(
+            "{entry}: a directory bot is installed at a version (version=…)"
+        ));
+    }
+    let version = version.to_owned();
+    let entry_id = entry.to_owned();
+    let listed = tokio::task::spawn_blocking(move || {
+        let registries = app_cli::config::load_registries();
+        let registry = registries
+            .enabled()
+            .next()
+            .ok_or_else(|| "no registry is enabled on this host".to_owned())?;
+        tilo_bot_directory::fetch_listed_bot(registry, &entry_id, &version)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok((
+        listed.entry.name.resolve("en").unwrap_or(entry).to_owned(),
+        listed.program_text,
+    ))
+}
+
 /// The name and canonical program text of the program file `entry`.
 fn program_file(entry: &str) -> Result<(String, String), String> {
     let bytes = std::fs::read(entry).map_err(|error| format!("{entry}: {error}"))?;
-    let shortcut = tilo_automation::program::parse_program(&bytes)
+    program_text(entry, &bytes)
+}
+
+/// The name and canonical text of the program `bytes` for `entry`.
+fn program_text(entry: &str, bytes: &[u8]) -> Result<(String, String), String> {
+    let shortcut = tilo_automation::program::parse_program(bytes)
         .map_err(|error| format!("{entry}: {error}"))?;
     let canonical =
         tilo_automation::program::canonical_bytes(&shortcut).map_err(|error| error.to_string())?;
