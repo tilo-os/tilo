@@ -354,39 +354,101 @@ fn certified_manager(
     )
     .unwrap()
 }
+/// The feedback publisher opens the room's Chat cold, on the device that
+/// hosts the room, in a fresh profile: the chat app made the record on its
+/// sealed channel, so only the room's host keeps it. It reads the record,
+/// publishes the report there, and a same-id retry leaves the host keeping
+/// the report once.
 #[test]
+#[serial_test::serial]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey: the room, its chat, the cold publisher, its retry and a fresh reader"
+)]
 fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner() {
-    let (directory, owner, room, _, key) = native_workspace_owner::test_enrolled_owner();
-    prepare_existing_chat(&owner, &key);
-    let (network, commands) = fixture_network(&owner, &key);
-    let (reporter, _) = network.feedback_custody(room).unwrap();
-    let author = hex::encode(reporter.user_public_key);
-    let delivery = Delivery::new(network.clone(), destination(), &author).unwrap();
-    admit(&delivery);
-    let admission = delivery.connection.borrow().current().unwrap();
-    let runtime = tempfile::Builder::new()
-        .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir_in(directory.path())
-        .unwrap();
-    let socket = runtime.path().join("broker.sock");
-    let broker = crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
-        socket.clone(),
-        native_workspace_owner::tree_of(&owner),
-        vec![reporter.device_public_key],
-        &network,
-        None,
+    use crate::shell::network::one_host_tests::cold_reads::{CHAT, ChatAuthor, open_cold};
+    use crate::shell::network::one_host_tests::{Device, Wakes, hosted_workspace, until};
+    let directory = tempfile::tempdir().unwrap();
+    // The broker binds only inside an owner-only directory.
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut host_identity = tilo_test_env::ScopedEnv::new();
+    host_identity
+        .set("XDG_CONFIG_HOME", directory.path().join("config"))
+        .set("TILO_IDENTITY_ROOT", directory.path().join("system"))
+        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1")
+        .set(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/nonexistent-tilo-test-bus",
+        )
+        .remove("TILO_USER_IDENTITY")
+        .remove("TILO_IDENTITY_BROKER_FD");
+    let identity = runtime_identity::identity_dir_from_env().unwrap();
+    crate::firstboot::ensure_throwaway_test_identity(
+        &identity,
+        &crate::firstboot::collaboration_identity_paths(),
     )
     .unwrap();
+    let wakes = Arc::new(Wakes::default());
+    let mut device = Device::start_as_this_host(
+        &directory.path().join("system"),
+        "Desktop",
+        &directory.path().join("session"),
+        1,
+        &wakes,
+    );
+    let (_, room) = hosted_workspace(&device, &[], "Feedback room");
+    let registry = tilo_identity_host::registry::IdentityRegistryStore::at(&identity);
+    let selected = registry
+        .load_reconciled()
+        .unwrap()
+        .default_identity
+        .unwrap();
+    registry
+        .bind_workspace(&room.to_string(), &selected)
+        .unwrap();
+    device.open_app_first(room, CHAT);
+    let socket = directory.path().join("collab.sock");
+    let broker = device.start_broker(&socket);
+    let network = Arc::clone(device.net());
+    let (reporter, _) = network.feedback_custody(room).unwrap();
+    let author = hex::encode(reporter.user_public_key);
+
+    // The chat app makes the room's Chat, with its feedback channel, on its
+    // own sealed channel; the room's host keeps it.
+    let mut chat_app = ChatAuthor::new(device.connect_app(&socket, CHAT, room));
+    chat_app.write(&author, |document, person| {
+        chat::demo::start(document, person, "Fixture", "F").unwrap();
+        chat::demo::insert_category(document, "feedback-category", "Feedback").unwrap();
+        chat::demo::insert_channel(
+            document,
+            "feedback",
+            "feedback-category",
+            "Feedback",
+            chat::model::ChannelKind::Text,
+        )
+        .unwrap();
+    });
+    until(&[&device], "the Chat on the room's host", || {
+        chat_app.pump();
+        (device.retained_writes(room, CHAT) >= 1).then_some(())
+    });
+    drop(chat_app);
+    let made = device.retained_writes(room, CHAT);
+
+    let destination = destination_in(room);
+    let delivery = Delivery::new(network.clone(), destination.clone(), &author).unwrap();
+    admit(&delivery);
+    let admission = delivery.connection.borrow().current().unwrap();
     let profile = directory.path().join("cold-publisher");
     assert!(!profile.exists());
     let mut apps = InProcessApps::at(&profile, &profile.join("person"), &author).unwrap();
-    let original_view = save_user_view(&apps);
+    let original_view = save_user_view(&apps, &destination.room);
     let mut publisher = publisher_on(
         &mut apps,
         &admission,
-        certified_manager(&socket, &reporter, &key),
+        device.connect_app(&socket, CHAT, room),
     )
-    .unwrap();
+    .expect("the publisher opens the Chat cold");
     let mut preview = tilo_app::feedback::Draft {
         text: "The book failed to open".into(),
         context: vec![],
@@ -395,22 +457,53 @@ fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner()
     .unwrap();
     preview.approve();
     let submission = preview
-        .submission("0123456789abcdef0123456789abcdef".into(), destination())
+        .submission(
+            "0123456789abcdef0123456789abcdef".into(),
+            destination.clone(),
+        )
         .unwrap();
-    publish_twice(&mut publisher, &network, &submission, room);
-    let records = apps
-        .owners
-        .open("so.tilo.chat", &destination().room)
-        .unwrap();
-    assert!(
-        records
-            .read(&RecordId::package_primary(), |document| {
-                chat::feedback::report(document, &submission.id)
-                    .unwrap()
-                    .is_some()
+    let reported = |apps: &mut InProcessApps| {
+        apps.owners
+            .open(CHAT, &destination.room)
+            .ok()
+            .and_then(|records| {
+                records
+                    .read(&RecordId::package_primary(), |document| {
+                        chat::feedback::report(document, &submission.id)
+                            .ok()
+                            .flatten()
+                            .is_some()
+                    })
+                    .ok()
             })
-            .unwrap()
+            .unwrap_or(false)
+    };
+    let address = tilo_actions::ActionAddress::new(
+        tilo_app::feedback::destination::item(
+            tilo_app::feedback::destination::CHANNELS,
+            "feedback",
+        ),
+        tilo_app::feedback::destination::SUBMIT,
     );
+    let arguments = serde_json::json!({"submission": submission});
+    for attempt in 0..2 {
+        publisher.pump_hosted_model();
+        publisher
+            .invoke_local_resource_action(&address, arguments.as_object().unwrap())
+            .unwrap_or_else(|error| panic!("publication attempt {attempt}: {error:?}"));
+        until(
+            &[&device],
+            "the report in the publisher's cold-read Chat",
+            || {
+                publisher.pump_hosted_model();
+                reported(&mut apps).then_some(())
+            },
+        );
+        until(&[&device], "the report on the room's host", || {
+            publisher.pump_hosted_model();
+            (device.retained_writes(room, CHAT) > made).then_some(())
+        });
+    }
     publisher.close_components();
     assert!(
         publisher
@@ -424,7 +517,7 @@ fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner()
         apps.store
             .read(&durable_store::StorageKey::view(
                 &apps.device_id,
-                &destination().room,
+                &destination.room,
                 1
             ))
             .unwrap()
@@ -433,114 +526,59 @@ fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner()
         original_view,
         "the model publisher must not replace the user's window presentation"
     );
-    drop(records);
     drop(publisher);
     drop(apps);
+
+    // A fresh reader of the record finds the report the host keeps, once.
+    let (mut reader, owners) = open_cold(
+        &directory.path().join("fresh-reader"),
+        chat::definition(),
+        room,
+        &author,
+        device.connect_app(&socket, CHAT, room),
+    );
+    let presented = until(&[&device], "the report in a fresh cold read", || {
+        reader.pump_hosted_model();
+        let mut owners = owners.clone();
+        let records = owners.open(CHAT, &destination.room).ok()?;
+        records
+            .read(&RecordId::package_primary(), |document| {
+                chat::projection::read(document)
+                    .message_rows(&chat::messages::Messages::default(), "feedback")
+                    .iter()
+                    .filter(|message| message.id == format!("m_feedback_{}", submission.id))
+                    .count()
+            })
+            .ok()
+            .filter(|count| *count > 0)
+    });
+    assert_eq!(
+        presented, 1,
+        "same-ID retry must present exactly one retained canonical message"
+    );
+    drop(reader);
     drop(delivery);
     drop(broker);
     drop(network);
-    drop(commands);
-    drop(owner);
-    let path = directory.path().join("state.json");
-    let mut tree = crate::shell::persist::load_tree_from(&path).unwrap();
-    tree.persist_path = Some(path);
-    let reopened = native_workspace_owner::open(tree.shared()).unwrap();
-    assert_retained_once(&reopened, room, &submission);
+    drop(device);
+    drop(host_identity);
 }
 
-fn assert_retained_once(
-    reopened: &NativeWorkspaceOwner,
-    room: crate::shell::state::RoomId,
-    submission: &Submission,
-) {
-    assert!(
-        reopened
-            .with_current(room, |view| {
-                let document = automerge::AutoCommit::load(
-                    &view
-                        .peer()
-                        .document("so.tilo.chat", "")
-                        .ok_or("retained Chat absent")?,
-                )
-                .map_err(|error| error.to_string())?;
-                assert_eq!(
-                    chat::projection::read(&document)
-                        .message_rows(&chat::messages::Messages::default(), "feedback")
-                        .iter()
-                        .filter(|message| message.id == format!("m_feedback_{}", submission.id))
-                        .count(),
-                    1,
-                    "same-ID retry must present exactly one retained canonical message"
-                );
-                chat::feedback::report(&document, &submission.id)
-                    .map(|report| report.is_some())
-                    .map_err(|error| error.to_string())
-            })
-            .unwrap(),
-        "the registered action's canonical report survives native owner restart"
-    );
-}
-
-fn publish_twice(
-    publisher: &mut ui::App,
-    network: &Arc<ShellNetwork>,
-    submission: &Submission,
-    room: crate::shell::state::RoomId,
-) {
-    use tilo_app::feedback::destination;
-    let address = tilo_actions::ActionAddress::new(
-        destination::item(destination::CHANNELS, "feedback"),
-        destination::SUBMIT,
-    );
-    let arguments = serde_json::json!({"submission":submission});
-    let deadline = std::time::Instant::now()
-        .checked_add(tilo_test_env::hang_bound())
-        .unwrap();
-    for attempt in 0..2 {
-        publisher.pump_hosted_model();
-        publisher
-            .invoke_local_resource_action(&address, arguments.as_object().unwrap())
-            .unwrap();
-        loop {
-            publisher.pump_hosted_model();
-            let retained = network
-                .native_owner()
-                .unwrap()
-                .with_current(room, |view| {
-                    let document = automerge::AutoCommit::load(
-                        &view
-                            .peer()
-                            .document("so.tilo.chat", "")
-                            .ok_or("Chat missing")?,
-                    )
-                    .map_err(|error| error.to_string())?;
-                    chat::feedback::report(&document, &submission.id)
-                        .map(|report| report.is_some())
-                        .map_err(|error| error.to_string())
-                })
-                .unwrap();
-            if retained {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "native publication attempt {attempt} never reached the original owner"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+fn destination_in(room: crate::shell::state::RoomId) -> tilo_desktop::feedback::Destination {
+    tilo_desktop::feedback::Destination {
+        room: room.to_string(),
+        ..destination()
     }
 }
 
-fn save_user_view(apps: &InProcessApps) -> Vec<u8> {
-    let views =
-        InstanceViewStore::with_store(apps.store.clone(), &apps.device_id, &destination().room)
-            .unwrap();
+fn save_user_view(apps: &InProcessApps, room: &str) -> Vec<u8> {
+    let views = InstanceViewStore::with_store(apps.store.clone(), &apps.device_id, room).unwrap();
     views
         .save(&ui::application_view::SavedInstanceView {
             version: 2,
             app_id: "so.tilo.chat".into(),
             device_id: apps.device_id.clone(),
-            workspace_id: destination().room,
+            workspace_id: room.to_owned(),
             instance_id: 1,
             record_id: RecordId::package_primary().as_str().into(),
             record_kind: chat::definition().record_kind.as_str().into(),
@@ -549,11 +587,7 @@ fn save_user_view(apps: &InProcessApps) -> Vec<u8> {
         })
         .unwrap();
     apps.store
-        .read(&durable_store::StorageKey::view(
-            &apps.device_id,
-            &destination().room,
-            1,
-        ))
+        .read(&durable_store::StorageKey::view(&apps.device_id, room, 1))
         .unwrap()
         .unwrap()
         .bytes
