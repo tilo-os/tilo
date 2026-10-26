@@ -47,7 +47,6 @@
 #include <condition_variable>
 #include <cstring>
 #include <cstdlib>
-#include <cstdio>
 #include <deque>
 #include <fcntl.h>
 #include <filesystem>
@@ -1667,10 +1666,39 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     browser_->GetHost()->WasHidden(true);
   }
   void PageKey(CefRefPtr<CefDictionaryValue> key) {
+    // A key of a fill's own typing arrives marked: it names its character, not
+    // a key to press.
+    if(key->HasKey("typed")) { TypedKey(key);return; }
     if(!browser_)return;const int held=key_modifiers_;
     // Keys reach only a focused view; the page's own focused element is kept.
     browser_->GetHost()->SetFocus(true);
     key->SetBool("down",true);Key(key);key->SetBool("down",false);Key(key);
+    key_modifiers_=held;
+  }
+  // One key of a fill's own typing, sent as the browser sends a person's: the
+  // press, the character it writes and the release, so the page hears keydown,
+  // keypress and, before anything is written, its beforeinput.
+  void TypedKey(CefRefPtr<CefDictionaryValue> key) {
+    if(!browser_)return;const int held=key_modifiers_;
+    // Keys reach only a focused view; the page's own focused element is kept.
+    browser_->GetHost()->SetFocus(true);
+    auto pressed=key->Copy(false);
+    // A line break is the Enter key itself: its press is what the page hears,
+    // and the browser makes of it what it makes of a person's Enter, which a
+    // page is free to prevent.
+    if(key->GetBool("enter")) {
+      pressed->SetString("key","Enter");
+      pressed->SetBool("down",true);Key(pressed);
+      pressed->SetBool("down",false);Key(pressed);
+      key_modifiers_=held;return;
+    }
+    pressed->SetString("key",key->GetString("text"));
+    const std::string text=pressed->GetString("text").ToString();
+    if(text.size()==1 && tilo::KeyCodeShaped("Key"+std::string(1,static_cast<char>(std::toupper(text[0])))))
+      pressed->SetString("code","Key"+std::string(1,static_cast<char>(std::toupper(text[0]))));
+    pressed->SetBool("down",true);
+    Key(pressed);
+    pressed->SetBool("down",false);Key(pressed);
     key_modifiers_=held;
   }
   CefRefPtr<CefBrowser> browser_;
