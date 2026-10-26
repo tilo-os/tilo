@@ -72,7 +72,6 @@ mod live_share;
 mod live_share_panel;
 mod local_voice;
 pub mod mention;
-mod mention_alerts;
 pub mod messages;
 pub mod model;
 mod moderation;

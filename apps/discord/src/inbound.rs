@@ -528,7 +528,7 @@ pub struct AnswerItem {
 /// The reply to `/link` once the account is linked to `name`.
 #[must_use]
 pub fn linked_reply(name: &str) -> String {
-    format!("Linked to {name} ✓ What you write here now shows as you in Tilo.")
+    format!("Linked to {name}. What you write here now shows as you in Tilo.")
 }
 
 /// The reply to `/link` once its button ran out unused.

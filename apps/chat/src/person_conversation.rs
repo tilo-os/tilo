@@ -52,8 +52,19 @@ impl ChatApp {
             .find(|contact| contact.public_key == public_key)
             .map_or_else(
                 || crate::identity::unnamed_label(public_key),
-                |contact| contact.display_name.clone(),
+                |contact| self.contact_name(contact),
             )
+    }
+
+    /// What a contact is called: the name they go by here now, as
+    /// everyone here sees it (they may have renamed themself since the
+    /// room's list was read), else the name the room keeps for them.
+    pub(crate) fn contact_name(&self, contact: &ui::person_chat::Contact) -> String {
+        self.room_names
+            .get(contact.public_key.as_str())
+            .map(|name| name.trim())
+            .filter(|name| !name.is_empty())
+            .map_or_else(|| contact.display_name.clone(), str::to_owned)
     }
 
     fn require_person_contact(&self, public_key: &str) -> Result<(), String> {

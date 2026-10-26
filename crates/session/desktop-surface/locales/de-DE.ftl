@@ -41,7 +41,7 @@ topbar-bell-silenced = { $unread ->
     [one] Mitteilungen stummgeschaltet, 1 ungelesen
    *[other] Mitteilungen stummgeschaltet, { $unread } ungelesen
 }
-topbar-show-collaborators = Mitwirkende anzeigen
+topbar-show-collaborators = Alle hier
 topbar-viewer-can-control = kann { $targets } steuern
 topbar-viewer-view-only = sieht nur { $targets }
 topbar-viewer-entry = { $name } ({ $kind ->
@@ -1026,6 +1026,7 @@ people-panel-stop-following = Beenden
 # The people overlay: the roster pinned out of the bar, floating over windows
 people-panel-pin = Auf dem Bildschirm halten
 a11y-people-pin = Wer hier ist, auf dem Bildschirm halten
+a11y-people-overlay = Wer hier ist
 people-overlay-title = { $count ->
     [0] Nur du
     [one] 1 hier

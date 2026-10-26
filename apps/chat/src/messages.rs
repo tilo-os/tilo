@@ -851,6 +851,21 @@ impl Chained for ChatPart {
         }
         Ok(())
     }
+
+    /// The channel a post goes to, as everyone in the room sees it named
+    /// (`#general`). A direct conversation is never named.
+    fn place(action: &Self::Action, chat: &Chat) -> Option<String> {
+        let channel = match &action.operation {
+            ChatPartAction::Post(post) => &post.message.channel,
+            ChatPartAction::PostFile(post) => &post.channel,
+            ChatPartAction::ShareResource(share) => &share.channel,
+            ChatPartAction::ShareWindow(share) => &share.channel,
+            _ => return None,
+        };
+        let channel = chat.channels.get(channel)?;
+        let name = channel.name.trim().trim_start_matches('#');
+        (channel.conversation_with.is_none() && !name.is_empty()).then(|| format!("#{name}"))
+    }
 }
 
 impl ChatPart {
