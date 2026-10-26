@@ -24,12 +24,23 @@ use tilo_desktop::activity::{
 pub use tilo_desktop::activity::{ActivityView, Period, RoomActivityOutcome, RoomScope};
 use ui::record::{RecordId, RecordStore};
 
-/// History derivation owns its document cursor, not the live workspace lock.
-/// Only the admitted desktop and causal document are copied; persistence and mutation authority remain on the original tree.
+/// History derivation owns its document cursors, not the live workspace
+/// lock. The admitted document of each room this device holds is copied,
+/// together with the desktop projection and the verified agents: persistence
+/// and mutation authority remain on the original tree.
 #[derive(Clone)]
 struct ActivityObservation {
     desktop: tilo_desktop_model::DesktopTree,
-    doc: automerge::AutoCommit,
+    /// Each held room's admitted document, by room: its own changes, by
+    /// their own actors, hashes and times. A room this device cannot read is
+    /// absent rather than replaced by a projection of it.
+    rooms: std::collections::BTreeMap<super::state::RoomId, automerge::AutoCommit>,
+    /// The active workspace's room at the observation, whose document
+    /// `document*()` addresses.
+    room: Option<super::state::RoomId>,
+    /// An empty document for an observation whose active room has none: no
+    /// row comes from it, and it is never written.
+    empty: automerge::AutoCommit,
     /// The verified agents of every room on this desktop, read with it.
     roster_agents: Vec<collab_types::history::RosterAgent>,
 }
@@ -38,12 +49,44 @@ impl ActivityObservation {
     fn capture(handle: &WorkspaceTreeHandle) -> Self {
         let mut tree = handle.write();
         tree.commit_room_change();
+        let room = tree
+            .desktop
+            .active_workspace()
+            .map(crate::shell::state::Workspace::room);
+        let rooms = tree
+            .rooms()
+            .into_iter()
+            .filter_map(|candidate| admitted_document(&tree, candidate).map(|doc| (candidate, doc)))
+            .collect();
         Self {
             desktop: tree.desktop.clone(),
-            doc: tree.doc.clone(),
+            rooms,
+            room,
+            empty: automerge::AutoCommit::new(),
             roster_agents: verified_agents_since(&mut tree),
         }
     }
+
+    fn active_document(&self) -> Option<&automerge::AutoCommit> {
+        self.rooms.get(&self.room?)
+    }
+}
+
+/// The admitted document of `room` as `tree` holds it: the state peer's own
+/// replica for a room a native owner admits, and the shell engine's room
+/// document otherwise. `None` when this device holds neither.
+fn admitted_document(
+    tree: &WorkspaceTree,
+    room: super::state::RoomId,
+) -> Option<automerge::AutoCommit> {
+    if tree.requires_native_owner(room) {
+        let owner = tree.installed_native_owner()?;
+        return owner
+            .with_current(room, |view| Ok(view.peer().admitted_room().cloned()))
+            .ok()
+            .flatten();
+    }
+    tree.room_docs.get(&room).cloned()
 }
 
 /// A room's verified agents and the room document's heads they were read at.
@@ -106,13 +149,62 @@ impl std::ops::DerefMut for ActivityObservation {
 
 impl ActivityTree for ActivityObservation {
     fn document(&self) -> &automerge::AutoCommit {
-        &self.doc
+        self.active_document().unwrap_or(&self.empty)
     }
     fn document_mut(&mut self) -> &mut automerge::AutoCommit {
-        &mut self.doc
+        let Some(room) = self.room else {
+            return &mut self.empty;
+        };
+        if self.rooms.contains_key(&room) {
+            return self.rooms.get_mut(&room).expect("the room's document");
+        }
+        &mut self.empty
+    }
+    fn history_rooms(&self) -> Vec<tilo_desktop::activity::HistoryRoom> {
+        let active = self
+            .desktop
+            .active_workspace()
+            .map(crate::shell::state::Workspace::room);
+        let mut seen = BTreeSet::new();
+        let mut rooms = self
+            .desktop
+            .workspaces
+            .iter()
+            .map(crate::shell::state::Workspace::room)
+            .filter(|room| !room.is_nil() && seen.insert(*room))
+            .collect::<Vec<_>>();
+        if let Some(active) = active
+            && let Some(index) = rooms.iter().position(|room| *room == active)
+        {
+            let room = rooms.remove(index);
+            rooms.insert(0, room);
+        }
+        rooms.into_iter().map(Some).collect()
+    }
+    fn history_document(
+        &self,
+        room: tilo_desktop::activity::HistoryRoom,
+    ) -> Option<&automerge::AutoCommit> {
+        self.rooms.get(&room?)
+    }
+    fn history_document_mut(
+        &mut self,
+        room: tilo_desktop::activity::HistoryRoom,
+    ) -> Option<&mut automerge::AutoCommit> {
+        self.rooms.get_mut(&room?)
+    }
+    /// An observation is a copy: a restore or name derived from it belongs
+    /// to the live tree, which owns the admitted documents.
+    fn history_room_writable(&self, _room: tilo_desktop::activity::HistoryRoom) -> bool {
+        false
     }
     fn resync_activity_cache(&mut self) -> Result<(), String> {
-        tilo_desktop_model::desktop_doc::rebuild(&self.doc, &mut self.desktop);
+        let Some(room) = self.room else {
+            return Ok(());
+        };
+        if let Some(doc) = self.rooms.get(&room).cloned() {
+            tilo_desktop_model::projection::apply_admitted_room(&mut self.desktop, room, &doc)?;
+        }
         Ok(())
     }
     fn roster_agents(&self) -> Vec<collab_types::history::RosterAgent> {
@@ -605,7 +697,7 @@ impl ShortcutRunRecorder {
                     tree = Some(lock());
                 }
                 if let Some(tree) = tree.as_mut()
-                    && run.finished.record(&mut tree.doc, &steps)
+                    && record_run(tree, &run, &steps)
                 {
                     recorded = true;
                     continue;
@@ -626,6 +718,43 @@ impl ShortcutRunRecorder {
         }
         recorded
     }
+}
+
+/// Record `run` in the admitted document of the room it ran in, where its
+/// changes and their history are: the room document this device's own engine
+/// replicates, or the whole-desktop document of a host whose one document
+/// holds every workspace. A room a native owner admits is written only by
+/// that owner's publication, so a run there is not recorded instead of being
+/// written where no peer would read it.
+fn record_run(tree: &mut WorkspaceTree, run: &PendingShortcutRun, steps: &[ui::RunStep]) -> bool {
+    let room = crate::shell::state::RoomId::parse(run.finished.room());
+    if let Some(room) = room {
+        if tree.requires_native_owner(room) {
+            // The owner publishes this room; a run appended to the tree's
+            // copy would never reach a peer and would be history no one has.
+            return false;
+        }
+        // A room of the shell's own engine may not have projected its
+        // document yet after a restart. Making it here records the run in
+        // the same per-room document every later change syncs through.
+        if !tree.room_docs.contains_key(&room) {
+            tree.sync_room_doc(room);
+        }
+        if tree.history_room_writable(Some(room)) {
+            let Some(doc) = tree.history_document_mut(Some(room)) else {
+                return false;
+            };
+            let written = run.finished.record(doc, steps);
+            if written {
+                let _ = tilo_resource::history::commit_stamped(doc);
+            }
+            return written;
+        }
+    }
+    if tree.history_rooms() == [None] {
+        return run.finished.record(&mut tree.doc, steps);
+    }
+    false
 }
 
 /// `$XDG_STATE_HOME/tilo/activity-history.json`: what this device has seen of
@@ -1107,6 +1236,10 @@ impl ActivityHost for NativeActivityHost {
 }
 
 impl ActivityTree for WorkspaceTree {
+    /// The whole-desktop document: what this device's own past looks like.
+    /// Activity reads the rooms' admitted documents instead
+    /// ([`Self::history_rooms`]); this remains the fallback for a caller that
+    /// built its own single-document history.
     fn document(&self) -> &automerge::AutoCommit {
         &self.doc
     }
@@ -1115,6 +1248,46 @@ impl ActivityTree for WorkspaceTree {
     }
     fn commit_activity_change(&mut self) {
         self.commit_room_change();
+    }
+    /// Every held room's admitted document, the active workspace's room
+    /// first; a room this device holds no document for is named but absent.
+    fn history_rooms(&self) -> Vec<tilo_desktop::activity::HistoryRoom> {
+        let active = self
+            .desktop
+            .active_workspace()
+            .map(crate::shell::state::Workspace::room);
+        let mut rooms = self.rooms();
+        if let Some(active) = active
+            && let Some(index) = rooms.iter().position(|room| *room == active)
+        {
+            let room = rooms.remove(index);
+            rooms.insert(0, room);
+        }
+        rooms.into_iter().map(Some).collect()
+    }
+    /// A native owner's room is read through the copy of its admitted
+    /// document that the owner's last publication projected here: the state
+    /// peer's own document, never a re-projection of the desktop cache.
+    fn history_document(
+        &self,
+        room: tilo_desktop::activity::HistoryRoom,
+    ) -> Option<&automerge::AutoCommit> {
+        self.room_docs.get(&room?)
+    }
+    fn history_document_mut(
+        &mut self,
+        room: tilo_desktop::activity::HistoryRoom,
+    ) -> Option<&mut automerge::AutoCommit> {
+        self.room_docs.get_mut(&room?)
+    }
+    /// A room this device governs with the shell's own engine writes its own
+    /// room document; a room a native owner admits is written only by that
+    /// owner's publication, never through the copy this tree projects. This
+    /// tree keeps no single document holding every workspace's history.
+    fn history_room_writable(&self, room: tilo_desktop::activity::HistoryRoom) -> bool {
+        room.is_some_and(|room| {
+            !self.requires_native_owner(room) && self.room_docs.contains_key(&room)
+        })
     }
     /// Every room's agents whose delegation its governance verified for
     /// exactly their device ([`WorkspaceTree::verified_agents`]).
@@ -1130,8 +1303,20 @@ impl ActivityTree for WorkspaceTree {
             .flat_map(|room| self.verified_agents(room))
             .collect()
     }
+    /// A restored change was written into a room's document: every workspace
+    /// is read back from the admitted document this device holds for its
+    /// room, and the device's own projection records the same state for its
+    /// restart. A restore into another room therefore shows there too.
     fn resync_activity_cache(&mut self) -> Result<(), String> {
-        self.resync_cache_from_doc();
+        let rooms: Vec<_> = self
+            .room_docs
+            .iter()
+            .map(|(room, doc)| (*room, doc.clone()))
+            .collect();
+        for (room, doc) in rooms {
+            tilo_desktop_model::projection::apply_admitted_room(&mut self.desktop, room, &doc)?;
+        }
+        self.seed_doc_from_cache();
         Ok(())
     }
 }
@@ -1389,6 +1574,7 @@ mod tests {
             .or_default()
             .insert(record.to_string(), kind.to_string());
         tree.commit_room_change();
+        tree.sync_room_doc(room);
         let handle = WorkspaceTreeHandle::new(tree);
         let mut document = automerge::AutoCommit::new();
         ui::record::init(&mut document, &record, &kind, &room.to_string());
@@ -1445,6 +1631,7 @@ mod tests {
             .or_default()
             .insert(record.to_string(), kind.to_string());
         tree.commit_room_change();
+        tree.sync_room_doc(room);
         let handle = WorkspaceTreeHandle::new(tree);
 
         let data = tempfile::tempdir().expect("data home");
@@ -1805,7 +1992,7 @@ mod tests {
         pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, now);
         pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, next);
 
-        let runs = ui::read_runs(&tree.doc);
+        let runs = recorded_runs(&tree, room);
         assert_eq!(runs.len(), 1, "recorded exactly once");
         assert_eq!(runs[0].label, "Publish a draft");
         assert_eq!(runs[0].issued_by.as_deref(), Some("ada"));
@@ -1864,7 +2051,7 @@ mod tests {
         assert!(pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, now));
         drop(pane);
 
-        let runs = ui::read_runs(&tree.doc);
+        let runs = recorded_runs(&tree, room);
         assert_eq!(runs.len(), 1);
         let run = &runs[0];
         assert_eq!(run.label, "Translate the paragraph");
@@ -1929,7 +2116,7 @@ mod tests {
         assert!(pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, now));
         drop(pane);
 
-        let runs = ui::read_runs(&tree.doc);
+        let runs = recorded_runs(&tree, room);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].task.as_deref(), Some("task:translate"));
         assert_eq!(runs[0].steps.len(), 1);
@@ -1939,6 +2126,14 @@ mod tests {
             crate::shell::room_records::room_document_id(room, "so.tilo.notes")
                 .map(|id| id.to_string())
         );
+    }
+
+    /// The runs recorded in `room`'s own admitted document.
+    fn recorded_runs(tree: &WorkspaceTree, room: crate::shell::state::RoomId) -> Vec<ui::AgentRun> {
+        tree.room_docs
+            .get(&room)
+            .map(ui::read_runs)
+            .unwrap_or_default()
     }
 
     /// `tree` as the recorder locks it.
@@ -2058,7 +2253,7 @@ mod tests {
             &local,
             finished_at
         ));
-        assert!(ui::read_runs(&tree.doc).is_empty());
+        assert!(recorded_runs(&tree, room).is_empty());
         assert!(
             pane.shortcut_runs_pending(),
             "the run waits for its changes"
@@ -2077,7 +2272,7 @@ mod tests {
         drop(pane);
         assert!(!still_pending, "the recorded run no longer waits");
 
-        let runs = ui::read_runs(&tree.doc);
+        let runs = recorded_runs(&tree, room);
         assert_eq!(runs.len(), 1, "the run is recorded once");
         assert_eq!(runs[0].label, "Publish a draft");
         assert_eq!(runs[0].issued_by.as_deref(), Some("ada"));
@@ -2147,13 +2342,13 @@ mod tests {
                 .checked_add(SHORTCUT_RUN_LOOK_INTERVAL)
                 .expect("a later pass");
         }
-        assert!(ui::read_runs(&tree.doc).is_empty());
+        assert!(recorded_runs(&tree, room).is_empty());
 
         release.send(()).expect("the read is held");
         pane.shortcut_run_recorder_mut().finish_reading();
         assert!(pane.record_finished_shortcut_runs(locked(&mut tree), &records, &local, at));
         drop(pane);
-        let runs = ui::read_runs(&tree.doc);
+        let runs = recorded_runs(&tree, room);
         assert_eq!(runs.len(), 1, "recorded once the read was in");
         assert_eq!(runs[0].steps[0].record, record.to_string());
     }
@@ -2190,7 +2385,259 @@ mod tests {
         let still_pending = pane.shortcut_runs_pending();
         drop(pane);
         assert!(!still_pending, "given up once settled");
-        assert!(ui::read_runs(&tree.doc).is_empty());
+        assert!(recorded_runs(&tree, room).is_empty());
+    }
+}
+
+/// A host with two rooms, each a real admitted document: their changes are
+/// authored by the peer that wrote them, with its hashes and stamps.
+#[cfg(test)]
+mod admitted_history_regression {
+    use super::*;
+    use crate::shell::state::{DesktopTree, RoomId, WorkspaceId};
+    use automerge::{ActorId, ROOT, transaction::CommitOptions, transaction::Transactable};
+    use tilo_desktop_model::{AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+
+    fn authored_room(
+        room: RoomId,
+        name: &str,
+        actor: [u8; 32],
+        titles: &[(i64, &str)],
+    ) -> (automerge::AutoCommit, Vec<automerge::ChangeHash>) {
+        let mut doc = automerge::AutoCommit::new().with_actor(ActorId::from(actor.to_vec()));
+        doc.put(ROOT, "room", room.to_string()).unwrap();
+        doc.put(ROOT, "name", name).unwrap();
+        doc.commit_with(CommitOptions::default().with_time(1_700_000_000));
+        let strip = Strip {
+            id: StripId((7 << 48) | 1),
+            name: "Main".into(),
+            window_groups: vec![],
+        };
+        let mut hashes = Vec::new();
+        for (time, title) in titles {
+            let mut strip = strip.clone();
+            strip.window_groups = vec![WindowGroup {
+                id: (7 << 48) | 2,
+                active_tab: (7 << 48) | 3,
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+                tabs: vec![Tab {
+                    id: (7 << 48) | 3,
+                    title: (*title).into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind: AppKind::Other("so.tilo.notes".into()),
+                        label: "Notes".into(),
+                    },
+                    app_title: None,
+                }],
+            }];
+            tilo_desktop_model::projection::project_owned_contents(
+                &mut doc,
+                std::slice::from_ref(&strip),
+                7,
+                None,
+                tilo_desktop_model::projection::EmptyStrips::Retain,
+            )
+            .unwrap();
+            hashes.push(
+                doc.commit_with(CommitOptions::default().with_time(*time))
+                    .unwrap(),
+            );
+        }
+        (doc, hashes)
+    }
+
+    fn change_id(hash: &automerge::ChangeHash) -> ui::widget::HistoryEntryId {
+        ui::history_source::entry_id_from_hash(&hash.to_string())
+    }
+
+    fn millis(secs: u64) -> ui::time::SystemTime {
+        ui::time::UNIX_EPOCH
+            .checked_add(ui::time::Duration::from_secs(secs))
+            .expect("a representable time")
+    }
+
+    /// The shell's direct engine holds one admitted document per room. Its
+    /// Activity lists each room's own changes with the peer's actor, hash and
+    /// stamp, and never the whole-desktop mirror it re-authored for itself.
+    #[test]
+    fn direct_rooms_read_their_own_admitted_history_not_the_desktop_mirror() {
+        let alpha_room = RoomId::new();
+        let beta_room = RoomId::new();
+        let (alpha_doc, _) = authored_room(
+            alpha_room,
+            "Alpha",
+            [0xa1; 32],
+            &[(1_700_000_100, "Alpha plan")],
+        );
+        let (mut beta_doc, beta_hashes) = authored_room(
+            beta_room,
+            "Beta",
+            [0xb2; 32],
+            &[(1_700_000_200, "Beta draft")],
+        );
+        let alpha = Workspace::in_room(WorkspaceId(1), alpha_room, "Alpha");
+        let beta = Workspace::in_room(WorkspaceId(2), beta_room, "Beta");
+        let mut tree = WorkspaceTree {
+            desktop: DesktopTree {
+                active: alpha.id,
+                workspaces: vec![alpha, beta],
+                ..DesktopTree::default()
+            },
+            ..WorkspaceTree::default()
+        };
+        tree.room_docs.insert(alpha_room, alpha_doc);
+        tree.room_docs.insert(beta_room, beta_doc.clone());
+        // The whole-desktop mirror is a copy of the projection: a change that
+        // only exists there must never become a history row.
+        tree.doc.put(ROOT, "name", "Mirror only").unwrap();
+        tree.doc
+            .commit_with(CommitOptions::default().with_time(1_700_000_900));
+        let alpha_heads = tree
+            .room_docs
+            .get_mut(&alpha_room)
+            .expect("Alpha's document")
+            .get_heads();
+        let beta_heads = tree
+            .room_docs
+            .get_mut(&beta_room)
+            .expect("Beta's document")
+            .get_heads();
+        let handle = WorkspaceTreeHandle::new(tree);
+
+        let records = RecordStore::in_memory();
+        let local = RoomRecords::in_memory();
+        let mut pane = RoomActivityPane::with_local_user("local".into());
+        pane.refresh_observed_local(&handle, &records, &local, Instant::now());
+        let summaries = pane
+            .entries()
+            .iter()
+            .map(|entry| entry.summary.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            summaries.iter().any(|row| row.contains("Alpha plan")),
+            "the active room's admitted change: {summaries:?}"
+        );
+        assert!(
+            !summaries.iter().any(|row| row.contains("Beta draft")),
+            "another room's change stayed out of this room: {summaries:?}"
+        );
+        assert!(
+            !summaries.iter().any(|row| row.contains("Mirror only")),
+            "the whole-desktop mirror is not a history source: {summaries:?}"
+        );
+
+        pane.set_scope(RoomScope::AllWorkspaces, &*handle.read());
+        pane.refresh_observed_local(&handle, &records, &local, Instant::now());
+        let beta_row = pane
+            .entries()
+            .iter()
+            .find(|row| row.summary.contains("Beta draft"))
+            .cloned()
+            .expect("Beta's admitted change is a row");
+        let beta_changes = beta_doc.get_changes(&[]);
+        let admitted = beta_changes
+            .iter()
+            .find(|change| change_id(&change.hash()) == beta_row.id)
+            .expect("the row is a change of Beta's admitted document");
+        assert_eq!(
+            admitted.actor_id().to_hex_string(),
+            ActorId::from(vec![0xb2; 32]).to_hex_string(),
+            "the change reads as the peer that wrote it"
+        );
+        assert_eq!(beta_row.timestamp, millis(1_700_000_200));
+        assert!(
+            beta_hashes
+                .iter()
+                .any(|hash| change_id(hash) == beta_row.id),
+            "the row keeps the admitted change hash"
+        );
+        assert!(
+            handle
+                .read()
+                .room_docs
+                .get(&alpha_room)
+                .is_some_and(|doc| ui::history_source::committed_heads(doc) == alpha_heads),
+            "reading history wrote nothing to another room"
+        );
+        assert!(
+            handle
+                .read()
+                .room_docs
+                .get(&beta_room)
+                .is_some_and(|doc| ui::history_source::committed_heads(doc) == beta_heads),
+            "reading history wrote nothing to the row's room"
+        );
+    }
+
+    /// A room the native owner admits is history from that owner's actual
+    /// admitted document. The tree's own re-authored document is never
+    /// substituted for it.
+    #[test]
+    fn native_rooms_read_the_owners_admitted_history_not_the_desktop_mirror() {
+        use crate::shell::native_workspace_owner::{test_enrolled_owner, tree_of};
+
+        let (_directory, owner, room, _now, _key) = test_enrolled_owner();
+        let handle = tree_of(&owner);
+        let mut admitted = owner
+            .with_current(room, |view| Ok(view.peer().admitted_room().cloned()))
+            .expect("the owner holds the room")
+            .expect("the owner admitted the room");
+        let admitted_ids: std::collections::HashSet<_> = admitted
+            .get_changes(&[])
+            .iter()
+            .map(|change| change_id(&change.hash()))
+            .collect();
+        {
+            let mut tree = handle.write();
+            let mirror = tree.doc.get_heads();
+            tree.doc.put(ROOT, "name", "Mirror only").unwrap();
+            tree.doc
+                .commit_with(CommitOptions::default().with_time(1_700_000_900));
+            assert_ne!(tree.doc.get_heads(), mirror);
+        }
+        let room_heads = admitted.get_heads();
+
+        let records = RecordStore::in_memory();
+        let local = RoomRecords::in_memory();
+        let mut pane = RoomActivityPane::with_local_user("local".into());
+        pane.refresh_observed_local(&handle, &records, &local, Instant::now());
+        let summaries = pane
+            .entries()
+            .iter()
+            .map(|entry| entry.summary.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            pane.entries()
+                .iter()
+                .any(|row| admitted_ids.contains(&row.id)),
+            "a change of the owner's admitted document is a row: {summaries:?}"
+        );
+        assert!(
+            !summaries.iter().any(|row| row.contains("Mirror only")),
+            "the tree's re-authored document is not a history source: {summaries:?}"
+        );
+        assert!(
+            pane.entries()
+                .iter()
+                .all(|row| { !admitted_ids.contains(&row.id) || row.author.name != "local" }),
+            "the owner's changes are not attributed to this device's person"
+        );
+        assert!(
+            owner
+                .with_current(room, |view| {
+                    Ok(view
+                        .peer()
+                        .admitted_room()
+                        .map(ui::history_source::committed_heads))
+                })
+                .ok()
+                .flatten()
+                .is_some_and(|heads| heads == room_heads),
+            "reading history wrote nothing into the native owner's room"
+        );
+        assert!(pane.feed_coverage().is_complete());
     }
 }
 

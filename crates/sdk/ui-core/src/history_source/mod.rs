@@ -181,6 +181,14 @@ impl HistorySource {
         self.pass_over.is_some_and(|pass_over| pass_over(change))
     }
 
+    /// Whether this source lists no row for `change`: a change it passes over
+    /// moves no row and no workspace's layout, so a presentation derived from
+    /// the document before it stays valid after it.
+    #[must_use]
+    pub fn passes_over_change(&self, change: &automerge::Change) -> bool {
+        self.passes_over(change)
+    }
+
     /// Describe a change that edited a document's fields by how many it
     /// edited, never by their paths. A document's own history names the
     /// fields for whoever inspects it; a feed read by people shows no

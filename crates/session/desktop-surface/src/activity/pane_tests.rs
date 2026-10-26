@@ -96,13 +96,13 @@ mod tests {
             tree.set_active(if n % 2 == 0 { second } else { first });
             tree.commit_room_change();
             let (diffs, forks) = reads();
-            let logged = pane.history_log.changes_read();
+            let logged = pane.history_logs[&None].changes_read();
             pane.refresh(&mut tree);
             let (diffs_after, forks_after) = reads();
             // The switch's change is read once and passed over: no row to
             // describe, nothing derived again.
             assert_eq!(
-                pane.history_log.changes_read() - logged,
+                pane.history_logs[&None].changes_read() - logged,
                 1,
                 "switch {n} reads only its own change"
             );
@@ -2490,11 +2490,11 @@ mod tests {
                 _ => "nothing new",
             };
             let appended = tree.doc.get_changes(&synced).len();
-            let read = pane.history_log.changes_read();
+            let read = pane.history_logs[&None].changes_read();
             let catalogue = ui::I18nManager::revision();
             pane.refresh(&mut tree);
             assert_eq!(
-                pane.history_log.changes_read() - read,
+                pane.history_logs[&None].changes_read() - read,
                 appended,
                 "step {step} ({kind}): the refresh reads only the appended changes \
                  (i18n revision {catalogue} -> {})",
@@ -2532,7 +2532,7 @@ mod tests {
             );
             for (entry, _) in &pane.derived {
                 assert_eq!(
-                    pane.history_log.heads_for_entry(&entry.id),
+                    pane.history_logs[&None].heads_for_entry(&entry.id),
                     ui::heads_for_entry(&mut tree.doc, &entry.id),
                     "step {step} ({kind}): the heads behind {:?}",
                     entry.summary

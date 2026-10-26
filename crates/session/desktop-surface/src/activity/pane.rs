@@ -2,8 +2,11 @@ use super::morning::{
     MORNING_OPEN, MORNING_REMOVE, MORNING_SOURCE, MorningCommand, MorningPreferences, MorningSource,
 };
 use tilo_sort::CompactSort as _;
+mod history_documents;
 mod morning_sources;
 mod serve;
+use history_documents::active_history_room;
+pub(super) use history_documents::history_heads;
 pub use serve::{ServedTree, is_document_write, is_personal, is_read, refused_to_agent};
 
 // Room activity — everything that has happened to this workspace, by
@@ -22,11 +25,13 @@ pub use serve::{ServedTree, is_document_write, is_personal, is_read, refused_to_
 // governance act with another one rather than rewinding it.
 
 use super::replay::{ReplayPointer, WorkspaceReplayFrame};
-use super::{ActivityDeepLink, ActivityHost, ActivityTree, TaskRunUndo, UnavailableActivityHost};
+use super::{
+    ActivityDeepLink, ActivityHost, ActivityTree, HistoryRoom, TaskRunUndo, UnavailableActivityHost,
+};
 
 use crate::i18n::{t, t_args};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use ui::time::{Duration, SystemTime};
 
@@ -172,6 +177,9 @@ impl DetailAction {
 #[derive(Clone, Debug, PartialEq)]
 struct IndexedAgentRun {
     source_record: Option<RecordId>,
+    /// The admitted document the run was recorded in; `None` for a host
+    /// whose one document holds every workspace.
+    room: HistoryRoom,
     run: AgentRun,
 }
 
@@ -379,7 +387,7 @@ struct UndoApply {
 pub struct RoomActivityPane {
     explicit_local_user: Option<String>,
     timeline: ActivityTimeline,
-    source: HistorySource,
+    pub(super) source: HistorySource,
     /// Set by the timeline's `FnMut` callback, drained right after — it
     /// can't reach back into this struct itself.
     revert_intent: Rc<Cell<Option<HistoryEntryId>>>,
@@ -387,10 +395,11 @@ pub struct RoomActivityPane {
     name_intent: Rc<RefCell<Option<GroupNameRequest>>>,
     undo_intent: Rc<RefCell<Option<BandUndoRequest>>>,
     named: Vec<NamedRange>,
-    /// Heads at the last rebuild, so a no-op frame skips re-deriving.
-    last_heads: Vec<ChangeHash>,
-    /// [`Self::history_log`]'s rows revision at the last rebuild: while it
-    /// holds, the changes since were all passed over (a workspace switch)
+    /// Heads of each admitted document at the last rebuild, so a no-op frame
+    /// skips re-deriving.
+    last_heads: BTreeMap<HistoryRoom, Vec<ChangeHash>>,
+    /// Summed [`Self::history_logs`] rows revision at the last rebuild: while
+    /// it holds, the changes since were all passed over (a workspace switch)
     /// and the rows are as derived.
     last_rows: u64,
     period: Period,
@@ -398,9 +407,13 @@ pub struct RoomActivityPane {
     /// to (`None` for no single workspace). [`Self::scope`] selects the
     /// subset handed to the timeline.
     derived: Vec<(HistoryEntry, Option<u64>)>,
-    /// Tree rows after workspace scoping, retained as the shell-document
-    /// contribution to the workspace-wide multi-document index.
-    scoped_tree_rows: Vec<HistoryEntry>,
+    /// The room row each derived row came from, so a write goes to that
+    /// row's own admitted document.
+    derived_origins: HashMap<HistoryEntryId, WorkspaceHistoryId>,
+    /// Tree rows after workspace scoping, retained as the rooms' contribution
+    /// to the workspace-wide multi-document index, each naming the admitted
+    /// document it came from.
+    scoped_tree_rows: Vec<(super::index::HistoryOrigin, HistoryEntry)>,
     history_index: WorkspaceHistoryIndex,
     detached_records: Vec<super::index::DetachedRecordHistory>,
     projected_origins: HashMap<HistoryEntryId, WorkspaceHistoryId>,
@@ -461,16 +474,22 @@ pub struct RoomActivityPane {
     pub(super) replay_unavailable: usize,
     replay_presentation_note: Option<String>,
     pub(super) replay_frames: Vec<WorkspaceReplayFrame>,
-    /// What [`Self::source`] has read of the room's change log, kept across
-    /// refreshes: a refresh reads only the changes appended since the last
-    /// one ([`HistorySource::entries_since`]).
-    pub(super) history_log: ui::history_source::HistoryLog,
+    /// What [`Self::source`] has read of each admitted document's change log,
+    /// kept across refreshes: a refresh reads only the changes appended since
+    /// the last one ([`HistorySource::entries_since`]).
+    pub(super) history_logs: BTreeMap<HistoryRoom, ui::history_source::HistoryLog>,
+    /// The document whose change log is the active workspace's room, and the
+    /// one a write that names no row goes to.
+    active_history_room: HistoryRoom,
     /// Each room change's reading, kept across refreshes; see
     /// [`describe_room_changes`].
-    room_changes: HashMap<ChangeHash, RoomChange>,
+    room_changes: BTreeMap<(HistoryRoom, ChangeHash), RoomChange>,
     /// Each replayed entry's desktop, kept across rebuilds; see
     /// [`Self::rebuild_replay_frames`].
     pub(super) replay_checkpoints: HashMap<HistoryEntryId, super::replay::ReplayCheckpoint>,
+    /// The admitted documents' heads the retained checkpoints were built at:
+    /// a change in any room moves the frames after it.
+    pub(super) replay_heads: BTreeMap<HistoryRoom, Vec<ChangeHash>>,
     pub(super) replay_index: usize,
     pub(super) replay_playing: bool,
     narrative: Option<ui::GroundedNarrative>,
@@ -586,10 +605,11 @@ impl RoomActivityPane {
             name_intent,
             undo_intent,
             named: Vec::new(),
-            last_heads: Vec::new(),
+            last_heads: BTreeMap::new(),
             last_rows: 0,
             period: Period::default(),
             derived: Vec::new(),
+            derived_origins: HashMap::new(),
             scoped_tree_rows: Vec::new(),
             history_index: WorkspaceHistoryIndex::new(),
             detached_records: Vec::new(),
@@ -632,9 +652,11 @@ impl RoomActivityPane {
             replay_unavailable: 0,
             replay_presentation_note: None,
             replay_frames: Vec::new(),
-            history_log: ui::history_source::HistoryLog::default(),
-            room_changes: HashMap::new(),
+            history_logs: BTreeMap::new(),
+            active_history_room: None,
+            room_changes: BTreeMap::new(),
             replay_checkpoints: HashMap::new(),
+            replay_heads: BTreeMap::new(),
             replay_index: 0,
             replay_playing: false,
             narrative: None,
@@ -817,20 +839,21 @@ impl RoomActivityPane {
             .iter()
             .flat_map(|brief| brief.entry_ids.iter().copied())
             .collect();
-        let was_viewed = |entry: &HistoryEntry| {
-            viewed.contains(&self.projected_origins.get(&entry.id).cloned().unwrap_or(
-                WorkspaceHistoryId {
-                    origin: super::index::HistoryOrigin::DesktopTree,
-                    change: entry.id,
-                },
-            ))
-        };
-        self.passive_rows.retain(|entry| !was_viewed(entry));
+        let viewed_rows: HashSet<HistoryEntryId> = self
+            .passive_rows
+            .iter()
+            .filter(|entry| viewed.contains(&self.origin_of(&entry.id)))
+            .map(|entry| entry.id)
+            .collect();
+        self.passive_rows
+            .retain(|entry| !viewed_rows.contains(&entry.id));
         let rows: Vec<_> = self
             .timeline
             .entries()
             .iter()
-            .filter(|entry| pending.contains(&entry.id) && !was_viewed(entry))
+            .filter(|entry| {
+                pending.contains(&entry.id) && !viewed.contains(&self.origin_of(&entry.id))
+            })
             .cloned()
             .collect();
         self.passive_unread = self.passive_rows.len();
@@ -905,17 +928,15 @@ impl RoomActivityPane {
         let Some(workspace) = self.last_active else {
             return rows.to_vec();
         };
-        let id = |entry: &HistoryEntry| WorkspaceHistoryId {
-            origin: super::index::HistoryOrigin::DesktopTree,
-            change: entry.id,
-        };
+        let ids: Vec<WorkspaceHistoryId> =
+            rows.iter().map(|entry| self.origin_of(&entry.id)).collect();
         if self.persistent_frontiers
             && !self.seen_frontiers.contains_key(&workspace)
             && !rows.is_empty()
         {
             let frontier = self.seen_frontiers.entry(workspace).or_default();
-            for row in rows {
-                frontier.acknowledge(&id(row));
+            for id in &ids {
+                frontier.acknowledge(id);
             }
             self.persist_frontiers();
         }
@@ -923,8 +944,9 @@ impl RoomActivityPane {
             return rows.to_vec();
         };
         rows.iter()
-            .filter(|row| !frontier.acknowledged(&id(row)))
-            .cloned()
+            .zip(&ids)
+            .filter(|(_, id)| !frontier.acknowledged(id))
+            .map(|(row, _)| row.clone())
             .collect()
     }
 
@@ -1079,12 +1101,7 @@ impl RoomActivityPane {
         let mut origin = None;
         let mut app_origins = BTreeSet::new();
         for id in &detail.entry_ids {
-            let next = self
-                .projected_origins
-                .get(id)
-                .map_or(super::index::HistoryOrigin::DesktopTree, |address| {
-                    address.origin.clone()
-                });
+            let next = self.origin_of(id).origin;
             if matches!(next, super::index::HistoryOrigin::AppRecord { .. }) {
                 app_origins.insert(next.clone());
             }
@@ -1161,6 +1178,9 @@ impl RoomActivityPane {
                 step.record.is_empty() || id.as_str() == step.record
             }
             Some(super::index::HistoryOrigin::AppRecord { .. }) => false,
+            Some(super::index::HistoryOrigin::Room(room)) => {
+                indexed.source_record.is_none() && indexed.room == Some(*room)
+            }
             Some(super::index::HistoryOrigin::DesktopTree) | None => {
                 indexed.source_record.is_none()
             }
@@ -1182,6 +1202,10 @@ impl RoomActivityPane {
                 (
                     super::index::HistoryOrigin::Record { id: a, .. },
                     Some(super::index::HistoryOrigin::Record { id: b, .. }),
+                ) => a == b,
+                (
+                    super::index::HistoryOrigin::Room(a),
+                    Some(super::index::HistoryOrigin::Room(b)),
                 ) => a == b,
                 (
                     super::index::HistoryOrigin::DesktopTree,
@@ -1422,28 +1446,40 @@ impl RoomActivityPane {
                 (*new_left_end, *new_right_start)
             }
         };
-        if ui::history_groups::materialize_and_move_boundary(
-            tree.document_mut(),
-            ui::history_groups::DisplayedSession {
-                record: older.work_session_id.as_deref(),
-                start: &older_start,
-                end: &older_end,
-                label: &older.title,
-            },
-            ui::history_groups::DisplayedSession {
-                record: newer.work_session_id.as_deref(),
-                start: &newer_start,
-                end: &newer_end,
-                label: &newer.title,
-            },
-            &new_left_end,
-            &new_right_start,
-        )
-        .is_none()
-        {
+        let Some(room) = self.write_room_of(tree, &newer_start) else {
+            return false;
+        };
+        if Some(room) != self.write_room_of(tree, &older_start) {
             return false;
         }
-        tree.commit_activity_change();
+        let Some((wrote, ())) = Self::write_history_document(tree, room, |doc| {
+            let moved = ui::history_groups::materialize_and_move_boundary(
+                doc,
+                ui::history_groups::DisplayedSession {
+                    record: older.work_session_id.as_deref(),
+                    start: &older_start,
+                    end: &older_end,
+                    label: &older.title,
+                },
+                ui::history_groups::DisplayedSession {
+                    record: newer.work_session_id.as_deref(),
+                    start: &newer_start,
+                    end: &newer_end,
+                    label: &newer.title,
+                },
+                &new_left_end,
+                &new_right_start,
+            );
+            (moved.is_some(), ())
+        }) else {
+            return false;
+        };
+        if !wrote {
+            return false;
+        }
+        if room.is_none() {
+            tree.commit_activity_change();
+        }
         self.last_heads.clear();
         self.refresh(tree);
         true
@@ -1572,19 +1608,31 @@ impl RoomActivityPane {
         let record_id = range.id.clone();
         let label = range.label.clone();
         let right_label = format!("{label} — continued");
-        if ui::history_groups::split_named_range(
-            tree.document_mut(),
-            &record_id,
-            &left_end,
-            &right_start,
-            &label,
-            &right_label,
-        )
-        .is_none()
-        {
+        let Some(room) = self.write_room_of(tree, &left_end) else {
+            return false;
+        };
+        if Some(room) != self.write_room_of(tree, &right_start) {
             return false;
         }
-        tree.commit_activity_change();
+        let Some((wrote, ())) = Self::write_history_document(tree, room, |doc| {
+            let split = ui::history_groups::split_named_range(
+                doc,
+                &record_id,
+                &left_end,
+                &right_start,
+                &label,
+                &right_label,
+            );
+            (split.is_some(), ())
+        }) else {
+            return false;
+        };
+        if !wrote {
+            return false;
+        }
+        if room.is_none() {
+            tree.commit_activity_change();
+        }
         self.last_heads.clear();
         self.refresh(tree);
         true
@@ -1597,18 +1645,25 @@ impl RoomActivityPane {
         let Some((records, start, end, label)) = self.merge_candidate() else {
             return false;
         };
-        if ui::history_groups::merge_named_ranges(
-            tree.document_mut(),
-            &records,
-            &start,
-            Some(&end),
-            &label,
-        )
-        .is_none()
-        {
+        let Some(room) = self.write_room_of(tree, &start) else {
+            return false;
+        };
+        if Some(room) != self.write_room_of(tree, &end) {
             return false;
         }
-        tree.commit_activity_change();
+        let Some((wrote, ())) = Self::write_history_document(tree, room, |doc| {
+            let merged =
+                ui::history_groups::merge_named_ranges(doc, &records, &start, Some(&end), &label);
+            (merged.is_some(), ())
+        }) else {
+            return false;
+        };
+        if !wrote {
+            return false;
+        }
+        if room.is_none() {
+            tree.commit_activity_change();
+        }
         self.last_heads.clear();
         self.refresh(tree);
         true
@@ -1622,22 +1677,14 @@ impl RoomActivityPane {
         tree: &mut impl ActivityTree,
         records: Option<&RecordStore>,
     ) -> Option<HistoryComparison> {
-        if tree.document().pending_ops() > 0 {
+        if super::index::history_pending(tree) {
             return None;
         }
         let (start, end) = self.timeline.selection()?;
         let selected = self.timeline.entries().get(start..=end)?;
         let addresses: Vec<WorkspaceHistoryId> = selected
             .iter()
-            .map(|entry| {
-                self.projected_origins
-                    .get(&entry.id)
-                    .cloned()
-                    .unwrap_or(WorkspaceHistoryId {
-                        origin: super::index::HistoryOrigin::DesktopTree,
-                        change: entry.id,
-                    })
-            })
+            .map(|entry| self.origin_of(&entry.id))
             .collect();
         let first = addresses.first()?;
         if addresses
@@ -1648,8 +1695,12 @@ impl RoomActivityPane {
         }
         let ids: Vec<HistoryEntryId> = addresses.iter().map(|address| address.change).collect();
         match &first.origin {
-            super::index::HistoryOrigin::DesktopTree => {
-                ui::compare_entries(tree.document_mut(), &ids).ok()
+            super::index::HistoryOrigin::DesktopTree | super::index::HistoryOrigin::Room(_) => {
+                let room = match first.origin {
+                    super::index::HistoryOrigin::Room(room) => Some(room),
+                    _ => None,
+                };
+                ui::compare_entries(tree.history_document_mut(room)?, &ids).ok()
             }
             super::index::HistoryOrigin::AppRecord { .. } => {
                 let mut doc = self
@@ -1788,6 +1839,7 @@ impl RoomActivityPane {
         self.last_heads.clear();
         self.last_active = None;
         self.derived.clear();
+        self.derived_origins.clear();
         self.scoped_tree_rows.clear();
         self.projected_origins.clear();
         self.external_entry = None;
@@ -1805,10 +1857,10 @@ impl RoomActivityPane {
         self.install_rows(Vec::new());
     }
 
-    /// Re-derive the timeline from the room document if the graph has
-    /// moved; called every frame, the heads check keeps that cheap.
-    /// A producer's pending transaction is deferred until its own stamped
-    /// commit. History never closes that transaction as a side effect.
+    /// Re-derive the timeline from the admitted room documents if their
+    /// graphs have moved; called every frame, the heads check keeps that
+    /// cheap. A producer's pending transaction is deferred until its own
+    /// stamped commit: history never closes it as a side effect.
     #[allow(
         clippy::too_many_lines,
         reason = "timeline refresh keeps document observation, filter projection, and retained activity rows in one ordered read-only projection pass"
@@ -1817,12 +1869,19 @@ impl RoomActivityPane {
         // History reads its rows in the desktop's words: loading them later
         // would change the reading's basis and read the log again.
         crate::i18n::ensure();
+        let rooms = tree.history_rooms();
         // Commit only what was written: an empty commit on every refresh
-        // would still open and roll back a transaction each frame.
-        if tree.document().pending_ops() > 0 {
+        // would still open and roll back a transaction each frame. A host
+        // whose one document holds every workspace owns it here; an admitted
+        // document another writer owns is never committed by history.
+        if rooms == [None] && tree.document().pending_ops() > 0 {
             tree.commit_activity_change();
         }
-        if tree.document().pending_ops() > 0 {
+        let pending = rooms.iter().any(|room| {
+            tree.history_document(*room)
+                .is_some_and(|doc| doc.pending_ops() > 0)
+        });
+        if pending {
             self.defer_pending_tree(tree);
             return;
         }
@@ -1846,18 +1905,36 @@ impl RoomActivityPane {
         }
         self.room = room;
         self.morning_workspace = tree.active.raw();
+        self.active_history_room = active_history_room(tree, &rooms);
         self.poll_undo();
 
-        let heads = tree.document_mut().get_heads();
+        let heads: BTreeMap<HistoryRoom, Vec<ChangeHash>> = rooms
+            .iter()
+            .filter_map(|room| {
+                tree.history_document(*room)
+                    .map(|doc| (*room, ui::history_source::committed_heads(doc)))
+            })
+            .collect();
         let active = tree.active.raw();
         // A switch writes the document but no row: read just the changes
         // since and, when all of them were passed over, only show the rows
         // of the workspace now active.
-        let only_passed_over = heads != self.last_heads && !self.last_heads.is_empty() && {
-            self.source
-                .follow(tree.document_mut(), &mut self.history_log);
-            self.history_log.rows_revision() == self.last_rows
-        };
+        // A room appearing or disappearing is not a passed-over change: its
+        // rows and the workspace's coverage change with it.
+        let same_documents =
+            heads.len() == self.last_heads.len() && heads.keys().eq(self.last_heads.keys());
+        let only_passed_over =
+            same_documents && heads != self.last_heads && !self.last_heads.is_empty() && {
+                let before = self.rows_revision();
+                for room in &rooms {
+                    let Some(doc) = tree.history_document_mut(*room) else {
+                        continue;
+                    };
+                    self.source
+                        .follow(doc, self.history_logs.entry(*room).or_default());
+                }
+                self.rows_revision() == before
+            };
         if only_passed_over || (heads == self.last_heads && !self.timeline.entries().is_empty()) {
             self.last_heads = heads;
             if self.last_active != Some(active) {
@@ -1882,10 +1959,18 @@ impl RoomActivityPane {
             self.host.local_author(self.source.authors_mut(), &handle);
         }
 
-        // Bind the local automerge actor to the Tilo identity, or local user
-        // id; a peer's actor stays unresolved until collaboration says who.
-        let actor = tree.document_mut().get_actor().to_hex_string();
-        if !self.source.authors().is_registered(&actor) {
+        // Bind each admitted document's local automerge actor to the Tilo
+        // identity, or local user id; a peer's actor stays unresolved until
+        // collaboration says who.
+        let actors: BTreeSet<String> = rooms
+            .iter()
+            .filter_map(|room| tree.history_document(*room))
+            .map(|doc| doc.get_actor().to_hex_string())
+            .collect();
+        for actor in actors {
+            if self.source.authors().is_registered(&actor) {
+                continue;
+            }
             let principal = if let Some(local) = &self.explicit_local_user {
                 Some(local.clone())
             } else {
@@ -1907,16 +1992,41 @@ impl RoomActivityPane {
             }
         }
 
-        let mut entries = self
-            .source
-            .entries_since(tree.document_mut(), &mut self.history_log);
-        self.last_rows = self.history_log.rows_revision();
-        let mut tags = describe_room_changes(
-            tree.document_mut(),
-            &self.history_log,
-            &mut entries,
-            &mut self.room_changes,
-        );
+        let mut entries: Vec<HistoryEntry> = Vec::new();
+        let mut tags: Vec<Option<u64>> = Vec::new();
+        let workspace_of: BTreeMap<HistoryRoom, u64> = tree
+            .workspaces
+            .iter()
+            .map(|workspace| (Some(workspace.room()), workspace.id.raw()))
+            .collect();
+        self.derived_origins.clear();
+        for room in &rooms {
+            let Some(doc) = tree.history_document_mut(*room) else {
+                continue;
+            };
+            let log = self.history_logs.entry(*room).or_default();
+            let mut rows = self.source.entries_since(doc, log);
+            let mut room_tags = describe_room_changes(
+                doc,
+                log,
+                &mut rows,
+                &mut self.room_changes,
+                *room,
+                workspace_of.get(room).copied(),
+            );
+            for row in &rows {
+                self.derived_origins.insert(
+                    row.id,
+                    WorkspaceHistoryId {
+                        origin: super::index::room_origin(*room),
+                        change: row.id,
+                    },
+                );
+            }
+            entries.append(&mut rows);
+            tags.append(&mut room_tags);
+        }
+        self.last_rows = self.rows_revision();
         // A receipt is committed by the room host, but its authenticated
         // `actor` is the person (or agent) who performed the semantic action.
         // Attribute the projected CRDT row to that actor rather than to the
@@ -1961,8 +2071,9 @@ impl RoomActivityPane {
                     continue;
                 }
                 let actor = receipt.actor.clone();
+                let id = HistoryEntryId::from_bytes(*receipt.invocation.0.as_bytes());
                 entries.push(HistoryEntry {
-                    id: HistoryEntryId::from_bytes(*receipt.invocation.0.as_bytes()),
+                    id,
                     author: ui::history_source::author_coloured(
                         participant_display_label(&actor),
                         ui::history_source::short_id(&actor),
@@ -1981,6 +2092,21 @@ impl RoomActivityPane {
                     redaction: None,
                     context: Some(receipt.context.clone()),
                 });
+                // A receipt is committed through the room host; it is not a
+                // change of a document Activity can revert, so it keeps the
+                // host's own origin and no restore addresses it.
+                let receipt_room = if rooms == [None] {
+                    None
+                } else {
+                    Some(workspace.room())
+                };
+                self.derived_origins.insert(
+                    id,
+                    WorkspaceHistoryId {
+                        origin: super::index::room_origin(receipt_room),
+                        change: id,
+                    },
+                );
                 tags.push(Some(workspace.id.raw()));
             }
         }
@@ -1998,9 +2124,17 @@ impl RoomActivityPane {
             .collect();
         self.derived
             .compact_sort_by_key(|(entry, _)| entry.timestamp);
-        // Names come out of the same document as the changes, so a peer's name
+        // Names come out of the documents the changes do, so a peer's name
         // arrives with their edits.
-        self.named = ui::history_groups::read_named_ranges(tree.document(), self.source.authors());
+        self.named.clear();
+        for room in &rooms {
+            if let Some(doc) = tree.history_document(*room) {
+                self.named.extend(ui::history_groups::read_named_ranges(
+                    doc,
+                    self.source.authors(),
+                ));
+            }
+        }
         self.apply_scope(tree);
     }
 
@@ -2021,10 +2155,12 @@ impl RoomActivityPane {
             .collect();
 
         let mut rows: Vec<HistoryEntry> = Vec::with_capacity(self.derived.len());
+        let mut scoped: Vec<(super::index::HistoryOrigin, HistoryEntry)> =
+            Vec::with_capacity(self.derived.len());
         for (entry, tag) in &self.derived {
-            match (self.scope, tag) {
-                (RoomScope::ThisRoom, Some(id)) if *id != active => {}
-                (RoomScope::ThisRoom, _) => rows.push(entry.clone()),
+            let row = match (self.scope, tag) {
+                (RoomScope::ThisRoom, Some(id)) if *id != active => continue,
+                (RoomScope::ThisRoom, _) => entry.clone(),
                 (RoomScope::AllWorkspaces, tag) => {
                     let mut e = entry.clone();
                     // Otherwise three identical "Set the room owner" lines are noise.
@@ -2040,11 +2176,13 @@ impl RoomActivityPane {
                             .push(ui::tilo_actions::ActionFacet::new("workspace", label));
                         e.context = Some(context);
                     }
-                    rows.push(e);
+                    e
                 }
-            }
+            };
+            scoped.push((self.origin_of(&entry.id).origin, row.clone()));
+            rows.push(row);
         }
-        self.scoped_tree_rows.clone_from(&rows);
+        self.scoped_tree_rows = scoped;
         self.rebuild_replay_frames(tree, &rows, active);
         self.install_rows(rows);
     }
@@ -2073,7 +2211,7 @@ impl RoomActivityPane {
         tree: &mut impl ActivityTree,
         records: Vec<super::index::DetachedRecordHistory>,
     ) {
-        if tree.document().pending_ops() > 0 {
+        if super::index::history_pending(tree) {
             self.defer_pending_tree(tree);
             return;
         }
@@ -2144,7 +2282,7 @@ impl RoomActivityPane {
         records: &RecordStore,
         local: Option<&dyn super::index::PersistedRecordHistory>,
     ) {
-        if tree.document().pending_ops() > 0 {
+        if super::index::history_pending(tree) {
             self.defer_pending_tree(tree);
             return;
         }
@@ -2278,14 +2416,6 @@ impl RoomActivityPane {
             .into_iter()
             .map(|checkout| checkout.id)
             .collect();
-        let mut indexed = ui::read_runs(tree.document())
-            .into_iter()
-            .map(|run| IndexedAgentRun {
-                source_record: None,
-                run,
-            })
-            .collect::<Vec<_>>();
-
         let rooms: HashSet<_> = match self.scope {
             RoomScope::ThisRoom => tree
                 .active_workspace()
@@ -2297,6 +2427,23 @@ impl RoomActivityPane {
                 .map(tilo_desktop_model::Workspace::room)
                 .collect(),
         };
+        let mut indexed = Vec::new();
+        for room in tree.history_rooms() {
+            if let Some(room) = room
+                && !rooms.contains(&room)
+            {
+                continue;
+            }
+            let Some(doc) = tree.history_document(room) else {
+                continue;
+            };
+            indexed.extend(ui::read_runs(doc).into_iter().map(|run| IndexedAgentRun {
+                source_record: None,
+                room,
+                run,
+            }));
+        }
+
         let record_ids: BTreeSet<RecordId> = rooms
             .into_iter()
             .filter_map(|room| tree.room_records_held.get(&room))
@@ -2311,6 +2458,7 @@ impl RoomActivityPane {
                 .unwrap_or_default();
             indexed.extend(runs.into_iter().map(|run| IndexedAgentRun {
                 source_record: Some(id.clone()),
+                room: None,
                 run,
             }));
         }
@@ -2376,10 +2524,9 @@ impl RoomActivityPane {
             .filter(|entry| is_news(entry))
             .filter(|entry| {
                 !self.history_index.entries().is_empty()
-                    || !self.catchup_frontier.acknowledged(&WorkspaceHistoryId {
-                        origin: super::index::HistoryOrigin::DesktopTree,
-                        change: entry.id,
-                    })
+                    || !self
+                        .catchup_frontier
+                        .acknowledged(&self.origin_of(&entry.id))
             })
             .cloned()
             .collect();
@@ -2473,7 +2620,7 @@ impl RoomActivityPane {
     }
 
     pub fn set_scope(&mut self, scope: RoomScope, tree: &impl ActivityTree) {
-        if tree.document().pending_ops() > 0 {
+        if super::index::history_pending(tree) {
             self.defer_pending_tree(tree);
             return;
         }
@@ -2607,7 +2754,7 @@ impl RoomActivityPane {
                 // transaction. That changes the observed heads without
                 // changing content; keep refresh from treating the next
                 // paint as an external edit and discarding the result.
-                self.last_heads = tree.document_mut().get_heads();
+                self.last_heads = history_heads(tree);
                 outcome.compared = self.comparison.is_some();
             }
             DetailAction::Restore => {
@@ -2719,13 +2866,25 @@ impl RoomActivityPane {
         if !self.host.mutations_available() {
             return false;
         }
-        let before = tree.document_mut().get_heads();
-        if !ui::history_groups::apply_name_request(tree.document_mut(), req) {
+        // The name is stored beside the changes it names: in their own
+        // admitted document. A range that names rows from two documents, or
+        // from a record, has no single document to store it in.
+        let Some(room) = self.write_room_of(tree, &req.start) else {
+            return false;
+        };
+        if Some(room) != self.write_room_of(tree, &req.end) {
             return false;
         }
-        tree.commit_activity_change();
-        if tree.document_mut().get_heads() == before {
+        let Some((wrote, ())) = Self::write_history_document(tree, room, |doc| {
+            (ui::history_groups::apply_name_request(doc, req), ())
+        }) else {
             return false;
+        };
+        if !wrote {
+            return false;
+        }
+        if room.is_none() {
+            tree.commit_activity_change();
         }
         self.last_heads.clear();
         self.refresh(tree);
@@ -2747,48 +2906,61 @@ impl RoomActivityPane {
         if !self.host.mutations_available() {
             return false;
         }
-        let origin = self.projected_origins.get(id).cloned();
-        if origin.as_ref().is_some_and(|address| {
-            matches!(
-                address.origin,
-                super::index::HistoryOrigin::AppRecord { .. }
-            )
-        }) {
-            return false;
+        let Some(known) = self.known_origin_of(id) else {
+            // A row this pane did not read is not a state to restore on a
+            // multi-room host; a single-document host keeps native addressing.
+            if tree.history_rooms() != [None] {
+                return false;
+            }
+            return self.revert_native(tree, id);
+        };
+        let origin = known;
+        match &origin.origin {
+            super::index::HistoryOrigin::AppRecord { .. } => return false,
+            super::index::HistoryOrigin::Record { id: record, .. } => {
+                let change = origin.change;
+                return records.is_some_and(|records| {
+                    records
+                        .with(record, |doc| {
+                            let Some(target) = ui::heads_for_entry(doc, &change) else {
+                                return false;
+                            };
+                            let current = doc.get_heads();
+                            if current == target {
+                                return false;
+                            }
+                            ui::state::write_revert_patches(doc, &current, &target);
+                            tilo_resource::history::commit_stamped(doc).is_some()
+                        })
+                        .unwrap_or(false)
+                });
+            }
+            // The whole-desktop document, or one room's admitted document.
+            super::index::HistoryOrigin::DesktopTree | super::index::HistoryOrigin::Room(_) => {}
         }
-        if let Some(WorkspaceHistoryId {
-            origin: super::index::HistoryOrigin::Record { id: record, .. },
-            change,
-        }) = origin
-        {
-            return records.is_some_and(|records| {
-                records
-                    .with(&record, |doc| {
-                        let Some(target) = ui::heads_for_entry(doc, &change) else {
-                            return false;
-                        };
-                        let current = doc.get_heads();
-                        if current == target {
-                            return false;
-                        }
-                        ui::state::write_revert_patches(doc, &current, &target);
-                        tilo_resource::history::commit_stamped(doc).is_some()
-                    })
-                    .unwrap_or(false)
-            });
-        }
-        let native = origin.map_or(*id, |address| address.change);
-        let Some(target) = ui::heads_for_entry(tree.document_mut(), &native) else {
+        let room = match &origin.origin {
+            super::index::HistoryOrigin::Room(room) => Some(*room),
+            _ => None,
+        };
+        let native = origin.change;
+        let Some((wrote, ())) = Self::write_history_document(tree, room, |doc| {
+            let Some(target) = ui::heads_for_entry(doc, &native) else {
+                return (false, ());
+            };
+            let current = doc.get_heads();
+            if current == target {
+                return (false, ());
+            }
+            ui::state::write_revert_patches(doc, &current, &target);
+            (true, ())
+        }) else {
             return false;
         };
-        let current = tree.document_mut().get_heads();
-        if current == target {
+        if !wrote {
             return false;
         }
-        ui::state::write_revert_patches(tree.document_mut(), &current, &target);
-        tree.commit_activity_change();
-        if tree.document_mut().get_heads() == current {
-            return false;
+        if room.is_none() {
+            tree.commit_activity_change();
         }
         // Bring the read model back in line with what just changed
         // underneath it, so the revert shows up as the newest entry.
@@ -2824,35 +2996,55 @@ impl RoomActivityPane {
                 return UndoApply::default();
             };
             for entry in entries {
-                let origin = self
-                    .projected_origins
-                    .get(&entry.id)
-                    .map_or(super::index::HistoryOrigin::DesktopTree, |address| {
-                        address.origin.clone()
-                    });
+                let origin = self.origin_of(&entry.id).origin;
                 if expected.as_ref().is_some_and(|value| value != &origin) {
                     return UndoApply::default();
                 }
                 expected = Some(origin);
             }
         }
-        let start = self.projected_origins.get(&request.start).cloned();
-        let end = self.projected_origins.get(&request.end).cloned();
+        let (Some(start), Some(end)) = positions else {
+            return UndoApply::default();
+        };
+        let start = self
+            .timeline
+            .entries()
+            .get(start)
+            .map(|entry| self.origin_of(&entry.id));
+        let end = self
+            .timeline
+            .entries()
+            .get(end)
+            .map(|entry| self.origin_of(&entry.id));
         match (start, end) {
             (Some(first), Some(last)) if first.origin == last.origin => {
                 let run = ChangeRun::new(first.change, last.change);
                 match first.origin {
                     super::index::HistoryOrigin::AppRecord { .. } => UndoApply::default(),
-                    super::index::HistoryOrigin::DesktopTree => {
-                        let Ok(outcome) =
-                            ui::revert_run(tree.document_mut(), &run, None, self.source.authors())
+                    super::index::HistoryOrigin::DesktopTree
+                    | super::index::HistoryOrigin::Room(_) => {
+                        let room = match first.origin {
+                            super::index::HistoryOrigin::Room(room) => Some(room),
+                            _ => None,
+                        };
+                        let Some((wrote, outcome)) =
+                            Self::write_history_document(tree, room, |doc| {
+                                let Ok(outcome) =
+                                    ui::revert_run(doc, &run, None, self.source.authors())
+                                else {
+                                    return (false, None);
+                                };
+                                (outcome.wrote, Some(outcome))
+                            })
                         else {
                             return UndoApply::default();
                         };
-                        if !outcome.wrote {
+                        let Some(outcome) = outcome.filter(|_| wrote) else {
                             return UndoApply::default();
+                        };
+                        if room.is_none() {
+                            tree.commit_activity_change();
                         }
-                        tree.commit_activity_change();
                         let _ = tree.resync_activity_cache();
                         self.last_heads.clear();
                         self.refresh(tree);
@@ -2882,18 +3074,33 @@ impl RoomActivityPane {
                     }
                 }
             }
-            // Tree-only callers and pre-index tests retain native addressing.
+            // A single-document host, and pre-index tests, retain native
+            // addressing. A multi-room host refuses rows it cannot place in
+            // one admitted document rather than writing another one.
             (None, None) => {
-                let run = ChangeRun::new(request.start, request.end);
-                let Ok(outcome) =
-                    ui::revert_run(tree.document_mut(), &run, None, self.source.authors())
-                else {
-                    return UndoApply::default();
+                let rooms = tree.history_rooms();
+                let room = match rooms.as_slice() {
+                    [None] => None,
+                    _ => self.active_history_room,
                 };
-                if !outcome.wrote {
+                if rooms.as_slice() != [None] && room.is_none() {
                     return UndoApply::default();
                 }
-                tree.commit_activity_change();
+                let run = ChangeRun::new(request.start, request.end);
+                let Some((wrote, outcome)) = Self::write_history_document(tree, room, |doc| {
+                    let Ok(outcome) = ui::revert_run(doc, &run, None, self.source.authors()) else {
+                        return (false, None);
+                    };
+                    (outcome.wrote, Some(outcome))
+                }) else {
+                    return UndoApply::default();
+                };
+                let Some(outcome) = outcome.filter(|_| wrote) else {
+                    return UndoApply::default();
+                };
+                if room.is_none() {
+                    tree.commit_activity_change();
+                }
                 let _ = tree.resync_activity_cache();
                 self.last_heads.clear();
                 self.refresh(tree);
@@ -3125,7 +3332,9 @@ fn describe_room_changes(
     doc: &mut automerge::AutoCommit,
     log: &ui::history_source::HistoryLog,
     entries: &mut [HistoryEntry],
-    known: &mut HashMap<ChangeHash, RoomChange>,
+    known: &mut BTreeMap<(HistoryRoom, ChangeHash), RoomChange>,
+    room: HistoryRoom,
+    workspace: Option<u64>,
 ) -> Vec<Option<u64>> {
     let mut tags: Vec<Option<u64>> = vec![None; entries.len()];
     for (entry, tag) in entries.iter_mut().zip(&mut tags) {
@@ -3134,9 +3343,12 @@ fn describe_room_changes(
         };
         // `deps -> [hash]` isolates exactly that change.
         let change = known
-            .entry(hash)
+            .entry((room, hash))
             .or_insert_with(|| RoomChange::read(doc, deps, hash));
-        *tag = change.workspace;
+        // A room document is one workspace's history, so every change in it
+        // belongs to that workspace; a document holding many workspaces says
+        // per change which one it moved.
+        *tag = workspace.or(change.workspace);
         if let Some((summary, entry_kind)) = change.counts.describe() {
             if entry.context.is_none() {
                 entry.summary = summary;

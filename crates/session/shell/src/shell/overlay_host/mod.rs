@@ -33,6 +33,7 @@ pub(crate) use agent_markers::AccessibleAgentMarker;
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
+use tilo_desktop::activity::ActivityTree as _;
 use ui::num::{f32_of_f64, f64_of_usize, isize_of_usize, usize_of_f64, usize_of_isize};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
