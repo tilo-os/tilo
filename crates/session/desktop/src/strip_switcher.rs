@@ -848,6 +848,27 @@ impl StripSwitcher {
         Some(Target::Row(row))
     }
 
+    /// Let the painted name field take a pointer event and copy the
+    /// selection back into the name the switcher owns.
+    pub fn field_pointer(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let Some(naming) = self.naming.as_mut() else {
+            return false;
+        };
+        let Some(input) = naming.input.as_mut() else {
+            return false;
+        };
+        let took = input.handle_chrome_pointer(event, scale_factor, modifiers);
+        if took && let Some((anchor, cursor)) = input.selection_anchor_focus_public() {
+            naming.selection = Selection { anchor, cursor };
+        }
+        took
+    }
+
     /// The name field for `target`: in place of the strip's label.
     fn field_rect(&self, target: NameTarget) -> Option<Rect> {
         let NameTarget::Rename(id) = target;

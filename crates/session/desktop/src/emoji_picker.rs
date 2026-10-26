@@ -883,6 +883,25 @@ impl EmojiPicker {
             .map(|(i, _)| i)
     }
 
+    /// Let the search field painted in the card take a pointer event. The
+    /// picker still owns the query, so only the selection is copied back.
+    fn field_pointer(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: ModifiersState,
+    ) -> bool {
+        let took = self.search.handle_chrome_pointer(
+            event,
+            scale_factor,
+            winit::event::Modifiers::from(modifiers),
+        );
+        if took && let Some((anchor, cursor)) = self.search.selection_anchor_focus_public() {
+            self.caret = Selection { anchor, cursor };
+        }
+        took
+    }
+
     /// Route an event while the picker is open. It owns the keyboard and the
     /// pointer: whatever it does not act on reaches nothing behind it.
     pub fn handle_event(
@@ -934,6 +953,12 @@ impl EmojiPicker {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if let Some(p) = cursor {
+                    if self.geometry.field.contains(p) {
+                        // A press in the search field places the caret and
+                        // drags a selection instead of picking an emoji.
+                        self.field_pointer(event, scale_factor, modifiers);
+                        return;
+                    }
                     self.button(*state, *button, p, now);
                 }
             }
@@ -954,6 +979,7 @@ impl EmojiPicker {
                 }
             }
             WindowEvent::CursorMoved { .. } => {
+                self.field_pointer(event, scale_factor, modifiers);
                 self.hover = cursor.map(|p| self.hit(p));
             }
             WindowEvent::Focused(false) => {
