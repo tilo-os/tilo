@@ -12,18 +12,14 @@ pub fn ensure() {
     CATALOG.ensure();
 }
 
-/// The emoji catalogue in the desktop's language: names, group labels and
-/// search follow it, with English kept for anything it does not translate.
+/// The emoji catalogue in the desktop's language, for Chat's own use: the
+/// name of an emoji and of a group it paints in the accessibility tree,
+/// with English kept for anything it does not translate.
+///
+/// The shared emoji picker and reaction strip do not read it: the toolkit
+/// provides the catalogue they offer.
 pub fn emoji_catalogue() -> &'static emoji::Catalogue {
     emoji::Catalogue::for_locale(&ui::i18n::I18nManager::current_locale())
-}
-
-/// Hand the catalogue to the toolkit's shared emoji picker and reaction
-/// strip ([`ui::emoji_catalogue::CATALOGUE`]). Chat links the catalogue, so
-/// it is there from the first frame; in the browser desktop it stays in
-/// Chat's own module.
-pub fn offer_emoji_catalogue() {
-    tilo_emoji_catalogue::offer();
 }
 
 #[cfg(test)]
@@ -77,7 +73,6 @@ mod tests {
         "chat-call-issue-session-ended",
         "chat-call-issue-stale",
         "chat-call-issue-unsupported",
-        "chat-emoji-insert",
         "chat-emoji-choose",
         "chat-emoji-group",
         "chat-agent-work-taken",

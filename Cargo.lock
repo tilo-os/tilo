@@ -2078,7 +2078,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-document",
- "tilo-emoji-catalogue",
  "tilo-emoji-engine",
  "tilo-files",
  "tilo-model-client",
