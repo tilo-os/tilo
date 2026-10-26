@@ -16,8 +16,27 @@ use ui::history_source::{AuthorDirectory, HistorySource, committed_heads};
 use ui::record::{RecordCheckout, RecordId, RecordKind, RecordStore, home};
 use ui::widget::{HistoryEntry, HistoryEntryId};
 
-use super::ActivityTree;
+use super::{ActivityTree, HistoryRoom};
 use tilo_desktop_model::RoomId;
+
+/// Whether an admitted document Activity reads has an unfinished writer
+/// transaction: history observes settled commits only, and never closes
+/// another writer's transaction as a side effect.
+pub fn history_pending(tree: &impl ActivityTree) -> bool {
+    tree.history_rooms().into_iter().any(|room| {
+        tree.history_document(room)
+            .is_some_and(|doc| doc.pending_ops() > 0)
+    })
+}
+
+/// The admitted document an origin names, when `tree` holds it.
+fn origin_document<'a>(tree: &'a impl ActivityTree, origin: &str) -> Option<&'a AutoCommit> {
+    if origin == HistoryOrigin::DesktopTree.key() {
+        return tree.history_document(None);
+    }
+    let room = RoomId::parse(origin.strip_prefix("room:")?)?;
+    tree.history_document(Some(room))
+}
 
 /// Hard ceilings keep a corrupt index or a room with thousands of references
 /// from turning opening History into an unbounded allocation.
@@ -75,7 +94,10 @@ fn change_ids(changes: &[automerge::Change]) -> HashSet<HistoryEntryId> {
 /// Which collaborative document produced a history row.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HistoryOrigin {
+    /// A host whose one document holds every workspace's history.
     DesktopTree,
+    /// One room's admitted document.
+    Room(RoomId),
     Record {
         id: RecordId,
         kind: RecordKind,
@@ -91,6 +113,7 @@ impl HistoryOrigin {
     pub fn key(&self) -> String {
         match self {
             Self::DesktopTree => "workspace-tree".to_string(),
+            Self::Room(room) => format!("room:{room}"),
             Self::Record { id, .. } => format!("record:{id}"),
             // A tuple of strings always encodes; the empty fallback is unreachable.
             Self::AppRecord { app, id, kind } => format!(
@@ -103,6 +126,7 @@ impl HistoryOrigin {
     pub fn label(&self) -> String {
         match self {
             Self::DesktopTree => crate::i18n::t("activity-source-workspace"),
+            Self::Room(room) => room.to_string(),
             Self::AppRecord { app, id, .. } => format!("{app}: {id}"),
             Self::Record { id, .. } => id.file_path().map_or_else(
                 || id.as_str().to_string(),
@@ -234,11 +258,14 @@ impl WorkspaceHistoryEntry {
     /// accepts only a 16-byte id.  Authoritative operations must retain `id`.
     pub fn timeline_entry(&self) -> HistoryEntry {
         let mut projected = self.entry.clone();
-        // Collaborative named ranges live in the workspace tree and address
-        // its native ids. Preserve those ids so adding record rows cannot
-        // detach an existing name from its band. Only foreign document ids
-        // need projection into the shared widget namespace.
-        if self.id.origin == HistoryOrigin::DesktopTree {
+        // Named ranges live in the document their changes do and address its
+        // native ids. Preserve those for the workspace tree and each room so
+        // adding record rows cannot detach an existing name from its band.
+        // Only foreign record ids need projection into the shared namespace.
+        if matches!(
+            self.id.origin,
+            HistoryOrigin::DesktopTree | HistoryOrigin::Room(_)
+        ) {
             return projected;
         }
         let mut hasher = blake3::Hasher::new();
@@ -293,6 +320,19 @@ impl WorkspaceHistoryQuery {
     fn bounded_limit(&self) -> usize {
         self.limit.clamp(1, MAX_FEED_ENTRIES)
     }
+
+    /// Whether this query's history includes `room`'s document. A host whose
+    /// one document holds every workspace answers `None` and covers them all.
+    fn covers_room(&self, room: HistoryRoom) -> bool {
+        let Some(room) = room else {
+            return true;
+        };
+        self.room.is_none_or(|only| only == room)
+            && self
+                .rooms
+                .as_ref()
+                .is_none_or(|rooms| rooms.contains(&room))
+    }
 }
 
 /// Explains whether the feed is complete on this device.  A referenced record
@@ -308,12 +348,16 @@ pub struct FeedCoverage {
     pub unavailable_records: Vec<RecordCheckout>,
     pub capped_records: usize,
     pub excluded_apps: Vec<String>,
+    /// Rooms the tree names whose admitted document it does not hold: their
+    /// changes are not in the feed, and no projection of them stands in.
+    pub unavailable_rooms: Vec<RoomId>,
 }
 
 impl FeedCoverage {
     pub fn is_complete(&self) -> bool {
         !self.pending_tree
             && self.unavailable_records.is_empty()
+            && self.unavailable_rooms.is_empty()
             && self.capped_records == 0
             && self.excluded_apps.is_empty()
     }
@@ -477,8 +521,8 @@ impl WorkspaceHistoryIndex {
             if heads.is_empty() || heads.len() != state.heads.len() {
                 continue;
             }
-            let changes = if origin == "workspace-tree" {
-                let mut doc = committed_snapshot(tree.document());
+            let changes = if let Some(document) = origin_document(tree, origin) {
+                let mut doc = committed_snapshot(document);
                 if !doc.get_missing_deps(&heads).is_empty() {
                     continue;
                 }
@@ -553,12 +597,13 @@ impl WorkspaceHistoryIndex {
     /// Join a caller's room-scoped tree rows with all records reachable from
     /// that room.  The supplied rows remain the exact objects used by the room
     /// pane, so naming and workspace labels cannot drift between surfaces.
+    /// Each row keeps the admitted document it came from.
     pub fn refresh_with_workspace_entries(
         &mut self,
         tree: &mut impl ActivityTree,
         records: &RecordStore,
         query: WorkspaceHistoryQuery,
-        workspace_entries: &[HistoryEntry],
+        workspace_entries: &[(HistoryOrigin, HistoryEntry)],
     ) -> bool {
         self.refresh_inner(tree, records, query, Some(workspace_entries), None)
     }
@@ -570,7 +615,7 @@ impl WorkspaceHistoryIndex {
         records: &RecordStore,
         local: &dyn PersistedRecordHistory,
         query: WorkspaceHistoryQuery,
-        workspace_entries: &[HistoryEntry],
+        workspace_entries: &[(HistoryOrigin, HistoryEntry)],
     ) -> bool {
         self.refresh_inner(tree, records, query, Some(workspace_entries), Some(local))
     }
@@ -581,20 +626,31 @@ impl WorkspaceHistoryIndex {
         &mut self,
         tree: &mut impl ActivityTree,
         query: WorkspaceHistoryQuery,
-        tree_rows: &[HistoryEntry],
+        tree_rows: &[(HistoryOrigin, HistoryEntry)],
         records: &[DetachedRecordHistory],
     ) -> bool {
         let limit = query.bounded_limit();
         let mut by_id = BTreeMap::new();
+        let (available_documents, unavailable_rooms) = tree_documents(tree, &query);
         let mut coverage = FeedCoverage {
-            pending_tree: tree.document().pending_ops() > 0,
+            pending_tree: history_pending(tree),
             referenced_records: records.len(),
+            unavailable_rooms,
             ..Default::default()
         };
-        let mut documents = BTreeMap::new();
+        let mut documents: BTreeMap<String, Vec<ChangeHash>> =
+            available_documents.into_iter().collect();
         if !coverage.pending_tree {
-            insert_rows(&mut by_id, &HistoryOrigin::DesktopTree, tree_rows.to_vec());
-            documents.insert("workspace-tree".into(), tree.document_mut().get_heads());
+            // A row from a document this host no longer holds is not shown:
+            // the room is reported unavailable instead of standing in with
+            // rows derived from somewhere else.
+            for (origin, entry) in tree_rows {
+                if documents.contains_key(&origin.key()) {
+                    insert_rows(&mut by_id, origin, std::iter::once(entry.clone()));
+                }
+            }
+        } else {
+            documents.clear();
         }
         let mut ordered = records.iter().collect::<Vec<_>>();
         ordered.compact_sort_by_key(|record| record.origin());
@@ -679,8 +735,8 @@ impl WorkspaceHistoryIndex {
             if heads.is_empty() {
                 continue;
             }
-            let doc = if key == "workspace-tree" {
-                Some(tree.document().clone())
+            let doc = if let Some(document) = origin_document(tree, key) {
+                Some(document.clone())
             } else {
                 records
                     .iter()
@@ -720,7 +776,7 @@ impl WorkspaceHistoryIndex {
         tree: &impl ActivityTree,
         records: &RecordStore,
         query: WorkspaceHistoryQuery,
-        supplied: Option<&[HistoryEntry]>,
+        supplied: Option<&[(HistoryOrigin, HistoryEntry)]>,
         local: Option<&dyn PersistedRecordHistory>,
     ) -> bool {
         let limit = query.bounded_limit();
@@ -730,8 +786,10 @@ impl WorkspaceHistoryIndex {
             return false;
         }
 
-        let entries = self.collect_entries(tree, records, supplied, &mut indexed, local, limit);
-        self.finish_refresh(query, &indexed, fingerprint, entries);
+        let entries =
+            self.collect_entries(tree, records, &query, supplied, &mut indexed, local, limit);
+        let (_, unavailable_rooms) = tree_documents(tree, &query);
+        self.finish_refresh(query, &indexed, fingerprint, entries, unavailable_rooms);
         true
     }
 
@@ -912,13 +970,10 @@ impl WorkspaceHistoryIndex {
         tree: &impl ActivityTree,
         records: &RecordStore,
         query: &WorkspaceHistoryQuery,
-        supplied: Option<&[HistoryEntry]>,
+        supplied: Option<&[(HistoryOrigin, HistoryEntry)]>,
         indexed: &IndexedRecords,
     ) -> Fingerprint {
-        let mut documents = vec![(
-            "workspace-tree".to_string(),
-            committed_heads(tree.document()),
-        )];
+        let (mut documents, _) = tree_documents(tree, query);
         for record in &indexed.included {
             if let Some(heads) = records
                 .read(&record.id, committed_heads)
@@ -930,7 +985,7 @@ impl WorkspaceHistoryIndex {
         }
         let supplied_tree_rows = supplied.map(|rows| {
             rows.iter()
-                .map(|entry| (entry.id, entry.timestamp))
+                .map(|(_, entry)| (entry.id, entry.timestamp))
                 .collect()
         });
         Fingerprint {
@@ -945,7 +1000,8 @@ impl WorkspaceHistoryIndex {
         &self,
         tree: &impl ActivityTree,
         records: &RecordStore,
-        supplied: Option<&[HistoryEntry]>,
+        query: &WorkspaceHistoryQuery,
+        supplied: Option<&[(HistoryOrigin, HistoryEntry)]>,
         indexed: &mut IndexedRecords,
         local: Option<&dyn PersistedRecordHistory>,
         limit: usize,
@@ -953,19 +1009,32 @@ impl WorkspaceHistoryIndex {
         let included = &indexed.included;
         let cold = &mut indexed.cold;
         let mut by_id: BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry> = BTreeMap::new();
-        let tree_rows = supplied.map_or_else(
-            || {
-                let mut doc = committed_snapshot(tree.document());
-                HistorySource::new()
+        let (documents, _) = tree_documents(tree, query);
+        let available: HashSet<String> = documents.into_iter().map(|(key, _)| key).collect();
+        if let Some(rows) = supplied {
+            for (origin, entry) in rows {
+                if available.contains(&origin.key()) {
+                    insert_rows(&mut by_id, origin, std::iter::once(entry.clone()));
+                }
+            }
+        } else {
+            for room in tree.history_rooms() {
+                if !query.covers_room(room) {
+                    continue;
+                }
+                let Some(document) = tree.history_document(room) else {
+                    continue;
+                };
+                let mut doc = committed_snapshot(document);
+                let rows = HistorySource::new()
                     .without_field_paths()
                     .with_authors(self.authors.clone())
                     .with_artifact_kind(ArtifactKind::Cluster)
                     .with_max_entries(limit)
-                    .entries(&mut doc)
-            },
-            <[HistoryEntry]>::to_vec,
-        );
-        insert_rows(&mut by_id, &HistoryOrigin::DesktopTree, tree_rows);
+                    .entries(&mut doc);
+                insert_rows(&mut by_id, &room_origin(room), rows);
+            }
+        }
 
         for record in included {
             let kind = artifact_kind(&record.kind);
@@ -1026,6 +1095,7 @@ impl WorkspaceHistoryIndex {
         indexed: &IndexedRecords,
         fingerprint: Fingerprint,
         entries: Vec<WorkspaceHistoryEntry>,
+        unavailable_rooms: Vec<RoomId>,
     ) {
         let included_ids: BTreeSet<RecordId> = indexed
             .included
@@ -1045,6 +1115,7 @@ impl WorkspaceHistoryIndex {
             unavailable_records,
             capped_records: indexed.capped_records,
             excluded_apps: Vec::new(),
+            unavailable_rooms,
         };
         self.entries = entries;
         self.query = Some(query);
@@ -1069,7 +1140,7 @@ fn committed_snapshot(doc: &AutoCommit) -> AutoCommit {
 fn insert_rows(
     target: &mut BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry>,
     origin: &HistoryOrigin,
-    rows: Vec<HistoryEntry>,
+    rows: impl IntoIterator<Item = HistoryEntry>,
 ) {
     for entry in rows {
         if !entry
@@ -1087,6 +1158,37 @@ fn insert_rows(
             .entry(id.clone())
             .or_insert(WorkspaceHistoryEntry { id, entry });
     }
+}
+
+/// The origin that names `room`'s document: `None` is a host whose one
+/// document holds every workspace.
+pub fn room_origin(room: HistoryRoom) -> HistoryOrigin {
+    room.map_or(HistoryOrigin::DesktopTree, HistoryOrigin::Room)
+}
+
+/// The documents a query reads, as origins with committed heads, and the
+/// rooms it covers whose document the host does not hold: Activity reports
+/// those as unavailable instead of replacing them with a projection.
+fn tree_documents(
+    tree: &impl ActivityTree,
+    query: &WorkspaceHistoryQuery,
+) -> (Vec<(String, Vec<ChangeHash>)>, Vec<RoomId>) {
+    let mut documents = Vec::new();
+    let mut unavailable = Vec::new();
+    for room in tree.history_rooms() {
+        if !query.covers_room(room) {
+            continue;
+        }
+        match tree.history_document(room) {
+            Some(document) => documents.push((room_origin(room).key(), committed_heads(document))),
+            None => {
+                if let Some(room) = room {
+                    unavailable.push(room);
+                }
+            }
+        }
+    }
+    (documents, unavailable)
 }
 
 fn referenced_records(tree: &impl ActivityTree, room: Option<RoomId>) -> Vec<RecordCheckout> {

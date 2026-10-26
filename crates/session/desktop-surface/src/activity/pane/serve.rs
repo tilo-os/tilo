@@ -711,25 +711,20 @@ impl RoomActivityPane {
         if self.scope != RoomScope::ThisRoom || self.last_active != Some(workspace) {
             return;
         }
+        let addresses: Vec<WorkspaceHistoryId> = viewed
+            .entries
+            .iter()
+            .filter_map(|hex| entry_id(hex))
+            .filter(|id| {
+                !self
+                    .external_entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.id == *id)
+            })
+            .map(|id| self.origin_of(&id))
+            .collect();
         let shown = self.viewed_changes.entry(workspace).or_default();
-        for id in viewed.entries.iter().filter_map(|hex| entry_id(hex)) {
-            if self
-                .external_entry
-                .as_ref()
-                .is_some_and(|entry| entry.id == id)
-            {
-                continue;
-            }
-            shown.insert(
-                self.projected_origins
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or(WorkspaceHistoryId {
-                        origin: crate::activity::index::HistoryOrigin::DesktopTree,
-                        change: id,
-                    }),
-            );
-        }
+        shown.extend(addresses);
         if !viewed.later {
             self.finish_view(workspace);
         }

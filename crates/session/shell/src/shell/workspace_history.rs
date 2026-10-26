@@ -43,8 +43,11 @@ mod tests {
             },
             ..WorkspaceTree::default()
         };
-        tree.doc.put(&ROOT, "name", "Research").unwrap();
-        tree.doc.commit_with(CommitOptions::default().with_time(1));
+        let mut room_doc = AutoCommit::new();
+        room_doc.put(&ROOT, "room", room.to_string()).unwrap();
+        room_doc.put(&ROOT, "name", "Research").unwrap();
+        room_doc.commit_with(CommitOptions::default().with_time(1));
+        tree.room_docs.insert(room, room_doc);
         (tree, room)
     }
 
@@ -132,7 +135,7 @@ mod tests {
                 .collect();
             assert!(projected.len() >= 2);
             assert!(index.entries().iter().any(|row| {
-                row.id.origin == HistoryOrigin::DesktopTree
+                row.id.origin == HistoryOrigin::Room(room)
                     && row.timeline_entry().id == row.id.change
             }));
         }
@@ -161,8 +164,11 @@ mod tests {
             });
             let pending = records.read(&record.id, Transactable::pending_ops).unwrap();
             assert!(pending > 0);
-            tree.doc.put(ROOT, "status", "unfinished").unwrap();
-            let pending_tree = tree.doc.pending_ops();
+            let pending_tree = {
+                let doc = tree.room_docs.get_mut(&room).expect("the room's document");
+                doc.put(ROOT, "status", "unfinished").unwrap();
+                doc.pending_ops()
+            };
             assert!(!index.refresh(&mut tree, &records, query.clone()));
             // Also force projection, rather than only exercising the cache hit.
             index.authors_mut();
@@ -177,7 +183,10 @@ mod tests {
                 .unwrap();
             assert_eq!(index.entries(), committed_entries);
             assert!(index.unseen(&frontier, &mut tree, &records).is_empty());
-            assert_eq!(tree.doc.pending_ops(), pending_tree);
+            assert_eq!(
+                tree.room_docs.get(&room).map(Transactable::pending_ops),
+                Some(pending_tree),
+            );
             assert_eq!(
                 records.read(&record.id, |doc| (doc.base_heads(), doc.pending_ops())),
                 Some((before_heads.clone(), pending)),
@@ -360,8 +369,15 @@ mod tests {
             frontier.mark_seen(&index);
             assert!(index.unseen(&frontier, &mut tree, &records).is_empty());
 
-            tree.doc.put(&ROOT, "status", "review").unwrap();
-            tree.doc.commit_with(CommitOptions::default().with_time(30));
+            tree.room_docs
+                .get_mut(&room)
+                .expect("the room's document")
+                .put(&ROOT, "status", "review")
+                .unwrap();
+            tree.room_docs
+                .get_mut(&room)
+                .expect("the room's document")
+                .commit_with(CommitOptions::default().with_time(30));
             records.with(&record.id, |doc| {
                 doc.put(&ROOT, "body", "A newer decision").unwrap();
                 doc.commit_with(CommitOptions::default().with_time(40));
@@ -372,7 +388,7 @@ mod tests {
             assert!(
                 unseen
                     .iter()
-                    .any(|row| row.id.origin == HistoryOrigin::DesktopTree)
+                    .any(|row| row.id.origin == HistoryOrigin::Room(room))
             );
             assert!(unseen.iter().any(
                 |row| matches!(&row.id.origin, HistoryOrigin::Record { id, .. } if id == &record.id)
@@ -389,8 +405,10 @@ mod tests {
             let encoded = serde_json::to_string(&frontier).unwrap();
             let decoded: WorkspaceSeenFrontier = serde_json::from_str(&encoded).unwrap();
             assert_eq!(decoded, frontier);
-            assert!(decoded.documents["workspace-tree"].heads.is_empty());
-            assert!(!decoded.documents["workspace-tree"].exceptions.is_empty());
+            let key = format!("room:{room}");
+            assert!(!decoded.documents[&key].heads.is_empty());
+            assert!(decoded.documents[&key].exceptions.is_empty());
+            assert!(!decoded.documents.contains_key("workspace-tree"));
         }
 
         {
@@ -425,16 +443,23 @@ mod tests {
             index.refresh(&mut tree, &records, query.clone());
             let mut frontier = WorkspaceSeenFrontier::default();
             frontier.mark_seen(&index);
-            let before = frontier.documents["workspace-tree"].exceptions.clone();
-            assert_eq!(before.len(), 1);
+            let key = format!("room:{room}");
+            let before = frontier.documents[&key].heads.clone();
+            assert!(!before.is_empty());
 
-            tree.doc.put(&ROOT, "status", "new").unwrap();
-            tree.doc.commit_with(CommitOptions::default().with_time(50));
+            tree.room_docs
+                .get_mut(&room)
+                .expect("the room's document")
+                .put(&ROOT, "status", "new")
+                .unwrap();
+            tree.room_docs
+                .get_mut(&room)
+                .expect("the room's document")
+                .commit_with(CommitOptions::default().with_time(50));
             index.refresh(&mut tree, &records, query);
             frontier.mark_seen(&index);
-            let after = &frontier.documents["workspace-tree"].exceptions;
-            assert_eq!(after.len(), 2);
-            assert!(before.is_subset(after));
+            let after = &frontier.documents[&key].heads;
+            assert_ne!(after, &before);
         }
     }
 
@@ -449,14 +474,21 @@ mod tests {
                 .entry(room)
                 .or_default()
                 .insert(record.id.to_string(), record.kind.to_string());
-            tree.doc.put(&ROOT, "status", "done").unwrap();
-            tree.doc.commit_with(CommitOptions::default().with_time(30));
+            tree.room_docs
+                .get_mut(&room)
+                .expect("the room's document")
+                .put(&ROOT, "status", "done")
+                .unwrap();
+            tree.room_docs
+                .get_mut(&room)
+                .expect("the room's document")
+                .commit_with(CommitOptions::default().with_time(30));
             let mut index = WorkspaceHistoryIndex::new();
             index.refresh(&mut tree, &records, WorkspaceHistoryQuery::for_room(room));
             let tree_ids: Vec<_> = index
                 .entries()
                 .iter()
-                .filter(|row| row.id.origin == HistoryOrigin::DesktopTree)
+                .filter(|row| row.id.origin == HistoryOrigin::Room(room))
                 .map(|row| row.timeline_entry().id)
                 .collect();
             assert!(tree_ids.len() >= 2);

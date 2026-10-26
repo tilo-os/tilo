@@ -32,12 +32,16 @@ fn fixture() -> Fixture {
         tilo_action_policy::roles::AgentPreset::Observer,
         &tilo_action_policy::Subject::person(OWNER.to_owned()),
     );
-    let room = workspace.room().to_string();
+    let room_id = workspace.room();
+    let room = room_id.to_string();
     let mut tree = WorkspaceTree::default();
     tree.desktop.active = workspace.id;
     tree.desktop.workspaces.push(workspace);
     // The room as it was set up here: setup is no change to show.
     tree.seed_doc_from_cache();
+    // Activity reads each room's admitted document, not the whole-desktop
+    // mirror; this room's document is what its own engine replicates.
+    tree.sync_room_doc(room_id);
     let chrome = crate::shell::chrome_state::ChromeState::new(tree);
     let handle = chrome.borrow().tree_handle();
     let broker =
@@ -85,20 +89,26 @@ impl Fixture {
         Caller::local_person(OWNER).in_room(self.room.clone())
     }
 
-    /// A change by someone else in the room, as the history reads it.
+    /// A change by someone else in the room, as the history reads it: a
+    /// change of the room's admitted document by the peer's actor.
     fn rename(&self, name: &str) {
+        use automerge::transaction::Transactable as _;
         let state = self.chrome.borrow();
         let mut guard = state.tree_mut();
         let tree = &mut *guard;
-        let reader = tree.doc.get_actor().clone();
-        tree.doc
-            .set_actor(automerge::ActorId::from(b"ada-device".as_slice()));
+        let room = tree
+            .active_workspace()
+            .map(Workspace::room)
+            .expect("the fixture's workspace has its room");
+        let doc = tree.room_docs.get_mut(&room).expect("the room's document");
+        let reader = doc.get_actor().clone();
+        doc.set_actor(automerge::ActorId::from(b"ada-device".as_slice()));
+        doc.put(automerge::ROOT, "name", name).unwrap();
+        tilo_resource::history::commit_stamped(doc);
+        doc.set_actor(reader);
         if let Some(workspace) = tree.desktop.workspaces.first_mut() {
             workspace.name = name.into();
         }
-        tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
-        tilo_resource::history::commit_stamped(&mut tree.doc);
-        tree.doc.set_actor(reader);
         drop(guard);
     }
 

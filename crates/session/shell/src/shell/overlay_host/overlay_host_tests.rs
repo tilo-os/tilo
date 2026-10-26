@@ -316,16 +316,26 @@ fn room_activity_reads_the_live_room_and_opens_what_it_names() {
     fn room_activity_reads_the_live_rooms_history() {
         let mut h = build_harness();
         {
+            use automerge::transaction::Transactable as _;
             let state = h.chrome.borrow();
             let mut tree = state.tree_mut();
             // Bootstrap writes are setup/layout and omitted from the feed;
-            // rename so the explorer has a Change row to show.
+            // rename so the explorer has a Change row to show in the room's
+            // own admitted document.
             let tree = &mut *tree;
-            if let Some(ws) = tree.desktop.workspaces.first_mut() {
+            let room = tree
+                .active_workspace()
+                .map(crate::shell::state::Workspace::room)
+                .expect("the active workspace has its room");
+            let name = if let Some(ws) = tree.desktop.workspaces.first_mut() {
                 ws.name = format!("{} · live", ws.name);
-            }
-            tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
-            tilo_resource::history::commit_stamped(&mut tree.doc);
+                ws.name.clone()
+            } else {
+                String::new()
+            };
+            let doc = tree.room_docs.get_mut(&room).expect("the room's document");
+            doc.put(automerge::ROOT, "name", name).unwrap();
+            tilo_resource::history::commit_stamped(doc);
             h.host.room_activity_mut().refresh(tree);
         }
         assert!(
@@ -817,7 +827,12 @@ struct Harness {
 }
 
 fn build_harness() -> Harness {
-    let tree = WorkspaceTree::bootstrap_demo();
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    // Activity reads each room's admitted document; bootstrap_demo seeds
+    // the desktop mirror, so project the rooms this device's engine holds.
+    for room in tree.rooms() {
+        tree.sync_room_doc(room);
+    }
     let chrome = ChromeState::new(tree);
     let content = Box::new(StubContent::new());
     let host = ShellOverlayHost::with_fixture_content(content).with_chrome(chrome.clone());
