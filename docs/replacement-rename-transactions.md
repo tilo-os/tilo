@@ -16,10 +16,11 @@ record repository. `QuickFS` has two durable authorities:
 2. the Automerge move tree, persisted separately and broadcast as a delta.
 
 `FileHistoryStore` is a derived, rebuildable query index over the signed
-`AppendVersion`, `AppendConflict` and `ResolveConflict` operations. Its
-checkpoint is a cache keyed by the record log digest, never a second durable
-history authority. Publishing an ordinary rename version for the source and an
-ordinary delete version for the destination would therefore be unsafe: a crash
+`AppendVersion`, `AppendConflict` and `ResolveConflict` operations. It is
+rebuilt from those accepted operations on open and keeps no persistent cache or
+second durable history authority. Publishing an ordinary rename version for the
+source and an ordinary delete version for the destination would therefore be
+unsafe: a crash
 between participant records creates an authenticated half-operation, while a
 crash between record publication and the move-tree write leaves signed history
 for a rename the namespace never performed. Returning an error cannot roll back
