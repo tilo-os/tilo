@@ -1149,6 +1149,8 @@ pub struct ChromeState {
     /// Toasts that undo a workspace deletion, by toast id: where the
     /// workspace was and what it held.
     workspace_undo_toasts: BTreeMap<u64, (usize, crate::shell::state::Workspace)>,
+    /// A close window's Undo toast, mapped to the remembered close it restores.
+    group_undo_toasts: BTreeMap<u64, u64>,
     /// Notices of an app that ran out of memory, by toast id: the closed-tab
     /// serials of its windows, which Reopen puts back where they were.
     memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
@@ -1350,6 +1352,7 @@ impl ChromeState {
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
             pending_closed_tabs: Vec::new(),
             workspace_undo_toasts: BTreeMap::new(),
+            group_undo_toasts: BTreeMap::new(),
             memory_reopen_toasts: BTreeMap::new(),
             device_asking_toasts: BTreeMap::new(),
             consent_notices: BTreeMap::new(),
@@ -2602,11 +2605,12 @@ impl ChromeState {
     }
 
     /// Publish the reopen entry only after removal. A live client may
-    /// refuse its close request and keep the tab present.
+    /// refuse its close request and keep the tab present. Returns the new
+    /// close's serial when this entry was the one published now.
     pub fn remember_closed_tab_after_removal(
         &mut self,
         entry: crate::shell::closed_tabs::ClosedTab,
-    ) {
+    ) -> Option<u64> {
         if self.pending_closed_tabs.iter().any(|pending| {
             pending
                 .tabs
@@ -2614,13 +2618,21 @@ impl ChromeState {
                 .map(|content| content.tab.id)
                 .eq(entry.tabs.iter().map(|content| content.tab.id))
         }) {
-            return;
+            return None;
         }
+        let ids = entry
+            .tabs
+            .iter()
+            .map(|content| content.tab.id)
+            .collect::<Vec<_>>();
         self.pending_closed_tabs.push(entry);
-        self.publish_completed_closes();
+        self.publish_completed_closes()
+            .into_iter()
+            .find(|(_, published)| published == &ids)
+            .map(|(serial, _)| serial)
     }
 
-    fn publish_completed_closes(&mut self) {
+    fn publish_completed_closes(&mut self) -> Vec<(u64, Vec<crate::shell::state::TabId>)> {
         let present: std::collections::HashSet<_> = self
             .tree()
             .desktop
@@ -2632,6 +2644,7 @@ impl ChromeState {
             .map(|tab| tab.id)
             .collect();
         let entries = std::mem::take(&mut self.pending_closed_tabs);
+        let mut published = Vec::new();
         for entry in entries {
             if entry
                 .tabs
@@ -2640,15 +2653,46 @@ impl ChromeState {
             {
                 self.pending_closed_tabs.push(entry);
             } else {
-                self.remember_closed_tab(entry);
+                let ids = entry
+                    .tabs
+                    .iter()
+                    .map(|content| content.tab.id)
+                    .collect::<Vec<_>>();
+                let serial = self.remember_closed_tab(entry);
+                published.push((serial, ids));
             }
         }
+        published
     }
 
     /// Remember a close for the normal Reopen Closed Tab action. Closing is
     /// direct visual feedback; it must not create an interruption or history.
     pub fn remember_closed_tab(&mut self, entry: crate::shell::closed_tabs::ClosedTab) -> u64 {
         self.closed_tabs.push(entry)
+    }
+
+    /// Offer the same Undo a workspace deletion offers after a whole window
+    /// closes. The close is already remembered for Reopen Closed Tab; the
+    /// toast names what went and restores all of it until it lapses.
+    pub fn push_group_undo_toast(&mut self, serial: u64, title: &str, count: usize) -> u64 {
+        use crate::shell::i18n::{t, t_args};
+        let title = if count == 1 {
+            t_args("tab-closed-toast", &[("title", title.into())])
+        } else {
+            t_args(
+                "tab-closed-group-toast",
+                &[("count", count.to_string().into())],
+            )
+        };
+        let mut toast = Notification::new(title, String::new())
+            .with_severity(NotificationSeverity::Info)
+            .with_icon_kind(NotificationIconKind::Generic);
+        toast.dismiss_after = crate::shell::closed_tabs::UNDO_WINDOW;
+        toast.actions = vec![("default".into(), t("tab-closed-undo"))];
+        toast.bypass_dnd = true;
+        toast.show_on_lock_screen = false;
+        self.group_undo_toasts.insert(toast.id, serial);
+        self.push_notification_full(toast)
     }
 
     /// Delete the workspace on screen, here and on the person's other
@@ -3718,6 +3762,9 @@ impl ChromeState {
         if self.workspace_undo_toasts.remove(&n.id).is_some() {
             return;
         }
+        if self.group_undo_toasts.remove(&n.id).is_some() {
+            return;
+        }
         self.device_asking_toasts.remove(&n.id);
         // The windows stay among the closed tabs; only the notice's offer lapses.
         self.memory_reopen_toasts.remove(&n.id);
@@ -3797,6 +3844,13 @@ impl ChromeState {
         };
         if self.workspace_undo_toasts.contains_key(&id) {
             self.undo_deleted_workspace(id);
+            return true;
+        }
+        if let Some(serial) = self.group_undo_toasts.remove(&id) {
+            if let Some(entry) = self.closed_tabs.take(serial) {
+                self.restore_closed_tab(entry);
+            }
+            self.bump();
             return true;
         }
         if let Some(key) = removed.default_action_key()
