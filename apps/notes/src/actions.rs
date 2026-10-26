@@ -111,7 +111,10 @@ pub(crate) fn find_text(
     text: &str,
     page: Option<PageId>,
 ) -> Result<serde_json::Value, String> {
-    let pages = crate::read::list_pages(doc);
+    // A document that does not read is not a notebook with no notes: a
+    // search over it would say "no matches" instead of why it could not look.
+    let workspace = crate::read::project(doc)?;
+    let pages = workspace.data.pages;
     let mut matches = Vec::new();
     for meta in pages
         .iter()

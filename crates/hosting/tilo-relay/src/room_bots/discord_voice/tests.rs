@@ -296,6 +296,7 @@ async fn bridged_room(rooms: &Rooms, cert: &DeviceCert) -> (String, String) {
                 )
                 .map_err(|error| error.to_string())?;
                 Ok(chat::projection::read(doc)
+                    .expect("the chat record reads")
                     .channel_rows()
                     .into_iter()
                     .find(|channel| {

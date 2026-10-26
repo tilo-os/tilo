@@ -287,6 +287,7 @@ fn the_marker_colour_recolours_the_selected_mark_through_the_record() {
     let colour_of = |app: &mut TestApp<PdfViewerShell>| {
         app.read_document(|doc| {
             PdfMarkup::of(doc)
+                .expect("the PDF markup reads")
                 .list_annotations()
                 .into_iter()
                 .find(|stored| stored.id == mark.id)

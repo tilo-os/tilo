@@ -584,7 +584,8 @@ fn readable(app: &str, record: &str, doc: &AutoCommit) -> Result<Value> {
             json!({"app_id":app,"part":part,"channels":channels,"projection_note":"One part of the chat's messages; the chat record names the channels. External attachment bytes are not in this archive export."}),
         )
     } else if app == "so.tilo.chat" {
-        let record = chat::projection::read(doc);
+        let record = chat::projection::read(doc)
+            .ok_or_else(|| anyhow::anyhow!("the chat record does not read"))?;
         // The chat record's own: its channels, drafts, and the reports filed
         // in them; the messages are in its parts' documents.
         let none = chat::messages::Messages::default();

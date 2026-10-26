@@ -56,6 +56,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
     )
     .unwrap();
     let channel = chat::projection::read(&doc)
+        .expect("the chat record reads")
         .channel_rows()
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Text)

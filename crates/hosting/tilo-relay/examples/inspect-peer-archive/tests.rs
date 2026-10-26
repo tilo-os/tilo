@@ -308,11 +308,15 @@ fn readable_export_contains_sent_content_and_shared_draft_without_changing_heads
     assert_eq!(writer_export["body_text"], "Recovery test");
     assert_eq!(writer.base_heads(), before);
     let chat = recovered.docs[&("so.tilo.chat".into(), String::new())].clone();
-    let channel = chat::projection::read(&chat).channel_rows().remove(0).id;
+    let channel = chat::projection::read(&chat)
+        .expect("the chat record reads")
+        .channel_rows()
+        .remove(0)
+        .id;
     let mut part = AutoCommit::new();
     chat::demo::say_in_part(
         &mut part,
-        &chat::projection::read(&chat),
+        &chat::projection::read(&chat).expect("the chat record reads"),
         "test-person",
         &channel,
         "Sent archive content",

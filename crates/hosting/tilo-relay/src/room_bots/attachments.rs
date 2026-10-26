@@ -192,8 +192,12 @@ pub fn reported(record: &[u8]) -> Vec<Referenced> {
     let Ok(doc) = AutoCommit::load(record) else {
         return Vec::new();
     };
-    chat::projection::read(&doc)
-        .feedback
+    let Some(chat) = chat::projection::read(&doc) else {
+        // A record that does not read names no files; asking for any would
+        // invent references, and there is nothing here to remove.
+        return Vec::new();
+    };
+    chat.feedback
         .iter()
         .filter_map(|(_, report)| {
             let picture = report.submission.as_ref()?.feedback.screenshot.as_ref()?;

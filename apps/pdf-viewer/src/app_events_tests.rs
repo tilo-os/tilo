@@ -582,7 +582,8 @@ fn canvas_tools_highlight_note_pan_select_and_dismiss_through_the_event_path() {
         "a highlight drag through handle_event adds an annotation"
     );
     assert!(
-        crate::markup::PdfMarkup::of(&rig.st.doc)
+        PdfMarkup::of(&rig.st.doc)
+            .expect("the PDF markup reads")
             .list_annotations()
             .len()
             > before,
@@ -620,7 +621,9 @@ fn canvas_tools_highlight_note_pan_select_and_dismiss_through_the_event_path() {
         rig.app.editing.is_none(),
         "Enter commits and closes the editor"
     );
-    let saved = crate::markup::PdfMarkup::of(&rig.st.doc).list_comments();
+    let saved = PdfMarkup::of(&rig.st.doc)
+        .expect("the PDF markup reads")
+        .list_comments();
     assert!(
         saved.iter().any(|c| c.body == "Relay path"),
         "the typed comment body landed in the shared document: {:?}",
@@ -1000,13 +1003,25 @@ fn delete_affordances_and_the_context_menu_dispatch_the_palette_action() {
     let comment_ids =
         |comments: Vec<Comment>| -> Vec<String> { comments.into_iter().map(|c| c.id).collect() };
     assert_eq!(
-        ids(crate::markup::PdfMarkup::of(&st.doc).list_annotations()),
-        ids(crate::markup::PdfMarkup::of(&palette).list_annotations()),
+        ids(PdfMarkup::of(&st.doc)
+            .expect("the PDF markup reads")
+            .list_annotations()),
+        ids(PdfMarkup::of(&palette)
+            .expect("the PDF markup reads")
+            .list_annotations()),
         "one source of truth"
     );
     assert_eq!(
-        comment_ids(crate::markup::PdfMarkup::of(&st.doc).list_comments()),
-        comment_ids(crate::markup::PdfMarkup::of(&palette).list_comments())
+        comment_ids(
+            PdfMarkup::of(&st.doc)
+                .expect("the PDF markup reads")
+                .list_comments()
+        ),
+        comment_ids(
+            PdfMarkup::of(&palette)
+                .expect("the PDF markup reads")
+                .list_comments()
+        )
     );
     assert!(
         app.annotations.iter().all(|a| a.id != anno.id),
@@ -1068,7 +1083,8 @@ fn delete_affordances_and_the_context_menu_dispatch_the_palette_action() {
         "specifically the right-clicked note"
     );
     assert!(
-        !crate::markup::PdfMarkup::of(&rig.st.doc)
+        !PdfMarkup::of(&rig.st.doc)
+            .expect("the PDF markup reads")
             .list_annotations()
             .iter()
             .any(|a| a.id == note_id),
@@ -1088,7 +1104,8 @@ fn delete_affordances_and_the_context_menu_dispatch_the_palette_action() {
             .any(|annotation| annotation.id == note_id)
     );
     assert!(
-        !crate::markup::PdfMarkup::of(&rig.st.doc)
+        !PdfMarkup::of(&rig.st.doc)
+            .expect("the PDF markup reads")
             .list_annotations()
             .iter()
             .any(|annotation| annotation.id == note_id)

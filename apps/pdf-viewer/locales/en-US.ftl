@@ -54,6 +54,7 @@ pdf-note-open-in-new-window = This window shows { $shown } and its markup. Open 
 pdf-note-open-in-new-window-unnamed = This window keeps its document's markup. Open { $name } in a new PDF Viewer window.
 pdf-note-source-changed = This file changed after it was marked up. Check that your markup still sits where you left it.
 pdf-note-existing-markup-unread = The markup already in this PDF couldn't be read. You can still add your own.
+pdf-note-markup-unreadable = This PDF's markup can't be read, so the reader is showing what last read whole: { $reason }
 pdf-note-pages-unavailable = Pages can't be shown right now. Open the PDF again to try once more.
 pdf-note-page-not-shown = Page { $page } couldn't be shown. Open the PDF again to try once more.
 pdf-note-text-unavailable = Text in this PDF can't be read right now. Open the PDF again to try once more.

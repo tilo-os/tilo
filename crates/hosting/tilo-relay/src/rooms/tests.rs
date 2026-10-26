@@ -1206,6 +1206,7 @@ async fn governor_application_authoring_preserves_native_view_and_voice_binding(
                 doc.put(ROOT, "preserved_native_marker", true)
                     .map_err(|error| error.to_string())?;
                 Ok(chat::projection::read(doc)
+                    .expect("the chat record reads")
                     .channel_rows()
                     .into_iter()
                     .find(|channel| channel.kind == chat::model::ChannelKind::Voice)
