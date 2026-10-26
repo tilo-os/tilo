@@ -34,8 +34,9 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
 /// What a refused download tells the person: the map source does not let
 /// areas be saved ahead (OpenStreetMap's tile server forbids fetching tiles
 /// nobody is viewing), but what they have looked at stays.
-pub(crate) const OFFLINE_AREAS_REFUSED: &str =
-    "Places you've looked at stay on this device, so they still show offline.";
+pub(crate) fn areas_refused() -> String {
+    crate::failure::t("maps-offline-refused")
+}
 const MAX_EXTRA_ZOOM: u8 = 6;
 
 /// Effect requested by a pointer interaction inside the panel.
@@ -105,7 +106,7 @@ impl OfflinePanel {
             cache_bytes,
             input: Autocomplete::new()
                 .with_id("maps_download_search")
-                .with_placeholder("Search for a city or a place")
+                .with_placeholder(&crate::failure::t("maps-offline-search-placeholder"))
                 .with_text_role(TextRole::Body),
             results: Vec::new(),
             query: String::new(),
@@ -116,7 +117,7 @@ impl OfflinePanel {
                 .with_id("maps_download_levels")
                 .with_range(1.0, f64::from(MAX_EXTRA_ZOOM) + 1.0)
                 .with_step(1.0)
-                .with_accessible_name("Zoom levels")
+                .with_accessible_name(&crate::failure::t("maps-offline-zoom-levels"))
                 .compact(),
             levels_rect: None,
             targets: Vec::new(),
@@ -264,7 +265,7 @@ impl OfflinePanel {
                 })
                 .collect();
             AccessNode::new(Role::Dialog)
-                .with_name("Offline maps")
+                .with_name(&crate::failure::t("maps-offline-title"))
                 .with_state(AccessState::new().modal(true))
                 .with_children(children)
         })
@@ -289,7 +290,7 @@ impl OfflinePanel {
             targets.push((
                 field,
                 OfflineAction::Consume,
-                "Area to download".to_string(),
+                crate::failure::t("maps-offline-area"),
                 "maps.offline.search".to_string(),
             ));
         }
@@ -305,14 +306,22 @@ impl OfflinePanel {
             targets.push((
                 rect,
                 OfflineAction::Close,
-                "Close offline maps".to_string(),
+                crate::failure::t("maps-offline-close"),
                 "maps.offline.close".to_string(),
             ));
         }
         if let Some(levels) = self.levels_rect {
             for (action, label, target) in [
-                (-1, "Fewer zoom levels", "maps.offline.zoom-out"),
-                (1, "More zoom levels", "maps.offline.zoom-in"),
+                (
+                    -1,
+                    &crate::failure::t("maps-offline-fewer-zoom-levels"),
+                    "maps.offline.zoom-out",
+                ),
+                (
+                    1,
+                    &crate::failure::t("maps-offline-more-zoom-levels"),
+                    "maps.offline.zoom-in",
+                ),
             ] {
                 targets.push((
                     levels,
@@ -325,19 +334,21 @@ impl OfflinePanel {
         for (rect, action) in &self.targets {
             let (label, target) = match action {
                 OfflineAction::Download => (
-                    "Download selected area",
+                    &crate::failure::t("maps-offline-download-area"),
                     "maps.offline.download".to_string(),
                 ),
-                OfflineAction::StopDownload => {
-                    ("Stop downloading", "maps.offline.stop-download".to_string())
-                }
+                OfflineAction::StopDownload => (
+                    &crate::failure::t("maps-offline-stop"),
+                    "maps.offline.stop-download".to_string(),
+                ),
                 OfflineAction::DeleteRegion(id) => (
-                    "Delete downloaded area",
+                    &crate::failure::t("maps-offline-delete-area"),
                     format!("maps.offline.region:{id}:delete"),
                 ),
-                OfflineAction::ClearCache => {
-                    ("Clear offline map cache", "maps.offline.clear".to_string())
-                }
+                OfflineAction::ClearCache => (
+                    &crate::failure::t("maps-offline-clear"),
+                    "maps.offline.clear".to_string(),
+                ),
                 OfflineAction::Close | OfflineAction::Consume | OfflineAction::ZoomDelta(_) => {
                     continue;
                 }
@@ -511,10 +522,7 @@ impl OfflinePanel {
             modal_dialog::MODAL_MAX_WIDTH,
             theme,
         ));
-        let note_h = f64::from(
-            text.measure_style(OFFLINE_AREAS_REFUSED, Some(note_w), &body)
-                .1,
-        );
+        let note_h = f64::from(text.measure_style(&areas_refused(), Some(note_w), &body).1);
         // The body is exactly the stack the painter advances through below.
         let form_h = if downloads {
             sub_h
@@ -535,21 +543,27 @@ impl OfflinePanel {
         let request =
             self.download_request(frame.viewport_bounds, frame.viewport_zoom, frame.viewport);
         let label = self.pick.as_ref().map_or_else(
-            || "Download this view".to_string(),
-            |pick| format!("Download {}", pick.name),
+            || crate::failure::t("maps-offline-download-view"),
+            |pick| {
+                crate::failure::t_args(
+                    "maps-offline-download-named",
+                    &[("name", pick.name.clone().into())],
+                )
+            },
         );
         // While a download runs, the one action the sheet offers stops it:
         // picking the wrong city must not mean waiting out hundreds of tiles
         // and then deleting the region.
         let running = frame.progress.is_active();
         let label = if running {
-            "Stop downloading".to_string()
+            crate::failure::t("maps-offline-stop")
         } else {
             label
         };
         let primary = [ModalAction::primary(&label)];
         let offered: &[ModalAction<'_>] = if downloads { &primary } else { &[] };
-        let spec = ModalSpec::new("Offline maps")
+        let title = crate::failure::t("maps-offline-title");
+        let spec = ModalSpec::new(&title)
             .actions(offered)
             .closable(true)
             .dismiss_on_scrim(true)
@@ -603,7 +617,7 @@ impl OfflinePanel {
             self.levels_rect = None;
             let mut ctx = PaintCtx::new(scene, transform, text, &ink);
             ctx.text(
-                OFFLINE_AREAS_REFUSED,
+                &areas_refused(),
                 &body,
                 ink.text_primary,
                 Point::new(left, y),
@@ -614,7 +628,8 @@ impl OfflinePanel {
         y += s4;
 
         // What this device holds, and the way to free it.
-        let clear_face = ButtonFace::new(Rect::ZERO, "Clear offline maps")
+        let clear_label = crate::failure::t("maps-offline-clear-short");
+        let clear_face = ButtonFace::new(Rect::ZERO, &clear_label)
             .role(ButtonRole::Destructive)
             .control_size(ControlSize::Small);
         let clear_w = clear_face.intrinsic_width(text, theme);
@@ -630,14 +645,17 @@ impl OfflinePanel {
             transform,
             text,
             &ink,
-            &ButtonFace::new(clear, "Clear offline maps")
+            &ButtonFace::new(clear, &clear_label)
                 .role(ButtonRole::Destructive)
                 .control_size(ControlSize::Small)
                 .hovered(clear.contains(frame.pointer)),
         );
         self.targets.push((clear, OfflineAction::ClearCache));
         let mut ctx = PaintCtx::new(scene, transform, text, &ink);
-        let stored = format!("{} on this device", ui::format::size(self.cache_bytes));
+        let stored = crate::failure::t_args(
+            "maps-offline-stored",
+            &[("size", ui::format::size(self.cache_bytes).into())],
+        );
         let stored_top = draw::vmid(ctx.text, y, line_h, &numeric);
         draw::text_clip(
             &mut ctx,
@@ -654,7 +672,7 @@ impl OfflinePanel {
             y += s4;
             draw::text(
                 &mut ctx,
-                "Downloaded areas",
+                &crate::failure::t("maps-offline-downloaded-areas"),
                 Point::new(left, y),
                 &subheading,
                 ink.text_primary,
@@ -732,7 +750,7 @@ impl OfflinePanel {
         let mut ctx = PaintCtx::new(scene, transform, text, ink);
         draw::text(
             &mut ctx,
-            "Area",
+            &crate::failure::t("maps-offline-area"),
             Point::new(left, y),
             &subheading,
             ink.text_primary,
@@ -748,7 +766,7 @@ impl OfflinePanel {
         let hint = match &self.pick {
             Some(pick) if !pick.context.is_empty() => pick.context.clone(),
             Some(pick) => pick.name.clone(),
-            None => "Search for a place, or download what the map shows now.".to_string(),
+            None => crate::failure::t("maps-offline-empty"),
         };
         draw::text_clip(
             &mut ctx,
@@ -764,7 +782,7 @@ impl OfflinePanel {
         let top = draw::vmid(ctx.text, y, control_h, &body);
         draw::text(
             &mut ctx,
-            "Zoom levels",
+            &crate::failure::t("maps-offline-zoom-levels"),
             Point::new(left, top),
             &body,
             ink.text_primary,
@@ -780,29 +798,42 @@ impl OfflinePanel {
 
         // The estimate, or the running download.
         let estimate = TileLayer::estimate_download(request.bounds, request.z0, request.z1);
+        let count = |value: u32| ui::i18n::ArgValue::from(i64::from(value));
         let readout = if frame.progress.is_active() {
-            format!(
-                "Downloading {} of {} tiles…",
-                frame.progress.done, frame.progress.total
+            crate::failure::t_args(
+                "maps-offline-progress",
+                &[
+                    ("done", count(frame.progress.done)),
+                    ("total", count(frame.progress.total)),
+                ],
             )
         } else if frame.progress.stopped {
-            format!(
-                "Stopped after {} tiles; they stay available offline",
-                frame.progress.total
+            crate::failure::t_args(
+                "maps-offline-stopped-count",
+                &[("total", count(frame.progress.total))],
             )
         } else if frame.progress.total > 0 && frame.progress.done >= frame.progress.total {
             if frame.progress.failed > 0 {
-                format!(
-                    "Downloaded {} tiles, {} failed",
-                    frame.progress.total, frame.progress.failed
+                crate::failure::t_args(
+                    "maps-offline-done-failed",
+                    &[
+                        ("total", count(frame.progress.total)),
+                        ("failed", count(frame.progress.failed)),
+                    ],
                 )
             } else {
-                format!("Downloaded {} tiles", frame.progress.total)
+                crate::failure::t_args(
+                    "maps-offline-done",
+                    &[("total", count(frame.progress.total))],
+                )
             }
         } else {
-            format!(
-                "About {} to download",
-                ui::format::size(u64::from(estimate) * TILE_BYTES)
+            crate::failure::t_args(
+                "maps-offline-estimate",
+                &[(
+                    "size",
+                    ui::format::size(u64::from(estimate) * TILE_BYTES).into(),
+                )],
             )
         };
         let mut ctx = PaintCtx::new(scene, transform, text, ink);
