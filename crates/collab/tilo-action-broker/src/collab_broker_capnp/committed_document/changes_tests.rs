@@ -488,3 +488,39 @@ fn a_refusal_of_authority_stays_final_whatever_the_budget_holds() {
         assert!(matches!(first, Reply::Chunk { .. }));
     });
 }
+
+#[test]
+fn a_queued_read_refused_or_left_gives_up_its_place() {
+    use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
+    on_the_broker(async {
+        let budget = Arc::new(Budget::with_total(MAX_DOCUMENT_BYTES));
+        let service = Service::new(false, 3);
+        let mut holder = Channel::sharing(&service, &budget);
+        let held = holder.open(None).unwrap();
+        let mut revoked = Channel::sharing(&service, &budget);
+        let mut leaving = Channel::sharing(&service, &budget);
+        let mut last = Channel::sharing(&service, &budget);
+        for channel in [&mut revoked, &mut leaving, &mut last] {
+            assert_eq!(channel.open(None).unwrap(), Reply::Busy);
+            settle().await;
+        }
+        // The first in line loses custody while it waits; the second stops
+        // reading on its channel.
+        revoked.custody.store(false, Ordering::Release);
+        leaving.slot.leave();
+        holder.take(&held);
+        settle().await;
+        // The refusal is final, and the room granted to it goes on.
+        assert!(revoked.open(None).is_err());
+        settle().await;
+        let first = last.open(None).unwrap();
+        assert!(
+            matches!(first, Reply::Chunk { .. }),
+            "the read behind a refused and a departed one is served: {first:?}"
+        );
+        assert_eq!(last.take(&first), vec![1; 3]);
+        drop((holder, revoked, leaving, last));
+        settle().await;
+        assert_eq!(budget.used(), 0);
+    });
+}

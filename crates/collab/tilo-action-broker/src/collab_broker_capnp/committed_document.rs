@@ -377,6 +377,11 @@ impl Slot {
         }
         reservation
     }
+    /// The reader reads no more on this channel: give up its place in the
+    /// byte budget's queue, or the room its turn was granted.
+    fn leave(&mut self) {
+        self.queued = None;
+    }
     /// Close the channel once an unacknowledged capture outlived its
     /// deadline; refuse every request on a closed channel.
     fn expire(&mut self) -> Result<(), String> {
@@ -699,6 +704,10 @@ impl CapnpChannelHandle {
                     .commit(*token, *revision, kind, document)
             }
             Request::Cancel { capture, token } => slot.acknowledge(*capture, *token),
+            Request::Leave => {
+                slot.leave();
+                Ok(Reply::Cancelled)
+            }
             Request::Open { known_revision } => {
                 self.open_committed_document(&mut slot, *known_revision, None, prepared)
             }
@@ -729,14 +738,19 @@ impl CapnpChannelHandle {
         let Some(service) = self.state.services.committed_documents.clone() else {
             return Ok(Reply::Unavailable);
         };
-        let reading = Reading {
-            context: self.document_read_context()?,
-            service,
-            budget: &self.state.committed_read_budget,
-            ids: &self.state.committed_read_id,
-            prepared,
-        };
-        let (reply, capture) = open_read(slot, reading, known_revision, held)?;
+        let opened = self.document_read_context().and_then(|context| {
+            let reading = Reading {
+                context,
+                service,
+                budget: &self.state.committed_read_budget,
+                ids: &self.state.committed_read_id,
+                prepared,
+            };
+            open_read(slot, reading, known_revision, held)
+        });
+        // A refusal is final: a read refused while it waited in the byte
+        // budget's queue gives up its place, so reads behind it are served.
+        let (reply, capture) = opened.inspect_err(|_| slot.queued = None)?;
         if let Some(id) = capture {
             self.arm_capture_deadline(id);
         }
@@ -781,7 +795,10 @@ fn open_read(
     // refused, never queued. Then capacity: a read that must wait its turn
     // has done nothing yet, and a record prepared elsewhere for it is kept
     // for its next Open.
-    context.revalidate()?;
+    if let Err(refused) = context.revalidate() {
+        slot.queued = None;
+        return Err(refused);
+    }
     let Some(reservation) = slot.admit(budget) else {
         if let Some(prepared) = prepared {
             slot.prepared = Some(prepared);
@@ -1003,14 +1020,26 @@ impl CapnpChannelHandle {
             handle: &self,
             generation,
         };
+        let watch = {
+            let wake = Arc::clone(&wake);
+            tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())
+        };
         if let Some((granted, turn)) = turn {
             // A read waiting in the budget's queue: what changes its Open's
-            // answer is its turn coming, announced by the queue itself.
+            // answer is its turn coming, announced by the queue itself, or
+            // its custody or admission ending, announced as any policy
+            // change is. Either way its next Open decides.
             loop {
                 if !self.holds_wait(generation) {
                     return Err("committed read wait was replaced".into());
                 }
-                if granted.borrow().is_some() {
+                let _ = watch.arm();
+                if granted.borrow().is_some()
+                    || self
+                        .document_read_context()
+                        .and_then(|context| context.revalidate())
+                        .is_err()
+                {
                     return Ok(Reply::Stale);
                 }
                 tokio::select! {
@@ -1019,10 +1048,6 @@ impl CapnpChannelHandle {
                 }
             }
         }
-        let watch = {
-            let wake = Arc::clone(&wake);
-            tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())
-        };
         hold_until_stale(
             &wake,
             || {
