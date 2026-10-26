@@ -648,7 +648,7 @@ pub(super) async fn handle_delta(
         tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
         return Ok(None);
     }
-    if desktop_refusal(&ws, peer.device_public_key, &env)
+    if layout_refusal(&ws, peer.device_public_key, &env)
         .await
         .is_some()
     {
@@ -703,16 +703,16 @@ pub(super) async fn tell_governor(
 }
 
 /// Why the room refuses `env`, `author`'s change, when it writes the room's
-/// shared layout: its topology or its shared desktop
+/// layout: its topology or its layout document
 /// ([`crate::rooms::Rooms::decide_layout_write`]); `None` for any other
 /// change, and in a room this relay does not govern.
-pub(super) async fn desktop_refusal(
+pub(super) async fn layout_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     env: &Envelope,
 ) -> Option<String> {
     let body = governor_notice(env)?;
-    if !crate::rooms::writes_desktop(&body) && !writes_topology(&body) {
+    if !crate::rooms::writes_layout(&body) && !writes_topology(&body) {
         return None;
     }
     let authority = ws.lock().await.room_authority.clone()?;
@@ -802,7 +802,7 @@ pub(super) async fn handle_delta_prefix(
         trace_native_publication("server_authorized", envelope, None);
     }
     for envelope in &envelopes {
-        if desktop_refusal(&workspace, peer.device_public_key, envelope)
+        if layout_refusal(&workspace, peer.device_public_key, envelope)
             .await
             .is_some()
         {

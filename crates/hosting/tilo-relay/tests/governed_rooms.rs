@@ -1136,8 +1136,8 @@ mod app_records;
 #[path = "governed_rooms/sealed_records.rs"]
 mod sealed_records;
 
-#[path = "governed_rooms/shared_desktop.rs"]
-mod shared_desktop;
+#[path = "governed_rooms/layout.rs"]
+mod layout;
 
 #[path = "governed_rooms/revocations.rs"]
 mod revocations;

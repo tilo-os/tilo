@@ -29,9 +29,9 @@ pub(crate) struct View<'a> {
     pub beside: Option<&'a str>,
 }
 
-/// The change that puts `view` on the shared `desktop`, written by
-/// `author`; `None` when a tab already shows the record, or the room has no
-/// shared desktop.
+/// The change that puts `view` on the room's layout `desktop`, written by
+/// `author`; `None` when a tab already shows the record, or the room keeps
+/// no layout this build reads.
 pub(crate) fn place_view(desktop: &AutoCommit, author: &str, view: &View<'_>) -> Option<Vec<u8>> {
     let mut doc = desktop.clone();
     let mut layout = room_layout::read(&doc, None)?;
