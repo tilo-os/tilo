@@ -987,9 +987,15 @@ pub trait ContinuationServices: Send + Sync {
         message: Vec<u8>,
     ) -> Result<(), String>;
 }
-/// Encoded bytes one application's search index change may take: the bound
-/// `ui::search::index_publication::MAX_DELTA_BYTES` publishers chunk to.
-pub const MAX_SEARCH_INDEX_DELTA_BYTES: usize = 512 * 1024;
+/// Whether a search index publication of `bytes` may enter the session: no
+/// more than the delta a publisher chunks to
+/// ([`runtime_collab::search_index::MAX_DELTA_BYTES`]), so a publication the
+/// protocol produced is never refused for its size. The host that keeps the
+/// entries decodes and applies it; this door only bounds it.
+#[must_use]
+pub(crate) fn search_index_delta_fits(bytes: usize) -> bool {
+    bytes <= runtime_collab::search_index::MAX_DELTA_BYTES
+}
 
 /// The session's persistent search index of applications' content. An app
 /// publishes changes to its entries over its certified route; the index
@@ -998,8 +1004,9 @@ pub const MAX_SEARCH_INDEX_DELTA_BYTES: usize = 512 * 1024;
 pub trait SearchIndexServices: Send + Sync {
     /// Apply one change to the entries `app` published in `room` from its
     /// record `record`. `delta` is an encoded
-    /// `ui::search::index_publication::IndexDelta`, at most
-    /// [`MAX_SEARCH_INDEX_DELTA_BYTES`]; the host decodes and bounds it.
+    /// [`runtime_collab::search_index::IndexDelta`], at most
+    /// [`runtime_collab::search_index::MAX_DELTA_BYTES`]; the host decodes
+    /// and bounds it.
     ///
     /// # Errors
     ///
@@ -1717,4 +1724,84 @@ pub struct HostServices {
     /// reaches a room, and the broker refuses it rather than let a share
     /// promise access no grant backs.
     pub room_nodes: Option<Arc<dyn RoomNodeActions>>,
+}
+
+#[cfg(test)]
+mod search_index_publication_tests {
+    use super::search_index_delta_fits;
+    use runtime_collab::search_index::{
+        IndexDelta, IndexEntry, IndexState, MAX_DELTA_BYTES, MAX_TEXT_BYTES, Publisher,
+    };
+
+    fn entry(at: usize, text: &str) -> IndexEntry {
+        IndexEntry {
+            key: format!("item-{at}"),
+            resource: format!("item-{at}"),
+            action: None,
+            title: text.to_owned(),
+            subtitle: Some(text.to_owned()),
+            group: None,
+            icon: None,
+            boost: 0,
+            fields: Vec::new(),
+            secret: false,
+        }
+    }
+
+    /// The delta vocabulary's encoded bytes at `bytes` long, still valid JSON:
+    /// a delta whose only reason to be refused is its length.
+    fn padded_delta(bytes: usize) -> Vec<u8> {
+        let mut encoded = IndexDelta::default().encode().expect("a delta encodes");
+        encoded.resize(bytes, b' ');
+        encoded
+    }
+
+    #[test]
+    fn every_delta_the_publisher_chunks_is_one_the_door_admits() {
+        let mut publisher = Publisher::default();
+        let text = "x".repeat(MAX_TEXT_BYTES);
+        let entries: Vec<IndexEntry> = (0..2_000).map(|at| entry(at, text.as_str())).collect();
+        let deltas = publisher.publish(
+            IndexState {
+                generation: 1,
+                secrets_unlocked: None,
+            },
+            entries,
+        );
+        assert!(
+            deltas.len() > 1,
+            "the fixture must cross in several deltas to prove chunking"
+        );
+        assert!(deltas[0].reset, "the first delta replaces the slot");
+        for delta in &deltas {
+            let bytes = delta.encode().expect("a delta encodes");
+            assert!(
+                search_index_delta_fits(bytes.len()),
+                "a publication the publisher produced is never refused for its size"
+            );
+            assert_eq!(
+                IndexDelta::decode(&bytes).expect("the host decodes it"),
+                *delta,
+                "the door's bound leaves every chunk readable whole"
+            );
+        }
+    }
+
+    #[test]
+    fn the_door_admits_exactly_the_bytes_the_delta_vocabulary_decodes() {
+        assert!(search_index_delta_fits(MAX_DELTA_BYTES));
+        assert!(
+            IndexDelta::decode(&padded_delta(MAX_DELTA_BYTES)).is_ok(),
+            "a delta at the shared bound is admitted and decodable"
+        );
+        let over = MAX_DELTA_BYTES.saturating_add(1);
+        assert!(
+            !search_index_delta_fits(over),
+            "one byte over the shared bound never reaches the host"
+        );
+        assert!(
+            IndexDelta::decode(&padded_delta(over)).is_err(),
+            "the decoder holds the same bound, not a looser one"
+        );
+    }
 }

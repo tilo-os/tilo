@@ -1,7 +1,22 @@
 //! Host-local invocation custody. No wire caller can manufacture these checks.
+//!
+//! The contracts a host and a worker compare about one delivered invocation
+//! (the request, the admitted declaration and the opaque lease) are the
+//! broker protocol's (`runtime_collab::invocation_custody`), which this
+//! module names for the toolkit. What stays here is the toolkit's own
+//! custody: the scopes a resolution and its effects run in, the record loans
+//! behind them, and the authorization a document mutation carries.
 
 pub use runtime_collab::approved_checks::{
     Receipt as ApprovedCheckReceipt, ReportObservation as ApprovedCheckReportObservation,
+};
+/// The host's original invocation custody as the broker protocol defines
+/// it: what a host promises a worker about one delivered invocation, and the
+/// worker's check that the delivery is the one the host retained. Defined in
+/// `runtime_collab::invocation_custody`, consumed here.
+pub use runtime_collab::invocation_custody::{
+    PublishedInvocationAuthorizer, PublishedInvocationLease, PublishedInvocationRequest,
+    PublishedInvocationSpec,
 };
 use tilo_sort::CompactSort as _;
 
@@ -132,33 +147,6 @@ pub(crate) fn reported_check_work(
             }
         })
     }))
-}
-
-/// Inert delivered inputs. Only the registered host can associate these with
-/// an original admitted caller, contract and exact worker connection.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PublishedInvocationRequest {
-    pub wire_id: u64,
-    pub invocation: tilo_actions::InvocationId,
-    pub address: tilo_actions::ActionAddress,
-    pub argument: Option<String>,
-    pub actor: String,
-    /// Whose view this invocation resolves against. Set only by the host that
-    /// admitted `actor` (for an agent task, derived from the admitted task),
-    /// never taken from a caller's envelope. It routes to view state and is
-    /// never authority. Part of the exact request both ends compare.
-    pub participant: Option<tilo_actions::ParticipantId>,
-}
-impl PublishedInvocationRequest {
-    /// The invoker this request resolves for: the admitted actor plus the
-    /// host-set participant.
-    pub fn invoker(&self) -> tilo_actions::ActionInvoker {
-        let invoker = tilo_actions::ActionInvoker::actor(self.actor.clone());
-        match &self.participant {
-            Some(participant) => invoker.with_participant(participant.clone()),
-            None => invoker,
-        }
-    }
 }
 
 thread_local! {
@@ -387,97 +375,6 @@ pub fn view_operation_permitted(
                 .is_some_and(|invoker| invoker.actor == actor && invoker.participant.is_some()))
 }
 
-/// Inert declaration retained by the actual host at original admission. This
-/// is not authority, and is never decoded from a caller's wire request.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PublishedInvocationSpec {
-    pub kind: tilo_actions::OperationKind,
-    pub contract: tilo_actions::ActionContract,
-    pub params: Vec<tilo_actions::ActionParam>,
-    pub input: tilo_actions::InputSpec,
-    pub directory_revision: Option<String>,
-}
-
-/// An opaque check minted by the actual host for this exact invocation.
-/// Hosts must retain original caller authority and resample their registered
-/// policy time on every check. A positive result is never a reusable decision.
-#[derive(Clone)]
-pub struct PublishedInvocationLease {
-    request: PublishedInvocationRequest,
-    route: crate::collaboration::RouteSpec,
-    check: std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-    owner_token: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
-    dispatch_spec: Option<PublishedInvocationSpec>,
-}
-impl PublishedInvocationLease {
-    pub fn new(
-        request: PublishedInvocationRequest,
-        route: crate::collaboration::RouteSpec,
-        check: std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-    ) -> Self {
-        Self {
-            request,
-            route,
-            check,
-            owner_token: None,
-            dispatch_spec: None,
-        }
-    }
-    /// Attach once from the host's immutable original offered declaration.
-    /// The worker separately compares its current resolved handler contract.
-    pub fn with_dispatch_spec(mut self, spec: PublishedInvocationSpec) -> Result<Self, String> {
-        if self.dispatch_spec.is_some() {
-            return Err("original invocation dispatch spec cannot be replaced".into());
-        }
-        self.dispatch_spec = Some(spec);
-        Ok(self)
-    }
-    /// Attach the concrete host's privately constructed immutable original
-    /// invocation facts. Presence is not authorization: the final owner must
-    /// validate its own private type against already-held current authority.
-    pub fn with_owner_token(
-        mut self,
-        token: std::sync::Arc<dyn std::any::Any + Send + Sync>,
-    ) -> Result<Self, String> {
-        if self.owner_token.is_some() {
-            return Err("original invocation owner token cannot be replaced".into());
-        }
-        self.owner_token = Some(token);
-        Ok(self)
-    }
-    pub fn check(&self) -> Result<(), String> {
-        (self.check)()
-    }
-    pub(crate) fn dispatch_spec(&self) -> Result<&PublishedInvocationSpec, String> {
-        self.dispatch_spec.as_ref().ok_or_else(|| {
-            "required invocation has no original admitted dispatch specification".into()
-        })
-    }
-    pub(crate) fn matches(&self, request: &PublishedInvocationRequest) -> bool {
-        self.request == *request
-    }
-    pub(crate) fn same_invocation(&self, other: &Self) -> bool {
-        self.request == other.request
-            && self.route == other.route
-            && self.dispatch_spec == other.dispatch_spec
-            && std::sync::Arc::ptr_eq(&self.check, &other.check)
-            && match (&self.owner_token, &other.owner_token) {
-                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
-    }
-}
-impl std::fmt::Debug for PublishedInvocationLease {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PublishedInvocationLease(..)")
-    }
-}
-
-pub type PublishedInvocationAuthorizer = std::sync::Arc<
-    dyn Fn(&PublishedInvocationRequest) -> Result<PublishedInvocationLease, String> + Send + Sync,
->;
-
 #[derive(Default)]
 pub(crate) struct PublishedInvocationRuntime {
     pub(crate) required: bool,
@@ -588,10 +485,10 @@ impl ResourceInvocationScope {
         lease: PublishedInvocationLease,
     ) -> Result<Self, String> {
         owner.validate().map_err(|error| error.to_string())?;
-        if lease.owner_token.is_none() {
+        if lease.owner_token().is_none() {
             return Err("required invocation has no concrete final-owner custody token".into());
         }
-        if owner.broker_route().as_ref() != Some(&lease.route) {
+        if owner.broker_route().as_ref() != Some(lease.route()) {
             return Err("invocation belongs to a different canonical record route".into());
         }
         let (store, checkout) = owner.store_checkout();
@@ -601,7 +498,7 @@ impl ResourceInvocationScope {
         let provenance = store
             .invocation_provenance(&checkout.id)
             .map_err(|error| error.to_string())?;
-        if provenance.borrow().route.as_ref() != Some(&lease.route) {
+        if provenance.borrow().route.as_ref() != Some(lease.route()) {
             return Err(
                 "canonical invocation provenance was not registered before construction".into(),
             );
@@ -658,7 +555,7 @@ impl ResourceInvocationScope {
         actor: &str,
         document: &AutoCommit,
     ) {
-        let request = &self.lease.request;
+        let request = self.lease.request();
         let valid = self.locus_target.as_ref() == Some(&target.address)
             && self
                 .owner
@@ -692,8 +589,8 @@ impl ResourceInvocationScope {
             target.address.address.resource.as_str(),
             target.address.address.action.as_str(),
             target.binding.checkout.id.as_str(),
-            self.lease.route.app_id.as_str(),
-            self.lease.route.record.as_deref().unwrap_or(""),
+            self.lease.route().app_id.as_str(),
+            self.lease.route().record.as_deref().unwrap_or(""),
         ];
         let bytes = fields
             .iter()
@@ -716,7 +613,7 @@ impl ResourceInvocationScope {
                 target: target.address.clone(),
                 owner_lifetime: target.binding.lifetime_id,
                 checkout: target.binding.checkout.id.clone(),
-                route: self.lease.route.clone(),
+                route: self.lease.route().clone(),
                 heads,
             }));
     }
@@ -770,7 +667,7 @@ impl ResourceInvocationScope {
     }
 
     pub fn invocation(&self) -> tilo_actions::InvocationId {
-        self.lease.request.invocation
+        self.lease.request().invocation
     }
 
     /// Submit only the exact operation retained by this original invocation.
@@ -782,7 +679,7 @@ impl ResourceInvocationScope {
         operation: registry_types::ExternalModerationOperation,
     ) -> Result<ExternalModerationFuture, String> {
         self.check()?;
-        let request = &self.lease.request;
+        let request = self.lease.request();
         let argument = request
             .argument
             .as_deref()
@@ -830,7 +727,7 @@ impl ResourceInvocationScope {
         paths: Vec<String>,
     ) -> Result<Option<WriteAttributionReceipt>, String> {
         self.check()?;
-        if !self.lease.request.actor.starts_with("agent:") {
+        if !self.lease.request().actor.starts_with("agent:") {
             return Ok(None);
         }
         #[cfg(feature = "broker-transport")]
@@ -912,7 +809,7 @@ impl ResourceInvocationScope {
 
     /// The canonical record route construction verified against the owner.
     pub(crate) fn route(&self) -> &RouteSpec {
-        &self.lease.route
+        self.lease.route()
     }
 
     /// Irreversibly retire this job and all derived worker-effect custody.
@@ -1157,7 +1054,7 @@ impl InvocationProvenance {
         hashes: Vec<ChangeHash>,
         lease: &PublishedInvocationLease,
     ) -> Result<(), String> {
-        if self.route.as_ref() != Some(&lease.route) {
+        if self.route.as_ref() != Some(lease.route()) {
             return Err("contribution route mismatch".into());
         }
         for hash in hashes {
@@ -1287,7 +1184,7 @@ impl DocumentAuthorization {
     ) -> Result<(), String> {
         self.check_binding(route, mutation)?;
         for group in &self.0.contributions {
-            if &group.lease.route != route {
+            if group.lease.route() != route {
                 return Err("document contributor route mismatch".into());
             }
             group.lease.check()?;
@@ -1351,15 +1248,14 @@ impl DocumentAuthorization {
         ) -> Result<(), String>,
     ) -> Result<(), String> {
         for group in &self.0.contributions {
-            if group.lease.route != self.0.route {
+            if group.lease.route() != &self.0.route {
                 return Err("document contributor route mismatch".into());
             }
             let token = group
                 .lease
-                .owner_token
-                .as_ref()
+                .owner_token()
                 .ok_or("required contributor has no final-owner custody token")?;
-            validate(&group.lease.request, &group.lease.route, token.as_ref())?;
+            validate(group.lease.request(), group.lease.route(), token)?;
         }
         Ok(())
     }
@@ -1382,7 +1278,7 @@ impl DocumentAuthorization {
             bytes = bytes
                 .checked_add(std::mem::size_of::<Contribution>())?
                 .checked_add(group.hashes.len().checked_mul(64)?)?;
-            let request = &group.lease.request;
+            let request = group.lease.request();
             for len in [
                 request.address.resource.capacity(),
                 request.address.action.capacity(),

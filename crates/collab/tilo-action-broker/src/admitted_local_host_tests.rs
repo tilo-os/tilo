@@ -65,13 +65,13 @@ async fn local_host_lease(
     rig: &Rig,
     caller: &tilo_actions::remote::Caller,
     invocation: tilo_actions::InvocationId,
-) -> ui::invocation_scope::PublishedInvocationLease {
+) -> runtime_collab::invocation_custody::PublishedInvocationLease {
     let delivered =
         tilo_test_env::within("the admitted delivery", rig.stream.as_ref().unwrap().read())
             .await
             .unwrap();
     assert_eq!(delivered.invocation_uuid, *invocation.0.as_bytes());
-    let request = ui::invocation_scope::PublishedInvocationRequest {
+    let request = runtime_collab::invocation_custody::PublishedInvocationRequest {
         wire_id: delivered.id,
         invocation,
         address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),

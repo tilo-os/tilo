@@ -52,7 +52,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             .unwrap();
         let delivered = invocations.read().await.unwrap();
         assert_eq!(delivered.id, id);
-        let request = ui::invocation_scope::PublishedInvocationRequest {
+        let request = runtime_collab::invocation_custody::PublishedInvocationRequest {
             wire_id: id,
             invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
                 delivered.invocation_uuid,
@@ -228,7 +228,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             .unwrap();
         let delivered = eager_invocations.read().await.unwrap();
         assert_eq!(delivered.id, eager_id);
-        let eager_request = ui::invocation_scope::PublishedInvocationRequest {
+        let eager_request = runtime_collab::invocation_custody::PublishedInvocationRequest {
             wire_id: eager_id,
             invocation: tilo_actions::InvocationId(uuid::Uuid::from_bytes(
                 delivered.invocation_uuid,

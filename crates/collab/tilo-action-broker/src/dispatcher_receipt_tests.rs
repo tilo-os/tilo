@@ -211,14 +211,16 @@ async fn nondurable_authenticated_read_dispatch_has_private_signed_admission() {
             assert_eq!(delivered.id, wire);
             let invocation =
                 tilo_actions::InvocationId(uuid::Uuid::from_bytes(delivered.invocation_uuid));
-            let lease = (rig.authorize)(&ui::invocation_scope::PublishedInvocationRequest {
-                wire_id: wire,
-                invocation,
-                address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
-                argument: delivered.argument,
-                actor: delivered.actor,
-                participant: None,
-            })
+            let lease = (rig.authorize)(
+                &runtime_collab::invocation_custody::PublishedInvocationRequest {
+                    wire_id: wire,
+                    invocation,
+                    address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
+                    argument: delivered.argument,
+                    actor: delivered.actor,
+                    participant: None,
+                },
+            )
             .expect("real worker accepts the dispatcher's original custody");
             lease.check().unwrap();
             let record = receipt_record(&rig, wire);
@@ -382,14 +384,16 @@ async fn dispatch_receipt_read(rig: &Rig) -> (u64, DurableInvocation) {
     let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
     assert_eq!(delivered.id, wire);
     let invocation = tilo_actions::InvocationId(uuid::Uuid::from_bytes(delivered.invocation_uuid));
-    let lease = (rig.authorize)(&ui::invocation_scope::PublishedInvocationRequest {
-        wire_id: wire,
-        invocation,
-        address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
-        argument: delivered.argument,
-        actor: delivered.actor,
-        participant: None,
-    })
+    let lease = (rig.authorize)(
+        &runtime_collab::invocation_custody::PublishedInvocationRequest {
+            wire_id: wire,
+            invocation,
+            address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
+            argument: delivered.argument,
+            actor: delivered.actor,
+            participant: None,
+        },
+    )
     .unwrap();
     lease.check().unwrap();
     (wire, receipt_record(rig, wire))

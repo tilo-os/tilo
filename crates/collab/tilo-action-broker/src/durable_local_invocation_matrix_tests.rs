@@ -132,7 +132,7 @@ mod durable_local_matrix {
         worker: Connection,
         stream: Option<runtime_collab::InvocationStream>,
         binding: runtime_collab::PublishedInvocationBinding,
-        authorize: ui::invocation_scope::PublishedInvocationAuthorizer,
+        authorize: runtime_collab::invocation_custody::PublishedInvocationAuthorizer,
         bridge_task: tokio::task::JoinHandle<()>,
     }
     impl Rig {
@@ -272,7 +272,7 @@ mod durable_local_matrix {
         async fn delivered_effect(&self, env: &Environment, id: tilo_actions::InvocationId) -> u64 {
             let delivered = self.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.invocation_uuid, *id.0.as_bytes());
-            let request = ui::invocation_scope::PublishedInvocationRequest {
+            let request = runtime_collab::invocation_custody::PublishedInvocationRequest {
                 wire_id: delivered.id,
                 invocation: id,
                 address: tilo_actions::ActionAddress {
@@ -350,7 +350,7 @@ mod durable_local_matrix {
             assert_eq!(first.invocation,*invocation.0.as_bytes());assert_eq!(first.host,binding.host);
             let accepted=first.result.unwrap();assert!(matches!(serde_json::from_str::<tilo_actions::InvocationUpdate>(&accepted.update_json).unwrap(),tilo_actions::InvocationUpdate::Accepted{invocation:id} if id==invocation));
             let delivered=stream.read().await.unwrap();assert_eq!(delivered.id,accepted.id);assert_eq!(delivered.invocation_uuid,*invocation.0.as_bytes());
-            let request=ui::invocation_scope::PublishedInvocationRequest{wire_id:delivered.id,invocation,address:tilo_actions::ActionAddress{resource:delivered.resource.clone(),action:delivered.action.clone()},argument:delivered.argument.clone(),actor:delivered.actor.clone(),participant:None};
+            let request=runtime_collab::invocation_custody::PublishedInvocationRequest{wire_id:delivered.id,invocation,address:tilo_actions::ActionAddress{resource:delivered.resource.clone(),action:delivered.action.clone()},argument:delivered.argument.clone(),actor:delivered.actor.clone(),participant:None};
             let lease=authorize(&request).unwrap();lease.check().unwrap();
             let cancelled=handle.cancel_durable_published_invocation(&binding.host,invocation.0.as_bytes()).await.unwrap();assert!(cancelled.result.as_ref().unwrap().cancellation_requested);
             assert_eq!(cancelled,handle.cancel_durable_published_invocation(&binding.host,invocation.0.as_bytes()).await.unwrap());
@@ -480,7 +480,7 @@ mod durable_local_matrix {
                 );
                 let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
                 assert_eq!(delivered.actor, "agent:scribe");
-                let request = ui::invocation_scope::PublishedInvocationRequest {
+                let request = runtime_collab::invocation_custody::PublishedInvocationRequest {
                     wire_id: delivered.id,
                     invocation,
                     address: tilo_actions::ActionAddress {
@@ -1123,7 +1123,7 @@ mod durable_local_matrix {
                     .await
                     .unwrap();
                 let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-                let request = ui::invocation_scope::PublishedInvocationRequest {
+                let request = runtime_collab::invocation_custody::PublishedInvocationRequest {
                     wire_id: delivered.id,
                     invocation,
                     address: tilo_actions::ActionAddress {
@@ -1221,7 +1221,7 @@ mod durable_local_matrix {
                 .await
                 .expect("the broker admits the queued original caller");
                 let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
-                let request = ui::invocation_scope::PublishedInvocationRequest {
+                let request = runtime_collab::invocation_custody::PublishedInvocationRequest {
                     wire_id: delivered.id,
                     invocation,
                     address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
@@ -1241,6 +1241,162 @@ mod durable_local_matrix {
                 assert!(
                     (rig.authorize)(&request).is_err(),
                     "same delivered request cannot remint custody"
+                );
+                rig.stop().await;
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn delivered_custody_names_one_exact_resource_action_and_caller() {
+        use runtime_collab::invocation_custody::PublishedInvocationRequest;
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let env = Environment::new();
+                let rig = Rig::new(&env).await;
+                let descriptor = directory_state("original-r1")
+                    .borrow()
+                    .row()
+                    .descriptor
+                    .unwrap();
+                rig.worker
+                    .handle
+                    .publish_actions(&env.route.app_id, &[descriptor])
+                    .await
+                    .unwrap();
+                let admitted = rig
+                    .state
+                    .host_workers
+                    .lock()
+                    .unwrap()
+                    .only(903)
+                    .unwrap()
+                    .clone();
+                let caller = admitted.caller(&env.route.cluster_id).in_new_execution();
+                let origin =
+                    crate::collab_broker_capnp::published_invocation::InvocationCaller::Local {
+                        route: env.route.clone(),
+                        admitted: Box::new(admitted),
+                        time: rig.state.registered_policy_time().unwrap(),
+                    };
+                let invocation = tilo_actions::InvocationId::new();
+                let request = tilo_actions::remote::InvokeRequest {
+                    invocation,
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: "903".into(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    on_behalf_of: None,
+                    wait_ms: None,
+                    appearance: None,
+                };
+                local_host_answer(rig.state.action_invoke_with_origin(
+                    &caller,
+                    None,
+                    None,
+                    Some(&origin),
+                    &request,
+                ))
+                .await
+                .expect("the broker admits the queued original caller");
+                let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+                let original = PublishedInvocationRequest {
+                    wire_id: delivered.id,
+                    invocation,
+                    address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
+                    argument: delivered.argument,
+                    actor: delivered.actor,
+                    participant: Some(tilo_actions::ParticipantId::for_execution(
+                        caller.execution_id().unwrap(),
+                    )),
+                };
+                let lease = (rig.authorize)(&original).expect("the actual worker mints custody");
+                lease.check().unwrap();
+                assert!(lease.matches(&original), "the lease names what it admitted");
+                assert!(
+                    lease.dispatch_spec().is_ok(),
+                    "the host's admitted declaration travels with the lease"
+                );
+                for (what, changed) in [
+                    (
+                        "wire id",
+                        PublishedInvocationRequest {
+                            wire_id: original.wire_id.saturating_add(1),
+                            ..original.clone()
+                        },
+                    ),
+                    (
+                        "invocation",
+                        PublishedInvocationRequest {
+                            invocation: tilo_actions::InvocationId::new(),
+                            ..original.clone()
+                        },
+                    ),
+                    (
+                        "resource",
+                        PublishedInvocationRequest {
+                            address: tilo_actions::ActionAddress::new(
+                                "workspace:other",
+                                original.address.action.clone(),
+                            ),
+                            ..original.clone()
+                        },
+                    ),
+                    (
+                        "action",
+                        PublishedInvocationRequest {
+                            address: tilo_actions::ActionAddress::new(
+                                original.address.resource.clone(),
+                                "close",
+                            ),
+                            ..original.clone()
+                        },
+                    ),
+                    (
+                        "argument",
+                        PublishedInvocationRequest {
+                            argument: Some(r#"{"by":1}"#.into()),
+                            ..original.clone()
+                        },
+                    ),
+                    (
+                        "actor",
+                        PublishedInvocationRequest {
+                            actor: "agent:borrowed".into(),
+                            ..original.clone()
+                        },
+                    ),
+                    (
+                        "participant",
+                        PublishedInvocationRequest {
+                            participant: Some(tilo_actions::ParticipantId::for_execution(
+                                uuid::Uuid::new_v4(),
+                            )),
+                            ..original.clone()
+                        },
+                    ),
+                ] {
+                    assert!(
+                        !lease.matches(&changed),
+                        "a changed {what} must not read as the original delivery"
+                    );
+                    assert!(
+                        (rig.authorize)(&changed).is_err(),
+                        "custody for a changed {what} is never minted"
+                    );
+                }
+                caller.retire_execution();
+                assert!(
+                    lease.check().is_err(),
+                    "custody of the exact delivery still ends with its execution"
+                );
+                assert!(
+                    (rig.authorize)(&original).is_err(),
+                    "custody is never minted past its original execution"
                 );
                 rig.stop().await;
             })

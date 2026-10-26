@@ -212,7 +212,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             tokio::runtime::Handle::current().block_on(local_host_answer(host.invoke(&caller, request.clone())))
                 .unwrap();
             let wire_id = facade.state().remote_job(&caller, &request.invocation).unwrap();
-            let delivered = ui::invocation_scope::PublishedInvocationRequest {
+            let delivered = runtime_collab::invocation_custody::PublishedInvocationRequest {
                 wire_id, invocation: request.invocation, address: request.target.address.clone(), argument: None,
                 actor: principal.clone(), participant: Some(tilo_actions::ParticipantId::for_execution(caller.execution_id().unwrap())),
             };
