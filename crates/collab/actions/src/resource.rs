@@ -1658,6 +1658,19 @@ impl ActionSpec {
         self
     }
 
+    /// Fire at once when a person chooses the action, asking nothing, encoded per invocation
+    /// from its target: [`with_immediate`](Self::with_immediate) for a type shared by many
+    /// targets. For a typed action whose parameters are all optional, each with a meaning when
+    /// left out; a caller that passes arguments still binds them against its parameters. An
+    /// action with a required parameter keeps asking for it.
+    #[must_use]
+    pub fn with_immediate_per_target(mut self) -> Self {
+        if self.params().iter().all(|param| !param.required) {
+            self.type_mut().lane = Lane::Immediate(None);
+        }
+        self
+    }
+
     /// Opt one action into inert, provider-defined continuation evidence.
     #[must_use]
     pub fn with_continuation_identity(
