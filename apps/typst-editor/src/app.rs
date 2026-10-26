@@ -125,7 +125,9 @@ pub(crate) const SCROLL_DEMO: &str = "= Horizontal scroll\n\n#let note = \"This 
 /// pane shows at a time.
 #[derive(Clone, Copy, PartialEq)]
 struct Frame {
-    bar_h: f64,
+    /// The height of one control, which the Problems panel keeps as the
+    /// least worth opening for.
+    control_h: f64,
     status_h: f64,
     compact_w: f64,
 }
@@ -136,7 +138,7 @@ impl Frame {
     fn of(theme: &Theme, control_h: f64, status_line_h: f64) -> Self {
         let metrics = &theme.tokens.metrics;
         Self {
-            bar_h: control_h + 2.0 * f64::from(theme.tokens.spacing.s1),
+            control_h: control_h + 2.0 * f64::from(theme.tokens.spacing.s1),
             // The bar grows with the text, so its readouts are never clipped.
             status_h: ui::chrome::status_bar::height(theme)
                 .max(status_line_h + 2.0 * f64::from(theme.tokens.spacing.s2)),
@@ -200,6 +202,10 @@ pub struct TypstApp {
     /// doc access) for the caret readout and change detection. The editor body
     /// and its syntax highlighting live in the shared `SourceEditor` widget.
     source_cache: String,
+    /// The source last written to disk (or read from it) and the file it
+    /// belongs to. The source differing from it is unsaved work, which the
+    /// window's bar says in words beside the document's name.
+    saved: Option<(Id, String)>,
 
     // --- view state ---
     show_diagnostics: bool,
@@ -233,8 +239,6 @@ pub struct TypstApp {
     /// Screenshot-only: after the first render, break the source so the
     /// capture shows the stale-render banner over the last good pages.
     demo_stale: bool,
-    /// Screenshot-only: open the document list.
-    demo_documents: bool,
 
     // --- chrome ---
     chrome: Chrome,
@@ -252,7 +256,6 @@ pub struct TypstApp {
 
     // --- layout rects (filled by layout_in) ---
     rect: Rect,
-    bar_rect: Rect,
     editor_rect: Rect,
     preview_rect: Rect,
     diag_rect: Rect,
@@ -301,6 +304,7 @@ impl TypstApp {
             initialized: false,
             last_source: String::new(),
             source_cache: String::new(),
+            saved: None,
             show_diagnostics: false,
             err_count: 0,
             warn_count: 0,
@@ -314,7 +318,6 @@ impl TypstApp {
             demo_preview_pan: false,
             demo_preview_select: false,
             demo_stale: false,
-            demo_documents: false,
             chrome: Chrome::new(),
             frame: Frame::of(
                 &theme,
@@ -326,7 +329,6 @@ impl TypstApp {
             save_path: None,
             compile_feedback: false,
             rect: Rect::ZERO,
-            bar_rect: Rect::ZERO,
             editor_rect: Rect::ZERO,
             preview_rect: Rect::ZERO,
             diag_rect: Rect::ZERO,
@@ -403,6 +405,34 @@ impl TypstApp {
         self.dirty = true;
     }
 
+    /// Whether the document shown holds changes no one has written yet: the
+    /// source differs from what was last saved or read from disk, or a
+    /// document that never had a file has been typed into.
+    pub(crate) fn unsaved(&self) -> bool {
+        let Some(file) = self.current_file() else {
+            return false;
+        };
+        match (&self.saved, &self.current) {
+            (Some((saved_id, source)), Some(id)) if saved_id == id => source != &file.source,
+            _ => file.path.is_none() && !file.source.trim().is_empty(),
+        }
+    }
+
+    /// Say in the window's bar where the window is and what it holds, and
+    /// take back what the person did there.
+    fn declare_window_slots(&mut self) {
+        let name = self.current_name();
+        self.chrome.sync(
+            &name,
+            self.unsaved(),
+            self.err_count + self.warn_count,
+            self.show_diagnostics,
+            self.outline.visible(),
+            matches!(self.compact_view, CompactPane::Preview),
+        );
+        self.chrome.declare();
+    }
+
     /// The file shown, if the workspace has one.
     pub(crate) fn current_file(&self) -> Option<&crate::resource::TypstFile> {
         self.files.file(self.current.as_ref()?)
@@ -425,6 +455,13 @@ impl TypstApp {
     /// Show file `id`, with the caret at its start.
     fn open_file(&mut self, id: &Id) {
         self.current = Some(id.clone());
+        // A document that lives in a file is as its file has it; one that
+        // lives nowhere yet has nothing written to compare it with.
+        self.saved = self
+            .files
+            .file(id)
+            .filter(|file| file.path.is_some())
+            .map(|file| (id.clone(), file.source.clone()));
         self.follow_current();
         self.editor.reset_cursor();
         // Keep focus consistent with the visible pane in compact mode.
@@ -456,10 +493,7 @@ impl TypstApp {
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         match scenario {
             Some("preview") => self.compact_view = CompactPane::Preview,
-            Some("menu") => {
-                self.compact_view = CompactPane::Editor;
-                self.chrome.open_picker();
-            }
+            Some("menu") => self.compact_view = CompactPane::Editor,
             Some("problems" | "errors") => self.show_diagnostics = true,
             Some("scrolled") => {
                 self.editor.focused = true;
@@ -631,6 +665,9 @@ impl TypstApp {
                 // The file is where the document lives: saving it says
                 // nothing, and the window's save status ends a failure.
                 self.saves.saved();
+                if let Some(id) = self.current.clone() {
+                    self.saved = Some((id, file.source.clone()));
+                }
                 let path = path.to_string_lossy().into_owned();
                 if file.path.as_ref().map(|at| at.0.as_str()) != Some(path.as_str())
                     && let Some(id) = self.current.clone()
@@ -738,6 +775,13 @@ impl TypstApp {
     }
 
     fn open_typ_source(&mut self, name: String, path: Option<String>, src: String) {
+        // What was read is what the file holds: nothing is unsaved until it
+        // is typed into.
+        self.saved = self
+            .current
+            .clone()
+            .filter(|_| path.is_some())
+            .map(|id| (id, src.clone()));
         // Recovery belongs to the source being replaced, not the newly opened
         // document. Leave it intact when reading the new file fails.
         self.save_path = None;
@@ -1044,14 +1088,12 @@ impl TypstApp {
         self.rect = rect;
         let r = self.rect;
         let frame = self.frame;
-        // The band of controls on top and the status bar at the bottom each
-        // reserve their height, so nothing is painted under either.
-        self.bar_rect = Rect::new(r.x0, r.y0, r.x1, (r.y0 + frame.bar_h).min(r.y1));
-        let status_top = (r.y1 - frame.status_h).max(self.bar_rect.y1);
+        // The window bar holds the editor's controls and the status bar holds
+        // its readouts, so neither is drawn here: the panes have the window
+        // from its top edge to the status bar.
+        let status_top = (r.y1 - frame.status_h).max(r.y0);
         self.status_rect = Rect::new(r.x0, status_top, r.x1, r.y1);
-        let body = self
-            .outline
-            .layout(Rect::new(r.x0, self.bar_rect.y1, r.x1, status_top));
+        let body = self.outline.layout(Rect::new(r.x0, r.y0, r.x1, status_top));
         let content_w = body.width();
 
         // Derive the layout mode from the *current* width every pass, so a
@@ -1118,17 +1160,13 @@ impl TypstApp {
             self.demo_preview_select = false;
             self.preview.demo_select_fraction(0.0, 0.03);
         }
-        if self.demo_documents {
-            self.demo_documents = false;
-            self.chrome.open_picker();
-        }
     }
 
     /// Carve the Problems panel out of the bottom of `col` when it is open
     /// and there is room: as tall as its rows need, at most half the column.
     fn split_off_diagnostics(&self, col: Rect) -> (Rect, Rect) {
         let cap = (col.height() * 0.5).floor();
-        if !self.show_diagnostics || cap < 2.0 * self.frame.bar_h {
+        if !self.show_diagnostics || cap < 2.0 * self.frame.control_h {
             return (col, Rect::ZERO);
         }
         let wanted = self.diagnostics.preferred_height();
@@ -1151,7 +1189,7 @@ impl TypstApp {
             .1;
         let frame = Frame::of(
             theme,
-            Chrome::control_height(tr, theme),
+            crate::chrome::control_height(tr, theme),
             f64::from(status_line),
         );
         let text_k = f64::from(tr.text_scale()).max(f64::from(f32::EPSILON));
@@ -1168,18 +1206,6 @@ impl TypstApp {
             self.layout_in(self.rect);
         }
 
-        let name = self.current_name();
-        let names = [name.as_str()];
-        self.chrome.sync(
-            &names,
-            0,
-            self.err_count + self.warn_count,
-            self.show_diagnostics,
-            self.outline.visible(),
-            matches!(self.compact_view, CompactPane::Preview),
-        );
-        self.chrome
-            .place(self.bar_rect, self.compact, names.len(), tr, theme);
         let close = (self.show_diagnostics && self.diag_rect.height() > 1.0)
             .then(|| self.diagnostics.close_rect(theme));
         self.chrome.place_close(close);
@@ -1230,10 +1256,7 @@ pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
 }
 
 impl Widget for TypstApp {
-    ui::provides!(
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::widget::WindowHeader
-    );
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         for child in self.children_mut() {
@@ -1248,6 +1271,9 @@ impl Widget for TypstApp {
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         self.sync_workspace(doc, path);
+        // The bar's slots say what the sync just learned: the name, whether
+        // the source is unsaved, the problems, the open panels.
+        self.declare_window_slots();
         self.status.expire();
         self.status.publish(|text| {
             ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
@@ -1324,13 +1350,13 @@ impl Widget for TypstApp {
         // Measure the chrome in this frame's theme and text scale; a change
         // re-fits the panes now, so this very frame paints coherently.
         self.refresh_frame(tr, theme);
+        self.declare_window_slots();
 
         // The window ground is the framework's. The preview stands on the
         // inspector region; the editor on the ground itself.
         if self.preview_rect.area() > 0.0 {
             ui::surface::region(scene, t, self.preview_rect, Region::Inspector, theme);
         }
-        ui::widget::toolbar::paint_band(scene, t, theme, self.bar_rect);
         self.chrome.draw(scene, t, tr, theme, presence);
 
         if self.editor_rect.area() > 0.0 {
@@ -1581,15 +1607,6 @@ impl Widget for TypstApp {
 impl ui::widget::controls::ActionControls for TypstApp {
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         ui::widget::semantic_action_bindings(self.accessibility())
-    }
-}
-
-/// The bar is the window's header row: it holds the History control the
-/// host offers, and the window draws no History bar above the editor.
-impl ui::widget::WindowHeader for TypstApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        self.chrome.set_history(control);
-        self.dirty = true;
     }
 }
 
@@ -1937,12 +1954,6 @@ impl TypstApp {
     /// tracked by the most recent `CursorMoved`.
     fn handle_left_press(&mut self, modifiers: Modifiers, handled: &mut bool) {
         let p = self.mouse;
-        // The band of controls owns its clicks; the controls themselves took
-        // theirs before this point.
-        if self.bar_rect.contains(p) {
-            *handled = true;
-            return;
-        }
         if self.editor_rect.contains(p) {
             self.editor.focused = true;
             let text = self.source_cache.clone();

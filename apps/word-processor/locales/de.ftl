@@ -189,6 +189,7 @@ status-chars = { $chars } { $chars ->
         [one] Zeichen
        *[other] Zeichen
     }
+status-page = Seite { $page } von { $pages }
 a11y-zoom = Zoom
 line-spacing-single = Einfach
 line-spacing-double = Doppelt

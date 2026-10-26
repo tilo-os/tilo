@@ -42,6 +42,7 @@ pub mod app;
 pub mod canvas;
 pub mod draw;
 mod endpoint_editor;
+mod failure;
 pub mod geo;
 mod hand_laid;
 mod map_controls;

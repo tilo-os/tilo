@@ -969,6 +969,13 @@ fn run_parsed(
             } else if let Some(directory) = &args.responsive_matrix {
                 for (name, viewport) in RESPONSIVE_VIEWPORTS {
                     driver.resize_component_capture(viewport);
+                    // The frame is the window a person sees a moment after the
+                    // resize, not the first one it could draw: a scroll thumb
+                    // still fading out, or a page still drawn from the bitmap
+                    // of the width it had before, is a difference about the
+                    // capture rather than about the layout. Equal frames are
+                    // only evidence when both were taken the same moment in.
+                    driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
                     driver.render_png(&directory.join(format!("{}-{name}.png", spec.app_id)));
                 }
             }

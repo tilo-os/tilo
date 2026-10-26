@@ -814,7 +814,9 @@ impl WordProcessorWidget {
         let strip_x1 = x - gap;
         self.layout_chips = chips;
 
-        // Trailing: the zoom field, then the counts before it.
+        // Trailing: the zoom field, then the counts before it. A band with no
+        // room left for a count drops it — the zoom control stays, because a
+        // phone has no other way to zoom.
         let zoom_w = self.zoom_input.preferred_width(theme, tr);
         let zoom = Rect::new(
             bar.x1 - s3 - zoom_w,
@@ -873,6 +875,27 @@ impl WordProcessorWidget {
             }
         }
         let _ = left;
+    }
+
+    /// The page the caret stands on, of how many the document has.
+    pub(super) fn page_readout(&self) -> String {
+        t_args(
+            "status-page",
+            &[
+                arg("page", num::i64_of_usize(self.caret_page() + 1)),
+                arg("pages", num::i64_of_usize(self.pages.max(1))),
+            ],
+        )
+    }
+
+    /// The page index the caret stands on, from the last laid pass: the page
+    /// its block was laid onto.
+    pub(super) fn caret_page(&self) -> usize {
+        let caret = &self.inner.caret;
+        self.laid
+            .iter()
+            .find(|laid| laid.id == caret.block)
+            .map_or(0, |laid| laid.page)
     }
 
     /// The live value of the layout mode in use, or nothing at rest.
