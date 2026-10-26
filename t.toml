@@ -4169,6 +4169,30 @@ cache = false
 default = false
 on = ["stable", "dispatch"]
 
+# A development VM of this tree (tools/ci/os-vm.sh): os-dev-disk-x86_64's disk on a throwaway
+# overlay, booted in a micro-VM on a node with KVM, its serial console, SSH and display reached
+# through t (`t vm console|ssh|display`, `t vm extend`, `t vm stop`). Never part of CI: only
+# `t test os-vm-x86_64` or a dispatch starts one. `--input lifetime=SECS` sets how long it runs
+# before `t vm extend` (default an hour); the job's timeout bounds it.
+[[check]]
+name = "os-vm-x86_64"
+image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
+run = "bash tools/ci/os-vm.sh x86_64 /target/publish/os-dev-disk/x86_64/disk"
+inputs = ["tools/ci/os-vm.sh", "tools/ci/publish/lib.sh", "os/dev/vm.sh", "os/dev/_common.sh"]
+needs = ["os-dev-disk-x86_64"]
+git = true
+requires = ["arch=x86_64", "/dev/kvm"]
+isolation = "vm"
+requirement = { cores = 6, memory = "10GiB" }
+timeout_secs = 14400
+cache = false
+cost = "heavy"
+default = false
+on = ["dispatch"]
+
+[check.dispatch_inputs]
+lifetime = "3600"
+
 # One-password sign-in end to end (docs/security/sign-in.md §3, §4; tools/ci/signin-e2e.sh): this
 # commit's development installer medium installs an encrypted system in a KVM guest with a
 # software TPM, which then boots through first boot, migration at the greeter, the boot sign-in
