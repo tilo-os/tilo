@@ -482,7 +482,7 @@ impl Replica {
                 .map_err(|error| AppError::Merge(error.to_string()))?;
             // A record kept before the app changed its storage is brought up
             // to the app's version when its view opens, as in a window.
-            if ui::tilo_resource::evolution::stored_version(&doc) >= kind.version() {
+            if !kind.holds_or_older(&doc) {
                 kind.read(&doc)
                     .map_err(|error| AppError::Merge(error.to_string()))?;
             }
@@ -810,7 +810,7 @@ impl Replica {
     pub fn apply(&mut self, mutation: &DocumentMutation) -> Result<(), AppError> {
         if let DocumentMutation::Snapshot(bytes) = mutation {
             let holds = ui::tilo_resource::Doc::load(bytes)
-                .is_ok_and(|incoming| self.kind.holds(&incoming));
+                .is_ok_and(|incoming| self.kind.holds_or_older(&incoming));
             if !holds {
                 return Err(AppError::Merge("the document is not this record".into()));
             }
