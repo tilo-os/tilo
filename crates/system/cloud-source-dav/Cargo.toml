@@ -28,6 +28,7 @@ test-http = { version = "0.1.0", path = "../../dev/test-http", optional = true }
 fake-server = ["dep:test-http", "dep:base64"]
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 cloud-source = { path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
 cloud-source-dav = { path = ".", features = ["fake-server"] }

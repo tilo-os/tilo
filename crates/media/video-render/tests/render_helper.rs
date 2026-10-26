@@ -41,11 +41,10 @@ fn encoder_present() -> bool {
     if gstreamer::init().is_ok() && gstreamer::ElementFactory::find(AGENT_VIDEO_ENCODER).is_some() {
         return true;
     }
-    assert!(
-        std::env::var_os("TILO_REQUIRE_MEDIA").is_none(),
-        "{AGENT_VIDEO_ENCODER} is required (set GST_PLUGIN_PATH to its plugin directory)"
+    tilo_test_env::capability_unavailable(
+        tilo_test_env::Capability::Media,
+        format_args!("no {AGENT_VIDEO_ENCODER} (set GST_PLUGIN_PATH to its plugin directory)"),
     );
-    eprintln!("skipped: no {AGENT_VIDEO_ENCODER} (set GST_PLUGIN_PATH to its plugin directory)");
     false
 }
 

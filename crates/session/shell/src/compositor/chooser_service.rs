@@ -2160,11 +2160,15 @@ type = "gui"
         let at = session.socket.with_file_name("documents");
         let mounted = match tilo_documents::mount::mount(documents.clone(), &at) {
             Ok(mounted) => Some(mounted),
-            Err(error) if std::env::var_os("TILO_REQUIRE_FUSE").is_none() => {
-                eprintln!("FUSE is unavailable here ({error}); checking the documents table only");
+            Err(error) => {
+                tilo_test_env::capability_unavailable(
+                    tilo_test_env::Capability::Fuse,
+                    format_args!(
+                        "FUSE is unavailable here ({error}); checking the documents table only"
+                    ),
+                );
                 None
             }
-            Err(error) => panic!("TILO_REQUIRE_FUSE is set and mounting failed: {error}"),
         };
         Giving {
             session,

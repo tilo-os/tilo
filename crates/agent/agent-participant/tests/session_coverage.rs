@@ -1158,11 +1158,10 @@ async fn a_task_reports_the_content_its_steps_produced() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_task_s_video_still_is_drawn_by_the_hosts_render_service() {
     if !tilo_agent_participant::render::available() {
-        assert!(
-            std::env::var_os("TILO_REQUIRE_MEDIA").is_none(),
-            "the render helper is required"
+        tilo_test_env::capability_unavailable(
+            tilo_test_env::Capability::Media,
+            format_args!("no tilo-video-render beside the test or at $TILO_VIDEO_RENDER"),
         );
-        eprintln!("skipped: no tilo-video-render beside the test or at $TILO_VIDEO_RENDER");
         return;
     }
     let (root, _) = UserIdentity::generate("Ada", 1);
