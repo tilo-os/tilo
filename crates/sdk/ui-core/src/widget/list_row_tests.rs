@@ -123,6 +123,23 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
 }
 
 #[test]
+fn a_row_without_its_avatar_keeps_the_avatars_room() {
+    // A conversation with no messages yet has no last author to show; its text still lines up
+    // with that of the conversations that have one, at the same height.
+    let outer = Rect::new(0.0, 0.0, 400.0, 56.0);
+    let with = ListRowFace::new("Design")
+        .secondary("See you there")
+        .leading(RowLeading::Avatar(AvatarFace::new("Ada", "ada")));
+    let without = ListRowFace::new("Empty")
+        .secondary("No messages yet")
+        .leading(RowLeading::AvatarSpace);
+    let bare = ListRowFace::new("Empty").secondary("No messages yet");
+    assert!((geometry(&with, outer).text_x - geometry(&without, outer).text_x).abs() < 0.01);
+    assert!(geometry(&bare, outer).text_x < geometry(&without, outer).text_x);
+    assert!((face_height(&with, 1.0) - face_height(&without, 1.0)).abs() < 0.01);
+}
+
+#[test]
 fn text_sits_on_the_content_edge_and_the_lift_bleeds_past_it() {
     let theme = Theme::dark();
     let bleed = crate::chrome::row_bleed(&theme);
