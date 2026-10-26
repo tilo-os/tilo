@@ -2221,6 +2221,15 @@ impl RelayRoom {
 
     /// [`Self::granting`], Ana keeping the room's content in `content`.
     async fn granting_with(url: &str, apps: &[&str], content: tilo_content::ContentStore) -> Self {
+        Box::pin(Self::planned_by(endpoint_planner(url), apps, content)).await
+    }
+
+    /// [`Self::granting_with`], Ana planning with `planner`.
+    async fn planned_by(
+        planner: Box<dyn tilo_agent_participant::Planner>,
+        apps: &[&str],
+        content: tilo_content::ContentStore,
+    ) -> Self {
         let (ada, _) = UserIdentity::generate("Ada", 1);
         let host_device = enrol(&ada, "home-server", DeviceCapabilities::host());
         let state = tempfile::tempdir().unwrap();
@@ -2244,7 +2253,7 @@ impl RelayRoom {
             &ada,
             (&host, &host_device),
             apps,
-            (endpoint_planner(url), content),
+            (planner, content),
         )
         .await;
         let mut rae = planning_agent_labelled(
