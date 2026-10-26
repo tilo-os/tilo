@@ -205,6 +205,45 @@ pad.onpointerdown = e => {
 '''
 
 
+SCROLL = b'''<!doctype html><title>Long conditions</title>
+<style>p{margin:0 0 200px} #lazy{display:block;min-height:200px}
+.invoices{height:124px;overflow:auto} .invoices div{height:40px}</style>
+<h1>Conditions of carriage</h1>
+<button onclick="this.textContent = 'Terms shown'">Show terms</button>
+<p id="first">Condition 1. Tickets are not transferable.</p>
+<div style="height:1200px">space the page needs before it loads the rest</div>
+<section id="lazy"><p>Nothing here yet.</p></section>
+<div id="rows" role="region" aria-label="Invoices" class="invoices" tabindex="0"></div>
+<script>
+// A section that loads once the page is scrolled to it, as a lazy article
+// below the fold does.
+new IntersectionObserver(entries => {
+  for (const entry of entries) if (entry.isIntersecting && !document.getElementById('conditions'))
+    document.getElementById('lazy').insertAdjacentHTML('beforeend',
+      '<p id="conditions">Condition 14. Bicycles travel at the owner&rsquo;s risk.</p>');
+}).observe(document.getElementById('lazy'));
+// A virtualized table: rows are rendered only around what is scrolled to.
+const rows = document.getElementById('rows'), ROWS = 400, HEIGHT = 40;
+const spacer = document.createElement('div');
+spacer.style.height = ROWS * HEIGHT + 'px';
+spacer.style.position = 'relative';
+rows.append(spacer);
+function render() {
+  const start = Math.floor(rows.scrollTop / HEIGHT), end = Math.min(ROWS, start + 6);
+  spacer.innerHTML = '';
+  for (let i = start; i < end; i++) {
+    const row = document.createElement('div');
+    row.style.position = 'absolute';
+    row.style.top = i * HEIGHT + 'px';
+    row.textContent = 'Invoice ' + (i + 1) + (i === 59 ? ' (overdue)' : '');
+    spacer.append(row);
+  }
+}
+rows.onscroll = render;
+render();
+</script>'''
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
@@ -216,6 +255,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else FRAMED if path == '/framed' else WIDGET if path == '/widget' \
             else LATE if path == '/late' else WIDGET_LATE if path == '/widget-late' \
             else NESTED if path == '/nested' else OUTER if path == '/outer' \
+            else SCROLL if path == '/scroll' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -262,9 +302,27 @@ class PageActions(unittest.TestCase):
         return self.ok('outline')['outline']
 
     def ref(self, outline, pattern):
-        match = re.search(pattern + r'.*?\[ref=(d\d+e\d+)\]', outline)
-        self.assertIsNotNone(match, f'{pattern!r} not in outline:\n{outline}')
-        return match.group(1)
+        found = re.search(pattern + r'[^\n]*\[ref=(d\d+e\d+)\]', outline) or re.search(
+            re.escape(pattern) + r'(?:[^\n]*\n)*?[^\n]*\[ref=(d\d+e\d+)\]', outline)
+        self.assertIsNotNone(found, f'{pattern!r} not in outline:\n{outline}')
+        return found.group(1)
+
+    def _disabled(self, outline, pattern):
+        for line in outline.splitlines():
+            found = re.search(r'\[ref=(d\d+e\d+)\]', line) if re.search(pattern, line) else None
+            if found:
+                return found.group(1)
+        self.fail(f'{pattern!r} not in outline:\n{outline}')
+
+    def near(self, pattern):
+        # A block holding text is not focusable, so a text line carries no ref:
+        # what a caller scrolls to is the region around it.
+        lines = self.outline().splitlines()
+        index = [i for i, text in enumerate(lines) if re.search(pattern, text)]
+        self.assertTrue(index, f'{pattern!r} not in outline:\n' + '\n'.join(lines))
+        regions = [line for line in lines[:index[0] + 1] if re.search(r'\[ref=d\d+e\d+\]', line)]
+        self.assertTrue(regions, f'no region before {pattern!r} in outline:\n' + '\n'.join(lines))
+        return re.search(r'\[ref=(d\d+e\d+)\]', regions[-1]).group(1)
 
     def main_world(self, expression):
         self.h.send(op='scripts', scripts=['document.title=JSON.stringify({value:(' + expression + '),nonce:' + str(time.monotonic_ns()) + '})'])
@@ -705,6 +763,93 @@ class PageActions(unittest.TestCase):
             steps.append(dict(kind='up', element=pad, x=120, y=20 + line * 20))
         self.pointer(steps)
         self.assertIn('text "strokes 3"', self.outline(), 'each press and release is one stroke')
+
+    def test_scrolling_to_a_lazy_section_loads_it(self):
+        self.h.navigate(self.url + '/scroll')
+        self.assertNotIn('Condition 14', self.outline(), 'the section loads only once it is scrolled to')
+        # The wheel loads the section below the fold as a hand's scroll would:
+        # the section's observer runs when the turn puts it on screen, and the
+        # page it loads goes on to extend the page, which the wheel follows.
+        self.ok("scroll", by=1000)
+        self.assertIn('Condition 14', self.outline(), 'the wheel loaded the section it scrolled to')
+        self.assertTrue(self.main_world('scrollY > 0'), 'the page itself moved')
+
+    def test_scrolling_back_up_returns_to_the_top(self):
+        self.h.navigate(self.url + '/scroll')
+        self.ok('scroll', to='bottom')
+        self.assertTrue(self.main_world('scrollY > 0'))
+        self.ok('scroll', to='top')
+        self.assertEqual(self.main_world('scrollY'), 0)
+
+    def test_a_virtualized_table_renders_the_rows_scrolled_to(self):
+        self.h.navigate(self.url + '/scroll')
+        self.assertIn('Invoice 6', self.main_world("[...document.querySelectorAll('#rows div')].map(d => d.textContent).join(', ')"))
+        # Rows are rendered as the list is scrolled, and its own scroll
+        # listener renders the rows further on as the wheel reaches them.
+        invoices = self.ref(self.outline(), 'region "Invoices"')
+        self.ok('scroll', to='bottom')
+        scrolled = self.main_world('scrollY')
+        # The wheel turns over the list until Invoice 60 comes into view.
+        self.ok('scroll', element=invoices, by=2300)
+        self.assertIn('Invoice 60 (overdue)', self.outline(), 'the rows the wheel reached are rendered')
+        self.assertEqual(self.main_world('scrollY'), scrolled, 'the list scrolled, not the page')
+
+    def test_an_element_that_cannot_hear_a_scroll_is_refused(self):
+        self.h.navigate(self.url + '/scroll')
+        # The list's box is below the fold, so its own wheel cannot turn yet:
+        # the request says so instead of turning the page's wheel instead.
+        invoices = self.ref(self.outline(), 'region "Invoices"')
+        refused = self.page('scroll', element=invoices, by=400)
+        self.assertEqual((refused['ok'], refused['code']), (False, 'not_visible'), refused)
+        self.assertEqual(self.main_world("document.getElementById('rows').scrollTop"), 0)
+
+    def test_a_scroll_that_says_nothing_or_two_things_is_refused(self):
+        self.h.navigate(self.url + '/scroll')
+        # Where one scroll goes is said once, and what is outside the bounds a
+        # scroll may ask for is answered rather than done. A refusal answers in
+        # its turn, so the keys of a scroll are only the ones that make one:
+        # what is not refused here is a scroll the page itself turns down.
+        for fields in ({}, {'to': 'sideways'}, {'to': 'top', 'by': 100},
+                       {'into_view': 'd1e2', 'by': 100}, {'by': 20000}):
+            refused = self.page('scroll', **fields)
+            self.assertEqual((refused['ok'], refused['code']), (False, 'invalid_request'),
+                             (fields, refused))
+            self.assertEqual(self.main_world('scrollY'), 0, f'{fields} moved the page')
+        self.ok('scroll', by=200)
+        self.assertTrue(self.main_world('scrollY') > 0, 'a scroll after a refusal still runs')
+
+    def test_an_element_is_brought_into_view(self):
+        self.h.navigate(self.url + '/scroll')
+        # A row the page has rendered but the list clips is brought into view
+        # by the same wheel a person turns over it.
+        invoices = self.ref(self.outline(), 'region "Invoices"')
+        self.ok('scroll', to='bottom')
+        # The wheel turns over the list until Invoice 60 comes into view.
+        self.ok('scroll', element=invoices, by=2300)
+        later = self.near('Invoice 6[0-9]')
+        self.ok('scroll', into_view=later)
+        self.assertIn('Invoice 60 (overdue)', self.outline(), 'the wheel brought the row into view')
+
+    def test_a_scroll_past_a_focused_control_moves_the_page(self):
+        self.h.navigate(self.url + '/scroll')
+        # A click focuses a control, and from then on the page's own focused
+        # element eats End and PageDown; the wheel does not care who has the
+        # keyboard.
+        button = self.ref(self.outline(), 'button "Show terms"')
+        self.ok('click', element=button)
+        self.ok('scroll', by=600)
+        self.assertGreater(self.main_world('scrollY'), 0)
+
+    def test_a_scroll_that_says_nothing_bounded_is_refused(self):
+        self.h.navigate(self.url + '/scroll')
+        # A distance is bounded, an end of the page is one of two names, and a
+        # scroll says where it goes once; a page request outside those bounds
+        # is answered as failed, not run.
+        for fields in (dict(by=20000), dict(to='sideways'), dict(to='top', by=100), dict()):
+            result = self.page('scroll', **fields)
+            self.assertFalse(result['ok'], result)
+        self.assertEqual(self.main_world('scrollY'), 0, 'the wheel moved the page')
+
 
 
 if __name__ == '__main__':

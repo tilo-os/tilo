@@ -32,7 +32,7 @@ pub mod paint;
 pub mod text_input;
 pub use page::{
     FrameId, MAX_POINTER_STEPS, PageFailure, PageKey, PageNavigation, PageReply, PageRequest,
-    PointerButton, PointerPoint, PointerStep, PointerStepKind,
+    PointerButton, PointerPoint, PointerStep, PointerStepKind, ScrollTarget,
 };
 pub mod profile;
 pub mod test_engine;
