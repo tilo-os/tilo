@@ -22,6 +22,12 @@ kind `tasks.tracker`), written the one way every app is
 | `labels` | `Set<String>` | `add-label`; removing one is a field edit |
 | `parent` | `Option<Id>`, read-only | `create`, `move-under` (refuses cycles) |
 | `links` | `Collection<Link>` (app, record, kind, resource, label) | `link`, `unlink` |
+| `area` | `Option<Area>`: the resource it works towards (app, kind, resource, label) | `plan` |
+| `due_ms` | `Option<i64>`, a moment | `plan` |
+| `priority` | `Option<u8>`, 1 (most urgent) to 4 | `plan` |
+| `cost_budget` | `Option<u64>`, read-only: the most its work may cost | `plan` |
+| `spend` | `Option<u64>`, read-only: what its runs recorded using | `record-spend` |
+| `budget` | turn and total time ceilings | `set-execution-budget` |
 | `comments` | `Collection<Message>`, the thread | `comment`, `send-message`, the run's reports |
 | `run` | `Option<Run>`, read-only | the run verbs below |
 
@@ -39,6 +45,37 @@ Numbers come from a counter: increments merge, so the next number is always
 past every issue a replica has seen. Two issues made concurrently on two
 replicas can share a number; links and references carry the issue's id, the
 number is how it reads.
+
+## What an issue is
+
+An issue is the whole of a task, and it holds nothing a person cannot read.
+There is no second, app-private task store: what was asked is `title` and
+`body`, the conversation around it is `comments` (a person's and an agent's
+alike, each message saying which), what it may cost is `cost_budget`,
+`budget` and `spend`, where it works towards is `area`, which device runs it
+is `run.device`, and who answered for it is `run.starter`. Its goal is an
+ordinary resource above it, named by address (`Area`), so a project or an
+area is itself a resource with the access every resource has, never a field
+of the issue that only Tasks understands.
+
+`Run` holds what one run of an agent did and may do:
+
+| Field | Meaning |
+|---|---|
+| `epoch` | the run's number on its issue, from 1 |
+| `agent` | the agent working, as the door names it (`agent:<id>`) |
+| `starter` | the person whose authority it acts under |
+| `model` | the model it plans with, as the issue chose it when it started |
+| `device` | the device it runs on, as its agent reports it (`run-on-device`) |
+| `phase` | approved, accepted, planning, executing, waiting, done, failed, stopped |
+| `started_ms`, `updated_ms` | when it started and last reported |
+| `confirmation` | the action it waits on: the app, action, resource, digest of the exact arguments, the draft a person decides on and their answer |
+
+Everything else the person sees of a run is the thread: its steps as
+`from-run` messages, its questions as the confirmation above, and the
+instruction and guidance it read as the `to-run` messages `incorporate` marks
+as taken in. Nothing about a run is kept somewhere else, so history,
+attention and the issue page all read the same fields.
 
 ## References
 
@@ -95,6 +132,8 @@ system and an entry in its history:
 | `ask-confirmation` | the run's agent | the draft of an action that asks first |
 | `answer-confirmation` | people, on the host's sheet | confirm (with edits) or decline with a reason |
 | `settle-confirmation` | the run's agent | the answer is spent once the action started |
+| `run-on-device` | the run's agent | the device it works on, so its person sees where it runs |
+| `record-spend` | the run's agent | what its runs have spent, in the workspace's units |
 | `finish-run` | the run's agent | done goes to review, failed or stopped back to Todo |
 
 The broker reads the tracker (`TrackerRuns`, served by the shell from the
