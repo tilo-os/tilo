@@ -3194,8 +3194,8 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "opening_card_room_wait",
-            description: "An app asked for in a room still being joined holds its place with the \
-                          opening card saying why it waits, then opens once the room is ready.",
+            description: "An app asked for in a room still being joined holds its place, which \
+                          says it comes from the room, then opens once the room is ready.",
             actions: vec![
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),

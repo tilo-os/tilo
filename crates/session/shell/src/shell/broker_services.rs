@@ -1277,6 +1277,11 @@ impl RoomStatusSource {
         Self { tree, network }
     }
 
+    /// Whether `room` is being placed on its host, rather than joined.
+    pub(crate) fn placing(&self, room: super::state::RoomId) -> bool {
+        self.tree.read().pending_placements.contains(&room)
+    }
+
     /// Where `room` stands now.
     pub(crate) fn status(&self, room: super::state::RoomId) -> runtime_collab::RoomStatus {
         room_status(&self.tree, self.network.as_deref(), room)

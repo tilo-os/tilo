@@ -3368,3 +3368,6 @@ search-apps-remove-from-apps = Aus Apps entfernen
 # The pinned people overlay's message box
 people-overlay-messages-unavailable = Direktnachrichten sind gerade nicht verfügbar
 people-overlay-message-failed = Die Nachricht an { $name } ging nicht raus
+# Where a window held until its room is ready comes from, as its place says it.
+pending-window-from-own-host = dem Host dieses Geräts
+pending-window-from-room = dem Raum
