@@ -94,34 +94,147 @@ the people in a workspace. Each kind gets its own backend, and each must be:
 
 ## The shared browser
 
-A browser window in a shared workspace is one page, shared, not one page per
-viewer and not a video stream of one.
+A web page in a workspace is shared like any other window, never streamed as
+video when the viewer has an engine of its own. A web member is looking at a
+web page and a Tilo device has Chromium, so nearly every viewer does, and
+**each viewer renders with the engine it already has**. No web engine is
+shipped into a browser, and no engine runs on a server for a viewer that
+has one.
 
-- **The host runs the page.** Its JavaScript and its web state (cookies,
-  storage, the live DOM) exist once, on the host, however many devices show
-  the window.
-- **Devices render it natively.** A device receives the page's HTML and CSS,
-  with what the proxy needs to keep scripts' effects in step, and renders
-  them itself, as a native frame. It doesn't embed a whole web engine and
-  doesn't receive pixels.
-- **Local effects stay local.** Hover, focus rings and other presentation
-  driven by one person's pointer render on that person's device.
-- **Many cursors.** Everyone in the window has their own cursor, as
-  elsewhere in a workspace. The page itself sees input as from one user:
-  the most recent input wins, for example the last click.
-- **One proxy for every web view.** Everyone in a workspace benefits, so
-  this lives in this repository beside the browser runtime
-  ([`browser-runtime.md`](browser-runtime.md)), not as a separate product.
+**Everything is shared for now.** A link opened in a workspace, posted in
+chat or otherwise, opens shared, the way every Tilo app's state is shared.
+One workspace is one pile of state, so a page uses the workspace's one
+cookie jar; separate sessions per person are added only if they turn out to
+be needed.
 
-What exists: `crates/browser/paint-stream` carries a host's page to members
-as a layered display list (a `Frame`, then `Patch`es) that each client draws
-with its own renderer, as it draws any Tilo surface. Scroll layers move
-locally, and input goes back to the host. `tilo-browser-peer` shows a native
-member's browser tab to web members this way, not as video. Other legacy
-windows still reach web members as video. A display list carries what the
-page looks like, not its CSS, so effects that depend on one person's pointer
-(hover, focus) can't yet render locally. How script and style effects reach
-devices so that they can is ours to design.
+### Modes
+
+These are the same choices as for Tilo apps (follow someone's viewport, or
+see the same state with your own view), plus one that pages need because a
+page's state lives in its scripts:
+
+1. **One instance on the host, mirrored.** The page runs once, on the
+   workspace's host. Every viewer's engine renders a mirror of its DOM and
+   CSS, running none of the page's scripts. This is the default, and the
+   only mode a web member's browser gets.
+2. **Every viewer runs the page.** Each viewer's engine runs the whole page
+   with the workspace's cookie jar. Only the address and playback-like state
+   (position, playing, rate) are shared. Only a Tilo device does this,
+   because there Tilo controls the engine (see the limits below). It fits a
+   static page, a video watched together, and an application with its own
+   multiplayer, which then does the collaborating itself.
+3. **Follow.** On top of either: one person's scroll, navigation and what
+   they have open drive everyone who follows them.
+
+### How mode 1 works
+
+- **The host runs real Chromium, driven over the DevTools protocol.** It
+  loads the site directly, from the site's real origin, with the
+  workspace's cookies in its own profile, so nothing about the page itself is
+  rewritten: logins, service workers, WebSockets and the site's own origin
+  checks work as they do in any browser. Input reaches it through the
+  protocol's input dispatch, so the page sees trusted events, the same as
+  from a real keyboard and mouse.
+- **An agent in the page sends the mirror.** It is injected before any page
+  script runs. It sends the DOM, the CSS (including constructed and adopted
+  stylesheets), shadow roots (it wraps `attachShadow` first, so closed roots
+  are seen too) and live form state (values, checked, selection), then their
+  changes. Nested frames get an agent of their own; the mirror nests them.
+- **A viewer renders the mirror in its own engine.** On the web, that is a
+  sandboxed frame on an origin of its own, with scripts disabled. On a Tilo
+  device, it is that device's Chromium. Images, fonts and stylesheets come
+  from the host's cache through Tilo, not from the site, so the viewer never
+  needs the site's cookies. Hover, focus rings, CSS animation, scrolling,
+  text selection, fonts and accessibility are therefore native and local.
+- **Input goes back attributed.** A viewer's pointer and keyboard events are
+  sent to the host with who gave them and dispatched there. The page sees
+  input as from one user, the latest input winning. Everyone has their own
+  cursor.
+- **Typing echoes locally.** A key typed into a field appears at once in
+  that viewer's mirror; the host's result replaces it when it arrives.
+  - Each person's focus is kept in their own mirror. When they type, the
+    host moves the page's focus to their field first, and keeps each
+    person's IME composition whole.
+- **Video plays in each viewer's engine.** The agent hands over the media
+  the page loads, including the segments a site appends through Media Source
+  Extensions, still encoded. Each viewer decodes them in its own engine, with
+  playback synced. Nothing is re-encoded.
+- **Canvas and WebGL are the one thing streamed as pixels.** A DOM mirror
+  can't carry what scripts draw, so the host encodes each such element alone
+  and the mirror shows it in place.
+
+### What this design can't do, or does only partly
+
+- **DRM video can't be watched together.** A protected stream can't be
+  forwarded, since only a licensed engine may decrypt it. It can't be
+  captured on the host either: headless Chromium has no Widevine, and
+  output protection blocks capture even where it does. A viewer's own engine
+  could decrypt only with a licence of its own, which the site issues to
+  its own origin and session, not to a mirror. Netflix-type services
+  therefore show "can't be shared" in the shared window, and each person
+  opens them on their own.
+- **Each person scrolls independently only where the page renders the
+  content.** One script instance has one viewport. Applications that render
+  only the rows in view (virtualized lists: mail, chat, feeds) build rows for
+  the host's viewport alone, so a viewer scrolling elsewhere finds nothing
+  there. In those, scrolling goes to the host and is shared. Static content
+  and ordinary long pages scroll independently.
+- **Layout that scripts compute follows the host's viewport.** CSS media
+  queries are evaluated in each viewer's mirror, but a script that picks
+  mobile or desktop markup from the window size picks it once, for the
+  host. The host's viewport follows the person who last interacted.
+- **Typing at the same time in different fields is approximate.** Each
+  switch moves the page's focus, which fires blur and focus events; a site
+  that validates or closes a suggestion list on blur will react to them.
+  Typing into the same field at the same time isn't supported.
+- **Every interaction run by script costs a round trip to the host.** Hover
+  and focus done in CSS are local; a menu opened by a script on
+  `mouseenter` waits for the host. On a nearby host this is fast; across
+  continents it is noticeable.
+- **Mode 2 isn't offered in a web browser.** Running a site's own scripts
+  inside a web member's browser needs a rewriting proxy: same-origin rules,
+  cookies, service workers, URLs written by scripts, CSP, OAuth and sign-in
+  flows. That breaks too many real sites, especially sign-ins, to be worth
+  it, so web members always get mode 1.
+- **Mode 2 shares one session across devices.** Some sites sign out a
+  session used from several devices at once.
+- **Each mode 1 page costs the host an engine.** That's a Chromium renderer
+  per open shared page, typically 100–300 MB. A person's own host device
+  bears its own pages. tilo.coffee bears the Lounge's and, later, those of
+  the workspaces it hosts, so it needs a limit per workspace and pages
+  nobody is viewing suspended.
+
+### Cases
+
+- **A blog post:** mode 1. Everyone scrolls on their own. Highlights and
+  comments are workspace records anchored to the text.
+- **A video site:** mode 1. The encoded media is forwarded and each viewer
+  plays it in its own engine, in sync. DRM video is the exception above.
+- **A stateful application:** mode 1, with the limits above for
+  virtualized lists and typing at the same time.
+- **An application with its own multiplayer:** mode 1 for now. On Tilo
+  devices mode 2 fits better, with everyone appearing as the workspace's
+  one account until separate sessions exist.
+
+### What exists
+
+`crates/browser/paint-stream` and `tilo-browser-peer` show a native member's
+browser tab to web members as a layered display list that each client draws
+with Tilo's renderer, not as video; other legacy windows still reach web
+members as video. A display list carries what the page looks like, not its
+DOM or CSS, so local hover and focus aren't possible with it. The host
+engine, the injected agent and the mirror are not built.
+
+### Open questions
+
+- **Choosing between modes 1 and 2 on Tilo devices.** Shared is the default;
+  when mode 2 is chosen, and whether automatically or by the person, is
+  undecided.
+- **Moving a page to another host.** When a workspace's governing host
+  changes, an open page's live state can't move with it. The page reloads
+  at the same address on the new host.
+- **The display list's future.** Whether `paint-stream` stays as a fallback
+  for a viewer without an engine, or goes once the mirror exists.
 
 ## Status
 
