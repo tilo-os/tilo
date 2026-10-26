@@ -25,9 +25,9 @@
 use std::collections::BTreeSet;
 
 use automerge::transaction::Transactable as _;
-use automerge::{AutoCommit, ChangeHash, ObjId, ROOT, ReadDoc as _, ScalarValue, Value};
+use automerge::{AutoCommit, ChangeHash, ObjId, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::apps::{bind_tab_record, record_routes_at};
+use crate::apps::{bind_tab_record_owned, record_routes_at};
 use crate::ids::{RoomId, WorkspaceId, peer_salt_of};
 use crate::ownership::SharedDesktop;
 use crate::projection::{
@@ -75,7 +75,9 @@ pub fn declared_room(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Option
 
 /// Write `layout`'s workspace into `doc` as `salt`'s entries, naming
 /// `author` (a person id) on each, and bind each window this machine owns to
-/// the record it shows. Only entries in `salt`'s namespace are written or
+/// the record it shows. A strip this machine owns is kept even while empty,
+/// so a place someone made (an operator's listed strip, a person's new
+/// strip) reaches the room before its first window does. Only entries in `salt`'s namespace are written or
 /// removed; every other device's entries are left exactly as they are, and
 /// an unchanged layout writes nothing. Returns whether it changed anything.
 ///
@@ -88,20 +90,34 @@ pub fn write(
     salt: u16,
     author: Option<&str>,
 ) -> Result<bool, automerge::AutomergeError> {
+    write_contents(doc, layout, salt, author, EmptyStrips::Retain)
+}
+
+fn write_contents(
+    doc: &mut AutoCommit,
+    layout: &SharedDesktop,
+    salt: u16,
+    author: Option<&str>,
+    empty: EmptyStrips,
+) -> Result<bool, automerge::AutomergeError> {
     let Some(workspace) = layout.tree.workspaces.first() else {
         return Ok(false);
     };
     if salt == 0 {
         return Ok(false);
     }
-    let before = doc.get_heads();
+    // Reading the heads first closes any transaction the caller left open,
+    // so this change starts from a clean document. What this function adds
+    // stays pending: the caller commits it with the message that names its
+    // author (the history pane reads that).
+    doc.get_heads();
     declare(doc, workspace.room(), &workspace.name)?;
     crate::projection::project_owned_contents_as(
         doc,
         &workspace.strips,
         salt,
         None,
-        EmptyStrips::Skip,
+        empty,
         author,
     )?;
     for strip in &workspace.strips {
@@ -114,14 +130,15 @@ pub fn write(
                 else {
                     continue;
                 };
-                // A binding is permanent: the first record a window showed is
-                // the one the others mount. A different one is refused, and
-                // the window keeps showing the record it was opened with.
-                let _ = bind_tab_record(doc, strip.id, group.id, tab.id, record);
+                // A window's owner may point it at another record: the tab
+                // is reused, and what it showed before stays in the
+                // document's history for Activity to read. No other device
+                // writes this entry.
+                let _ = bind_tab_record_owned(doc, strip.id, group.id, tab.id, record);
             }
         }
     }
-    Ok(doc.get_heads() != before)
+    Ok(doc.pending_ops() != 0)
 }
 
 /// Name the room and its workspace in `doc`, when it does not already.

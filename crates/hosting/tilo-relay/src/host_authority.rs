@@ -27,14 +27,8 @@ pub(crate) enum HostOperation {
     GrantAppAuthorship,
     /// Install or renew a bot in a room.
     GovernBot,
-    /// Author or prepare a room's applications in exact governor custody.
-    #[cfg_attr(
-        not(any(feature = "agents", test)),
-        expect(
-            dead_code,
-            reason = "only a relay that runs agents authors applications"
-        )
-    )]
+    /// Author or prepare a room's applications, and its own document, in
+    /// exact governor custody.
     AuthorApplications,
     /// Drive the host's personal compute over its control stream.
     ComputeControl,

@@ -32,7 +32,11 @@ pub(crate) struct View<'a> {
 /// The change that puts `view` on the room's layout `desktop`, written by
 /// `author`; `None` when a tab already shows the record, or the room keeps
 /// no layout this build reads.
-pub(crate) fn place_view(desktop: &AutoCommit, author: &str, view: &View<'_>) -> Option<Vec<u8>> {
+pub(crate) fn place_view(
+    desktop: &AutoCommit,
+    author: &str,
+    view: &View<'_>,
+) -> Option<Vec<Vec<u8>>> {
     let mut doc = desktop.clone();
     let mut layout = room_layout::read(&doc, None)?;
     if layout
@@ -53,7 +57,12 @@ pub(crate) fn place_view(desktop: &AutoCommit, author: &str, view: &View<'_>) ->
     doc.set_actor(automerge::ActorId::from(author.as_bytes()));
     room_layout::write(&mut doc, &layout, salt, Some(author)).ok()?;
     doc.commit();
-    Some(doc.save_after(&before))
+    let changes: Vec<Vec<u8>> = doc
+        .get_changes(&before)
+        .iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    (!changes.is_empty()).then_some(changes)
 }
 
 /// Add a tab for `view` to the desktop's first workspace, beside the group
@@ -107,7 +116,7 @@ fn add_tab(desktop: &mut SharedDesktop, author: &str, view: &View<'_>) -> Option
 
 /// `author`'s share of the desktop id space, derived the way every host
 /// derives a device's namespace.
-fn salt_of(author: &str) -> u16 {
+pub(crate) fn salt_of(author: &str) -> u16 {
     tilo_desktop_model::ids::namespace_of_device(author)
 }
 
@@ -207,7 +216,7 @@ mod tests {
             beside: Some("notes-record"),
         };
         let change = place_view(&merged(&changes), "agent:scribe", &view).expect("a tab is added");
-        changes.push(change);
+        changes.extend(change);
         let desktop = read(&changes);
         let task = &desktop.tree.workspaces[0].strips[1];
         assert_eq!(task.window_groups.len(), 2, "on the task's strip");
@@ -216,9 +225,15 @@ mod tests {
             compose_id(salt_of(PERSON), 30),
             "right after the view it works in"
         );
-        let added = &task.window_groups[1].tabs[0];
+        let added = task.window_groups[1].tabs[0].clone();
         assert!(
-            matches!(&added.tile, TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.files")
+            matches!(
+                &added.tile,
+                TileContent::LocalApp { app_id, .. } | TileContent::PeerWindow { app_id, .. }
+                    if app_id == "so.tilo.files"
+            ),
+            "the tab shows the app the agent opened: {:?}",
+            added.tile
         );
         assert!(
             desktop

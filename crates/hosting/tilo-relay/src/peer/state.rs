@@ -712,7 +712,7 @@ pub(super) async fn layout_refusal(
     env: &Envelope,
 ) -> Option<String> {
     let body = governor_notice(env)?;
-    if !crate::rooms::writes_layout(&body) && !writes_topology(&body) {
+    if !writes_topology(&body) {
         return None;
     }
     let authority = ws.lock().await.room_authority.clone()?;

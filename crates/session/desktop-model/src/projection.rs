@@ -201,9 +201,9 @@ fn sweep_stale(
     }
 }
 
-/// Every tab entry in a room document's `contents`, joined across concurrent
-/// containers at every level: `(strip, group, tab, tab entry)`, as the
-/// document stood at `heads` (`None`: now).
+/// Every tab entry in a room document's `contents` as the document stood at
+/// `heads` (`None`: now), joined across concurrent containers at every level:
+/// `(strip, group, tab, tab entry)`.
 pub(crate) fn tab_entries_at(
     doc: &impl ReadDoc,
     heads: Option<&[automerge::ChangeHash]>,

@@ -1346,13 +1346,15 @@ pub(crate) async fn settle_strips(
     if strips.is_empty() {
         return Ok(());
     }
+    let salt = tilo_desktop_model::ids::namespace_of_device(&hex::encode(cert.device_public_key));
+    let author = hex::encode(cert.user_public_key);
     rooms
-        .author_room_record(room, cert, crate::room_strips::DESKTOP, |doc| {
-            crate::room_strips::settle_strips(doc, room, shown, strips)
+        .author_room_document(room, cert, |doc| {
+            crate::room_strips::settle_strips(doc, room, shown, strips, salt, &author)
         })
         .await
         .map(drop)
-        .map_err(|error| anyhow::anyhow!("give the shared desktop its strips: {error}"))
+        .map_err(|error| anyhow::anyhow!("give the room its strips: {error}"))
 }
 
 /// Make exactly the operator's `apps` authors of the room, so its members

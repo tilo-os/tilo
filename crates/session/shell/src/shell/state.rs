@@ -2174,6 +2174,59 @@ impl WorkspaceTree {
     /// map so the revocation reaches a peer already holding the grant —
     /// but the room document is not persisted, so that deletion has to
     /// be re-issued after a restart.
+    /// Apply the retained commands addressed to this device's namespace in
+    /// `room`: another person (or another of this person's devices) asked
+    /// this owner to move, close or rename a window it made. Each is applied
+    /// once as the same change that records it did, so a restart neither
+    /// loses nor repeats it. The host's own windows travel the same path.
+    fn apply_room_requests(&mut self, room: RoomId) {
+        use tilo_desktop_model::commands::{BoundCommand, apply_command};
+        let local_salt = self.local_salt();
+        if local_salt == 0 {
+            return;
+        }
+        let Some(before) = self.room_docs.get(&room).cloned() else {
+            return;
+        };
+        if projection::room_layout(&before).is_personal() {
+            return;
+        }
+        let pending = tilo_desktop_model::room_layout::pending(&before, local_salt);
+        if pending.is_empty() {
+            return;
+        }
+        let Some(workspace) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room() == room)
+        else {
+            return;
+        };
+        let mut candidate = before;
+        let mut changed = false;
+        for request in pending {
+            let Ok(bound) = serde_json::from_slice::<BoundCommand>(&request.command) else {
+                continue;
+            };
+            if apply_command(
+                workspace,
+                &bound.command,
+                &mut || Err("a retained command opens nothing here".into()),
+                &mut |_, _| Err("a retained command opens nothing here".into()),
+            )
+            .is_ok()
+            {
+                changed = true;
+            }
+            changed |= tilo_desktop_model::room_layout::claim(&mut candidate, local_salt, &request)
+                .unwrap_or(false);
+        }
+        if changed {
+            self.room_docs.insert(room, candidate);
+        }
+    }
+
     pub fn sync_room_doc(&mut self, room: RoomId) {
         self.try_sync_room_doc(room);
     }
@@ -2190,6 +2243,7 @@ impl WorkspaceTree {
         if self.requires_native_owner(room) {
             return false;
         }
+        self.apply_room_requests(room);
 
         let Some(ws) = self.workspace_in_room(room) else {
             return false;
@@ -6438,6 +6492,73 @@ mod automerge_foundation_tests {
         assert!(guest.pin_room_authority(room, PeerOrigin::hub(1)));
         guest.adopt_ownerless_workspaces(&"xaver".to_string());
         (host, guest, room)
+    }
+
+    #[test]
+    fn this_device_applies_a_retained_command_to_its_own_strip_once() {
+        use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
+        use tilo_desktop_model::projection::LayoutRequest;
+
+        let (mut host, _, room) = two_in_a_room();
+        host.set_salt_override(0x0A11);
+        host.sync_room_doc(room);
+        let salt = host.local_salt();
+        assert_ne!(salt, 0, "the demo desktop has a device namespace");
+        let strip = host
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .and_then(|workspace| workspace.strips.first())
+            .map(|strip| strip.id.0)
+            .expect("the room has a strip");
+        let command = serde_json::to_vec(&BoundCommand {
+            source: CommandSource {
+                room: room.to_string(),
+                heads: Vec::new(),
+            },
+            command: DesktopCommand::RenameStrip {
+                strip,
+                name: "Renamed by its owner".into(),
+            },
+        })
+        .expect("a command encodes");
+        let request = LayoutRequest {
+            id: LayoutRequest::id("asks", salt, 1, &command),
+            from: "asks".into(),
+            to_salt: salt,
+            at: 1,
+            command,
+        };
+        {
+            let doc = host.room_docs.get_mut(&room).expect("the room document");
+            tilo_desktop_model::room_layout::request(doc, &request).unwrap();
+            doc.commit();
+        }
+
+        host.apply_room_requests(room);
+
+        let name = host
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .and_then(|workspace| workspace.strips.first())
+            .map(|strip| strip.name.clone());
+        assert_eq!(name.as_deref(), Some("Renamed by its owner"));
+        let doc = host.room_docs.get(&room).expect("the room document");
+        assert!(
+            tilo_desktop_model::room_layout::applied(doc, salt).contains(&request.id),
+            "the owner recorded that it applied the request"
+        );
+        // A second pass applies nothing again.
+        let heads = host.room_docs.get_mut(&room).unwrap().get_heads();
+        host.apply_room_requests(room);
+        assert_eq!(
+            host.room_docs.get_mut(&room).unwrap().get_heads(),
+            heads,
+            "a retained command is applied once"
+        );
     }
 
     #[test]

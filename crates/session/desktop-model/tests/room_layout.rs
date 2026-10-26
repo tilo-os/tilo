@@ -73,12 +73,12 @@ fn room() -> RoomId {
 }
 
 fn titles(desktop: &SharedDesktop) -> Vec<String> {
-    desktop
-        .tree
-        .workspaces
-        .first()
-        .into_iter()
-        .flat_map(|workspace| &workspace.strips)
+    let Some(workspace) = desktop.tree.workspaces.first() else {
+        return Vec::new();
+    };
+    workspace
+        .strips
+        .iter()
         .flat_map(|strip| strip.window_groups.iter())
         .flat_map(|group| group.tabs.iter())
         .map(|tab| tab.title.clone())
@@ -256,22 +256,32 @@ fn the_layout_reads_as_it_stood_at_any_heads() {
 }
 
 /// The record a window shows travels with the window, written by the device
-/// that owns it; a later layout naming another record does not rebind it.
+/// that owns it: a reused window may point at another record, and the
+/// document's history still says what it showed before.
 #[test]
-fn a_window_keeps_the_record_its_owner_bound() {
+fn a_window_owner_may_rebind_its_record_and_the_old_binding_stays_in_history() {
     let room = room();
     let mut doc = AutoCommit::new();
     let mut first = layout(room, vec![strip_of(ADA, 1, "Notes")]);
     first.records = vec![(tab_id(ADA, 1), "note-1".into())];
     room_layout::write(&mut doc, &first, ADA, Some("ada")).unwrap();
+    doc.commit();
+    let before_rebind = doc.get_heads();
     let mut second = first.clone();
     second.records = vec![(tab_id(ADA, 1), "note-2".into())];
     room_layout::write(&mut doc, &second, ADA, Some("ada")).unwrap();
-    let read = room_layout::read(&doc, None).unwrap();
+    doc.commit();
     assert_eq!(
-        read.records,
+        room_layout::read(&doc, None).unwrap().records,
+        vec![(tab_id(ADA, 1), "note-2".to_owned())],
+        "the owner follows its window to the new record"
+    );
+    assert_eq!(
+        room_layout::read(&doc, Some(&before_rebind))
+            .unwrap()
+            .records,
         vec![(tab_id(ADA, 1), "note-1".to_owned())],
-        "a binding is permanent"
+        "the binding it replaced is still the truth at its own heads"
     );
 }
 

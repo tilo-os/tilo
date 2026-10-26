@@ -17,6 +17,13 @@ use collab_types::{
 use neighbour_wire::{NeighbourMsg, Retention};
 use tilo_relay_client::DeviceSigner;
 
+/// The route label a page's room-document commit carries in its outbox and
+/// progress. It names no app record: the body is the room's own `SyncResp`,
+/// admitted by the room's `StatePeer` like a native device's topology.
+pub const ROOM_DOCUMENT_APP: &str = "so.tilo.room-document";
+/// The record label of [`ROOM_DOCUMENT_APP`].
+pub const ROOM_DOCUMENT_RECORD: &str = "layout";
+
 /// One document route: application, room (cluster) and record.
 #[derive(
     Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -365,6 +372,11 @@ pub fn claimed_changes(body: &[u8]) -> Vec<[u8; 32]> {
         Ok(NeighbourMsg::AppDocument { envelope, .. }) => {
             envelope.claims.iter().map(|claim| claim.change).collect()
         }
+        Ok(NeighbourMsg::SyncResp { changes, .. }) => changes
+            .iter()
+            .filter_map(|bytes| automerge::Change::from_bytes(bytes.clone()).ok())
+            .map(|change| change.hash().0)
+            .collect(),
         _ => Vec::new(),
     }
 }

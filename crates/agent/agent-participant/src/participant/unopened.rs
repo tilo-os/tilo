@@ -39,14 +39,14 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ReadDoc as _};
+use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge_isolate::{Dependencies, Rejected};
 use tilo_browser_peer::DocumentRoute;
 
-/// The route of a room's shared browser desktop (`tilo-browser-runtime`'s
-/// replication): its `desktop` value names each tab's record.
-const DESKTOP_APP: &str = "so.tilo.browser-desktop";
-const DESKTOP_RECORD: &str = "desktop";
+/// The route label under which a page's room-document changes are kept
+/// here: the same room document the host admitted, not a separate desktop
+/// record.
+use tilo_browser_peer::document::{ROOM_DOCUMENT_APP, ROOM_DOCUMENT_RECORD};
 
 /// Change bytes a record may hold unmerged however small its document.
 const TAIL_FLOOR: usize = 64 * 1024;
@@ -60,9 +60,9 @@ const BATCH_CHANGES: usize = 4096;
 
 pub(crate) fn desktop_route(room: &str) -> DocumentRoute {
     DocumentRoute {
-        app_id: DESKTOP_APP.to_owned(),
+        app_id: ROOM_DOCUMENT_APP.to_owned(),
         cluster_id: room.to_owned(),
-        record: DESKTOP_RECORD.to_owned(),
+        record: ROOM_DOCUMENT_RECORD.to_owned(),
     }
 }
 
@@ -388,6 +388,14 @@ impl Unopened {
         }
     }
 
+    /// Take the room document's `changes`, in the order the host sent them.
+    pub(crate) fn receive_room(&mut self, changes: Vec<Vec<u8>>) {
+        let route = self.desktop_route.clone();
+        for change in changes {
+            self.receive(route.clone(), change);
+        }
+    }
+
     /// Take one durable change (or snapshot) of `route`, in host order.
     pub(crate) fn receive(&mut self, route: DocumentRoute, bytes: Vec<u8>) {
         self.changes_seen = self.changes_seen.wrapping_add(1);
@@ -425,13 +433,10 @@ impl Unopened {
         self.desktop.as_ref().map(|live| &live.doc)
     }
 
-    /// The records.
+    /// The records. The room document is not one: it carries the tabs that
+    /// name them.
     pub(crate) fn routes(&self) -> Vec<DocumentRoute> {
-        let mut routes: Vec<DocumentRoute> = self.held.keys().cloned().collect();
-        if self.desktop.is_some() {
-            routes.push(self.desktop_route.clone());
-        }
-        routes
+        self.held.keys().cloned().collect()
     }
 
     /// What a replica of `route` is seeded from: its document, saved.
@@ -777,7 +782,7 @@ mod tests {
     /// with nothing new reads nothing.
     #[test]
     fn desktop_records_cost_is_independent_of_history() {
-        let desktop_route = route(DESKTOP_APP, DESKTOP_RECORD);
+        let desktop_route = desktop_route("room");
         let mut unopened = Unopened::new("room");
         unopened.receive(route("sheets", "seen"), AutoCommit::new().save());
         unopened.receive(route("sheets", "rec-open"), AutoCommit::new().save());
@@ -811,11 +816,15 @@ mod tests {
         );
         unopened.receive(desktop_route.clone(), desktop.change("seen"));
         assert_eq!(unopened.people_first()[0].record, "rec-open");
-        assert_eq!(
-            unopened.desktop.as_ref().unwrap().tabs.as_ref().unwrap()[0].title,
-            "seen",
-            "the desktop changed, so its tabs were read again"
-        );
+        let reread = unopened
+            .desktop
+            .as_ref()
+            .unwrap()
+            .tabs
+            .as_ref()
+            .expect("the desktop changed, so its tabs were read again");
+        assert_eq!(reread.len(), 20);
+        assert!(reread.contains("rec-open"));
         let seed = unopened.seed(&desktop_route).unwrap().unwrap();
         assert_seeds(&seed, &mut desktop.doc);
     }
@@ -982,7 +991,7 @@ mod tests {
     fn hostile_changes_are_dropped(hostile: &[Vec<u8>]) {
         let (changes, mut doc) = history(3_000);
         let notes = route("so.tilo.notes", "rec-notes");
-        let desktop_route = route(DESKTOP_APP, DESKTOP_RECORD);
+        let desktop_route = desktop_route("room");
         let mut desktop = Desktop::default();
         let mut unopened = Unopened::new("room");
         for (index, change) in changes.iter().enumerate() {
@@ -1013,7 +1022,7 @@ mod tests {
             "a refused change is not kept"
         );
         let tabs = unopened.desktop.as_mut().unwrap().tabs();
-        assert!(tabs.contains("tab-2900"), "{tabs:?}");
+        assert!(tabs.contains("rec-open"), "{tabs:?}");
         let seed = unopened.seed(&desktop_route).unwrap().unwrap();
         assert_seeds(&seed, &mut desktop.doc);
 
@@ -1024,7 +1033,7 @@ mod tests {
             shared.receive(bytes.clone());
         }
         shared.receive(desktop.change("open"));
-        assert!(shared.tabs().contains("open"));
+        assert!(shared.tabs().contains("rec-open"));
         assert_seeds(&shared.seed().unwrap(), &mut desktop.doc);
     }
 

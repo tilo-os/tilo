@@ -221,11 +221,20 @@ What is still doubled:
    empty room by the native owner: it keeps its workspace and its last
    projection on the older engine, and re-joining its host fetches it
    again. There is no automatic migration for it.
-2. **Three layout schemas.** The room document's `contents` (native), the
-   `so.tilo.browser-desktop/desktop` shared record (`shared_record.rs`,
-   browser, relay, agent participant) and the device's whole-desktop
-   document (`desktop_doc.rs`). In the browser one room holds many
-   workspaces, so `Workspace::room` is not the room it replicates in.
+
+Settled: **one layout schema.** The room document's `contents` is what the
+native shell, the browser, the relay's operator strips and an agent
+participant all write (`tilo_desktop_model::room_layout`): one workspace per
+document, every device publishing only entries minted in its id namespace,
+with tab-to-record bindings, authors, reads at any heads and retained
+rearrangement requests in the same document. A page's workspace is the
+room's (`WorkspaceId::of_room`), and it publishes its entries into the room's
+own governance document as `SyncResp`; the room's `StatePeer` admits them
+within the namespace the host registered to that device, then republishes the
+one admitted document. The separate `so.tilo.browser-desktop/desktop` record
+and the relay's `layout_guard` are gone: one admission decides every layout.
+The device's own whole-desktop document (`desktop_doc.rs`) is not a copy of a
+room's layout and goes with step 6.
 
 ## Migration
 
@@ -270,19 +279,25 @@ engine still writes it; the native owner takes it over at once afterwards.
    devices a workspace-join invitation in the person's workspace list; the
    device redeems it as an owner-role member. `RoomAuthority`,
    `room_authority`, `adopt_governed_peers` and the continuation pins go.
-4. **One layout schema.** The browser, the relay's operator strips and the
-   agent participant write `contents`; `shared_record.rs` and the relay's
-   `desktop_guard` go (the topology registry decides who moves what). A new
-   workspace in the browser is a new room.
+4. **One layout schema.** Done: the browser, the relay's operator strips and
+   the agent participant write `contents` through `room_layout`, and the
+   room's `StatePeer` admits each write by the one-writer-per-entry rule the
+   topology registry states. The browser sends its part of the room document
+   as `SyncResp` (a namespace claim first), not as a separate desktop record;
+   `shared_record.rs`, the desktop-record layout route and `layout_guard` are
+   gone. A workspace in the browser is the room's, one per room.
 5. **Requests to rearrange another device's windows are retained room
    state** applied once by their owner, with the applied ids in its
    namespace. The schema (`room_layout::request`, `pending`, `claim`) and
    the native owner's drain/claim/apply have landed: a request waits while
    its owner is away and is applied once when it returns, in the same change
    that marks it. A command the owner's reducer refuses (for example a tab
-   that has since gone) stays retained rather than being dropped. Closing
-   another device's tab still runs through that owner's ordinary close
-   lifecycle, not a second mutation here.
+   that has since gone) stays retained rather than being dropped. A page that
+   moves another device's window asks instead of writing it; the relay judges
+   the ask on that window's `moderation` node before it admits it, and the
+   owner (the host's operator strips included) applies it once and records
+   that it did. Closing another device's tab still runs through that owner's
+   ordinary close lifecycle, not a second mutation here.
 6. **The device desktop holds only what is the device's.** `desktop_doc`
    keeps the workspace list and presentation; Activity and Replay read
    the room documents' history for everything else.

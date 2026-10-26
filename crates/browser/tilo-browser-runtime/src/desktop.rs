@@ -1642,7 +1642,7 @@ fn stored_desktop(
             )
             .collect();
         records.compact_sort();
-        let authors = held_authors
+        let authors = authors
             .iter()
             .filter(|(id, _)| strips.contains(*id) || live.contains(*id))
             .map(|(id, author)| (*id, author.clone()))

@@ -82,6 +82,55 @@ pub fn bind_tab_record(
     tab: TabId,
     record: &str,
 ) -> Result<(), BindRecordError> {
+    let object = tab_object(doc, strip, group, tab)?;
+    match doc.get(&object, TAB_RECORD_KEY)? {
+        Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Str(current) if current.as_str() == record) => {
+            Ok(())
+        }
+        Some(_) => Err(BindRecordError::AlreadyBound),
+        None => {
+            doc.put(&object, TAB_RECORD_KEY, record)?;
+            Ok(())
+        }
+    }
+}
+
+/// Bind `record` to the tab at `strip`/`group`/`tab` as its owner: the
+/// device whose namespace minted the tab may change what it shows, so a
+/// reused window follows its person to another record. Everyone else's
+/// entries are never written here. The old binding remains in the document's
+/// history, so Activity can still say what the window showed then.
+///
+/// # Errors
+///
+/// [`BindRecordError::MissingTab`] when the document carries no such tab, or
+/// the document's own error when the write fails.
+pub fn bind_tab_record_owned(
+    doc: &mut AutoCommit,
+    strip: StripId,
+    group: GroupId,
+    tab: TabId,
+    record: &str,
+) -> Result<(), BindRecordError> {
+    let object = tab_object(doc, strip, group, tab)?;
+    let unchanged = matches!(
+        doc.get(&object, TAB_RECORD_KEY)?,
+        Some((Value::Scalar(value), _))
+            if matches!(value.as_ref(), ScalarValue::Str(current) if current.as_str() == record)
+    );
+    if !unchanged {
+        doc.put(&object, TAB_RECORD_KEY, record)?;
+    }
+    Ok(())
+}
+
+/// The map entry of the tab at `strip`/`group`/`tab`.
+fn tab_object(
+    doc: &AutoCommit,
+    strip: StripId,
+    group: GroupId,
+    tab: TabId,
+) -> Result<ObjId, BindRecordError> {
     let mut object = ROOT;
     for key in [
         ROOM_CONTENTS_KEY.to_string(),
@@ -93,16 +142,7 @@ pub fn bind_tab_record(
     ] {
         object = child(doc, &object, &key).ok_or(BindRecordError::MissingTab)?;
     }
-    match doc.get(&object, TAB_RECORD_KEY)? {
-        Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Str(current) if current.as_str() == record) => {
-            Ok(())
-        }
-        Some(_) => Err(BindRecordError::AlreadyBound),
-        None => {
-            doc.put(&object, TAB_RECORD_KEY, record)?;
-            Ok(())
-        }
-    }
+    Ok(object)
 }
 
 fn child(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {

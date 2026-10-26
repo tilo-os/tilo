@@ -65,6 +65,37 @@ impl PeerGovernanceMut<'_> {
         self.peer.apply_governance_doc(doc, &before, key, now)
     }
 
+    /// Author `edit`'s change to the room's own document as its governor
+    /// `key`: the one door through which the host writes its own topology,
+    /// operator strips, retained command marks, or anything else the room
+    /// document carries. `edit` returns whether it changed the document; a
+    /// change that did not is not committed. The governor may write any
+    /// namespace, including the room's own.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a key that is not the pinned authority, an edit that fails,
+    /// or a document this peer cannot take in.
+    pub fn author_room_document(
+        self,
+        key: &SigningKey,
+        now: SystemTime,
+        edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<bool, String>,
+    ) -> Result<bool, String> {
+        self.peer.require_governance_writer(key, now)?;
+        let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;
+        let before = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        let changed = edit(&mut doc)?;
+        if !changed {
+            return Ok(false);
+        }
+        doc.commit();
+        self.peer.apply_governance_doc(doc, &before, key, now)
+    }
+
     /// Remove every strip, window group and window a member published into
     /// the room's contents: each entry in a topology namespace registered to
     /// a device other than the governor `key`'s. What the governor or the
@@ -74,7 +105,7 @@ impl PeerGovernanceMut<'_> {
         self.peer.require_governance_writer(key, now)?;
         let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;
         let before = doc.get_heads();
-        let owners = contents_owners_of(&doc);
+        let owners = contents_owners_of(&*doc);
         let governor = hex::encode(key.verifying_key().to_bytes());
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),

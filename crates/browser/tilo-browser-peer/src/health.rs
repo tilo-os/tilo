@@ -433,6 +433,7 @@ mod tests {
             channels: String::new(),
             personal_rooms: std::collections::BTreeSet::new(),
             room_members: std::collections::BTreeMap::new(),
+            host_device: [0; 32],
         };
         serde_json::to_value(PeerSnapshot::from_status(&status).health).unwrap_or_default()
     }

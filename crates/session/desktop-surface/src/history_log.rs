@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use automerge::AutoCommit;
-use automerge::transaction::CommitOptions;
+use automerge::transaction::{CommitOptions, Transactable as _};
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::{RoomId, room_layout};
 
@@ -156,7 +156,7 @@ pub struct RoomHistory {
 /// `log`, the room's layout document, with the author each actor writes
 /// for. A log that describes another room (or names none) contributes
 /// nothing: the pane has no history of this room to show from it.
-pub fn room_history(log: AutoCommit, room: RoomId) -> RoomHistory {
+pub fn room_history(mut log: AutoCommit, room: RoomId) -> RoomHistory {
     let mut authors = BTreeMap::new();
     if room_layout::declared_room(&log, None) != Some(room) {
         return RoomHistory {
@@ -209,7 +209,6 @@ pub fn register_authors(
 mod tests {
     use super::*;
     use crate::activity::{ActivitySnapshot, RoomActivityPane};
-    use automerge::transaction::Transactable as _;
     use tilo_automerge::ApplyIncoming as _;
     use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TileContent};
 
@@ -261,7 +260,7 @@ mod tests {
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.set_active_group(strip_id, group);
         assert!(
-            !record(&mut log, &stored(&tree), SALT, "Ada", 2_500),
+            !record(&mut log, &stored(&tree), SALT, "Grace", 2_500),
             "focus alone is not a change"
         );
         tree.workspaces[0].strips[0].window_groups.remove(0);
@@ -321,7 +320,7 @@ mod tests {
     /// each author.
     #[test]
     fn a_rooms_own_document_is_its_history_with_its_authors_and_times() {
-        let (log, tree) = log();
+        let (mut log, tree) = log();
         let room = tree.workspaces[0].room();
         let heads = log.get_heads();
         let mut history = room_history(log, room);
@@ -401,7 +400,7 @@ mod tests {
         peer.commit();
         log.merge_incoming(&mut peer).unwrap();
         let heads = log.get_heads();
-        let history = room_history(log, tree.workspaces[0].room());
+        let mut history = room_history(log, tree.workspaces[0].room());
         assert_eq!(history.doc.get_heads(), heads, "nothing is re-authored");
         assert_eq!(history.authors.len(), 1, "only the named author is named");
     }

@@ -11,8 +11,6 @@
 
 use tilo_desktop_model::{DesktopTree, IdMinter, RoomId, Strip, StripId, WorkspaceId, room_layout};
 
-/// The room record members' pages keep the room's layout in.
-pub(crate) const DESKTOP: (&str, &str) = ("so.tilo.browser-desktop", "desktop");
 /// The longest strip name, the same as one a person names in the top bar.
 const STRIP_NAME_MAX: usize = 48;
 
@@ -35,6 +33,8 @@ pub(crate) fn settle_strips(
     room: &str,
     shown: &str,
     names: &[String],
+    salt: u16,
+    author: &str,
 ) -> Result<bool, String> {
     if names.is_empty() {
         return Ok(false);
@@ -57,7 +57,7 @@ pub(crate) fn settle_strips(
     if layout.tree.workspaces.is_empty() {
         return Ok(false);
     }
-    let mut minter = Minter::new(room, &layout.tree);
+    let mut minter = Minter::new(salt, &layout.tree);
     let Some(workspace) = layout.tree.workspaces.first_mut() else {
         return Ok(false);
     };
@@ -74,8 +74,7 @@ pub(crate) fn settle_strips(
     if !changed {
         return Ok(false);
     }
-    let salt = Minter::salt(room);
-    room_layout::write(doc, &layout, salt, None).map_err(|error| error.to_string())
+    room_layout::write(doc, &layout, salt, Some(author)).map_err(|error| error.to_string())
 }
 
 /// Ids for the strips the room adds: under a namespace of the room's own,
@@ -86,11 +85,7 @@ struct Minter {
 }
 
 impl Minter {
-    fn salt(room: &str) -> u16 {
-        tilo_desktop_model::ids::room_strips_salt(room)
-    }
-
-    fn new(room: &str, tree: &DesktopTree) -> Self {
+    fn new(salt: u16, tree: &DesktopTree) -> Self {
         let mut taken = std::collections::HashSet::new();
         for workspace in &tree.workspaces {
             taken.insert(workspace.id.0);
@@ -103,7 +98,7 @@ impl Minter {
             }
         }
         Self {
-            ids: IdMinter::new(Self::salt(room)),
+            ids: IdMinter::new(salt),
             taken,
         }
     }
@@ -124,6 +119,8 @@ mod tests {
     use tilo_desktop_model::ownership::SharedDesktop;
 
     const ROOM: &str = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+    const HOST_SALT: u16 = 0x0A11;
+    const HOST: &str = "host";
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|name| (*name).to_owned()).collect()
@@ -146,7 +143,17 @@ mod tests {
     #[test]
     fn a_room_without_a_layout_starts_with_the_listed_strips() {
         let mut doc = automerge::AutoCommit::new();
-        assert!(settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main", "Games"])).unwrap());
+        assert!(
+            settle_strips(
+                &mut doc,
+                ROOM,
+                "Hangout",
+                &names(&["Main", "Games"]),
+                HOST_SALT,
+                HOST
+            )
+            .unwrap()
+        );
         assert_eq!(strips(&doc), ["Main", "Games"]);
         let tree: DesktopTree = desktop(&doc).tree;
         assert_eq!(tree.workspaces[0].name, "Hangout");
@@ -163,8 +170,17 @@ mod tests {
     #[test]
     fn settling_adds_only_what_is_missing() {
         let mut doc = automerge::AutoCommit::new();
-        settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main"])).unwrap();
-        let alice = 0x0A11;
+        settle_strips(
+            &mut doc,
+            ROOM,
+            "Hangout",
+            &names(&["Main"]),
+            HOST_SALT,
+            HOST,
+        )
+        .unwrap();
+        doc.commit();
+        let alice = 0x0B22;
         let mut value = desktop(&doc);
         value.tree.workspaces[0].strips.push(Strip::new(
             StripId(tilo_desktop_model::compose_id(alice, 1)),
@@ -174,9 +190,30 @@ mod tests {
             .authors
             .insert(tilo_desktop_model::compose_id(alice, 1), "alice".into());
         room_layout::write(&mut doc, &value, alice, Some("alice")).unwrap();
+        doc.commit();
 
-        assert!(!settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main"])).unwrap());
-        assert!(settle_strips(&mut doc, ROOM, "Hangout", &names(&["Main", "Quiet"])).unwrap());
+        assert!(
+            !settle_strips(
+                &mut doc,
+                ROOM,
+                "Hangout",
+                &names(&["Main"]),
+                HOST_SALT,
+                HOST
+            )
+            .unwrap()
+        );
+        assert!(
+            settle_strips(
+                &mut doc,
+                ROOM,
+                "Hangout",
+                &names(&["Main", "Quiet"]),
+                HOST_SALT,
+                HOST
+            )
+            .unwrap()
+        );
         assert_eq!(strips(&doc), ["Main", "Someone's", "Quiet"]);
         let value = desktop(&doc);
         assert_eq!(
@@ -198,7 +235,7 @@ mod tests {
     #[test]
     fn no_strips_writes_nothing() {
         let mut doc = automerge::AutoCommit::new();
-        assert!(!settle_strips(&mut doc, ROOM, "Hangout", &[]).unwrap());
+        assert!(!settle_strips(&mut doc, ROOM, "Hangout", &[], HOST_SALT, HOST).unwrap());
         assert!(room_layout::read(&doc, None).is_none());
     }
 

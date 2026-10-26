@@ -80,9 +80,17 @@ async fn a_write_the_relay_committed_survives_a_hard_stop_before_the_governor_ke
     // stopped hard at that moment, before the governor's copy is kept.
     let bob_client: RelayClient = bob_session.into_client();
     let write = write(&mut bob_peer, "reply", "committed", &phone.sk);
-    super::layout::commit(&bob_client, &phone, room.workspace_id, &write)
-        .await
-        .expect("the relay commits Bob's write");
+    let mut room_doc = AutoCommit::new();
+    super::layout::commit(
+        &bob_client,
+        &phone,
+        room.workspace_id,
+        &room.room,
+        &write,
+        &mut room_doc,
+    )
+    .await
+    .expect("the relay commits Bob's write");
     let stopped = tempfile::tempdir().unwrap();
     copy_dir(state.path(), stopped.path());
 
