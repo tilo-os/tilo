@@ -1079,6 +1079,54 @@ mod tests {
         );
     }
 
+    /// Every destructive action the client publishes carries a sentence
+    /// saying what it costs. The palette, a script and an agent ask through
+    /// the action itself, and the sheet they get shows the action's own
+    /// description under its question — an action documented as its own
+    /// label asks "Discard file changes?" and then says nothing at all about
+    /// what is about to be lost.
+    #[test]
+    fn a_destructive_action_says_what_it_loses() {
+        use ui::tilo_actions::RiskLevel;
+
+        let (_dir, path) = scratch_repository("destructive-docs");
+        // A second branch, so the client publishes deleting one too.
+        crate::repo::create_branch(&path, "feature", None, false).unwrap();
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+        let actions = app.actions().unwrap();
+        let destructive: Vec<_> = actions
+            .iter()
+            .filter(|action| action.contract.risk == RiskLevel::Destructive)
+            .collect();
+        assert!(
+            destructive.len() >= 2,
+            "the client publishes its destructive acts: {:?}",
+            actions
+                .iter()
+                .map(|action| action.action_label.as_str())
+                .collect::<Vec<_>>()
+        );
+        for action in destructive {
+            let description = action
+                .description
+                .as_deref()
+                .unwrap_or_else(|| panic!("{} says nothing", action.action_label));
+            // What the sheet shows is the description without the heading it
+            // already has as its question.
+            let body = description
+                .trim()
+                .strip_prefix(action.action_label.trim())
+                .unwrap_or(description)
+                .trim();
+            assert!(
+                body.split_whitespace().count() >= 6,
+                "{} asks without saying what it costs: {body:?}",
+                action.action_label
+            );
+        }
+    }
+
     /// The window bar's layout item and the palette's effect switch the
     /// person's diff preference: kept beside the document, changing no
     /// document and on nobody's undo stack.
