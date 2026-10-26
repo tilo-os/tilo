@@ -633,7 +633,7 @@ fn first_draft(room: &Room) -> tilolang_tilo::runtime::ResourceRef {
     let Some(Value::Ref(draft)) = drafts.first() else {
         panic!("a draft is a reference");
     };
-    draft.target.clone()
+    ResourceRef::clone(&draft.target)
 }
 
 #[test]
@@ -1059,4 +1059,281 @@ fn a_change_to_an_item_reaches_its_shown_row() {
         .and_then(|row| row.row)
         .and_then(|row| row.props.get("title").map(crate::reconcile::display));
     assert_eq!(title.as_deref(), Some("Renamed"));
+}
+
+/// The identity of every widget under `widget`, itself included, with its name.
+fn widget_identities(widget: &dyn ui::widget::Widget, out: &mut Vec<(usize, String)>) {
+    out.push((
+        std::ptr::from_ref(widget).cast::<()>() as usize,
+        widget.name().to_owned(),
+    ));
+    for child in widget.children() {
+        widget_identities(child, out);
+    }
+}
+
+/// The content column.
+fn content_pane(room: &mut Room) -> &mut Pane {
+    room.window
+        .shell()
+        .and_then(|shell| shell.content_mut::<Pane>())
+        .expect("the content column")
+}
+
+/// The widgets of the content column.
+fn content_widgets(room: &mut Room) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    widget_identities(content_pane(room), &mut out);
+    out
+}
+
+/// The widget under `widget`, itself included, whose test id is `id`.
+fn widget_with_id<'a>(
+    widget: &'a dyn ui::widget::Widget,
+    id: &str,
+) -> Option<&'a dyn ui::widget::Widget> {
+    if widget.test_id() == Some(id) {
+        return Some(widget);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| widget_with_id(child, id))
+}
+
+#[test]
+fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widget() {
+    use ui::widget::Widget as _;
+    fn cards(node: &UiNode, out: &mut Vec<String>) {
+        if node.kind == "card" {
+            out.push(node.key.clone());
+        }
+        for child in &node.children {
+            cards(child, out);
+        }
+    }
+    let mut room = Room::seeded("board");
+    let mut keys = Vec::new();
+    cards(&room.window.root_tree().unwrap(), &mut keys);
+    let [todos, notes, chats] = &keys[..] else {
+        panic!("the todo list, the notebook and the chats: {keys:?}");
+    };
+    let widgets_of = |room: &mut Room, key: &str| {
+        let mut out = Vec::new();
+        widget_identities(
+            widget_with_id(content_pane(room), key).expect("the card's content"),
+            &mut out,
+        );
+        out
+    };
+    let chats_before = widgets_of(&mut room, chats);
+    let notes_before = widgets_of(&mut room, notes);
+    let todo_before = widgets_of(&mut room, todos);
+    let outside_before: Vec<_> = content_widgets(&mut room)
+        .into_iter()
+        .filter(|widget| !todo_before.contains(widget))
+        .collect();
+    content_pane(&mut room).take_structure_change();
+
+    // Ticking a todo off changes what the todo card counts and previews, and nothing else.
+    let host = room.window.current_host().unwrap();
+    let list = host.root_of("so.tilo.lang.todo").unwrap();
+    let Value::List(items) = host.runtime().read(&list, "items").unwrap() else {
+        panic!("the list holds items");
+    };
+    let open = items
+        .iter()
+        .find_map(|item| match item {
+            Value::Ref(item)
+                if host.runtime().read(&item.target, "done").ok() == Some(Value::Bool(false)) =>
+            {
+                Some(item.clone())
+            }
+            _ => None,
+        })
+        .expect("an open todo");
+    let check = describe::offered(&host, &open.target)
+        .iter()
+        .find(|action| action.label == "Check")
+        .cloned()
+        .expect("an open todo can be checked");
+    room.ask(Request::Invoke {
+        action: check,
+        title: String::new(),
+    });
+    let Value::List(items) = host.runtime().read(&list, "items").unwrap() else {
+        panic!("the list holds items");
+    };
+    assert!(
+        !items.contains(&Value::Ref(open.clone()))
+            || host.runtime().read(&open.target, "done").ok() == Some(Value::Bool(true)),
+        "the todo is checked"
+    );
+
+    assert_eq!(
+        widgets_of(&mut room, chats),
+        chats_before,
+        "the chats card is kept"
+    );
+    assert_eq!(
+        widgets_of(&mut room, notes),
+        notes_before,
+        "the notes card is kept"
+    );
+    let after = content_widgets(&mut room);
+    let gone: Vec<_> = outside_before
+        .iter()
+        .filter(|widget| !after.contains(widget))
+        .collect();
+    // The card itself is replaced; what holds it is kept.
+    assert!(
+        gone.iter().all(|(_, name)| name == "Card"),
+        "only the todo card is replaced: {gone:?}"
+    );
+    assert!(widget_with_id(content_pane(&mut room), todos).is_some());
+    assert_eq!(
+        content_pane(&mut room).take_structure_change(),
+        ui::widget::StructureChange::Described,
+        "the frame's damage describes the card it replaced"
+    );
+}
+
+#[test]
+fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
+    fn rendered(node: &UiNode) -> usize {
+        usize::from(node.kind == "item") + node.children.iter().map(rendered).sum::<usize>()
+    }
+    let mut room = Room::seeded("chat");
+    let messages = |room: &mut Room| {
+        thread_in(content_pane(room).content_mut())
+            .map(|thread| ui::widget::ListModel::len(thread.model()))
+    };
+    let first = messages(&mut room).expect("the conversation's transcript");
+    let thread_widget = |room: &mut Room| {
+        thread_in(content_pane(room).content_mut())
+            .map(|thread| std::ptr::from_ref(thread).cast::<()>() as usize)
+    };
+    let before = thread_widget(&mut room);
+    // Enough messages that the transcript shows only the last of them.
+    let sent = 80;
+    for n in 0..sent {
+        let detail = room.window.detail_tree().unwrap();
+        let input = first_input(&detail).expect("the composer").key.clone();
+        let button = first_button(&detail)
+            .expect("the composer's send")
+            .key
+            .clone();
+        room.window
+            .act(true, UiEvent::Edit(input, format!("Message {n}")));
+        room.settle();
+        room.window.act(true, UiEvent::Press(button));
+        room.settle();
+    }
+    let total = first + sent;
+    assert_eq!(
+        messages(&mut room),
+        Some(total),
+        "each message is a row more"
+    );
+    assert_eq!(thread_widget(&mut room), before, "of the same transcript");
+    let detail = room.window.detail_tree().unwrap();
+    assert!(
+        rendered(&detail) < total / 2,
+        "only the messages shown are rendered: {} of {total}",
+        rendered(&detail)
+    );
+    assert!(
+        format!("{detail:?}").contains(&format!("Message {}", sent - 1)),
+        "the newest is shown"
+    );
+}
+
+/// The first button under `node`.
+fn first_button(node: &UiNode) -> Option<&UiNode> {
+    if node.kind == "button" {
+        return Some(node);
+    }
+    node.children.iter().find_map(first_button)
+}
+
+/// A page as a detail column shows it: a heading and a paragraph.
+fn page_node(value: &str, extra: bool) -> UiNode {
+    fn leaf(kind: &str, key: &str, value: &str) -> UiNode {
+        let mut node = UiNode {
+            kind: kind.to_owned(),
+            key: key.to_owned(),
+            props: std::collections::BTreeMap::new(),
+            binding: None,
+            events: std::collections::BTreeMap::new(),
+            anchor: None,
+            children: Vec::new(),
+        };
+        node.props.insert("value".to_owned(), Value::text(value));
+        node
+    }
+    let mut children = vec![
+        leaf("heading", "title", "Q3 plan"),
+        leaf("text", "said", value),
+    ];
+    if extra {
+        children.push(leaf("text", "more", "and more"));
+    }
+    UiNode {
+        children,
+        ..leaf("stack", "page", "")
+    }
+}
+
+#[test]
+fn a_changed_value_on_a_page_sets_its_widget_and_keeps_every_other() {
+    use ui::widget::{StructureChange, Widget as _};
+    let mut reconciler = Reconciler::new(Rc::default(), Rc::new(|_| String::new()));
+    let mut pane = Pane::new(Box::new(Spacer::fixed(0.0)));
+    let mut built = None;
+    fill(
+        &mut pane,
+        &mut reconciler,
+        &mut built,
+        &page_node("Ship it", false),
+    );
+    pane.take_structure_change();
+    let mut before = Vec::new();
+    widget_identities(&pane, &mut before);
+
+    // A value changed: the widget that shows it is set, nothing is replaced or rebuilt.
+    fill(
+        &mut pane,
+        &mut reconciler,
+        &mut built,
+        &page_node("Shipped", false),
+    );
+    let mut after = Vec::new();
+    widget_identities(&pane, &mut after);
+    assert_eq!(after, before, "every widget is kept");
+    assert_eq!(pane.take_structure_change(), StructureChange::None);
+
+    // A paragraph inserted: described, and every other widget kept where it was.
+    fill(
+        &mut pane,
+        &mut reconciler,
+        &mut built,
+        &page_node("Shipped", true),
+    );
+    let mut inserted = Vec::new();
+    widget_identities(&pane, &mut inserted);
+    assert!(before.iter().all(|widget| inserted.contains(widget)));
+    assert_eq!(inserted.len(), before.len() + 1);
+    assert_eq!(pane.take_structure_change(), StructureChange::Described);
+
+    // And taken out again.
+    fill(
+        &mut pane,
+        &mut reconciler,
+        &mut built,
+        &page_node("Shipped", false),
+    );
+    let mut removed = Vec::new();
+    widget_identities(&pane, &mut removed);
+    assert_eq!(removed, before);
+    assert_eq!(pane.take_structure_change(), StructureChange::Described);
 }

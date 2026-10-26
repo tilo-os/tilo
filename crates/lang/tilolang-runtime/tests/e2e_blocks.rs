@@ -134,7 +134,7 @@ mod cases {
             panic!("data");
         };
         assert!(
-            matches!(v, Value::Ref(ref r) if r.target == w.list),
+            matches!(v, Value::Ref(ref r) if *r.target == w.list),
             "{v:?}"
         );
         let projection = w.rt.project(&v);

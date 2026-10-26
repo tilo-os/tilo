@@ -88,7 +88,7 @@ use crate::widget::window_header::{HistoryControl, WindowHeader};
 use crate::widget::{
     AppModel, Button, Element, ModelPath, SearchField, TaffyTreeExt, Widget, WidgetLayoutError,
 };
-use crate::widget::{SplitHandle, SplitOrientation, SplitRatio};
+use crate::widget::{SplitHandle, SplitOrientation, SplitRatio, StructureChange};
 
 mod header_parts;
 use crate::widget::toast::{ToastKind, ToastStack};
@@ -4517,6 +4517,15 @@ impl Widget for NavShell {
         let mut dirty = std::mem::take(&mut self.structure_dirty);
         self.for_each_owned_mut(|child| dirty |= child.take_structure_dirty());
         dirty
+    }
+
+    /// The shell's own changes (a column shown or hidden, a part swapped) rebuild; what its
+    /// parts describe (a column's content changed in place) stays described.
+    fn take_structure_change(&mut self) -> StructureChange {
+        self.take_requests();
+        let mut change = StructureChange::of(std::mem::take(&mut self.structure_dirty));
+        self.for_each_owned_mut(|child| change = change.join(child.take_structure_change()));
+        change
     }
 
     /// A part whose overlay holds the pointer (a popover a header button

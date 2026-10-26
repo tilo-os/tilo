@@ -47,31 +47,60 @@ pub(crate) struct Bound {
     pub retained: Vec<Retained>,
 }
 
+/// A map keyed by resource ids, of which a view over a list reads tens of thousands: hashed
+/// fast.
+type FastMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
+
+/// `reads` without repeats, in the order first read.
+fn distinct(mut reads: Vec<(String, String)>) -> Vec<(String, String)> {
+    let first: Vec<bool> = {
+        let mut seen =
+            HashSet::with_capacity_and_hasher(reads.len(), foldhash::fast::RandomState::default());
+        reads.iter().map(|read| seen.insert(read)).collect()
+    };
+    let mut first = first.into_iter();
+    reads.retain(|_| first.next().unwrap_or(false));
+    reads
+}
+
 /// Which boundaries read what.
+///
+/// A view over a list reads a field of every item, so a boundary can hold tens of thousands of
+/// reads: they are indexed per resource, each resource with the fields read on it and by whom,
+/// which costs a key per resource read rather than per field and boundary.
 #[derive(Default)]
 struct Index {
-    fields: HashMap<(String, String), HashSet<BoundId>>,
-    resources: HashMap<String, HashSet<BoundId>>,
-    docs: HashMap<String, HashSet<BoundId>>,
+    resources: FastMap<String, Vec<(String, BoundId)>>,
+    docs: FastMap<String, HashSet<BoundId>>,
     states: HashMap<StateKey, HashSet<BoundId>>,
     space: HashSet<BoundId>,
 }
 
 impl Index {
     fn add(&mut self, id: BoundId, b: &Bound) {
+        let mut docs: Vec<&str> = Vec::new();
         for (resource, field) in &b.reads {
-            self.fields
-                .entry((resource.clone(), field.clone()))
-                .or_default()
-                .insert(id);
-            self.resources
-                .entry(resource.clone())
-                .or_default()
-                .insert(id);
-            self.docs
-                .entry(doc_of(resource).to_owned())
-                .or_default()
-                .insert(id);
+            let read = (field.clone(), id);
+            match self.resources.get_mut(resource) {
+                Some(readers) => readers.push(read),
+                None => {
+                    self.resources.insert(resource.clone(), vec![read]);
+                }
+            }
+            let doc = doc_of(resource);
+            if docs.last() != Some(&doc) && !docs.contains(&doc) {
+                docs.push(doc);
+            }
+        }
+        for doc in docs {
+            match self.docs.get_mut(doc) {
+                Some(ids) => {
+                    ids.insert(id);
+                }
+                None => {
+                    self.docs.insert(doc.to_owned(), HashSet::from([id]));
+                }
+            }
         }
         for (key, _) in &b.state_reads {
             self.states.entry(key.clone()).or_default().insert(id);
@@ -94,15 +123,34 @@ impl Index {
                 }
             }
         }
-        for (resource, field) in &b.reads {
-            drop_from(&mut self.fields, &(resource.clone(), field.clone()), id);
-            drop_from(&mut self.resources, resource, id);
-            drop_from(&mut self.docs, &doc_of(resource).to_owned(), id);
+        for (resource, _) in &b.reads {
+            if let Some(readers) = self.resources.get_mut(resource) {
+                readers.retain(|(_, reader)| *reader != id);
+                if readers.is_empty() {
+                    self.resources.remove(resource);
+                }
+            }
+            if let Some(ids) = self.docs.get_mut(doc_of(resource)) {
+                ids.remove(&id);
+                if ids.is_empty() {
+                    self.docs.remove(doc_of(resource));
+                }
+            }
         }
         for (key, _) in &b.state_reads {
             drop_from(&mut self.states, key, id);
         }
         self.space.remove(&id);
+    }
+
+    /// The boundaries that read `field` of `resource`, or any field of it for [`ANY_FIELD`].
+    fn readers<'a>(&'a self, resource: &str, field: &'a str) -> impl Iterator<Item = BoundId> + 'a {
+        self.resources
+            .get(resource)
+            .into_iter()
+            .flatten()
+            .filter(move |(read, _)| field == ANY_FIELD || read == field)
+            .map(|(_, id)| *id)
     }
 }
 
@@ -230,13 +278,10 @@ impl Live {
             return self.index.docs.contains_key(&change.doc);
         }
         change.fields.iter().any(|key| {
-            if key.field == ANY_FIELD {
-                self.index.resources.contains_key(&key.resource)
-            } else {
-                self.index
-                    .fields
-                    .contains_key(&(key.resource.clone(), key.field.clone()))
-            }
+            self.index
+                .readers(&key.resource, &key.field)
+                .next()
+                .is_some()
         })
     }
 
@@ -267,16 +312,7 @@ impl Live {
             }
         } else {
             for key in &change.fields {
-                let set = if key.field == ANY_FIELD {
-                    self.index.resources.get(&key.resource)
-                } else {
-                    self.index
-                        .fields
-                        .get(&(key.resource.clone(), key.field.clone()))
-                };
-                if let Some(set) = set {
-                    hit.extend(set.iter().copied());
-                }
+                hit.extend(self.index.readers(&key.resource, &key.field));
             }
         }
         self.dirty.extend(hit);
@@ -415,9 +451,9 @@ impl Live {
             state_reads,
             state_seen,
         } = rendered;
-        let mut reads = reads;
-        reads.sort();
-        reads.dedup();
+        // A view over a list reads each item's fields once per expression that uses them (a
+        // count and a filter), tens of thousands of reads: duplicates go by hash, not a sort.
+        let reads = distinct(reads);
         if let Some(mut b) = self.bounds.get_mut(id).and_then(Option::take) {
             self.index.remove(id, &b);
             self.to_release.append(&mut b.retained);

@@ -652,13 +652,36 @@ impl<T> FromIterator<(Id, T)> for Collection<T> {
     }
 }
 
-pub(crate) struct Stored {
-    pub(crate) id: Id,
-    pub(crate) key: String,
+/// One item of a collection map as stored: its id, its order key, its entry and what the
+/// entry's value slot holds. [`stored_entries`] lists them in order.
+pub struct Stored {
+    pub id: Id,
+    pub key: String,
     /// The entry's map; `None` for an item stored as its order key alone.
-    pub(crate) entry: Option<ObjId>,
+    pub entry: Option<ObjId>,
     /// What the entry's value slot holds, for reading the item.
-    pub(crate) value: crate::model::MapSlot,
+    pub value: crate::model::MapSlot,
+}
+
+/// An entry of a collection map, not read yet: see [`collection_entries`].
+pub struct StoredEntry {
+    id: Id,
+    slot: EntrySlot,
+}
+
+impl StoredEntry {
+    /// The id of the item the entry holds.
+    #[must_use]
+    pub fn id(&self) -> &Id {
+        &self.id
+    }
+}
+
+enum EntrySlot {
+    /// An item stored as its order key alone.
+    Order(String),
+    /// The entry's map, holding the order key and the value.
+    Map(ObjId),
 }
 
 /// Whether items of the type `item` are stored as their order key alone:
@@ -1066,41 +1089,71 @@ fn stored_order(keys: &[(Option<&str>, &Id)]) -> Vec<usize> {
     order
 }
 
+/// The entries of the collection map `map`, in one walk of the map, without reading any:
+/// [`read_entry`] reads each and [`in_stored_order`] orders what they read, which is what
+/// [`stored_entries`] does. Each read opens its entry's map, so a reader of a large
+/// collection may spread the reads over threads.
+#[must_use]
+pub fn collection_entries(doc: &Doc, map: &ObjId) -> Vec<StoredEntry> {
+    let mut entries = Vec::new();
+    for item in doc.map_range(map, ..) {
+        let id = Id(item.key.clone().into_owned());
+        // An item stored as its order key alone.
+        if let automerge::ValueRef::Scalar(automerge::ScalarValueRef::Str(order)) = &item.value {
+            entries.push(StoredEntry {
+                id,
+                slot: EntrySlot::Order(order.to_string()),
+            });
+        } else if item.value == automerge::ValueRef::Object(ObjType::Map) {
+            entries.push(StoredEntry {
+                id,
+                slot: EntrySlot::Map(item.id()),
+            });
+        }
+    }
+    entries
+}
+
+/// The item an entry holds: its order key and value slot, read with one walk of the entry.
+/// `None` for an entry without a readable order key: no entry anyone placed, left out, never
+/// the reason its whole collection does not read.
+#[must_use]
+pub fn read_entry(doc: &Doc, entry: StoredEntry) -> Option<Stored> {
+    match entry.slot {
+        EntrySlot::Order(key) => Some(Stored {
+            id: entry.id,
+            key,
+            entry: None,
+            value: None,
+        }),
+        EntrySlot::Map(map) => {
+            let [order, value] = crate::model::read_slots(doc, &map, [ORDER, VALUE]);
+            let order = crate::model::load_slot::<crate::Atom>(doc, order, ORDER).ok()?;
+            Some(Stored {
+                id: entry.id,
+                key: order.0,
+                entry: Some(map),
+                value,
+            })
+        }
+    }
+}
+
+/// Put read entries in stored order: by order key, ties by id.
+pub fn in_stored_order(entries: &mut [Stored]) {
+    // `(order key, id)` is unique, so an unstable sort orders as a stable one.
+    entries.sort_unstable_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
+}
+
 /// The stored entries of the collection map `map`, in order. One walk of
 /// the map lists the entries and one walk of each entry reads its order key
 /// and value slot: a lookup per key would open each map again.
 pub(crate) fn stored_entries(doc: &Doc, map: &ObjId) -> Vec<Stored> {
-    let mut entries = Vec::new();
-    for item in doc.map_range(map, ..) {
-        // An item stored as its order key alone.
-        if let automerge::ValueRef::Scalar(automerge::ScalarValueRef::Str(order)) = &item.value {
-            entries.push(Stored {
-                id: Id(item.key.clone().into_owned()),
-                key: order.to_string(),
-                entry: None,
-                value: None,
-            });
-            continue;
-        }
-        if item.value != automerge::ValueRef::Object(ObjType::Map) {
-            continue;
-        }
-        let entry = item.id();
-        let [order, value] = crate::model::read_slots(doc, &entry, [ORDER, VALUE]);
-        // An entry without a readable order key is no entry anyone placed:
-        // left out, never the reason its whole collection does not read.
-        let Ok(order) = crate::model::load_slot::<crate::Atom>(doc, order, ORDER) else {
-            continue;
-        };
-        entries.push(Stored {
-            id: Id(item.key.into_owned()),
-            key: order.0,
-            entry: Some(entry),
-            value,
-        });
-    }
-    // `(order key, id)` is unique, so an unstable sort orders as a stable one.
-    entries.sort_unstable_by(|a, b| a.key.cmp(&b.key).then_with(|| a.id.cmp(&b.id)));
+    let mut entries: Vec<Stored> = collection_entries(doc, map)
+        .into_iter()
+        .filter_map(|entry| read_entry(doc, entry))
+        .collect();
+    in_stored_order(&mut entries);
     entries
 }
 

@@ -774,6 +774,19 @@ impl Target {
     pub fn get<T: std::any::Any>(&self) -> Option<&T> {
         self.0.as_deref()?.downcast_ref()
     }
+
+    /// Whether `self` and `other` are one target: the same allocation, as
+    /// the specs of one item bound from one target are. Two targets made
+    /// apart are different even when their values are equal, so a resource
+    /// bound anew is told from one kept.
+    #[must_use]
+    pub fn same(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
 }
 
 /// Builds a prompted action's encoded form for one target from its text.
@@ -2716,11 +2729,19 @@ mod tests {
         );
 
         // Changing one item's action leaves the shared type alone.
-        let unavailable = b.clone().unavailable("locked", "The note is locked");
+        let unavailable = b.unavailable("locked", "The note is locked");
         assert!(!Arc::ptr_eq(unavailable.action_type(), &ty));
         assert!(!unavailable.contract.availability.is_available());
         assert!(a.contract.availability.is_available());
         assert_eq!(unavailable.build_json(&typed).unwrap(), encode("b", "Plan"));
+
+        // A target is one allocation: its clones are the same target, an equal value made
+        // apart is not.
+        let target = Target::new("a".to_owned());
+        assert!(target.same(&target.clone()));
+        assert!(!target.same(&Target::new("a".to_owned())));
+        assert!(Target::none().same(&Target::none()));
+        assert!(!target.same(&Target::none()));
     }
 
     #[test]

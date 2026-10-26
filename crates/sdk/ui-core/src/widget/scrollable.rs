@@ -112,6 +112,9 @@ pub struct Scrollable {
     /// Opt-in inherited decision, consumed by the retained content wrapper.
     content_min_viewport_height: Option<Rc<Cell<f32>>>,
     child: Option<Element>,
+    /// A content shown in place of another since the host last read it
+    /// ([`Self::replace_child`]): described.
+    structure: crate::widget::StructureChange,
     /// Retained Taffy identity for `child`; refreshed with the layout tree so
     /// event and scroll-layout paths never allocate `taffy.children()`.
     child_node: Option<NodeId>,
@@ -244,6 +247,7 @@ impl Scrollable {
             fill_parent_height: false,
             content_min_viewport_height: None,
             child: None,
+            structure: crate::widget::StructureChange::None,
             child_node: None,
             rect: Rect::ZERO,
             scroll_dirty: false,
@@ -301,11 +305,26 @@ impl Scrollable {
     }
     #[must_use]
     pub fn with_child(mut self, c: Element) -> Self {
-        self.child = Some(match &self.content_min_viewport_height {
+        self.child = Some(self.content(c));
+        self
+    }
+    /// Show `c` instead of the content, which it returns, keeping the scroll position. A
+    /// change the frame's damage describes: the new content draws itself whole, and the host
+    /// repaints where the boxes it moved were and are.
+    pub fn replace_child(&mut self, c: Element) -> Option<Element> {
+        let c = self.content(c);
+        self.structure = self
+            .structure
+            .join(crate::widget::StructureChange::Described);
+        self.child.replace(c)
+    }
+    /// `c` as the child, in the wrapper that keeps it at least the viewport's height when the
+    /// view asks for one.
+    fn content(&self, c: Element) -> Element {
+        match &self.content_min_viewport_height {
             Some(minimum) => Box::new(ViewportContent::new(c, Rc::clone(minimum))),
             None => c,
-        });
-        self
+        }
     }
     /// Let auto-height content fill at least the measured viewport height,
     /// retaining its intrinsic height when it overflows. This does not change
@@ -2092,20 +2111,21 @@ impl Widget for Scrollable {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure).rebuilds();
         self.child
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty())
+            | own
     }
 
-    /// The view adds no structure of its own: a change its content can
-    /// describe (a long list mounting the rows a scroll brought near) stays
-    /// described.
+    /// The view adds no structure of its own but a content replaced in place,
+    /// which is described: a change its content can describe (a long list
+    /// mounting the rows a scroll brought near) stays described.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        let own = std::mem::take(&mut self.structure);
         self.child
             .as_mut()
-            .map_or(crate::widget::StructureChange::None, |child| {
-                child.take_structure_change()
-            })
+            .map_or(own, |child| own.join(child.take_structure_change()))
     }
 }
 

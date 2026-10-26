@@ -77,7 +77,7 @@ impl Checker<'_> {
     /// Checks that a primitive stands where it may: a frame's columns and its composer
     /// directly in a frame.
     pub(super) fn placement(&mut self, prim: &str, span: Span) {
-        if prims::FRAMES.contains(&self.st.ui_parent) {
+        if prims::FRAMES.contains(&self.st.ui.parent) {
             return;
         }
         if matches!(prim, "sidebar" | "inspector") {
@@ -249,8 +249,20 @@ impl Checker<'_> {
             .unwrap_or_default();
         self.emit(host(
             Imp::UiPropH,
-            vec![node, Ex::str("item_type"), Ex::str(&type_id)],
+            vec![node.clone(), Ex::str("item_type"), Ex::str(&type_id)],
         ));
+        // A list in a card is the card's summary: it shows its first rows, and the card opens
+        // the resource for the rest.
+        if self.st.ui.in_card {
+            self.emit(host(
+                Imp::UiPropI,
+                vec![
+                    node,
+                    Ex::str("preview"),
+                    Ex::new(Ek::Int(prims::PREVIEW_ROWS), Ty::Int),
+                ],
+            ));
+        }
         if let Some(v) = sort
             && let Some((state, info)) = self.enum_state("sort", v)
         {
@@ -331,11 +343,11 @@ impl Checker<'_> {
         match (&c.block, &c.item, row_view) {
             (Some(block), Some(var), _) => {
                 self.bind_local(&var.name, fl.item_local);
-                let saved = (self.st.ui_parent, self.st.list_row_ok);
-                self.st.ui_parent = "item";
-                self.st.list_row_ok = true;
+                let saved = self.st.ui;
+                self.st.ui.parent = "item";
+                self.st.ui.list_row_ok = true;
                 self.ui_stmts(block, it);
-                (self.st.ui_parent, self.st.list_row_ok) = saved;
+                self.st.ui = saved;
             }
             (None, _, Some(v)) => {
                 let key = concat(Ex::local(item_key, Ty::Text), Ex::str("/row"));
@@ -467,7 +479,7 @@ impl Checker<'_> {
         if c.block.is_some() {
             self.err("E097", span, "a row with a title is a list row and takes no block; for a layout row write `row { ... }` with the title inside it as `text(...)`");
         }
-        if !self.st.list_row_ok {
+        if !self.st.ui.list_row_ok {
             self.err("E097", span, "a list row `row(title, ...)` stands directly in a list's item block, `list(xs) { x -> row(x.title) }`, or is a row view's body; for a layout row write `row { ... }`");
         }
         let key = self.node_key(c);
@@ -527,8 +539,9 @@ impl Checker<'_> {
         n
     }
 
-    /// A row's `avatar:`: a Principal, or an Option of one, which shows no avatar when `.none`
-    /// (the last message's author of a conversation that has none yet).
+    /// A row's `avatar:`: a Principal, or an Option of one. At `.none` (the last message's author
+    /// of a conversation that has none yet) the prop is `.none`: the row shows no avatar and
+    /// keeps the room one takes, in line with the rows that have one.
     fn avatar_arg(&mut self, node: &Ex, value: &ast::Expr) {
         let v = self.expr(value, Some(&Ty::Principal));
         let Ty::Option(inner) = v.ty.clone() else {
@@ -545,13 +558,16 @@ impl Checker<'_> {
         self.emit(Stmt::Set(tmp, v));
         let opt = Ex::local(tmp, ty);
         let test = Ex::host(Imp::IsSome, vec![opt.clone()], Ty::Bool);
-        let who = Ex::host(Imp::UnwrapH, vec![opt], Ty::Principal);
-        let set = Stmt::Eval(Ex::host(
-            Imp::UiPropH,
-            vec![node.clone(), Ex::str("avatar"), who],
-            Ty::Unit,
-        ));
-        self.emit(Stmt::If(test, vec![set], Vec::new()));
+        let who = Ex::host(Imp::UnwrapH, vec![opt.clone()], Ty::Principal);
+        let set = |value| {
+            Stmt::Eval(Ex::host(
+                Imp::UiPropH,
+                vec![node.clone(), Ex::str("avatar"), value],
+                Ty::Unit,
+            ))
+        };
+        let (some, none) = (set(who), set(opt));
+        self.emit(Stmt::If(test, vec![some], vec![none]));
     }
 
     /// A row's text: Text, a Date or a Time, or an Option of one (`.none` is the empty text).
@@ -840,7 +856,7 @@ impl Checker<'_> {
         parent: LocalId,
         span: Span,
     ) {
-        if self.st.ui_parent != "facts" {
+        if self.st.ui.parent != "facts" {
             self.err(
                 "E098",
                 span,

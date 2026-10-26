@@ -74,6 +74,10 @@ pub const PRIMS: &[Prim] = &[
     prim_of("embed", &["source"], &["author", "invocation"]),
 ];
 
+/// How many rows a `list` inside a `card` shows: a card is a summary of its resource, which it
+/// opens for the whole list. The list node carries it as its `preview` property.
+pub const PREVIEW_ROWS: i64 = 5;
+
 /// The frames: one of them is the whole of a window's view.
 pub const FRAMES: &[&str] = &["list", "document", "page", "canvas"];
 

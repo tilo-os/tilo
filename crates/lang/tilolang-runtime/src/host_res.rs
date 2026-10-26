@@ -28,6 +28,18 @@ struct MutCtx {
     txn: Txn,
 }
 
+/// The field `field` (by id) of a type.
+fn field_in<'a>(info: &'a TypeInfo, field: &str) -> HResult<&'a FieldInfo> {
+    match info.field(field) {
+        Some(f) => Ok(f),
+        None => trap(format!(
+            "type `{}` has no field `{field}`; fields are: {}",
+            info.name,
+            info.field_names()
+        )),
+    }
+}
+
 fn spec(f: &FieldInfo) -> FieldSpec {
     FieldSpec {
         id: f.id.clone(),
@@ -183,17 +195,8 @@ impl Core {
         field: &str,
     ) -> HResult<(Rc<TypeInfo>, FieldInfo)> {
         let (_, info) = self.type_of_ref(&r.ty)?;
-        match info.field(field) {
-            Some(f) => {
-                let f = f.clone();
-                Ok((info, f))
-            }
-            None => trap(format!(
-                "type `{}` has no field `{field}`; fields are: {}",
-                info.name,
-                info.field_names()
-            )),
-        }
+        let f = field_in(&info, field)?.clone();
+        Ok((info, f))
     }
 
     /// Check a stored or parsed reference against the type stored in the document.
@@ -317,7 +320,7 @@ impl Core {
                     ids.iter()
                         .map(|id| {
                             Value::Ref(RefValue {
-                                target: target.item(&field.id, id, item.id.clone()),
+                                target: Rc::new(target.item(&field.id, id, item.id.clone())),
                                 author: author.cloned(),
                             })
                         })
@@ -368,7 +371,7 @@ impl Core {
                     let target = ResourceRef::parse_id(&k, ty).ok_or("malformed set element")?;
                     self.verify_stored_ref(&target)?;
                     Ok(Value::Ref(RefValue {
-                        target,
+                        target: Rc::new(target),
                         author: author.cloned(),
                     }))
                 }
@@ -379,15 +382,41 @@ impl Core {
     }
 
     fn res_get(&self, rh: i32, fh: i32) -> HResult<Value> {
-        let r = self.ref_arg(rh)?;
-        let field = self.text(fh)?;
-        let (_, f) = self.lookup_field(&r.target, &field)?;
-        let author = self.module_of_frame()?;
-        let v = self.journaled_read(|| Ok(self.read_value(&r.target, &f, Some(&author))?))?;
-        if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
-            vs.reads.push((r.target.id_string(), f.id));
+        let in_flow = matches!(self.frames.borrow().top()?.kind, FrameKind::Flow(_));
+        if in_flow {
+            // A flow's reads go through its journal, which takes the frames to record them.
+            let target = Rc::unwrap_or_clone(self.ref_arg(rh)?.target);
+            let field = self.text(fh)?;
+            let (_, f) = self.lookup_field(&target, &field)?;
+            let author = self.module_of_frame()?;
+            return self.journaled_read(|| Ok(self.read_value(&target, &f, Some(&author))?));
         }
-        Ok(v)
+        // The hottest import: a view over a list reads a field of every item. The reference,
+        // the field's name and the author are read where they are held, not copied.
+        let (value, read) = {
+            let frames = self.frames.borrow();
+            let target = match frames.get(rh)? {
+                Value::Ref(r) => &r.target,
+                other => {
+                    return trap(format!(
+                        "expected a resource reference, got {}",
+                        other.kind_name()
+                    ));
+                }
+            };
+            let (_, info) = self.type_of_ref(&target.ty)?;
+            let f = match frames.get(fh)? {
+                Value::Text(field) => field_in(&info, field)?,
+                other => return trap(format!("expected text, got {}", other.kind_name())),
+            };
+            let author = &frames.top()?.module;
+            let value = self.read_value(target, f, Some(author))?;
+            (value, (target.id_string(), f.id.clone()))
+        };
+        if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
+            vs.reads.push(read);
+        }
+        Ok(value)
     }
 
     fn mut_ctx(&self, rh: i32, fh: i32) -> HResult<MutCtx> {
@@ -410,7 +439,7 @@ impl Core {
             ));
         }
         Ok(MutCtx {
-            target: r.target,
+            target: Rc::unwrap_or_clone(r.target),
             field: f,
             txn,
         })
@@ -523,7 +552,10 @@ impl Core {
         let target = ctx.target.item(&ctx.field.id, &id, item_ty.id.clone());
         self.init_item(&ctx, &item_ty, &target, &rec)?;
         let author = Some(self.module_of_frame()?);
-        self.ret_h(Value::Ref(RefValue { target, author }))
+        self.ret_h(Value::Ref(RefValue {
+            target: Rc::new(target),
+            author,
+        }))
     }
 
     fn init_item(
@@ -627,7 +659,10 @@ impl Core {
                 self.type_of_ref(&ty)?;
                 self.verify_ref(&target)?;
                 let author = Some(self.module_of_frame()?);
-                self.ret_h(Value::Ref(RefValue { target, author }))
+                self.ret_h(Value::Ref(RefValue {
+                    target: Rc::new(target),
+                    author,
+                }))
             }
             Imp::RefEq => {
                 let (x, y) = (self.ref_arg(a.h(0)?)?, self.ref_arg(a.h(1)?)?);

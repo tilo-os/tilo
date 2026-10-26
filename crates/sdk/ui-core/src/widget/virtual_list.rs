@@ -30,6 +30,8 @@ use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
 const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
+/// How near its end a list that follows its end still counts as at it, in logical pixels.
+const END_SLACK: f64 = 0.5;
 
 fn px(value: f64) -> f32 {
     #[allow(
@@ -386,6 +388,10 @@ pub struct VirtualList<M: ListModel> {
     rows_beside_bar: bool,
     /// The list takes its parent's height, and its viewport follows it.
     fill_height: bool,
+    /// The list follows its end, as a transcript does ([`Self::following_end`]).
+    follow_end: bool,
+    /// Whether a list that follows its end shows it: the last scroll left it there.
+    at_end: bool,
     last_tick: Option<Instant>,
     last_anchor: Option<SparseAnchor<M::Key>>,
     requested_range: Option<Range<usize>>,
@@ -517,6 +523,8 @@ impl<M: ListModel> VirtualList<M> {
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
             rows_beside_bar: false,
             fill_height: false,
+            follow_end: false,
+            at_end: false,
             last_tick: None,
             last_anchor: None,
             requested_range: None,
@@ -551,9 +559,7 @@ impl<M: ListModel> VirtualList<M> {
             return false;
         };
         self.focused_key = Some(key.clone());
-        self.viewport
-            .scroll_to_index(index, ScrollAlignment::Nearest);
-        self.visible_window_changed();
+        self.scroll_to_index(index);
         true
     }
 
@@ -572,6 +578,7 @@ impl<M: ListModel> VirtualList<M> {
 
     pub fn set_viewport_height(&mut self, height: f32) {
         self.viewport.set_viewport(f64::from(height));
+        self.keep_end();
         self.visible_window_changed();
     }
 
@@ -705,6 +712,53 @@ impl<M: ListModel> VirtualList<M> {
             .take()
             .filter(|key| self.model.index_of(key).is_some());
         self.request_dirty = true;
+        self.keep_end();
+        self.visible_window_changed();
+    }
+
+    /// Follow the list's end, as a transcript does: it opens at its last row, and while it
+    /// shows its end it stays there as rows arrive and settle their heights. A scroll away
+    /// lets go; a scroll back to the end takes it up again.
+    #[must_use]
+    pub fn following_end(mut self) -> Self {
+        self.follow_end = true;
+        self.at_end = true;
+        self.keep_end();
+        self
+    }
+
+    /// Whether the list shows its end, for one that follows it.
+    #[must_use]
+    pub fn is_at_end(&self) -> bool {
+        self.follow_end && self.at_end
+    }
+
+    /// After a scroll: whether it left a list that follows its end at the end.
+    fn note_scrolled(&mut self) {
+        if self.follow_end {
+            self.at_end = self.viewport.max_offset() - self.viewport.offset() <= END_SLACK;
+        }
+    }
+
+    /// Bring a list that follows its end back to it, after its rows or its height changed.
+    /// Whether that scrolled.
+    fn keep_end(&mut self) -> bool {
+        if !(self.follow_end && self.at_end) {
+            return false;
+        }
+        let end = self.viewport.max_offset();
+        if self.viewport.offset().to_bits() == end.to_bits() {
+            return false;
+        }
+        self.viewport.set_offset(end);
+        true
+    }
+
+    /// Scroll row `index` into view, as the keyboard focus or assistive technology asks.
+    fn scroll_to_index(&mut self, index: usize) {
+        self.viewport
+            .scroll_to_index(index, ScrollAlignment::Nearest);
+        self.note_scrolled();
         self.visible_window_changed();
     }
 
@@ -880,6 +934,7 @@ impl<M: ListModel> VirtualList<M> {
 
     pub fn set_scroll_offset(&mut self, offset: f64) {
         self.viewport.set_offset(offset);
+        self.note_scrolled();
         // The rows move in `apply_layout`; rows the scroll brought near are
         // mounted by the rebuild the layout pass asks for, which the
         // frame's damage describes.
@@ -1265,9 +1320,7 @@ impl<M: ListModel> VirtualList<M> {
         };
         self.focused_key = Some(key.clone());
         self.select_focused(key, extend);
-        self.viewport
-            .scroll_to_index(index, ScrollAlignment::Nearest);
-        self.visible_window_changed();
+        self.scroll_to_index(index);
         true
     }
 
@@ -1573,6 +1626,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         }
         self.gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
         self.bleed = crate::chrome::row_bleed(theme);
+        if self.keep_end() {
+            self.refresh_anchor();
+        }
         self.reconcile_mounted();
         // Rows stand one bleed in from the list's edges, so their lift (and
         // a ListRow's) fills the list; beside the bar they leave its gutter.
@@ -1632,6 +1688,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             && (self.rect.height() - self.viewport.viewport()).abs() > 0.5
         {
             self.viewport.set_viewport(self.rect.height());
+            self.keep_end();
             self.visible_window_changed();
         }
         // Rows stand where the layout was built, moved by the scroll since.
@@ -1662,6 +1719,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             self.viewport.measure(index, key, height.max(1.0));
             measured |= geometry(&self.viewport) != before;
         }
+        // Rows that settled their heights moved the end: a list following it stays there.
+        measured |= self.keep_end();
         if measured {
             self.visible_window_changed();
         } else {
@@ -2209,9 +2268,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             Action::Focus => {
                 self.focused_key = Some(key.clone());
                 self.select_focused(key, false);
-                self.viewport
-                    .scroll_to_index(index, ScrollAlignment::Nearest);
-                self.visible_window_changed();
+                self.scroll_to_index(index);
                 true
             }
             Action::Activate => {
@@ -2226,9 +2283,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 true
             }
             Action::ScrollIntoView => {
-                self.viewport
-                    .scroll_to_index(index, ScrollAlignment::Nearest);
-                self.visible_window_changed();
+                self.scroll_to_index(index);
                 true
             }
             Action::ShowContextMenu if self.on_context.is_some() => {
@@ -3230,6 +3285,70 @@ mod tests {
         );
         assert!(!list.selection().is_selected(&2));
         assert_eq!(selected.borrow().last(), Some(&(3, true)));
+    }
+
+    #[test]
+    fn a_transcript_opens_at_its_end_and_follows_it_until_scrolled_away() {
+        let mut list = plain_rows(10_000).following_end();
+        // The rows settle their heights over a few layouts; the list stays at its end.
+        for _ in 0..4 {
+            let _ = lay_out(&mut list, 300.0);
+        }
+        assert!(list.is_at_end());
+        assert!(list.max_scroll_offset() > 0.0);
+        assert!((list.max_scroll_offset() - list.scroll_offset()).abs() < 0.01);
+        assert!(
+            list.visible_range().contains(&9_999),
+            "the newest row shows"
+        );
+
+        // A row arrives: the list follows it.
+        list.update_model_changes(
+            &[ListModelChange::RowsInserted {
+                index: 10_000,
+                count: 1,
+            }],
+            |model| model.push(10_000, 10_000).unwrap(),
+        );
+        for _ in 0..2 {
+            let _ = lay_out(&mut list, 300.0);
+        }
+        assert!((list.max_scroll_offset() - list.scroll_offset()).abs() < 0.01);
+        assert!(list.visible_range().contains(&10_000));
+
+        // Scrolled back to read: an arrival leaves the rows where they are. (Rows as tall as
+        // the estimate, so that rows settling their heights above move nothing either.)
+        let mut list = VirtualList::from_items(
+            (0..10_000_u32).collect(),
+            40.0,
+            |item| *item,
+            |_, _, _| Box::new(crate::widget::Spacer::fixed(40.0)) as Element,
+        )
+        .unwrap()
+        .with_viewport_height(200.0)
+        .following_end();
+        let _ = lay_out(&mut list, 300.0);
+        list.set_scroll_offset(list.scroll_offset() - 500.0);
+        let _ = lay_out(&mut list, 300.0);
+        assert!(!list.is_at_end());
+        let reading = list.scroll_offset();
+        list.update_model_changes(
+            &[ListModelChange::RowsInserted {
+                index: 10_000,
+                count: 1,
+            }],
+            |model| model.push(10_000, 10_000).unwrap(),
+        );
+        let _ = lay_out(&mut list, 300.0);
+        assert!(
+            (list.scroll_offset() - reading).abs() < 0.01,
+            "the rows read stay put"
+        );
+        assert!(!list.is_at_end());
+
+        // Back at the end, it follows again.
+        list.set_scroll_offset(list.max_scroll_offset());
+        assert!(list.is_at_end());
     }
 
     #[test]

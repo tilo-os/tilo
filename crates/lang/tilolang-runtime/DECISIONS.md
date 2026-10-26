@@ -234,15 +234,54 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   patches that empty them; a forgotten row no longer runs. Showing and hiding cost the rows
   concerned, not the list's length. A host that draws the whole tree calls
   `set_lazy_rows(false)` before its first poll and reads `tree()` after it.
+- **A card is a summary.** A `list` inside a `card` is the card's preview: the compiler gives it
+  `preview` (`tilolang::prims::PREVIEW_ROWS`, 5) and the runtime builds only those rows, with
+  `len` holding how many the list has (`UiNode::items_total`). The card's `count:` says how many
+  there are and pressing the card opens its resource for the rest. Before, a board's cards built
+  and drew every row of three 10k lists.
 - **The native host** (`apps/tilolang`). The list column of a `list` frame is a `VirtualList`
   over the list's row keys: it asks for the rows it shows (visible and overscan) with
   `row(list, i)` and forgets the rest with `hide_rows`. A poll's patches are sorted by where
   they show: rows inserted, removed or moved are the list's model changes; a change inside a
-  shown row reads that row again and rebuilds it alone; anything else reconciles the columns
-  from `tree()` by key. A list inside a page or a card is drawn whole, its rows rendered as
-  they appear. What the room publishes (`Publications`) and what search finds (`SearchIndex`)
-  are kept by the live window and updated from the store's changes, read off the frame the
-  first time.
+  shown row reads that row again and rebuilds it alone; anything else is reconciled in place.
+  The `list` of a frame with a composer (a conversation) is a transcript: a `VirtualList` that
+  opens at its newest row and follows it while it shows it (`following_end`), its rows the
+  view's own, shown and forgotten as the list column's are, so a conversation of 10k messages
+  costs the messages on screen. A list inside a page is drawn whole, its rows rendered as they
+  appear; one in a card shows its preview. What the room publishes (`Publications`) and what
+  search finds (`SearchIndex`) are kept by the live window and updated from the store's
+  changes, read off the frame the first time.
+- **Patches outside a list apply to single widgets.** The reconciler (`apps/tilolang/src/
+  reconcile.rs`) updates a widget in place where it can take the change (a text, a heading, an
+  image, a holder, a button's enabled state, an input keeps its own) and reconciles a
+  container's children by key through the toolkit's slot operations: `Arranged` (`replace`,
+  `insert`, `remove`, `move_slot`, `set_placement`), `Container` and `Scrollable`
+  (`replace_child`). A prop change marks the widget alone; an insert, remove or move reports a
+  `StructureChange::Described` that the containers above forward (`Card`, `Section`,
+  `NavShell`, the form parts), so the surface compares boxes by identity and repaints where
+  they moved instead of rebuilding the window. Only a content swapped whole (`Pane::set`, a
+  container's own `set_slots`) is a `Rebuild`.
+- **Publication follows a change to its depth.** `Publications` republishes where a change
+  reached: an item whose own field changed has its label read again, and so do the items
+  holding it; a collection whose membership or order changed has its children brought in line
+  at the resource holding it, wherever it is; only an item created, replaced or removed as a
+  whole is built anew. Before, a change anywhere in a top-level item rebuilt it with
+  everything in it: typing a conversation's draft republished its 10k messages (556 ms a
+  keystroke). Labels are the store's `first_text` through its read cache, and naming skips a
+  collection whose items cannot hold a text (`reads::may_hold_text`).
+- **The store keeps what it read** (`tilolang-tilo/src/cache.rs`). Reading a field of an item
+  used to walk from the document's root to the item (three map lookups), then to the field: 3
+  to 4 µs per lookup in automerge's op set, about 20 µs a field, so a view that filters 10k items
+  spent 200 ms. `TiloStore` now keeps per resource where its map is and the fields read, and a
+  collection read lists every item with its registers and counters in one walk of each item's
+  map, on up to 8 threads for 1k items or more (`collection_entries`/`read_entry` in
+  `tilo-resource` split the read so that it can be spread). Every write the store makes forgets
+  the keys it touched (a local write, a rollback or rewind of local writes, an incremental sync
+  forgets the changed fields; a sync that cannot say clears all), so a read never sees an older
+  value than the mirror holds. The runtime's side of a read copies nothing it can borrow:
+  `res_get` reads the reference, field and author where the frame holds them, a reference value
+  shares its `ResourceRef` (`RefValue::target` is an `Rc`), and a boundary's reads are deduplicated
+  by hash and indexed per resource.
 - **Store changes for the host.** `TiloStore::watch()` gives a cursor; `Watch::take()` returns the
   `Changes` since the last take: changed fields per document, documents changed anywhere
   (`whole`), or `everything` after the mirror was copied anew. Planning an action (a trial run
@@ -306,24 +345,35 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   item, or bumps the root's counter. `memory_anon` is measured in a process of its own that loads
   the saved room and opens it, as an app process does (the bench's own process keeps what
   seeding allocated). `cargo test --release -p tilolang-tilo --test budgets` holds section 4.1 of
-  the design on the apps in `apps/tl`: notes and chat at 10k (open p95 300 ms, keystroke and
-  peer p95 2 ms, scroll p50 1 ms, no idle wakeups) and memory at 1k (60 MiB); todo and the
-  board on every budget but open; and the counter.
+  the design on the apps in `apps/tl`: notes, chat, todo and the board at 10k (open p95 150 ms,
+  half the section's 300; keystroke and peer p95 2 ms; scroll p50 1 ms for the lists; no idle
+  wakeups) and memory at 1k (60 MiB); and the counter.
 - **Where it stands** (release, aarch64, 10k items, 20 samples, p95; the runtime's share, the
-  bench drives no window). notes: open 280 ms, keystroke 0.58 ms, peer edit 0.40 ms, scroll p50
-  0.23 ms, idle 0 wakeups; ready (search and publication done) 689 ms. chat: open 50 ms,
-  keystroke 0.51, peer 0.34, scroll p50 0.29. todo: open 497 ms, keystroke 0.52, peer 0.37,
-  scroll p50 0.17. board (notes, todo and chat of 10k each): open 1265 ms, keystroke 0.92, peer
-  0.70. Memory at 1k: notes 12 MiB, chat 13, todo 13, board 35. counter: open 0.28 ms, press
-  0.12, peer 0.07. The first change of a window costs 5 to 7 ms: automerge renumbers its
-  columns for the new actor (about 2 ms per document at 400k ops), inherent to its sorted actor
-  table.
-- **Not met yet.** Open at 10k for todo (497 ms) and the board (1265 ms); where their time goes
-  is not measured yet. The board's lists sit inside cards, which the host draws whole. Memory at
-  10k: notes' process holds 113 MiB, todo's 114, chat's 105, the board's 327. In the host, a
-  change outside the list column's rows reconciles the column by key from `tree()` and lays the
-  window out again; applying such patches to single widgets needs the toolkit's containers to
-  take a child in place.
+  bench drives no window). notes: open 48 ms, keystroke 0.48 ms, peer edit 0.29 ms, scroll p50
+  0.09 ms, idle 0 wakeups; ready (search and publication done) 421 ms. chat: open 27 ms,
+  keystroke 0.44, peer 0.24, scroll p50 0.21. todo: open 68 ms, keystroke 0.44, peer 0.29,
+  scroll p50 0.08. board (notes, todo and chat of 10k each): open 126 ms, keystroke 0.90, peer
+  0.53. One conversation of 10k messages in its window: open 52 ms (p50 25), a keystroke in the
+  draft 1.6 ms (582 ms before publication followed changes to their depth), scroll p50 0.33 ms,
+  a peer's message 83 ms. Memory at 1k: notes 21 MiB, chat 19, todo 17, board 39. counter: open 0.28 ms, press
+  0.12, peer 0.07. Open was 280, 50, 497 and 1265 ms before the store kept what it read and a
+  card showed its preview. The board's open is where the time is: three listings of 10k items
+  (30 ms on eight threads), 40k field reads from the store's cache (20 ms, mostly the memory
+  the reads reach), 30k references built for the items (10 ms) and freed with the frame
+  (10 ms), the view's own work (20 ms). On a shared t worker the same open measured 154 ms, and
+  more under load: the board meets the budget with little to spare off the laptop. The first
+  change of a window costs 5 to 7 ms: automerge renumbers its columns for the new actor (about
+  2 ms per document at 400k ops), inherent to its sorted actor table.
+- **Not met yet.** A peer's message in a conversation of 10k: 83 ms, against the peer budget
+  of 2 ms. Its share: the store lists the 10k messages again after the insert forgets the
+  listing (9 ms, each time), publication brings the conversation's 10k children in line (9 ms),
+  the thread view runs again because it reads the collection (20 ms for the evaluation, which
+  builds a reference per message, 8 ms for diffing 10k row keys), and the conversation's row in
+  the chat list runs again for `messages.last()`, which builds the same 10k references
+  (22 ms). A collection read as a value is a list of every item's reference; reading the end of
+  one, or a listing kept across an insert, needs collections that the runtime reads lazily and
+  a cache that applies an insert to what it listed. Memory at 10k: see the measurement after the
+  actions split below.
 - **An action is a type bound to a target.** `tilo-actions` splits what an action is
   (`ActionType`: id, label, description, params, contract, kind, operation type, builder,
   classifiers) from what it acts on (`Target`). An `ActionSpec` is an `Arc<ActionType>` and a

@@ -16,6 +16,7 @@ pub mod authority;
 pub mod background;
 pub mod bench;
 pub mod bundle;
+pub mod cache;
 pub mod effects;
 pub mod host;
 pub mod meta;
