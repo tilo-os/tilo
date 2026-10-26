@@ -282,10 +282,10 @@ impl Outbox {
         }
         state.bytes = kept.iter().map(|item| item.bytes).sum();
         state.items = kept;
+        // Only a confirmation that never left loses its receipt: one already
+        // delivered still confirms, so an address left again within the
+        // relay's hour is answered as mailed, not refused.
         let mut receipts_changed = false;
-        if let Some(key) = contact_sha256 {
-            receipts_changed |= state.receipts.remove(key).is_some();
-        }
         for contact in cancelled_contacts {
             receipts_changed |= state.receipts.remove(&receipt_key(&contact)).is_some();
         }
@@ -1291,6 +1291,18 @@ mod tests {
         assert!(restored.state.lock_recover().items.is_empty());
         assert!(!restored.confirmation_kept("äda@example.org"));
         assert_eq!(scripted.count(), 0);
+    }
+
+    #[test]
+    fn removal_keeps_the_receipt_of_a_confirmation_already_delivered() {
+        let root = tempfile::tempdir().unwrap();
+        let scripted = Scripted::new([]);
+        let outbox = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
+        assert!(outbox.confirmation_receipt("ada@example.org", true));
+        outbox.cancel(&"aa".repeat(32), Some(&receipt_key("ada@example.org")));
+        assert!(outbox.confirmation_kept("ada@example.org"));
+        let restored = Outbox::durable(root.path(), mailer(&scripted), Limits::DEFAULT).unwrap();
+        assert!(restored.confirmation_kept("ada@example.org"));
     }
 
     #[tokio::test]
