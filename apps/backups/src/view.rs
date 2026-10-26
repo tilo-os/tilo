@@ -541,7 +541,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
                 )),
         ) as Element
     };
-    let protected_fact = Measured::measured(
+    let protected_fact = Measured::reading(
         Measure::new("Protected size").unit(unit.clone()),
         value,
         "repository manifest",
@@ -552,7 +552,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
         tile("Protected", protected_fact, Some(unit), None),
         tile(
             "Snapshots",
-            Measured::measured(
+            Measured::reading(
                 Measure::new("Snapshots"),
                 i18n::group_digits(count as u64),
                 "repository manifest",
@@ -569,7 +569,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
             let tone = (now - last.taken > chrono::Duration::days(2)).then_some(Tone::Warning);
             tile(
                 "Last backup",
-                Measured::measured(
+                Measured::reading(
                     Measure::new("Time since last backup").unit(unit.clone()),
                     value,
                     "repository manifest",
@@ -595,7 +595,7 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
             let (value, unit) = ahead(next, now);
             tile(
                 "Next run",
-                Measured::measured(
+                Measured::reading(
                     Measure::new("Time to next run").unit(unit.clone()),
                     value,
                     "schedule",

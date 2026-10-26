@@ -28,7 +28,7 @@
 //! use tilo_ui::capability_door::{Capability, Door};
 //!
 //! let door = Door::grantable(Capability::FIREWALL, "Tilo needs your permission to change firewall rules");
-//! let shown: Option<&str> = door.control(|| Some("the Apply button"));
+//! let shown: Option<&str> = door.control(|| "the Apply button");
 //! assert!(shown.is_none(), "a grantable verb draws no inert control");
 //! let grant = door.grant_words().expect("the grant step names itself");
 //! assert!(grant.contains("permission"));
@@ -218,13 +218,14 @@ impl Door {
     }
 
     /// Draw one of the three faces. A view that goes through here cannot
-    /// draw the granted control for a capability it does not hold.
+    /// draw the granted control for a capability it does not hold. The grant
+    /// words, reason and remedy are the door's own, so a face may keep them.
     #[must_use]
-    pub fn face<T>(
-        &self,
+    pub fn face<'a, T>(
+        &'a self,
         granted: impl FnOnce() -> T,
-        grantable: impl FnOnce(&str) -> T,
-        unavailable: impl FnOnce(&str, Option<&str>) -> T,
+        grantable: impl FnOnce(&'a str) -> T,
+        unavailable: impl FnOnce(&'a str, Option<&'a str>) -> T,
     ) -> T {
         match &self.resolution {
             Resolution::Granted => granted(),
@@ -284,16 +285,17 @@ mod tests {
             "allow changing firewall rules"
         );
 
-        let unavailable = Door::unavailable(Capability::FIREWALL, "firewalld isn't running").face(
-            || "control",
-            |_| "grant",
-            |reason, remedy| (reason, remedy),
-        );
+        let unavailable = Door::unavailable(Capability::FIREWALL, "firewalld isn't running");
         assert_eq!(
-            unavailable,
+            unavailable.face(
+                || ("control", None),
+                |_| ("grant", None),
+                |reason, remedy| (reason, remedy),
+            ),
             ("firewalld isn't running", None),
             "unavailable draws no control"
         );
+        assert_eq!(unavailable.control(|| "apply"), None);
     }
 
     #[test]

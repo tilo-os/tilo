@@ -626,7 +626,7 @@ fn logs(c: &Container) -> Element {
     }
     let now = ui::time::wall();
     let fact = match as_of(c.logs_fetched_unix_ms) {
-        Some(at) => Measured::measured(
+        Some(at) => Measured::reading(
             Measure::new("Log lines"),
             c.logs.len().to_string(),
             "Podman logs",
@@ -723,7 +723,7 @@ fn stats(c: &Container) -> Element {
     ];
     let now = ui::time::wall();
     let fact = match as_of(s.fetched_unix_ms) {
-        Some(at) => Measured::measured(
+        Some(at) => Measured::reading(
             Measure::new("Container usage"),
             "1 sample",
             "Podman stats",

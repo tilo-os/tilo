@@ -372,33 +372,30 @@ impl Notice {
 /// the same way) does not stack two rows: the one waiting takes the newer
 /// why, and is unseen again if it had been seen.
 pub fn publish(notice: Notice) -> Published {
-    match notice.action.clone() {
-        Some(action) => {
-            let mut item = Item::new(notice.owner, notice.title, action).urgent(notice.urgency);
-            if let Some(about) = notice.about {
-                item = item.about(about);
-            }
-            if let Some(because) = notice.because {
-                item = item.because(because);
-            }
-            if let Some(target) = notice.target {
-                item = item.subject(target);
-            }
-            Published::Waiting(raise(item))
+    if let Some(action) = notice.action {
+        let mut item = Item::new(notice.owner, notice.title, action).urgent(notice.urgency);
+        if let Some(about) = notice.about {
+            item = item.about(about);
         }
-        None => {
-            let mut entry = crate::attention::ledger::Entry::new(notice.owner, notice.title);
-            if let Some(about) = notice.about {
-                entry = entry.about(about);
-            }
-            if let Some(because) = notice.because {
-                entry = entry.because(because);
-            }
-            if let Some(target) = notice.target {
-                entry = entry.subject(target);
-            }
-            Published::Recorded(crate::attention::ledger::record(entry))
+        if let Some(because) = notice.because {
+            item = item.because(because);
         }
+        if let Some(target) = notice.target {
+            item = item.subject(target);
+        }
+        Published::Waiting(raise(item))
+    } else {
+        let mut entry = crate::attention::ledger::Entry::new(notice.owner, notice.title);
+        if let Some(about) = notice.about {
+            entry = entry.about(about);
+        }
+        if let Some(because) = notice.because {
+            entry = entry.because(because);
+        }
+        if let Some(target) = notice.target {
+            entry = entry.subject(target);
+        }
+        Published::Recorded(crate::attention::ledger::record(entry))
     }
 }
 
@@ -558,9 +555,7 @@ pub fn dismissed(target: Target) {
 pub fn act(id: ItemId) -> Option<Action> {
     let (action, wakes) = {
         let mut registry = registry();
-        let Some(index) = registry.items.iter().position(|item| item.id == id) else {
-            return None;
-        };
+        let index = registry.items.iter().position(|item| item.id == id)?;
         let action = registry.items[index].action.clone();
         let _ = registry.items.remove(index);
         registry.changed();

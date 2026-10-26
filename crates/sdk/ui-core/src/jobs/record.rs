@@ -384,16 +384,10 @@ impl Summary {
 
 /// The handle a worker keeps: what it reports through, and how it hears that
 /// the person stopped it. Clones report on the same job.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Running {
     id: JobId,
     stopped: Arc<AtomicBool>,
-}
-
-impl std::fmt::Debug for Running {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Running").field("id", &self.id).finish()
-    }
 }
 
 impl Running {
