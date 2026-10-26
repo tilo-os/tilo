@@ -79,7 +79,7 @@ type Message {
   | enum | chips with the variants' icons; several may be picked | `status:open` | `status: [.open]` |
   | `Time`, `Date` | presets (today, this week, last 30 days, a month) plus a range picker; also a sort | `received:>2026-10-01` | `received: 2026-10-01..` |
   | `Int`, `Number` | range | `size:>10` | `size: 10..` |
-  | `Person`, `Set<Person>` | people picker with avatars, ordered by who you deal with most | `from:jane` | `from: person:a1` |
+  | `Person`, `Set<Person>` | people picker with avatars, ordered by who you deal with most | `from:jane`, `from:jane@ycombinator.com`, `from:@ycombinator.com` | `from: "@ycombinator.com"` |
   | a reference or `Set` of another type | picker of that type, using its row view | `label:legal` | `labels: [label:9c]` |
   | `Set<Text>` | tag chips with counts | `tag:urgent` | `tags: ["urgent"]` |
 
@@ -88,6 +88,9 @@ type Message {
   the runtime's field-precise invalidation. It is shown as a toggle chip.
 - **`sort field newest|oldest|a_z|z_a`** is the default order when there's no text, and an
   offered order otherwise. Relevance is always offered when there is text.
+- **People are matched by name or address.** A person is known by their addresses (mail, Tilo
+  identity, phone). `from:@ycombinator.com` matches anyone with an address at that domain,
+  whether or not they are a contact. No organisation concept is needed to search.
 - **`hide field`** keeps a field out of filters. It is still searchable by text if it is text.
 - **Text fields:**
   - `(title)` is weighted as a title and `(body)` as long prose.
@@ -209,7 +212,7 @@ describe(mail.Message)
            labels (Set<Label>), has_attachment (Bool) "Has attachment"
   sort: received newest | relevance
 
-find(mail.Message, text: "83(b)", where: { from: org:8f2.people, received: 2026-09-01.. },
+find(mail.Message, text: "83(b)", where: { from: "@ycombinator.com", received: 2026-09-01.. },
      sort: received newest, limit: 10)
 → [ { ref: msg:m3, title: "Re: Incorporation & SAFE", from: person:a1, received: 2026-10-21T14:02,
       unread: true, labels: [label:9c "Legal"], match: { field: body, at: ¶2.2,
@@ -220,6 +223,8 @@ find(mail.Message, text: "83(b)", where: { from: org:8f2.people, received: 2026-
   resource.
 - `match` is a content anchor the agent can cite (`quote(msg:m3, ¶2.2)`).
 - Agents search under their task's authority. They see only what the task may read.
+- The agent's text interface to this, and the conventions that make it quick to use, are in
+  `agents.md`.
 
 ## 4. Index and performance
 
