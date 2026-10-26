@@ -29,7 +29,7 @@ topbar-bell-silenced = { $unread ->
     [one] Notifications silenced, 1 unread
    *[other] Notifications silenced, { $unread } unread
 }
-topbar-show-collaborators = Show collaborators
+topbar-show-collaborators = Everyone here
 topbar-viewer-can-control = can control { $targets }
 topbar-viewer-view-only = view only { $targets }
 topbar-viewer-entry = { $name } ({ $kind ->
