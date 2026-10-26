@@ -32,6 +32,10 @@ enum KeyboardWire {
 struct Client {
     globals: Vec<(u32, String, u32)>,
     keyboard: Vec<KeyboardWire>,
+    /// `mods_depressed` from the last `wl_keyboard.modifiers`.
+    depressed: u32,
+    /// Each pressed key, with the modifiers the client held when it came.
+    presses: Vec<(u32, u32)>,
 }
 
 crate::support::wayland::test_client!(Client);
@@ -85,10 +89,14 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
                 state: key_state,
                 ..
             } => {
-                state.keyboard.push(KeyboardWire::Key {
-                    key,
-                    pressed: matches!(key_state, WEnum::Value(wl_keyboard::KeyState::Pressed)),
-                });
+                let pressed = matches!(key_state, WEnum::Value(wl_keyboard::KeyState::Pressed));
+                if pressed {
+                    state.presses.push((key, state.depressed));
+                }
+                state.keyboard.push(KeyboardWire::Key { key, pressed });
+            }
+            wl_keyboard::Event::Modifiers { mods_depressed, .. } => {
+                state.depressed = mods_depressed;
             }
             _ => {}
         }
@@ -799,4 +807,115 @@ fn focus_handoff_soak_has_one_release_per_backspace_press() {
     eprintln!(
         "keyboard focus soak: {ROUNDS} handoffs, max press-to-release dispatch {max_dispatch:?}"
     );
+}
+
+/// One window whose keyboard the test drives, with a desktop around it.
+fn typing_window(app_id: &str) -> (Harness, wl_surface::WlSurface, u64) {
+    let mut h = Harness::new();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id(app_id.into());
+    h.pump();
+    let id = foreign_id(&h.state, app_id);
+    (h, surface, id)
+}
+
+/// Type `h` then `i` through the desktop's key routing, as a person does
+/// with no modifier held: both reach the focused window, not the desktop.
+fn type_hi(h: &mut Harness, frame: &mut shell::compositor::frame::FrameBuilder) {
+    for key in ["h", "i"] {
+        for pressed in [true, false] {
+            assert!(
+                shell::compositor::client_input::route_input(
+                    &mut h.state,
+                    frame,
+                    &captured_key_event(Key::Character(key.into()), pressed),
+                    &Modifiers::default(),
+                ),
+                "{key} (pressed: {pressed}) belongs to the focused window"
+            );
+        }
+    }
+    h.pump();
+}
+
+/// evdev `h` and `i`.
+const TYPED_HI: [(u32, u32); 2] = [(35, 0), (23, 0)];
+
+/// A modifier held while the desktop had the keyboard is in the `enter` the
+/// window gets when focus moves to it; its release is the desktop's, since
+/// the press never reached the window. The window must still learn that the
+/// modifier is up, or it reads every later key as a chord: a nested Tilo
+/// desktop sent its typing to the search palette as Ctrl and Super chords.
+#[test]
+fn a_modifier_released_outside_the_window_it_was_held_into_is_up_for_that_window() {
+    for (modifier, mask) in [
+        (NamedKey::Control, ModifiersState::CONTROL),
+        (NamedKey::Super, ModifiersState::SUPER),
+    ] {
+        let (mut h, surface, window) = typing_window("org.example.HeldIn");
+        let mut frame = shell::compositor::frame::FrameBuilder::new((1600, 900));
+        h.state.set_client_keyboard_focus(None);
+        h.pump();
+
+        // Held while the desktop has the keyboard; the window sees nothing.
+        let held = Modifiers::from(mask);
+        assert!(!shell::compositor::client_input::route_input(
+            &mut h.state,
+            &mut frame,
+            &captured_key_event(Key::Named(modifier), true),
+            &held,
+        ));
+        h.state.set_client_keyboard_focus(Some(window));
+        h.pump();
+        assert_ne!(
+            h.client.depressed, 0,
+            "{modifier:?} is held as the window takes focus"
+        );
+
+        // Released: not the window's key, but its modifier state.
+        assert!(!shell::compositor::client_input::route_input(
+            &mut h.state,
+            &mut frame,
+            &captured_key_event(Key::Named(modifier), false),
+            &Modifiers::default(),
+        ));
+        h.pump();
+        assert_eq!(
+            h.client.depressed, 0,
+            "the window learns {modifier:?} came up"
+        );
+
+        h.client.presses.clear();
+        type_hi(&mut h, &mut frame);
+        assert_eq!(
+            h.client.presses, TYPED_HI,
+            "typing after {modifier:?} came up arrives as plain text"
+        );
+        assert!(
+            !frame.host().palette_visible(),
+            "no shortcut ran for {modifier:?} then typing"
+        );
+        assert!(
+            h.client
+                .keyboard
+                .iter()
+                .all(|event| !matches!(event, KeyboardWire::Key { key: 29 | 125, .. })),
+            "the window never sees the modifier key itself: {:?}",
+            h.client.keyboard
+        );
+        assert!(
+            h.client.keyboard.contains(&KeyboardWire::Enter {
+                surface: surface_id(&surface),
+                keys: Vec::new(),
+            }),
+            "the window entered with no key of its own held"
+        );
+    }
 }
