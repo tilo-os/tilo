@@ -887,7 +887,10 @@ package = "tilo-relay"
 # The room's bot runner is tested with the Discord bridge's program as it
 # ships, the import it plans resuming after the room refused part of a run.
 inputs = ["apps/discord/bridge/program.json"]
-readers = ["crates/hosting/tilo-relay/src/room_bots/tests.rs"]
+readers = [
+  "crates/hosting/tilo-relay/src/room_bots/tests.rs",
+  "crates/hosting/tilo-relay/tests/governed_rooms/app_push.rs",
+]
 
 [[cargo]]
 package = "tilo-esp-write"
