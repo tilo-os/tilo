@@ -27,7 +27,7 @@ pub const MAX_MARKS: usize = 100_000;
 pub const MAX_POINTS: usize = 4096;
 
 /// The support the artwork is made on.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Model)]
 pub struct Ground {
     /// `smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`.
     pub texture: String,
@@ -269,8 +269,35 @@ pub struct Gradient {
     pub focal: Option<[f64; 2]>,
 }
 
+impl Default for Gradient {
+    /// A gradient with no stops, which paints nothing: what an absent slot
+    /// reads as. A mark's gradient is an `Option`, so this is never a
+    /// gradient someone chose.
+    fn default() -> Self {
+        Self {
+            kind: "linear".into(),
+            from: [0.0, 0.0],
+            to: [1.0, 0.0],
+            stops: Vec::new(),
+            focal: None,
+        }
+    }
+}
+
+impl Default for Shadow {
+    /// A shadow that draws nothing: what an absent slot reads as. A mark's
+    /// shadow is an `Option`, so this is never a shadow someone chose.
+    fn default() -> Self {
+        Self {
+            offset: [0.0, 0.0],
+            blur: 0.0,
+            colour: None,
+        }
+    }
+}
+
 /// How a mark is coloured and, on a painted layer, how it is painted.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, Model)]
 pub struct Style {
     /// Enlarge image pixels with nearest-neighbor sampling.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -347,7 +374,7 @@ pub struct Style {
 /// white balance, exposure, contrast, curve, highlights and
 /// shadows, hue, saturation, vibrance, grayscale, invert; then blur,
 /// sharpen and vignette. Absent or zero leaves a step out.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, Model)]
 #[serde(deny_unknown_fields)]
 pub struct Adjust {
     /// Stops, -5 to 5. Others -1 to 1 unless noted.
@@ -581,11 +608,15 @@ impl Default for Artwork {
     }
 }
 
+// A mark's geometry, the picture it traces, the area selected and a medium
+// are each replaced together: they stay one value, last writer wins. What a
+// mark looks like ([`Style`], [`Adjust`]) and the ground are editable one
+// field at a time, so they are models with a field each: two people painting
+// one mark do not overwrite the field they did not touch.
 tilo_resource::json_model!(
-    Ground,
     Shape,
-    Style,
-    Adjust,
+    Gradient,
+    Shadow,
     Reference,
     Selection,
     crate::media::MediumSpec
@@ -848,6 +879,41 @@ pub fn valid_group(group: &str) -> bool {
 }
 
 impl Artwork {}
+
+/// Bring a document written when a mark's style and adjustments were stored
+/// whole up to the storage its model reads now.
+///
+/// Version 1 stored a mark's [`Style`], a mark's and a layer's [`Adjust`] and
+/// the artwork's [`Ground`] as one JSON string each, last writer wins: two
+/// people changing different fields of one mark — a fill and an opacity —
+/// overwrote each other. Version 2 stores each as a map of its fields, so
+/// each field merges on its own. [`retype_json`] rewrites an old string as
+/// the form its value already had, so nothing else about the document moves.
+///
+/// # Errors
+/// Returns why an old value does not read, or the document's write error.
+pub fn upgrade(
+    doc: &mut ui::tilo_resource::Doc,
+    from: u32,
+) -> Result<(), ui::tilo_resource::ModelError> {
+    use ui::tilo_resource::evolution::{map_values, retype_json};
+    if from != 1 {
+        return Err(ui::tilo_resource::ModelError::invalid(format!(
+            "no canvas migration from storage version {from}"
+        )));
+    }
+    let root = &ui::automerge::ROOT;
+    // Keyed collections hold each item as a map under its id.
+    for (_, mark) in map_values(doc, root, "marks")? {
+        retype_json::<Style>(doc, &mark, "style")?;
+        retype_json::<Adjust>(doc, &mark, "adjust")?;
+    }
+    for (_, layer) in map_values(doc, root, "layers")? {
+        retype_json::<Adjust>(doc, &layer, "adjust")?;
+    }
+    retype_json::<Ground>(doc, root, "ground")?;
+    Ok(())
+}
 
 /// A valid id: 1–48 of `a-z`, `0-9`, `-` and `_`, so an agent can name a mark
 /// (`sun`, `tree-3`) and address it later.
