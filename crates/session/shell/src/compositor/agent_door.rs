@@ -713,16 +713,18 @@ mod tests {
             )
             .expect("the owner admits it");
 
+        // The answer asks the room's governor for the agent's membership;
+        // the door lets the client in once the room has made it a member.
+        turn(&mut consent);
+        handle
+            .write()
+            .govern_requests_here_for_test(&"shell-fixture".to_owned());
         let initialized = reply(&mut consent);
         assert_eq!(initialized["id"], 1, "{initialized}");
         assert!(
             initialized["result"]["serverInfo"].is_object(),
             "{initialized}"
         );
-        // The room's governor takes the admission the answer asked for.
-        handle
-            .write()
-            .govern_requests_here_for_test(&"shell-fixture".to_owned());
         let members: Vec<_> = handle.read().desktop.workspaces[0]
             .agent_members()
             .into_iter()
