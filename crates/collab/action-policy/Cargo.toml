@@ -22,6 +22,7 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["use-std"] }
+proptest.workspace = true
 serde_json.workspace = true
 
 [lints]

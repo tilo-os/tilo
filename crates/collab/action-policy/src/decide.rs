@@ -74,6 +74,86 @@ pub fn decide<'g>(
     )
 }
 
+/// [`decide`] for one subject by itself: what the person holds and what their
+/// delegation holds are each read this way before [`decide_delegated`]
+/// combines them.
+#[must_use]
+pub fn decide_subject<'g>(
+    grants: impl IntoIterator<Item = &'g Grant>,
+    subject: &Subject,
+    node: &TreePath,
+    kind: ActionKind,
+    cx: &Context<'_>,
+) -> Decision<'g> {
+    decide(grants, std::slice::from_ref(subject), node, kind, cx)
+}
+
+/// Someone acting for a person: `min(decide(person), decide(delegation))`, with
+/// Deny < Ask < Allow, each side decided over the grants naming its subject.
+/// A delegation never does more than the person, and the person's restriction
+/// always reaches it.
+#[must_use]
+pub fn decide_delegated<'g>(
+    grants: impl IntoIterator<Item = &'g Grant>,
+    person: &Subject,
+    delegation: &Subject,
+    node: &TreePath,
+    kind: ActionKind,
+    cx: &Context<'_>,
+) -> Decision<'g> {
+    let grants: Vec<&Grant> = grants.into_iter().collect();
+    let person = decide(
+        grants.iter().copied(),
+        std::slice::from_ref(person),
+        node,
+        kind,
+        cx,
+    );
+    let delegation = decide(
+        grants.iter().copied(),
+        std::slice::from_ref(delegation),
+        node,
+        kind,
+        cx,
+    );
+    if delegation.answer < person.answer {
+        delegation
+    } else {
+        person
+    }
+}
+
+/// Why a decision came out as it did, in a sentence people and agents can
+/// read: the node, the kind and the grant that decided it, or that no grant
+/// covers it.
+#[must_use]
+pub fn explain(decision: &Decision, node: &TreePath, kind: ActionKind) -> String {
+    let outcome = match decision.answer {
+        Answer::Allow => "Allowed",
+        Answer::Ask => "Asks first",
+        Answer::Deny => "Not allowed",
+    };
+    let reason = match decision.basis {
+        Basis::Owner => "the room is theirs".to_owned(),
+        Basis::Grant(grant) => format!(
+            "a grant {} {} for {}",
+            kind.phrase(),
+            answer_phrase(grant.answer),
+            grant.node,
+        ),
+        Basis::NoGrant => format!("no grant covers {} on {node}", kind.phrase()),
+    };
+    format!("{outcome}: {reason}.")
+}
+
+fn answer_phrase(answer: Answer) -> &'static str {
+    match answer {
+        Answer::Allow => "allows",
+        Answer::Ask => "asks first for",
+        Answer::Deny => "refuses",
+    }
+}
+
 /// One source of authority: the subjects someone is known by, the grants that
 /// may name them, and the rooms they own.
 #[derive(Clone, Debug, Default)]
