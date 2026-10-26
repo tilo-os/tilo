@@ -74,10 +74,16 @@ impl FrameHarness {
     }
 
     /// Write the `--shots` capture: the frame alone, or under the desktop's
-    /// window bar when `window_bar` is set. Only the native launcher takes
-    /// `--shots`.
+    /// window bar when `window_bar` is set.
+    ///
+    /// The frame is the window a person sees a moment after it opened: the
+    /// capture settles first, exactly as a named capture does (`write_capture`),
+    /// so an entrance that is still running, a scroll bar that is still fading
+    /// and a page whose sharp bitmap has not arrived are all waited out. A
+    /// capture taken before that is evidence about the capture, not the app.
     #[cfg(feature = "native")]
     pub(crate) fn write_shot(&mut self, out: &std::path::Path, window_bar: bool) {
+        self.settle_for_capture(crate::launch::CAPTURE_SETTLE_BOUND);
         if window_bar {
             self.present_in_window_bar();
         }
