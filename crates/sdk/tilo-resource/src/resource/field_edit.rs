@@ -129,10 +129,10 @@ fn edit_spec(
     // Controls and agents edit fields; a person picks named actions or edits
     // the field in place.
     .for_audience(tilo_actions::Audience::Agents)
-    // A field edit changes only the document.
-    .reversible()
-    // History records the edit itself, not `field-edit`.
+    // History records the edit itself, not `field-edit`, and Undo puts the
+    // field's value back.
     .carrying()
+    .of_kind(tilo_actions::ActionKind::Undoable)
     // Removing a collection item asks, as a delete verb does, and so does
     // any edit of a field that is not ordinary, but an edit of one that
     // weakens one way only when it makes it weaker than it is now.

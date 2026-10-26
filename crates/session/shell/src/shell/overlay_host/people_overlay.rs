@@ -232,6 +232,8 @@ impl ShellOverlayHost {
             }
             PeopleHit::Send { to, text } => self.send_direct_message(&to, &text),
             PeopleHit::SetStatus(words) => self.set_manual_status(Some(words)),
+            // Who is here, open at them: where this desktop shows a person.
+            PeopleHit::ShowPerson { id, .. } => self.show_person(id),
         }
     }
 

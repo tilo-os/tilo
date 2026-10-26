@@ -392,7 +392,10 @@ pub struct Running {
 
 impl std::fmt::Debug for Running {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Running").field("id", &self.id).finish()
+        f.debug_struct("Running")
+            .field("id", &self.id)
+            .field("stopped", &self.stopped.load(Ordering::Relaxed))
+            .finish()
     }
 }
 

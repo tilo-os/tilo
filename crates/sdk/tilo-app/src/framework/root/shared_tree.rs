@@ -14,9 +14,7 @@ use ui_core::published::{SharedChildren, SharedResource};
 
 use super::super::rows::{LiveRow, join, outside_document};
 use super::typed::ResourceType;
-use super::{
-    Decoration, ResourceRoot, mark_document_jobs, offer_document_reads, offer_item_open, open_spec,
-};
+use super::{Decoration, ResourceRoot, offer_document_reads, offer_item_open, open_spec};
 
 /// The document-owned tree at one live version, locale and
 /// [`Resource::publication_cache_epoch`].
@@ -1327,5 +1325,28 @@ mod tests {
         for (was, now) in before.children().iter().zip(after.children().iter()) {
             assert!(was.ptr_eq(now), "{} is published again", was.id());
         }
+    }
+}
+
+/// The document actions of `resource` and its children that can queue an
+/// outside consequence (a verb taking an outbox, every action of a record
+/// with a `queue`, undo, redo and restore, which queue a compensation, and a
+/// field edit, which names a path the host resolves), published as jobs: the
+/// invocation answers when what it queued has settled. Every other document
+/// action applies where it is invoked, at once.
+pub(super) fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
+    const OWN_JOB: [&str; 4] = ["field-edit", "undo", "redo", "restore"];
+    for spec in &mut resource.actions {
+        let outside = spec.contract.kind == tilo_actions::ActionKind::Outside;
+        let queues = outside || OWN_JOB.contains(&spec.id.as_str());
+        if spec.kind == tilo_actions::OperationKind::Document && queues {
+            spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
+            if matches!(spec.contract.result, tilo_actions::ResultSpec::None) {
+                spec.contract.result = tilo_actions::ResultSpec::Job;
+            }
+        }
+    }
+    for child in &mut resource.children {
+        mark_document_jobs(child);
     }
 }

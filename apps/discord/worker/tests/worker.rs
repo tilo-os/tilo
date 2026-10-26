@@ -11,8 +11,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use discord_wire::event::{code_sha256, event_id, source};
-use discord_wire::op::{DiscordOp, FetchAssetOp, MemberOp, OutAttachment, ReactOp, SendOp};
+use discord_wire::event::{event_id, link_check, link_proof, source};
+use discord_wire::op::{
+    AnswerInteractionOp, DiscordOp, FetchAssetOp, MemberOp, OutAttachment, ReactOp, SendOp,
+};
 use fake_discord::{CHANNEL_GENERAL, FakeDiscord, TOKEN, User};
 use serde_json::{Map, Value, json};
 use tilo_connector::framing::{read_frame_async, write_frame_async};
@@ -59,6 +61,7 @@ impl Host {
             ("DISCORD_API_BASE", fake.api_base()),
             ("DISCORD_CDN_BASE", fake.cdn_base()),
             ("DISCORD_ALLOW_LOOPBACK", "1".to_owned()),
+            ("DISCORD_LINK_URL", "https://tilo.example/".to_owned()),
             (
                 "DISCORD_READ_ONLY",
                 if read_only { "1" } else { "0" }.to_owned(),
@@ -342,18 +345,28 @@ async fn identifies_with_the_bridge_intents_and_reports_messages() {
     host.stop().await;
 }
 
+/// The one-time token a `/link` reply's button carries.
+fn button_token(reply: &Value) -> String {
+    let url = reply["reply"]["data"]["components"][0]["components"][0]["url"]
+        .as_str()
+        .expect("a link button");
+    url.strip_prefix("https://tilo.example/#?link=")
+        .expect("the room's web entry")
+        .to_owned()
+}
+
 #[tokio::test]
-async fn link_codes_are_hashed_on_arrival_and_answered_privately() {
+async fn link_answers_with_a_private_button_and_reports_only_its_check() {
     let host = Host::start(false).await;
     host.connected().await;
-    let ada = User::new("3001", "ada");
-    let interaction = host.fake.slash(&ada, "link", Some("ab12 cd34"));
+    let ada = User::new("3001", "ada").with_avatar("a1b2");
+    let interaction = host.fake.slash(&ada, "link");
     let payload = host
         .event(source::COMMAND, &event_id::command(&interaction))
         .await;
     assert_eq!(payload["name"], "link");
-    assert_eq!(payload["code_sha256"], code_sha256("ab12 cd34"));
-    assert!(!Value::Object(payload).to_string().contains("ab12"));
+    assert_eq!(payload["interaction"], interaction.as_str());
+    assert_eq!(payload["avatar"], "a1b2");
     let reply = host
         .fake
         .eventually(tilo_test_env::hang_bound(), |f| {
@@ -361,7 +374,65 @@ async fn link_codes_are_hashed_on_arrival_and_answered_privately() {
         })
         .await
         .expect("an interaction reply");
-    assert_eq!(reply["reply"]["data"]["flags"], 64);
+    assert_eq!(reply["reply"]["type"], 4);
+    assert_eq!(reply["reply"]["data"]["flags"], 64, "only Ada sees it");
+    let token = button_token(&reply);
+    assert_eq!(token.len(), 64);
+    assert_eq!(payload["link_check"], link_check(&link_proof(&token)));
+    assert!(
+        !Value::Object(payload).to_string().contains(&token),
+        "the token never reaches the room"
+    );
+
+    // Once linked, the bridge edits the reply to the outcome, once.
+    let answer = DiscordOp::AnswerInteraction(AnswerInteractionOp {
+        interaction: interaction.clone(),
+        content: "Linked to Ada Lovelace.".into(),
+    });
+    let outcome = host.perform(&answer).await;
+    assert!(matches!(outcome, Outcome::Done { .. }), "{outcome:?}");
+    let edits = host.fake.interaction_edits();
+    assert_eq!(edits[0]["interaction"], interaction.as_str());
+    assert_eq!(edits[0]["edit"]["content"], "Linked to Ada Lovelace.");
+    assert_eq!(
+        edits[0]["edit"]["components"],
+        json!([]),
+        "the button is gone"
+    );
+    let again = host.perform(&answer).await;
+    assert!(matches!(again, Outcome::Refused { .. }), "{again:?}");
+    host.stop().await;
+}
+
+#[tokio::test]
+async fn unlink_is_answered_with_what_came_of_it() {
+    let host = Host::start(false).await;
+    host.connected().await;
+    let ada = User::new("3001", "ada");
+    let interaction = host.fake.slash(&ada, "unlink");
+    let payload = host
+        .event(source::COMMAND, &event_id::command(&interaction))
+        .await;
+    assert_eq!(payload["link_check"], Value::Null, "no token for /unlink");
+    let reply = host
+        .fake
+        .eventually(tilo_test_env::hang_bound(), |f| {
+            f.interaction_replies().into_iter().next()
+        })
+        .await
+        .expect("an interaction reply");
+    assert_eq!(reply["reply"]["type"], 5, "it answers once the room did");
+    let outcome = host
+        .perform(&DiscordOp::AnswerInteraction(AnswerInteractionOp {
+            interaction: interaction.clone(),
+            content: "Unlinked from Ada.".into(),
+        }))
+        .await;
+    assert!(matches!(outcome, Outcome::Done { .. }), "{outcome:?}");
+    assert_eq!(
+        host.fake.interaction_edits()[0]["edit"]["content"],
+        "Unlinked from Ada."
+    );
     host.stop().await;
 }
 
@@ -728,7 +799,7 @@ async fn read_only_changes_nothing() {
     let outcome = host.perform(&send(&webhook, "nope")).await;
     assert!(matches!(outcome, Outcome::Refused { .. }), "{outcome:?}");
     let ada = User::new("3001", "ada");
-    let interaction = host.fake.slash(&ada, "link", Some("abcd"));
+    let interaction = host.fake.slash(&ada, "link");
     host.event(source::COMMAND, &event_id::command(&interaction))
         .await;
     // A reply would be decided with the event, before the worker reads its

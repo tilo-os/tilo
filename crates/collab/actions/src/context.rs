@@ -1292,6 +1292,12 @@ pub struct ActionGroup {
 /// action a context describes, for a question about it put to a person.
 pub const RISK_FACET: &str = "risk";
 
+/// [`ActionFacet::key`] of where in its app's record a step happened, as
+/// everyone the record is shared with sees that place named: a chat post's
+/// channel, `#general`. Only such a place is named; a direct conversation
+/// never is.
+pub const PLACE_FACET: &str = "place";
+
 /// A filterable activity dimension. Open key/value vocabulary lets future
 /// apps add facets without changing the wire enum.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

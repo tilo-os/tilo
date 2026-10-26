@@ -53,9 +53,10 @@ fn near(a: f64, b: f64, why: &str) {
 }
 
 /// The theme's commands, in the window bar's order.
-const COMMANDS: [&str; 5] = [
+const COMMANDS: [&str; 6] = [
     "theme-apply",
     "theme-export",
+    "theme-import",
     "theme-duplicate",
     "theme-reset",
     "theme-delete",

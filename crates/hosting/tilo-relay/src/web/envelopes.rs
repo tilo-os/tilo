@@ -70,6 +70,21 @@ struct Profile {
     /// The picture they chose, as a `data:` URL; none shows their initials.
     #[serde(default)]
     photo: Option<String>,
+    /// What they say they are doing, in their own words: one line of at
+    /// most [`MAX_STATUS_CHARS`] characters.
+    #[serde(default)]
+    status: Option<String>,
+    /// How they share what they are doing: `automatic`, `manual` or `off`.
+    #[serde(default)]
+    sharing: Option<String>,
+}
+
+/// The longest status a profile keeps, in characters.
+const MAX_STATUS_CHARS: usize = 96;
+
+/// Whether `status` is one line a profile may carry.
+fn valid_status(status: &str) -> bool {
+    status.chars().count() <= MAX_STATUS_CHARS && !status.chars().any(char::is_control)
 }
 
 /// Whether `photo` is a picture a profile may carry: a bounded base64
@@ -124,6 +139,14 @@ impl Kind {
                         .photo
                         .as_deref()
                         .is_some_and(|photo| !valid_photo(photo))
+                    || profile
+                        .status
+                        .as_deref()
+                        .is_some_and(|status| !valid_status(status))
+                    || profile
+                        .sharing
+                        .as_deref()
+                        .is_some_and(|sharing| !matches!(sharing, "automatic" | "manual" | "off"))
                 {
                     return Err(Refusal::Malformed("not a profile"));
                 }
@@ -486,5 +509,49 @@ mod tests {
                 &bad[..bad.len().min(40)]
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_profile_keeps_what_they_say_they_are_doing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let root = SigningKey::from_bytes(&[8; 32]);
+        let hex_root = hex::encode(root.verifying_key().to_bytes());
+        let signed = |label: &[u8], text: &str, at: u64| {
+            let mut statement = label.to_vec();
+            statement.extend_from_slice(&at.to_le_bytes());
+            statement.extend_from_slice(text.as_bytes());
+            serde_json::to_vec(&serde_json::json!({
+                "profile": text,
+                "issued_at_ms": at,
+                "signature": hex::encode(root.sign(&statement).to_bytes()),
+            }))
+            .unwrap_or_default()
+        };
+        // What they say they are doing, and how they share it, ride along
+        // too; a second line or a way of sharing nobody knows does not.
+        let said = serde_json::json!({"version": 1, "user_public_key": hex_root,
+            "display_name": "Ada", "status": "Sketching the tour", "sharing": "manual"})
+        .to_string();
+        profiles
+            .publish(&signed(PROFILE_LABEL, &said, 4_500), 4_500, |_| async {
+                true
+            })
+            .await
+            .expect("kept with a status");
+        for (status, sharing) in [("Two\nlines", "manual"), ("Fine", "sometimes")] {
+            let text = serde_json::json!({"version": 1, "user_public_key": hex_root,
+                "display_name": "Ada", "status": status, "sharing": sharing})
+            .to_string();
+            assert!(matches!(
+                profiles
+                    .publish(&signed(PROFILE_LABEL, &text, 4_600), 4_600, |_| async {
+                        true
+                    })
+                    .await,
+                Err(Refusal::Malformed(_))
+            ));
+        }
+        assert_eq!(profiles.fetch(hex_root.as_bytes()), Some(said));
     }
 }

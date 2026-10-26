@@ -275,6 +275,8 @@ pub struct FrameOutput<'a> {
 
 mod caller_palette;
 mod capture;
+mod inspection_patch;
+pub use inspection_patch::{InspectionPatchStats, write_inspection_patch};
 mod drive;
 mod invocation_results;
 mod nav_gesture;
@@ -7307,6 +7309,24 @@ impl FrameHarness {
         self.pump_component_wakes();
         self.invoke_bound_action_for(address, arguments, true, None, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
+    }
+
+    /// [`Self::invoke_bound_action_confirmed`] as the person at this device,
+    /// for an act the host saw them make themselves (a control they pressed
+    /// in its own chrome): what only a person's own invocation may do, such
+    /// as writing in their private conversations, it may.
+    ///
+    /// # Errors
+    /// As [`Self::invoke_bound_action`].
+    pub fn invoke_bound_action_by_person(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let _person = crate::invocation_scope::InvokerScope::enter(
+            tilo_actions::ActionInvoker::actor(self.author.0.clone()),
+        );
+        self.invoke_bound_action_confirmed(address, arguments)
     }
 
     /// Invoke the action `action` that the hosted component publishes on its

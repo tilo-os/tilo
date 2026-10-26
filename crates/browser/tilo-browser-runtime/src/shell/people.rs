@@ -9,11 +9,11 @@
 //! they are in each time it changes, under the same banner the native
 //! shell shows; the person's own input takes their view back.
 //!
-//! The peek's message box talks to the person privately, as Chat does:
-//! the conversation with them is open while their peek is (`ui::person_chat`,
+//! The peek's message box talks to the person privately, in Chat's own
+//! conversation with them: it is open while their peek is (`ui::person_chat`,
 //! the room governor's private door), its last lines show above the box,
-//! and a message goes to the room the same way Chat's own
-//! `send-direct-message` sends one.
+//! and a message is sent by Chat's `send-direct-message`, which the page
+//! runs ([`OwnAsk`]), the one way a direct message goes.
 //!
 //! The overlay's code may come in its own module the first time the roster
 //! is pinned ([`crate::pinned_roster`]); following and the banner are here
@@ -81,11 +81,88 @@ struct Lane {
     failed: bool,
 }
 
-/// A message on its way, until the room accepts or refuses it.
+/// A message on its way, until Chat took or refused it.
 struct Sending {
     /// To whom, by name, to say so if it did not go.
     name: String,
-    reply: ui::person_chat::Pending<ui::person_chat::Conversation>,
+    /// The page's answer, by [`OwnAsk::id`].
+    id: u32,
+}
+
+/// What the person asked of Chat themselves, on a card or in a peek: the
+/// page finds Chat's conversation with `to` and hands `id` back to
+/// [`take_own_ask`], which is what lets Chat's private action run as the
+/// person's own act.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct OwnAsk {
+    pub id: u32,
+    /// The person (root key, hex).
+    pub to: String,
+    /// Chat's action on its conversation with them.
+    pub action: &'static str,
+    /// Its arguments.
+    #[serde(skip)]
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+thread_local! {
+    /// The last message id handed out, and the page's answers not taken yet.
+    static ANSWERS: std::cell::RefCell<(u32, std::collections::HashMap<u32, Result<(), String>>)> =
+        std::cell::RefCell::default();
+    /// The person's own asks the page has not run yet.
+    static OWN_ASKS: std::cell::RefCell<Vec<OwnAsk>> = std::cell::RefCell::default();
+}
+
+/// Keep the person's own ask of Chat's `action` on their conversation with
+/// `to`, for the page to run.
+pub(crate) fn ask_own(
+    to: &str,
+    action: &'static str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> OwnAsk {
+    let ask = OwnAsk {
+        id: next_id(),
+        to: to.to_owned(),
+        action,
+        arguments,
+    };
+    OWN_ASKS.with(|asks| {
+        let mut asks = asks.borrow_mut();
+        // A handful at most are ever in flight; an unrun one is not kept forever.
+        if asks.len() >= 16 {
+            asks.remove(0);
+        }
+        asks.push(ask.clone());
+    });
+    ask
+}
+
+/// The person's own ask `id`, once: none for an id they never made.
+pub(crate) fn take_own_ask(id: u32) -> Option<OwnAsk> {
+    OWN_ASKS.with(|asks| {
+        let mut asks = asks.borrow_mut();
+        let at = asks.iter().position(|ask| ask.id == id)?;
+        Some(asks.remove(at))
+    })
+}
+
+/// What came of the message `id`: Chat took it, or why not.
+pub(crate) fn answer(id: u32, result: Result<(), String>) {
+    ANSWERS.with(|answers| {
+        answers.borrow_mut().1.insert(id, result);
+    });
+}
+
+fn next_id() -> u32 {
+    ANSWERS.with(|answers| {
+        let mut answers = answers.borrow_mut();
+        answers.0 = answers.0.wrapping_add(1);
+        answers.0
+    })
+}
+
+fn take_answer(id: u32) -> Option<Result<(), String>> {
+    ANSWERS.with(|answers| answers.borrow_mut().1.remove(&id))
 }
 
 /// What following last brought forward.
@@ -119,6 +196,15 @@ pub(super) struct PagePeople {
     sending: Option<Sending>,
     /// A message that did not go: to whom, and why.
     failed_send: Option<(String, String)>,
+    /// The desktop it was last drawn over.
+    rect: Rect,
+    /// What assistive technology pressed since the host last looked.
+    pressed: Vec<PeopleHit>,
+    /// The bar's people panel as a reader finds it while it is open (the
+    /// host paints it), and the control pressed on it since the host last
+    /// looked, by its target.
+    panel: Option<ui::a11y::AccessNode>,
+    panel_pressed: Option<String>,
 }
 
 impl PagePeople {
@@ -137,7 +223,27 @@ impl PagePeople {
             abandoned: Vec::new(),
             sending: None,
             failed_send: None,
+            rect: Rect::ZERO,
+            pressed: Vec::new(),
+            panel: None,
+            panel_pressed: None,
         }
+    }
+
+    /// What the bar's people panel shows a reader now; `None` once closed.
+    pub(super) fn set_panel(&mut self, panel: Option<ui::a11y::AccessNode>) {
+        self.panel = panel;
+    }
+
+    /// The panel control a reader pressed since the last call, by target.
+    pub(super) fn take_panel_pressed(&mut self) -> Option<String> {
+        self.panel_pressed.take()
+    }
+
+    /// What assistive technology pressed on the overlay since the last
+    /// call, for the host to apply as it applies a press.
+    pub(super) fn take_pressed(&mut self) -> Vec<PeopleHit> {
+        std::mem::take(&mut self.pressed)
     }
 
     /// Hold the conversation with `peeked` open, by roster id (none when
@@ -236,22 +342,27 @@ impl PagePeople {
         )
     }
 
-    /// Send `text` to the person with roster id `to`, whose peek is open.
-    pub(super) fn send(&mut self, to: &str, text: &str) {
+    /// Send `text` to the person with roster id `to`, whose peek is open:
+    /// what the page sends by Chat's action, if it may go now.
+    pub(super) fn send(&mut self, to: &str, text: &str) -> Option<OwnAsk> {
         let Some(lane) = self.lane.as_ref().filter(|lane| lane.id == to) else {
             self.failed_send = Some((
                 to.to_owned(),
                 tilo_desktop::i18n::t("people-overlay-messages-unavailable"),
             ));
-            return;
+            return None;
         };
         if self.sending.is_some() {
-            return;
+            return None;
         }
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("text".to_owned(), text.into());
+        let ask = ask_own(&lane.key, "send-direct-message", arguments);
         self.sending = Some(Sending {
             name: lane.name.clone(),
-            reply: ui::person_chat::send(&lane.key, text),
+            id: ask.id,
         });
+        Some(ask)
     }
 
     /// A message that did not go since the last ask: to whom, and why.
@@ -396,6 +507,7 @@ impl PagePeople {
         frame: &Frame<'_>,
     ) {
         self.motion = theme.motion();
+        self.rect = frame.rect;
         let bar = f64::from(tilo_desktop::topbar::topbar_height(theme));
         let below_bar = Rect::new(
             frame.rect.x0,
@@ -436,12 +548,12 @@ impl PagePeople {
             .and_then(PinnedRoster::peeked)
             .and_then(|id| frame.rows.iter().find(|row| row.id == id));
         self.follow_lane(peeked, frame.persons);
-        refresh_contacts(frame.persons);
+        refresh_contacts(frame.persons, frame.rows);
         let (messages, unavailable) = self.lane_messages();
         let sent = match self
             .sending
             .as_ref()
-            .and_then(|sending| sending.reply.take())
+            .and_then(|sending| take_answer(sending.id))
         {
             Some(answer) => {
                 let sending = self.sending.take();
@@ -565,23 +677,161 @@ impl PagePeople {
     }
 }
 
-/// The public key of the person on `row`: their roster id when it is one,
-/// else the room contact of that name.
-/// Someone is here whom the room's last list of people did not have: ask
-/// for it again, so Chat's direct conversations list them too. The native
-/// host hears of new members from the room itself; a page sees them here.
-fn refresh_contacts(persons: &[(String, String)]) {
+/// The overlay and the banner as assistive technology reads them. The
+/// host paints them and routes their pointer and keys itself; as a widget
+/// they only say what is there and take what a reader presses.
+impl ui::widget::Widget for PagePeople {
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _theme: &Theme,
+        map: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        use ui::widget::TaffyTreeExt as _;
+        let style = ui::taffy::Style {
+            position: ui::taffy::Position::Absolute,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[], map, self)
+    }
+
+    fn apply_layout(
+        &mut self,
+        _taffy: &ui::taffy::TaffyTree<()>,
+        _node: ui::taffy::NodeId,
+        _origin: Point,
+    ) {
+    }
+
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &ui::presence::PresenceCtx,
+    ) {
+    }
+
+    fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut ui::widget::EventCtx<'_>) {}
+
+    fn children(&self) -> Vec<&dyn ui::widget::Widget> {
+        Vec::new()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn ui::widget::Widget + '_)> {
+        Vec::new()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        false
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    fn name(&self) -> &'static str {
+        "PeopleOverlay"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// The bar's people panel while open, the pinned roster (who is here,
+    /// each with their controls) and the banner of whom this view follows,
+    /// with its Stop.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+        let mut children: Vec<AccessNode> = self.panel.iter().cloned().collect();
+        if let Some(overlay) = self.made().filter(|overlay| overlay.is_visible()) {
+            children.push(
+                AccessNode::new(Role::Group)
+                    .with_hashed_key("people-overlay")
+                    .with_name(tilo_desktop_surface::i18n::t("a11y-people-overlay"))
+                    .with_children(overlay.accessibility_children()),
+            );
+        }
+        children.extend(self.banner.accessibility());
+        if children.is_empty() {
+            return None;
+        }
+        Some(AccessNode::new(Role::Group).with_children(children))
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ui::widget::ModelPath,
+    ) -> bool {
+        if target.starts_with("people:") {
+            if matches!(action, ui::a11y::Action::Activate) {
+                self.panel_pressed = Some(target.to_owned());
+            }
+            return self.panel.is_some();
+        }
+        if target == tilo_desktop::follow_banner::STOP_TARGET {
+            if matches!(action, ui::a11y::Action::Activate) {
+                self.stop_following(false);
+            }
+            return true;
+        }
+        let Some(overlay) = self.overlay.as_deref_mut() else {
+            return false;
+        };
+        let ours = overlay
+            .accessibility_children()
+            .iter()
+            .any(|node| node.action_target.as_deref() == Some(target));
+        if let Some(hit) = overlay.perform_semantic_action(action, target) {
+            self.pressed.push(hit);
+        }
+        ours
+    }
+}
+
+/// Someone is here whom the room's last list of people did not have, or
+/// who goes by another name now than that list says (they renamed
+/// themselves, which the room keeps): ask for it again, so Chat's direct
+/// conversations list them, by the name they go by, also once they left.
+/// The native host hears of new members from the room itself; a page sees
+/// them here.
+fn refresh_contacts(persons: &[(String, String)], rows: &[RosterRow]) {
     let contacts = ui::person_chat::contacts_snapshot();
     let own = ui::local_identity::load().map(|own| hex::encode(own.group_public_key));
-    let unknown = persons.iter().any(|(_, user)| {
-        own.as_deref() != Some(user.as_str())
-            && !contacts
-                .iter()
-                .any(|contact| contact.public_key.eq_ignore_ascii_case(user))
+    let stale = persons.iter().any(|(device, user)| {
+        if own.as_deref() == Some(user.as_str()) {
+            return false;
+        }
+        let Some(contact) = contacts
+            .iter()
+            .find(|contact| contact.public_key.eq_ignore_ascii_case(user))
+        else {
+            return true;
+        };
+        rows.iter()
+            .find(|row| row.id == *device)
+            .is_some_and(|row| renamed(&contact.display_name, &row.label))
     });
-    if unknown {
+    if stale {
         ui::person_chat::refresh_contacts();
     }
+}
+
+/// Whether the name a person goes by here (`live`, numbered when someone
+/// else here goes by it too: "Ada (2)") is another than the one the room's
+/// list has for them (`listed`).
+fn renamed(listed: &str, live: &str) -> bool {
+    let live = live.trim();
+    let listed = listed.trim();
+    !live.is_empty()
+        && !listed.eq_ignore_ascii_case(live)
+        && !live
+            .strip_prefix(listed)
+            .is_some_and(|rest| rest.trim_start().starts_with('('))
 }
 
 /// The person `row` is a device of: as the host said, else the contact
@@ -671,6 +921,16 @@ mod tests {
     use super::*;
     use tilo_desktop::here::{Screen, ScreenWindow};
     use tilo_desktop_model::IdMinter;
+
+    /// A person who renamed themself has the room's list asked again; a
+    /// namesake's number or the same name in other letters is no rename.
+    #[test]
+    fn a_rename_is_told_from_a_namesakes_number() {
+        assert!(super::renamed("Swift Lynx", "Ada"));
+        assert!(!super::renamed("Swift Lynx", "swift lynx"));
+        assert!(!super::renamed("Ada", "Ada (2)"));
+        assert!(!super::renamed("Ada", ""));
+    }
 
     /// A window on someone's screen showing a record this page shows too
     /// stands for theirs, with its title and live picture; any other shows

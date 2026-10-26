@@ -112,6 +112,33 @@ pub fn webhook_username(name: &str, automated: bool) -> String {
     named.chars().take(MAX_USERNAME_CHARS).collect()
 }
 
+/// The webhook username of a person who linked their Discord account: their
+/// Tilo name and their Discord handle, "ada (@ada)", so they read as
+/// the same person on both sides. Within Discord's 80 characters the name
+/// gives way, ending in "…", and the handle stays whole. Discord's markup and
+/// banned words are cleaned out of both as in [`webhook_username`]; a handle
+/// it would refuse whole is left out.
+#[must_use]
+pub fn linked_webhook_username(name: &str, handle: &str) -> String {
+    let handle = webhook_username(handle, false);
+    if handle == FALLBACK_USERNAME || handle.is_empty() {
+        return webhook_username(name, false);
+    }
+    let suffix = format!(" (@{handle})");
+    let room = MAX_USERNAME_CHARS.saturating_sub(suffix.chars().count());
+    let name = webhook_username(name, false);
+    let name = if name.chars().count() > room {
+        let kept: String = name.chars().take(room.saturating_sub(1)).collect();
+        format!("{}…", kept.trim_end())
+    } else {
+        name
+    };
+    format!("{name}{suffix}")
+        .chars()
+        .take(MAX_USERNAME_CHARS)
+        .collect()
+}
+
 fn remove_ascii_case_insensitive(text: &str, needle: &str) -> String {
     let mut out = text.to_owned();
     while let Some(at) = out.to_ascii_lowercase().find(needle) {
@@ -169,6 +196,23 @@ mod tests {
         );
         assert_eq!(discord_channel_name(ChannelKind::Voice, "Voice"), "Voice");
         assert_eq!(discord_channel_name(ChannelKind::Text, "Voice"), "voice");
+    }
+
+    #[test]
+    fn a_linked_person_is_named_with_their_handle() {
+        assert_eq!(
+            linked_webhook_username("ada", "ada"),
+            "ada (@ada)"
+        );
+        let long = linked_webhook_username(&"Ada ".repeat(40), "ada.lovelace");
+        assert_eq!(long.chars().count(), MAX_USERNAME_CHARS);
+        assert!(long.ends_with("… (@ada.lovelace)"), "{long}");
+        assert_eq!(
+            linked_webhook_username("Kim", "kim.discord"),
+            "Kim (@kim.)",
+            "Discord refuses its own name in a webhook's"
+        );
+        assert_eq!(linked_webhook_username("Kim", "discord"), "Kim");
     }
 
     #[test]

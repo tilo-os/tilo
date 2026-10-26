@@ -152,20 +152,31 @@ no node orders governance for the others.
 
 - **Any authorized device can act.** A person enrolls a new device from
   any of their devices.
-- **Rules can require several signatures.** For example, removing one of a
-  person's devices needs two of their devices once they have three or more.
-  Below three, it needs one device and the person's recovery code (below).
-  A request without enough signatures waits, and the person's other devices
-  ask them to approve it.
+- **Half the shares decide; the person approves at most twice.** A
+  person's shares are their devices plus their recovery code (below), all
+  counted alike.
+  - A change to the person's identity (enrolling a device, removing one)
+    takes effect once at least half of their shares have signed it.
+  - At most two of those signatures need the person: the device asking,
+    and with two or more devices one more, given on another device or with
+    the recovery code. With one device, that device alone is half.
+  - The remaining signatures are co-signatures. Each of the person's other
+    devices adds its own automatically once it has seen the request, unless
+    the person declined on it or it has seen a conflicting request. A
+    request that lacks co-signatures waits for those devices to come
+    online, and says which it is waiting for.
+  - Two conflicting requests can't both reach half without sharing a
+    signer, which never signs both. The one tie, exactly half each, goes
+    to the half holding the recovery code.
 - **Keys: a device key per device, an identity key held by the quorum.**
   - The secret typed at sign-in ([`../security/sign-in.md`](../security/sign-in.md))
     unlocks only that device's own key. Someone who learns it gains one
     device's authority, not the person's.
   - Each device key is signed by the person's identity key.
-  - The identity key is shared across the person's devices under the same
-    quorum rules, so anything signed with it (enrolling a device, removing
-    one) takes as many shares as the rules require. Where the rule is one of
-    n, which a person can choose, each device holds the key whole.
+  - The identity key is split into those shares, so anything signed with
+    it (enrolling a device, removing one) takes as many shares as the rules
+    require. Where the rule is one share, with one device or by the
+    person's choice, each share holds the key whole.
 - **Removal wins.** A removed device's changes are rejected unless they come
   before its removal in history. Undoing what someone changed over a time
   range is a general Tilo feature, used separately. Removal doesn't do it.
@@ -174,23 +185,34 @@ no node orders governance for the others.
 - **Conflicts resolve the same way everywhere:** removals made concurrently,
   changes to the rules themselves, and quorums that change as devices come
   and go.
-- **The recovery code is a share.** The recovery code a person gets at
-  setup is one share of their identity key, held outside their devices. It
-  counts toward the quorum like a device. While a person has fewer than
-  three devices, it is required: removing a device then takes a device and
-  the recovery code, so an unlocked stolen device can't act alone. If every
-  device is lost, the recovery code and a new device restore the identity.
-- **Two devices removing each other freeze the identity.** If two of a
-  person's devices each remove the other, neither removal stands and the
-  identity is frozen: it signs nothing new until the recovery code decides
-  which device stays. Shares decide, not devices, and an identity never
-  splits in two.
+- **The recovery code is one share, nothing more.** The recovery code a
+  person gets at setup is a share of their identity key held outside their
+  devices. It outranks no device. With two devices it is what keeps one
+  stolen device from acting alone: the person removes it with their other
+  device and the recovery code. With one device, the recovery code alone
+  restores the identity on a new device.
+- **An identity never splits in two.** Because deciding takes half the
+  shares, two sides of a conflict can't both decide. Shares decide, not
+  devices.
+- **A device that signs both sides gives itself away.** An honest device
+  never signs two conflicting requests, so one that does has a key in
+  someone else's hands. Neither request stands, and every node can see
+  which device it was. Until a request removing it passes, signed by half
+  of the other shares, the identity makes no further identity changes;
+  everything else keeps working.
 
 The scenario this must hold up to: a person has three devices and one is
 stolen unlocked. The thief can't remove another of their devices alone,
 because the second signature never comes and the person declines on any
 device. The person removes the stolen device with two signatures. From
 then on, every node rejects its changes.
+
+Open:
+- **Losing every device from two on.** The recovery code is one share, and
+  two are needed, so it can't restore the identity alone. Candidates: a
+  second recovery share (a second printed code, or one held by a trusted
+  contact), or tilo.coffee holding a share that it releases only after a
+  waiting period.
 
 ### One host serves many workspaces
 

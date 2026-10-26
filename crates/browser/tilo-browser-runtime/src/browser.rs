@@ -19,7 +19,7 @@ use ui::permissions::{PermissionContext, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use wasm_bindgen::{JsCast, prelude::*};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::platform::web::{EventLoopExtWebSys as _, WindowAttributesExtWebSys as _};
 use winit::window::{Window, WindowId};
@@ -246,6 +246,10 @@ struct Config {
     /// The build the page runs (the site's `version.json` revision).
     #[serde(default)]
     build: Option<String>,
+    /// A Discord account to link, by the one-time token its link carried
+    /// (`#?link=`); the profile card asks the person to confirm it.
+    #[serde(default)]
+    link_offer: Option<String>,
 }
 
 impl Config {
@@ -324,6 +328,8 @@ struct Gpu {
     /// The surface's target keeps the last presented frame; each frame
     /// repaints only what changed since, the way the native hosts do.
     retained: Retained,
+    /// Frames submitted that the GPU has not finished.
+    pacing: crate::frame_pacing::FramePacing,
 }
 
 impl Gpu {
@@ -455,6 +461,9 @@ struct Mount {
     /// The last frame's layout failed and was skipped
     /// ([`ui::headless::FrameHarness::skip_frame`]).
     skipped_frame: bool,
+    /// Who is here changed since the last frame, which puts them on their
+    /// windows before it lays out ([`Mount::apply_here`]).
+    here_stale: bool,
     /// The peer this mount replicates through, and whether a peer's change
     /// reached it since the last frame.
     peer: Option<u32>,
@@ -502,6 +511,8 @@ struct Desktop {
     openings: tilo_desktop_surface::session::Openings,
     /// What the session asked of the page for its windows, still open.
     asks: session_asks::Asks,
+    /// Mentions of this person in the room's records, and what was told.
+    mentions: RefCell<mention_notices::Mentions>,
     /// What this person may do here, which decides what the session opens
     /// as the workspace broker decides it on a native desktop.
     permissions: Rc<RefCell<PermissionContext>>,
@@ -621,21 +632,20 @@ impl Desktop {
 }
 
 impl Mount {
-    /// Put who is here on the windows they are in. Remote carets clear a
-    /// member's registrations as they move, so this runs after each.
-    fn apply_here(&mut self) {
-        let Some(desktop) = &self.desktop else {
-            return;
+    /// Send the room what an input just committed. An app applies the
+    /// action a key or a click invokes while handling it (a message sent
+    /// with Enter is in its record at once), so the others get it now,
+    /// without waiting for the frame that lays it out and draws it here.
+    fn publish_committed(&self, event: &WindowEvent) {
+        let committing = match event {
+            WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Released,
+            WindowEvent::Ime(winit::event::Ime::Commit(_)) => true,
+            _ => false,
         };
-        let tree = desktop.handle.read(Clone::clone);
-        let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
-        let mut here = desktop.here.borrow_mut();
-        here.show_waves(self.frame.presence_mut());
-        here.register_windows(&people, self.frame.presence_mut());
-        drop(here);
-        self.frame.relayout();
-        self.pending = true;
-        self.window.request_redraw();
+        if committing && let Some(peer) = self.peer {
+            crate::replication::publish(peer);
+        }
     }
 
     fn service_owner_models(&mut self) {
@@ -1144,6 +1154,7 @@ impl ApplicationHandler<u64> for Runner {
                     let passes = m.frame.relayout_frames();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.metric_end("input", start);
+                    m.publish_committed(&event);
                     if !matches!(event, WindowEvent::Touch(_)) {
                         m.show_cursor();
                     }
@@ -1392,6 +1403,7 @@ fn present_desktop(
             host: config.host.clone(),
             about: config.about.clone(),
             build: config.build.clone(),
+            link_offer: config.link_offer.clone(),
         },
         Rc::clone(&requests),
         crate::shell::ChromeSources {
@@ -1422,6 +1434,10 @@ fn present_desktop(
             session,
             openings,
             asks: session_asks::Asks::new(config.peer),
+            mentions: RefCell::new(mention_notices::Mentions::new(
+                &config.room,
+                &config.author(),
+            )),
             permissions: opening_permissions,
             room: config.room.clone(),
         }),
@@ -1766,6 +1782,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         error: None,
         oversized_scene: false,
         skipped_frame: false,
+        here_stale: false,
         peer: config.peer,
         replica_changed,
         focus_presence: RefCell::new(None),
@@ -2238,6 +2255,7 @@ async fn set_up_gpu(setup: GpuSetup) {
                     shared,
                     surface,
                     retained: Retained::new(),
+                    pacing: crate::frame_pacing::FramePacing::default(),
                 });
                 m.viewport.surface_installed();
                 m.queue_resize();
@@ -2363,6 +2381,9 @@ impl Mount {
                 .woken
                 .load(std::sync::atomic::Ordering::Acquire)
         });
+        if let Some(peer) = self.peer {
+            crate::replication::follow_answers(peer);
+        }
         self.pending |= desktop_woken || self.replica_changed.get();
         let frame = self.frame.frame_schedule();
         let due = frame
@@ -2410,6 +2431,13 @@ impl Mount {
             if !self.skipped_frame {
                 self.held = "nothing to draw";
             }
+            return Ok(());
+        }
+        if !gpu.pacing.may_draw() {
+            // The GPU still draws earlier frames: what changed waits for
+            // the frame after it caught up, rather than queue behind them.
+            self.held = "the GPU drawing earlier frames";
+            self.window.request_redraw();
             return Ok(());
         }
         let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
@@ -2497,6 +2525,7 @@ impl Mount {
                 .handle
                 .set_viewport_width(f64::from(viewport.logical_size().0));
             desktop.post_room_notices();
+            desktop.tell_mentions();
             desktop.refresh_holders(self.peer.is_some())
         });
         // Desktop commands and peer changes need an update even when the
@@ -2524,6 +2553,8 @@ impl Mount {
             }
             host_changed = true;
         }
+        // Presence that arrived since the last frame, laid out by this one.
+        self.place_here();
         // A frame whose semantics will be built draws every window: one it
         // replayed instead (a pan frame may) would have to be drawn again
         // before its tree could be read.
@@ -2724,6 +2755,8 @@ impl Mount {
         );
         let target = &gpu.surface.target_texture;
         crate::feedback_crops::service(&handle.device, &handle.queue, target, viewport.dpr);
+        let done = gpu.pacing.submitted();
+        handle.queue.on_submitted_work_done(move || done.finished());
         // The first frame is out: the pipelines it did not need compile once
         // the page has stayed a while (`compile_deferred_pipelines_later`).
         drop(shared_guard);
@@ -2744,7 +2777,7 @@ impl Mount {
         }
         let stage = self.metric_start();
         self.presentation.set(true);
-        self.publish_frame(0, change);
+        self.publish_frame(0, change, true);
         self.presentation.set(false);
         self.metric_end("publish", stage);
         Ok(())
@@ -2828,7 +2861,7 @@ impl Mount {
     }
 
     fn publish(&mut self, id: u64) {
-        self.publish_frame(id, FrameChange::Other);
+        self.publish_frame(id, FrameChange::Other, false);
     }
 
     /// Whether a frame's tree stays unbuilt: only a frame that laid nothing
@@ -2874,13 +2907,15 @@ impl Mount {
         }
     }
 
-    /// Publish the status of a presented frame. `change` says what the
-    /// frame changed ([`Self::draw`]). The tree of a frame that laid
+    /// Publish the status of a frame. `change` says what the frame changed
+    /// ([`Self::draw`]); `presented`, that it is the frame just drawn, whose
+    /// tree is built in a task after it
+    /// ([`crate::semantics_status::SemanticsGate::after_frame`]). The tree of a frame that laid
     /// nothing out is not built: it is the last one. Nor is that of a frame
     /// that only moved laid-out content, a content-only change: the gate's
     /// deadline delivers it as it then is. Neither changes the focus
     /// presence or the place in the room either.
-    fn publish_frame(&mut self, id: u64, change: FrameChange) {
+    fn publish_frame(&mut self, id: u64, change: FrameChange, presented: bool) {
         // What did not run is said over the window; the log says which
         // invocation it was, which the window's words leave out.
         let failures = self.frame.control_failures();
@@ -2897,7 +2932,12 @@ impl Mount {
         let ime = ime_window.as_ref().map(|i| {
             serde_json::json!({"x":i.x,"y":i.y,"width":i.width,"height":i.height,"purpose":format!("{:?}",i.content.purpose),"hints":i.content.html()})
         });
-        let unbuilt = self.tree_unbuilt(change, ime_window.as_ref());
+        let unbuilt = self.tree_unbuilt(change, ime_window.as_ref())
+            || (presented
+                && self
+                    .semantics
+                    .borrow_mut()
+                    .after_frame(ime_window.as_ref(), ui::time::now()));
         let (decision, root_rect) = if unbuilt {
             (None, self.tree_root_rect.get())
         } else {
@@ -2910,18 +2950,19 @@ impl Mount {
             let semantics = self.frame.inspection();
             self.metric_end("inspection", stage);
             self.tree_entries.set(self.entries);
-            self.tree_root_rect.set(semantics.root.rect);
+            let root_rect = semantics.root.rect;
+            self.tree_root_rect.set(root_rect);
             // The semantics tree is the bulk of every status; the host keeps
-            // the last tree it received, so an unchanged tree is left out and
-            // content-only changes while typing are throttled.
+            // the last tree it received, so an unchanged tree is left out,
+            // a changed one goes as a patch to it and content-only changes
+            // while typing are throttled.
             let stage = self.metric_start();
-            let decision = self.semantics.borrow_mut().decide(
-                &semantics,
-                ime_window.as_ref(),
-                ui::time::now(),
-            );
+            let decision =
+                self.semantics
+                    .borrow_mut()
+                    .decide(semantics, ime_window.as_ref(), ui::time::now());
             self.metric_end("semantics_decide", stage);
-            (Some(decision), semantics.root.rect)
+            (Some(decision), root_rect)
         };
         let applied = self.viewport.applied();
         let value = serde_json::json!({
@@ -2966,13 +3007,16 @@ impl Mount {
         }
         let mut text = value.to_string();
         if let Some(crate::semantics_status::SemanticsDecision::Deliver { .. }) = decision {
-            // Splice the already serialized tree into the status object
-            // instead of parsing it back into a value and serializing twice.
+            // Splice the already serialized tree or patch into the status
+            // object instead of parsing it back into a value and
+            // serializing twice.
             let gate = self.semantics.borrow();
-            text.pop();
-            text.push_str(",\"semantics\":");
-            text.push_str(std::str::from_utf8(gate.text()).unwrap_or("null"));
-            text.push('}');
+            if let Ok(members) = std::str::from_utf8(gate.text()) {
+                text.pop();
+                text.push(',');
+                text.push_str(members);
+                text.push('}');
+            }
         }
         emit_text(&self.status, &text);
     }
@@ -2994,7 +3038,9 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
         _ => return Err(error("invalid IME event")),
     };
     with_mount(id, |m| {
-        m.frame.send_host_event(&WindowEvent::Ime(event));
+        let event = WindowEvent::Ime(event);
+        m.frame.send_host_event(&event);
+        m.publish_committed(&event);
         m.pending = true;
         m.window.request_redraw();
         Ok(())
@@ -3194,18 +3240,46 @@ pub fn invoke_component_action(
 ) -> Result<String, JsValue> {
     let arguments: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(arguments).map_err(error)?;
+    let by = if confirmed {
+        Invoker::Confirmed
+    } else {
+        Invoker::Door
+    };
+    invoke_as(id, resource, action, &arguments, window.as_deref(), by)
+}
+
+/// Who an action call from the page is.
+#[derive(Clone, Copy)]
+enum Invoker {
+    /// Whoever calls the bound door.
+    Door,
+    /// The door's caller, having confirmed this exact request.
+    Confirmed,
+    /// The person themself, by a control they pressed in the desktop's own
+    /// chrome.
+    Person,
+}
+
+fn invoke_as(
+    id: u64,
+    resource: &str,
+    action: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    window: Option<&str>,
+    by: Invoker,
+) -> Result<String, JsValue> {
     with_mount(id, |m| {
-        let instance = m.action_window(window.as_deref())?;
+        let instance = m.action_window(window)?;
         let address = ui::bound_dispatch::BoundActionAddress {
             instance_id: instance
                 .or_else(|| m.frame.component_instance_id())
                 .ok_or_else(|| error("the mount hosts no application"))?,
             address: tilo_actions::ActionAddress::new(resource, action),
         };
-        let started = if confirmed {
-            m.frame.invoke_bound_action_confirmed(&address, &arguments)
-        } else {
-            m.frame.invoke_bound_action(&address, &arguments)
+        let started = match by {
+            Invoker::Door => m.frame.invoke_bound_action(&address, arguments),
+            Invoker::Confirmed => m.frame.invoke_bound_action_confirmed(&address, arguments),
+            Invoker::Person => m.frame.invoke_bound_action_by_person(&address, arguments),
         }
         .map_err(|e| door_error(&e))?;
         // A following call sees the state this one left, not the last frame's.
@@ -3272,8 +3346,11 @@ pub fn request_semantics(id: u64) -> Result<(), JsValue> {
 
 mod desktop_exports;
 mod fonts;
+mod here_exports;
 mod live_layout;
 mod live_signals;
+mod mention_notices;
+mod remote_presence;
 mod session_asks;
 use crate::first_frame::{self, GpuStep};
 pub(crate) mod pointers;
@@ -3281,338 +3358,6 @@ mod retained;
 use retained::Retained;
 #[cfg(debug_assertions)]
 use retained::check_retained;
-
-/// A room member's presence from the page's live layer: `publisher` (the
-/// member's device, hex) with its participant `label` and `kind` (`person`
-/// or `agent`), and its caret or selection as the live anchors (hex) it
-/// published, or none when it has no selection. Editors draw the caret,
-/// labelled, in the next frame. Its colour is the room's to settle
-/// ([`tilo_desktop::here::HereState::colors`]), never the one it publishes,
-/// so two people here at once are never drawn alike.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-#[allow(
-    clippy::needless_pass_by_value,
-    reason = "wasm-bindgen receives optional JavaScript strings only as owned values"
-)]
-pub fn remote_presence(
-    id: u64,
-    publisher: &str,
-    label: &str,
-    kind: &str,
-    anchor: Option<String>,
-    head: Option<String>,
-) -> Result<(), JsValue> {
-    use ui::collaboration::PresencePayload;
-    let range = anchor.zip(head).and_then(|(anchor, head)| {
-        let anchor = tilo_relay_protocol::live::LiveAnchor {
-            cursor: hex::decode(anchor).ok()?,
-        };
-        let head = tilo_relay_protocol::live::LiveAnchor {
-            cursor: hex::decode(head).ok()?,
-        };
-        tilo_browser_peer::transport::read_presence_anchors(&anchor, &head)
-    });
-    with_mount(id, |m| {
-        let user = UserId(publisher.to_owned());
-        let presence = m.frame.presence_mut();
-        presence.set_participant_kind(&user, kind == "agent");
-        if !label.is_empty() {
-            presence.set_display_name(user, label);
-        }
-        match range {
-            Some((key, start, end)) => {
-                let payload = if start == end {
-                    PresencePayload::Caret { pos: start }
-                } else {
-                    PresencePayload::Selection { start, end }
-                };
-                presence.apply_remote_presence(publisher.to_owned(), key, payload);
-            }
-            None => presence.unregister_peer(publisher),
-        }
-        m.apply_here();
-        m.frame.relayout();
-        m.pending = true;
-        m.window.request_redraw();
-        Ok(())
-    })
-}
-
-/// Who is in the room's live layer now: `{own: {publisher, label, user},
-/// members: [{publisher, kind, label, focus, activity, place}] | null}`,
-/// `members` null while the layer is not live. The bar, the People popover
-/// and the windows show them, each in the colour the room settles for them;
-/// nothing is written to the room.
-///
-/// # Errors
-///
-/// Rejects malformed JSON or a mount without a desktop.
-#[wasm_bindgen]
-pub fn desktop_set_people(id: u64, people: &str) -> Result<(), JsValue> {
-    #[derive(serde::Deserialize)]
-    struct People {
-        own: Option<tilo_desktop::here::LiveMember>,
-        members: Option<Vec<tilo_desktop::here::LiveMember>>,
-    }
-    let people: People = serde_json::from_str(people).map_err(error)?;
-    with_mount(id, |m| {
-        let desktop = m
-            .desktop
-            .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?;
-        if desktop
-            .here
-            .borrow_mut()
-            .set_members(people.own, people.members)
-        {
-            desktop.announce_arrivals();
-            // The bar reads the strips' counts in its update pass, which a
-            // bare redraw skips: without the wake it would paint them only
-            // on its next other change, such as the clock's minute.
-            desktop.shared.wake();
-            m.apply_here();
-        }
-        Ok(())
-    })
-}
-
-/// Who the desktop shows as here, as its People list does: `[{id, label,
-/// agent}]`, one row per person however many devices they are here from,
-/// never this page's own person. `None` for a single application.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn desktop_here_people(id: u64) -> Result<Option<String>, JsValue> {
-    // A read: it changes nothing a semantics tree shows.
-    with_mount_quietly(id, |m| {
-        m.desktop
-            .as_ref()
-            .map(|d| {
-                let tree = d.handle.read(Clone::clone);
-                let people: Vec<serde_json::Value> = crate::shell::here_people(&d.here, &d.shared, &tree)
-                    .into_iter()
-                    .map(|person| serde_json::json!({"id": person.id, "label": person.label, "agent": person.agent}))
-                    .collect();
-                serde_json::to_string(&people).map_err(error)
-            })
-            .transpose()
-    })
-}
-
-/// The picture `user` (root key, hex) chose for their profile, decoded by
-/// the page into `width` × `height` straight-alpha RGBA pixels; empty
-/// pixels take it away. Every avatar of theirs wears it from the next frame.
-///
-/// # Errors
-///
-/// Rejects pixels that do not fill the size, a picture larger than a
-/// profile's, or a mount without a desktop.
-#[wasm_bindgen]
-pub fn desktop_set_person_photo(
-    id: u64,
-    user: &str,
-    width: u32,
-    height: u32,
-    rgba: Vec<u8>,
-) -> Result<(), JsValue> {
-    /// The largest side a profile picture is drawn from.
-    const MAX_SIDE: u32 = 256;
-    let image = if rgba.is_empty() {
-        None
-    } else {
-        let expected = usize::try_from(width.saturating_mul(height).saturating_mul(4)).ok();
-        if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
-            return Err(error("a profile picture is at most 256 pixels square"));
-        }
-        if expected != Some(rgba.len()) {
-            return Err(error("the pixels do not fill the picture"));
-        }
-        Some(ui::peniko::ImageData {
-            data: ui::peniko::Blob::new(std::sync::Arc::new(rgba)),
-            format: ui::peniko::ImageFormat::Rgba8,
-            alpha_type: ui::peniko::ImageAlphaType::Alpha,
-            width,
-            height,
-        })
-    };
-    ui::people_photos::set(user, image);
-    with_mount(id, |m| {
-        let desktop = m
-            .desktop
-            .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?;
-        desktop.here.borrow_mut().photos_changed();
-        m.apply_here();
-        Ok(())
-    })
-}
-
-/// The host's answer to `/here` (`peer.here`): each person's line.
-///
-/// # Errors
-///
-/// Rejects malformed JSON or a mount without a desktop.
-#[wasm_bindgen]
-pub fn desktop_set_here(id: u64, lines: &str) -> Result<(), JsValue> {
-    let lines: Vec<tilo_desktop::here::HostLine> = serde_json::from_str(lines).map_err(error)?;
-    with_mount(id, |m| {
-        let desktop = m
-            .desktop
-            .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?;
-        if desktop
-            .here
-            .borrow_mut()
-            .set_lines(lines, crate::shell::now_ms())
-        {
-            // A line can name someone whose presence arrived nameless.
-            desktop.announce_arrivals();
-            m.apply_here();
-        }
-        Ok(())
-    })
-}
-
-/// How many spectators follow the room without taking part.
-///
-/// # Errors
-///
-/// Rejects a mount without a desktop.
-#[wasm_bindgen]
-pub fn desktop_set_watching(id: u64, watching: u32) -> Result<(), JsValue> {
-    with_mount(id, |m| {
-        let desktop = m
-            .desktop
-            .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?;
-        if desktop.here.borrow_mut().set_watching(watching) {
-            m.pending = true;
-            m.window.request_redraw();
-        }
-        Ok(())
-    })
-}
-
-/// What this page's person is doing, for the page to post to `/here`:
-/// `{window: hex | null, share, actions: [{id, action, resource, app,
-/// at_ms}], status}`: the focused window's tab id, their own steps in the active workspace since
-/// `since_ms` (titles only; none unless they share an automatic status) and their own words for
-/// their live presence (`null` while they said nothing or share nothing).
-///
-/// # Errors
-///
-/// Rejects a mount without a desktop.
-#[wasm_bindgen]
-pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
-    with_mount(id, |m| {
-        let desktop = m
-            .desktop
-            .as_ref()
-            .ok_or_else(|| error("Desktop unavailable"))?;
-        let tree = desktop.handle.read(Clone::clone);
-        let focused = tree.active_workspace().and_then(|workspace| {
-            // A person who has not moved yet is shown the first strip, as
-            // the composition draws it.
-            let strip = tree
-                .active_strip
-                .get(&workspace.id)
-                .and_then(|id| workspace.strips.iter().find(|s| s.id == *id))
-                .or_else(|| workspace.strips.first())?;
-            let group = tree
-                .active_group_for(strip.id)
-                .and_then(|g| strip.window_groups.iter().find(|w| w.id == g))
-                .or_else(|| strip.window_groups.first())?;
-            group.tabs.iter().find(|tab| tab.id == group.active_tab)
-        });
-        let window = focused.map(|tab| format!("{:x}", tab.id));
-        let share = desktop.here.borrow().sharing() == ui::StatusSharing::Automatic;
-        let actions = if share {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a page clock in milliseconds; negative clamps to zero"
-            )]
-            let since = since_ms.max(0.0) as u64;
-            crate::history::own_recent_actions(&desktop.shared, &tree, &desktop.author, since)
-        } else {
-            Vec::new()
-        };
-        serde_json::to_string(&serde_json::json!({
-            "window": window,
-            "share": share,
-            "actions": actions,
-            "status": desktop.here.borrow().shared_words(),
-        }))
-        .map_err(error)
-    })
-}
-
-/// The colour presence draws the identity `id` in when nothing settled
-/// another one for it, as `#rrggbb`: [`ui::presence::user_color`], the one
-/// the native desktop uses, so a page never computes a colour of its own.
-#[wasm_bindgen(js_name = presenceColor)]
-#[must_use]
-pub fn presence_color(id: &str) -> String {
-    let (r, g, b) = ui::presence::user_color(id);
-    format!("#{r:02x}{g:02x}{b:02x}")
-}
-
-/// A member left the room: forget its carets and name.
-///
-/// # Errors
-///
-/// Rejects a closed mount.
-#[wasm_bindgen]
-pub fn remote_presence_gone(id: u64, publisher: &str) -> Result<(), JsValue> {
-    with_mount(id, |m| {
-        m.frame.presence_mut().unregister_peer(publisher);
-        m.apply_here();
-        m.frame.relayout();
-        m.pending = true;
-        m.window.request_redraw();
-        Ok(())
-    })
-}
-
-/// Name the people of the mount's room, `[{id, name}]`, `id` each person's
-/// key as their actions record it (what `cx.me()` and `ActionCx::author`
-/// answer). Live presence names devices; a page that knows who belongs to
-/// the room (its door admitted them) names the people, so an app shows
-/// `cx.people().name(author)` as the person's name rather than their key.
-///
-/// # Errors
-///
-/// Rejects malformed JSON or a closed mount.
-#[wasm_bindgen]
-pub fn set_people(id: u64, people: &str) -> Result<(), JsValue> {
-    #[derive(serde::Deserialize)]
-    struct Person {
-        id: String,
-        name: String,
-    }
-    let people: Vec<Person> =
-        serde_json::from_str(people).map_err(|error| JsValue::from_str(&error.to_string()))?;
-    with_mount(id, |m| {
-        let presence = m.frame.presence_mut();
-        for person in people {
-            let name = person.name.trim();
-            if !person.id.is_empty() && !name.is_empty() {
-                presence.set_display_name(UserId(person.id), name);
-            }
-        }
-        m.apply_here();
-        m.frame.relayout();
-        m.pending = true;
-        m.window.request_redraw();
-        Ok(())
-    })
-}
 
 /// Take accepted writes for the page to commit (`[{key, bytes, actor,
 /// revision}]`).

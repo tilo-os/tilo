@@ -1131,7 +1131,12 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
         }
         if verb.options.destructive {
             risks.push(quote!(Self::#variant(..) => #krate::__private::RiskLevel::Destructive,));
+        } else if verb.options.irreversible {
+            // A declaration that says only that Undo cannot take it back
+            // cannot say the invocation is harmless, so it reaches a person.
+            risks.push(quote!(Self::#variant(..) => #krate::__private::RiskLevel::Destructive,));
         }
+
         if verb.options.housekeeping {
             change_kinds
                 .push(quote!(Self::#variant(..) => #krate::__private::ChangeKind::Housekeeping,));

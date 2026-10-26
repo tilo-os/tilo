@@ -282,7 +282,7 @@ pub struct EditRecord {
     pub text: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Message {
     pub id: Id,
     pub channel: Id,

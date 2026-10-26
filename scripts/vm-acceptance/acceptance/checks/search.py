@@ -28,10 +28,56 @@ def _open_palette(ctx):
     return ctx.wait_state(lambda s: _palette(s).get("visible"), 5, "search open after Super+Space")
 
 
-def _top_app(ctx, query):
-    results = ctx.vm.actions(query)
-    top = results[0] if results else None
-    return top, [(a["provider"], a["id"]) for a in results[:5]]
+def _app_title(ctx, query, app):
+    """The title the desktop gives `app`, read from its applications row."""
+    rows = ctx.vm.actions(query)
+    row = next((a for a in rows if a["provider"] == "applications" and a["id"] == app), None)
+    return row and row["title"], [(a["provider"], a["id"]) for a in rows[:5]]
+
+
+def _palette_rows(ctx, query, timeout: float = 6.0):
+    """Type `query` into a freshly opened search and return its rows once they stop
+    changing (providers answer one after another)."""
+    _open_palette(ctx)
+    ctx.vm.control("type", query)
+    last = {"rows": None}
+
+    def settled():
+        pal = _palette(ctx.state())
+        rows = pal.get("rows") or []
+        if pal.get("query") != query or not rows:
+            last["rows"] = None
+            return None
+        if rows == last["rows"]:
+            return rows
+        last["rows"] = rows
+        return None
+
+    rows = wait_until(settled, timeout, 0.4)
+    if rows is None:
+        rows = _palette(ctx.state()).get("rows") or []
+    ctx.close_overlays()
+    return rows
+
+
+def _names_check(ctx, res, names):
+    """What a person sees: the search's first row for each name is the app.
+
+    `actions list` is not that view: it leads with live app actions and orders
+    the rest by kind for agents (docs/agent-action-api.md), so it reads only the
+    app's title here."""
+    ctx.reset()
+    wrong = []
+    for query, app in names:
+        title, listed = _app_title(ctx, query, app)
+        if not title:
+            wrong.append(f"'{query}' does not list {app} at all ({listed})")
+            continue
+        rows = _palette_rows(ctx, query)
+        res.metrics[query] = [(r.get("label"), r.get("description")) for r in rows[:3]]
+        if not rows or rows[0].get("label") != title:
+            wrong.append(f"'{query}' -> {res.metrics[query][:2]} (want {title!r} ({app}) first)")
+    expect(not wrong, "; ".join(wrong))
 
 
 @check("S01", AREA, "Super+Space opens search with a non-empty empty-query view")
@@ -47,16 +93,6 @@ def empty_view(ctx, res):
     ctx.shot("S01-empty-query")
     ctx.close_overlays()
     expect(rows, "the empty-query search view lists nothing")
-
-
-def _names_check(ctx, res, names):
-    wrong = []
-    for query, app in names:
-        top, head = _top_app(ctx, query)
-        res.metrics[query] = head
-        if not top or top["id"] != app:
-            wrong.append(f"'{query}' -> {head[:2]} (want {app} first)")
-    expect(not wrong, "; ".join(wrong))
 
 
 @check("S02", AREA, "English app names find the app first (Terminal, Files, Settings, Notes, Store)")

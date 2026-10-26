@@ -49,6 +49,14 @@ pub trait PinnedRoster {
     fn key(&mut self, key: &Key, modifiers: ModifiersState) -> Option<Option<PeopleHit>>;
     /// The message box's message went: it empties.
     fn sent(&mut self);
+    /// What it shows, for assistive technology: its rows and controls.
+    fn accessibility_children(&self) -> Vec<ui::a11y::AccessNode>;
+    /// Assistive technology pressed one of them (its action target).
+    fn perform_semantic_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        target: &str,
+    ) -> Option<PeopleHit>;
 }
 
 impl PinnedRoster for PeopleOverlay {
@@ -111,6 +119,18 @@ impl PinnedRoster for PeopleOverlay {
 
     fn sent(&mut self) {
         PeopleOverlay::sent(self);
+    }
+
+    fn accessibility_children(&self) -> Vec<ui::a11y::AccessNode> {
+        PeopleOverlay::accessibility_children(self)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        target: &str,
+    ) -> Option<PeopleHit> {
+        PeopleOverlay::perform_semantic_action(self, action, target)
     }
 }
 

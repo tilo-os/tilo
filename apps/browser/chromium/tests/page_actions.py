@@ -60,6 +60,52 @@ AGENT = b'''<!doctype html><title>Agent</title>
 '''
 
 
+CANVAS = b'''<!doctype html><title>Sign</title>
+<canvas id="c" width="500" height="150" aria-label="Signature pad" style="border:1px solid #000"></canvas>
+<button type="button" id="s">Submit signature</button><p id="m"></p>
+<script>let ink=0,down=false;const x=document.getElementById("c").getContext("2d");
+const c=document.getElementById("c");
+c.onpointerdown=e=>{down=true;x.beginPath();x.moveTo(e.offsetX,e.offsetY)};
+c.onpointermove=e=>{if(down){x.lineTo(e.offsetX,e.offsetY);x.stroke();ink++}};
+window.onpointerup=()=>down=false;
+window.strokes=()=>ink;
+document.getElementById("s").onclick=()=>{document.getElementById("m").textContent=ink<5?"Draw your signature first":"Signature received"};
+</script>'''
+
+
+GESTURES = b'''<!doctype html><title>Gestures</title>
+<style>.menu{position:relative;display:inline-block}
+.menu ul{display:none;position:absolute;background:#fff;list-style:none;padding:8px;margin:0}
+.menu:hover ul{display:block}
+li{border:1px solid #000;padding:8px;margin:4px;list-style:none}</style>
+<h1>Gestures</h1>
+<nav class="menu"><span id="trigger" style="padding:8px;display:inline-block;border:1px solid #000">Licences menu</span>
+<ul><li><a href="#" onclick="opened(\'fishing\');return false">Fishing licence</a></li></ul></nav>
+<ol id="l"><li draggable="true">Riverton office</li><li draggable="true">Porthaven office</li><li draggable="true">Central office</li></ol>
+<canvas id="c" width="400" height="150" style="border:2px solid #000" aria-label="Signature pad"></canvas>
+<button type="button" id="s" onclick="submitSignature()">Submit signature</button>
+<button type="button" id="save" onclick="saveOrder()">Save order</button>
+<p id="m"></p>
+<script>
+let ink = 0, down = false;
+const pad = document.getElementById('c'), ctx = pad.getContext('2d');
+pad.onpointerdown = e => { down = true; ctx.beginPath(); ctx.moveTo(e.offsetX, e.offsetY); };
+pad.onpointermove = e => { if (!down) return; ctx.lineTo(e.offsetX, e.offsetY); ctx.stroke(); ink++; };
+pad.onpointerup = () => { down = false; };
+window.drawn = () => ink;
+window.opened = name => { document.getElementById('m').textContent = 'opened ' + name; };
+window.order = () => [...document.getElementById('l').children].map(x => x.textContent).join(' > ');
+window.saveOrder = () => { document.getElementById('m').textContent = 'saved ' + order(); };
+window.submitSignature = () => { document.getElementById('m').textContent = ink < 5 ? 'Draw your signature first' : 'Signature received'; };
+let held;
+document.querySelectorAll('#l li').forEach(li => {
+  li.ondragstart = () => { held = li; };
+  li.ondragover = e => e.preventDefault();
+  li.ondrop = e => { e.preventDefault(); if (held !== li) document.getElementById('l').insertBefore(held, li.nextSibling); };
+});
+</script>'''
+
+
 PARAGRAPH = ('Reading on a screen is easiest when the line is short, the type is calm and nothing '
              'else competes for attention. ') * 3
 ARTICLE = f'''<!doctype html><title>The long read</title>
@@ -106,6 +152,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = FORM if path == '/form' else AGENT if path == '/agent' else ARTICLE if path == '/article' \
             else LATER if path == '/later' \
             else GESTURE if path == '/gesture' \
+            else CANVAS if path == '/canvas' \
+            else GESTURES if path == '/gestures' \
             else b'{"ok":true}' if path == '/data.json' \
             else f'<title>{path}</title><p>{path}</p>'.encode()
         self.send_response(200)
@@ -296,6 +344,67 @@ class PageActions(unittest.TestCase):
         self.assertEqual((hit['data']['ref'], hit['data']['interactive']), (add, True), hit)
         empty = self.ok('at', x=990, y=790)
         self.assertFalse(empty['data']['interactive'], empty)
+
+    def test_a_hover_reveals_a_menu_and_a_click_then_opens_it(self):
+        self.h.navigate(self.url + '/gestures')
+        outline = self.outline()
+        self.assertNotIn('Fishing licence', outline, 'the menu starts closed')
+        # A trigger a hover reveals something under is named by ref: the rule
+        # that opens the menu is what a gesture has to address.
+        trigger = self.ref(outline, '(?:hint|hoverable) "Licences menu"')
+        hovered = self.ok('hover', element=trigger)
+        self.assertTrue(hovered['data']['changed'], hovered)
+        self.assertIn('+ - list', hovered['outline'], hovered)
+        self.assertIn('Fishing licence', self.outline())
+        self.ok('click', element=self.ref(self.outline(), 'link "Fishing licence"'))
+        self.assertIn('text "opened fishing"', self.outline())
+        # A hover keeps the button up: it reveals a menu, it does not press.
+        self.assertEqual(self.main_world('drawn()'), 0)
+
+    def test_a_drag_reorders_a_draggable_list(self):
+        self.h.navigate(self.url + '/gestures')
+        outline = self.outline()
+        first = self.ref(outline, 'draggable "Riverton office"')
+        third = self.ref(outline, 'draggable "Central office"')
+        dragged = self.ok('drag', element=first, to=third, steps=6)
+        self.assertEqual(self.main_world('order()'), 'Porthaven office > Central office > Riverton office', dragged)
+        self.assertIn('Dragged', dragged['message'], dragged)
+
+    def test_a_path_draws_on_a_canvas_whose_page_starts_the_line(self):
+        # A pad that begins its stroke on pointerdown only draws if the page is
+        # the one the pointer is working: an unfocused view drops the moves.
+        self.h.navigate(self.url + '/canvas')
+        canvas = self.ref(self.outline(), 'canvas "Signature pad"')
+        points = [[50, 100], [80, 40], [110, 110], [140, 45], [170, 105], [200, 60], [240, 100]]
+        drawn = self.ok('path', element=canvas, points=points)
+        self.assertEqual(self.main_world('strokes()'), len(points), drawn)
+
+    def test_a_click_still_lands_after_a_drag(self):
+        # A drag leaves the engine's own drag behind it; the click that follows
+        # has to reach the page as any click does.
+        self.h.navigate(self.url + '/gestures')
+        outline = self.outline()
+        first = self.ref(outline, 'draggable "Riverton office"')
+        third = self.ref(outline, 'draggable "Central office"')
+        self.ok('drag', element=first, to=third, steps=6)
+        save = self.ref(self.outline(), 'button "Save order"')
+        clicked = self.ok('click', element=save)
+        self.assertEqual(self.main_world("document.getElementById('m').textContent"),
+                         'saved Porthaven office > Central office > Riverton office', clicked)
+
+    def test_a_pointer_path_draws_on_a_canvas(self):
+        self.h.navigate(self.url + '/gestures')
+        outline = self.outline()
+        self.assertIn('canvas "Signature pad" 400x150', outline)
+        pad = self.ref(outline, 'canvas "Signature pad"')
+        points = [[20, 110], [40, 60], [60, 100], [80, 50], [100, 105], [120, 70], [140, 95]]
+        drawn = self.ok('path', element=pad, points=points)
+        # Every point after the press is a move the page strokes; the reply
+        # names how many it drew so an agent can tell ink landed.
+        self.assertEqual(drawn['data']['drew'], len(points), drawn)
+        self.assertEqual(self.main_world('drawn()'), len(points), drawn)
+        self.ok('click', element=self.ref(self.outline(), 'button "Submit signature"'))
+        self.assertIn('text "Signature received"', self.outline())
 
     def test_console_and_network_reach_the_agent_and_not_the_page(self):
         self.h.navigate(self.url + '/agent')

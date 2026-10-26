@@ -34,6 +34,9 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 
 use crate::web_cli::{RoomArgs, enrol, operator_lines, start_relay_lending, web_config};
 
+mod bots;
+use bots::{hand_to_discord, offer_sign_in, start_bots};
+
 /// The secret store this host keeps room roots in.
 pub(crate) const SECRET_APP: &str = "so.tilo.relay";
 /// How long a pre-admitted invitation stays redeemable: a visitor who
@@ -193,6 +196,18 @@ pub struct PersistentArgs {
     /// secrets; kept where the Discord connector's worker asks for it.
     #[arg(long = "discord-token-file", value_name = "PATH")]
     pub discord_token_file: Option<PathBuf>,
+    /// The Discord application members sign in with to link their
+    /// account (OAuth 2, `identify`); with the redirect and consent page
+    /// below, the room offers "Connect Discord". The room's host keeps the
+    /// client secret and trades the code itself.
+    #[arg(long = "discord-client-id", value_name = "ID", requires_all = ["discord_redirect_url", "discord_authorize_url"])]
+    pub discord_client_id: Option<String>,
+    /// Where Discord sends the browser back: the room host's callback.
+    #[arg(long = "discord-redirect-url", value_name = "URL")]
+    pub discord_redirect_url: Option<String>,
+    /// Discord's consent page.
+    #[arg(long = "discord-authorize-url", value_name = "URL")]
+    pub discord_authorize_url: Option<String>,
     /// The worker binary of a connector (`APP=PATH`), where it is not
     /// `<name>-worker` beside this binary; repeatable.
     #[arg(long = "connector-worker", value_name = "APP=PATH")]
@@ -245,6 +260,9 @@ pub(crate) struct PersistentRoom {
     pub spectator: SigningKey,
     pub host_cert: DeviceCert,
     pub web: WebHandle,
+    /// The Discord connector a bridge runs on, which a sign-in with Discord
+    /// that came back to the service is handed to.
+    pub discord: Option<Arc<tilo_connector::ConnectorProcess>>,
 }
 
 /// The workspace name people see for the persistent room `name` (a lowercase
@@ -1658,7 +1676,7 @@ pub(crate) async fn run(
             origin: Some(web.origin.clone()),
         },
     );
-    let runners = start_bots(
+    let (runners, discord) = start_bots(
         &rooms,
         &room,
         &host_cert,
@@ -1669,6 +1687,9 @@ pub(crate) async fn run(
         &state,
     )
     .await?;
+    if let Some(discord) = &discord {
+        offer_sign_in(discord, &persistent).await;
+    }
     // The files members post in the room's Chat, kept in the same store
     // as what the bots fetch, so they stay once their poster left.
     let attachments = attachment_limits(&persistent).map(|limits| {
@@ -1702,6 +1723,7 @@ pub(crate) async fn run(
         spectator,
         host_cert,
         web,
+        discord,
     };
     let governance = Governance {
         owners,
@@ -1728,181 +1750,6 @@ pub(crate) async fn run(
     drop(context);
     hosted.shutdown().await;
     result
-}
-
-/// Connect the room to the Discord server a bridge's inputs name
-/// ([`discord::link_bridge`](tilo_relay::room_bots::discord::link_bridge)),
-/// its posts pointing at what `connectors`' host serves publicly.
-async fn link_discord(
-    rooms: &Rooms,
-    room: &str,
-    host_cert: &DeviceCert,
-    spec: &BotSpec,
-    bot: &mut tilo_relay::room_bots::installed::InstalledBot,
-    connectors: &tilo_relay::room_bots::installed::ConnectorHost,
-) -> Result<Vec<(String, String)>, String> {
-    let public = &connectors.public;
-    tilo_relay::room_bots::discord::link_bridge(rooms, room, host_cert, &spec.inputs, bot, public)
-        .await
-}
-
-/// Install the bots the operator named (once: a restart finds the same
-/// installations), start the connectors their programs listen to, and run
-/// each bot on this host. Each is kept a governed member of the room, its
-/// delegation renewed with the room's root as it runs out.
-async fn start_bots(
-    rooms: &Rooms,
-    room: &str,
-    host_cert: &DeviceCert,
-    root: &SigningKey,
-    bots: &[BotSpec],
-    connector_host: &tilo_relay::room_bots::installed::ConnectorHost,
-    persistent: &PersistentArgs,
-    state: &Path,
-) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
-    use tilo_relay::room_bots::discord;
-    use tilo_relay::room_bots::installed::{self, BotRunner, InstalledBot};
-    if let Some(path) = &persistent.discord_token_file {
-        let token = std::fs::read_to_string(path)
-            .with_context(|| format!("read the Discord token file {}", path.display()))?;
-        // Never logged: only kept where the connector's worker asks for it.
-        installed::put_connector_secret(
-            discord::APP,
-            discord::TOKEN_PURPOSE,
-            token.trim().as_bytes(),
-        )
-        .map_err(|error| anyhow::anyhow!("keep the Discord token: {error}"))?;
-    }
-    let mut installed_bots = Vec::new();
-    let mut connectors = BTreeSet::new();
-    let mut settings = BTreeMap::new();
-    for spec in bots {
-        let inputs = spec
-            .inputs
-            .iter()
-            .map(|(key, value)| (key.clone(), input_value(value)))
-            .collect();
-        let dir = state.join("bots").join(slug_of(&spec.entry));
-        let mut bot = installed::install(&dir, &spec.entry, inputs)
-            .await
-            .map_err(|error| anyhow::anyhow!("install {}: {error}", spec.entry))?;
-        let shortcut = bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?;
-        let wanted = InstalledBot::connectors(&shortcut);
-        if wanted.contains(discord::APP) {
-            match link_discord(rooms, room, host_cert, spec, &mut bot, connector_host).await {
-                Ok(env) => {
-                    settings.insert(discord::APP.to_owned(), env);
-                }
-                Err(error) => {
-                    tracing::error!(entry = %spec.entry, %error, "not running the Discord bridge");
-                    continue;
-                }
-            }
-        }
-        connectors.extend(wanted);
-        tracing::info!(entry = %spec.entry, installation = %bot.installation, "bot installed");
-        installed_bots.push((dir, bot));
-    }
-    if installed_bots.is_empty() {
-        return Ok(Vec::new());
-    }
-    let blobs = connector_host.blobs(rooms);
-    // The room serves without its bots rather than not at all: a connector
-    // whose worker does not start (a missing binary, an unreachable service)
-    // leaves the bots that need it out, said in the log, as a bridge that
-    // does not link does.
-    let started = match installed::start_connectors(
-        &connectors,
-        state,
-        &connector_host.workers,
-        &settings,
-        &blobs,
-    )
-    .await
-    {
-        Ok(started) => started,
-        Err(error) => {
-            tracing::error!(%error, "not running the room's bots: a connector did not start");
-            return Ok(Vec::new());
-        }
-    };
-    let mut runners = Vec::new();
-    for (dir, bot) in installed_bots {
-        let wanted =
-            InstalledBot::connectors(&bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?);
-        let own = started
-            .iter()
-            .filter(|(app, _)| wanted.contains(*app))
-            .map(|(app, process)| (app.clone(), Arc::clone(process)))
-            .collect::<BTreeMap<_, _>>();
-        let certifier = tilo_relay::room_bots::membership::HostRootCertifier::new(root.clone());
-        if let Some(lane) = own.get(discord::APP).cloned() {
-            runners.extend(carry_calls(rooms, room, host_cert, &certifier, &bot, lane));
-        }
-        let runner = BotRunner::new(
-            rooms.clone(),
-            room.to_owned(),
-            host_cert.clone(),
-            certifier.device_key(&bot.installation),
-            bot.clone(),
-            own,
-            dir.join("progress.json"),
-        )
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-        runners.push(tokio::spawn(
-            tilo_relay::room_bots::membership::keep_renewed(
-                rooms.clone(),
-                room.to_owned(),
-                host_cert.clone(),
-                certifier,
-                bot.clone(),
-            ),
-        ));
-        runners.push(tokio::spawn(runner.run()));
-    }
-    Ok(runners)
-}
-
-/// Carry `room`'s calls to Discord and back as `bot`'s device, through the
-/// Discord connector's worker `lane` the bot's runner uses too.
-fn carry_calls(
-    rooms: &Rooms,
-    room: &str,
-    host_cert: &DeviceCert,
-    certifier: &tilo_relay::room_bots::membership::HostRootCertifier,
-    bot: &tilo_relay::room_bots::installed::InstalledBot,
-    lane: Arc<impl tilo_relay::room_bots::discord_voice::CallLane>,
-) -> Option<tokio::task::JoinHandle<()>> {
-    match certifier.device(room, bot, tilo_clock::unix_now_ns()) {
-        Ok(device) => Some(tokio::spawn(
-            tilo_relay::room_bots::discord_voice::VoiceBridge::new(
-                rooms.clone(),
-                room.to_owned(),
-                host_cert.clone(),
-                device.cert,
-                lane,
-            )
-            .run(),
-        )),
-        Err(error) => {
-            tracing::error!(entry = %bot.entry, %error, "not carrying the Discord bridge's calls");
-            None
-        }
-    }
-}
-
-/// A file name for directory entry or program path `entry`.
-fn slug_of(entry: &str) -> String {
-    entry
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 /// The operator's declarations the room is kept in line with.
@@ -2266,6 +2113,9 @@ async fn serve_operator(
                     if let Some(sender) = mail_acks.remove(&request) {
                         let _ = sender.send(queued);
                     }
+                }
+                Some(Ok(OperatorCommand::DiscordAuthorized { user_id, user_name, display_name, avatar, state_sha256, link_check })) => {
+                    hand_to_discord(context, user_id, user_name, display_name, avatar, state_sha256, link_check).await;
                 }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent room admits guests by pre-admission only"),
                 Some(Ok(OperatorCommand::Shutdown {})) | None => {

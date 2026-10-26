@@ -723,6 +723,19 @@ impl Grid {
         self.dirty = true;
     }
 
+    /// Keep the active cell in view after a resize, so a window opened at a
+    /// size and one resized to it show the same place in the sheet.
+    pub fn ensure_active_visible(&mut self) {
+        // Canonical, not incremental: a resize lays the view out from the
+        // active cell, so a window opened at this size and one resized to it
+        // show the same place. (Keeping a previous size's scroll is what made
+        // the two disagree.)
+        self.scroll_x = 0.0;
+        self.scroll_y = 0.0;
+        self.ensure_visible();
+        self.dirty = true;
+    }
+
     /// Public hit-test wrapper so the app can detect double-clicks.
     pub fn cell_at_public(&self, p: Point) -> Option<Addr> {
         self.cell_at(p)

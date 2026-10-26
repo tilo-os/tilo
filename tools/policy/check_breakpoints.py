@@ -79,6 +79,9 @@ def audit(root: Path = ROOT) -> tuple[Counter[str], int]:
         for source in sorted((root / tree).rglob("*.rs")):
             if any(part in {"target", "vendor"} for part in source.parts):
                 continue
+            # A test asserts what a surface does at a size; it is not a surface.
+            if rust_source.is_test_file(source.relative_to(root)):
+                continue
             scanned += 1
             text = source.read_text(encoding="utf-8")
             # Only code decides a layout: a comparison inside a string literal is

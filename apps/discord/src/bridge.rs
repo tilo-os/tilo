@@ -12,23 +12,24 @@
 //! is in the record; [`BridgePlan::again`] asks for that pass.
 
 use discord_wire::event::{
-    Command, LayoutChanged, MemberChanged, MessageCreated, MessageDeleted, MessageUpdated,
-    ReactionChanged, source,
+    Authorized, Command, LayoutChanged, MemberChanged, MessageCreated, MessageDeleted,
+    MessageUpdated, ReactionChanged, SignInOffered, source,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::inbound::{self, InboundPlan};
 use crate::outbound::{self, Context};
-use crate::record::{Guild, MappedKind, Ownership, map_key};
+use crate::record::{Guild, MappedKind, Ownership};
 use crate::tilo::{self, RoomChat};
 use crate::{import, layout, roles};
-use ui::tilo_resource::Id;
 
 /// The Chat record kind the bridge mirrors.
 pub const CHAT_KIND: &str = "chat.workspace";
 /// The kind of the parts Chat keeps its messages in, beside its record.
 pub const MESSAGES_KIND: &str = "chat.messages";
+/// The workspace's own emoji, which the bridge uploads to the server.
+pub const EMOJI_KIND: &str = "tilo.workspace.emoji";
 /// The room record kind whose role changes the bridge mirrors.
 pub const ROOM_KIND: &str = "tilo.room";
 /// Chat's verb filing a feedback report in a channel.
@@ -75,6 +76,12 @@ pub struct BridgePlan {
     pub apply_roles: Vec<Value>,
     /// `set-overwrite`.
     pub overwrites: Vec<Value>,
+    /// `delete-emoji`, then `settle-emoji`: an emoji the bridge uploaded
+    /// whose workspace emoji is gone or has another picture.
+    pub delete_emojis: Vec<Value>,
+    /// `apply-emoji`, then `settle-emoji`: a workspace emoji uploaded to
+    /// the server, or the one uploaded for it renamed.
+    pub apply_emojis: Vec<Value>,
     pub member_roles: Vec<Value>,
     /// `kick`: a linked person was removed from the room.
     pub kicks: Vec<Value>,
@@ -98,7 +105,14 @@ pub struct BridgePlan {
     pub chat_unreacts: Vec<Value>,
     /// `block-persona`.
     pub blocks: Vec<Value>,
-    pub complete_links: Vec<Value>,
+    /// `offer-link`.
+    pub offers: Vec<Value>,
+    /// `offer-sign-in`.
+    pub sign_in_offers: Vec<Value>,
+    /// `answer-interaction`: a slash command's reply says what came of it.
+    pub answers: Vec<Value>,
+    /// `set-sign-in`: the host's offer of signing in with Discord changed.
+    pub sign_ins: Vec<Value>,
     pub unlinks: Vec<Value>,
     /// `rename-link`.
     pub renames: Vec<Value>,
@@ -150,6 +164,8 @@ enum Fired<'e> {
         verbs: Vec<String>,
         event: &'e Value,
     },
+    /// The workspace's emoji changed.
+    Emoji,
     /// A change to the bridged guild record itself, such as a Moderator's
     /// `block-persona`.
     Guild {
@@ -183,6 +199,7 @@ fn fired(event: &Value) -> Fired<'_> {
             event,
         },
         Some(ROOM_KIND) => Fired::Room { verbs, event },
+        Some(EMOJI_KIND) => Fired::Emoji,
         Some(crate::KIND) => Fired::Guild { verbs, event },
         _ => Fired::Other,
     }
@@ -344,20 +361,6 @@ pub fn route(guild: &Guild, event: &Value) -> String {
             .and_then(|event| guild.by_discord(MappedKind::Message, &event.message_id))
             .map(|mapped| mapped.tilo.clone())
             .unwrap_or_default(),
-        // A Tilo message deleted in Discord is read in case it goes back.
-        // Without the room every delete counts as one to send again; the
-        // plan, which has the room, decides.
-        Fired::Discord {
-            source: source::MESSAGE_DELETED,
-            payload: body,
-        } => payload::<MessageDeleted>(body)
-            .and_then(|deleted| {
-                inbound::plan_deleted(guild, &deleted, &Value::Null)
-                    .resends
-                    .into_iter()
-                    .next()
-            })
-            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -380,6 +383,10 @@ pub struct Reading<'a> {
     /// "role"}]}`), for a Discord-side moderator's standing in Tilo; `null`
     /// when the host binds none, which treats nobody as a moderator.
     pub room: &'a Value,
+    /// The workspace's emoji as the host hands them (`{"emoji": [{"name",
+    /// "picture"}]}`), or `None` when it binds none, which leaves the
+    /// server's emoji alone.
+    pub emoji: Option<&'a Value>,
 }
 
 /// Everything `event` means.
@@ -425,6 +432,7 @@ pub fn plan(read: Reading<'_>, event: &Value) -> BridgePlan {
                 guild_change(&mut plan, read, verb, event);
             }
         }
+        Fired::Emoji => emoji(&mut plan, read),
         Fired::Discord { source, payload } => discord_event(&mut plan, read, source, payload),
         Fired::Other => {}
     }
@@ -522,6 +530,16 @@ fn reconcile(plan: &mut BridgePlan, read: Reading<'_>) {
     }
 }
 
+/// Bring the server's emoji in line with the workspace's.
+fn emoji(plan: &mut BridgePlan, read: Reading<'_>) {
+    let Some(wanted) = crate::emoji_sync::wanted(read.emoji) else {
+        return;
+    };
+    let emoji = crate::emoji_sync::plan(read.guild, &wanted);
+    plan.delete_emojis.extend(values(emoji.deletes));
+    plan.apply_emojis.extend(values(emoji.applies));
+}
+
 fn room_change(plan: &mut BridgePlan, guild: &Guild, verb: &str, event: &Value) {
     // A bridge confined to one channel leaves the server's members alone.
     if guild.only_channel.is_some() {
@@ -555,6 +573,13 @@ fn room_change(plan: &mut BridgePlan, guild: &Guild, verb: &str, event: &Value) 
 /// A Moderator blocked a Discord author: what was already mirrored of them
 /// is removed from Chat.
 fn guild_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, event: &Value) {
+    if verb == "complete-link" {
+        // A person took a link offer: the `/link` it answered says so.
+        if let Some(person) = event.pointer("/actor/id").and_then(Value::as_str) {
+            inbound_plan(plan, inbound::plan_linked(read.guild, read.chat, person));
+        }
+        return;
+    }
     if verb != "block-persona" {
         return;
     }
@@ -564,7 +589,7 @@ fn guild_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, event: &Va
     else {
         return;
     };
-    inbound_plan(plan, read, inbound::plan_block(read.guild, user));
+    inbound_plan(plan, inbound::plan_block(read.guild, user));
 }
 
 fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &Value) {
@@ -577,7 +602,7 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
             payload::<MessageUpdated>(body).map(|e| inbound::plan_updated(guild, &e))
         }
         source::MESSAGE_DELETED => {
-            payload::<MessageDeleted>(body).map(|e| inbound::plan_deleted(guild, &e, read.room))
+            payload::<MessageDeleted>(body).map(|e| inbound::plan_deleted(guild, &e))
         }
         source::REACTION_ADDED => payload::<ReactionChanged>(body)
             .map(|e| inbound::plan_reaction(guild, &e, read.chat, true)),
@@ -586,7 +611,18 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
         source::MEMBER_CHANGED => {
             payload::<MemberChanged>(body).map(|e| inbound::plan_member(guild, &e, read.room))
         }
-        source::COMMAND => payload::<Command>(body).map(|e| inbound::plan_command(guild, &e)),
+        source::COMMAND => {
+            payload::<Command>(body).map(|e| inbound::plan_command(guild, read.chat, &e))
+        }
+        source::AUTHORIZED => payload::<Authorized>(body).map(|e| inbound::plan_authorized(&e)),
+        source::SIGN_IN => {
+            if let Some(offered) = payload::<SignInOffered>(body)
+                && guild.sign_in_page.as_deref().unwrap_or_default() != offered.page
+            {
+                plan.sign_ins.push(json!({ "page": offered.page }));
+            }
+            None
+        }
         source::LAYOUT_CHANGED => {
             if let Some(layout) = payload::<LayoutChanged>(body) {
                 layout_changed(plan, read, &layout);
@@ -596,7 +632,7 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
         _ => None,
     };
     if let Some(inbound) = inbound {
-        inbound_plan(plan, read, inbound);
+        inbound_plan(plan, inbound);
     }
 }
 
@@ -611,6 +647,9 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
     observed.observe_emojis(layout.emojis.clone());
     if observed == *read.guild {
         reconcile(plan, read);
+        // On every start too: the workspace's emoji made while the bridge
+        // was away, or that the server had no room or permission for.
+        emoji(plan, read);
     } else {
         plan.observe.push(json!({
             "bot_user": layout.bot_user,
@@ -621,7 +660,7 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
     }
 }
 
-fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) {
+fn inbound_plan(plan: &mut BridgePlan, inbound: InboundPlan) {
     plan.avatars.extend(values(inbound.avatars));
     plan.posts.extend(inbound.posts.into_iter().map(|p| {
         json!({
@@ -664,14 +703,6 @@ fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) 
             .into_iter()
             .map(|r| json!({ "message": r.message })),
     );
-    // Sent again: the Discord copy is gone, so its mapping no longer counts.
-    for id in inbound.resends {
-        let mut unmapped = read.guild.clone();
-        unmapped
-            .map
-            .take(&Id::from_raw(map_key(MappedKind::Message, &id)));
-        post(plan, &unmapped, read.chat, &id, read.context);
-    }
     let reaction = |r: inbound::ReactItem| json!({ "message": r.message, "emoji": r.emoji, "appearance": r.appearance });
     plan.chat_reacts
         .extend(inbound.reacts.into_iter().map(reaction));
@@ -684,7 +715,9 @@ fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) 
             .map(|user| json!({ "discord_user": user })),
     );
     plan.member_roles.extend(values(inbound.member_roles));
-    plan.complete_links.extend(values(inbound.complete_links));
+    plan.offers.extend(values(inbound.offers));
+    plan.sign_in_offers.extend(values(inbound.sign_in_offers));
+    plan.answers.extend(values(inbound.answers));
     plan.unlinks.extend(
         inbound
             .unlinks

@@ -406,6 +406,8 @@ pub(crate) enum Hit {
     OpenShare(Id),
     /// Stop sharing the window a message of yours shares.
     StopShare(Id),
+    /// Let the others do this with the window a message of yours shares.
+    SwitchShare(Id, crate::record::ShareAccess),
     /// Open the "Share a window" panel from the attach menu.
     ShareWindowPanel,
     /// What the people a window is shared with may do there.
@@ -437,6 +439,13 @@ pub(crate) enum Hit {
     TogglePins,
     /// Show a message where it was written (a pinned message's row).
     RevealMessage(Id),
+    /// Open the card of a message's author (their avatar and name), or a
+    /// member's in the list: who they are, Message and Follow. `place`
+    /// tells the targets of one person apart.
+    ShowPerson {
+        person: String,
+        place: String,
+    },
     Dismiss, // click on a scrim closes the top-most popover
 }
 
@@ -451,6 +460,7 @@ impl Hit {
             Self::AddCategory => "chat.add-category".into(),
             Self::TogglePins => "chat.pins".into(),
             Self::RevealMessage(id) => format!("chat.reveal-message:{id}"),
+            Self::ShowPerson { place, .. } => format!("chat.person-card:{place}"),
             Self::FocusMain => "chat.composer".into(),
             Self::FocusThread => "chat.thread-composer".into(),
             Self::FocusEdit => "chat.message-edit".into(),
@@ -474,6 +484,7 @@ impl Hit {
             Self::OpenResource(id) => format!("chat.open-resource:{id}"),
             Self::OpenShare(id) => format!("chat.open-share:{id}"),
             Self::StopShare(id) => format!("chat.stop-sharing:{id}"),
+            Self::SwitchShare(id, access) => format!("chat.switch-share:{id}:{}", access.as_str()),
             Self::ShareWindowPanel => "chat.share-window".into(),
             Self::ShareAccess(access) => format!("chat.share-access:{}", access.as_str()),
             Self::SharePick(tab) => format!("chat.share-pick:{tab}"),
@@ -883,6 +894,11 @@ pub struct ChatApp {
     root_node: Option<NodeId>,
     video_node: Option<NodeId>,
     pub(crate) video: VideoPlayer,
+    /// What the call tile's layout node was last placed from: whether the
+    /// call fills the window, and where the tile stands. Chat's only laid-out
+    /// node is that tile; everything else it places itself as it paints, so
+    /// a scroll or a keystroke re-solves no layout.
+    laid_video: Option<(bool, Rect)>,
     pub(crate) hits: Vec<(Rect, Hit)>,
     /// Ordinal in `keyboard_targets()`. Derived from the current hit inventory
     /// so Tab and assistive focus traverse the same controls a pointer can use.
@@ -899,9 +915,6 @@ pub struct ChatApp {
     /// This window's person still has to be announced into the shared
     /// roster under the name this device knows them by.
     announce: Option<crate::identity::LocalIdentity>,
-    /// A live window tells its person about mentions of them that arrive
-    /// while they look elsewhere.
-    mention_alerts: Option<crate::mention_alerts::MentionAlerts>,
     /// The person's own drafts record, so the sidebar can say where the
     /// unsent words are.
     pub(crate) drafts_record: Option<ui::framework::PersonRecord<crate::drafts::ChatDrafts>>,
@@ -927,6 +940,11 @@ pub struct ChatApp {
     /// Where each message shown last frame drew its own texts, by message
     /// id: what its accessible row's children are read and picked by.
     pub(crate) painted_messages: HashMap<Id, PaintedMessage>,
+    /// The conversation's rows, measured and painted, kept between frames.
+    pub(crate) timeline: std::cell::RefCell<crate::timeline::Timeline>,
+    /// Counts each load of [`Self::messages`], so what is kept of them knows
+    /// when to look again.
+    pub(crate) messages_revision: u64,
     /// A video call was started: the camera turns on once the call is live.
     pub(crate) camera_on_live: bool,
 
@@ -979,7 +997,6 @@ impl ChatApp {
     /// sync, under the name this device knows them by.
     pub(crate) fn announcing(mut self) -> Self {
         self.announce = Some(self.me.clone());
-        self.mention_alerts = Some(crate::mention_alerts::MentionAlerts::default());
         self
     }
 
@@ -1186,6 +1203,7 @@ impl ChatApp {
             root_node: None,
             video_node: None,
             video,
+            laid_video: None,
             hits: Vec::new(),
             keyboard_target: None,
             last_mouse: Point::ZERO,
@@ -1193,13 +1211,14 @@ impl ChatApp {
             relayout: false,
             flap_animating: false,
             announce: None,
-            mention_alerts: None,
             drafts_record: None,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
             call_pictures: ui::call_pictures::CallPictures::new(),
             picture_tiles: std::cell::RefCell::new(Vec::new()),
             painted_messages: HashMap::new(),
+            timeline: std::cell::RefCell::default(),
+            messages_revision: 0,
             camera_on_live: false,
             media_error: None,
             canonical_dirty: true,
@@ -2990,8 +3009,8 @@ impl ChatApp {
     /// Rebuild the snapshot from the CRDT. Called at the tail of `sync` and
     /// after every mutation so `draw` always reflects the latest document.
     /// Count each channel's unread mentions of this peer, the badge that
-    /// says someone is waiting on you, not just talking, and tell about new
-    /// ones in a live window.
+    /// says someone is waiting on you, not just talking. Telling about a new
+    /// one is the desktop's, for every app's mentions (`ui::mentions`).
     fn note_mentions(&mut self, per_channel: &[(Id, Vec<Message>)]) {
         let me: Vec<&str> = std::iter::once(self.me.id.as_str())
             .chain(self.former_ids.iter().map(String::as_str))
@@ -3011,47 +3030,6 @@ impl ChatApp {
         for c in &mut self.channels {
             c.mentions = mentions.get(&c.id).copied().unwrap_or_default();
         }
-        if let Some(mut alerter) = self.mention_alerts.take() {
-            let named: Vec<(Id, String, &[Message])> = per_channel
-                .iter()
-                .map(|(id, messages)| {
-                    let name = self
-                        .channels
-                        .iter()
-                        .find(|c| c.id == *id)
-                        .map_or_else(String::new, |c| c.name.clone());
-                    (id.clone(), name, messages.as_slice())
-                })
-                .collect();
-            let reading = self.host_focused.then_some(self.active_channel.as_str());
-            let now = ui::tilo_resource::origin_now_ms() / 1000;
-            let alerts = alerter.take_new(&named, &me, (reading, now), |id| self.display_name(id));
-            alerter.show(&alerts);
-            self.mention_alerts = Some(alerter);
-        }
-    }
-
-    /// Open the message a mention notification was about: the channel it was
-    /// said in, and the message itself where it is loaded. A message no longer
-    /// in view cannot be revealed, so the channel opens at its newest edge and
-    /// the reason is the only thing missing.
-    fn open_mention(&mut self, channel: &str, message: &str) -> bool {
-        if self.reveal_message(message).is_ok() {
-            return true;
-        }
-        if !self
-            .channels
-            .iter()
-            .any(|candidate| candidate.id == channel)
-        {
-            return false;
-        }
-        channel.clone_into(&mut self.active_channel);
-        self.thread_open = None;
-        self.revealed_message = None;
-        self.reset_timeline_to_latest();
-        self.reselect();
-        true
     }
 
     pub(crate) fn reload(&mut self, doc: &AutoCommit) {
@@ -3099,6 +3077,7 @@ impl ChatApp {
             .map(|channel| (channel.id.clone(), chat.message_rows(&held, &channel.id)))
             .collect();
         self.note_mentions(&per_channel);
+        self.messages_revision += 1;
         self.messages = per_channel
             .iter()
             .find(|(id, _)| *id == self.active_channel)
@@ -3133,6 +3112,10 @@ impl ChatApp {
         self.refresh_native_streams();
         self.users = self.room_people_from(&chat, &per_channel);
         self.sync_reload_composers(doc);
+        // A share started, switched or ended reaches the room as soon as
+        // the record says so, not at the window's next settled frame,
+        // which an idle window may not have for a long while.
+        self.follow_share_grants();
     }
 
     fn sync_reload_composers(&mut self, doc: &AutoCommit) {
@@ -3189,7 +3172,7 @@ impl ChatApp {
     /// channels. Channel activity and voice membership are durable evidence;
     /// the local identity is included so a brand-new room remains a valid
     /// one-person surface.
-    fn room_people_from(
+    pub(crate) fn room_people_from(
         &self,
         chat: &crate::record::Chat,
         per_channel: &[(Id, Vec<Message>)],
@@ -3204,6 +3187,17 @@ impl ChatApp {
                 .map(|(_, messages)| messages);
             for message in messages.into_iter().flatten() {
                 ids.insert(message.author.clone());
+                // A member who writes only from a linked account on a
+                // bridged service is still this room's person: their
+                // bridged messages read as theirs, by their name and colour,
+                // never as a namesake from that service.
+                if let Some(linked) = message
+                    .appearance
+                    .as_ref()
+                    .and_then(|appearance| appearance.persona.as_ref()?.linked.as_deref())
+                {
+                    ids.insert(linked.to_owned());
+                }
                 for reaction in &message.reactions {
                     ids.extend(reaction.reactors.iter().map(|reactor| reactor.by.clone()));
                 }
@@ -3943,6 +3937,16 @@ impl ChatApp {
                         false,
                     ),
                     Hit::StopShare(_) => (copy("chat-share-stop"), Role::Button, false),
+                    Hit::SwitchShare(id, access) => (
+                        ControlName {
+                            text: crate::live_share::access_label(*access),
+                            interface: true,
+                        },
+                        Role::ToggleButton,
+                        self.message(id)
+                            .and_then(|m| m.share.as_ref())
+                            .is_some_and(|share| share.access == *access),
+                    ),
                     Hit::ShareWindowPanel => (copy("chat-share-window"), Role::Button, false),
                     Hit::ShareAccess(access) => (
                         ControlName {
@@ -3981,6 +3985,14 @@ impl ChatApp {
                             || copy("chat-pinned-message"),
                             |m| content(format!("{}: {}", self.user_name(&m.author), m.text)),
                         ),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::ShowPerson { person, .. } => (
+                        content(crate::i18n::t_args(
+                            "chat-person-card",
+                            &[("name", self.user_name(person).into())],
+                        )),
                         Role::Button,
                         false,
                     ),
@@ -4774,6 +4786,20 @@ impl Widget for ChatApp {
             };
             self.video.apply_layout(taffy, vn, off);
         }
+        self.laid_video = Some((self.call.expanded, self.call_video_rect()));
+    }
+
+    /// Chat paints what it shows itself; under it only the call's video
+    /// tile is laid out. So a frame elsewhere on the desktop (another window
+    /// opening, an animation, a peer's pointer) re-solves nothing here: the
+    /// layout is dirty only while the expanded call's tile follows the
+    /// participant grid, or when the tile's node would be placed elsewhere
+    /// than it was laid, because the call closed or the tile moved.
+    fn is_layout_dirty(&self) -> bool {
+        self.call.expanded
+            || self
+                .laid_video
+                .is_some_and(|laid| laid != (self.call.expanded, self.call_video_rect()))
     }
 
     fn draw(
@@ -5043,6 +5069,9 @@ impl Widget for ChatApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
+        #[cfg(test)]
+        crate::component_tests::ACCESSIBILITY_BUILDS
+            .set(crate::component_tests::ACCESSIBILITY_BUILDS.get() + 1);
         let controls = self
             .semantic_hits()
             .into_iter()
@@ -5281,17 +5310,10 @@ impl Widget for ChatApp {
     fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
         let model_changed = self.pump_model();
         let room_changed = self.take_room();
-        // A mention chosen from the host's notifications opens its own
-        // message, in the channel it was said in.
         self.settle_attachment_save();
-        let opened = self
-            .mention_alerts
-            .as_ref()
-            .and_then(crate::mention_alerts::MentionAlerts::take_open)
-            .is_some_and(|(channel, message)| self.open_mention(&channel, &message));
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
-        std::mem::take(&mut self.read_on_present) || model_changed || room_changed || opened
+        std::mem::take(&mut self.read_on_present) || model_changed || room_changed
     }
 
     fn needs_animation_frame(&self) -> bool {

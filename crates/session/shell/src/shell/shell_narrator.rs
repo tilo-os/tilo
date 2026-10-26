@@ -159,6 +159,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::compositor::lock_controller::LockPrompt;
     use crate::compositor::lock_screen::{LockView, narration_tree};
 
     #[derive(Clone, Default)]
@@ -181,9 +182,13 @@ mod tests {
         }
     }
 
-    fn view(password_len: usize, error: Option<&str>) -> LockView<'_> {
+    /// The lock screen with `typed` in its password field.
+    fn view<'a>(prompt: &'a LockPrompt, typed: &str, error: Option<&'a str>) -> LockView<'a> {
+        if let Some(field) = prompt.borrow_mut().field_mut(ui::widget::FieldRole::Secret) {
+            field.set_text(typed);
+        }
         LockView {
-            password_len,
+            prompt: Some(prompt),
             error,
             clock: "09:41",
             date: "Friday, 11 July",
@@ -200,9 +205,14 @@ mod tests {
         let recorder = Recorder::default();
         let mut narrator =
             ShellNarrator::with_reader(ScreenReader::with_speaker(Box::new(recorder.clone())));
-        narrator.observe(&narration_tree(&view(0, None)));
-        narrator.observe(&narration_tree(&view(5, None)));
-        narrator.observe(&narration_tree(&view(0, Some("Authentication failure"))));
+        let prompt = LockPrompt::new();
+        narrator.observe(&narration_tree(&view(&prompt, "", None)));
+        narrator.observe(&narration_tree(&view(&prompt, "typed", None)));
+        narrator.observe(&narration_tree(&view(
+            &prompt,
+            "",
+            Some("Authentication failure"),
+        )));
         let spoken = recorder.0.lock().unwrap().clone();
         assert!(
             spoken
@@ -224,7 +234,8 @@ mod tests {
             ShellNarrator::with_reader(ScreenReader::with_speaker(Box::new(recorder.clone())));
         narrator.set_enabled(false);
         assert!(!narrator.enabled());
-        narrator.observe(&narration_tree(&view(0, None)));
+        let prompt = LockPrompt::new();
+        narrator.observe(&narration_tree(&view(&prompt, "", None)));
         assert!(recorder.0.lock().unwrap().is_empty());
     }
 }

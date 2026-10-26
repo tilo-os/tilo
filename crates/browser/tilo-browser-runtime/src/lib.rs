@@ -137,7 +137,7 @@ mod semantics_status;
 #[cfg(target_arch = "wasm32")]
 mod settings;
 #[cfg(target_arch = "wasm32")]
-mod shell;
+pub(crate) mod shell;
 #[cfg(target_arch = "wasm32")]
 mod storage;
 #[cfg(target_arch = "wasm32")]
@@ -160,3 +160,10 @@ mod first_frame;
     allow(dead_code, reason = "only the browser draws; the host runs its tests")
 )]
 mod viewport;
+// How many frames the GPU may still be drawing: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser draws; the host runs its tests")
+)]
+mod frame_pacing;

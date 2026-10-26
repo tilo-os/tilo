@@ -33,6 +33,9 @@ pub enum Language {
 }
 
 impl Language {
+    /// Every language with embedded word data.
+    pub const ALL: [Self; 2] = [Self::English, Self::French];
+
     /// The language's ISO 639-1 code, under which what the keyboard learned
     /// in it is kept.
     pub fn code(self) -> &'static str {
@@ -40,6 +43,13 @@ impl Language {
             Self::English => "en",
             Self::French => "fr",
         }
+    }
+
+    /// The language whose code is `code`.
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|language| language.code() == code)
     }
 
     /// The language typed on the letter layout `name`: QWERTY types English

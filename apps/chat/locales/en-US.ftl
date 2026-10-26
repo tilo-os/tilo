@@ -3,6 +3,8 @@
 chat-contacts-section = Contacts
 chat-channels-title = Channels
 chat-person-chat-private = Private conversation
+# A message's author or a member, opening their profile card.
+chat-person-card = { $name }, profile
 chat-person-chat-placeholder = Write a private message
 chat-person-chat-unavailable = Private conversation unavailable. Choose someone in this workspace.
 chat-person-chat-empty = Write a message before sending.
@@ -286,7 +288,6 @@ chat-sheet-category = Category
 chat-sheet-no-category = None
 chat-sheet-topic = Topic
 chat-sheet-topic-placeholder = What this channel is for (optional)
-chat-mention-alert = { $name } mentioned you in #{ $channel }
 
 # What kind of thing a message row is, for assistive technology and the
 # feedback picker ("Message in Chat").
