@@ -276,8 +276,14 @@ else
 fi
 # The relay image installs only from the snapshot rpm-snapshot resolved and verified.
 has_t image-relay needs rpm-snapshot 'the relay image builds from the verified RPM snapshot'
-has "$repo/tools/ci/publish/relay-build.sh" '[[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' \
-  'the relay image accepts only a digest-pinned RPM snapshot'
+# It takes the published snapshot only as a digest-pinned reference; a build of a package set
+# stable has not published (the run's own image-rpms) records so and is never signed.
+has "$repo/tools/ci/publish/relay-build.sh" 'snapshot_for_build "$snapshot" "$rpms" x86_64' \
+  'the relay image installs from the snapshot rpm-snapshot named'
+has "$repo/tools/ci/publish/lib.sh" '[[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' \
+  'the relay image accepts only a digest-pinned published RPM snapshot'
+has "$repo/tools/ci/publish/oci-sign.sh" 'require_published_snapshot "$out/rpms-source"' \
+  'an image built from an unpublished RPM snapshot is never signed'
 has "$build_script" 'frozen RPM provenance does not bind its package set, digest, base, and architectures' \
   'local OS builds verify exact RPM snapshot provenance'
 has_t image-rpms-{arch} inputs 'os/dev/derive-rpm-package-set.py' \

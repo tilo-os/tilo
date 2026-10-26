@@ -103,6 +103,40 @@ archive_digest() {
   tar -xOf "$1" index.json | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | head -1 | cut -d'"' -f4
 }
 
+# The frozen RPM snapshot a build installs from (rpm-snapshot-ref.sh wrote SNAPSHOT): the
+# published snapshot in SNAPSHOT/rpms-ref, or, where this package set is not published yet (off
+# stable, before stable publishes it), this run's image-rpms-ARCH in RPMS, loaded unsigned into
+# the store `b` runs on (use_buildah first). Sets rpms_ref, what the Containerfile's FROM takes,
+# and rpms_source, what the build records beside its output: the published reference, or
+# "unsigned image-rpms-ARCH DIGEST", which require_published_snapshot refuses, so a build of an
+# unpublished package set is tested everywhere and signed or published nowhere.
+snapshot_for_build() {
+  local snapshot=$1 rpms=$2 arch=$3 digest
+  if [[ -f $snapshot/rpms-ref ]]; then
+    rpms_ref=$(cat "$snapshot/rpms-ref")
+    [[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || die "unexpected snapshot $rpms_ref"
+    rpms_source=$rpms_ref
+    return
+  fi
+  [[ -f $snapshot/unpublished ]] || die "$snapshot names no snapshot: neither rpms-ref nor unpublished"
+  digest=$(cat "$rpms/digest")
+  [[ $(archive_digest "$rpms/image.oci.tar") == "$digest" ]] || die "$rpms/image.oci.tar is not the build $digest"
+  rpms_ref=localhost/tilo-rpms:unpublished-$arch
+  b tag "$(b pull -q "oci-archive:$rpms/image.oci.tar")" "$rpms_ref"
+  rpms_source="unsigned image-rpms-$arch $digest"
+  printf 'the RPM snapshot %s is not published: building from image-rpms-%s (%s), unsigned; nothing signs or publishes this build\n' \
+    "$(cat "$snapshot/unpublished")" "$arch" "$digest"
+}
+
+# Refuse a build whose recorded snapshot (FILE, as snapshot_for_build set rpms_source) is not
+# the published, signed one.
+require_published_snapshot() {
+  local source
+  source=$(cat "$1")
+  [[ $source =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] \
+    || die "$1: built from $source, not the published RPM snapshot: refusing to sign or publish it"
+}
+
 # The simple-signing payload Cosign signs for an image: its repository and manifest digest.
 signing_payload() {
   printf '{"critical":{"identity":{"docker-reference":"%s"},"image":{"docker-manifest-digest":"%s"},"type":"cosign container image signature"},"optional":null}' "$1" "$2"

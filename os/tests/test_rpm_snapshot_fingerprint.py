@@ -165,6 +165,16 @@ class Fingerprint(unittest.TestCase):
             with self.subTest(consumer=consumer):
                 self.assertIn("rpm-snapshot", checks[consumer]["needs"])
                 self.assertIn("/target/publish/rpm-snapshot", checks[consumer]["run"])
+        # Stable publishes a new package set before resolving it, in the same run; elsewhere the
+        # builds fall back to the run's own image-rpms of their architecture.
+        self.assertEqual(checks["rpm-snapshot"].get("optional_needs"), ["publish-rpms"])
+        self.assertEqual(checks["publish-rpms"]["on"], ["stable"])
+        self.assertIn("image-rpms-x86_64", checks["image-relay"]["needs"])
+        for arch in ("x86_64", "aarch64"):
+            tree = checks[f"image-env-runtime-tree-{arch}"]
+            self.assertIn(f"image-rpms-{arch}", tree["needs"])
+            self.assertIn(f"/target/publish/rpms/{arch}", tree["run"])
+        self.assertIn("/target/publish/relay/rpms-source", checks["image-relay"]["outputs"])
         # The snapshot is published once per package-set fingerprint, never proposed as a pin.
         self.assertIn("'once:set-{fingerprint}'", checks["publish-rpms"]["run"])
         for name in ("image-rpms-x86_64", "provenance-rpms", "sign-rpms", "publish-rpms"):
@@ -173,6 +183,27 @@ class Fingerprint(unittest.TestCase):
             text = (ROOT / "tools/ci/publish" / script).read_text(encoding="utf-8")
             self.assertNotIn("open-snapshot-pr.py", text)
             self.assertNotIn("reconcile-snapshot-pins.py", text)
+
+    def test_only_a_build_of_the_published_snapshot_is_signed(self) -> None:
+        # lib.sh require_published_snapshot, which oci-sign.sh and a publisher's env-runtime
+        # seal run on what the build recorded (snapshot_for_build).
+        published = "registry.tilo.so/tilo/rpms@sha256:" + "b" * 64
+        cases = {published: 0, "unsigned image-rpms-x86_64 sha256:" + "c" * 64: 1}
+        for source, code in cases.items():
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as tmp:
+                recorded = Path(tmp) / "rpms-source"
+                recorded.write_text(source + "\n", encoding="utf-8")
+                result = subprocess.run(
+                    ["bash", "-c", '. "$1"; require_published_snapshot "$2"', "bash",
+                     str(ROOT / "tools/ci/publish/lib.sh"), str(recorded)],
+                    capture_output=True, text=True, env={**os.environ, "TMPDIR": tmp})
+                self.assertEqual(result.returncode != 0, bool(code), result.stderr)
+                if code:
+                    self.assertIn("refusing to sign or publish", result.stderr)
+        sign = (ROOT / "tools/ci/publish/oci-sign.sh").read_text(encoding="utf-8")
+        self.assertIn('require_published_snapshot "$out/rpms-source"', sign)
+        runtime = (ROOT / "tools/ci/publish/env-runtime.sh").read_text(encoding="utf-8")
+        self.assertIn('require_published_snapshot "$trees/env-runtime-rpms-$arch.txt"', runtime)
 
 
 if __name__ == "__main__":
