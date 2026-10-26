@@ -19,7 +19,7 @@ use ui::permissions::{PermissionContext, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use wasm_bindgen::{JsCast, prelude::*};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::platform::web::{EventLoopExtWebSys as _, WindowAttributesExtWebSys as _};
 use winit::window::{Window, WindowId};
@@ -630,6 +630,22 @@ impl Desktop {
 }
 
 impl Mount {
+    /// Send the room what an input just committed. An app applies the
+    /// action a key or a click invokes while handling it (a message sent
+    /// with Enter is in its record at once), so the others get it now,
+    /// without waiting for the frame that lays it out and draws it here.
+    fn publish_committed(&self, event: &WindowEvent) {
+        let committing = match event {
+            WindowEvent::KeyboardInput { event, .. } => event.state == ElementState::Pressed,
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Released,
+            WindowEvent::Ime(winit::event::Ime::Commit(_)) => true,
+            _ => false,
+        };
+        if committing && let Some(peer) = self.peer {
+            crate::replication::publish(peer);
+        }
+    }
+
     fn service_owner_models(&mut self) {
         self.feedback_retry = None;
         if let Some(desktop) = &self.desktop
@@ -1136,6 +1152,7 @@ impl ApplicationHandler<u64> for Runner {
                     let passes = m.frame.relayout_frames();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
                     m.metric_end("input", start);
+                    m.publish_committed(&event);
                     if !matches!(event, WindowEvent::Touch(_)) {
                         m.show_cursor();
                     }
@@ -3010,7 +3027,9 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
         _ => return Err(error("invalid IME event")),
     };
     with_mount(id, |m| {
-        m.frame.send_host_event(&WindowEvent::Ime(event));
+        let event = WindowEvent::Ime(event);
+        m.frame.send_host_event(&event);
+        m.publish_committed(&event);
         m.pending = true;
         m.window.request_redraw();
         Ok(())
