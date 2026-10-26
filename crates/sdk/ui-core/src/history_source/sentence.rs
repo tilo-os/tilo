@@ -123,6 +123,17 @@ pub fn learn_field_titles(shape: &tilo_resource::Shape) {
                     walk(&field.shape, titles, depth.saturating_add(1));
                 }
             }
+            tilo_resource::Shape::Variant(variants) => {
+                for variant in *variants {
+                    for field in variant.fields {
+                        titles.insert(
+                            (field.owner.to_owned(), field.key.to_owned()),
+                            field.title.to_owned(),
+                        );
+                        walk(&field.shape, titles, depth.saturating_add(1));
+                    }
+                }
+            }
             tilo_resource::Shape::Collection(item)
             | tilo_resource::Shape::Keyed(item)
             | tilo_resource::Shape::Map(item) => {

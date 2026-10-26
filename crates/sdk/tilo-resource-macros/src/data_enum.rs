@@ -4,8 +4,14 @@
 //! (`tilo_resource::VARIANT_KEY`), and each of the variant's fields under its
 //! own key, stored as its type stores it. Concurrent edits of one variant
 //! merge field by field (two people editing a text field of the same variant
-//! splice it); changing the variant is one last-writer-wins write of its name,
-//! and storing a variant removes the fields another one left.
+//! splice it); changing the variant is one last-writer-wins write of its name.
+//! Fields the new variant does not carry stay where they are, unused, so a
+//! concurrent edit of the variant being left is not lost and changing back
+//! reads it again.
+//!
+//! A field path names its variant before the field (`shape.rect.x`), so
+//! fields of different variants never share a path even when they share a
+//! storage key.
 //!
 //! Named fields keep their names (`#[model(rename = "key")]` changes one,
 //! `#[model(skip)]` leaves one out: its `Default` on read); the fields of a
@@ -18,17 +24,20 @@ use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::{DataEnum, DeriveInput, Fields, Ident, Type};
 
-use crate::{field_options, krate, snake_case};
+use crate::{doc_lines, field_options, humanize, krate, snake_case};
 
 struct Field {
     /// How the variant's pattern and constructor name it: an identifier or
     /// a tuple index.
     member: syn::Member,
-    /// The local the pattern binds it to.
-    binding: Ident,
+    /// The field's Rust name.
+    name: String,
     key: String,
     ty: Type,
     skip: bool,
+    atom: bool,
+    whole: bool,
+    title: String,
 }
 
 struct Variant {
@@ -53,10 +62,11 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
         let key = options
             .rename
             .unwrap_or_else(|| snake_case(&variant.ident.to_string()));
-        let default = variant
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("default"));
+        let default = options.default_variant
+            || variant
+                .attrs
+                .iter()
+                .any(|attr| attr.path().is_ident("default"));
         let style = match &variant.fields {
             Fields::Unit => Style::Unit,
             Fields::Named(_) => Style::Named,
@@ -65,10 +75,15 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
         let mut fields = Vec::new();
         for (index, field) in variant.fields.iter().enumerate() {
             let options = field_options(&field.attrs)?;
-            if options.label || options.readonly || options.unit || options.resource {
+            if options.label
+                || options.readonly
+                || options.unit
+                || options.resource
+                || options.keyed
+            {
                 return Err(syn::Error::new(
                     field.span(),
-                    "a variant's field takes `rename`, `skip`, `atom` or `whole`",
+                    "a variant's field takes `rename`, `skip`, `default`, `atom` or `whole`",
                 ));
             }
             let (member, name) = match &field.ident {
@@ -88,12 +103,22 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
                     "`$variant` names the variant; store this field under another key",
                 ));
             }
+            let title = doc_lines(&field.attrs)
+                .into_iter()
+                .find(|line| !line.is_empty())
+                .map_or_else(
+                    || humanize(&key),
+                    |line| line.trim_end_matches('.').to_owned(),
+                );
             fields.push(Field {
                 member,
-                binding: format_ident!("__field{}", index),
+                name,
                 key,
                 ty: field.ty.clone(),
                 skip: options.skip,
+                atom: options.atom,
+                whole: options.whole,
+                title,
             });
         }
         out.push(Variant {
@@ -118,12 +143,33 @@ const fn tilo_variant_key() -> &'static str {
     "$variant"
 }
 
+fn ty_text(ty: &Type) -> String {
+    quote!(#ty)
+        .to_string()
+        .replace(" < ", "<")
+        .replace("< ", "<")
+        .replace(" <", "<")
+        .replace(" >", ">")
+        .replace(" :: ", "::")
+        .replace(":: ", "::")
+        .replace(" ,", ",")
+}
+
+fn binding_of(index: usize) -> Ident {
+    format_ident!("__field{}", index)
+}
+
 impl Variant {
-    /// The pattern binding every field: `Self::V { a: __field0, .. }`.
-    fn pattern(&self) -> Tokens {
+    /// The pattern binding every field with `prefix` before its position.
+    fn pattern_with(&self, prefix: &str) -> Tokens {
         let ident = &self.ident;
         let members = self.fields.iter().map(|field| &field.member);
-        let bindings = self.fields.iter().map(|field| &field.binding);
+        let bindings: Vec<Ident> = self
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format_ident!("{}{}", prefix, index))
+            .collect();
         match self.style {
             Style::Unit => quote!(Self::#ident),
             Style::Named | Style::Tuple => quote!(Self::#ident { #(#members: #bindings),* }),
@@ -152,6 +198,7 @@ impl Variant {
 )]
 pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens> {
     let krate = krate();
+    let table = quote!(#krate::table);
     let model = quote!(#krate::model);
     let name = &input.ident;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
@@ -162,22 +209,100 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
             "an enum with no variants holds no value",
         ));
     }
+    let owner = snake_case(&name.to_string()).replace('_', "-");
 
     let field_types: Vec<&Type> = variants
         .iter()
         .flat_map(|variant| variant.stored().map(|field| &field.ty))
         .collect();
 
+    let table_expr = |field: &Field| {
+        if field.atom {
+            quote!(&#table::ATOM_STRING)
+        } else {
+            let ty = &field.ty;
+            quote!(<#ty as #krate::Model>::TABLE)
+        }
+    };
+
+    let variant_descs = variants.iter().map(|variant| {
+        let key = &variant.key;
+        let variant_name = variant.ident.to_string();
+        let fields = variant.stored().map(|field| {
+            let key = &field.key;
+            let name = &field.name;
+            let field_table = table_expr(field);
+            let whole = field.whole;
+            quote!(#table::FieldDesc {
+                key: #key,
+                name: #name,
+                table: #field_table,
+                readonly: false,
+                whole: #whole,
+                items: ::core::option::Option::None,
+            })
+        });
+        quote!(#table::VariantDesc {
+            key: #key,
+            name: #variant_name,
+            fields: &[#(#fields),*],
+        })
+    });
+
+    let variant_shapes = variants.iter().map(|variant| {
+        let key = &variant.key;
+        let variant_name = variant.ident.to_string();
+        let fields = variant.stored().map(|field| {
+            let key = &field.key;
+            let name = &field.name;
+            let ty = &field.ty;
+            let ty_text = ty_text(ty);
+            let title = &field.title;
+            let owner = &owner;
+            quote!(#krate::FieldShape {
+                key: #key,
+                owner: #owner,
+                name: #name,
+                ty: #ty_text,
+                title: #title,
+                shape: <#ty as #krate::Model>::SHAPE,
+                unit: false,
+                readonly: false,
+                label: false,
+                label_part: 0,
+                quiet_remove: false,
+                trust: #krate::Trust::Ordinary,
+                schema: <#ty as #krate::Model>::value_schema,
+                text: #krate::stored_text::<#ty>,
+                absent: #krate::absent_scalar::<#ty>,
+                resource: ::core::option::Option::None,
+            })
+        });
+        quote!(#krate::VariantShape {
+            key: #key,
+            name: #variant_name,
+            fields: &[#(#fields),*],
+        })
+    });
+
     let to_json = variants.iter().map(|variant| {
-        let pattern = variant.pattern();
+        let pattern = variant.pattern_with("__field");
         let key = &variant.key;
         let keys = variant.stored().map(|field| &field.key);
-        let bindings = variant.stored().map(|field| &field.binding);
-        let unused = variant
+        let bindings: Vec<Ident> = variant
             .fields
             .iter()
-            .filter(|field| field.skip)
-            .map(|field| &field.binding);
+            .enumerate()
+            .filter(|(_, field)| !field.skip)
+            .map(|(index, _)| binding_of(index))
+            .collect();
+        let unused: Vec<Ident> = variant
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| field.skip)
+            .map(|(index, _)| binding_of(index))
+            .collect();
         quote! {
             #pattern => {
                 #(let _ = #unused;)*
@@ -202,34 +327,68 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
         quote!(#key => ::core::result::Result::Ok(#built),)
     });
 
-    let load = variants.iter().map(|variant| {
+    let load = variants.iter().enumerate().map(|(variant_index, variant)| {
         let key = &variant.key;
         let built = variant.construct(|field| {
             if field.skip {
                 quote!(::core::default::Default::default())
             } else {
-                let field_key = &field.key;
-                quote!(#krate::read_key(doc, id, #field_key)?)
+                let field_index = variant
+                    .stored()
+                    .position(|candidate| ::core::ptr::eq(candidate, field))
+                    .unwrap_or_default();
+                let ty = &field.ty;
+                quote!({
+                    let mut __out: ::core::option::Option<#ty> = ::core::option::Option::None;
+                    #table::load_field(
+                        &Self::__VARIANTS[#variant_index].fields[#field_index],
+                        doc,
+                        id,
+                        &mut __out,
+                    )?;
+                    #table::filled(__out)?
+                })
             }
         });
-        quote!(#key => ::core::result::Result::Ok(#built),)
+        quote! {
+            #key => {
+                let mut __value = #built;
+                #krate::Model::read_whole(&mut __value, doc)?;
+                ::core::result::Result::Ok(__value)
+            }
+        }
     });
 
-    let store = variants.iter().map(|variant| {
-        let pattern = variant.pattern();
+    let store = variants.iter().enumerate().map(|(variant_index, variant)| {
+        let pattern = variant.pattern_with("__field");
         let key = &variant.key;
-        let keys: Vec<&String> = variant.stored().map(|field| &field.key).collect();
-        let bindings = variant.stored().map(|field| &field.binding);
-        let unused = variant
+        let writes = variant.stored().enumerate().map(|(field_index, field)| {
+            let binding = binding_of(
+                variant
+                    .fields
+                    .iter()
+                    .position(|candidate| ::core::ptr::eq(candidate, field))
+                    .unwrap_or_default(),
+            );
+            quote!(#table::store_field(
+                &Self::__VARIANTS[#variant_index].fields[#field_index],
+                doc,
+                &__obj,
+                #binding,
+            )?;)
+        });
+        let unused: Vec<Ident> = variant
             .fields
             .iter()
-            .filter(|field| field.skip)
-            .map(|field| &field.binding);
+            .enumerate()
+            .filter(|(_, field)| field.skip)
+            .map(|(index, _)| binding_of(index))
+            .collect();
         quote! {
             #pattern => {
                 #(let _ = #unused;)*
-                let __obj = #model::variant_map(doc, slot, #key, &[#(#keys),*])?;
-                #(#krate::write_key(doc, &__obj, #keys, #bindings)?;)*
+                let __obj = #model::variant_map(doc, slot, #key)?;
+                #(#writes)*
                 ::core::result::Result::Ok(())
             }
         }
@@ -248,13 +407,23 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
     });
 
     let checks = variants.iter().map(|variant| {
-        let pattern = variant.pattern();
-        let checked = variant.stored().map(|field| &field.binding);
-        let unused = variant
+        let pattern = variant.pattern_with("__field");
+        let checked = variant.stored().map(|field| {
+            binding_of(
+                variant
+                    .fields
+                    .iter()
+                    .position(|candidate| ::core::ptr::eq(candidate, field))
+                    .unwrap_or_default(),
+            )
+        });
+        let unused: Vec<Ident> = variant
             .fields
             .iter()
-            .filter(|field| field.skip)
-            .map(|field| &field.binding);
+            .enumerate()
+            .filter(|(_, field)| field.skip)
+            .map(|(index, _)| binding_of(index))
+            .collect();
         quote! {
             #pattern => {
                 #(let _ = #unused;)*
@@ -265,13 +434,23 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
     });
 
     let texts = variants.iter().map(|variant| {
-        let pattern = variant.pattern();
-        let collected = variant.stored().map(|field| &field.binding);
-        let unused = variant
+        let pattern = variant.pattern_with("__field");
+        let collected = variant.stored().map(|field| {
+            binding_of(
+                variant
+                    .fields
+                    .iter()
+                    .position(|candidate| ::core::ptr::eq(candidate, field))
+                    .unwrap_or_default(),
+            )
+        });
+        let unused: Vec<Ident> = variant
             .fields
             .iter()
-            .filter(|field| field.skip)
-            .map(|field| &field.binding);
+            .enumerate()
+            .filter(|(_, field)| field.skip)
+            .map(|(index, _)| binding_of(index))
+            .collect();
         quote! {
             #pattern => {
                 #(let _ = #unused;)*
@@ -280,7 +459,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
         }
     });
 
-    let missing = variants.iter().find(|variant| variant.default).map_or_else(
+    let misses = variants.iter().find(|variant| variant.default).map_or_else(
         || {
             quote! {
                 ::core::result::Result::Err(#krate::ModelError::Missing {
@@ -301,14 +480,432 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
         },
     );
 
+    let stores_as = variants.iter().enumerate().map(|(variant_index, variant)| {
+        let ident = &variant.ident;
+        let members_now = variant.fields.iter().map(|field| &field.member);
+        let members_was = variant.fields.iter().map(|field| &field.member);
+        let now_bindings = variant
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format_ident!("__now{}", index));
+        let was_bindings = variant
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format_ident!("__was{}", index));
+        let pattern_now = match variant.style {
+            Style::Unit => quote!(Self::#ident),
+            Style::Named | Style::Tuple => {
+                quote!(Self::#ident { #(#members_now: #now_bindings),* })
+            }
+        };
+        let pattern_was = match variant.style {
+            Style::Unit => quote!(Self::#ident),
+            Style::Named | Style::Tuple => {
+                quote!(Self::#ident { #(#members_was: #was_bindings),* })
+            }
+        };
+        let comparisons: Vec<Tokens> = variant
+            .stored()
+            .enumerate()
+            .map(|(field_index, field)| {
+                let index = variant
+                    .fields
+                    .iter()
+                    .position(|candidate| ::core::ptr::eq(candidate, field))
+                    .unwrap_or_default();
+                let now = format_ident!("__now{}", index);
+                let was = format_ident!("__was{}", index);
+                quote!(#table::stores_as_field(
+                    Self::__VARIANTS[#variant_index].fields[#field_index].table,
+                    #now,
+                    #was,
+                ))
+            })
+            .collect();
+        let result = if comparisons.is_empty() {
+            quote!(true)
+        } else {
+            quote!(#(#comparisons)&&*)
+        };
+        quote! {
+            (#pattern_now, #pattern_was) => #result,
+        }
+    });
+
+    let diffs = variants.iter().enumerate().map(|(variant_index, variant)| {
+        let ident = &variant.ident;
+        let members_now = variant.fields.iter().map(|field| &field.member);
+        let members_was = variant.fields.iter().map(|field| &field.member);
+        let now_bindings = variant
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format_ident!("__now{}", index));
+        let was_bindings = variant
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format_ident!("__was{}", index));
+        let pattern_now = match variant.style {
+            Style::Unit => quote!(Self::#ident),
+            Style::Named | Style::Tuple => {
+                quote!(Self::#ident { #(#members_now: #now_bindings),* })
+            }
+        };
+        let pattern_was = match variant.style {
+            Style::Unit => quote!(Self::#ident),
+            Style::Named | Style::Tuple => {
+                quote!(Self::#ident { #(#members_was: #was_bindings),* })
+            }
+        };
+        let fields = variant.stored().enumerate().map(|(field_index, field)| {
+            let index = variant
+                .fields
+                .iter()
+                .position(|candidate| ::core::ptr::eq(candidate, field))
+                .unwrap_or_default();
+            let now = format_ident!("__now{}", index);
+            let was = format_ident!("__was{}", index);
+            let key = &variant.key;
+            let field_key = &field.key;
+            quote! {
+                if !#table::stores_as_field(
+                    Self::__VARIANTS[#variant_index].fields[#field_index].table,
+                    #now,
+                    #was,
+                ) {
+                    let mut __at = path.to_vec();
+                    __at.push(#krate::Segment::Field(::std::string::String::from(#key)));
+                    __at.push(#krate::Segment::Field(::std::string::String::from(#field_key)));
+                    #table::diff_field(
+                        Self::__VARIANTS[#variant_index].fields[#field_index].table,
+                        #was,
+                        #now,
+                        &__at,
+                        &mut found,
+                    );
+                }
+            }
+        });
+        quote! {
+            (#pattern_was, #pattern_now) => {
+                #(#fields)*
+            }
+        }
+    });
+
+    let store_changed = variants.iter().enumerate().map(|(variant_index, variant)| {
+        let ident = &variant.ident;
+        let members_now = variant.fields.iter().map(|field| &field.member);
+        let members_was = variant.fields.iter().map(|field| &field.member);
+        let now_bindings = variant.fields.iter().enumerate().map(|(index, _)| {
+            format_ident!("__now{}", index)
+        });
+        let was_bindings = variant.fields.iter().enumerate().map(|(index, _)| {
+            format_ident!("__was{}", index)
+        });
+        let pattern_now = match variant.style {
+            Style::Unit => quote!(Self::#ident),
+            Style::Named | Style::Tuple => quote!(Self::#ident { #(#members_now: #now_bindings),* }),
+        };
+        let pattern_was = match variant.style {
+            Style::Unit => quote!(Self::#ident),
+            Style::Named | Style::Tuple => quote!(Self::#ident { #(#members_was: #was_bindings),* }),
+        };
+        let key = &variant.key;
+        let writes = variant.stored().enumerate().map(|(field_index, field)| {
+            let index = variant
+                .fields
+                .iter()
+                .position(|candidate| ::core::ptr::eq(candidate, field))
+                .unwrap_or_default();
+            let now = format_ident!("__now{}", index);
+            let was = format_ident!("__was{}", index);
+            quote! {
+                #table::write_key_changed(
+                    Self::__VARIANTS[#variant_index].fields[#field_index].table,
+                    (#now, #was),
+                    doc,
+                    &__obj,
+                    Self::__VARIANTS[#variant_index].fields[#field_index].key,
+                    dirty,
+                )?;
+            }
+        });
+        quote! {
+            (#pattern_now, #pattern_was) => {
+                if #model::slot_variant(doc, slot)?.as_deref() != ::core::option::Option::Some(#key) {
+                    return self.store(doc, slot);
+                }
+                let __obj = match slot.current(doc)? {
+                    ::core::option::Option::Some((
+                        #krate::__private::Value::Object(#krate::__private::ObjType::Map),
+                        id,
+                    )) => id,
+                    _ => return self.store(doc, slot),
+                };
+                #(#writes)*
+                ::core::result::Result::Ok(())
+            }
+        }
+    });
+
+    let get_at = variants.iter().enumerate().map(|(variant_index, variant)| {
+        let ident = &variant.ident;
+        let members = variant.fields.iter().map(|field| &field.member);
+        let bindings = variant
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format_ident!("__field{}", index));
+        let pattern = match variant.style {
+            Style::Unit => quote!(Self::#ident),
+            Style::Named | Style::Tuple => quote!(Self::#ident { #(#members: #bindings),* }),
+        };
+        let lookups = variant.stored().enumerate().map(|(field_index, field)| {
+            let index = variant
+                .fields
+                .iter()
+                .position(|candidate| ::core::ptr::eq(candidate, field))
+                .unwrap_or_default();
+            let binding = format_ident!("__field{}", index);
+            let field_key = &field.key;
+            quote! {
+                if __key == #field_key {
+                    let __field = &Self::__VARIANTS[#variant_index].fields[#field_index];
+                    return #table::field_at(__field.table, #binding, __rest);
+                }
+            }
+        });
+        quote! {
+            #pattern => {
+                #(#lookups)*
+                ::core::option::Option::None
+            }
+        }
+    });
+
+    let field_refs = variants
+        .iter()
+        .enumerate()
+        .flat_map(|(variant_index, variant)| {
+            let ident = &variant.ident;
+            let members = variant.fields.iter().map(|field| &field.member);
+            let bindings = variant
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, _)| format_ident!("__field{}", index));
+            let pattern = match variant.style {
+                Style::Unit => quote!(Self::#ident),
+                Style::Named | Style::Tuple => quote!(Self::#ident { #(#members: #bindings),* }),
+            };
+            variant
+                .stored()
+                .enumerate()
+                .map(move |(field_index, field)| {
+                    let index = variant
+                        .fields
+                        .iter()
+                        .position(|candidate| ::core::ptr::eq(candidate, field))
+                        .unwrap_or_default();
+                    let binding = format_ident!("__field{}", index);
+                    let variant_index = proc_macro2::Literal::usize_unsuffixed(variant_index);
+                    let field_index = proc_macro2::Literal::usize_unsuffixed(field_index);
+                    quote! {
+                        (#variant_index, #field_index) => match self {
+                            #pattern => ::core::option::Option::Some(#binding),
+                            _ => ::core::option::Option::None,
+                        },
+                    }
+                })
+        });
+
+    let read_whole = variants.iter().map(|variant| {
+        let ident = &variant.ident;
+        let members = variant.fields.iter().map(|field| &field.member);
+        let bindings = variant
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format_ident!("__field{}", index));
+        let pattern = match variant.style {
+            Style::Unit => quote!(Self::#ident),
+            Style::Named | Style::Tuple => quote!(Self::#ident { #(#members: #bindings),* }),
+        };
+        let reads = variant.stored().filter(|field| field.whole).map(|field| {
+            let index = variant
+                .fields
+                .iter()
+                .position(|candidate| ::core::ptr::eq(candidate, field))
+                .unwrap_or_default();
+            let binding = format_ident!("__field{}", index);
+            quote!(#krate::Model::read_whole(#binding, doc)?;)
+        });
+        quote! {
+            #pattern => {
+                #(#reads)*
+            }
+        }
+    });
+
+    let nested = variants.iter().map(|variant| {
+        let ident = &variant.ident;
+        let members = variant.fields.iter().map(|field| &field.member);
+        let bindings = variant
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, _)| format_ident!("__field{}", index));
+        let pattern = match variant.style {
+            Style::Unit => quote!(Self::#ident),
+            Style::Named | Style::Tuple => quote!(Self::#ident { #(#members: #bindings),* }),
+        };
+        let items = variant.stored().map(|field| {
+            let index = variant
+                .fields
+                .iter()
+                .position(|candidate| ::core::ptr::eq(candidate, field))
+                .unwrap_or_default();
+            let binding = format_ident!("__field{}", index);
+            quote!(found.extend(#krate::Model::nested_collections(#binding));)
+        });
+        quote! {
+            #pattern => {
+                #(#items)*
+            }
+        }
+    });
+
+    let variant_named = variants.iter().enumerate().map(|(index, variant)| {
+        let key = &variant.key;
+        let index = proc_macro2::Literal::usize_unsuffixed(index);
+        quote!(#key => ::core::option::Option::Some(#index),)
+    });
+
+    let variant_index = variants.iter().enumerate().map(|(index, variant)| {
+        let ident = &variant.ident;
+        let index = proc_macro2::Literal::usize_unsuffixed(index);
+        quote!(Self::#ident { .. } => ::core::option::Option::Some(#index),)
+    });
+
+    let default_variant = variants
+        .iter()
+        .position(|variant| variant.default)
+        .map_or_else(
+            || quote!(::core::option::Option::None),
+            |index| {
+                let index = proc_macro2::Literal::usize_unsuffixed(index);
+                quote!(::core::option::Option::Some(#index))
+            },
+        );
+
+    let edit_direct = variants.iter().enumerate().map(|(variant_index, variant)| {
+        let key = &variant.key;
+        let fields = variant.stored().enumerate().map(|(field_index, field)| {
+            let field_key = &field.key;
+            quote! {
+                if __field_key == #field_key {
+                    let __field = &Self::__VARIANTS[#variant_index].fields[#field_index];
+                    let __obj = match slot.current(doc)? {
+                        ::core::option::Option::Some((
+                            #krate::__private::Value::Object(#krate::__private::ObjType::Map),
+                            id,
+                        )) => id,
+                        ::core::option::Option::Some(_) => {
+                            return ::core::result::Result::Err(#krate::ModelError::shape(
+                                "a map naming its variant",
+                            ));
+                        }
+                        ::core::option::Option::None => #model::variant_map(doc, slot, #key)?,
+                    };
+                    #krate::LocatedAt::located(
+                        #table::edit_field(
+                            __field.table,
+                            doc,
+                            #krate::Slot::Key(&__obj, __field.key),
+                            __below,
+                            op,
+                            cx,
+                        ),
+                        __field.key,
+                    )?;
+                    let __value = #krate::__private::Value::Object(#krate::__private::ObjType::Map);
+                    Self::load(doc, &__value, &__obj)?.check().map_err(#krate::ModelError::refused)?;
+                    return ::core::result::Result::Ok(());
+                }
+            }
+        });
+        quote! {
+            #key => {
+                #(#fields)*
+                let names: ::std::vec::Vec<&str> = Self::__VARIANTS[#variant_index]
+                    .fields
+                    .iter()
+                    .map(|field| field.key)
+                    .collect();
+                return ::core::result::Result::Err(#krate::ModelError::invalid(format!(
+                    "no field `{}` in variant `{}`; its fields are {}",
+                    __first,
+                    #key,
+                    names.join(", "),
+                )));
+            }
+        }
+    });
+
+    // Typed paths: one field per variant (`shape.rect`), and inside it one
+    // per stored field (`shape.rect.x`).
     Ok(quote! {
+        impl #impl_generics #name #type_generics #where_clause {
+            /// The data enum as data: its variants' names and fields.
+            #[doc(hidden)]
+            pub const __VARIANTS: &'static [#table::VariantDesc] = &[#(#variant_descs),*];
+
+            #[doc(hidden)]
+            pub fn __variant_named(name: &str) -> ::core::option::Option<usize> {
+                match name {
+                    #(#variant_named)*
+                    _ => ::core::option::Option::None,
+                }
+            }
+
+            #[doc(hidden)]
+            pub fn __variant_index(value: &dyn ::core::any::Any) -> ::core::option::Option<usize> {
+                let value = value.downcast_ref::<Self>()?;
+                match value {
+                    #(#variant_index)*
+                }
+            }
+
+            #[doc(hidden)]
+            pub fn __default_variant() -> ::core::option::Option<usize> {
+                #default_variant
+            }
+
+            #[doc(hidden)]
+            pub fn __field_ref(
+                &self,
+                variant: usize,
+                field: usize,
+            ) -> ::core::option::Option<&dyn ::core::any::Any> {
+                match (variant, field) {
+                    #(#field_refs)*
+                    _ => ::core::option::Option::None,
+                }
+            }
+        }
+
         impl #impl_generics #krate::Settable for #name #type_generics #where_clause {}
 
         impl #impl_generics #krate::Model for #name #type_generics #where_clause {
+            const SHAPE: #krate::Shape = #krate::Shape::Variant(&[#(#variant_shapes),*]);
             const CHECKS: bool = false #(|| <#field_types as #krate::Model>::CHECKS)*;
             type Paths<__R> = #krate::Path<__R, Self>;
 
-            fn paths_at<__R>(path: #krate::Path<__R, Self>) -> #krate::Path<__R, Self> {
+            fn paths_at<__R>(path: #krate::Path<__R, Self>) -> Self::Paths<__R> {
                 path
             }
 
@@ -342,7 +939,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
             }
 
             fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
-                #missing
+                #misses
             }
 
             fn store(
@@ -352,6 +949,168 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
             ) -> ::core::result::Result<(), #krate::ModelError> {
                 match self {
                     #(#store)*
+                }
+            }
+
+            fn stores_as(&self, before: &Self) -> bool {
+                match (self, before) {
+                    #(#stores_as)*
+                    _ => false,
+                }
+            }
+
+            fn store_changed(
+                &self,
+                before: &Self,
+                doc: &mut #krate::Doc,
+                slot: #krate::Slot<'_>,
+                dirty: &#krate::Delta,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                if self.stores_as(before) {
+                    return ::core::result::Result::Ok(());
+                }
+                match (self, before) {
+                    #(#store_changed)*
+                    _ => self.store(doc, slot),
+                }
+            }
+
+            fn diff<R>(
+                &self,
+                after: &Self,
+                path: &[#krate::Segment],
+                out: &mut ::std::vec::Vec<#krate::Edit<R>>,
+            ) {
+                if self.stores_as(after) {
+                    return;
+                }
+                let mut found = ::std::vec::Vec::new();
+                match (self, after) {
+                    #(#diffs)*
+                    _ => found.push(#krate::Edit::new(
+                        path.to_vec(),
+                        #krate::EditOp::Set { value: after.to_json() },
+                    )),
+                }
+                for edit in found {
+                    out.push(edit.retyped());
+                }
+            }
+
+            fn edit(
+                doc: &mut #krate::Doc,
+                slot: #krate::Slot<'_>,
+                path: &[#krate::Segment],
+                op: &#krate::EditOp,
+                cx: &mut #krate::ActionCx,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                let Some((#krate::Segment::Field(__first), __rest)) = path.split_first() else {
+                    return #krate::edit_whole::<Self>(doc, slot, path, op);
+                };
+                // A variant names the branch; otherwise the active variant's
+                // field is named directly.
+                if let ::core::option::Option::Some(__variant_index) = Self::__variant_named(__first)
+                {
+                    let __key = Self::__VARIANTS[__variant_index].key;
+                    let __rest = __rest;
+                    if __rest.is_empty() {
+                        return ::core::result::Result::Err(#krate::ModelError::invalid(
+                            "a variant is changed by setting the whole value",
+                        ));
+                    }
+                    let Some((#krate::Segment::Field(__field_key), __below)) = __rest.split_first() else {
+                        return ::core::result::Result::Err(#krate::ModelError::unsupported(op));
+                    };
+                    let __fields = Self::__VARIANTS[__variant_index].fields;
+                    let Some((__field_index, __field)) = __fields
+                        .iter()
+                        .enumerate()
+                        .find(|(_, field)| field.key == __field_key.as_str())
+                    else {
+                        let names: ::std::vec::Vec<&str> = __fields.iter().map(|field| field.key).collect();
+                        return ::core::result::Result::Err(#krate::ModelError::invalid(format!(
+                            "no field `{}` in variant `{}`; its fields are {}",
+                            __field_key,
+                            __key,
+                            names.join(", "),
+                        )));
+                    };
+                    let _ = __field_index;
+                    let __obj = match slot.current(doc)? {
+                        ::core::option::Option::Some((
+                            #krate::__private::Value::Object(#krate::__private::ObjType::Map),
+                            id,
+                        )) => id,
+                        ::core::option::Option::Some(_) => {
+                            return ::core::result::Result::Err(#krate::ModelError::shape(
+                                "a map naming its variant",
+                            ));
+                        }
+                        ::core::option::Option::None => #model::variant_map(doc, slot, __key)?,
+                    };
+                    #krate::LocatedAt::located(
+                        #table::edit_field(
+                            __field.table,
+                            doc,
+                            #krate::Slot::Key(&__obj, __field.key),
+                            __below,
+                            op,
+                            cx,
+                        ),
+                        __field.key,
+                    )?;
+                    let __value = #krate::__private::Value::Object(#krate::__private::ObjType::Map);
+                    Self::load(doc, &__value, &__obj)?.check().map_err(#krate::ModelError::refused)?;
+                    return ::core::result::Result::Ok(());
+                }
+                let __field_key = __first;
+                let __below = __rest;
+                let __current = #model::slot_variant(doc, slot)?;
+                let __variant_index = __current
+                    .as_deref()
+                    .and_then(Self::__variant_named)
+                    .or_else(Self::__default_variant)
+                    .ok_or_else(|| #krate::ModelError::Missing {
+                        path: ::std::string::String::new(),
+                    })?;
+                match Self::__VARIANTS[__variant_index].key {
+                    #(#edit_direct)*
+                    _ => ::core::result::Result::Err(#krate::ModelError::invalid(format!(
+                        "no field `{__field_key}` in this variant"
+                    ))),
+                }
+            }
+
+            fn get_at(&self, path: &[#krate::Segment]) -> ::core::option::Option<&dyn ::core::any::Any> {
+                if path.is_empty() {
+                    return ::core::option::Option::Some(self);
+                }
+                let Some((#krate::Segment::Field(__first), __rest)) = path.split_first() else {
+                    return ::core::option::Option::None;
+                };
+                if let ::core::option::Option::Some(__variant_index) = Self::__variant_named(__first)
+                {
+                    if Self::__variant_index(self) != ::core::option::Option::Some(__variant_index) {
+                        return ::core::option::Option::None;
+                    }
+                    if __rest.is_empty() {
+                        return ::core::option::Option::Some(self);
+                    }
+                    let Some((#krate::Segment::Field(__field_key), __below)) = __rest.split_first() else {
+                        return ::core::option::Option::None;
+                    };
+                    let __fields = Self::__VARIANTS[__variant_index].fields;
+                    let (__field_index, __field) = __fields
+                        .iter()
+                        .enumerate()
+                        .find(|(_, field)| field.key == __field_key.as_str())?;
+                    let __value = self.__field_ref(__variant_index, __field_index)?;
+                    return #table::field_at(__field.table, __value, __below);
+                }
+                let __key = __first;
+                match self {
+                    #(#get_at)*
+                    _ => ::core::option::Option::None,
                 }
             }
 
@@ -369,6 +1128,25 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                 match self {
                     #(#texts)*
                 }
+            }
+
+            fn read_whole(
+                &mut self,
+                doc: &#krate::Doc,
+            ) -> ::core::result::Result<(), #krate::ModelError> {
+                let _ = doc;
+                match self {
+                    #(#read_whole)*
+                }
+                ::core::result::Result::Ok(())
+            }
+
+            fn nested_collections(&self) -> ::std::vec::Vec<#krate::items::ItemCollection> {
+                let mut found = ::std::vec::Vec::new();
+                match self {
+                    #(#nested)*
+                }
+                found
             }
         }
     })

@@ -78,6 +78,12 @@ pub fn has_units(shape: Shape) -> bool {
         Shape::Record(fields) => fields
             .iter()
             .any(|field| field.unit || has_units(field.shape)),
+        Shape::Variant(variants) => variants.iter().any(|variant| {
+            variant
+                .fields
+                .iter()
+                .any(|field| field.unit || has_units(field.shape))
+        }),
         Shape::Collection(item) | Shape::Keyed(item) => has_units(*item),
         // A map's entries are written with it.
         Shape::Value | Shape::Map(_) => false,
@@ -147,6 +153,7 @@ fn is_outbox(shape: Shape, unit: &[Segment]) -> bool {
     shape
         .fields()
         .iter()
+        .chain(shape.variants().iter().flat_map(|variant| variant.fields))
         .any(|field| field.key == key && tilo_actions::surface::is_outbox_type(field.ty))
 }
 
@@ -201,6 +208,13 @@ pub fn patterns(shape: Shape) -> Vec<String> {
                         }
                         _ => walk(field.shape, &format!("{path}/"), out),
                     }
+                }
+            }
+            Shape::Variant(variants) => {
+                // A variant's fields are stored in the map beside its name;
+                // the branch is a path, not a key of its own.
+                for variant in variants {
+                    walk(Shape::Record(variant.fields), prefix, out);
                 }
             }
             Shape::Collection(item) => walk(*item, &format!("{prefix}*/{VALUE}/"), out),

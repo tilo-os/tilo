@@ -787,6 +787,26 @@ fn edit_paths(
             "required": ["path", "op"],
         })
     };
+    if let crate::Shape::Variant(variants) = shape {
+        // A variant is a branch an edit names before its fields
+        // (`shape.rect.x`), so fields of different variants never share a
+        // path even when they share a storage key.
+        for variant in variants {
+            let mut branch = steps.to_vec();
+            branch.push(step_schema(
+                "field",
+                serde_json::json!({ "const": variant.key }),
+            ));
+            edit_paths(
+                crate::Shape::Record(variant.fields),
+                &branch,
+                &format!("{dotted}{}.", variant.key),
+                rich,
+                out,
+            );
+        }
+        return;
+    }
     let item = step_schema("item", serde_json::json!({ "type": "string" }));
     // A read-only field is changed only by the record's verbs: no path an
     // edit could take.
@@ -850,7 +870,7 @@ fn edit_paths(
             description,
         ));
         match field.shape {
-            crate::Shape::Record(_) => {
+            crate::Shape::Record(_) | crate::Shape::Variant(_) => {
                 edit_paths(field.shape, &here, &format!("{path}."), rich, out);
             }
             crate::Shape::Collection(inner) | crate::Shape::Keyed(inner) => {
@@ -1037,6 +1057,12 @@ pub(crate) fn field_edit_spec_at_of(
                 dotted.push_str(key);
                 dotted.push('.');
             }
+            (crate::Shape::Variant(variants), crate::Segment::Field(key)) => {
+                let variant = variants.iter().find(|candidate| candidate.key == key)?;
+                shape = crate::Shape::Record(variant.fields);
+                dotted.push_str(key);
+                dotted.push('.');
+            }
             (
                 crate::Shape::Collection(inner) | crate::Shape::Keyed(inner),
                 crate::Segment::Item(_),
@@ -1047,7 +1073,7 @@ pub(crate) fn field_edit_spec_at_of(
             _ => return None,
         }
     }
-    if shape.fields().is_empty() || readonly {
+    if (shape.fields().is_empty() && shape.variants().is_empty()) || readonly {
         return None;
     }
     // The same for every item: built once per type and path.

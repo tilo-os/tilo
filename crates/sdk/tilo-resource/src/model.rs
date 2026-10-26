@@ -1016,31 +1016,42 @@ pub fn write_key_changed<T: Model>(
 pub const VARIANT_KEY: &str = "$variant";
 
 /// The map a data enum's variant `variant` is stored in, in `slot`: made
-/// when the slot holds anything else, its variant name written, and the
-/// fields of another variant it held before removed, so concurrent edits of
-/// the same variant merge field by field and a change of variant is one
-/// last-writer-wins write of its name.
+/// when the slot holds anything else, and its variant name written. The
+/// name is one scalar, so a change of variant is one last-writer-wins write;
+/// a field edit in the same variant leaves it untouched.
+///
+/// Fields a variant does not have are left where they are, unused: a
+/// concurrent edit of the variant being left keeps its value, and changing
+/// back reads it again. Writing the new variant's own fields replaces the
+/// keys they share; a field they do not carry is absent from them and so is
+/// not read by the new variant.
 ///
 /// # Errors
 /// Returns the document's write error.
 #[doc(hidden)]
 #[inline(never)]
-pub fn variant_map(
-    doc: &mut Doc,
-    slot: Slot<'_>,
-    variant: &str,
-    fields: &[&str],
-) -> Result<ObjId, ModelError> {
+pub fn variant_map(doc: &mut Doc, slot: Slot<'_>, variant: &str) -> Result<ObjId, ModelError> {
     let obj = slot.object(doc, ObjType::Map)?;
     Slot::Key(&obj, VARIANT_KEY).put_scalar(doc, ScalarValue::Str(variant.into()))?;
-    let stale: Vec<String> = doc
-        .keys(&obj)
-        .filter(|key| key.as_str() != VARIANT_KEY && !fields.contains(&key.as_str()))
-        .collect();
-    for key in stale {
-        doc.delete(&obj, key.as_str())?;
-    }
     Ok(obj)
+}
+
+/// The variant name a data enum stored in `slot` currently has, or `None`
+/// when the slot holds nothing.
+///
+/// # Errors
+/// Returns a shape error when the slot holds something that is not a data
+/// enum's map.
+#[doc(hidden)]
+#[inline(never)]
+pub fn slot_variant(doc: &Doc, slot: Slot<'_>) -> Result<Option<String>, ModelError> {
+    match slot.current(doc)? {
+        Some((value @ Value::Object(ObjType::Map), id)) => {
+            stored_variant(doc, &value, &id).map(Some)
+        }
+        Some(_) => Err(ModelError::shape("a map naming its variant")),
+        None => Ok(None),
+    }
 }
 
 /// The variant a data enum stored at `value` (the object `id`) names.

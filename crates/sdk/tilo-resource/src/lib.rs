@@ -189,7 +189,7 @@ pub use resource::{
     with_origin_clock,
 };
 pub use schema::JsonSchema;
-pub use shape::{FieldShape, Shape, StoredText, Trust, absent_scalar, stored_text};
+pub use shape::{FieldShape, Shape, StoredText, Trust, VariantShape, absent_scalar, stored_text};
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
 pub use surface::Surface;
 pub use text::{PlainText, TextEdit, TextSpliceError, char_len, splice_chars, text_of};

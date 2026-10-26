@@ -90,6 +90,26 @@ fn locate(doc: &Doc, root: Shape, path: &[Segment]) -> Located {
                 }
                 located.value = get(doc, &obj, key);
             }
+            (Shape::Variant(variants), Segment::Field(key)) => {
+                if let Some(variant) = variants.iter().find(|variant| variant.key == key) {
+                    // The variant names the branch; its fields are stored in
+                    // the same map, so the next step reads from here.
+                    shape = Shape::Record(variant.fields);
+                    located.value = Some((Value::Object(ObjType::Map), obj));
+                } else if let Some(field) = variants
+                    .iter()
+                    .flat_map(|variant| variant.fields)
+                    .find(|field| field.key == key)
+                {
+                    located.owner = Some((field.owner, key.clone()));
+                    located.absent = Some(field.absent);
+                    shape = field.shape;
+                    located.value = get(doc, &obj, key);
+                } else {
+                    shape = Shape::Value;
+                    located.value = get(doc, &obj, key);
+                }
+            }
             (Shape::Collection(item) | Shape::Keyed(item), Segment::Item(id)) => {
                 let value = if matches!(shape, Shape::Keyed(_)) {
                     get(doc, &obj, id.as_str())
@@ -441,7 +461,11 @@ fn item_named(
     obj: &ObjId,
     ids: &[&str],
 ) -> Option<(String, Option<String>)> {
-    for field in shape.fields() {
+    for field in shape
+        .fields()
+        .iter()
+        .chain(shape.variants().iter().flat_map(|variant| variant.fields))
+    {
         let (Shape::Collection(item) | Shape::Keyed(item)) = field.shape else {
             continue;
         };
