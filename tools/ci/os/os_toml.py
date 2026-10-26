@@ -262,13 +262,15 @@ def flavour_checks(plan, arch, req, tools, flavour, layer):
             ("outputs", arr([f"/target/os/{arch}/{dirs}/{lname}/**"]))]
         if env:
             fields.append(("env", env))
-        # A development or release layer reads no commit (the clock is the base's and the
-        # snapshot's, the build context leaves .git out), so its files and the layers below key
-        # it and an unchanged layer is reused on every later commit. A piece that bakes in the
-        # generation, which build-layer.sh allocates from the published series rather than
-        # from any file, stays per commit, and so does a board's layer, whose update origin
-        # names the commit.
-        if board or reads_generation(pieces.action_text(lname)):
+        # A layer reads no commit (the clock is the base's and the snapshot's, the build context
+        # leaves .git out), so its files and the layers below key it and an unchanged layer is
+        # reused on every later commit. A board's layer stays per commit: its update origin names
+        # the commit. So does a release's piece that bakes in the generation, which
+        # build-layer.sh allocates from the published series rather than from any file: a release
+        # must carry the series' next one when it is built. A development image's generation is
+        # read when its layer is built; a later commit reusing the layer has the same binaries,
+        # the same image, which needs no newer generation to be told apart.
+        if board or (flavour != "dev" and reads_generation(pieces.action_text(lname))):
             fields.append(("git", "true"))
         out.append(check(fields + [
             ("requires", req), ("isolation", '"vm"'), ("writable_sources", "true"),
