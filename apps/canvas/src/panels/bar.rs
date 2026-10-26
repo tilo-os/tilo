@@ -134,6 +134,9 @@ pub(crate) struct WindowBar {
     child: Element,
     tools: Tools,
     dispatch: ui::framework::Dispatcher<Artwork>,
+    /// The notice last put in the window's bar, so the same one is not
+    /// re-sent every frame and a cleared one is taken down.
+    notice: std::cell::RefCell<Option<String>>,
 }
 
 impl WindowBar {
@@ -146,6 +149,7 @@ impl WindowBar {
             child,
             tools: tools.clone(),
             dispatch,
+            notice: std::cell::RefCell::new(None),
         }
     }
 
@@ -189,6 +193,22 @@ impl WindowBar {
         let title = self.tools.title.get();
         let open = self.tools.sidebar.get();
         ui::window_toolbar::declare(Some(toolbar(&self.tools, &title, open)));
+        self.publish_notice();
+    }
+
+    /// Say what the canvas is doing — finding a subject, a save that failed —
+    /// in the window's bar, where a transient notice belongs. It used to be
+    /// small text under the artwork's title, in the row this bar replaced.
+    fn publish_notice(&self) {
+        let notice = self.tools.notice.get();
+        let mut published = self.notice.borrow_mut();
+        if *published == notice {
+            return;
+        }
+        *published = notice.clone();
+        ui::window_toolbar::notify(notice.map(|text| {
+            ui::window_toolbar::ToolbarNotice::new(text, ui::widget::toast::ToastKind::Info)
+        }));
     }
 }
 
