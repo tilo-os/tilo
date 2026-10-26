@@ -297,9 +297,18 @@ fn a_verb_with_an_outbox_reaches_outside() {
     assert_eq!(Shelf::kind_of(&rename), ActionKind::Undoable);
     let tree = published(&shelf);
     let spec = |id: &str| tree.actions.iter().find(|spec| spec.id == id).unwrap();
-    assert!(!spec("mail-to").contract.reversible);
-    assert!(spec("retitle").contract.reversible);
-    assert!(spec(tilo_resource::APPLY).contract.reversible);
+    // The kind follows from what each action is able to do: a verb that
+    // queues reaches outside, one that only edits the document is undoable,
+    // and so is the generic `apply`.
+    assert_eq!(spec("mail-to").contract.kind, ActionKind::Outside);
+    assert_eq!(spec("retitle").contract.kind, ActionKind::Undoable);
+    assert_eq!(
+        spec(tilo_resource::APPLY).contract.kind,
+        ActionKind::Undoable
+    );
+    assert!(!spec("mail-to").contract.can_be_undone());
+    assert!(spec("retitle").contract.can_be_undone());
+    assert!(spec(tilo_resource::APPLY).contract.can_be_undone());
     assert_eq!(
         tilo_resource::spec_kind(spec("mail-to")),
         ActionKind::Outside

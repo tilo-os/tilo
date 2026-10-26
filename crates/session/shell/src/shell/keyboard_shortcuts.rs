@@ -129,7 +129,6 @@ fn contract(kind: ActionKind, result: Value) -> ActionContract {
     ActionContract {
         kind,
         retry: RetryPolicy::Idempotent,
-        reversible: kind != ActionKind::Read,
         result: ResultSpec::Json { schema: result },
         tags: vec![
             "configuration".into(),

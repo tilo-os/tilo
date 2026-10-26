@@ -1356,7 +1356,11 @@ pub fn with_surface<R: Resource, S: 'static, T>(
 /// where it is invoked, at once.
 fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
     for spec in &mut resource.actions {
+        // Undo takes a field edit back, so its kind says document, but it is
+        // still invoked as a job: it names a path the invoked host resolves,
+        // and a job answers when that write has landed.
         let queues = spec.contract.kind == tilo_actions::ActionKind::Outside
+            || spec.id == tilo_resource::FIELD_EDIT
             || matches!(spec.id.as_str(), "undo" | "redo" | "restore");
         if spec.kind == tilo_actions::OperationKind::Document && queues {
             spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };

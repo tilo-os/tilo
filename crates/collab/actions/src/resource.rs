@@ -267,6 +267,16 @@ pub const PROMPTED_PARAM: &str = "value";
 /// The text of an argument object that holds exactly one string, whatever it
 /// is called: what a continuation or an accessibility set-value reads of a
 /// prompted action's arguments without knowing the action's own name for it.
+/// The contract of a spec nothing has declared a kind for: its operation's
+/// without the kind, which only the declaration names
+/// ([`ActionSpec::of_kind`]).
+fn unnamed_kind(contract: ActionContract) -> ActionContract {
+    ActionContract {
+        kind: ActionKind::Outside,
+        ..contract
+    }
+}
+
 pub fn sole_text_argument(arguments: &serde_json::Map<String, serde_json::Value>) -> Option<&str> {
     let mut values = arguments.values();
     match (values.next(), values.next()) {
@@ -1256,7 +1266,7 @@ impl ActionSpec {
             locus,
             kind: OperationKind::Document,
             operation_type: None,
-            contract: ActionContract::default(),
+            contract: unnamed_kind(ActionContract::default()),
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: InvocationBuilder::Fixed(for_build),
@@ -1294,7 +1304,7 @@ impl ActionSpec {
             locus,
             kind: OperationKind::Document,
             operation_type: None,
-            contract: ActionContract::default(),
+            contract: unnamed_kind(ActionContract::default()),
             input: ActionInput::Immediate(encoded),
             params: Vec::new(),
             build: InvocationBuilder::Fixed(for_build),
@@ -1342,7 +1352,7 @@ impl ActionSpec {
             locus,
             kind: OperationKind::Document,
             operation_type: None,
-            contract: ActionContract::default(),
+            contract: unnamed_kind(ActionContract::default()),
             params: vec![param],
             build: InvocationBuilder::Dynamic {
                 build: Arc::new(move |args| for_args(args.text(&name).unwrap_or(""))),
@@ -1572,7 +1582,7 @@ impl ActionSpec {
             locus: seed.locus,
             kind: seed.kind,
             operation_type: seed.operation_type,
-            contract: ActionContract::for_operation(seed.kind),
+            contract: unnamed_kind(ActionContract::for_operation(seed.kind)),
             input,
             params: seed.params,
             build: InvocationBuilder::Dynamic {
@@ -1668,6 +1678,9 @@ impl ActionSpec {
     #[must_use]
     pub fn destructive(mut self) -> Self {
         self.contract.risk = RiskLevel::Destructive;
+        // A deletion reaches outside its resource only once Undo takes the
+        // change back.
+        self.contract.kind = self.contract.deletion_kind();
         // Asked with a click when Undo cannot take it back; run at once,
         // with Undo offered, when it can ([`ActionContract::settle_confirmation`]).
         self.contract.settle_confirmation();
@@ -1926,14 +1939,16 @@ impl ActionSpec {
         self
     }
 
-    /// Set what the action is able to do. See [`ActionContract::kind`].
+    /// Set what the action is able to do, as the declaration sees it. See
+    /// [`ActionContract::kind`].
     #[must_use]
     pub fn of_kind(mut self, kind: ActionKind) -> Self {
         self.contract.kind = kind;
         self
     }
 
-    /// Set what the action is: its kind and the field it writes.
+    /// Set the field the action writes, and its kind unless the declaration
+    /// named one ([`of_kind`](Self::of_kind)), which a need does not overrule.
     #[must_use]
     pub fn with_need(mut self, need: ActionNeed) -> Self {
         self.contract.kind = need.kind;
@@ -1946,14 +1961,6 @@ impl ActionSpec {
     #[must_use]
     pub fn below_field(mut self, field: impl Into<String>) -> Self {
         self.contract.field = Some(field.into());
-        self
-    }
-
-    #[must_use]
-    pub fn reversible(mut self) -> Self {
-        self.contract.reversible = true;
-        // A deletion Undo takes back is no longer asked about.
-        self.contract.settle_confirmation();
         self
     }
 

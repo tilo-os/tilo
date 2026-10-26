@@ -1679,10 +1679,10 @@ facts that let a caller plan safely:
   execution.
 - `permission`: `read`, `comment`, `write`, `invite`, or `admin`; the broker
   uses this exact value for both discovery and invocation.
-- `risk`, `confirmation`, and `reversible`: privileged and sensitive actions,
-  and destructive ones Undo cannot take back, require a confirmation policy.
-  A destructive action Undo takes back (`reversible`, or a compensated undo)
-  asks nothing: it runs at once and the app offers Undo
+- `risk` and `confirmation`: privileged and sensitive actions, and
+  destructive ones Undo cannot take back, require a confirmation policy.
+  A destructive action Undo takes back (`ActionKind::Undoable`, or a
+  compensated undo) asks nothing: it runs at once and the app offers Undo
   (`RiskLevel::requires_confirmation_when`). A typed phrase
   (`ConfirmationPolicy::Phrase`) is for irreversible, high-risk actions only,
   and names what is lost (the drive, the app), never a word like "CONFIRM";
@@ -1804,7 +1804,6 @@ ActionSpec::operation(
     &ArchiveArgs { conversation_id },
 )?
 .requiring(PermissionRequirement::Write)
-.reversible()
 .retry_policy(RetryPolicy::Idempotent)
 .returns(ResultSpec::Resource {
     resource_kind: "mail.conversation".into(),
