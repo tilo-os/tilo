@@ -379,16 +379,32 @@ async fn native_peer_facade_real_relay_durable_broker_application_stream() {
         assert!(matches!(reply(&caller, unknown).await, ActionMessage::Observation { uncertain: true, .. }));
         assert!(reopened.invocation_rx.try_recv().is_err());
         assert_eq!(std::fs::read_to_string(root.path().join("effect-counter")).unwrap(), "1");
-        // A failed durable barrier withdraws the live broker lane. It cannot
-        // claim Accepted or cause another application stream delivery.
+        // A write that reaches no durable byte is taken back: the live broker
+        // lane goes on, and it neither claims Accepted nor causes another
+        // application stream delivery for the request it could not admit.
         reopened.state.journal.lock().unwrap().as_mut().unwrap().as_mut().unwrap().fail_at = Some(BarrierFailure::File);
         let mut blocked = request.clone(); blocked.invocation = tilo_actions::InvocationId::new();
         let refused = send(&caller, room, 52, invoke(&blocked));
+        tilo_test_env::within("the refused request to be rejected", async { loop {
+            if let Some(EnvelopeV2::Delivered { action, .. }) = caller.recv_action().await
+                && action.request_id == refused
+            {
+                assert!(matches!(action.message, ActionMessage::Rejected { .. }));
+                break;
+            }
+        }}).await;
+        assert!(reopened.invocation_rx.try_recv().is_err());
+        assert_eq!(std::fs::read_to_string(root.path().join("effect-counter")).unwrap(), "1");
+        // A write that may be durable although unconfirmed withdraws the lane:
+        // nothing more may be admitted until the store is recovered.
+        reopened.state.journal.lock().unwrap().as_mut().unwrap().as_mut().unwrap().fail_at = Some(BarrierFailure::Directory);
+        let mut unconfirmed = request.clone(); unconfirmed.invocation = tilo_actions::InvocationId::new();
+        let withdrawn = send(&caller, room, 52, invoke(&unconfirmed));
         assert!(tilo_test_env::within("`server`", server).await.unwrap().is_err());
-        let unavailable = send(&caller, room, 52, ActionMessage::Status { invocation: blocked.invocation });
+        let unavailable = send(&caller, room, 52, ActionMessage::Status { invocation: unconfirmed.invocation });
         tilo_test_env::within("the refused request to become unavailable", async { loop {
             match caller.recv_action().await {
-                Some(EnvelopeV2::Delivered { action, .. }) if action.request_id == refused => assert!(matches!(action.message, ActionMessage::Rejected { .. })),
+                Some(EnvelopeV2::Delivered { action, .. }) if action.request_id == withdrawn => assert!(matches!(action.message, ActionMessage::Rejected { .. })),
                 Some(EnvelopeV2::Unavailable { request_id, .. }) if request_id == unavailable => break,
                 None => break,
                 _ => {},

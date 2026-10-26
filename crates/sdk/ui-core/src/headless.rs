@@ -382,9 +382,19 @@ pub struct FrameHarness {
     /// it: a component publishing a shared forest is filtered and surveyed
     /// only where its forest changed.
     bound_resources: crate::bound_dispatch::BoundResourceCache,
-    /// Advanced by every frame that publishes, so nothing local is taken
-    /// from an earlier frame. A quiet frame publishes nothing.
+    /// Advanced whenever something a component's declarations may follow
+    /// moved since the last publication ([`Self::bound_resource_key`]), so
+    /// nothing local is taken from an earlier frame, yet a frame that only
+    /// repeats the last one's reading (an arrival animating, a second
+    /// publication in the same frame) finds what that one discovered.
     bound_resource_frames: u64,
+    /// What the last publication read: [`Self::bound_resource_frames`]
+    /// stays while it reads the same.
+    bound_resource_key: Option<BoundResourceKey>,
+    /// Frames whose widgets noticed a change of their own (`update`, a
+    /// wake, a served deadline): local state no document or entry point
+    /// shows.
+    local_changes: u64,
     /// Advanced by every entry point that can reach a widget, the document
     /// or what a frame presents ([`Self::invalidate_local`]). Only
     /// [`Self::poll_frame`] and a wheel coalesced into it leave it alone.
@@ -612,6 +622,18 @@ impl FrameWitness {
             && self.permissions == other.permissions
             && crate::bound_dispatch::same_owner_standing(&self.owners, &other.owners)
     }
+}
+
+/// What a publication of the bound components' controls read
+/// ([`FrameHarness::publish_undo_status`]): while it reads the same, what
+/// the last one discovered of each component still holds.
+#[derive(PartialEq, Eq)]
+struct BoundResourceKey {
+    local_epoch: u64,
+    local_changes: u64,
+    document: (Vec<automerge::ChangeHash>, usize),
+    presentation: u64,
+    focused: Option<NodeId>,
 }
 
 /// What one completed [`FrameHarness::relayout`] did with its layout tree.
@@ -1757,6 +1779,8 @@ impl FrameHarness {
             window_app: None,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
             bound_resource_frames: 0,
+            bound_resource_key: None,
+            local_changes: 0,
             local_epoch: 0,
             frame_witness: None,
             quiet_frames: 0,
@@ -2736,7 +2760,18 @@ impl FrameHarness {
         {
             return;
         }
-        self.bound_resource_frames = self.bound_resource_frames.wrapping_add(1);
+        let key = BoundResourceKey {
+            local_epoch: self.local_epoch,
+            local_changes: self.local_changes,
+            document: crate::doc::settle_mark(&self.state.doc),
+            presentation: crate::widget::resource_presentation_epoch(),
+            focused: self.focused,
+        };
+        // An uncommitted document can move without its heads moving.
+        if key.document.1 != 0 || self.bound_resource_key.as_ref() != Some(&key) {
+            self.bound_resource_frames = self.bound_resource_frames.wrapping_add(1);
+            self.bound_resource_key = Some(key);
+        }
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root.as_ref(),
             &self.state.doc,
@@ -3651,6 +3686,9 @@ impl FrameHarness {
         self.tick_records();
         let updated = self.update_root();
         self.tick_records();
+        if updated || woken {
+            self.local_changes = self.local_changes.wrapping_add(1);
+        }
         // As the live App syncs only when something set `needs_sync`: a
         // frame whose widgets noticed nothing of their own, after nothing
         // the witness follows moved, has nothing new to sync or publish.
@@ -3666,6 +3704,9 @@ impl FrameHarness {
             && self.root.next_wake_deadline().is_some_and(|due| due <= now)
             && self.root.serve_deadline(now);
         let quiet = quiet && !deadline_served;
+        if deadline_served {
+            self.local_changes = self.local_changes.wrapping_add(1);
+        }
         if quiet {
             self.quiet_frames = self.quiet_frames.saturating_add(1);
         } else {
@@ -7354,6 +7395,7 @@ impl FrameHarness {
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
         let _person = crate::invocation_scope::InvokerScope::enter(
             tilo_actions::ActionInvoker::actor(self.author.0.clone()),
         );

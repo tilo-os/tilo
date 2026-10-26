@@ -52,14 +52,13 @@ B: PROP=0
 """
 
 # A stand-in for tilo-runtime-mcp --connect behind the agent door: it asks the person on
-# `initialize` (a file the fake VM answers), then serves a Notes catalogue.
+# `initialize` (a file the fake VM answers), then serves the agent tools over a Notes notebook.
 FAKE_MCP = r'''#!/usr/bin/env python3
 import json, os, sys, time
 state = os.environ["FAKE_STATE"]
 def say(m): sys.stdout.write(json.dumps(m) + "\n"); sys.stdout.flush()
-def tool(i, payload, error=False):
-    say({"jsonrpc": "2.0", "id": i, "result": {"isError": error, "structuredContent": payload,
-         "content": [{"type": "text", "text": json.dumps(payload)}]}})
+def tool(i, text, error=False):
+    say({"jsonrpc": "2.0", "id": i, "result": {"isError": error, "content": [{"type": "text", "text": text}]}})
 for line in sys.stdin:
     m = json.loads(line)
     if m.get("method") == "initialize":
@@ -74,18 +73,22 @@ for line in sys.stdin:
         say({"jsonrpc": "2.0", "id": m["id"], "result": {"serverInfo": {"name": "tilo"}}})
     elif m.get("method") == "tools/list":
         say({"jsonrpc": "2.0", "id": m["id"], "result": {"tools": [{"name": n} for n in
-             ("tilo_list_apps", "tilo_query", "tilo_invoke")] + FAKE_EXTRA}})
+             ("tilo_ls", "tilo_read", "tilo_do", "tilo_find", "tilo_status")] + FAKE_EXTRA}})
     elif m.get("method") == "tools/call":
         p = m["params"]; a = p["arguments"]
-        if p["name"] == "tilo_list_apps":
-            tool(m["id"], {"apps": [{"peer_id": 1, "app_id": a_} for a_ in APPS]})
-        elif p["name"] == "tilo_query":
-            tool(m["id"], {"rows": [{"resource": "notes.notebook", "id": "new-page", "label": "New page"}]})
-        elif p["name"] == "tilo_invoke":
-            if a["action"] == "new-page":
-                tool(m["id"], {"page": "page-123", "resource": "notes.page:page-123"})
-            else:
-                tool(m["id"], "unknown_action: " + a["action"], error=True)
+        notes = state + "/notes"
+        if p["name"] == "tilo_ls" and not a.get("path"):
+            tool(m["id"], "\n".join(["apps"] + [f"{x.rsplit('.', 1)[-1]}  Notes  running" for x in APPS]))
+        elif p["name"] == "tilo_ls" and a["path"] == "notes#new-note":
+            tool(m["id"], "notes#new-note  New note\n  title  text")
+        elif p["name"] == "tilo_do" and a["path"] == "notes#new-note":
+            open(notes, "a").write(a["args"]["title"] + "\n")
+            tool(m["id"], "ok note " + a["args"]["title"])
+        elif p["name"] == "tilo_do":
+            tool(m["id"], "notes has no action " + a["path"].split("#")[-1], error=True)
+        elif p["name"] == "tilo_find":
+            found = open(notes).read().splitlines() if os.path.exists(notes) else []
+            tool(m["id"], "\n".join(f"notes/Notebook/{t}  {t}" for t in found if a["query"] in t))
 '''
 
 
@@ -106,6 +109,7 @@ class FakeVm:
         self.home.mkdir()
         self.state.mkdir()
         self.invoked = []
+        self.grants = []
 
     def exec(self, script, timeout=120, check=True):
         if script.startswith("test -S"):
@@ -133,7 +137,14 @@ class FakeVm:
         return {}
 
     def run(self, *args, **kwargs):
-        return json.dumps({"pages": ["page-123"]}) if args[:2] == ("control", "read") else ""
+        notes = self.state / "notes"
+        if args[:2] == ("control", "read") and notes.exists():
+            return json.dumps({"notes": notes.read_text().splitlines()})
+        return ""
+
+    def raw(self, op, timeout=60):
+        self.grants.append(op)
+        return {"ok": True}
 
     def control_json(self, *args):
         return {}
@@ -181,13 +192,15 @@ class AgentDoorChecks(unittest.TestCase):
             self.assertIn("fix/agent-door", r.detail)
             self.assertFalse(r.unobservable)
 
-    def test_an_admitted_agent_sees_the_desktop_and_makes_a_page(self):
+    def test_an_admitted_agent_sees_the_desktop_and_makes_a_note(self):
         vm, results = self.run_agent()
         self.assertEqual({i: r.status for i, r in results.items()},
                          {"M01": "pass", "M02": "pass", "M03": "pass", "M04": "pass"},
                          {i: r.detail for i, r in results.items()})
         self.assertEqual([a[1] for a in vm.invoked], ["allow-once@p1", "deny@p1"][:len(vm.invoked)])
         self.assertTrue(any(i[1].startswith("deny@") for i in vm.invoked))
+        # Notes is granted for the session and taken back after it.
+        self.assertEqual([g["op"] for g in vm.grants], ["allow", "disallow"])
 
     def test_an_empty_standalone_runtime_fails_m02_not_m01(self):
         _, results = self.run_agent(apps=[])
@@ -385,6 +398,23 @@ class InputDeviceParsers(unittest.TestCase):
     def test_udev_properties(self):
         props = input_devices.parse_properties("ID_INPUT=1\nID_INPUT_TOUCHPAD=1\nID_INPUT_WIDTH_MM=130\n")
         self.assertEqual(props["ID_INPUT_WIDTH_MM"], "130")
+
+    def test_a_lost_super_space_names_the_keyboards_the_compositor_opened(self):
+        written = {}
+        state = {"devices": [{"name": "tilo-vm keyboard (seat-acceptance)"}],
+                 "active_keyboard": "tilo-vm keyboard"}
+        vm = SimpleNamespace(
+            exec=lambda script, **k: json.dumps(state),
+            root_exec=lambda script, **k: YOGA_DEVICES if "proc/bus" in script
+            else "ID_INPUT_KEYBOARD=1\nID_SEAT=seat-acceptance\nDEVNAME=/dev/input/event1\n")
+        ctx = SimpleNamespace(vm=vm, current=SimpleNamespace(id="I02"),
+                              write=lambda name, text: written.update({name: text}))
+        why = input_devices.keyboard_diagnosis(ctx)
+        self.assertIn("has not opened the profile keyboard", why)
+        self.assertIn("'tilo-vm keyboard'", why)
+        self.assertIn("ID_SEAT", why)
+        self.assertNotIn("DEVNAME", why)
+        self.assertIn("I02-keyboards.json", written)
 
     def test_every_check_has_a_registered_order_and_area(self):
         from run import ORDER  # noqa: PLC0415

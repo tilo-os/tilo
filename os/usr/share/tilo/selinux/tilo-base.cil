@@ -74,6 +74,9 @@
 ; domain of its own) may create but not write. The service then fails on
 ; every boot of a measured UKI. A type of its own gives exactly the
 ; measurement log to the two writers, not the volatile journal beside it.
+; What a writer does to it (systemd's tpm2_userspace_log_*): create it 0600,
+; flock it, fstat it, fchmod the sticky bit on as a dirty marker and off
+; again around each record, seek to the end and write, and read it back.
 (type tilo_tpm2_measure_log_t)
 (roletype object_r tilo_tpm2_measure_log_t)
 (typeattributeset file_type (tilo_tpm2_measure_log_t))
@@ -83,8 +86,8 @@
 (filecon "/run/log/systemd/tpm2-measure\.log" file (system_u object_r tilo_tpm2_measure_log_t ((s0) (s0))))
 (typetransition init_t syslogd_var_run_t file "tpm2-measure.log" tilo_tpm2_measure_log_t)
 (typetransition systemd_pcrextend_t syslogd_var_run_t file "tpm2-measure.log" tilo_tpm2_measure_log_t)
-(allow init_t tilo_tpm2_measure_log_t (file (create open getattr read write append lock ioctl)))
-(allow systemd_pcrextend_t tilo_tpm2_measure_log_t (file (create open getattr read write append lock ioctl setattr)))
+(allow init_t tilo_tpm2_measure_log_t (file (create open getattr setattr read write append lock ioctl)))
+(allow systemd_pcrextend_t tilo_tpm2_measure_log_t (file (create open getattr setattr read write append lock ioctl)))
 
 ; --- what fs does, grouped by subsystem -------------------------------------
 ; Types the domain attribute already grants (proc, sysfs, /dev/null and

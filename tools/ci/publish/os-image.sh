@@ -216,10 +216,11 @@ case ${1:-} in
     # layers are the same blobs in both, stored and sent once.
     phase push
     dev=$scratch/dev-built
-    rm -rf "$dev" "$out"
-    podman push -q --compression-format gzip --force-compression localhost/tilo-vm:ci "oci:$dev:tilo"
+    rm -rf "$out"
+    python3 -I tools/ci/os/oci_layers.py export localhost/tilo-vm:ci "$in/oci" "$dev"
     printf '{"inputs":{},"inputsDigest":""}' > "$scratch/dev-inputs.json"
     python3 -I tools/ci/os/oci_layers.py take "$in/oci" "$dev" "$scratch/dev-fragment" dev-image "$scratch/dev-inputs.json"
+    rm -rf "$dev"
     python3 -I tools/ci/os/oci_layers.py compose "$out" "$in/oci" "$scratch/dev-fragment"
     printf '%s\n' "$revision" > "$out/revision"
     ;;

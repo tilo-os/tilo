@@ -23,7 +23,7 @@ use crate::userkey::UserKey;
 use crate::wrapper::{self, Kind, Outcome, Tpm, Wrapper};
 use anyhow::{Context as _, Result, bail};
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tilo_rollback::exec::Real;
 use tilo_rollback::policy::Workspace;
@@ -111,6 +111,8 @@ pub struct Daemon {
     accounts: Accounts,
     lockout: LockoutStore,
     state: Mutex<State>,
+    /// Signalled after every request, which may have remembered a wrong entry.
+    requests: Condvar,
 }
 
 /// One request's scratch directory and tool runner.
@@ -208,6 +210,7 @@ impl Daemon {
                 guard: Guard::new()?,
                 boot: None,
             }),
+            requests: Condvar::new(),
             legacy,
             cfg,
         })
@@ -233,6 +236,28 @@ impl Daemon {
             runner,
             ws,
         })
+    }
+
+    /// Forgets each remembered wrong entry when its ten minutes are up, not
+    /// at the next request, so none stays in memory longer. Never returns.
+    pub fn forget_wrong_entries_when_due(&self) {
+        let mut state = self.lock();
+        loop {
+            state.guard.forget_expired(Instant::now());
+            state = match state.guard.next_expiry() {
+                Some(due) => {
+                    let wait = due.saturating_duration_since(Instant::now());
+                    self.requests
+                        .wait_timeout(state, wait)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0
+                }
+                None => self
+                    .requests
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
+            };
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -322,6 +347,12 @@ impl Daemon {
     }
 
     pub fn handle(&self, peer: Peer, request: Request) -> Answer {
+        let answer = self.answer(peer, request);
+        self.requests.notify_all();
+        answer
+    }
+
+    fn answer(&self, peer: Peer, request: Request) -> Answer {
         let result = match request {
             Request::PendingSignIn => return Answer::Pending(self.pending_sign_in(peer)),
             Request::Verify { user, secret } => self.verify(peer, &user, &secret),

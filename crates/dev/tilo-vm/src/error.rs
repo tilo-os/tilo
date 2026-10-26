@@ -38,7 +38,7 @@ pub fn no_disk_help(local_build: Option<&str>) -> String {
         ),
     };
     format!(
-        "t publishes main's dev disks, each architecture on its own: t dispatch publish-os-dev-x86_64 --ref main (publish-os-dev-aarch64 for ARM) if you may dispatch t, or ask a human who may   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
+        "t publishes main's dev disks, each architecture on its own: t dispatch publish-os-dev-disk-x86_64 --ref main (publish-os-dev-disk-aarch64 for ARM) if you may dispatch t, or ask a human who may   |   or ask a human for a shared VM and use it: tilo-vm vm use <name>   |   {local}"
     )
 }
 
@@ -1109,7 +1109,7 @@ mod tests {
             }
             .hint();
             assert!(
-                without.contains("t dispatch publish-os-dev-x86_64 --ref main"),
+                without.contains("t dispatch publish-os-dev-disk-x86_64 --ref main"),
                 "{without}"
             );
             assert!(without.contains("tilo-vm vm use <name>"), "{without}");

@@ -119,6 +119,13 @@ impl Downloads {
         self.entries.iter().find(|entry| entry.id == id)
     }
 
+    /// An offer nobody has answered yet: the engine is fetching, but nothing is
+    /// kept until the person says where it goes.
+    pub fn awaiting_offer(&self, id: &str) -> bool {
+        self.get(id)
+            .is_some_and(|entry| entry.status == DownloadStatus::AwaitingDestination)
+    }
+
     pub fn requested(&mut self, id: String, source_url: String, suggested_name: &str) -> bool {
         if !valid_id(&id) || !valid_source(&source_url) || self.get(&id).is_some() {
             return false;
@@ -262,9 +269,10 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn valid_source(source: &str) -> bool {
-    url::Url::parse(source)
-        .ok()
-        .is_some_and(|url| matches!(url.scheme(), "http" | "https") && url.host().is_some())
+    // A page's own export arrives as a blob: or data: URL as well as over http.
+    // Any of them is a download the person can be asked about and read once it
+    // is saved; only an address with no scheme at all is no record at all.
+    url::Url::parse(source).is_ok()
 }
 
 fn bounded(mut value: String) -> String {

@@ -1,0 +1,4 @@
+#pragma once
+namespace tilo {
+inline constexpr char kGeolocationScript[] = R"TILO_GEOLOCATION(@TILO_GEOLOCATION@)TILO_GEOLOCATION";
+}

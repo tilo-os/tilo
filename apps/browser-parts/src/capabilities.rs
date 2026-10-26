@@ -11,6 +11,10 @@ use ui::widget::{Button, Column, Container, EmptyState, ListRow, Row, Text, Widg
 /// once.
 const PERMISSION_SECONDS: u32 = 60;
 
+/// The window's row for a site's permission request, published as part of
+/// the page that waits on it.
+pub const RESOURCE: &str = "browser.page-permission";
+
 /// An extension's request for more access (`chrome.permissions.request`),
 /// as the person is asked it: its name and what it could then do, one line
 /// each.
@@ -505,6 +509,73 @@ impl Capabilities {
     pub fn prompt_is_permission(&self) -> bool {
         !self.permissions.is_empty() || self.asks_for_extension()
     }
+    /// The site's request waiting for an answer, oldest first: its id, the
+    /// site that asks, and what it asks for.
+    pub fn pending(&self) -> Option<(u32, &str, &str)> {
+        self.permissions
+            .first_key_value()
+            .map(|(&id, (origin, rights))| (id, origin.as_str(), rights.as_str()))
+    }
+    /// The site's request, published as part of the page it belongs to: the
+    /// site, what it asks for, and the same two answers the person's prompt
+    /// offers. Refused here, the site's request is denied as its Block
+    /// button denies it.
+    pub fn resource(&self) -> Option<ui::tilo_actions::Resource> {
+        use ui::tilo_resource::Effect as _;
+        let (request, origin, rights) = self.pending()?;
+        let mut row = ui::tilo_actions::Resource::new(
+            RESOURCE,
+            RESOURCE,
+            crate::CATALOG.t_args(
+                "browser-permission-request",
+                &[
+                    ("origin", ArgValue::Text(origin.to_owned())),
+                    ("rights", ArgValue::Text(rights.to_owned())),
+                    ("seconds", ArgValue::Number(f64::from(PERMISSION_SECONDS))),
+                ],
+            ),
+        );
+        for (key, allow) in [
+            ("browser-permission-allow", true),
+            ("browser-permission-deny", false),
+        ] {
+            let mut action =
+                crate::effects::BrowserEffect::AnswerPermission { request, allow }.bound();
+            action.label = crate::CATALOG.t(key);
+            row.actions.push(action);
+        }
+        Some(row)
+    }
+    /// The answers to the site's waiting request, for the page whose own
+    /// outline names it: the page's Allow and Deny, about this request only.
+    #[must_use]
+    pub fn permission_answers(&self) -> Vec<ui::tilo_actions::ActionSpec> {
+        use ui::tilo_resource::Effect as _;
+        let Some((request, _, _)) = self.pending() else {
+            return Vec::new();
+        };
+        [
+            ("browser-permission-allow", true),
+            ("browser-permission-deny", false),
+        ]
+        .into_iter()
+        .map(|(key, allow)| {
+            let mut action =
+                crate::effects::BrowserEffect::AnswerPermission { request, allow }.bound();
+            action.label = crate::CATALOG.t(key);
+            action
+        })
+        .collect()
+    }
+    /// Answer the site's request `request`: grant it when `allow`, else
+    /// refuse it. An answer for a request no longer waiting is ignored.
+    pub fn answer(&self, engine: &SharedEngine, request: u32, allow: bool) -> Result<(), String> {
+        if !self.permissions.contains_key(&request) {
+            return Err("the site's permission request is no longer waiting".into());
+        }
+        engine.send(WebViewCommand::PermissionDecision { id: request, allow });
+        Ok(())
+    }
     /// An extension asked to open the engine's download `id`, or show it in
     /// its folder (`chrome.downloads.open`, `show`), as the person's Open and
     /// Show in Files do. The engine asks only for a complete one; the file
@@ -523,6 +594,12 @@ impl Capabilities {
         drop(downloads);
         launch_download(&path, reveal, &self.notice.writer());
         true
+    }
+    /// Whether a download is still waiting for the person to say where it goes:
+    /// the engine reports bytes and progress for it, but nothing is kept. A row
+    /// keeps offering Save and Discard until this is answered.
+    pub fn offer_pending(&self, id: u32) -> bool {
+        self.downloads.borrow().prompts.contains_key(&id)
     }
     /// The person dismissed the question on offer: a permission is set aside
     /// unanswered, so the site may ask again; an extension's request and a
@@ -1038,6 +1115,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_sites_permission_request_is_published_with_the_page_and_answered_once() {
+        let capture = ui::webview::test_engine::TestEngine::new();
+        let engine: SharedEngine = capture.clone();
+        let mut capabilities = Capabilities::default();
+        assert!(capabilities.resource().is_none(), "nothing is asked");
+        capabilities.apply(WebViewEvent::PermissionRequested {
+            id: 7,
+            origin: "https://site.test".into(),
+            permissions: "location".into(),
+        });
+        // The window publishes the request as a row of its own, naming the
+        // site and what it asks for, with both answers bound to it.
+        let row = capabilities.resource().unwrap();
+        assert_eq!(row.id.as_str(), RESOURCE);
+        assert!(row.label.contains("https://site.test"), "{}", row.label);
+        let names: Vec<&str> = row
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(names, ["answer-permission", "answer-permission"]);
+        // An agent's answer crosses the site's privacy boundary, so it is
+        // asked first, with the authority the person's own prompt has.
+        for action in &row.actions {
+            assert_ne!(
+                action.contract.risk,
+                ui::tilo_actions::RiskLevel::None,
+                "granting a site a capability asks first"
+            );
+        }
+        // The page itself lists them too, so reading the page finds the answer.
+        let page_answers = capabilities.permission_answers();
+        let names: Vec<&str> = page_answers
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(names, ["answer-permission", "answer-permission"]);
+        // A request the page no longer waits on is not answered twice.
+        capabilities
+            .answer(&engine, 7, true)
+            .expect("the waiting request is answered");
+        assert_eq!(
+            capture.commands(),
+            [WebViewCommand::PermissionDecision { id: 7, allow: true }]
+        );
+        capabilities.apply(WebViewEvent::PermissionClosed { id: 7 });
+        assert!(capabilities.resource().is_none());
+        assert!(capabilities.permission_answers().is_empty());
+        assert!(capabilities.answer(&engine, 7, false).is_err());
+        assert_eq!(capture.commands().len(), 1);
+    }
     #[test]
     fn an_extension_opens_only_a_complete_download_the_engine_reported() {
         let mut capabilities = Capabilities::default();

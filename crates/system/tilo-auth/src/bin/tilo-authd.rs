@@ -31,6 +31,8 @@ fn run() -> Result<()> {
         },
         Box::new(SystemLegacy::default()),
     )?);
+    let sweeper = Arc::clone(&daemon);
+    std::thread::spawn(move || sweeper.forget_wrong_entries_when_due());
     daemon.take_boot_handoff();
     daemon.settle_volume_key();
     let listener = server::bind(&daemon)?;
