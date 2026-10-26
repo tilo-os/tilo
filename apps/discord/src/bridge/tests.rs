@@ -48,26 +48,20 @@ fn planned_in(guild: &Guild, room: &Value, event: &Value) -> BridgePlan {
 }
 
 #[test]
-fn a_linked_tilo_moderators_delete_in_discord_removes_and_anyone_elses_resends() {
+fn a_tilo_message_deleted_in_discord_is_removed_in_chat_not_sent_again() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
-    g.links.push(Link {
-        discord_user: "d_mod".into(),
-        person: "u_mod".into(),
-        ..Link::default()
-    });
     let deleted = discord(
         source::MESSAGE_DELETED,
-        &json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm1", "executor": "d_mod"}),
+        &json!({"guild_id": "1", "channel_id": "d1", "message_id": "dm1", "executor": "d_admin"}),
     );
-    let room = json!({"members": [{"person": "u_mod", "role": "Moderator"}]});
-    let removed = planned_in(&g, &room, &deleted);
-    assert_eq!(removed.chat_removes.len(), 1, "{removed:?}");
-    assert!(removed.sends.is_empty());
-    // Without the room's roles nobody counts as a moderator.
-    let resent = planned(&g, &deleted);
-    assert!(resent.chat_removes.is_empty());
-    assert_eq!(resent.sends.len(), 1, "{resent:?}");
+    let removed = planned(&g, &deleted);
+    assert_eq!(
+        removed.chat_removes,
+        [json!({"message": "m1"})],
+        "{removed:?}"
+    );
+    assert!(removed.sends.is_empty(), "never sent again: {removed:?}");
 }
 
 fn discord(source: &str, payload: &Value) -> Value {

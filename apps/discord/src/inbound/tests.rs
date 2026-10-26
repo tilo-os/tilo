@@ -340,7 +340,7 @@ fn edits_and_deletes_of_discord_messages_follow_the_map() {
         message_id: "dm1".into(),
         ..MessageDeleted::default()
     };
-    assert_eq!(plan_deleted(&g, &delete, &json!({})).deletes, ["m1"]);
+    assert_eq!(plan_deleted(&g, &delete).deletes, ["m1"]);
 }
 
 #[test]
@@ -372,38 +372,39 @@ fn deleting_a_discord_post_removes_every_attachment_copy() {
             message_id: event.message_id,
             ..MessageDeleted::default()
         },
-        &json!({}),
     );
     assert_eq!(deleted.deletes, ["m0", "m1", "m2"]);
     assert!(deleted.removes.is_empty());
-    assert!(deleted.resends.is_empty());
 }
 
 #[test]
-fn a_tilo_message_deleted_in_discord_is_resent_unless_a_linked_moderator_did_it() {
+fn a_tilo_message_deleted_in_discord_goes_in_tilo_too_whoever_deleted_it() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
-    g.links.push(Link {
-        discord_user: "d_mod".into(),
-        person: "u_mod".into(),
-        ..Link::default()
-    });
     g.links.push(Link {
         discord_user: "d_ed".into(),
         person: "u_ed".into(),
         ..Link::default()
     });
-    let room = json!({"members": [{"person": "u_mod", "role": "moderator"}, {"person": "u_ed", "role": "editor"}]});
     let by = |executor: Option<&str>| MessageDeleted {
         message_id: "dm1".into(),
         executor: executor.map(Into::into),
         ..MessageDeleted::default()
     };
-    assert_eq!(plan_deleted(&g, &by(Some("d_mod")), &room).removes.len(), 1);
-    assert_eq!(plan_deleted(&g, &by(Some("d_ed")), &room).resends, ["m1"]);
-    assert_eq!(plan_deleted(&g, &by(None), &room).resends, ["m1"]);
+    let removed = |executor| plan_deleted(&g, &by(executor)).removes;
+    // Its linked author (or anyone linked), an unlinked server admin, and a
+    // delete Discord names nobody for all take it away in Tilo.
     assert_eq!(
-        plan_deleted(&g, &by(Some("b0")), &room),
+        removed(Some("d_ed")),
+        [RemoveItem {
+            message: "m1".into(),
+            reason: "deleted in Discord by u_ed".into()
+        }]
+    );
+    assert_eq!(removed(Some("d_admin")).len(), 1);
+    assert_eq!(removed(None).len(), 1);
+    assert_eq!(
+        plan_deleted(&g, &by(Some("b0"))),
         InboundPlan::default(),
         "the bridge's own delete"
     );

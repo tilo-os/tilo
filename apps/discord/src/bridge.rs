@@ -20,10 +20,9 @@ use serde_json::{Value, json};
 
 use crate::inbound::{self, InboundPlan};
 use crate::outbound::{self, Context};
-use crate::record::{Guild, MappedKind, Ownership, map_key};
+use crate::record::{Guild, MappedKind, Ownership};
 use crate::tilo::{self, RoomChat};
 use crate::{import, layout, roles};
-use ui::tilo_resource::Id;
 
 /// The Chat record kind the bridge mirrors.
 pub const CHAT_KIND: &str = "chat.workspace";
@@ -351,20 +350,6 @@ pub fn route(guild: &Guild, event: &Value) -> String {
             .and_then(|event| guild.by_discord(MappedKind::Message, &event.message_id))
             .map(|mapped| mapped.tilo.clone())
             .unwrap_or_default(),
-        // A Tilo message deleted in Discord is read in case it goes back.
-        // Without the room every delete counts as one to send again; the
-        // plan, which has the room, decides.
-        Fired::Discord {
-            source: source::MESSAGE_DELETED,
-            payload: body,
-        } => payload::<MessageDeleted>(body)
-            .and_then(|deleted| {
-                inbound::plan_deleted(guild, &deleted, &Value::Null)
-                    .resends
-                    .into_iter()
-                    .next()
-            })
-            .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -565,11 +550,7 @@ fn guild_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, event: &Va
     if verb == "complete-link" {
         // A person took a link offer: the `/link` it answered says so.
         if let Some(person) = event.pointer("/actor/id").and_then(Value::as_str) {
-            inbound_plan(
-                plan,
-                read,
-                inbound::plan_linked(read.guild, read.chat, person),
-            );
+            inbound_plan(plan, inbound::plan_linked(read.guild, read.chat, person));
         }
         return;
     }
@@ -582,7 +563,7 @@ fn guild_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, event: &Va
     else {
         return;
     };
-    inbound_plan(plan, read, inbound::plan_block(read.guild, user));
+    inbound_plan(plan, inbound::plan_block(read.guild, user));
 }
 
 fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &Value) {
@@ -595,7 +576,7 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
             payload::<MessageUpdated>(body).map(|e| inbound::plan_updated(guild, &e))
         }
         source::MESSAGE_DELETED => {
-            payload::<MessageDeleted>(body).map(|e| inbound::plan_deleted(guild, &e, read.room))
+            payload::<MessageDeleted>(body).map(|e| inbound::plan_deleted(guild, &e))
         }
         source::REACTION_ADDED => payload::<ReactionChanged>(body)
             .map(|e| inbound::plan_reaction(guild, &e, read.chat, true)),
@@ -625,7 +606,7 @@ fn discord_event(plan: &mut BridgePlan, read: Reading<'_>, source: &str, body: &
         _ => None,
     };
     if let Some(inbound) = inbound {
-        inbound_plan(plan, read, inbound);
+        inbound_plan(plan, inbound);
     }
 }
 
@@ -650,7 +631,7 @@ fn layout_changed(plan: &mut BridgePlan, read: Reading<'_>, layout: &LayoutChang
     }
 }
 
-fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) {
+fn inbound_plan(plan: &mut BridgePlan, inbound: InboundPlan) {
     plan.avatars.extend(values(inbound.avatars));
     plan.posts.extend(inbound.posts.into_iter().map(|p| {
         json!({
@@ -693,14 +674,6 @@ fn inbound_plan(plan: &mut BridgePlan, read: Reading<'_>, inbound: InboundPlan) 
             .into_iter()
             .map(|r| json!({ "message": r.message })),
     );
-    // Sent again: the Discord copy is gone, so its mapping no longer counts.
-    for id in inbound.resends {
-        let mut unmapped = read.guild.clone();
-        unmapped
-            .map
-            .take(&Id::from_raw(map_key(MappedKind::Message, &id)));
-        post(plan, &unmapped, read.chat, &id, read.context);
-    }
     let reaction = |r: inbound::ReactItem| json!({ "message": r.message, "emoji": r.emoji, "appearance": r.appearance });
     plan.chat_reacts
         .extend(inbound.reacts.into_iter().map(reaction));

@@ -75,7 +75,7 @@ pub struct EditItem {
     pub text: String,
 }
 
-/// A Chat `remove-message` by the bot for a linked moderator.
+/// A Chat `remove-message` by the bot: a Tilo message deleted in Discord.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RemoveItem {
     pub message: String,
@@ -141,8 +141,6 @@ pub struct InboundPlan {
     pub deletes: Vec<String>,
     /// Chat `remove-message`, then `unmap`.
     pub removes: Vec<RemoveItem>,
-    /// `unmap`, then send the Tilo message again (outbound `plan-post`).
-    pub resends: Vec<String>,
     pub reacts: Vec<ReactItem>,
     pub unreacts: Vec<ReactItem>,
     /// `block-persona`.
@@ -387,13 +385,11 @@ pub fn plan_updated(guild: &Guild, event: &MessageUpdated) -> InboundPlan {
     plan
 }
 
-/// `message-deleted`. `room` is the `tilo.room` read, for the executor's role.
+/// `message-deleted`. A message deleted in Discord goes in Tilo too,
+/// whoever deleted it there: its author, a server moderator or an admin.
+/// Only the bridge's own deletes (a Tilo delete reaching Discord) do nothing.
 #[must_use]
-pub fn plan_deleted(
-    guild: &Guild,
-    event: &MessageDeleted,
-    room: &serde_json::Value,
-) -> InboundPlan {
+pub fn plan_deleted(guild: &Guild, event: &MessageDeleted) -> InboundPlan {
     let mut plan = InboundPlan::default();
     let Some(mapped) = guild.by_discord(MappedKind::Message, &event.message_id) else {
         return plan;
@@ -412,29 +408,19 @@ pub fn plan_deleted(
                 })
                 .map(|m| m.tilo.clone()),
         ),
+        Origin::Tilo if event.executor.as_deref() == Some(guild.bot_user.as_str()) => {}
         Origin::Tilo => {
-            let moderator = event
+            let by = event
                 .executor
                 .as_ref()
-                .filter(|executor| **executor != guild.bot_user)
-                .and_then(|executor| guild.links.iter().find(|l| l.discord_user == *executor))
-                .filter(|link| {
-                    matches!(
-                        tilo::room_role(room, &link.person).as_deref(),
-                        Some("moderator" | "owner")
-                    )
-                });
-            match moderator {
-                Some(link) => plan.removes.push(RemoveItem {
-                    message: mapped.tilo.clone(),
-                    reason: format!("removed in Discord by the linked moderator {}", link.person),
-                }),
-                // A Discord-only permission must not remove a Tilo person's message.
-                None if event.executor.as_deref() != Some(guild.bot_user.as_str()) => {
-                    plan.resends.push(mapped.tilo.clone());
-                }
-                None => {}
-            }
+                .and_then(|executor| guild.links.iter().find(|l| l.discord_user == *executor));
+            plan.removes.push(RemoveItem {
+                message: mapped.tilo.clone(),
+                reason: by.map_or_else(
+                    || "deleted in Discord".to_owned(),
+                    |link| format!("deleted in Discord by {}", link.person),
+                ),
+            });
         }
     }
     plan
