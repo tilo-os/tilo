@@ -1870,6 +1870,18 @@ impl CollaborationManager {
             }
     }
 
+    /// Ask `route`'s reader for the whole committed read again, as an owner
+    /// being built does: a request the reader answers with an Open.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub(crate) fn controlled_request_whole_read_for_test(&self, route: &RouteSpec) -> bool {
+        match &self.backend {
+            Backend::Transport(transport) => {
+                transport.controlled_request_whole_read_for_test(&route.channel_id())
+            }
+            Backend::Disabled(_) => false,
+        }
+    }
+
     /// Independently sample the existing transport read gates without admission.
     #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub(crate) fn controlled_document_read_phase_for_test(
