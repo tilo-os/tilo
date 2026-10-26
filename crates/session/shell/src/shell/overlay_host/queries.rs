@@ -919,10 +919,6 @@ impl ShellOverlayHost {
             if state.tree().is_joining(room) {
                 return Some(t("workspace-not-joined-yet"));
             }
-            // A room from before rooms had hosts, which no host holds.
-            if state.tree().on_this_device_only(room) {
-                return Some(t("workspace-on-this-device-only"));
-            }
             here.retain(|id| *id != state.local_user_id);
             here.sort_unstable();
             here.dedup();

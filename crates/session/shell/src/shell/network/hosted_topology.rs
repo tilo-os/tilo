@@ -217,6 +217,17 @@ impl ShellNetwork {
             }
             state.claimed_at = Some(now);
         }
+        // Asking the governor reads this device's key material, which can
+        // wait on the disk: never on the frame loop when a worker can.
+        if !self.claim_namespace_off_loop(room, salt) {
+            self.claim_namespace_now(room, salt);
+        }
+    }
+
+    /// Ask `room`'s governor to register topology namespace `salt` to this
+    /// device. Reads this device's key material: runs on the peer-sync
+    /// worker ([`Self::claim_namespace`]).
+    pub(super) fn claim_namespace_now(&self, room: RoomId, salt: u16) {
         let bound = BoundCommand {
             source: CommandSource {
                 room: room.to_string(),

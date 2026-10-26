@@ -126,7 +126,7 @@ impl RoomReadiness {
         self.0.subscribe()
     }
 
-    fn watched(&self) -> bool {
+    pub(crate) fn watched(&self) -> bool {
         self.0.receiver_count() > 0
     }
 }
