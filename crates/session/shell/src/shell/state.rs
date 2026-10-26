@@ -2228,7 +2228,8 @@ impl WorkspaceTree {
         let Some(current) = self.desktop.workspaces.iter_mut().find(|w| w.id == id) else {
             return false;
         };
-        if current.room() == room {
+        let replaced = current.room();
+        if replaced == room {
             return false;
         }
         let Ok(mut stored) = serde_json::to_value(&*current) else {
@@ -2249,6 +2250,11 @@ impl WorkspaceTree {
         let surrendered = joining && workspace.surrender_governance();
         *current = workspace;
         let _ = surrendered;
+        // The room it stood in waited to be placed as this workspace's own:
+        // no workspace is that room any more, so it waits no longer.
+        if !self.has_workspace(replaced) {
+            self.pending_placements.remove(&replaced);
+        }
         self.seed_doc_from_cache();
         self.queue_save();
         true
