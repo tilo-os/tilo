@@ -197,7 +197,7 @@ impl ShellNetwork {
 
     /// Whether this device's own host holds `room`, as the native owner,
     /// already open, has it.
-    pub(super) fn hosted_here(&self, room: RoomId) -> bool {
+    pub(crate) fn hosted_here(&self, room: RoomId) -> bool {
         let Some(owner) = self.opened_native_owner() else {
             return false;
         };

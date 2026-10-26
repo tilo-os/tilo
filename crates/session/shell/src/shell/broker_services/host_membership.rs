@@ -35,10 +35,11 @@ pub(super) async fn commit_membership_at_host(
         tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
             app,
         } => {
-            network
+            let generation = network
                 .grant_app_authorship_at_host(room, caller, app)
                 .await
                 .ok_or(REFUSED)??;
+            tracing::info!(%room, app, generation, "the host let the app author the room");
             return wait_for_membership(network, owner, room, request, caller, &held).await;
         }
         command => host_membership_invocation(command)?,
@@ -82,9 +83,10 @@ async fn wait_for_membership(
         }
     })
     .await
-    .map_err(
-        |_| "the host committed the membership change but it did not reach this device in time",
-    )?
+    .map_err(|_| {
+        tracing::warn!(%room, "the membership change did not reach this device in time");
+        "the host committed the membership change but it did not reach this device in time"
+    })?
 }
 
 /// The room-governance action and arguments a membership command travels as
