@@ -671,7 +671,9 @@ mod prepare {
     lands = Artwork::lands,
     search = Artwork::entries,
     answer = crate::answer::answer,
-    effects = ViewOp
+    effects = ViewOp,
+    version = 2,
+    migrate = crate::model::upgrade
 )]
 impl Artwork {
     /// Paint strokes.
@@ -1050,9 +1052,16 @@ impl Artwork {
 }
 
 impl Artwork {
-    /// Apply `invoke` to `doc` through the door, as a replica of it does.
+    /// Apply `invoke` to `doc` through the door, as a replica of it does. A
+    /// blank document is initialized first — its genesis and its storage
+    /// version — as a door's record is before its first change.
     #[cfg(test)]
     pub(crate) fn apply_to(doc: &mut Doc, invoke: impl Into<Invoke<Self>>) {
+        use tilo_resource::__private::ReadDoc as _;
+        use tilo_resource::Resource as _;
+        if doc.length(&ui::automerge::ROOT) == 0 {
+            Artwork::initialize(doc).expect("a blank artwork initializes");
+        }
         let mut replica = tilo_resource::Replica::<Self>::from_doc(std::mem::take(doc));
         replica.apply(invoke).expect("the change applies");
         *doc = std::mem::take(replica.doc_mut());
