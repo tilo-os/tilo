@@ -15,6 +15,8 @@
 //!       `profile-own-linked.png` (that card with Discord linked and the
 //!       control hints' switch),
 //!       `profile-other.png` (Ada's card, opened from her face),
+//!       `profile-other-linked.png` (her card once she linked Discord,
+//!       wearing its avatar),
 //!       `author-discord.png` (a bridged author's Discord mark and its tip)
 
 #![allow(
@@ -471,6 +473,7 @@ fn other_model() -> ProfileModel {
             following: false,
             can_follow: true,
             can_message: true,
+            linked: Vec::new(),
         }),
         ..ProfileModel::default()
     }
@@ -633,6 +636,27 @@ fn main() {
     let area = shown.rect;
     shown.profile.toggle(&other_model(), anchor, area);
     shoot(&mut harness, "profile-other.png");
+    // Ada linked her Discord account: her card says so, and she wears its
+    // avatar, which her profile took from Discord.
+    ui::people_photos::set(
+        "key-a",
+        Some(sample_photo(96, [88, 101, 242], [235, 69, 158])),
+    );
+    let mut harness = FrameHarness::for_root(State::new(), stage(), (1440, 900), Theme::dark());
+    harness.settle_for_capture(settle);
+    let shown = harness.root_mut::<Stage>();
+    let anchor = shown.bar.face_rect("key-a").expect("Ada's face on the bar");
+    let area = shown.rect;
+    let mut linked = other_model();
+    if let Some(other) = &mut linked.other {
+        other.linked = vec![tilo_app::linked_accounts::ProfileLink {
+            service: "Discord".into(),
+            handle: "ada.lovelace".into(),
+            picture: None,
+        }];
+    }
+    shown.profile.toggle(&linked, anchor, area);
+    shoot(&mut harness, "profile-other-linked.png");
 
     let mut harness =
         FrameHarness::for_root(State::new(), Authors(Rect::ZERO), (560, 220), Theme::dark());

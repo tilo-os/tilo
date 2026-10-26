@@ -160,6 +160,8 @@ pub struct OtherPerson {
     /// The host can open a direct conversation with them in Chat: their
     /// root key is known and Chat holds person-only conversations here.
     pub can_message: bool,
+    /// Their accounts elsewhere, as their profile names them.
+    pub linked: Vec<tilo_app::linked_accounts::ProfileLink>,
 }
 
 /// The host actions about the person's picture, which the card offers
@@ -463,6 +465,9 @@ impl ProfileCard {
             .push(Box::new(header));
         if let Some(status) = &other.status {
             body = body.push(Self::status_row(status));
+        }
+        for link in &other.linked {
+            body = body.push(Self::linked_to(link));
         }
         if let Some(key) = &model.key {
             body = body
@@ -1002,6 +1007,31 @@ impl ProfileCard {
                         }),
                     )),
             ))
+    }
+
+    /// Someone's account elsewhere: "Linked to @ada on Discord".
+    fn linked_to(link: &tilo_app::linked_accounts::ProfileLink) -> Box<dyn Widget> {
+        let icon = tilo_app::linked_accounts::service_name_icon(&link.service);
+        Box::new(
+            Row::new()
+                .no_wrap()
+                .with_align_items(taffy::AlignItems::Center)
+                .push(Box::new(ui::widget::IconWidget::new(icon)))
+                .push(Box::new(
+                    Text::new(&t_args(
+                        "profile-linked-to",
+                        &[
+                            ("handle", format!("@{}", link.handle).into()),
+                            ("service", link.service.clone().into()),
+                        ],
+                    ))
+                    .with_id(format!(
+                        "profile-other-linked-{}",
+                        link.service.to_lowercase()
+                    ))
+                    .with_role(TextRole::Caption),
+                )),
+        )
     }
 
     /// The linked account, with Unlink.
@@ -1853,6 +1883,7 @@ mod tests {
                 following: false,
                 can_follow: true,
                 can_message,
+                linked: Vec::new(),
             }),
             ..ProfileModel::default()
         }
@@ -1921,5 +1952,26 @@ mod tests {
             Some(ProfileChoice::Action(SET_PHOTO.into()))
         );
         assert_eq!(short_key("abc"), "abc");
+    }
+
+    #[test]
+    fn someone_elses_card_names_their_linked_accounts() {
+        let mut model = ada(true, crate::collaborators::LineSource::Written);
+        let mut frame = framed_model(&model);
+        assert!(!says(&mut frame).contains("Linked to"));
+        if let Some(other) = &mut model.other {
+            other.linked = vec![tilo_app::linked_accounts::ProfileLink {
+                service: "Discord".into(),
+                handle: "ada".into(),
+                picture: None,
+            }];
+        }
+        let mut frame = framed_model(&model);
+        let said = says(&mut frame);
+        assert!(said.contains("Linked to @ada on Discord"), "{said}");
+        assert!(
+            !said.contains("Unlink"),
+            "only their own card unlinks: {said}"
+        );
     }
 }

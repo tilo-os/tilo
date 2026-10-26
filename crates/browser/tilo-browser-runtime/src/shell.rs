@@ -97,6 +97,10 @@ pub(crate) enum HostRequest {
     /// Go to this address, leaving the page: a service's consent page,
     /// which comes back to the room's host and from there to this entry.
     Open(String),
+    /// The person's linked accounts, as the room's host answered: their
+    /// profile names them, and wears an account's picture until the person
+    /// uploads their own (`onHostAction('set-linked', {accounts})`).
+    Linked(Vec<tilo_app::linked_accounts::ProfileLink>),
 }
 
 /// How a person shares what they are doing, as their profile keeps it.
@@ -584,6 +588,10 @@ pub(crate) struct BrowserShell {
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
     linking: tilo_app::linked_accounts::LinkingRecheck,
+    /// The linked accounts last handed to the page for the person's profile.
+    profile_links: Option<Vec<tilo_app::linked_accounts::ProfileLink>>,
+    /// How often, and when last, the room was asked for them unopened.
+    links_asked: (u32, Option<ui::time::Instant>),
     /// The person whose recent summary the popover shows.
     expanded: Option<String>,
     /// The pointer, in logical pixels, for the popover's targets.
@@ -690,6 +698,8 @@ impl BrowserShell {
             pinned: people::PagePeople::new(),
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
+            profile_links: None,
+            links_asked: (0, None),
             expanded: None,
             cursor: None,
             shortcuts: ShortcutConfig::default(),
@@ -1366,6 +1376,10 @@ impl BrowserShell {
         // without a known person (a guest before the host's line) has none.
         let can_message =
             !person.agent && key.is_some() && crate::desktop::known_application(CHAT_APP).is_some();
+        let linked = key
+            .as_deref()
+            .map(|key| self.chrome.here.borrow().linked_of(key).to_vec())
+            .unwrap_or_default();
         Some(ProfileModel {
             name: row.label.clone(),
             identity: person.id.clone(),
@@ -1378,6 +1392,7 @@ impl BrowserShell {
                 following: self.pinned.followed() == Some(id),
                 can_follow: row.followable && !person.agent,
                 can_message,
+                linked,
             }),
             ..ProfileModel::default()
         })
@@ -1589,6 +1604,34 @@ impl BrowserShell {
         true
     }
 
+    /// The person's profile names their linked accounts and wears their
+    /// picture, so the room's host is asked where they stand once the room
+    /// is known, without the card open; what it answers goes to the page
+    /// whenever it changed.
+    fn follow_profile_links(&mut self) {
+        /// How many times, and how far apart, the room is asked unopened:
+        /// its records arrive a moment after the page.
+        const TRIES: u32 = 6;
+        const APART: std::time::Duration = std::time::Duration::from_secs(5);
+        let linked = &self.chrome.shared.linked;
+        let links = linked.profile_links();
+        if links.is_none() && self.chrome.here.borrow().own_user().is_some() {
+            let now = ui::time::now();
+            let (asked, last) = self.links_asked;
+            let due = last.is_none_or(|last| now.saturating_duration_since(last) >= APART);
+            if asked < TRIES && due {
+                linked.refresh();
+                self.links_asked = (asked.saturating_add(1), Some(now));
+            }
+        }
+        if let Some(links) = links
+            && self.profile_links.as_ref() != Some(&links)
+        {
+            self.profile_links = Some(links.clone());
+            self.requests.borrow_mut().push(HostRequest::Linked(links));
+        }
+    }
+
     /// Hand the room actions the chrome asked for to the page, which has the
     /// room's host run them, and show the linked accounts again when an
     /// answer changed them. Whether anything changed.
@@ -1607,6 +1650,7 @@ impl BrowserShell {
             self.profile.is_open() && self.profile_of.is_none(),
             ui::time::now(),
         );
+        self.follow_profile_links();
         let asked = self.chrome.shared.room_actions.take_requests();
         let opens = self.chrome.shared.room_actions.take_opens();
         let changed = offered || !asked.is_empty() || !opens.is_empty();
@@ -2786,6 +2830,7 @@ fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
             following: false,
             can_follow: false,
             can_message: crate::desktop::known_application(CHAT_APP).is_some(),
+            linked: Vec::new(),
         }),
         key: Some(key),
         ..ProfileModel::default()

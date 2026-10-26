@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, NAME, PAIR, passkeysUsable, PHOTO, RECOVERY, RESET_PHOTO,
+  ACTION_GAP_MS, ASK_AFTER_ACTIONS, createIdentityActions, KEEP, LINKED_ID, NAME, PAIR, passkeysUsable, PHOTO, RECOVERY, RESET_PHOTO,
   SIGN_IN, syncProfile,
 } from './identity-actions.mjs';
 import {openInvites} from './pairing.mjs';
@@ -220,6 +220,57 @@ test('a chosen picture is kept in the profile with the name, worn at once, and c
   photos.choose = async () => null;
   await actions.perform(PHOTO.id);
   assert.equal(published.length, 3);
+});
+
+test('a linked account names itself in the profile and lends its picture until one is uploaded', async () => {
+  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const published = [];
+  let current = null;
+  const photos = {current: () => current, choose: async () => 'data:image/webp;base64,UklGRg==', show: url => { current = url; }};
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'], name: () => 'ada',
+    profile: async ({photo, photoFrom, linked}) => { published.push({photo, photoFrom, linked}); },
+    photos, naming: {ask: async () => null, set: chosen => chosen}});
+  await actions.attach(fakeMount());
+  const avatar = 'data:image/png;base64,iVBORw0KGgo=';
+  const discord = {service: 'Discord', handle: 'ada', picture: avatar};
+  // Before the kept profile says whose the picture is, nothing changes.
+  await actions.perform(LINKED_ID, {accounts: [discord], keep: true});
+  assert.deepEqual(published, []);
+  await actions.perform(LINKED_ID, {photoFrom: null, linked: [], keep: false});
+  assert.deepEqual(published, [{photo: avatar, photoFrom: 'Discord', linked: [{service: 'Discord', handle: 'ada'}]}]);
+  assert.equal(current, avatar);
+  // The same answer again keeps nothing new.
+  await actions.perform(LINKED_ID, {accounts: [discord], keep: true});
+  assert.equal(published.length, 1);
+  // A new avatar replaces the old.
+  const newer = 'data:image/png;base64,AAAA';
+  await actions.perform(LINKED_ID, {accounts: [{...discord, picture: newer}], keep: true});
+  assert.equal(published.at(-1).photo, newer);
+  // An uploaded picture wins over the account's.
+  await actions.perform(PHOTO.id);
+  assert.deepEqual(published.at(-1), {photo: 'data:image/webp;base64,UklGRg==', photoFrom: null,
+    linked: [{service: 'Discord', handle: 'ada'}]});
+  await actions.perform(LINKED_ID, {accounts: [discord], keep: true});
+  assert.equal(current, 'data:image/webp;base64,UklGRg==');
+  // Unlinking drops the handle, and keeps the upload.
+  await actions.perform(LINKED_ID, {accounts: [], keep: true});
+  assert.deepEqual(published.at(-1), {photo: 'data:image/webp;base64,UklGRg==', photoFrom: null, linked: []});
+});
+
+test('unlinking takes away the picture the account lent', async () => {
+  const identity = await browserIdentity({storage: memoryStorage(), persist: null});
+  const published = [];
+  const avatar = 'data:image/png;base64,iVBORw0KGgo=';
+  let current = avatar;
+  const photos = {current: () => current, choose: async () => null, show: url => { current = url; }};
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, hosts: () => ['https://a.example'], name: () => 'ada',
+    profile: async ({photo, photoFrom, linked}) => { published.push({photo, photoFrom, linked}); },
+    photos, naming: {ask: async () => null, set: chosen => chosen}});
+  await actions.attach(fakeMount());
+  await actions.perform(LINKED_ID, {photoFrom: 'Discord', linked: [{service: 'Discord', handle: 'ada'}], keep: false});
+  await actions.perform(LINKED_ID, {accounts: [], keep: true});
+  assert.deepEqual(published, [{photo: null, photoFrom: null, linked: []}]);
+  assert.equal(current, null);
 });
 
 test('a name typed in the desktop is kept as typed, with no form', async () => {
