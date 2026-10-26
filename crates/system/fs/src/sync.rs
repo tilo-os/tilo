@@ -1450,9 +1450,16 @@ impl Workspace {
             if let Err(error) = initial_mesh
                 && !identity.partitioned()
             {
-                // Persisted/offline mounts remain available. The periodic
-                // mesh worker below keeps retrying a temporarily unavailable
-                // peer after startup.
+                // An explicit refusal is not an offline peer: continuing
+                // would expose an empty projection for a workspace this
+                // device may not read. Other transport failures keep a
+                // persisted mount available while the periodic mesh worker
+                // retries.
+                if error.downcast_ref::<session::SessionDenied>().is_some()
+                    || error.to_string().contains("session request denied")
+                {
+                    return Err(error);
+                }
                 eprintln!("initial record mesh reconciliation failed: {error}");
             }
         }
@@ -2287,7 +2294,7 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
         // and a burst of local changes must not recheck records per change.
         // Other passes look only at what was written or merged since the
         // last look ([`conflict_watch`]), so an idle pass does nothing.
-        if records.is_some() || !may_write || (local_change && !namespace_changed) {
+        if !may_write || (local_change && !namespace_changed) {
             continue;
         }
         conflict_watch.begin_pass(Instant::now());
@@ -2317,6 +2324,9 @@ async fn reconcile_loop(reconcile: ReconcileLoop) {
                 }
                 Err(error) => eprintln!("record conflict publisher unavailable: {error}"),
             }
+            // Signed records carry conflict publication; the legacy
+            // namespace conflict scanner is not a second structural engine.
+            continue;
         }
         // Takes the namespace lock a step at a time: FUSE requests between
         // the steps never wait for the whole walk.
