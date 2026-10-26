@@ -153,32 +153,44 @@ no node orders governance for the others.
 - **Any authorized device can act.** A person enrolls a new device from
   any of their devices.
 - **Rules can require several signatures.** For example, removing one of a
-  person's devices needs two of their devices once they have three or more,
-  and one below that. A request without enough signatures waits, and the
-  person's other devices ask them to approve it.
-- **A person key outranks device keys.** It comes from the one secret typed
-  at sign-in ([`../security/sign-in.md`](../security/sign-in.md)). It can
-  remove any of the person's devices, which covers one or two devices and
-  recovery when every device is lost.
+  person's devices needs two of their devices once they have three or more.
+  Below three, it needs one device and the person's recovery code (below).
+  A request without enough signatures waits, and the person's other devices
+  ask them to approve it.
+- **Keys: a device key per device, an identity key held by the quorum.**
+  - The secret typed at sign-in ([`../security/sign-in.md`](../security/sign-in.md))
+    unlocks only that device's own key. Someone who learns it gains one
+    device's authority, not the person's.
+  - Each device key is signed by the person's identity key.
+  - The identity key is shared across the person's devices under the same
+    quorum rules, so anything signed with it (enrolling a device, removing
+    one) takes as many shares as the rules require. Where the rule is one of
+    n, which a person can choose, each device holds the key whole.
 - **Removal wins.** A removed device's changes are rejected unless they come
-  before its removal in history. A removal can name the point from which
-  that device's changes are also undone, for example since it was stolen.
+  before its removal in history. Undoing what someone changed over a time
+  range is a general Tilo feature, used separately. Removal doesn't do it.
 - **Keys rotate on removal.** A removed device can read nothing new. What it
   already read can't be taken back.
 - **Conflicts resolve the same way everywhere:** removals made concurrently,
   changes to the rules themselves, and quorums that change as devices come
   and go.
+- **The recovery code is a share.** The recovery code a person gets at
+  setup is one share of their identity key, held outside their devices. It
+  counts toward the quorum like a device. While a person has fewer than
+  three devices, it is required: removing a device then takes a device and
+  the recovery code, so an unlocked stolen device can't act alone. If every
+  device is lost, the recovery code and a new device restore the identity.
+- **Two devices removing each other freeze the identity.** If two of a
+  person's devices each remove the other, neither removal stands and the
+  identity is frozen: it signs nothing new until the recovery code decides
+  which device stays. Shares decide, not devices, and an identity never
+  splits in two.
 
 The scenario this must hold up to: a person has three devices and one is
 stolen unlocked. The thief can't remove another of their devices alone,
 because the second signature never comes and the person declines on any
 device. The person removes the stolen device with two signatures. From
 then on, every node rejects its changes.
-
-Open:
-- whether the person key, being the one secret, is the right override;
-- whether undoing a removed device's changes from a chosen time belongs in
-  the first version.
 
 ### One host serves many workspaces
 
