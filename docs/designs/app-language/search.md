@@ -182,10 +182,10 @@ There is no separate search row.
   name or a declared `plural`.
 
 **Rows render without the app running.** Views are pure wasm over resources, so the search host
-may instantiate a package's module in a **view-only instance**:
+may instantiate an app's module in a **view-only instance**:
 - it may read only the resources whose rows it shows, and nothing else;
 - it has no actions; activating a row opens the app;
-- it uses one engine for every package, with modules cached;
+- it uses one engine for every app, with modules cached;
 - it renders only visible rows: at most the palette's 8, or a list viewport.
 
 Until a module is loaded, the row is the generic row from the published entry, in the same row
@@ -296,7 +296,7 @@ as search's:
   app read the same files, so the app has no second copy.
 
 
-- **Per package, per workspace, persistent.**
+- **Per app, per workspace, persistent.**
   - The index is kept incrementally from the store's field changes, off the frame, as
     publication is today.
   - It is stored so that opening never rebuilds it.
@@ -307,7 +307,7 @@ as search's:
 - **Published to the system index.**
   - `IndexEntry` gains typed facets: key and value, where the value is text, number, time, bool,
     enum or ref.
-  - The package publishes its types' filter schema once: keys, labels, kinds, icons, variants.
+  - The app publishes its types' filter schema once: keys, labels, kinds, icons, variants.
   - The system index can therefore filter, sort and count across apps without any app running.
 - **Budgets,** checked by counters in tests and by wall clock in the bench:
 
@@ -327,7 +327,7 @@ as search's:
    - the enum window-state filter rule removed;
    - Todo, Notes, Chat and Board migrated.
 2. **tilolang-tilo:**
-   - the typed, persistent, incremental index per package;
+   - the typed, persistent, incremental index per app;
    - query and facet answers;
    - the same index answers lazy collections' filters.
 3. **ui-core search:**
@@ -337,17 +337,17 @@ as search's:
    - sort;
    - automatic highlight and snippet;
    - rows as row views (`components.md`), retiring the closed `SearchRow` for tilolang types.
-4. **Search host:** view-only instances of packages for rows and previews.
+4. **Search host:** view-only instances of apps for rows and previews.
 5. **Agent door:** `find` with typed `where` and `sort`; `describe` with filters; results with
    facet values and match anchors.
-6. **A reference app: Mail.** A local Mail package with threads, people, labels, attachments and
+6. **A reference app: Mail.** A local Mail app with threads, people, labels, attachments and
    unread state. It exists to prove the defaults on the richest common case, and it is the target
    of the agent example ("what does YC legal say are our next steps?").
 
 ## 5.1 The model across domains
 
 These are the acceptance cases. Each must be expressible with only the three rules of §2.2.1,
-with no domain knowledge in search. Each becomes a test over sample packages.
+with no domain knowledge in search. Each becomes a test over sample apps.
 
 | Domain | Query a person or agent writes | What makes it work |
 |---|---|---|
