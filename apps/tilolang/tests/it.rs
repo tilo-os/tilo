@@ -12,3 +12,4 @@
 mod door;
 mod narrow;
 mod support;
+mod sync;
