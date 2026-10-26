@@ -30,7 +30,7 @@ git-confirm-switch-title = Switch to { $name }?
 git-confirm-switch-body = The working tree is clean, so nothing changes hands but the branch.
 git-confirm-switch-dirty-body = You have uncommitted changes. Park them on the stash and switch, or take them with you; a change that would be overwritten refuses either way.
 git-switch-stash = Stash and switch
-git-switch-carry = Switch, keeping my changes
+git-switch-carry = Keep my changes
 git-switch-go = Switch
 git-cancel = Cancel
 

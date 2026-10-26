@@ -12,12 +12,13 @@ use ui::framework::{
 };
 use ui::headless::FrameHarness;
 use ui::i18n::EmbeddedCatalog;
+
+use crate::i18n::t;
 use ui::tilo_resource::{self, Atom, Invoke, Model, resource};
 use ui::widget::Element;
 
 use crate::actions::GitClientEffect;
 use crate::app::GitClientApp;
-use crate::i18n::t;
 use crate::model::{DiffMap, RepoModel};
 use crate::shared::SharedRepo;
 
@@ -71,7 +72,8 @@ ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// Every `--scenario` the screenshot renderer stages.
 pub const SCENARIOS: &[&str] = &[
-    "changes", "split", "history", "branches", "commit", "conflict", "discard", "empty", "narrow",
+    "changes", "split", "history", "branches", "commit", "conflict", "switch", "discard", "empty",
+    "narrow",
 ];
 
 /// Framework app: the git client widget over [`GitClient`].
@@ -151,10 +153,10 @@ impl ResourceApp for GitClientShell {
     /// confirm the destructive effect before it runs.
     fn scenario_input(name: Option<&str>, input: &mut FrameHarness) -> Result<(), String> {
         if name == Some("discard") {
-            // The name the button carries in whichever language the capture
-            // runs in, not the one this source happens to spell: under
-            // `--pseudo-locale` the two differ, and a scenario looking for
-            // English finds no button and fails to render at all.
+            // The name the button carries in whatever language the capture
+            // is running in, not the one this source file happens to spell:
+            // under `--pseudo-locale` the two differ, and a scenario that
+            // looks for English finds no button at all.
             let discard = input
                 .a11y_node_named(&t("git-discard-file-name"))
                 .ok_or("no \"Discard file\" button on the changed file")?;
@@ -896,62 +898,185 @@ mod tests {
         );
     }
 
-    /// A commit's file opens in the same diff view the working tree uses,
-    /// and offers none of that view's actions: the change is already made,
-    /// and staging or discarding it from here would act on a different
-    /// file than the one on screen.
-    #[test]
-    fn a_commits_file_offers_no_stage_or_discard() {
-        let (_dir, path) = scratch_repository("commit-diff-actions");
-        std::fs::write(path.join("file.txt"), "one\nedited\n").unwrap();
+    /// A repository with one commit, the branch `feature` beside the one
+    /// HEAD is on, and no uncommitted work.
+    fn clean_repository(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let (dir, path) = scratch_repository(name);
+        std::fs::remove_file(path.join("new.txt")).unwrap();
         let repo = git2::Repository::open(&path).unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(std::path::Path::new("file.txt")).unwrap();
-        index.write().unwrap();
-        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
-        let signature = git2::Signature::now("Test User", "test@example.com").unwrap();
-        let parent = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            "edit the file",
-            &tree,
-            &[&parent],
-        )
-        .unwrap();
-        let head = repo.head().unwrap().target().unwrap().to_string();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("feature", &head, false).unwrap();
+        (dir, path)
+    }
+
+    fn local_branches(path: &std::path::Path) -> Vec<String> {
+        git2::Repository::open(path)
+            .unwrap()
+            .branches(Some(git2::BranchType::Local))
+            .unwrap()
+            .map(|branch| branch.unwrap().0.name().unwrap().unwrap().to_owned())
+            .collect()
+    }
+
+    fn head_of(path: &std::path::Path) -> String {
+        git2::Repository::open(path)
+            .unwrap()
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// The question a dirty switch asks is answered from the keyboard: Enter
+    /// on the branch opens it, and Enter again takes the answer that keeps
+    /// the work — parking it on the stash — because that is the one the sheet
+    /// offers as its default. Nothing needed the pointer.
+    #[test]
+    fn the_switch_question_is_answered_from_the_keyboard() {
+        use crate::actions::GitClientEffect;
+
+        let (_dir, path) = clean_repository("keyboard-switch");
+        std::fs::write(path.join("file.txt"), "one\nedited\n").unwrap();
         let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
         app.settle();
+        let from = head_of(&path);
 
         app.effect_on(
-            &crate::actions::commit_resource_id(&head),
-            &crate::actions::GitClientEffect::OpenCommit { id: head },
+            &crate::actions::branch_resource_id("feature"),
+            &GitClientEffect::CheckoutBranch {
+                name: "feature".into(),
+            },
         )
         .unwrap();
         app.settle();
-        // Enter opens the file the commit's list is on.
+        assert_eq!(
+            head_of(&path),
+            from,
+            "uncommitted work asks before the branch moves"
+        );
+        assert!(
+            app.harness().a11y_node_named(&t("git-cancel")).is_some(),
+            "the question and its answers are what a reader hears"
+        );
+
         app.harness().key("Enter");
         app.settle();
+        assert_eq!(head_of(&path), "feature", "Enter took the sheet's answer");
+        assert_eq!(
+            std::fs::read_to_string(path.join("file.txt")).unwrap(),
+            "one\n",
+            "the parked edits left the working tree"
+        );
+    }
 
+    /// Escape is the way out of a question, from the keyboard, as it is for
+    /// every other sheet.
+    #[test]
+    fn escape_puts_a_destructive_question_away() {
+        let (_dir, path) = clean_repository("keyboard-escape");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.effect(&crate::actions::GitClientEffect::ShowBranches)
+            .unwrap();
+        app.settle();
+        // The branches page opens on its first local branch, so Delete names
+        // the branch the page is showing.
+        assert_eq!(
+            local_branches(&path).first().map(String::as_str),
+            Some("feature")
+        );
+        app.harness().key("Delete");
+        app.settle();
         assert!(
             app.harness()
-                .a11y_node_named(&t("git-back-to-commit"))
+                .a11y_node_named(&t("git-delete-branch"))
                 .is_some(),
-            "the commit's file is open, with the way back"
+            "the sheet asks, naming the branch"
         );
-        for absent in [
-            t("git-stage-file"),
-            t("git-unstage-file"),
-            t("git-discard-file-name"),
-            t("git-stage-hunk"),
-            t("git-discard-hunk"),
-        ] {
-            assert!(
-                app.harness().a11y_node_named(&absent).is_none(),
-                "a committed change offers no {absent:?}: there is nothing here to act on"
-            );
-        }
+        app.harness().key("Escape");
+        app.settle();
+        assert!(
+            local_branches(&path).iter().any(|name| name == "feature"),
+            "Escape answered the question: the branch is still there"
+        );
+    }
+
+    /// Deleting a branch asks a question whose default answer is the way out:
+    /// Enter alone cancels, and the arrow keys reach the destructive answer
+    /// for someone who means it.
+    #[test]
+    fn a_destructive_answer_is_never_what_enter_fires() {
+        let (_dir, path) = clean_repository("keyboard-delete");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.effect(&crate::actions::GitClientEffect::ShowBranches)
+            .unwrap();
+        app.settle();
+        app.harness().key("Delete");
+        app.settle();
+        app.harness().key("Enter");
+        app.settle();
+        assert!(
+            local_branches(&path).iter().any(|name| name == "feature"),
+            "Enter on a destructive question is its way out"
+        );
+
+        app.harness().key("Delete");
+        app.settle();
+        app.harness().key("ArrowRight");
+        app.harness().key("ArrowRight");
+        app.harness().key("Enter");
+        app.settle();
+        assert!(
+            !local_branches(&path).iter().any(|name| name == "feature"),
+            "two arrows and Enter take the answer the person chose"
+        );
+    }
+
+    /// A reader answers the same question the pointer and the keyboard
+    /// answer: the sheet's answers are buttons with their names, and
+    /// activating one does what pressing it does.
+    #[test]
+    fn a_reader_answers_the_same_question() {
+        use ui::a11y::Action;
+
+        let (_dir, path) = clean_repository("reader-delete");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.effect(&crate::actions::GitClientEffect::ShowBranches)
+            .unwrap();
+        app.settle();
+        app.harness().key("Delete");
+        app.settle();
+        let titled = |node: &ui::accesskit::Node| {
+            node.label()
+                .is_some_and(|label| label.starts_with("Delete feature?"))
+        };
+        let question = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| titled(node))
+            .map(|(_, node)| node.label().unwrap_or_default().to_owned());
+        let question = question.expect("the question is read out, naming the branch");
+        assert!(
+            question.contains("only this branch holds are lost"),
+            "a reader hears what answering costs, not just what is asked: {question:?}"
+        );
+        assert!(
+            app.harness().a11y_node_named(&t("git-cancel")).is_some(),
+            "the way out is one of the answers a reader can reach"
+        );
+        let answer = app
+            .harness()
+            .a11y_node_named(&t("git-delete-branch"))
+            .expect("the destructive answer is a named button");
+        app.harness()
+            .perform_a11y_action(answer, &Action::Activate)
+            .unwrap();
+        app.settle();
+        assert!(
+            !local_branches(&path).iter().any(|name| name == "feature"),
+            "activating the named answer deleted the branch"
+        );
     }
 
     /// The window bar's layout item and the palette's effect switch the
