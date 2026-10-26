@@ -521,9 +521,52 @@ impl AgentModelsArea {
             model.notice = Some(error.clone());
             return Err(error);
         }
-        let result = model.change_providers(effect.clone());
-        model.provider_notice(result.as_ref().map(|()| t("agent-provider-offline-saved")));
-        result.map(|()| Effected::done())
+        // Removing a signed-in provider forgets its grant here, which only
+        // this area can do; the provider record itself is changed by the
+        // same typed action any other provider edit uses.
+        if let ProviderEffect::RemoveProvider { provider } = effect
+            && model
+                .provider_config()
+                .profiles
+                .iter()
+                .any(|profile| profile.id == *provider && profile.sign_in.is_some())
+        {
+            model.forget_signed_in_grant(provider)?;
+        }
+        let listed = match effect {
+            ProviderEffect::SetProviderModel {
+                provider,
+                model: id,
+            } => model
+                .listed_models
+                .get(provider)
+                .and_then(|listed| listed.as_ref().ok())
+                .and_then(|models| models.iter().find(|model| model.id == *id))
+                .cloned(),
+            _ => None,
+        };
+        let Some(action) = effect.agent_action(listed.as_ref()) else {
+            let result = model.change_providers(effect.clone());
+            model.provider_notice(result.as_ref().map(|()| t("agent-provider-offline-saved")));
+            return result.map(|()| Effected::done());
+        };
+        let action = ui::tilo_resource::Stamped {
+            operation: action,
+            now_ms: i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX),
+        };
+        if model
+            .cx
+            .apply_section::<provider_settings_ui::AgentProviders>(&action)
+            .is_err()
+        {
+            // A pane detached from a window (a screenshot, a pane test) has
+            // no record to run the action on; it stores the metadata itself.
+            let result = model.change_providers(effect.clone());
+            model.provider_notice(result.as_ref().map(|()| t("agent-provider-offline-saved")));
+            return result.map(|()| Effected::done());
+        }
+        model.provider_notice(Ok(t("agent-provider-offline-saved")));
+        Ok(Effected::done())
     }
 }
 
@@ -1278,6 +1321,11 @@ impl AgentModelsModel {
             return Err(t("agent-provider-offline"));
         }
         let _ = config.remove(provider);
+        self.forget_signed_in_grant(provider)
+    }
+
+    /// Forget the grant kept on this device for signed-in `provider`.
+    fn forget_signed_in_grant(&mut self, provider: &str) -> Result<(), String> {
         // Forgotten here only: revoking at Google would end every grant of
         // Tilo's client for this person, Mail's included.
         if self
@@ -1483,7 +1531,7 @@ impl AgentModelsModel {
                 self.remove_vertex_provider(&mut config, &provider)?;
                 config.sanitised()
             }
-            effect => self.proposed_config(effect)?,
+            effect => self.config_after(effect)?,
         };
         self.store_providers(config)?;
         if let Some(acknowledgement) = limits_ack {
