@@ -761,6 +761,17 @@ RUN systemctl enable greetd.service && \
 # passes its own `--image-policy`. Unlike the pcrlock and prune masks,
 # these units must exist: a missing unit is a build failure, not a skip. The
 # unsealed dev image unmasks systemd-sysext for its development layers.
+# systemd defines NvPCRs (TPM NV indices extended like PCRs: "hardware" for
+# the product ID, "cryptsetup" for crypttab's tpm2-measure-keyslot-nvpcr=)
+# and anchors each one on every boot with a secret it keeps as a TPM-sealed
+# credential in /var/lib/systemd/nvpcr and in the ESP's loader/credentials.
+# Nothing in Tilo extends, reads or seals to an NvPCR (the encrypted root's
+# policy is tilo-rollback's signed PCR 11 flow). Left on, systemd-tpm2-setup
+# fails on every boot after the first, because the ESP is mounted read-only
+# and the copy for the initrd cannot be written, and each boot spends TPM
+# sessions anchoring them. Masking the definitions turns the whole mechanism
+# off; systemd-pcrproduct, which only extends the "hardware" NvPCR, goes with
+# them.
 RUN for u in \
         NetworkManager-wait-online.service \
         systemd-networkd-wait-online.service \
@@ -783,20 +794,8 @@ RUN for u in \
  && systemctl mask systemd-sysext.service systemd-confext.service systemd-sysext.socket \
  && for u in systemd-sysext.service systemd-confext.service systemd-sysext.socket; do \
       test "$(readlink "/etc/systemd/system/$u")" = /dev/null; \
-    done
-
-# systemd defines NvPCRs (TPM NV indices extended like PCRs: "hardware" for
-# the product ID, "cryptsetup" for crypttab's tpm2-measure-keyslot-nvpcr=)
-# and anchors each one on every boot with a secret it keeps as a TPM-sealed
-# credential in /var/lib/systemd/nvpcr and in the ESP's loader/credentials.
-# Nothing in Tilo extends, reads or seals to an NvPCR (the encrypted root's
-# policy is tilo-rollback's signed PCR 11 flow). Left on, systemd-tpm2-setup
-# fails on every boot after the first, because the ESP is mounted read-only
-# and the copy for the initrd cannot be written, and each boot spends TPM
-# sessions anchoring them. Masking the definitions turns the whole mechanism
-# off; systemd-pcrproduct, which only extends the "hardware" NvPCR, goes with
-# them.
-RUN mkdir -p /etc/nvpcr \
+    done \
+ && mkdir -p /etc/nvpcr \
  && for f in /usr/lib/nvpcr/*.nvpcr; do ln -sfn /dev/null "/etc/nvpcr/${f##*/}"; done \
  && systemctl mask systemd-pcrproduct.service \
  && test "$(readlink /etc/nvpcr/hardware.nvpcr)" = /dev/null \
