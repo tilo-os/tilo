@@ -152,12 +152,22 @@ no node orders governance for the others.
 
 - **Any authorized device can act.** A person enrolls a new device from
   any of their devices.
-- **Rules can require several shares.** A person's shares are their
-  devices plus their recovery code (below), all counted alike. With one
-  device, one share acts. From two devices on, two shares act: two of three
-  with two devices (device, device, recovery code), two of four with three,
-  and so on. A request without enough shares waits, and the person's other
-  devices ask them to approve it.
+- **Half the shares decide; the person approves at most twice.** A
+  person's shares are their devices plus their recovery code (below), all
+  counted alike.
+  - A change to the person's identity (enrolling a device, removing one)
+    takes effect once at least half of their shares have signed it.
+  - At most two of those signatures need the person: the device asking,
+    and with two or more devices one more, given on another device or with
+    the recovery code. With one device, that device alone is half.
+  - The remaining signatures are co-signatures. Each of the person's other
+    devices adds its own automatically once it has seen the request, unless
+    the person declined on it or it has seen a conflicting request. A
+    request that lacks co-signatures waits for those devices to come
+    online, and says which it is waiting for.
+  - Two conflicting requests can't both reach half without sharing a
+    signer, which never signs both. The one tie, exactly half each, goes
+    to the half holding the recovery code.
 - **Keys: a device key per device, an identity key held by the quorum.**
   - The secret typed at sign-in ([`../security/sign-in.md`](../security/sign-in.md))
     unlocks only that device's own key. Someone who learns it gains one
@@ -181,10 +191,9 @@ no node orders governance for the others.
   stolen device from acting alone: the person removes it with their other
   device and the recovery code. With one device, the recovery code alone
   restores the identity on a new device.
-- **Conflicting removals freeze the identity.** If two removals that each
-  had enough shares remove each other's signers, neither stands and the
-  identity signs nothing new until shares outside the conflict settle it.
-  Shares decide, not devices, and an identity never splits in two.
+- **An identity never splits in two.** Because deciding takes half the
+  shares, two sides of a conflict can't both decide. Shares decide, not
+  devices.
 
 The scenario this must hold up to: a person has three devices and one is
 stolen unlocked. The thief can't remove another of their devices alone,
