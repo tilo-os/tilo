@@ -36,6 +36,8 @@ use durable_store::{DurableStore, StorageKey};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
+mod history_access;
+pub use history_access::HistoryUnavailable;
 pub mod person;
 pub mod transfer;
 pub mod workspace;
@@ -434,28 +436,7 @@ fn normalise(path: &Path) -> PathBuf {
     out
 }
 
-/// The durable file id behind [`RecordId::identify_file`]: the
-/// `user.tilo.record-id` extended attribute, kept by `tilo-files`.
-mod file_identity {
-    use std::path::Path;
-
-    /// The attribute the collaborative filesystem serves its `FileRecordId`
-    /// in, and the one written for files elsewhere.
-    pub(super) use fs_protocol::RECORD_ID_XATTR as ATTRIBUTE;
-
-    /// The file's id, minting and storing one for a regular file that has
-    /// none. `None` when the file can't carry an id.
-    pub(super) fn read_or_mint(path: &Path) -> Option<uuid::Uuid> {
-        let fresh = uuid::Uuid::new_v4().into_bytes();
-        match tilo_files::native::identity::read_or_mint(path, ATTRIBUTE, fresh) {
-            Ok(id) => id.map(uuid::Uuid::from_bytes),
-            Err(error) => {
-                tracing::debug!(path = %path.display(), %error, "file cannot carry a record id; identifying it by path");
-                None
-            }
-        }
-    }
-}
+mod file_identity;
 
 /// FNV-1a, 64-bit: a fixed algorithm, unlike a library's default hasher, so
 /// the directory names it produces stay stable.
@@ -2695,31 +2676,6 @@ pub enum RecordOpenOutcome {
     AlreadyOpen,
 }
 
-/// Why a record could not be changed now ([`RecordStore::with_history_or_why`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum HistoryUnavailable {
-    /// Something reads or changes the store right now.
-    #[error("the record's store is in use")]
-    StoreInUse,
-    /// The record is lent to a frame running now.
-    #[error("the record is in use")]
-    Lent,
-    /// The record is still being created.
-    #[error("the record is still being created")]
-    Creating,
-    /// The record is not open in this store.
-    #[error("the record is not open")]
-    NotOpen,
-}
-
-impl HistoryUnavailable {
-    /// Whether the record can be changed once what holds it now lets go.
-    #[must_use]
-    pub fn is_momentary(self) -> bool {
-        !matches!(self, Self::NotOpen)
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum RecordOpenError {
     #[error(transparent)]
@@ -4555,33 +4511,6 @@ impl RecordStore {
         let mut set = self.0.try_borrow_mut().ok()?;
         let (doc, history) = set.document_and_history_mut(id)?;
         Some(f(doc, history))
-    }
-
-    /// [`Self::with_history`], saying why the record could not be changed
-    /// now: the store is in use, the record is lent to a frame or still
-    /// being created, or it is not open here.
-    ///
-    /// # Errors
-    /// Why `f` did not run.
-    pub fn with_history_or_why<R>(
-        &self,
-        id: &RecordId,
-        f: impl FnOnce(&mut AutoCommit, &mut crate::state::UndoLog) -> R,
-    ) -> Result<R, HistoryUnavailable> {
-        let mut set = self
-            .0
-            .try_borrow_mut()
-            .map_err(|_| HistoryUnavailable::StoreInUse)?;
-        if set.lent.contains(id) {
-            return Err(HistoryUnavailable::Lent);
-        }
-        if set.pending.contains_key(id) {
-            return Err(HistoryUnavailable::Creating);
-        }
-        let (doc, history) = set
-            .document_and_history_mut(id)
-            .ok_or(HistoryUnavailable::NotOpen)?;
-        Ok(f(doc, history))
     }
 
     /// Inspect committed history without turning a pending burst into a boundary.
