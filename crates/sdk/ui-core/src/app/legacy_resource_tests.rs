@@ -258,7 +258,7 @@ fn native_legacy_effect_capture_keeps_exact_accepted_owner_hidden_poll_cancel_an
         .execution(tilo_actions::ExecutionMode::Background { cancellable: true });
         *b.probe.spec.borrow_mut() = a.probe.spec.borrow().clone();
         if cancel {
-            b.probe.spec.borrow_mut().id = "other".into();
+            b.probe.spec.borrow_mut().type_mut().id = "other".into();
         }
         a.tile.register_document_history(&EFFECT_HISTORY).unwrap();
         let before_a = a.snapshot();
@@ -431,7 +431,8 @@ fn native_legacy_effect_control_keeps_existing_confirmation_gate() {
     )
     .unwrap()
     .execution(tilo_actions::ExecutionMode::Background { cancellable: true });
-    f.probe.spec.borrow_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+    f.probe.spec.borrow_mut().type_mut().contract.confirmation =
+        tilo_actions::ConfirmationPolicy::Confirm;
     let root = f.take_tile();
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
     app.init_layout();

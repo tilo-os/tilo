@@ -51,8 +51,9 @@ use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 /// Infallible by design: every check a caller can fail — presence, type,
 /// choice — happens in [`ActionArgs::bind`] *before* this runs, so a builder
 /// that holds an `ActionArgs` is looking at values it declared and can use them
-/// directly.
-pub type ArgsBuilder = Arc<dyn Fn(&ActionArgs) -> EncodedAction + Send + Sync>;
+/// directly. The [`Target`] is that of the spec being invoked, for a type
+/// shared by many; an action whose builder holds what it acts on ignores it.
+pub type ArgsBuilder = Arc<dyn Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync>;
 
 /// A UI control's inert request to invoke one advertised operation.
 ///
@@ -172,7 +173,7 @@ impl<I> ActionBinding<I> {
     pub fn invoke(&self, input: I) -> Result<ControlInvocation, ActionBindingError> {
         let arguments = (self.arguments)(input).map_err(ActionBindingError::Unbindable)?;
         if self.spec.deferred_invocation_type().is_some()
-            || matches!(self.spec.input, ActionInput::Deferred { .. })
+            || matches!(self.spec.input(), ActionInput::Deferred { .. })
         {
             self.spec.validate_json(&arguments)?;
         } else {
@@ -199,7 +200,7 @@ impl ActionBinding<()> {
         let binding = Self::new(resource, spec, |()| serde_json::Map::new())?;
         // Refuse a required-argument action at construction, not first click.
         if binding.spec.deferred_invocation_type().is_some()
-            || matches!(binding.spec.input, ActionInput::Deferred { .. })
+            || matches!(binding.spec.input(), ActionInput::Deferred { .. })
         {
             binding.spec.validate_json(&serde_json::Map::new())?;
         } else {
@@ -239,7 +240,7 @@ impl ActionBinding<()> {
     ) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, move |()| arguments.clone())?;
         if binding.spec.deferred_invocation_type().is_some()
-            || matches!(binding.spec.input, ActionInput::Deferred { .. })
+            || matches!(binding.spec.input(), ActionInput::Deferred { .. })
         {
             binding
                 .spec
@@ -705,28 +706,78 @@ pub enum Collects {
     Content,
 }
 
-/// How an [`ActionSpec`] produces its replayable [`EncodedAction`] when chosen.
-#[derive(Clone)]
-pub enum ActionInput {
-    /// Fires immediately with this pre-encoded action. Cloned publications
-    /// share immutable bytes; modifying this public lane uses copy-on-write
-    /// and never changes the private execution witness.
-    Immediate(Arc<EncodedAction>),
+/// How the palette collects an [`ActionSpec`]'s input when it is chosen.
+///
+/// A view of the action's type: the encoding itself comes from the spec
+/// ([`ActionSpec::encode_immediate`], [`ActionSpec::build_deferred`],
+/// [`ActionSpec::build_text`]), which binds the type to the spec's target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionInput<'a> {
+    /// Fires at once, with no argument. Holds the encoding made when the
+    /// action was declared, the same for every invocation; `None` for one
+    /// encoded per invocation from its target
+    /// ([`ActionSpec::encode_immediate`]), which a caller holding the
+    /// resource tree resolves by address when it fires, as a deferred one.
+    Immediate(Option<&'a Arc<EncodedAction>>),
     /// A no-argument operation built only at final admitted owner execution.
     /// Enumeration and confirmation retain declared intent, not minted bytes.
+    Deferred { type_id: &'a str },
+    /// Collects one free-text argument first, then builds its encoded action.
+    Prompted {
+        prompt: &'a str,
+        placeholder: &'a str,
+        /// What that argument names. See [`Collects`].
+        collects: Collects,
+    },
+}
+
+/// What an action type keeps of how the palette collects its input.
+#[derive(Clone)]
+enum Lane {
+    /// Fires at once. `Some` holds the encoding made when the action was
+    /// declared (an action with no target, so one encoding for every
+    /// invocation); `None` builds it from the target per invocation.
+    Immediate(Option<Arc<EncodedAction>>),
     Deferred {
         type_id: String,
-        build: Arc<dyn Fn() -> EncodedAction + Send + Sync>,
     },
-    /// Collects one free-text argument first, then builds its encoded action.
     Prompted {
         prompt: String,
         placeholder: String,
-        /// What that argument names. See [`Collects`].
         collects: Collects,
-        build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
     },
 }
+
+/// What one [`ActionSpec`] acts on: the item its shared [`ActionType`] is
+/// bound to (a note's path, a file's id). An action type's builders receive
+/// it, so the type is held once for every item that offers it. An action
+/// declared with its state captured in its builder has none.
+#[derive(Clone, Default)]
+pub struct Target(Option<Arc<dyn std::any::Any + Send + Sync>>);
+
+impl Target {
+    /// No target: the action's builder holds what it acts on.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self(None)
+    }
+
+    /// `value` as a target. Clone the target to bind several actions of one
+    /// item to the same allocation.
+    #[must_use]
+    pub fn new<T: std::any::Any + Send + Sync>(value: T) -> Self {
+        Self(Some(Arc::new(value)))
+    }
+
+    /// The target, when it is a `T`.
+    #[must_use]
+    pub fn get<T: std::any::Any>(&self) -> Option<&T> {
+        self.0.as_deref()?.downcast_ref()
+    }
+}
+
+/// Builds a prompted action's encoded form for one target from its text.
+type TargetTextBuilder = Arc<dyn Fn(&Target, &str) -> EncodedAction + Send + Sync>;
 
 /// Collision-free, provider-defined identity for one continuation target or
 /// handler. Tuple components remain separate; callers never join or hash them.
@@ -825,15 +876,9 @@ enum InvocationBuilder {
         build: ArgsBuilder,
         deferred_type: Option<String>,
     },
-}
-
-impl InvocationBuilder {
-    fn build(&self, args: &ActionArgs) -> EncodedAction {
-        match self {
-            Self::Fixed(encoded) => encoded.as_ref().clone(),
-            Self::Dynamic { build, .. } => build(args),
-        }
-    }
+    /// A prompted action's builder of its one text, which the typed lane
+    /// reads from the action's [`prompt parameter`](ActionSpec::prompt_param).
+    Text(TargetTextBuilder),
 }
 
 /// The facet naming the nested resource an action was addressed through,
@@ -841,8 +886,14 @@ impl InvocationBuilder {
 /// ([`ActionSpec::history_context`]).
 pub const NESTED_RESOURCE_FACET: &str = "part";
 
-/// One action a resource exports to the palette.
-pub struct ActionSpec {
+/// What an action is, whichever resource offers it: its id, label, contract,
+/// parameters and builders. Held once per (resource type, action) and shared
+/// by every [`ActionSpec`] that binds it to a [`Target`].
+///
+/// Read through the spec (`spec.label`, `spec.contract`); change one spec's
+/// with [`ActionSpec::type_mut`], which copies a shared type first.
+#[derive(Clone)]
+pub struct ActionType {
     /// Stable id within the resource (e.g. `"like"`, `"reply"`).
     pub id: String,
     pub label: String,
@@ -861,14 +912,15 @@ pub struct ActionSpec {
     pub operation_type: Option<String>,
     /// Machine-readable safety, availability, lifecycle, and result contract.
     pub contract: ActionContract,
-    pub input: ActionInput,
+    /// How the palette collects the input. See [`ActionSpec::input`].
+    lane: Lane,
     /// The typed argument surface an external caller invokes against. Private
     /// because it must stay in step with `build` — the two are always set
     /// together by a constructor, never independently.
     params: Vec<ActionParam>,
-    /// Builds the encoded action from arguments bound against `params`. Shares
-    /// the app's closure with `input` rather than duplicating it, which is what
-    /// makes the palette path and the external path provably one function.
+    /// Builds the encoded action from arguments bound against `params`. The
+    /// palette's lane uses the same closure, which is what makes the palette
+    /// path and the external path provably one function.
     build: InvocationBuilder,
     /// Classifies one invocation's bound arguments when the action's risk
     /// depends on them. See [`ActionSpec::with_risk`].
@@ -887,36 +939,56 @@ pub struct ActionSpec {
     applied_as: Option<(String, String)>,
 }
 
-impl Clone for ActionSpec {
-    /// Out of line: a derived clone is inlined, so every app that cloned a spec compiled one of its
-    /// own.
-    #[inline(never)]
-    fn clone(&self) -> Self {
-        Self {
-            id: self.id.clone(),
-            label: self.label.clone(),
-            description: self.description.clone(),
-            locus: self.locus,
-            kind: self.kind,
-            operation_type: self.operation_type.clone(),
-            contract: self.contract.clone(),
-            input: self.input.clone(),
-            params: self.params.clone(),
-            build: self.build.clone(),
-            risk_of: self.risk_of.clone(),
-            need_of: self.need_of.clone(),
-            continuation_resolver: self.continuation_resolver.clone(),
-            carrier: self.carrier,
-            applied_as: self.applied_as.clone(),
+impl ActionType {
+    /// This type bound to `target`: the action one item offers.
+    #[must_use]
+    pub fn bind(self: &Arc<Self>, target: Target) -> ActionSpec {
+        ActionSpec {
+            ty: Arc::clone(self),
+            target,
+        }
+    }
+
+    fn encode(&self, target: &Target, args: &ActionArgs) -> EncodedAction {
+        match &self.build {
+            InvocationBuilder::Fixed(encoded) => encoded.as_ref().clone(),
+            InvocationBuilder::Dynamic { build, .. } => build(target, args),
+            InvocationBuilder::Text(build) => {
+                let text = primary_param(&self.params)
+                    .and_then(|param| args.text(&param.name))
+                    .unwrap_or("");
+                build(target, text)
+            }
         }
     }
 }
 
+/// One action a resource exports to the palette: an [`ActionType`] bound to
+/// the [`Target`] it acts on. Small: the type is shared, so a resource of
+/// ten thousand items holds each of its types once.
+///
+/// It reads as its type (`spec.id`, `spec.contract`).
+#[derive(Clone)]
+pub struct ActionSpec {
+    ty: Arc<ActionType>,
+    target: Target,
+}
+
+impl std::ops::Deref for ActionSpec {
+    type Target = ActionType;
+
+    fn deref(&self) -> &ActionType {
+        &self.ty
+    }
+}
+
 /// Classifies the risk of one invocation from its bound arguments.
-pub type RiskClassifier = Arc<dyn Fn(&ActionArgs) -> RiskLevel + Send + Sync>;
+/// The [`Target`] is that of the spec being invoked.
+pub type RiskClassifier = Arc<dyn Fn(&Target, &ActionArgs) -> RiskLevel + Send + Sync>;
 
 /// Classifies what one invocation is from its bound arguments.
-pub type NeedClassifier = Arc<dyn Fn(&ActionArgs) -> ActionNeed + Send + Sync>;
+/// The [`Target`] is that of the spec being invoked.
+pub type NeedClassifier = Arc<dyn Fn(&Target, &ActionArgs) -> ActionNeed + Send + Sync>;
 
 struct TypedActionSeed {
     id: String,
@@ -928,7 +1000,101 @@ struct TypedActionSeed {
     params: Vec<ActionParam>,
 }
 
+/// What a constructor declares of a new action type before its lane and
+/// builder.
+struct Declared {
+    id: String,
+    label: String,
+    locus: ExecutionLocus,
+    kind: OperationKind,
+    operation_type: Option<String>,
+    params: Vec<ActionParam>,
+}
+
+impl Declared {
+    fn new(id: String, label: String, locus: ExecutionLocus, kind: OperationKind) -> Self {
+        Self {
+            id,
+            label,
+            locus,
+            kind,
+            operation_type: None,
+            params: Vec::new(),
+        }
+    }
+}
+
 impl ActionSpec {
+    fn of(ty: ActionType) -> Self {
+        Self {
+            ty: Arc::new(ty),
+            target: Target::none(),
+        }
+    }
+
+    /// The type this spec binds: what every resource offering the action
+    /// shares. Bind it to other targets with [`ActionType::bind`].
+    #[must_use]
+    pub fn action_type(&self) -> &Arc<ActionType> {
+        &self.ty
+    }
+
+    /// What this spec acts on.
+    #[must_use]
+    pub fn target(&self) -> &Target {
+        &self.target
+    }
+
+    /// This spec's type, to change: copied first when other specs share it,
+    /// so a change to one item's action never reaches another's.
+    pub fn type_mut(&mut self) -> &mut ActionType {
+        Arc::make_mut(&mut self.ty)
+    }
+
+    /// How the palette collects this action's input.
+    #[must_use]
+    pub fn input(&self) -> ActionInput<'_> {
+        match &self.lane {
+            Lane::Immediate(encoded) => ActionInput::Immediate(encoded.as_ref()),
+            Lane::Deferred { type_id } => ActionInput::Deferred { type_id },
+            Lane::Prompted {
+                prompt,
+                placeholder,
+                collects,
+            } => ActionInput::Prompted {
+                prompt,
+                placeholder,
+                collects: *collects,
+            },
+        }
+    }
+
+    /// The action an [`Immediate`](ActionInput::Immediate) spec fires, or
+    /// `None` for one that takes input or is deferred. An action declared
+    /// with what it acts on in its builder was encoded once, when declared;
+    /// one bound to a target is encoded for it now.
+    #[must_use]
+    pub fn encode_immediate(&self) -> Option<Arc<EncodedAction>> {
+        match &self.lane {
+            Lane::Immediate(Some(encoded)) => Some(Arc::clone(encoded)),
+            Lane::Immediate(None) => {
+                Some(Arc::new(self.ty.encode(&self.target, &ActionArgs::none())))
+            }
+            Lane::Deferred { .. } | Lane::Prompted { .. } => None,
+        }
+    }
+
+    /// Run a [`Deferred`](ActionInput::Deferred) spec's builder, unchecked:
+    /// `None` for any other. Callers check the result's type against the
+    /// declared one, as the door does.
+    #[must_use]
+    pub fn build_deferred(&self) -> Option<EncodedAction> {
+        match &self.lane {
+            Lane::Deferred { .. } => Some(self.ty.encode(&self.target, &ActionArgs::none())),
+            Lane::Immediate(_) | Lane::Prompted { .. } => None,
+        }
+    }
+
     /// Mark this action as applied as the enclosing resource of kind `kind`
     /// (labelled `label`): a nested resource (a note's rich-text body)
     /// publishes its document actions re-encoded as the record's field
@@ -936,7 +1102,7 @@ impl ActionSpec {
     #[must_use]
     pub fn applied_as(mut self, kind: impl Into<String>, label: impl Into<String>) -> Self {
         if self.kind == OperationKind::Document {
-            self.applied_as = Some((kind.into(), label.into()));
+            self.type_mut().applied_as = Some((kind.into(), label.into()));
         }
         self
     }
@@ -968,7 +1134,7 @@ impl ActionSpec {
     pub fn fixed_invocation_encoding(&self) -> Option<&EncodedAction> {
         match &self.build {
             InvocationBuilder::Fixed(encoded) => Some(encoded),
-            InvocationBuilder::Dynamic { .. } => None,
+            InvocationBuilder::Dynamic { .. } | InvocationBuilder::Text(_) => None,
         }
     }
 
@@ -983,13 +1149,13 @@ impl ActionSpec {
     pub fn deferred_invocation_type(&self) -> Option<&str> {
         match &self.build {
             InvocationBuilder::Dynamic { deferred_type, .. } => deferred_type.as_deref(),
-            InvocationBuilder::Fixed(_) => None,
+            InvocationBuilder::Fixed(_) | InvocationBuilder::Text(_) => None,
         }
     }
 
     pub(crate) fn validate_deferred_shape(&self) -> Result<(), ArgError> {
-        match (&self.input, self.deferred_invocation_type()) {
-            (ActionInput::Deferred { type_id, .. }, Some(expected))
+        match (&self.lane, self.deferred_invocation_type()) {
+            (Lane::Deferred { type_id }, Some(expected))
                 if !type_id.is_empty()
                     && type_id == expected
                     && self.params.is_empty()
@@ -1002,7 +1168,7 @@ impl ActionSpec {
             {
                 Ok(())
             }
-            (ActionInput::Deferred { .. }, _) | (_, Some(_)) => Err(ArgError::Constraint {
+            (Lane::Deferred { .. }, _) | (_, Some(_)) => Err(ArgError::Constraint {
                 name: "deferred".into(),
                 reason: "deferred input and retained declaration disagree".into(),
             }),
@@ -1042,6 +1208,27 @@ impl ActionSpec {
         ActionArgs::bind_json(&self.params, supplied).map(|_| ())
     }
 
+    /// The spec of a newly declared type, bound to no target.
+    fn declared(seed: Declared, lane: Lane, build: InvocationBuilder) -> Self {
+        Self::of(ActionType {
+            id: seed.id,
+            label: seed.label,
+            description: None,
+            locus: seed.locus,
+            kind: seed.kind,
+            operation_type: seed.operation_type,
+            contract: ActionContract::for_operation(seed.kind),
+            lane,
+            params: seed.params,
+            build,
+            risk_of: None,
+            need_of: None,
+            continuation_resolver: None,
+            carrier: false,
+            applied_as: None,
+        })
+    }
+
     /// A document operation whose no-argument builder runs only at execution.
     /// Both invocation lanes share this one closure; construction never runs it.
     pub fn deferred(
@@ -1051,11 +1238,20 @@ impl ActionSpec {
         type_id: impl Into<String>,
         build: impl Fn() -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
+        Self::deferred_on(id, label, locus, type_id, move |_| build())
+    }
+
+    /// [`deferred`](Self::deferred) for a type shared by many targets: the
+    /// builder is given the target of the spec being invoked.
+    pub fn deferred_on(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        locus: ExecutionLocus,
+        type_id: impl Into<String>,
+        build: impl Fn(&Target) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
         Self::deferred_with_kind(
-            id.into(),
-            label.into(),
-            locus,
-            OperationKind::Document,
+            Declared::new(id.into(), label.into(), locus, OperationKind::Document),
             type_id.into(),
             build,
         )
@@ -1070,48 +1266,38 @@ impl ActionSpec {
         build: impl Fn() -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
         Self::deferred_with_kind(
-            id.into(),
-            label.into(),
-            ExecutionLocus::ClientLocal,
-            kind,
+            Declared::new(id.into(), label.into(), ExecutionLocus::ClientLocal, kind),
             type_id.into(),
-            build,
+            move |_| build(),
         )
     }
 
     fn deferred_with_kind(
-        id: String,
-        label: String,
-        locus: ExecutionLocus,
-        kind: OperationKind,
+        mut seed: Declared,
         type_id: String,
-        build: impl Fn() -> EncodedAction + Send + Sync + 'static,
+        build: impl Fn(&Target) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        let build: Arc<dyn Fn() -> EncodedAction + Send + Sync> = Arc::new(build);
-        let shared = build.clone();
-        Self {
-            id,
-            label,
-            description: None,
-            locus,
-            kind,
-            operation_type: (kind != OperationKind::Document).then(|| type_id.clone()),
-            contract: ActionContract::for_operation(kind),
-            input: ActionInput::Deferred {
+        seed.operation_type = (seed.kind != OperationKind::Document).then(|| type_id.clone());
+        Self::declared(
+            seed,
+            Lane::Deferred {
                 type_id: type_id.clone(),
-                build,
             },
-            params: vec![],
-            build: InvocationBuilder::Dynamic {
-                build: Arc::new(move |_| shared()),
+            InvocationBuilder::Dynamic {
+                build: Arc::new(move |target, _| build(target)),
                 deferred_type: Some(type_id),
             },
-            risk_of: None,
-            need_of: None,
-            continuation_resolver: None,
-            carrier: false,
-            applied_as: None,
-        }
+        )
+    }
+
+    /// An action that fires immediately with `encoded`, declared as `seed`.
+    fn fixed(seed: Declared, encoded: EncodedAction) -> Self {
+        let encoded = Arc::new(encoded);
+        Self::declared(
+            seed,
+            Lane::Immediate(Some(Arc::clone(&encoded))),
+            InvocationBuilder::Fixed(encoded),
+        )
     }
 
     /// An action that fires immediately. `type_id` must match the app's
@@ -1134,25 +1320,10 @@ impl ActionSpec {
     {
         let locus = action.locus();
         let encoded = EncodedAction::encode(type_id, action)?;
-        let encoded = Arc::new(encoded);
-        let for_build = Arc::clone(&encoded);
-        Ok(Self {
-            id: id.into(),
-            label: label.into(),
-            description: None,
-            locus,
-            kind: OperationKind::Document,
-            operation_type: None,
-            contract: ActionContract::default(),
-            input: ActionInput::Immediate(encoded),
-            params: Vec::new(),
-            build: InvocationBuilder::Fixed(for_build),
-            risk_of: None,
-            need_of: None,
-            continuation_resolver: None,
-            carrier: false,
-            applied_as: None,
-        })
+        Ok(Self::fixed(
+            Declared::new(id.into(), label.into(), locus, OperationKind::Document),
+            encoded,
+        ))
     }
 
     /// An action that fires immediately, from an [`EncodedAction`] the caller
@@ -1169,25 +1340,10 @@ impl ActionSpec {
         locus: ExecutionLocus,
         encoded: EncodedAction,
     ) -> Self {
-        let encoded = Arc::new(encoded);
-        let for_build = Arc::clone(&encoded);
-        Self {
-            id: id.into(),
-            label: label.into(),
-            description: None,
-            locus,
-            kind: OperationKind::Document,
-            operation_type: None,
-            contract: ActionContract::default(),
-            input: ActionInput::Immediate(encoded),
-            params: Vec::new(),
-            build: InvocationBuilder::Fixed(for_build),
-            risk_of: None,
-            need_of: None,
-            continuation_resolver: None,
-            carrier: false,
-            applied_as: None,
-        }
+        Self::fixed(
+            Declared::new(id.into(), label.into(), locus, OperationKind::Document),
+            encoded,
+        )
     }
 
     /// An action that first collects a free-text argument, then builds its
@@ -1210,37 +1366,33 @@ impl ActionSpec {
         locus: ExecutionLocus,
         build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
+        Self::prompted_param_on(id, label, param, placeholder, locus, move |_, text| {
+            build(text)
+        })
+    }
+
+    /// [`prompted_param`](Self::prompted_param) for a type shared by many
+    /// targets: the builder is given the target of the spec being invoked.
+    pub fn prompted_param_on(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        param: ActionParam,
+        placeholder: impl Into<String>,
+        locus: ExecutionLocus,
+        build: impl Fn(&Target, &str) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        let mut seed = Declared::new(id.into(), label.into(), locus, OperationKind::Document);
         let prompt = param.description.to_string();
-        let name = param.name.clone();
-        // One `Arc`, shared by the palette's `ActionInput` and the typed
-        // projection. Not two closures that happen to agree.
-        let build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync> = Arc::new(build);
-        let for_args = build.clone();
-        Self {
-            id: id.into(),
-            label: label.into(),
-            description: None,
-            locus,
-            kind: OperationKind::Document,
-            operation_type: None,
-            contract: ActionContract::default(),
-            params: vec![param],
-            build: InvocationBuilder::Dynamic {
-                build: Arc::new(move |args| for_args(args.text(&name).unwrap_or(""))),
-                deferred_type: None,
-            },
-            input: ActionInput::Prompted {
+        seed.params = vec![param];
+        Self::declared(
+            seed,
+            Lane::Prompted {
                 prompt,
                 placeholder: placeholder.into(),
                 collects: Collects::Words,
-                build,
             },
-            risk_of: None,
-            need_of: None,
-            continuation_resolver: None,
-            carrier: false,
-            applied_as: None,
-        }
+            InvocationBuilder::Text(Arc::new(build)),
+        )
     }
 
     /// The name of the parameter the typed text of a prompted action goes
@@ -1248,13 +1400,8 @@ impl ActionSpec {
     /// caller holding the text of a prompt (the palette, a broker request, a
     /// continuation) learns where it belongs.
     pub fn prompt_param(&self) -> Option<&str> {
-        match self.input {
-            ActionInput::Prompted { .. } => self
-                .params()
-                .iter()
-                .find(|param| param.required)
-                .or_else(|| self.params().first())
-                .map(|param| param.name.as_ref()),
+        match self.lane {
+            Lane::Prompted { .. } => primary_param(self.params()).map(|param| param.name.as_ref()),
             _ => None,
         }
     }
@@ -1288,25 +1435,9 @@ impl ActionSpec {
         debug_assert_ne!(kind, OperationKind::Document);
         let type_id = type_id.into();
         let encoded = EncodedAction::encode_operation(type_id.clone(), payload)?;
-        let encoded = Arc::new(encoded);
-        let for_build = Arc::clone(&encoded);
-        Ok(Self {
-            id: id.into(),
-            label: label.into(),
-            description: None,
-            locus: ExecutionLocus::ClientLocal,
-            kind,
-            operation_type: Some(type_id),
-            contract: ActionContract::for_operation(kind),
-            input: ActionInput::Immediate(encoded),
-            params: Vec::new(),
-            build: InvocationBuilder::Fixed(for_build),
-            risk_of: None,
-            need_of: None,
-            continuation_resolver: None,
-            carrier: false,
-            applied_as: None,
-        })
+        let mut seed = Declared::new(id.into(), label.into(), ExecutionLocus::ClientLocal, kind);
+        seed.operation_type = Some(type_id);
+        Ok(Self::fixed(seed, encoded))
     }
 
     /// A prompted effect or view operation owned by the application.
@@ -1323,38 +1454,24 @@ impl ActionSpec {
         let prompt = prompt.into();
         let type_id = type_id.into();
         let expected = type_id.clone();
-        let build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync> =
-            Arc::new(move |value| enforce_operation_type(build(value), &expected));
-        let for_args = build.clone();
-        Self {
-            id: id.into(),
-            label: label.into(),
-            description: None,
-            locus: ExecutionLocus::ClientLocal,
-            kind,
-            operation_type: Some(type_id),
-            contract: ActionContract::for_operation(kind),
-            params: vec![ActionParam::required_owned(
-                PROMPTED_PARAM,
-                ParamType::Text,
-                prompt.clone(),
-            )],
-            build: InvocationBuilder::Dynamic {
-                build: Arc::new(move |args| for_args(args.text(PROMPTED_PARAM).unwrap_or(""))),
-                deferred_type: None,
-            },
-            input: ActionInput::Prompted {
+        let mut seed = Declared::new(id.into(), label.into(), ExecutionLocus::ClientLocal, kind);
+        seed.operation_type = Some(type_id);
+        seed.params = vec![ActionParam::required_owned(
+            PROMPTED_PARAM,
+            ParamType::Text,
+            prompt.clone(),
+        )];
+        Self::declared(
+            seed,
+            Lane::Prompted {
                 prompt,
                 placeholder: placeholder.into(),
                 collects: Collects::Words,
-                build,
             },
-            risk_of: None,
-            need_of: None,
-            continuation_resolver: None,
-            carrier: false,
-            applied_as: None,
-        }
+            InvocationBuilder::Text(Arc::new(move |_, value| {
+                enforce_operation_type(build(value), &expected)
+            })),
+        )
     }
 
     /// An action with a real typed argument surface.
@@ -1365,7 +1482,8 @@ impl ActionSpec {
     /// declaration, so a caller that sends `"hlaf"` for a choice parameter gets
     /// a named refusal instead of a silent default.
     ///
-    /// The palette can still offer it. `input` is derived from `params`:
+    /// The palette can still offer it. Its [`input`](Self::input) is derived
+    /// from `params`:
     ///
     /// * no parameters → [`Immediate`](ActionInput::Immediate) of the action
     ///   `build` returns for an empty argument set;
@@ -1397,7 +1515,34 @@ impl ActionSpec {
                 operation_type: None,
                 params,
             },
-            build,
+            Arc::new(move |_, args| build(args)),
+            true,
+        )
+    }
+
+    /// [`typed`](Self::typed) for a type shared by many targets: the builder
+    /// is given the target of the spec being invoked. A nullary one is
+    /// encoded per invocation, as its target says what it does.
+    pub fn typed_on(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        placeholder: impl Into<String>,
+        locus: ExecutionLocus,
+        params: Vec<ActionParam>,
+        build: impl Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        Self::typed_with_kind(
+            TypedActionSeed {
+                id: id.into(),
+                label: label.into(),
+                placeholder: placeholder.into(),
+                locus,
+                kind: OperationKind::Document,
+                operation_type: None,
+                params,
+            },
+            Arc::new(build),
+            false,
         )
     }
 
@@ -1423,40 +1568,81 @@ impl ActionSpec {
                 operation_type: Some(type_id.into()),
                 params,
             },
-            build,
+            Arc::new(move |_, args| build(args)),
+            true,
         )
     }
 
-    fn typed_with_kind(
-        seed: TypedActionSeed,
-        build: impl Fn(&ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    /// [`typed_operation`](Self::typed_operation) for a type shared by many
+    /// targets, as [`typed_on`](Self::typed_on) is for [`typed`](Self::typed).
+    pub fn typed_operation_on(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        placeholder: impl Into<String>,
+        kind: OperationKind,
+        type_id: impl Into<String>,
+        params: Vec<ActionParam>,
+        build: impl Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
+        debug_assert_ne!(kind, OperationKind::Document);
+        Self::typed_with_kind(
+            TypedActionSeed {
+                id: id.into(),
+                label: label.into(),
+                placeholder: placeholder.into(),
+                locus: ExecutionLocus::ClientLocal,
+                kind,
+                operation_type: Some(type_id.into()),
+                params,
+            },
+            Arc::new(build),
+            false,
+        )
+    }
+
+    /// `eager`: encode a nullary action once, now, as an action that holds
+    /// what it acts on in its builder always has.
+    fn typed_with_kind(seed: TypedActionSeed, build: ArgsBuilder, eager: bool) -> Self {
         let build: ArgsBuilder = if let Some(expected) = seed.operation_type.clone() {
-            Arc::new(move |args| enforce_operation_type(build(args), &expected))
+            Arc::new(move |target, args| enforce_operation_type(build(target, args), &expected))
         } else {
-            Arc::new(build)
+            build
         };
-        let input = derive_input(&seed.params, &build, seed.placeholder);
-        Self {
-            id: seed.id,
-            label: seed.label,
-            description: None,
-            locus: seed.locus,
-            kind: seed.kind,
-            operation_type: seed.operation_type,
-            contract: ActionContract::for_operation(seed.kind),
-            input,
-            params: seed.params,
-            build: InvocationBuilder::Dynamic {
+        let lane = match primary_param(&seed.params) {
+            None => Lane::Immediate(
+                eager.then(|| Arc::new(build(&Target::none(), &ActionArgs::none()))),
+            ),
+            Some(primary) => Lane::Prompted {
+                prompt: primary.description.to_string(),
+                placeholder: seed.placeholder,
+                collects: Collects::Words,
+            },
+        };
+        Self::declared(
+            Declared {
+                id: seed.id,
+                label: seed.label,
+                locus: seed.locus,
+                kind: seed.kind,
+                operation_type: seed.operation_type,
+                params: seed.params,
+            },
+            lane,
+            InvocationBuilder::Dynamic {
                 build,
                 deferred_type: None,
             },
-            risk_of: None,
-            need_of: None,
-            continuation_resolver: None,
-            carrier: false,
-            applied_as: None,
-        }
+        )
+    }
+
+    /// Fire `encoded` at once when a person chooses the action (the palette,
+    /// a menu, the shortcut), asking nothing; a caller that passes arguments
+    /// still binds them against its parameters. For a typed action whose
+    /// arguments all have a meaning when left out (open search, unnarrowed).
+    #[must_use]
+    pub fn with_immediate(mut self, encoded: EncodedAction) -> Self {
+        self.type_mut().lane = Lane::Immediate(Some(Arc::new(encoded)));
+        self
     }
 
     /// Opt one action into inert, provider-defined continuation evidence.
@@ -1468,7 +1654,7 @@ impl ActionSpec {
         + Sync
         + 'static,
     ) -> Self {
-        self.continuation_resolver = Some(Arc::new(resolver));
+        self.type_mut().continuation_resolver = Some(Arc::new(resolver));
         self
     }
 
@@ -1499,7 +1685,22 @@ impl ActionSpec {
         locus: ExecutionLocus,
         build: impl Fn(&str) -> EncodedAction + Send + Sync + 'static,
     ) -> Self {
-        let mut spec = Self::prompted_param(
+        Self::prompted_content_on(id, label, prompt, placeholder, locus, move |_, hash| {
+            build(hash)
+        })
+    }
+
+    /// [`prompted_content`](Self::prompted_content) for a type shared by many
+    /// targets: the builder is given the target of the spec being invoked.
+    pub fn prompted_content_on(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        prompt: impl Into<String>,
+        placeholder: impl Into<String>,
+        locus: ExecutionLocus,
+        build: impl Fn(&Target, &str) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        let mut spec = Self::prompted_param_on(
             id,
             label,
             ActionParam::required_owned(PROMPTED_PARAM, ParamType::Text, prompt.into()),
@@ -1507,7 +1708,7 @@ impl ActionSpec {
             locus,
             build,
         );
-        if let ActionInput::Prompted { collects, .. } = &mut spec.input {
+        if let Lane::Prompted { collects, .. } = &mut spec.type_mut().lane {
             *collects = Collects::Content;
         }
         spec
@@ -1515,19 +1716,19 @@ impl ActionSpec {
 
     #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
-        self.description = Some(description.into());
+        self.type_mut().description = Some(description.into());
         self
     }
 
     #[must_use]
     pub fn with_contract(mut self, contract: ActionContract) -> Self {
-        self.contract = contract;
+        self.type_mut().contract = contract;
         self
     }
 
     #[must_use]
     pub fn unavailable(mut self, code: impl Into<String>, reason: impl Into<String>) -> Self {
-        self.contract.availability = Availability::Unavailable {
+        self.type_mut().contract.availability = Availability::Unavailable {
             code: code.into(),
             reason: reason.into(),
         };
@@ -1536,8 +1737,8 @@ impl ActionSpec {
 
     #[must_use]
     pub fn destructive(mut self) -> Self {
-        self.contract.risk = RiskLevel::Destructive;
-        self.contract.confirmation = ConfirmationPolicy::Confirm;
+        self.type_mut().contract.risk = RiskLevel::Destructive;
+        self.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
         self
     }
 
@@ -1550,7 +1751,10 @@ impl ActionSpec {
     /// every boundary the inert contract does.
     #[must_use]
     pub fn programmatic(mut self) -> Self {
-        push_tag(&mut self.contract, crate::contract::PROGRAMMATIC_TAG);
+        push_tag(
+            &mut self.type_mut().contract,
+            crate::contract::PROGRAMMATIC_TAG,
+        );
         self
     }
 
@@ -1561,7 +1765,10 @@ impl ActionSpec {
     /// [`with_contract`](Self::with_contract), which replaces the tags.
     #[must_use]
     pub fn reads_document(mut self) -> Self {
-        push_tag(&mut self.contract, crate::contract::DOCUMENT_READ_TAG);
+        push_tag(
+            &mut self.type_mut().contract,
+            crate::contract::DOCUMENT_READ_TAG,
+        );
         self
     }
 
@@ -1574,10 +1781,13 @@ impl ActionSpec {
     /// [`with_contract`](Self::with_contract), which replaces the tags.
     #[must_use]
     pub fn opens_path(mut self, extensions: &[&str]) -> Self {
-        push_tag(&mut self.contract, crate::contract::OPENS_PATH_TAG);
+        push_tag(
+            &mut self.type_mut().contract,
+            crate::contract::OPENS_PATH_TAG,
+        );
         for extension in extensions {
             push_tag(
-                &mut self.contract,
+                &mut self.type_mut().contract,
                 &format!(
                     "{}{}",
                     crate::contract::OPENS_PATH_EXTENSION_PREFIX,
@@ -1599,7 +1809,7 @@ impl ActionSpec {
     /// it carried, never this one.
     #[must_use]
     pub fn carrying(mut self) -> Self {
-        self.carrier = true;
+        self.type_mut().carrier = true;
         self
     }
 
@@ -1620,11 +1830,24 @@ impl ActionSpec {
     /// classify know to expect it.
     #[must_use]
     pub fn with_risk(
-        mut self,
+        self,
         classify: impl Fn(&ActionArgs) -> RiskLevel + Send + Sync + 'static,
     ) -> Self {
-        push_tag(&mut self.contract, crate::contract::ARGUMENT_RISK_TAG);
-        self.risk_of = Some(Arc::new(classify));
+        self.with_risk_on(move |_, args| classify(args))
+    }
+
+    /// [`with_risk`](Self::with_risk) for a type shared by many targets: the
+    /// classifier is given the target of the spec being invoked.
+    #[must_use]
+    pub fn with_risk_on(
+        mut self,
+        classify: impl Fn(&Target, &ActionArgs) -> RiskLevel + Send + Sync + 'static,
+    ) -> Self {
+        push_tag(
+            &mut self.type_mut().contract,
+            crate::contract::ARGUMENT_RISK_TAG,
+        );
+        self.type_mut().risk_of = Some(Arc::new(classify));
         self
     }
 
@@ -1640,17 +1863,17 @@ impl ActionSpec {
         mut self,
         classify: impl Fn(&ActionArgs) -> ActionNeed + Send + Sync + 'static,
     ) -> Self {
-        self.need_of = Some(Arc::new(classify));
+        self.type_mut().need_of = Some(Arc::new(move |_, args| classify(args)));
         self
     }
 
     /// What one invocation with these bound arguments is: the classifier's
     /// verdict, else the declared contract's.
     pub fn need_for_args(&self, args: &ActionArgs) -> ActionNeed {
-        let mut need = self
-            .need_of
-            .as_ref()
-            .map_or_else(|| self.contract.need(), |classify| classify(args));
+        let mut need = self.need_of.as_ref().map_or_else(
+            || self.contract.need(),
+            |classify| classify(&self.target, args),
+        );
         need.privileged |= self.risk_for(args) == RiskLevel::Privileged;
         need
     }
@@ -1692,7 +1915,7 @@ impl ActionSpec {
     pub fn risk_for(&self, args: &ActionArgs) -> RiskLevel {
         self.risk_of
             .as_ref()
-            .map_or(self.contract.risk, |classify| classify(args))
+            .map_or(self.contract.risk, |classify| classify(&self.target, args))
     }
 
     /// The confirmation one invocation with these bound arguments needs: the
@@ -1753,23 +1976,23 @@ impl ActionSpec {
 
     #[must_use]
     pub fn privileged(mut self) -> Self {
-        self.contract.risk = RiskLevel::Privileged;
-        self.contract.confirmation = ConfirmationPolicy::Confirm;
+        self.type_mut().contract.risk = RiskLevel::Privileged;
+        self.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
         self
     }
 
     /// Set what the action is able to do. See [`ActionContract::kind`].
     #[must_use]
     pub fn of_kind(mut self, kind: ActionKind) -> Self {
-        self.contract.kind = kind;
+        self.type_mut().contract.kind = kind;
         self
     }
 
     /// Set what the action is: its kind and the field it writes.
     #[must_use]
     pub fn with_need(mut self, need: ActionNeed) -> Self {
-        self.contract.kind = need.kind;
-        self.contract.field = need.field;
+        self.type_mut().contract.kind = need.kind;
+        self.type_mut().contract.field = need.field;
         self
     }
 
@@ -1777,31 +2000,31 @@ impl ActionSpec {
     /// [`ActionContract::field`].
     #[must_use]
     pub fn below_field(mut self, field: impl Into<String>) -> Self {
-        self.contract.field = Some(field.into());
+        self.type_mut().contract.field = Some(field.into());
         self
     }
 
     #[must_use]
     pub fn reversible(mut self) -> Self {
-        self.contract.reversible = true;
+        self.type_mut().contract.reversible = true;
         self
     }
 
     #[must_use]
     pub fn retry_policy(mut self, retry: RetryPolicy) -> Self {
-        self.contract.retry = retry;
+        self.type_mut().contract.retry = retry;
         self
     }
 
     #[must_use]
     pub fn execution(mut self, execution: ExecutionMode) -> Self {
-        self.contract.execution = execution;
+        self.type_mut().contract.execution = execution;
         self
     }
 
     #[must_use]
     pub fn returns(mut self, result: ResultSpec) -> Self {
-        self.contract.result = result;
+        self.type_mut().contract.result = result;
         self
     }
 
@@ -1829,7 +2052,8 @@ impl ActionSpec {
                     wrap(encoded)
                 }
             });
-        self.build = match self.build {
+        let ty = self.type_mut();
+        ty.build = match ty.build.clone() {
             InvocationBuilder::Fixed(encoded) => {
                 InvocationBuilder::Fixed(Arc::new(wrap(encoded.as_ref().clone())))
             }
@@ -1839,31 +2063,22 @@ impl ActionSpec {
             } => {
                 let wrap = Arc::clone(&wrap);
                 InvocationBuilder::Dynamic {
-                    build: Arc::new(move |args| wrap(build(args))),
+                    build: Arc::new(move |target, args| wrap(build(target, args))),
                     deferred_type: deferred_type.map(|_| wrapped_type.to_owned()),
                 }
             }
-        };
-        self.input = match self.input {
-            ActionInput::Immediate(encoded) => {
-                ActionInput::Immediate(Arc::new(wrap(encoded.as_ref().clone())))
+            InvocationBuilder::Text(build) => {
+                let wrap = Arc::clone(&wrap);
+                InvocationBuilder::Text(Arc::new(move |target, text| wrap(build(target, text))))
             }
-            ActionInput::Deferred { build, .. } => ActionInput::Deferred {
-                type_id: wrapped_type.to_owned(),
-                build: Arc::new(move || wrap(build())),
-            },
-            ActionInput::Prompted {
-                prompt,
-                placeholder,
-                collects,
-                build,
-            } => ActionInput::Prompted {
-                prompt,
-                placeholder,
-                collects,
-                build: Arc::new(move |text| wrap(build(text))),
-            },
         };
+        match &mut ty.lane {
+            Lane::Immediate(Some(encoded)) => {
+                *encoded = Arc::new(wrap(encoded.as_ref().clone()));
+            }
+            Lane::Deferred { type_id } => wrapped_type.clone_into(type_id),
+            Lane::Immediate(None) | Lane::Prompted { .. } => {}
+        }
         self
     }
 
@@ -1884,8 +2099,9 @@ impl ActionSpec {
             return self;
         }
         let mut spec = self.rewrapped(operation_type, wrap);
-        spec.kind = OperationKind::Effect;
-        spec.operation_type = Some(operation_type.to_owned());
+        let ty = spec.type_mut();
+        ty.kind = OperationKind::Effect;
+        ty.operation_type = Some(operation_type.to_owned());
         spec
     }
 
@@ -1917,7 +2133,7 @@ impl ActionSpec {
     ) -> Result<EncodedAction, ArgError> {
         self.validate_deferred_shape()?;
         let bound = ActionArgs::bind(&self.params, supplied)?;
-        self.validate_built(self.build.build(&bound))
+        self.validate_built(self.ty.encode(&self.target, &bound))
     }
 
     /// [`build_args`](Self::build_args) for arguments that arrived as JSON.
@@ -1932,16 +2148,27 @@ impl ActionSpec {
     ) -> Result<EncodedAction, ArgError> {
         self.validate_deferred_shape()?;
         let bound = ActionArgs::bind_json(&self.params, supplied)?;
-        self.validate_built(self.build.build(&bound))
+        self.validate_built(self.ty.encode(&self.target, &bound))
     }
 
     /// The palette lane's encoding for one typed text argument, exactly as a
     /// prompted affordance builds it. `None` when this action collects no text.
     pub fn build_text(&self, text: &str) -> Option<EncodedAction> {
-        match &self.input {
-            ActionInput::Prompted { build, .. } => Some(build(text)),
-            ActionInput::Immediate(_) | ActionInput::Deferred { .. } => None,
+        if !matches!(self.lane, Lane::Prompted { .. }) {
+            return None;
         }
+        Some(match &self.build {
+            InvocationBuilder::Text(build) => build(&self.target, text),
+            InvocationBuilder::Fixed(_) | InvocationBuilder::Dynamic { .. } => {
+                match ActionArgs::bind(&self.params, primary_argument(&self.params, text)) {
+                    Ok(bound) => self.ty.encode(&self.target, &bound),
+                    Err(error) => EncodedAction {
+                        type_id: INVALID_ARGUMENTS_TYPE.into(),
+                        payload: error.to_string().into_bytes(),
+                    },
+                }
+            }
+        })
     }
 }
 
@@ -1969,13 +2196,9 @@ fn push_tag(contract: &mut ActionContract, tag: &str) {
 /// Bind one line of text to the primary parameter (the first required one,
 /// else the first), as the palette collects it.
 fn primary_argument(params: &[ActionParam], text: &str) -> Vec<(String, ArgValue)> {
-    params
-        .iter()
-        .find(|p| p.required)
-        .or_else(|| params.first())
-        .map_or_else(Vec::new, |primary| {
-            parse_argument(&primary.name, primary.ty, text)
-        })
+    primary_param(params).map_or_else(Vec::new, |primary| {
+        parse_argument(&primary.name, primary.ty, text)
+    })
 }
 
 /// Parse the one line the palette can collect into a parameter's declared
@@ -2009,35 +2232,13 @@ fn parse_argument(name: &str, ty: ParamType, text: &str) -> Vec<(String, ArgValu
         .unwrap_or_default()
 }
 
-/// Derive the palette-facing [`ActionInput`] for a [`typed`](ActionSpec::typed)
-/// spec from its declared parameters. See that constructor's docs.
-fn derive_input(params: &[ActionParam], build: &ArgsBuilder, placeholder: String) -> ActionInput {
-    let Some(primary) = params
+/// The parameter one line of palette text binds to: the first required one,
+/// else the first.
+fn primary_param(params: &[ActionParam]) -> Option<&ActionParam> {
+    params
         .iter()
         .find(|p| p.required)
         .or_else(|| params.first())
-    else {
-        return ActionInput::Immediate(Arc::new(build(&ActionArgs::none())));
-    };
-    let name = primary.name.to_string();
-    let ty = primary.ty;
-    let params = params.to_vec();
-    let build = build.clone();
-    ActionInput::Prompted {
-        prompt: primary.description.to_string(),
-        placeholder,
-        collects: Collects::Words,
-        build: Arc::new(move |text: &str| {
-            let supplied = parse_argument(&name, ty, text);
-            match ActionArgs::bind(&params, supplied) {
-                Ok(bound) => build(&bound),
-                Err(error) => EncodedAction {
-                    type_id: INVALID_ARGUMENTS_TYPE.into(),
-                    payload: error.to_string().into_bytes(),
-                },
-            }
-        }),
-    }
 }
 
 /// Field separator inside a flattened composite key — a unit-separator
@@ -2435,16 +2636,91 @@ mod tests {
         );
         // The typed projection and the palette's one-field input build the same bytes.
         assert_eq!(named.build_json(&typed).unwrap(), encode("Plan"));
-        let ActionInput::Prompted { prompt, build, .. } = &named.input else {
+        let ActionInput::Prompted { prompt, .. } = named.input() else {
             panic!("a prompted action prompts");
         };
         assert_eq!(prompt, "The note's new title");
-        assert_eq!(build("Plan"), encode("Plan"));
+        assert_eq!(named.build_text("Plan"), Some(encode("Plan")));
         // An action that collects no text has no prompt parameter.
         let immediate =
             ActionSpec::operation("run", "Run", OperationKind::Effect, "test.run", &()).unwrap();
         assert_eq!(immediate.prompt_param(), None);
         assert_eq!(immediate.prompt_arguments("x"), None);
+    }
+
+    /// One action type serves every item that offers it: each spec is the
+    /// type bound to its item, builds for that item on every lane, and a
+    /// change to one item's action copies the type rather than reaching the
+    /// others.
+    #[test]
+    fn one_action_type_bound_to_many_targets_builds_for_each() {
+        fn encode(item: &str, title: &str) -> EncodedAction {
+            EncodedAction::encode_operation("notes.retitle", &(item, title)).unwrap()
+        }
+        let item = |target: &Target| target.get::<String>().cloned().unwrap_or_default();
+        let retitle = ActionSpec::typed_operation_on(
+            "retitle",
+            "Retitle",
+            "Title",
+            OperationKind::Effect,
+            "notes.retitle",
+            vec![ActionParam::required("title", ParamType::Text, "The title")],
+            move |target, args| encode(&item(target), args.text("title").unwrap_or("")),
+        )
+        .with_description("Give the note a new title");
+        let ty = Arc::clone(retitle.action_type());
+        let a = ty.bind(Target::new("a".to_owned()));
+        let b = ty.bind(Target::new("b".to_owned()));
+        assert!(Arc::ptr_eq(a.action_type(), b.action_type()));
+        assert_eq!(a.description.as_deref(), Some("Give the note a new title"));
+        assert_eq!(a.prompt_param(), b.prompt_param());
+        let typed = a.prompt_arguments("Plan").unwrap();
+        assert_eq!(a.build_json(&typed).unwrap(), encode("a", "Plan"));
+        assert_eq!(b.build_json(&typed).unwrap(), encode("b", "Plan"));
+        assert_eq!(b.build_text("Plan"), Some(encode("b", "Plan")));
+
+        // A nullary type is encoded per target when it fires.
+        let open = ActionSpec::typed_operation_on(
+            "open",
+            "Open",
+            "",
+            OperationKind::View,
+            "notes.open",
+            Vec::new(),
+            move |target, _| EncodedAction::encode_operation("notes.open", &item(target)).unwrap(),
+        );
+        let open = Arc::clone(open.action_type());
+        assert_eq!(
+            open.bind(Target::none()).input(),
+            ActionInput::Immediate(None)
+        );
+        assert_eq!(
+            open.bind(Target::new("b".to_owned()))
+                .encode_immediate()
+                .as_deref(),
+            Some(&EncodedAction::encode_operation("notes.open", &"b").unwrap())
+        );
+
+        // A deferred type builds for the target it is invoked on.
+        let finish = ActionSpec::deferred_on(
+            "finish",
+            "Finish",
+            ExecutionLocus::ClientLocal,
+            "notes.finish",
+            move |target| EncodedAction::encode_operation("notes.finish", &item(target)).unwrap(),
+        );
+        let finish = Arc::clone(finish.action_type()).bind(Target::new("a".to_owned()));
+        assert_eq!(
+            finish.build_deferred(),
+            Some(EncodedAction::encode_operation("notes.finish", &"a").unwrap())
+        );
+
+        // Changing one item's action leaves the shared type alone.
+        let unavailable = b.clone().unavailable("locked", "The note is locked");
+        assert!(!Arc::ptr_eq(unavailable.action_type(), &ty));
+        assert!(!unavailable.contract.availability.is_available());
+        assert!(a.contract.availability.is_available());
+        assert_eq!(unavailable.build_json(&typed).unwrap(), encode("b", "Plan"));
     }
 
     #[test]

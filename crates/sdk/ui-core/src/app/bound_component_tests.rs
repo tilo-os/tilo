@@ -485,10 +485,11 @@ impl crate::resources::PublishesResources for Probe {
             &(),
         )
         .unwrap();
-        action.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
-        action.contract.result = tilo_actions::ResultSpec::Job;
+        action.type_mut().contract.execution =
+            tilo_actions::ExecutionMode::Background { cancellable: true };
+        action.type_mut().contract.result = tilo_actions::ResultSpec::Job;
         if self.strict {
-            action.contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+            action.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
         }
         let mut document = tilo_actions::ActionSpec::immediate(
             "apply",
@@ -498,9 +499,9 @@ impl crate::resources::PublishesResources for Probe {
         )
         .unwrap();
         if DOCUMENT_JOB_MODE.get() {
-            document.contract.execution =
+            document.type_mut().contract.execution =
                 tilo_actions::ExecutionMode::Background { cancellable: true };
-            document.contract.result = tilo_actions::ResultSpec::Job;
+            document.type_mut().contract.result = tilo_actions::ResultSpec::Job;
         }
         let mut resource = tilo_actions::Resource::new(
             self.collision.as_deref().unwrap_or("bound:probe"),

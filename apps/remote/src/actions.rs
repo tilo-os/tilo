@@ -87,7 +87,7 @@ pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
         "Open a live session to this saved connection. {}",
         readiness.detail(connection.kind)
     ));
-    spec.contract.tags = vec!["network".into(), "session".into()];
+    spec.type_mut().contract.tags = vec!["network".into(), "session".into()];
     if readiness.can_connect() {
         spec
     } else {
@@ -109,7 +109,7 @@ const HOST_KEY_TAGS: &[&str] = &["ssh", "host-key", "device-private"];
 
 /// `spec`, tagged with what it touches.
 fn tagged(mut spec: ActionSpec, tags: &[&str]) -> ActionSpec {
-    spec.contract.tags = tags.iter().map(|tag| (*tag).to_string()).collect();
+    spec.type_mut().contract.tags = tags.iter().map(|tag| (*tag).to_string()).collect();
     spec
 }
 

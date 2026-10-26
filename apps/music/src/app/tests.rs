@@ -5111,7 +5111,8 @@ fn playback_failure_does_not_advertise_retry_of_an_at_most_once_invocation() {
         queued: None,
     }
     .bound()
-    .contract;
+    .contract
+    .clone();
     assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
     assert!(!error.retryable);
     assert!(error.message.contains("Premium eligibility"));

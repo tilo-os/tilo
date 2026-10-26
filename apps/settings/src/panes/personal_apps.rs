@@ -233,7 +233,7 @@ impl DefaultAppsArea {
                         app: app.package_id.clone(),
                     })
                     .bound();
-                    choose.label = format!(
+                    choose.type_mut().label = format!(
                         "Open {} with {}",
                         PersonalAppsPane::resource_label(&kind),
                         app.display_name

@@ -381,7 +381,7 @@ fn capture_row(ctx: &CameraResourceCtx) -> LiveRow {
                     },
                     selected.then_some(("already_selected", "This camera is already selected")),
                 );
-                spec.label = format!("Use {device}");
+                spec.type_mut().label = format!("Use {device}");
                 let label = if selected {
                     format!("{device} (selected)")
                 } else {
@@ -415,7 +415,7 @@ fn capture_row(ctx: &CameraResourceCtx) -> LiveRow {
         },
     );
     if ctx.recording {
-        record.label = "Stop recording".into();
+        record.type_mut().label = "Stop recording".into();
     }
     row.operation(record)
 }
@@ -482,7 +482,7 @@ mod tests {
     use super::*;
     use crate::app::CameraApp;
     use crate::record::Record;
-    use ui::tilo_actions::{ActionInput, OperationKind, Resource};
+    use ui::tilo_actions::{OperationKind, Resource};
 
     /// A record holding the sample recent capture.
     fn seeded() -> Record {
@@ -553,7 +553,7 @@ mod tests {
                 browse.operation_type.as_deref(),
                 Some(ApplicationLaunch::TYPE)
             );
-            let ActionInput::Immediate(encoded) = &browse.input else {
+            let Some(encoded) = browse.encode_immediate() else {
                 panic!("Photos browse is a zero-argument application handoff");
             };
             let browse_payload: serde_json::Value =
@@ -585,7 +585,7 @@ mod tests {
                     }),
                     "Camera does not publish media-library management"
                 );
-                let ActionInput::Immediate(encoded) = &action.input else {
+                let Some(encoded) = action.encode_immediate() else {
                     panic!("zero-argument handoff must be immediate");
                 };
                 let payload: serde_json::Value =
@@ -712,7 +712,7 @@ mod tests {
         {
             let ids: Vec<String> = CameraEffect::specs()
                 .into_iter()
-                .map(|spec| spec.id)
+                .map(|spec| spec.id.clone())
                 .collect();
             for id in [
                 "use-mode",

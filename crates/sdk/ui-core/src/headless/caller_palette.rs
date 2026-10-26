@@ -315,8 +315,8 @@ mod tests {
                 payload: vec![],
             },
         );
-        action.kind = tilo_actions::OperationKind::Effect;
-        action.contract.confirmation = confirmation;
+        action.type_mut().kind = tilo_actions::OperationKind::Effect;
+        action.type_mut().contract.confirmation = confirmation;
         vec![
             tilo_actions::Resource::new(
                 "certified-host/room/record/revision",

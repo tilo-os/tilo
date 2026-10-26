@@ -450,7 +450,7 @@ pub(crate) fn effect_payload(effect: &MusicEffect) -> Vec<u8> {
 /// `effect` bound to the row it acts on, under the row's own `label`.
 pub(crate) fn bound(effect: &MusicEffect, label: &str) -> ActionSpec {
     let mut spec = effect.bound();
-    label.clone_into(&mut spec.label);
+    label.clone_into(&mut spec.type_mut().label);
     spec
 }
 

@@ -430,7 +430,7 @@ impl ui::resources::PublishesResources for GreeterApp {
         for mut spec in specs {
             if spec.id == "respond-challenge" {
                 if self.phase != AuthPhase::Authenticating || challenge.is_none() {
-                    spec.contract.availability = Availability::Unavailable {
+                    spec.type_mut().contract.availability = Availability::Unavailable {
                         code: "no_authentication_challenge".into(),
                         reason: "No authentication challenge is waiting for a response".into(),
                     };
@@ -442,13 +442,13 @@ impl ui::resources::PublishesResources for GreeterApp {
                         .as_ref()
                         .is_none_or(|session| !session.can_cancel())
                 {
-                    spec.contract.availability = Availability::Unavailable {
+                    spec.type_mut().contract.availability = Availability::Unavailable {
                         code: "no_cancellable_authentication".into(),
                         reason: "No authentication attempt can be cancelled now".into(),
                     };
                 }
             } else if self.phase != AuthPhase::Idle {
-                spec.contract.availability = Availability::Unavailable {
+                spec.type_mut().contract.availability = Availability::Unavailable {
                     code: "authentication_busy".into(),
                     reason: "An authentication attempt is already running".into(),
                 };
@@ -456,7 +456,7 @@ impl ui::resources::PublishesResources for GreeterApp {
                 && (self.attempt_username().is_empty()
                     || self.sessions.get(self.selected_session).is_none())
             {
-                spec.contract.availability = Availability::Unavailable {
+                spec.type_mut().contract.availability = Availability::Unavailable {
                     code: "sign_in_not_ready".into(),
                     reason: "Choose an account and an available session first".into(),
                 };

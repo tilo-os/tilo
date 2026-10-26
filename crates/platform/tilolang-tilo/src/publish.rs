@@ -11,7 +11,8 @@ use std::sync::Arc;
 use serde_json::Value as Json;
 use tilo_actions::resource::INVALID_ARGUMENTS_TYPE;
 use tilo_actions::{
-    ActionArgs, ActionParam, ActionSpec, EncodedAction, ExecutionLocus, ParamType, Resource,
+    ActionArgs, ActionParam, ActionSpec, ActionType, EncodedAction, ExecutionLocus, ParamType,
+    Resource, Target,
 };
 
 use crate::action::DynAction;
@@ -125,32 +126,30 @@ fn action_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
     built.with_schema(schema_of_type(meta, &param.ty))
 }
 
-/// The typed action spec of `action`, whose build runs `planner`.
-///
-/// `subject` is the id of the resource the action is published on, when it has one.
+/// The type of the typed action `action` on resources of kind `kind`, whose build runs
+/// `planner` on the subject its spec is bound to: the resource id it is published on, a
+/// [`String`] [`Target`], or none for an action that takes no resource.
 #[must_use]
-pub fn action_spec(
+pub fn action_type(
     meta: &Meta,
     kind: &str,
-    subject: Option<&str>,
     action: &ActionMeta,
     planner: &Arc<dyn Planner>,
-) -> ActionSpec {
+) -> Arc<ActionType> {
     let params: Vec<ActionParam> = arguments(meta, &action.params)
         .iter()
         .map(|param| action_param(meta, param))
         .collect();
     let (app, kind, id) = (meta.app.clone(), kind.to_owned(), action.id.clone());
-    let subject = subject.map(str::to_owned);
     let planner = Arc::clone(planner);
-    let build = move |args: &ActionArgs| {
+    let build = move |subject: &Target, args: &ActionArgs| {
         let json = args.to_json();
         let caller = planner.caller();
         let request = PlanRequest {
             app: &app,
             kind: &kind,
             action_id: &id,
-            resource: subject.as_deref(),
+            resource: subject.get::<String>().map(String::as_str),
             args: &json,
             caller: caller.as_ref(),
         };
@@ -177,15 +176,15 @@ pub fn action_spec(
     // An action without parameters is planned when it runs, not when it is published: planning
     // is a trial run of the action, and publishing every item's actions must not run them all.
     let spec = if params.is_empty() {
-        ActionSpec::deferred(
+        ActionSpec::deferred_on(
             action.id.clone(),
             label,
             ExecutionLocus::ClientLocal,
             crate::action::ACTION_TYPE,
-            move || build(&ActionArgs::none()),
+            move |subject| build(subject, &ActionArgs::none()),
         )
     } else {
-        ActionSpec::typed(
+        ActionSpec::typed_on(
             action.id.clone(),
             label,
             placeholder,
@@ -198,33 +197,95 @@ pub fn action_spec(
     if !action.doc.is_empty() {
         spec = spec.with_description(action.doc.clone());
     }
-    spec
+    Arc::clone(spec.action_type())
+}
+
+/// The action types a package's resources offer, built once per package and shared by every
+/// resource that offers them: an item's spec is its type bound to the item.
+pub struct ActionTypes {
+    meta: Meta,
+    planner: Arc<dyn Planner>,
+    /// Per type name, the action types of its resources.
+    on_type: std::collections::BTreeMap<String, TypeActions>,
+}
+
+/// The action types of the resources of one tilolang type.
+struct TypeActions {
+    /// The two direct edits ([`edit_types`]), which a record offers.
+    edits: [Arc<ActionType>; 2],
+    /// The actions whose subject is the type.
+    actions: Vec<Arc<ActionType>>,
+}
+
+impl ActionTypes {
+    /// The action types of the package `meta`, whose actions `planner` runs.
+    #[must_use]
+    pub fn new(meta: &Meta, planner: &Arc<dyn Planner>) -> Self {
+        let mut on_type = std::collections::BTreeMap::new();
+        for declared in &meta.types {
+            let kind = meta.kind_of(&declared.name);
+            let actions = meta
+                .offered_actions()
+                .filter(|action| {
+                    meta.subject_of(&action.params)
+                        .is_some_and(|subject| subject.name == declared.name)
+                })
+                .map(|action| action_type(meta, &kind, action, planner))
+                .collect();
+            on_type.insert(
+                declared.name.clone(),
+                TypeActions {
+                    edits: edit_types(meta, &declared.name),
+                    actions,
+                },
+            );
+        }
+        Self {
+            meta: meta.clone(),
+            planner: Arc::clone(planner),
+            on_type,
+        }
+    }
+
+    /// The package these types are of.
+    #[must_use]
+    pub fn meta(&self) -> &Meta {
+        &self.meta
+    }
+
+    /// Whether these are the types of the package as `meta` describes it now, run by
+    /// `planner`.
+    fn describe(&self, meta: &Meta, planner: &Arc<dyn Planner>) -> bool {
+        self.meta.app == meta.app
+            && self.meta.module_hash == meta.module_hash
+            && Arc::ptr_eq(&self.planner, planner)
+    }
+
+    /// The resource `id` of the type `type_name`, labelled `label`, carrying its `open`, the
+    /// direct edits when it is a record (`edits`), and the actions on its type.
+    fn resource(&self, type_name: &str, id: &str, label: String, edits: bool) -> Resource {
+        let mut resource = Resource::new(
+            resource_id(&self.meta.app, id),
+            self.meta.kind_of(type_name),
+            label,
+        )
+        .with_action(open_spec(id));
+        let Some(of_type) = self.on_type.get(type_name) else {
+            return resource;
+        };
+        let subject = Target::new(id.to_owned());
+        let edits = if edits { &of_type.edits[..] } else { &[] };
+        for ty in edits.iter().chain(&of_type.actions) {
+            resource = resource.with_action(ty.bind(subject.clone()));
+        }
+        resource
+    }
 }
 
 /// The resource `id` of the type `type_name`, published with the actions of that type.
 #[must_use]
-pub fn publish_record(
-    meta: &Meta,
-    type_name: &str,
-    id: &str,
-    label: &str,
-    planner: &Arc<dyn Planner>,
-) -> Resource {
-    let kind = meta.kind_of(type_name);
-    let mut resource =
-        Resource::new(resource_id(&meta.app, id), kind.clone(), label).with_action(open_spec(id));
-    for spec in edit_specs(meta, type_name, id) {
-        resource = resource.with_action(spec);
-    }
-    for action in meta.offered_actions() {
-        let on_type = meta
-            .subject_of(&action.params)
-            .is_some_and(|subject| subject.name == type_name);
-        if on_type {
-            resource = resource.with_action(action_spec(meta, &kind, Some(id), action, planner));
-        }
-    }
-    resource
+pub fn publish_record(types: &ActionTypes, type_name: &str, id: &str, label: &str) -> Resource {
+    types.resource(type_name, id, label.to_owned(), true)
 }
 
 /// The `open` view action of the published resource `anchor`: what a search hit invokes.
@@ -244,25 +305,23 @@ fn open_spec(anchor: &str) -> ActionSpec {
 /// item's verbs directly.
 #[must_use]
 pub fn publish_tree(
-    meta: &Meta,
+    types: &ActionTypes,
     record: &crate::record::DynRecord,
     type_name: &str,
     doc: &str,
     label: &str,
-    planner: &Arc<dyn Planner>,
 ) -> Resource {
-    let mut resource = publish_record(meta, type_name, doc, label, planner);
-    for child in item_resources(meta, record, doc, planner) {
+    let mut resource = publish_record(types, type_name, doc, label);
+    for child in item_resources(types, record, doc) {
         resource = resource.with_child(child);
     }
     resource
 }
 
 fn item_resources(
-    meta: &Meta,
+    types: &ActionTypes,
     record: &crate::record::DynRecord,
     parent: &str,
-    planner: &Arc<dyn Planner>,
 ) -> Vec<Resource> {
     use crate::record::DynValue;
     let mut out = Vec::new();
@@ -272,33 +331,18 @@ fn item_resources(
         };
         for (item_id, item) in items.iter() {
             let path = format!("{parent}/{}:{}", field.id, item_id.as_str());
-            out.push(item_resource(meta, item, &path, planner));
+            out.push(item_resource(types, item, &path));
         }
     }
     out
 }
 
 /// The item `item` at `path`, published with its type's actions and its own items.
-fn item_resource(
-    meta: &Meta,
-    item: &crate::record::DynRecord,
-    path: &str,
-    planner: &Arc<dyn Planner>,
-) -> Resource {
-    let type_name = item.schema().name.clone();
-    let kind = meta.kind_of(&type_name);
+fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &str) -> Resource {
+    let type_name = &item.schema().name;
     let label = item_label(item).unwrap_or_else(|| type_name.clone());
-    let mut resource = Resource::new(resource_id(&meta.app, path), kind.clone(), label)
-        .with_action(open_spec(path));
-    for action in meta.offered_actions() {
-        let on_type = meta
-            .subject_of(&action.params)
-            .is_some_and(|subject| subject.name == type_name);
-        if on_type {
-            resource = resource.with_action(action_spec(meta, &kind, Some(path), action, planner));
-        }
-    }
-    for child in item_resources(meta, item, path, planner) {
+    let mut resource = types.resource(type_name, path, label, false);
+    for child in item_resources(types, item, path) {
         resource = resource.with_child(child);
     }
     resource
@@ -319,6 +363,8 @@ pub struct Publications {
     /// Records being built whole off the frame.
     building: Option<(Vec<String>, Pending<Vec<Built>>)>,
     wake: Option<Waker>,
+    /// Per app, the action types its records offer.
+    types: std::collections::BTreeMap<String, Arc<ActionTypes>>,
 }
 
 /// A record built whole off the frame: its tree and the resource whose text names it.
@@ -331,28 +377,21 @@ struct Built {
 /// A record to build whole.
 struct Whole {
     doc: String,
-    meta: Meta,
+    types: Arc<ActionTypes>,
     type_name: String,
     type_id: String,
 }
 
 impl Whole {
-    fn build(&self, snapshot: &crate::store::Snapshot, planner: &Arc<dyn Planner>) -> Built {
+    fn build(&self, snapshot: &crate::store::Snapshot) -> Built {
         let root = tilolang_runtime::value::ResourceRef::root(&self.doc, self.type_id.clone());
         let named = snapshot.first_text(&root);
         let label = named
             .as_ref()
             .map_or_else(|| self.doc.clone(), |(text, _)| text.clone());
         let tree = match snapshot.record(&self.doc) {
-            Ok(record) => publish_tree(
-                &self.meta,
-                &record,
-                &self.type_name,
-                &self.doc,
-                &label,
-                planner,
-            ),
-            Err(_) => publish_record(&self.meta, &self.type_name, &self.doc, &label, planner),
+            Ok(record) => publish_tree(&self.types, &record, &self.type_name, &self.doc, &label),
+            Err(_) => publish_record(&self.types, &self.type_name, &self.doc, &label),
         };
         Built {
             doc: self.doc.clone(),
@@ -372,7 +411,48 @@ impl Publications {
             named_by: std::collections::BTreeMap::new(),
             building: None,
             wake: None,
+            types: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// The action types of the package `meta`, built once per package and planner.
+    fn types_of(&mut self, meta: &Meta, planner: &Arc<dyn Planner>) -> Arc<ActionTypes> {
+        match self.types.get(&meta.app) {
+            Some(types) if types.describe(meta, planner) => Arc::clone(types),
+            _ => {
+                let types = Arc::new(ActionTypes::new(meta, planner));
+                self.types.insert(meta.app.clone(), Arc::clone(&types));
+                types
+            }
+        }
+    }
+
+    /// The records among `docs` to build whole, as the host has them now.
+    fn wholes(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+        docs: &[String],
+    ) -> Vec<Whole> {
+        host.records()
+            .into_iter()
+            .filter(|(_, _, doc)| docs.contains(doc))
+            .filter_map(|(package, type_name, doc)| {
+                let type_id = package
+                    .meta
+                    .types
+                    .iter()
+                    .find(|t| t.name == type_name)?
+                    .id
+                    .clone();
+                Some(Whole {
+                    doc,
+                    types: self.types_of(&package.meta, planner),
+                    type_name,
+                    type_id,
+                })
+            })
+            .collect()
     }
 
     /// Have `wake` called (from another thread) when records built off the frame are ready
@@ -414,9 +494,9 @@ impl Publications {
             Poll::Ready(built) => built,
             Poll::Running | Poll::Lost => {
                 let snapshot = host.store().snapshot();
-                wholes(host, docs)
+                self.wholes(host, planner, docs)
                     .iter()
-                    .map(|whole| whole.build(&snapshot, planner))
+                    .map(|whole| whole.build(&snapshot))
                     .collect()
             }
         };
@@ -480,12 +560,12 @@ impl Publications {
             else {
                 continue;
             };
+            let types = self.types_of(&package.meta, planner);
             let at = Published {
                 store: host.store(),
-                meta: &package.meta,
+                types: &types,
                 schema,
                 doc,
-                planner,
             };
             let whole = changes.everything
                 || changes.whole.contains(doc)
@@ -498,7 +578,7 @@ impl Publications {
             if whole {
                 whole_docs.push(Whole {
                     doc: doc.clone(),
-                    meta: package.meta.clone(),
+                    types: Arc::clone(&types),
                     type_name: type_name.clone(),
                     type_id: schema.id.clone(),
                 });
@@ -528,7 +608,6 @@ impl Publications {
         if !whole_docs.is_empty() {
             // Built off the frame; changes from now on stay in the watch until it is taken in.
             let snapshot = host.store().snapshot();
-            let planner = Arc::clone(planner);
             let docs = whole_docs.iter().map(|whole| whole.doc.clone()).collect();
             self.building = Some((
                 docs,
@@ -536,7 +615,7 @@ impl Publications {
                     move || {
                         whole_docs
                             .iter()
-                            .map(|whole| whole.build(&snapshot, &planner))
+                            .map(|whole| whole.build(&snapshot))
                             .collect()
                     },
                     self.wake.clone(),
@@ -545,29 +624,6 @@ impl Publications {
         }
         touched
     }
-}
-
-/// The records among `docs` to build whole, as the host has them now.
-fn wholes(host: &crate::host::Host, docs: &[String]) -> Vec<Whole> {
-    host.records()
-        .into_iter()
-        .filter(|(_, _, doc)| docs.contains(doc))
-        .filter_map(|(package, type_name, doc)| {
-            let type_id = package
-                .meta
-                .types
-                .iter()
-                .find(|t| t.name == type_name)?
-                .id
-                .clone();
-            Some(Whole {
-                doc,
-                meta: package.meta,
-                type_name,
-                type_id,
-            })
-        })
-        .collect()
 }
 
 /// What to rebuild of a published record.
@@ -596,10 +652,9 @@ enum Relabel {
 /// One record being republished.
 struct Published<'a> {
     store: &'a crate::store::TiloStore,
-    meta: &'a Meta,
+    types: &'a ActionTypes,
     schema: &'static crate::schema::TypeSchema,
     doc: &'a str,
-    planner: &'a Arc<dyn Planner>,
 }
 
 impl Published<'_> {
@@ -669,7 +724,7 @@ impl Published<'_> {
     ) {
         use tilolang_runtime::store::Store as _;
 
-        let (doc, app) = (self.doc, &self.meta.app);
+        let (doc, app) = (self.doc, &self.types.meta().app);
         let spec = tilolang_runtime::store::FieldSpec {
             id: field.to_owned(),
             kind: tilolang_runtime::meta::FieldKind::Collection,
@@ -724,7 +779,7 @@ impl Published<'_> {
     /// Rebuild the top-level items at `paths` in place; drop those gone.
     fn rebuild(&self, tree: &mut Resource, paths: &std::collections::BTreeSet<String>) {
         for path in paths {
-            let published = resource_id(&self.meta.app, path);
+            let published = resource_id(&self.types.meta().app, path);
             let at = tree
                 .children
                 .iter()
@@ -748,7 +803,7 @@ impl Published<'_> {
     fn item(&self, path: &str) -> Option<Resource> {
         let at = tilolang_runtime::value::ResourceRef::parse_id(path, self.schema.id.clone())?;
         let item = self.store.record_at(&at).ok()?;
-        Some(item_resource(self.meta, &item, path, self.planner))
+        Some(item_resource(self.types, &item, path))
     }
 }
 
@@ -773,7 +828,8 @@ pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>) -> Resource {
     let mut resource = Resource::new(package_resource_id(&meta.app), kind.clone(), &meta.title);
     for action in meta.offered_actions() {
         if meta.subject_of(&action.params).is_none() {
-            resource = resource.with_action(action_spec(meta, &kind, None, action, planner));
+            resource = resource
+                .with_action(action_type(meta, &kind, action, planner).bind(Target::none()));
         }
     }
     resource
@@ -868,12 +924,12 @@ pub fn edit_action(
     })
 }
 
-/// The two direct edit actions of the resource `id`: a bound text input and a bound checkbox.
-#[must_use]
-pub fn edit_specs(meta: &Meta, type_name: &str, id: &str) -> [ActionSpec; 2] {
+/// The two direct edit actions of a resource, whose target is its id: a bound text input and
+/// a bound checkbox.
+fn edit_types(meta: &Meta, type_name: &str) -> [Arc<ActionType>; 2] {
     let make = |action: &'static str, label: &'static str, ty: ParamType| {
-        let (meta, type_name, id) = (meta.clone(), type_name.to_owned(), id.to_owned());
-        ActionSpec::typed(
+        let (meta, type_name) = (meta.clone(), type_name.to_owned());
+        let spec = ActionSpec::typed_on(
             action,
             label,
             label,
@@ -882,18 +938,20 @@ pub fn edit_specs(meta: &Meta, type_name: &str, id: &str) -> [ActionSpec; 2] {
                 ActionParam::required("field", ParamType::Text, "The field id"),
                 ActionParam::required("value", ty, "The new value"),
             ],
-            move |args: &ActionArgs| {
+            move |target: &Target, args: &ActionArgs| {
                 let json = args.to_json();
                 let field = json.get("field").and_then(Json::as_str).unwrap_or_default();
                 let value = json.get("value").cloned().unwrap_or(Json::Null);
-                edit_action(&meta, &type_name, &id, field, &value)
+                let id = target.get::<String>().map_or("", String::as_str);
+                edit_action(&meta, &type_name, id, field, &value)
                     .and_then(|planned| planned.encode().map_err(|error| error.to_string()))
                     .unwrap_or_else(|message| EncodedAction {
                         type_id: INVALID_ARGUMENTS_TYPE.to_owned(),
                         payload: message.into_bytes(),
                     })
             },
-        )
+        );
+        Arc::clone(spec.action_type())
     };
     [
         make(

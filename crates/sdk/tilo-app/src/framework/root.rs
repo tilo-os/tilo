@@ -239,16 +239,16 @@ pub fn reserved_action_ids() -> Vec<String> {
     .into_iter()
     .map(str::to_owned)
     .collect();
-    ids.push(open_spec().id);
-    ids.push(read_spec().id);
+    ids.push(open_spec().id.clone());
+    ids.push(read_spec().id.clone());
     ids.push(tilo_resource::share::SHARE_LINK.to_owned());
     ids.push(tilo_resource::share::SHARE_INVITE_LINK.to_owned());
-    ids.extend(super::history::specs().into_iter().map(|spec| spec.id));
+    ids.extend(super::history::specs().iter().map(|spec| spec.id.clone()));
     ids.extend(
         with_native_presentations(tilo_actions::Resource::new("", "", ""))
             .actions
-            .into_iter()
-            .map(|spec| spec.id),
+            .iter()
+            .map(|spec| spec.id.clone()),
     );
     ids.sort();
     ids.dedup();
@@ -319,7 +319,7 @@ fn read_spec_for(item: Option<&str>) -> tilo_actions::ActionSpec {
     .with_description(
         "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
     );
-    spec.contract.result = tilo_actions::ResultSpec::Json {
+    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
     };
     spec.reads_document()
@@ -1165,7 +1165,7 @@ fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource
 fn withhold_document_actions(resource: &mut tilo_actions::Resource, reason: &str) {
     for spec in &mut resource.actions {
         if spec.kind == tilo_actions::OperationKind::Document {
-            spec.contract.availability = tilo_actions::Availability::Unavailable {
+            spec.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
                 code: "unreadable".into(),
                 reason: reason.to_owned(),
             };
@@ -1205,9 +1205,10 @@ fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
         let queues = spec.contract.kind == tilo_actions::ActionKind::Outside
             || matches!(spec.id.as_str(), "undo" | "redo" | "restore");
         if spec.kind == tilo_actions::OperationKind::Document && queues {
-            spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
+            spec.type_mut().contract.execution =
+                tilo_actions::ExecutionMode::Background { cancellable: true };
             if matches!(spec.contract.result, tilo_actions::ResultSpec::None) {
-                spec.contract.result = tilo_actions::ResultSpec::Job;
+                spec.type_mut().contract.result = tilo_actions::ResultSpec::Job;
             }
         }
     }
@@ -2028,8 +2029,8 @@ impl RootModel for ResourceRoot {
             .into_iter()
             .chain(self.presentation.iter().cloned())
         {
-            if let Some(type_id) = spec.operation_type {
-                handlers.insert(type_id);
+            if let Some(type_id) = &spec.operation_type {
+                handlers.insert(type_id.clone());
             }
         }
         handlers.extend(self.nested_views().iter().cloned());

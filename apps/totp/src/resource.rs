@@ -363,7 +363,7 @@ impl AuthenticatorApp {
         }
         .bound();
         if !ready {
-            copy.contract.availability = tilo_actions::Availability::Unavailable {
+            copy.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
                 code: "local_secret_required".into(),
                 reason: "Set up this account on this device before copying a code".into(),
             };

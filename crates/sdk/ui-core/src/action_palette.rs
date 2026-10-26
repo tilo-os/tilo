@@ -113,10 +113,11 @@ enum ActionKind {
         kind: OperationKind,
         confirmation: ConfirmationPolicy,
     },
-    /// Collects a free-text argument in the field first, then builds the action.
+    /// Collects a free-text argument in the field first, then builds the
+    /// action with the spec's [`build_text`](tilo_actions::ActionSpec::build_text).
     Prompted {
         prompt: String,
-        build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
+        spec: Box<tilo_actions::ActionSpec>,
         context: ActionContext,
         kind: OperationKind,
         confirmation: ConfirmationPolicy,
@@ -1892,9 +1893,11 @@ impl ActionPalette {
                 .params()
                 .first()
                 .is_some_and(|parameter| parameter.ty != tilo_actions::ParamType::Text);
-        Some(match &fa.action.input {
-            ActionInput::Immediate(enc) => ActionKind::NoArgument {
-                intent: PreparedActionIntent::Encoded(enc.as_ref().clone()),
+        Some(match fa.action.input() {
+            ActionInput::Immediate(_) => ActionKind::NoArgument {
+                intent: PreparedActionIntent::Encoded(Arc::unwrap_or_clone(
+                    fa.action.encode_immediate()?,
+                )),
                 context,
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),
@@ -1920,9 +1923,9 @@ impl ActionPalette {
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),
             },
-            ActionInput::Prompted { prompt, build, .. } => ActionKind::Prompted {
-                prompt: prompt.clone(),
-                build: build.clone(),
+            ActionInput::Prompted { prompt, .. } => ActionKind::Prompted {
+                prompt: prompt.to_owned(),
+                spec: Box::new(fa.action.clone()),
                 context,
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),
@@ -2571,13 +2574,18 @@ impl ActionPalette {
                     let history_draft_identity = state.history_draft_identity;
                     let (encoded, context, kind, confirmation, input) = match fresh {
                         ActionKind::Prompted {
-                            build,
+                            spec,
                             context,
                             kind,
                             confirmation,
                             ..
                         } => {
-                            let encoded = build(&value);
+                            let encoded =
+                                spec.build_text(&value).unwrap_or_else(|| EncodedAction {
+                                    type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+                                        .to_owned(),
+                                    payload: b"the action takes no text".to_vec(),
+                                });
                             let input = if encoded.type_id
                                 == tilo_actions::resource::INVALID_ARGUMENTS_TYPE
                             {
@@ -3650,10 +3658,11 @@ mod tests {
         // Case `disabled_canonical_action_is_refused_at_activation`.
         {
             let mut disabled = thing_resource();
-            disabled.actions[0].contract.availability = tilo_actions::Availability::Unavailable {
-                code: "offline".into(),
-                reason: "The service went offline".into(),
-            };
+            disabled.actions[0].type_mut().contract.availability =
+                tilo_actions::Availability::Unavailable {
+                    code: "offline".into(),
+                    reason: "The service went offline".into(),
+                };
 
             let mut p = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
                 SearchField::with_language("en_US")
@@ -3930,6 +3939,7 @@ mod tests {
             .iter_mut()
             .find(|action| action.id == "mark")
             .unwrap()
+            .type_mut()
             .contract
             .confirmation = ConfirmationPolicy::Phrase {
             phrase: "MARK THING".into(),
@@ -4024,7 +4034,7 @@ mod tests {
                 payload: vec![],
             },
         );
-        spec.contract.confirmation = ConfirmationPolicy::Confirm;
+        spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
         let resource = Resource::new("document", "document", "Document").with_action(spec);
         let mut palette = ActionPalette::new();
         palette.load_open_resources(&[resource]);

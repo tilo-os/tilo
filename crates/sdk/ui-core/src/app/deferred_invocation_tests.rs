@@ -35,7 +35,7 @@ fn deferred_fixture() -> (
             handler: ContinuationKey::new("creation-handler", [b"v1"]),
         })
     });
-    spec.contract.confirmation = ConfirmationPolicy::Confirm;
+    spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
     let resource = Resource::new("ordinary:fixture", "fixture", "Fixture").with_action(spec);
     let binding = ActionBinding::unit(&resource, &resource.actions[0]).unwrap();
     let widget = Fixture {
@@ -183,6 +183,7 @@ fn deferred_semantic_no_confirmation_reaches_final_owner_once() {
     use std::sync::atomic::Ordering;
     let (widget, calls, _) = deferred_fixture();
     widget.resources.borrow_mut()[0].actions[0]
+        .type_mut()
         .contract
         .confirmation = tilo_actions::ConfirmationPolicy::None;
     let ledger = widget.ledger.clone();
@@ -214,8 +215,8 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
     {
         let mut resources = widget.resources.borrow_mut();
         let spec = &mut resources[0].actions[0];
-        spec.kind = tilo_actions::OperationKind::View;
-        spec.contract.confirmation = tilo_actions::ConfirmationPolicy::None;
+        spec.type_mut().kind = tilo_actions::OperationKind::View;
+        spec.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::None;
     }
     let ledger = widget.ledger.clone();
     let (root, guard) = owned(widget, true);

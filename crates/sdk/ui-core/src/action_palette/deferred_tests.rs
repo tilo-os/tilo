@@ -89,7 +89,7 @@ fn deferred_palette_changed_declaration_discards_intent_without_mint() {
     palette.load_open_resources(std::slice::from_ref(&resource));
     palette.open();
     assert!(palette.activate_address("test.thing:1", "create"));
-    resource.actions[0].label = "Changed meaning".into();
+    resource.actions[0].type_mut().label = "Changed meaning".into();
     palette.load_open_resources(&[resource]);
     assert!(palette.take_operation().is_none());
     assert_eq!(calls.load(Ordering::SeqCst), 0);

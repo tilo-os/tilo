@@ -186,7 +186,7 @@ fn selection_actions(driver: &FrameHarness, _book: &str) -> Vec<String> {
             resource
                 .actions
                 .into_iter()
-                .map(|action| action.id)
+                .map(|action| action.id.clone())
                 .collect()
         })
         .unwrap_or_default()

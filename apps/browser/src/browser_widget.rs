@@ -5289,13 +5289,13 @@ impl BrowserWidget {
         }
         let mut pip = E::PictureInPicture.bound();
         if self.active_pip {
-            pip.label = "Close Picture in Picture".into();
+            pip.type_mut().label = "Close Picture in Picture".into();
         }
         page.actions.push(pip);
         let web_page = is_supported_web_url(&self.current_uri);
         let mut reader = E::ReaderView.bound();
         if self.reader_view {
-            reader.label = "Close reader view".into();
+            reader.type_mut().label = "Close reader view".into();
         }
         page.actions.push(if web_page {
             reader
@@ -5377,7 +5377,7 @@ impl BrowserWidget {
         );
         let mut pause = E::TogglePause.bound();
         if self.history_paused() {
-            pause.label = "Resume history in this window".into();
+            pause.type_mut().label = "Resume history in this window".into();
         }
         session.actions.push(pause);
 
@@ -6390,7 +6390,8 @@ mod architecture_tests {
             url: "https://request.test/".into(),
         }
         .bound()
-        .contract;
+        .contract
+        .clone();
         assert!(matches!(
             contract.execution,
             ui::tilo_actions::ExecutionMode::Background { cancellable: false }

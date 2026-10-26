@@ -163,7 +163,7 @@ pub(crate) fn partition_row_id(leaf: &str) -> String {
 fn row_operation(kind: ActionKind, device: &str) -> ui::tilo_actions::ActionSpec {
     let mut spec = DisksEffect::operation(kind, device).bound();
     if kind.destructive() {
-        spec.contract.confirmation = ConfirmationPolicy::Phrase {
+        spec.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
             phrase: device.to_owned(),
         };
     }

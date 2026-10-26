@@ -98,7 +98,7 @@ fn deferred_wrong_builder_type_refuses_both_lanes() {
 fn deferred_mutated_public_declaration_refuses_before_either_builder() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut changed = spec(&calls);
-    let ActionInput::Deferred { type_id, .. } = &mut changed.input else {
+    let Lane::Deferred { type_id } = &mut changed.type_mut().lane else {
         panic!("deferred")
     };
     *type_id = "test.replaced".into();
@@ -113,34 +113,13 @@ fn deferred_mutated_public_declaration_refuses_before_either_builder() {
 fn deferred_changed_operation_type_refuses_without_minting() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut changed = spec(&calls);
-    changed.operation_type = Some("test.changed-handler".into());
+    changed.type_mut().operation_type = Some("test.changed-handler".into());
     let resources = [resource(changed)];
     let address = crate::ActionAddress::new("test", "create");
     assert!(crate::door::encode(&resources, &address, None).is_err());
     assert!(crate::door::encode_json(&resources, &address, &serde_json::Map::new()).is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
-#[test]
-fn deferred_public_and_private_output_types_are_checked_independently() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let mut changed = spec(&calls);
-    let ActionInput::Deferred { build, .. } = &mut changed.input else {
-        panic!("deferred")
-    };
-    *build = Arc::new(|| EncodedAction::encode_operation("test.wrong-public", &()).unwrap());
-    let resources = [resource(changed)];
-    let address = crate::ActionAddress::new("test", "create");
-    assert!(crate::door::encode(&resources, &address, None).is_err());
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        crate::door::encode_json(&resources, &address, &serde_json::Map::new())
-            .unwrap()
-            .type_id,
-        "test.create"
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-}
-
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct DeferredLocusAction {
     server: bool,

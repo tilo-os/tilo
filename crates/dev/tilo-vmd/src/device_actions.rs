@@ -41,8 +41,8 @@ fn resources() -> Vec<Resource> {
             payload: br#"{"action":"enroll"}"#.to_vec(),
         },
     );
-    spec.contract.confirmation = ConfirmationPolicy::Confirm;
-    spec.contract.kind = tilo_actions::ActionKind::Outside;
+    spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
+    spec.type_mut().contract.kind = tilo_actions::ActionKind::Outside;
     resource.actions.push(spec);
     vec![resource]
 }

@@ -31,7 +31,7 @@ impl App {
         if encoded.type_id == crate::host_chrome::edit::EDIT_OPERATION {
             return true;
         }
-        self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(&action.input, tilo_actions::ActionInput::Immediate(value) if value.as_ref() == encoded))
+        self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(action.input(), tilo_actions::ActionInput::Immediate(Some(value)) if value.as_ref() == encoded))
     }
     pub(super) fn with_native_presentation<R>(
         &mut self,

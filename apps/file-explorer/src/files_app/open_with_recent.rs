@@ -486,9 +486,9 @@ pub(super) fn append_open_with_actions(
         access: access.map(|access| access.as_str().to_owned()),
     }
     .bound_asking_params(params);
-    open_with.contract.kind = permission;
-    open_with.id = OPEN_WITH_ACTION.into();
-    open_with.label = t("files-menu-open-with");
+    open_with.type_mut().contract.kind = permission;
+    open_with.type_mut().id = OPEN_WITH_ACTION.into();
+    open_with.type_mut().label = t("files-menu-open-with");
     resource.actions.push(open_with);
     if let Some(chooser) = &facts.chooser {
         append_open_with_chooser_actions(candidates, chooser, resource_id, resource);
@@ -542,7 +542,7 @@ fn append_open_with_chooser_actions(
                 },
             };
             let spec = if let Some(access) = access.filter(|_| !always) {
-                let immediate = effect.bound().input;
+                let immediate = effect.bound().encode_immediate();
                 let mut spec = effect.bound_asking_params(vec![
                     ActionParam::optional_owned(
                         "access",
@@ -554,13 +554,15 @@ fn append_open_with_chooser_actions(
                         "type":"string", "const":access.as_str(), "default":access.as_str(),
                     })),
                 ]);
-                spec.contract.kind = permission;
+                spec.type_mut().contract.kind = permission;
                 // The existing chooser remains one click. Its immutable
                 // optional constant also describes the bound intent to the
                 // original host custody, without a second permission UI.
-                spec.input = immediate;
-                spec.id = format!("{prefix}{}", app.id);
-                spec.label = label;
+                if let Some(immediate) = immediate {
+                    spec = spec.with_immediate(std::sync::Arc::unwrap_or_clone(immediate));
+                }
+                spec.type_mut().id = format!("{prefix}{}", app.id);
+                spec.type_mut().label = label;
                 spec
             } else {
                 crate::effects::row_action(&effect, format!("{prefix}{}", app.id), label)

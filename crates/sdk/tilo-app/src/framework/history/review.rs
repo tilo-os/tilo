@@ -101,7 +101,7 @@ pub(super) fn specs() -> Vec<ActionSpec> {
     .of_kind(ActionKind::Read)
     .with_description("Review exact-item restoration without writing. Returns pinned target and live heads; copy review into restore-reviewed. Any later edit requires a new review.")
     .reads_document();
-    review.contract.result = tilo_actions::ResultSpec::Json {
+    review.type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: json!({"type": "object"}),
     };
     let restore = edit(

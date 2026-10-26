@@ -3086,8 +3086,8 @@ impl ImagerApp {
             confirmation: target.name.clone(),
         }
         .bound();
-        write.contract.risk = tilo_actions::RiskLevel::Destructive;
-        write.contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
+        write.type_mut().contract.risk = tilo_actions::RiskLevel::Destructive;
+        write.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
             phrase: target.name.clone(),
         };
         let write = match self.writer_refusal() {

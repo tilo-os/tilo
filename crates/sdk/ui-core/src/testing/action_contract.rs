@@ -372,11 +372,17 @@ fn prompted_argument(spec: &ActionSpec, text: &str) -> Option<(String, ArgValue)
 /// When `arg` is given for an immediate spec, missing for a prompted one, or
 /// the external path builds a different action.
 pub fn spec_encoding(spec: &ActionSpec, arg: Option<&str>) -> EncodedAction {
-    let (palette, supplied) = match (&spec.input, arg) {
-        (ActionInput::Immediate(encoded), None) => (encoded.as_ref().clone(), Vec::new()),
-        (ActionInput::Deferred { build, .. }, None) => (build(), Vec::new()),
-        (ActionInput::Prompted { build, .. }, Some(arg)) => (
-            build(arg),
+    let built = |encoded: Option<EncodedAction>| {
+        encoded.unwrap_or_else(|| panic!("`{}` builds nothing from its input", spec.id))
+    };
+    let (palette, supplied) = match (spec.input(), arg) {
+        (ActionInput::Immediate(_), None) => (
+            built(spec.encode_immediate().map(std::sync::Arc::unwrap_or_clone)),
+            Vec::new(),
+        ),
+        (ActionInput::Deferred { .. }, None) => (built(spec.build_deferred()), Vec::new()),
+        (ActionInput::Prompted { .. }, Some(arg)) => (
+            built(spec.build_text(arg)),
             prompted_argument(spec, arg).into_iter().collect(),
         ),
         (ActionInput::Immediate(_) | ActionInput::Deferred { .. }, Some(_)) => {
@@ -450,9 +456,10 @@ pub fn assert_every_immediate_action_honours_contract(
     let mut swept: usize = 0;
     for flat in tilo_actions::flatten(resources) {
         let spec = flat.action;
-        let ActionInput::Immediate(encoded) = &spec.input else {
+        let Some(encoded) = spec.encode_immediate() else {
             continue;
         };
+        let encoded = encoded.as_ref();
         if spec.kind != OperationKind::Document || !spec.contract.availability.is_available() {
             continue;
         }

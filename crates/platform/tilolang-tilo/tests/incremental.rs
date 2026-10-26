@@ -8,7 +8,9 @@ use serde_json::{Value as Json, json};
 use tilo_actions::Resource;
 use tilo_resource::{Edit, EditOp, Id, Segment};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
-use tilolang_tilo::publish::{PlanRequest, Planner, Publications, publish_tree, resource_id};
+use tilolang_tilo::publish::{
+    ActionTypes, PlanRequest, Planner, Publications, publish_tree, resource_id,
+};
 use tilolang_tilo::record::DynValue;
 use tilolang_tilo::search::{SearchIndex, hits};
 
@@ -195,7 +197,11 @@ fn published_anew(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) 
     let record = replica.host.store().record(root).unwrap();
     let label = replica.host.label_of(root);
     shape(&publish_tree(
-        meta, &record, "TodoList", root, &label, &planner,
+        &ActionTypes::new(meta, &planner),
+        &record,
+        "TodoList",
+        root,
+        &label,
     ))
 }
 
@@ -440,10 +446,8 @@ fn publishing_plans_no_action_until_one_runs() {
     let action = item
         .actions
         .iter()
-        .find(|a| matches!(a.input, tilo_actions::ActionInput::Deferred { .. }))
+        .find(|a| matches!(a.input(), tilo_actions::ActionInput::Deferred { .. }))
         .expect("the item's `finish`, deferred");
-    if let tilo_actions::ActionInput::Deferred { build, .. } = &action.input {
-        build();
-    }
+    assert!(action.build_deferred().is_some());
     assert_eq!(plans(), 1);
 }

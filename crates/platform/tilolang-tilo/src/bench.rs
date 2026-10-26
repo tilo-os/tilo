@@ -843,13 +843,9 @@ fn index_everything(sized: &Sized<'_>, room: &Room) -> [Record; 2] {
         for (package, type_name, doc) in room.host.records() {
             let label = room.host.label_of(&doc);
             if let Ok(record) = room.host.store().record(&doc) {
+                let types = crate::publish::ActionTypes::new(&package.meta, &room.planner);
                 std::hint::black_box(crate::publish::publish_tree(
-                    &package.meta,
-                    &record,
-                    &type_name,
-                    &doc,
-                    &label,
-                    &room.planner,
+                    &types, &record, &type_name, &doc, &label,
                 ));
             }
         }

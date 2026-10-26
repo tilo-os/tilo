@@ -492,7 +492,7 @@ fn an_action_without_arguments_is_built_when_it_is_taken() {
         "publishing builds nothing"
     );
     assert!(matches!(
-        resource.actions[0].input,
+        resource.actions[0].input(),
         tilo_actions::ActionInput::Deferred { .. }
     ));
     let address = tilo_actions::ActionAddress::new("board", "clear");

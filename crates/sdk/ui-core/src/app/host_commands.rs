@@ -52,14 +52,14 @@ impl App {
         let mut resource = edit_resource(&self.focused_undo_status());
         if crate::undo::local_undo_is_deferred(self.root_widget.as_ref()) {
             for action in &mut resource.actions {
-                action.contract.execution =
+                let ty = action.type_mut();
+                ty.contract.execution =
                     tilo_actions::ExecutionMode::Background { cancellable: false };
-                action.contract.result = tilo_actions::ResultSpec::Job;
-                action
-                    .contract
+                ty.contract.result = tilo_actions::ResultSpec::Job;
+                ty.contract
                     .tags
                     .push(tilo_actions::LOCAL_DEVICE_ONLY.into());
-                action.description = Some(crate::i18n::I18nManager::lookup_plain(
+                ty.description = Some(crate::i18n::I18nManager::lookup_plain(
                     "host-native-page-history-scope",
                 ));
             }
@@ -69,7 +69,7 @@ impl App {
             Some(crate::undo::LocalUndoStatus::Pending)
         ) {
             for action in &mut resource.actions {
-                action.contract.availability = tilo_actions::Availability::Unavailable {
+                action.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
                     code: "native_history_unobserved".into(),
                     reason: crate::i18n::I18nManager::lookup_plain(
                         "host-native-history-unobserved",
@@ -209,7 +209,7 @@ impl App {
         {
             // The open palette answers its own shortcut by closing.
             for action in &mut search.actions {
-                action.contract.availability = tilo_actions::Availability::Unavailable {
+                action.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
                     code: "search_open".into(),
                     reason: crate::i18n::I18nManager::lookup_plain("host-search"),
                 };

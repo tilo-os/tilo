@@ -1177,7 +1177,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "open-app")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         assert!(matches!(
             native.result,
             ui::tilo_actions::ResultSpec::Json { .. }
@@ -1190,7 +1191,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "flatpak-open")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         assert_eq!(flatpak.result, ui::tilo_actions::ResultSpec::Job);
     }
 
@@ -1222,7 +1224,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "flatpak-open")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
         let invocation = app
             .start_effect_on(&row, &StoreEffect::FlatpakOpen { app: id.clone() })
@@ -1304,7 +1307,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "refresh")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
         let versions = app.versions().len();
         let invocation = app.start_effect(&StoreEffect::Refresh).unwrap();
@@ -1647,7 +1651,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "browse-remote")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let before = browses.load(std::sync::atomic::Ordering::SeqCst);
         let invocation = app
             .start_effect_on(
@@ -1782,7 +1787,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "disable-remote")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let invocation = app
             .start_effect_on(
                 remote,
@@ -1895,7 +1901,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "browse-remote")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let invocation = app
             .start_effect_on(
                 remote,
@@ -1916,7 +1923,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "flatpak-install")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let invocation = app
             .start_effect_on(
                 item_id,
@@ -1956,7 +1964,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "refresh-remotes")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let invocation = app
             .start_effect_on("store:remotes", &StoreEffect::RefreshRemotes)
             .unwrap();
@@ -2044,7 +2053,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "browse-remote")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         assert_eq!(contract.result, ui::tilo_actions::ResultSpec::Job);
         let before = browses.load(std::sync::atomic::Ordering::SeqCst);
         let versions = app.versions().len();
@@ -2183,7 +2193,8 @@ mod tests {
             .into_iter()
             .find(|action| action.id == "refresh")
             .unwrap()
-            .contract;
+            .contract
+            .clone();
         let invocation = app.start_effect(&StoreEffect::Refresh).unwrap();
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
         assert_eq!(

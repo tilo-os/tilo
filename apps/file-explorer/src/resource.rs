@@ -1366,7 +1366,7 @@ mod tests {
         }
         let effects: Vec<String> = <FilesEffect as ui::tilo_resource::Effect>::specs()
             .into_iter()
-            .map(|spec| spec.id)
+            .map(|spec| spec.id.clone())
             .collect();
         for expected in [
             "refresh",

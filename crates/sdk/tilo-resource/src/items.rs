@@ -90,7 +90,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tilo_actions::{ActionArgs, ActionParam, ActionSpec, ExecutionLocus};
+use tilo_actions::{ActionArgs, ActionParam, ActionSpec, ActionType, ExecutionLocus, Target};
 
 use crate::collection::Id;
 use crate::resource::Resource;
@@ -349,12 +349,25 @@ pub const RENAME: &str = "rename";
 /// "Rename" on an item whose `#[model(label)]` is a plain text field: the
 /// field edit that sets it, asking for the new name, so the palette and
 /// agents offer what a person would otherwise type into the item's title.
+/// Its type is kept once per collection, bound to the item's id.
 fn rename_spec(vocabulary: &'static Vocabulary, field: &str, id: &Id) -> Option<ActionSpec> {
-    use crate::path::{EditOp, Segment};
-    use crate::shape::Shape;
+    thread_local! {
+        static KEPT: RefCell<crate::kept::KeptTypes<(TypeId, String), Option<Arc<ActionType>>>> =
+            RefCell::default();
+    }
     if !vocabulary.edits {
         return None;
     }
+    let key = ((vocabulary.type_id)(), field.to_owned());
+    crate::kept::kept_type(&KEPT, key, || rename_type(vocabulary, field))
+        .map(|ty| ty.bind(Target::new(id.clone())))
+}
+
+/// The type of [`rename_spec`] on the items of the collection `field`, whose
+/// target is the item's [`Id`].
+fn rename_type(vocabulary: &'static Vocabulary, field: &str) -> Option<Arc<ActionType>> {
+    use crate::path::{EditOp, Segment};
+    use crate::shape::Shape;
     let collection = (vocabulary.shape)()?
         .fields()
         .iter()
@@ -367,24 +380,10 @@ fn rename_spec(vocabulary: &'static Vocabulary, field: &str, id: &Id) -> Option<
     if collection.readonly || label.readonly || !plain_text {
         return None;
     }
-    let path = vec![
-        Segment::Field(collection.key.to_owned()),
-        Segment::Item(id.clone()),
-        Segment::Field(label.key.to_owned()),
-    ];
+    let (collection_key, label_key) = (collection.key, label.key);
     let param = label.name;
-    let build: crate::vocabulary::Builds = Arc::new(move |args, now_ms| {
-        let Some(tilo_actions::ArgValue::Text(name)) = args.get(param) else {
-            return Err(format!("missing `{param}`"));
-        };
-        let edit = crate::Edit::<()>::new(
-            path.clone(),
-            EditOp::Set {
-                value: serde_json::Value::String(name.clone()),
-            },
-        );
-        crate::resource::stamped_edit(vocabulary, edit, now_ms)
-    });
+    // What the action is; its builder is the type's, below, which reads the
+    // item from the target.
     let decl = Declaration::new(
         vocabulary,
         RENAME,
@@ -394,9 +393,29 @@ fn rename_spec(vocabulary: &'static Vocabulary, field: &str, id: &Id) -> Option<
             tilo_actions::ParamType::Text,
             label.title,
         )],
-        build,
+        Arc::new(|_, _| Err("bound to no item".to_owned())),
     );
-    Some(crate::resource::declaration_spec(&decl))
+    let spec = crate::resource::spec_of_declaration_on(&decl, move |target, args, now_ms| {
+        let Some(tilo_actions::ArgValue::Text(name)) = args.get(param) else {
+            return Err(format!("missing `{param}`"));
+        };
+        let Some(id) = target.get::<Id>() else {
+            return Err("bound to no item".to_owned());
+        };
+        let path = vec![
+            Segment::Field(collection_key.to_owned()),
+            Segment::Item(id.clone()),
+            Segment::Field(label_key.to_owned()),
+        ];
+        let edit = crate::Edit::<()>::new(
+            path,
+            EditOp::Set {
+                value: serde_json::Value::String(name.clone()),
+            },
+        );
+        crate::resource::stamped_edit(vocabulary, edit, now_ms)
+    });
+    Some(Arc::clone(spec.action_type()))
 }
 
 /// What a published resource is, as text: its identity, its actions with
@@ -865,20 +884,39 @@ pub fn bound<N: AsRef<str>>(decl: &Declaration, values: &[(N, serde_json::Value)
     bound_to(decl, owned)
 }
 
-/// [`bound`] with its values owned.
+/// [`bound`] with its values owned: the type of `decl` with those parameters
+/// bound, kept once for every item it is bound on, bound to `values`.
 fn bound_to(decl: &Declaration, values: Vec<(String, serde_json::Value)>) -> ActionSpec {
-    let params = unbound_params(&decl.params, &values);
+    thread_local! {
+        static KEPT: std::cell::RefCell<crate::kept::KeptTypes<BoundKey>> =
+            std::cell::RefCell::default();
+    }
+    let names: Vec<String> = values.iter().map(|(name, _)| name.clone()).collect();
+    let key = (decl.resource, decl.id, decl.refines, names);
+    crate::kept::kept_type(&KEPT, key, || bound_type(decl, &values)).bind(Target::new(values))
+}
+
+/// Which bound type of a declaration: the kind of resource it is declared
+/// on, its id, whether it refines one, and the names of its bound parameters.
+type BoundKey = (&'static str, &'static str, bool, Vec<String>);
+
+/// The values a bound spec's [`Target`] holds, by parameter.
+type BoundValues = Vec<(String, serde_json::Value)>;
+
+/// The type of `decl` with the parameters `values` names bound by its target.
+fn bound_type(decl: &Declaration, values: &[(String, serde_json::Value)]) -> Arc<ActionType> {
+    let params = unbound_params(&decl.params, values);
     let all = decl.params.clone();
     let build = Arc::clone(&decl.build);
-    let mut spec = ActionSpec::typed(
+    let mut spec = ActionSpec::typed_on(
         decl.id,
         decl.label.clone(),
         decl.label.clone(),
         ExecutionLocus::ClientLocal,
         params,
-        move |args| {
+        move |target, args| {
             let mut arguments = args.to_json();
-            for (name, value) in &values {
+            for (name, value) in target.get::<BoundValues>().into_iter().flatten() {
                 // An optional parameter bound to nothing is left out.
                 if !value.is_null() {
                     arguments.insert(name.clone(), value.clone());
@@ -895,13 +933,14 @@ fn bound_to(decl: &Declaration, values: Vec<(String, serde_json::Value)>) -> Act
     if decl.kind == crate::ActionKind::Undoable {
         spec = spec.reversible();
     }
-    finish_bound(
+    let spec = finish_bound(
         spec,
         decl.field,
         decl.description.as_ref(),
         decl.destructive,
         decl.result.as_ref(),
-    )
+    );
+    Arc::clone(spec.action_type())
 }
 
 /// The parameters of `params` that `values` leaves to the caller.
@@ -935,7 +974,7 @@ fn finish_bound(
     }
     // An item verb that answers answers on its item too.
     if let Some(result) = result {
-        spec.contract.result = result.clone();
+        spec.type_mut().contract.result = result.clone();
     }
     spec
 }

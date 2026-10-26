@@ -128,15 +128,15 @@ impl OskEffect {
 /// `effect` offered as `id`, labelled `label`.
 fn offer(id: &str, label: &str, effect: &OskEffect) -> ActionSpec {
     let mut spec = effect.bound();
-    id.clone_into(&mut spec.id);
-    label.clone_into(&mut spec.label);
+    id.clone_into(&mut spec.type_mut().id);
+    label.clone_into(&mut spec.type_mut().label);
     spec
 }
 
 /// `effect` offered as `id`, still asking for its `value`.
 fn asking(id: &str, effect: &OskEffect) -> ActionSpec {
     let mut spec = effect.bound_asking(&["value"]);
-    id.clone_into(&mut spec.id);
+    id.clone_into(&mut spec.type_mut().id);
     spec
 }
 

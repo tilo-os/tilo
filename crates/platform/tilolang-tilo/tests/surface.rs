@@ -5,7 +5,9 @@ use serde_json::json;
 use tilo_actions::{ActionKind, ActionRegistry};
 use tilolang_runtime::Meta;
 use tilolang_tilo::action::{ACTION_TYPE, DynAction, register_actions};
-use tilolang_tilo::publish::{PlanRequest, Planner, publish_package, publish_record, resource_id};
+use tilolang_tilo::publish::{
+    ActionTypes, PlanRequest, Planner, publish_package, publish_record, resource_id,
+};
 use tilolang_tilo::surface::{HOST_KIND, host_surface, package_surfaces, surface_toml};
 
 use crate::fixtures::{COUNTER, Replica, TODO};
@@ -107,7 +109,12 @@ impl Planner for Recording {
 fn a_published_action_builds_the_planned_dyn_action() {
     let meta = counter();
     let planner: Arc<dyn Planner> = Arc::new(Recording);
-    let resource = publish_record(&meta, "Counter", "c1", "Counter", &planner);
+    let resource = publish_record(
+        &ActionTypes::new(&meta, &planner),
+        "Counter",
+        "c1",
+        "Counter",
+    );
     assert_eq!(
         resource.id.as_str(),
         resource_id("so.tilo.lang.counter", "c1")

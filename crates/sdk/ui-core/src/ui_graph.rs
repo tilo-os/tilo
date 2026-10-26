@@ -1464,7 +1464,7 @@ impl LiveUi {
                 .expect("apply arguments are serializable")
             },
         );
-        apply.contract = ActionContract {
+        apply.type_mut().contract = ActionContract {
             result: ResultSpec::None,
             ..ActionContract::default()
         };

@@ -83,7 +83,7 @@ impl Builder {
         // Query an opaque builder's draft once, without invoking either
         // encoder. Its owner must explicitly cover the whole resolution domain.
         let fixed = action.fixed_invocation_encoding();
-        let needs_draft = fixed.is_none() || matches!(action.input, ActionInput::Prompted { .. });
+        let needs_draft = fixed.is_none() || matches!(action.input(), ActionInput::Prompted { .. });
         let draft = needs_draft
             .then(|| action.continuation_identity(ContinuationQuery::Draft))
             .flatten();
@@ -113,18 +113,22 @@ impl Builder {
             self.evidence(draft.as_ref());
         }
 
-        // Legacy door::encode uses this public lane directly. Do not assume it
-        // agrees with the private builder: callers can replace the public input.
-        match &action.input {
-            ActionInput::Immediate(encoded) => {
+        // How door::encode collects the input: the declared encoding, or the
+        // builder bound to the spec's target, whose draft covers it.
+        match action.input() {
+            ActionInput::Immediate(Some(encoded)) => {
                 self.tag(0);
                 self.encoded(encoded);
+            }
+            ActionInput::Immediate(None) => {
+                self.tag(3);
+                self.evidence(draft.as_ref());
             }
             ActionInput::Prompted { .. } => {
                 self.tag(1);
                 self.evidence(draft.as_ref());
             }
-            ActionInput::Deferred { type_id, .. } => {
+            ActionInput::Deferred { type_id } => {
                 self.tag(2);
                 self.bytes(type_id.as_bytes());
                 if action.validate_json(&serde_json::Map::new()).is_err() {
@@ -152,8 +156,8 @@ mod tests {
     use super::*;
     use crate::app::action_directory_snapshot::ActionDirectorySnapshot;
     use tilo_actions::{
-        ActionInput, ContinuationEvidence, ContinuationKey, ContinuationQuery, EncodedAction,
-        ExecutionLocus, OperationKind,
+        ContinuationEvidence, ContinuationKey, ContinuationQuery, EncodedAction, ExecutionLocus,
+        OperationKind,
     };
     fn fixed(value: usize) -> ActionSpec {
         ActionSpec::operation("run", "Run", OperationKind::View, "test.effective", &value).unwrap()
@@ -201,18 +205,15 @@ mod tests {
         let baseline = witness(original.clone()).expect("actual Fixed builders support comparison");
         assert_eq!(witness(original.clone()), Some(baseline));
         assert_ne!(witness(fixed(2)), Some(baseline));
-        let mut public = original.clone();
-        public.input = ActionInput::Immediate(
-            EncodedAction::encode_operation("test.other", &1)
-                .unwrap()
-                .into(),
-        );
+        let public = original
+            .clone()
+            .with_immediate(EncodedAction::encode_operation("test.other", &1).unwrap());
         assert_ne!(witness(public), Some(baseline));
         let mut operation_type = original.clone();
-        operation_type.operation_type = Some("test.other".into());
+        operation_type.type_mut().operation_type = Some("test.other".into());
         assert_ne!(witness(operation_type), Some(baseline));
         let mut locus = original;
-        locus.locus = ExecutionLocus::ServerPreferred;
+        locus.type_mut().locus = ExecutionLocus::ServerPreferred;
         assert_ne!(witness(locus), Some(baseline));
     }
     fn dynamic(domain: &'static [u8], handler: &'static [u8]) -> ActionSpec {
@@ -262,7 +263,7 @@ mod tests {
         let mut resource = Resource::new("probe", "probe", "Probe");
         for index in 0..600 {
             let mut spec = fixed(index);
-            spec.id = index.to_string();
+            spec.type_mut().id = index.to_string();
             resource.actions.push(spec);
         }
         resource.actions.push(

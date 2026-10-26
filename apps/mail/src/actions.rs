@@ -140,7 +140,7 @@ pub(crate) fn effect_payload(effect: &MailEffect) -> Vec<u8> {
 /// `effect` bound to the item it acts on, under that item's own `label`.
 fn bound(effect: &MailEffect, label: &str) -> ActionSpec {
     let mut spec = effect.bound();
-    label.clone_into(&mut spec.label);
+    label.clone_into(&mut spec.type_mut().label);
     spec
 }
 

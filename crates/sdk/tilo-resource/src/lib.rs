@@ -121,6 +121,7 @@ pub mod footprint;
 pub mod group;
 pub mod history;
 pub mod items;
+mod kept;
 pub mod keyed;
 pub mod kind;
 mod map;

@@ -274,7 +274,8 @@ impl TreeDelta {
 
 /// Build closures for [`AppPrompted`](SemanticActionKind::AppPrompted)
 /// actions, keyed by `(node id, action name)`.
-type PromptedMap = HashMap<(SemanticId, String), Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>>;
+/// The spec of each prompted action, which builds it from its text.
+type PromptedMap = HashMap<(SemanticId, String), ActionSpec>;
 
 /// The retained accessibility tree. Persists node identity across frames and
 /// diffs each [`refresh`](Self::refresh) against the previous.
@@ -954,7 +955,7 @@ impl SemanticTree {
                     .iter()
                     .find_map(|component| component.prompted.get(&key))
             })
-            .map(|build| build(arg))
+            .and_then(|spec| spec.build_text(arg))
     }
 }
 

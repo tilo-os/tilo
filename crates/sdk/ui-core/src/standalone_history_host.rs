@@ -536,7 +536,7 @@ impl StandaloneHistoryHost {
                     .iter_mut()
                     .find(|action| action.id == "compare")
             {
-                compare.contract.availability =
+                compare.type_mut().contract.availability =
                     unavailable("selection_too_small", "host-history-compare-unavailable");
             }
             self.set_restore_availability(&mut session, context);
@@ -563,7 +563,7 @@ impl StandaloneHistoryHost {
                 _ => continue,
             };
             if !enabled {
-                action.contract.availability = unavailable(
+                action.type_mut().contract.availability = unavailable(
                     "restore_unavailable",
                     "standalone-history-restore-unavailable",
                 );
@@ -1306,7 +1306,7 @@ pub(crate) fn history_resource(can_open: bool, open: bool) -> Resource {
     let mut resource = open_resource();
     if !can_open {
         for action in &mut resource.actions {
-            action.contract.availability =
+            action.type_mut().contract.availability =
                 unavailable("history_unavailable", "host-history-unavailable");
         }
     }

@@ -191,7 +191,7 @@ impl WindowsEffect {
 /// reports.
 fn offered(effect: &WindowsEffect, available: bool, reason: Option<&str>) -> ActionSpec {
     let mut spec = effect.bound();
-    spec.contract.availability = availability(available, reason);
+    spec.type_mut().contract.availability = availability(available, reason);
     spec
 }
 
@@ -297,7 +297,7 @@ fn maintenance_specs(app: &crate::model::WindowsApp) -> Vec<ActionSpec> {
         Some(REASON),
     );
     // Erasing an application's data asks for its name.
-    delete.contract.confirmation = ConfirmationPolicy::Phrase {
+    delete.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
         phrase: app.name.clone(),
     };
     vec![

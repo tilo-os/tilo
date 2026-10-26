@@ -1947,7 +1947,7 @@ pub(crate) fn container_row(container: &crate::model::Container, engine_live: bo
     )
     .operation({
         let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
-        open.label = format!("Open {}", container.name);
+        open.type_mut().label = format!("Open {}", container.name);
         open
     });
     let effects = match container.status {

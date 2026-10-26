@@ -682,7 +682,7 @@ impl ResourceInvocationScope {
             reason,
         };
         let original = self.lease.dispatch_spec().map_err(refused)?;
-        let input_matches = match (&original.input, &current.input) {
+        let input_matches = match (&original.input, current.input()) {
             (
                 tilo_actions::InputSpec::None,
                 tilo_actions::ActionInput::Immediate(_)
@@ -698,12 +698,11 @@ impl ResourceInvocationScope {
                     prompt: actual_prompt,
                     placeholder: actual_placeholder,
                     collects: actual_collects,
-                    ..
                 },
             ) => {
                 prompt == actual_prompt
                     && placeholder == actual_placeholder
-                    && collects == actual_collects
+                    && *collects == actual_collects
             }
             _ => false,
         };

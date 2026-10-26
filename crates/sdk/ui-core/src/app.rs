@@ -1751,18 +1751,17 @@ impl App {
             locus: action.locus,
             kind: action.kind,
             contract: action.contract.clone(),
-            input: match &action.input {
+            input: match action.input() {
                 tilo_actions::ActionInput::Immediate(_)
                 | tilo_actions::ActionInput::Deferred { .. } => tilo_actions::InputSpec::None,
                 tilo_actions::ActionInput::Prompted {
                     prompt,
                     placeholder,
                     collects,
-                    ..
                 } => tilo_actions::InputSpec::Text {
-                    prompt: prompt.clone(),
-                    placeholder: placeholder.clone(),
-                    collects: *collects,
+                    prompt: prompt.to_owned(),
+                    placeholder: placeholder.to_owned(),
+                    collects,
                 },
             },
             params: action.params().to_vec(),
@@ -3630,7 +3629,7 @@ pub(crate) mod ordinary_confirmation_tests {
             vec![ActionParam::required("payload", ParamType::Text, "Payload")],
             |args| EncodedAction::encode_operation("fixture.control", &args.to_json()).unwrap(),
         );
-        spec.contract.confirmation = policy;
+        spec.type_mut().contract.confirmation = policy;
         let resource = Resource::new("ordinary:fixture", "fixture", "Fixture").with_action(spec);
         let binding = ActionBinding::new(&resource, &resource.actions[0], move |()| {
             source.lock().unwrap().clone()
@@ -4196,9 +4195,9 @@ pub(crate) mod ordinary_confirmation_tests {
                             )
                             .with_contract(old);
                         }
-                        "contract" => spec.contract.risk = RiskLevel::Privileged,
+                        "contract" => spec.type_mut().contract.risk = RiskLevel::Privileged,
                         "policy" => {
-                            spec.contract.confirmation = ConfirmationPolicy::Phrase {
+                            spec.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
                                 phrase: "OTHER".into(),
                             }
                         }
@@ -4226,7 +4225,7 @@ pub(crate) mod ordinary_confirmation_tests {
                             .with_contract(old);
                         }
                         "unavailable" => {
-                            spec.contract.availability = Availability::Unavailable {
+                            spec.type_mut().contract.availability = Availability::Unavailable {
                                 code: "gone".into(),
                                 reason: "Gone".into(),
                             }
@@ -4239,8 +4238,8 @@ pub(crate) mod ordinary_confirmation_tests {
                             let duplicate = resources[0].actions[0].clone();
                             resources[0].actions.push(duplicate);
                         }
-                        "label" => spec.label = "Different reviewed meaning".into(),
-                        "kind" => spec.kind = OperationKind::View,
+                        "label" => spec.type_mut().label = "Different reviewed meaning".into(),
+                        "kind" => spec.type_mut().kind = OperationKind::View,
                         "revoked" => {}
                         _ => unreachable!(),
                     }
@@ -4454,7 +4453,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 )
                 .unwrap()
             };
-            spec.contract.confirmation = ConfirmationPolicy::Confirm;
+            spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
             resources.borrow_mut()[0].actions[0] = spec;
             let mut app =
                 App::from_managed_root_with_controlled_inputs(State::new(), root).unwrap();
@@ -4515,7 +4514,8 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.value("CONFIRM");
                 host.activate("History");
                 if changed {
-                    resources.borrow_mut()[0].actions[0].label = "Changed during History".into();
+                    resources.borrow_mut()[0].actions[0].type_mut().label =
+                        "Changed during History".into();
                 }
                 host.activate("History");
                 assert!(ledger.borrow().is_empty());
@@ -4551,7 +4551,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 vec![ActionParam::required("payload", ParamType::Text, "Payload")],
                 |_| EncodedAction::encode("fixture.edit", &FixtureEdit).unwrap(),
             );
-            spec.contract.confirmation = ConfirmationPolicy::Confirm;
+            spec.type_mut().contract.confirmation = ConfirmationPolicy::Confirm;
             resources.borrow_mut()[0].actions[0] = spec;
             let mut host = Host::new(native, root);
             match &mut host {

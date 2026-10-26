@@ -4525,7 +4525,7 @@ mod tests {
                             .into_resource()
                             .actions
                             .into_iter()
-                            .map(|spec| spec.id)
+                            .map(|spec| spec.id.clone())
                             .collect()
                     })
                     .unwrap_or_default()

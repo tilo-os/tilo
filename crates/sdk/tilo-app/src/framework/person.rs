@@ -272,7 +272,7 @@ pub(crate) fn resource_id(kind: &str) -> String {
 
 fn history_spec(record: &str, label: &str, undo: bool) -> tilo_actions::ActionSpec {
     let mut spec = history_operation(record.to_owned(), label, undo);
-    spec.contract.result = tilo_actions::ResultSpec::Json {
+    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({
             "type": "object",
             "properties": { "steps": { "type": "integer" } },

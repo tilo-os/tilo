@@ -699,10 +699,10 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "save")
                 .unwrap();
-            let tilo_actions::ActionInput::Immediate(encoded) = &action.input else {
+            let Some(encoded) = action.encode_immediate() else {
                 panic!("unit close action")
             };
-            assert!(app.invoke_close_encoded(encoded).is_err());
+            assert!(app.invoke_close_encoded(&encoded).is_err());
             assert_eq!(
                 calls.get(),
                 0,
@@ -779,10 +779,10 @@ mod tests {
             .iter()
             .find(|action| action.id == choice.id())
             .unwrap();
-        let tilo_actions::ActionInput::Immediate(encoded) = &action.input else {
+        let Some(encoded) = action.encode_immediate() else {
             panic!("unit close action")
         };
-        app.invoke_close_encoded(encoded)
+        app.invoke_close_encoded(&encoded)
     }
 
     // This is the production portable Quit router and the very same admission

@@ -1656,7 +1656,7 @@ fn confirmation_follows_the_arguments_and_a_surface_withholds_an_action() {
 #[test]
 fn background_effect_return_values_keep_their_declared_result_contract() {
     use tilo_resource::Effect as _;
-    let export = FileEffect::Export.bound().contract;
+    let export = FileEffect::Export.bound().contract.clone();
     assert!(matches!(
         export.execution,
         tilo_actions::ExecutionMode::Background { cancellable: false }
@@ -1667,7 +1667,7 @@ fn background_effect_return_values_keep_their_declared_result_contract() {
         resources: Vec::new(),
     };
     export.result.validate(&output).unwrap();
-    let import = FileEffect::Import.bound().contract;
+    let import = FileEffect::Import.bound().contract.clone();
     assert!(import.validate_declaration().is_empty());
     assert!(import.result.validate(&output).is_err());
     import

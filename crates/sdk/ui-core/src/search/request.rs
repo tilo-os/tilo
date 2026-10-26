@@ -23,8 +23,8 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    ActionArgs, ActionBinding, ActionInput, ActionParam, ActionSpec, ControlInvocation,
-    EncodedAction, OperationKind, ParamType, Resource,
+    ActionArgs, ActionBinding, ActionParam, ActionSpec, ControlInvocation, EncodedAction,
+    OperationKind, ParamType, Resource,
 };
 
 use crate::i18n::I18nManager;
@@ -245,7 +245,7 @@ pub(crate) fn search_address() -> tilo_actions::ActionAddress {
 /// arguments.
 pub(crate) fn search_resource() -> Resource {
     let label = I18nManager::lookup_plain("standalone-search-title");
-    let mut open = ActionSpec::typed_operation(
+    let open = ActionSpec::typed_operation(
         SEARCH_ACTION,
         label.clone(),
         label.clone(),
@@ -270,10 +270,10 @@ pub(crate) fn search_resource() -> Resource {
             ),
         ],
         |args| SearchRequest::from_args(args).encode(),
-    );
+    )
     // Opening search asks nothing first: a menu item, the shortcut and the
     // palette run it at once; a control or an agent passes the arguments.
-    open.input = ActionInput::Immediate(SearchRequest::default().encode().into());
+    .with_immediate(SearchRequest::default().encode());
     Resource::new(SEARCH_RESOURCE, "tilo.host.search", label).with_action(open)
 }
 
@@ -421,7 +421,10 @@ mod tests {
         let built = open.build_json(&request.arguments()).unwrap();
         assert_eq!(SearchRequest::decode(&built.payload).unwrap(), request);
         // A menu or the shortcut opens it without asking anything.
-        assert!(matches!(open.input, ActionInput::Immediate(_)));
+        assert!(matches!(
+            open.input(),
+            tilo_actions::ActionInput::Immediate(Some(_))
+        ));
         assert!(ActionBinding::unit_for(&resource, SEARCH_ACTION).is_ok());
     }
 
