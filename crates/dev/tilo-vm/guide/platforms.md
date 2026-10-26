@@ -207,10 +207,10 @@ and need no login (`tilo-vm guide troubleshooting`).
 
 `tilo-vm doctor` says whether one is. If none is:
 
-- `t dispatch publish-os-dev-x86_64 --ref main` (`publish-os-dev-aarch64`
+- `t dispatch publish-os-dev-disk-x86_64 --ref main` (`publish-os-dev-disk-aarch64`
   for an ARM host), or ask someone who may dispatch t: it builds main's dev
-  image, gates it in `os-dev-gate-<arch>` and publishes its disk, each
-  architecture on its own. Its tag ends in `-ci`: it is built on the
+  image, installs it in `os-dev-disk-<arch>`, checks it in `os-acceptance-<arch>`
+  and publishes the disk, each architecture on its own. Its tag ends in `-ci`: it is built on the
   unsigned `tilo-ci` image;
 - or ask a human for a shared VM and use it: `tilo-vm vm use <name>`;
 - or, when this checkout has `os/dev/build-dev-image.sh`, build a disk

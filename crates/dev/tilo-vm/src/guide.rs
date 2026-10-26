@@ -257,7 +257,7 @@ mod tests {
             }
             let platforms = topic("platforms").unwrap();
             assert!(platforms.contains("virt-manager"));
-            assert!(platforms.contains("t dispatch publish-os-dev-x86_64"));
+            assert!(platforms.contains("t dispatch publish-os-dev-disk-x86_64"));
             let fedora = topic("fedora-loop").unwrap();
             assert!(fedora.contains("dist/dev/fedora44-vm-iterate.sh"));
             assert!(fedora.contains("deploy-apps"));
