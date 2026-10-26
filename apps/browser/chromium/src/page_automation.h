@@ -163,7 +163,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   struct Pending {
     // Named, so an aggregate initializer names each field once: a member added
     // to the middle of the list cannot silently shift the ones after it.
-    int request=0;uint64_t token=0;uint64_t navigations=0;bool retried=false;
+    int request=0;uint64_t token=0;uint64_t navigations=0;bool retried=false;bool refreshed=false;
     CefRefPtr<CefDictionaryValue> command;std::string message="";
     // "none": the action ran no page code. "started": the page began leaving
     // the document while it handled the action's input. "possible": it had
@@ -283,8 +283,11 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(Action()=="pointer") { BeginGesture();return; }
     // A gesture the page runs itself starts from what the page shows now.
     if(Dragging() || HoverAtPoint()) { BeginPageGesture();return; }
+    // A tree kept from an earlier action still speaks for this one unless the
+    // page's frames moved since it was read; the read below is then the one an
+    // action naming a frame depends on.
     if(tree_ && tree_generation_==generation_) { AfterTree();return; }
-    Call(Stage::FrameTree,"Page.getFrameTree",nullptr);
+    ReadTree();
   }
   // Answer the held chooser with these paths. The page then runs exactly what
   // a person's pick runs.
@@ -676,6 +679,47 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     params->SetString("frameId",target.id);params->SetString("worldName","tilo-page-actions");
     Call(Stage::World,"Page.createIsolatedWorld",params);
   }
+  // Read the page's frames again: a page attaches, detaches and navigates its
+  // frames after it loaded, and an action that names none of them still wants
+  // the page's own document, which only this read tells apart from a frame's.
+  void ReadTree() { Call(Stage::FrameTree,"Page.getFrameTree",nullptr); }
+  // The tree read now says whether the document it leads to is the one the
+  // cached tree led to: a page whose own document was replaced is read afresh
+  // rather than acted on in the document that is gone.
+  bool TreeMoved(CefRefPtr<CefDictionaryValue> tree) {
+    auto now=tree?tree->GetDictionary("frame"):nullptr;
+    auto before=tree_?tree_->GetDictionary("frame"):nullptr;
+    if(!now || !before) return true;
+    for(const char* key:{"id","loaderId"}) {
+      const auto held=now->GetType(key)==VTYPE_STRING && before->GetType(key)==VTYPE_STRING;
+      if(!held || now->GetString(key)!=before->GetString(key)) return true;
+    }
+    return false;
+  }
+  // A frame the page attached, detached or navigated since the tree was read:
+  // the tree kept from then names frames that are gone and misses the ones
+  // that are here, so the next action reads the page's frames again.
+  void FramesMoved() { ++generation_; }
+  // The page's frames moved in the inspector, or the agent's own from them:
+  // either way the tree kept is older than the page.
+  void OnDevToolsEvent(CefRefPtr<CefBrowser>,const CefString& method,const void* params,size_t size) override {
+    const std::string name=method.ToString();
+    if(name=="Page.frameAttached" || name=="Page.frameDetached") { FramesMoved();return; }
+    if(name!="Page.frameNavigated") return;
+    // Its own document leaving is a page navigation, which the host's fences
+    // already name; a frame's document, or the same one again, only moves the
+    // frames an action can name.
+    auto parsed=CefParseJSON(std::string(size>0?static_cast<const char*>(params):"",size>0?size:0),JSON_PARSER_RFC);
+    auto params_frame=parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr;
+    auto frame=params_frame?params_frame->GetDictionary("frame"):nullptr;
+    const bool own=frame && frame->GetType("parentId")!=VTYPE_STRING;
+    if(!own) { FramesMoved();return; }
+    // The same document loaded again is no new document.
+    auto leaf=tree_?tree_->GetDictionary("frame"):nullptr;
+    const auto loader=frame->GetType("loaderId")==VTYPE_STRING?frame->GetString("loaderId").ToString():std::string();
+    if(!leaf || loader.empty() || leaf->GetType("loaderId")!=VTYPE_STRING || leaf->GetString("loaderId").ToString()!=loader)
+      FramesMoved();
+  }
   void Call(Stage stage,const char* method,CefRefPtr<CefDictionaryValue> params) {
     CallInt(static_cast<int>(stage),method,params);
   }
@@ -743,7 +787,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         BeginGestureWorld();return;
       }
       if(stage_==Gesture(GestureStage::World)) {
-        if(!success || !result || result->GetType("executionContextId")!=VTYPE_INT) { Fail("unavailable","The page refused a script context");return; }
+        if(!success || !result || result->GetType("executionContextId")!=VTYPE_INT) {
+          const auto why=frame_world_.has_value()?"The page's document is not the one this action read, and its frames moved as it was read":"The page has no document to read";
+          Fail("unavailable",why);return;
+        }
         // The world belongs to the document the tree named: another document
         // is another world, however the ids of the two read.
         world_=result->GetInt("executionContextId");world_id_=main_id_;world_loader_=loader_;
@@ -819,7 +866,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       // the whole tree, not only the node asked for, so a later action still
       // finds the page's own document in it.
       auto tree=result->GetDictionary("frameTree");
+      const bool moved=TreeMoved(tree);
       tree_=tree->Copy(true);tree_generation_=generation_;
+      // The page's own document may have been replaced since the tree kept: an
+      // action read then runs in the document it names, not in a world that
+      // belonged to the one before it.
+      if(moved) { world_=0;main_world_=0;frame_world_.reset();world_request_.clear(); }
       // The tree leads straight on: which document this action runs in is the
       // next step, never the end of the action.
       AfterTree();return;
@@ -837,9 +889,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       if(!remote || remote->GetType("value")!=VTYPE_BOOL || !remote->GetBool("value")) { ProbeTextFrame();return; }
       Evaluate();
     } else if(At(Stage::World)) {
-      if(!success || !result || result->GetType("executionContextId")!=VTYPE_INT) {
-        Fail("unavailable","The page refused a script context");return;
-      }
+      if(!success || !result || result->GetType("executionContextId")!=VTYPE_INT) { WorldRefused();return; }
       // Which world this result is depends on the frame it was asked for, so
       // the page's world and the frame's never stand for each other.
       const int context=result->GetInt("executionContextId");
@@ -1387,7 +1437,23 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     fields->SetString("code",code.empty()?"script":code);fields->SetString("message",message.substr(0,1024));
     return fields;
   }
+  // The page refused a world: the frame it was asked for has left the page,
+  // which is a tree that moved while this action was read in it. The page's
+  // frames are read again once and the action runs in the page that is there,
+  // so it is never answered from a document the page has replaced.
+  void WorldRefused() {
+    world_=0;contexts_.clear();frame_world_.reset();world_request_.clear();
+    if(pending_->refreshed) { Fail("page_changed","The page's frames moved while this action was read; read the page again");return; }
+    pending_->refreshed=true;call_=0;++generation_;place_frame_=PageFrame{};step_located_=false;Begin();
+  }
   void Fail(const std::string& code,const std::string& message) {
+    if(code=="no_frame" && !pending_->refreshed && !gesture_ && Action()!="pointer") {
+      // The tree this action names a frame from may have been read before the
+      // page made, dropped or moved that frame. The page's frames are read
+      // again once, and the action goes on with the outline as it is now, so a
+      // frame the page lists is never one the page's actions refuse.
+      pending_->refreshed=true;call_=0;++generation_;place_frame_=PageFrame{};step_located_=false;Begin();return;
+    }
     if(PrivateText() && code=="text_input_retired" && text_owner_ && pending_->command->GetString("lease").ToString()==text_lease_) {
       text_owner_.reset();text_lease_.clear();
     }
