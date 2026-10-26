@@ -186,6 +186,51 @@ impl CalendarApp {
         }
     }
 
+    /// Say `text` of a change just submitted once it is kept: at once on
+    /// this device alone, once the room accepts it in a shared calendar,
+    /// and never when the room refuses it ([`Self::announce_answers`]).
+    pub(super) fn say_when_kept(&mut self, text: impl Into<String>) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.say_when_kept(text);
+        } else {
+            self.status.show(text.into(), ToastKind::Info);
+        }
+    }
+
+    /// Show what the room answered of this window's changes: a change it
+    /// kept is said done ("Added Buy milk"), and one it refused, which the
+    /// record withdrew, says why instead.
+    pub(super) fn announce_answers(&mut self) {
+        let Some(dispatcher) = &self.dispatcher else {
+            return;
+        };
+        let said = dispatcher.said();
+        if let Some(text) = said.with(Clone::clone) {
+            said.set(None);
+            self.status.show(text, ToastKind::Info);
+            self.dirty = true;
+        }
+        let refused = dispatcher.refused();
+        let Some(refusal) = refused.with(Clone::clone) else {
+            return;
+        };
+        refused.set(None);
+        self.status.failed(crate::resource::t_args(
+            "calendar-change-refused",
+            &[("reason", ui::i18n::ArgValue::from(refusal.reason))],
+        ));
+        self.dirty = true;
+    }
+
+    /// Whether a calendar was just shown or hidden, in words.
+    pub(super) fn visibility_status(visible: bool) -> String {
+        crate::resource::t(if visible {
+            "calendar-visible"
+        } else {
+            "calendar-hidden"
+        })
+    }
+
     /// Keep the window bar's notice saying the status while it lasts:
     /// "Syncing calendars…" for as long as the sync runs.
     pub(super) fn publish_status(&mut self) {
