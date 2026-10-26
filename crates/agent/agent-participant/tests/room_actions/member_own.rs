@@ -1,6 +1,6 @@
 //! A member asks the room's host to run a record's member-own actions for
-//! them: linking their own Discord account, whose code the host makes,
-//! keeps only the hash of, and answers to the asking device alone.
+//! them: linking their own Discord account by signing in with Discord,
+//! whose round trip the host starts and answers to the asking device alone.
 use super::*;
 
 /// The Discord connector's room record, by its record provider.
@@ -100,42 +100,71 @@ async fn a_member_links_their_discord_account_through_the_host() {
     .await;
     let mut visitor = open_admitted_peer(&hosted, &guest_device, &host, &room.room).await;
 
-    let reading = value(
-        &answered(
-            &mut visitor,
-            on_guild(&room.room, "my-link", serde_json::json!({})),
+    // The room's host offers signing in with Discord, as the bridge's bot
+    // says it at each start.
+    let page = "https://discord.test/oauth2/authorize?client_id=1&scope=identify";
+    rooms
+        .author_application(
+            &room.room,
+            &host.cert,
+            &common::catalogue(),
+            "so.tilo.discord",
+            "",
+            |doc| {
+                let mut bot = ui::tilo_resource::Replica::<discord::record::Guild>::from_doc(
+                    std::mem::take(doc),
+                )
+                .as_bot_for("bridge-install", &hex::encode(host.cert.user_public_key));
+                let applied = bot
+                    .apply(discord::record::Guild::SET_SIGN_IN.with(page.to_owned()))
+                    .map(drop)
+                    .map_err(|error| error.to_string());
+                std::mem::swap(doc, bot.doc_mut());
+                applied
+            },
         )
-        .await,
-    );
+        .await
+        .unwrap();
+
+    let deadline = tilo_test_env::hang_deadline();
+    let reading = loop {
+        let reading = value(
+            &answered(
+                &mut visitor,
+                on_guild(&room.room, "my-link", serde_json::json!({})),
+            )
+            .await,
+        );
+        if reading["connect"].is_string() {
+            break reading;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the member is never offered Connect Discord: {reading}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     assert_eq!(reading["connected"], true, "{reading}");
     assert!(reading["account"].is_null(), "{reading}");
-    assert_eq!(reading["link"], "link-account");
+    let connect = reading["connect"].as_str().unwrap().to_owned();
 
-    let code = value(
+    let start = value(
         &answered(
             &mut visitor,
-            on_guild(&room.room, "link-account", serde_json::json!({})),
+            on_guild(&room.room, &connect, serde_json::json!({})),
         )
         .await,
     );
-    let code = code["code"].as_str().unwrap().to_owned();
-    assert_eq!(code.len(), 12, "the host made a code for the asking device");
-
-    let reading = value(
-        &answered(
-            &mut visitor,
-            on_guild(&room.room, "my-link", serde_json::json!({})),
-        )
-        .await,
+    let url = start["url"].as_str().unwrap().to_owned();
+    assert!(
+        url.starts_with(page) && url.contains("&state="),
+        "the host answers the consent page with a fresh state: {start}"
     );
-    assert_eq!(
-        reading["pending"], true,
-        "the record holds the member's pending link: {reading}"
-    );
-    // The bridge's bot reads the governor's copy of the record when `/link`
-    // arrives; the pending link must be there, not only in the host's own.
-    let deadline = tilo_test_env::hang_deadline();
+    // The bridge's bot reads the governor's copy of the record when the
+    // sign-in comes back; the round trip must be there, bound to the member
+    // who started it, not only in the host's own copy.
     let guest_person = hex::encode(guest_device.cert.user_public_key);
+    let owner_person = hex::encode(owner_device.cert.user_public_key);
     loop {
         let saved = rooms
             .record_document(&room.room, "so.tilo.discord", "")
@@ -144,31 +173,24 @@ async fn a_member_links_their_discord_account_through_the_host() {
             .expect("the governor holds the Discord record");
         let mut doc = automerge::AutoCommit::load(&saved).unwrap();
         let governors = tilo_relay::room_bots::opened::<discord::record::Guild>(&mut doc).unwrap();
-        if governors
-            .pending_links
+        let people: Vec<_> = governors
+            .connects
             .iter()
-            .any(|pending| pending.person == guest_person)
-        {
+            .map(|connect| connect.person.clone())
+            .collect();
+        if people.contains(&guest_person) {
+            assert!(
+                !people.contains(&owner_person),
+                "the round trip is the member's own: {people:?}"
+            );
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the governor's copy never took the member's pending link: {:?}",
-            governors.pending_links.iter().collect::<Vec<_>>()
+            "the governor's copy never took the member's sign-in: {people:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let owners_view = value(
-        &answered(
-            &mut owner_browser,
-            on_guild(&room.room, "my-link", serde_json::json!({})),
-        )
-        .await,
-    );
-    assert_eq!(
-        owners_view["pending"], false,
-        "the pending link is the member's own: {owners_view}"
-    );
 
     let refused = answered(
         &mut visitor,
