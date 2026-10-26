@@ -17283,6 +17283,7 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tokio",
+ "tracing",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
