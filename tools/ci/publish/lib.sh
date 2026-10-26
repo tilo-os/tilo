@@ -186,13 +186,15 @@ use_cosign() {
   PATH=$tools/tilo-cosign-tools:$PATH
 }
 
-# The manifest digest of the single image an OCI index.json (on stdin, from $1) names, compact
-# (podman's) or not (Python's json.dump, as tools/ci/os/oci_layers.py writes layouts).
+# The manifest digest of the single image an OCI index.json (on stdin, from $1) names.
 index_digest() {
-  local digest
-  digest=$(tr -d '[:space:]' | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | head -1 | cut -d'"' -f4) || true
-  [[ -n $digest ]] || die "$1 names no image digest"
-  printf '%s' "$digest"
+  python3 -c '
+import json, sys
+manifests = json.load(sys.stdin).get("manifests", [])
+if len(manifests) != 1:
+    sys.exit(f"publish: {sys.argv[1]} names {len(manifests)} images, not one")
+print(manifests[0]["digest"], end="")
+' "$1"
 }
 
 # The manifest digest of the single image in an OCI archive, from its index.json.
