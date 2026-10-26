@@ -185,14 +185,32 @@ fn changed_fields(before: &[u8], after: &[u8]) -> Vec<String> {
         serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(bytes)
             .unwrap_or_default()
     };
+    let first = before
+        .iter()
+        .zip(after)
+        .position(|(a, b)| a != b)
+        .unwrap_or_else(|| before.len().min(after.len()));
+    let around = |bytes: &[u8]| {
+        String::from_utf8_lossy(&bytes[first.saturating_sub(120)..(first + 120).min(bytes.len())])
+            .into_owned()
+    };
+    let at = format!(
+        "{} vs {} bytes, first difference at {first}: {:?} became {:?}",
+        before.len(),
+        after.len(),
+        around(before),
+        around(after)
+    );
     let (before, after) = (parse(before), parse(after));
-    before
-        .keys()
-        .chain(after.keys())
-        .filter(|key| before.get(*key) != after.get(*key))
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
+    std::iter::once(at)
+        .chain(
+            before
+                .keys()
+                .chain(after.keys())
+                .filter(|key| before.get(*key) != after.get(*key))
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+        )
         .collect()
 }
 /// An admission stands only while the room's sandbox is the one it was
