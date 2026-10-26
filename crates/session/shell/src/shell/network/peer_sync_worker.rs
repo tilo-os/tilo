@@ -25,6 +25,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
+use std::time::{Duration, Instant};
 
 /// How long an invite minted from the invitation card stays valid.
 const INVITE_EXPIRY_SECONDS: u64 = crate::shell::peer_sync_overlay::INVITE_EXPIRES_IN_SECONDS;
