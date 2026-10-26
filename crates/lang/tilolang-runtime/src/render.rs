@@ -2,6 +2,7 @@
 //! foreign view nodes (`view:<app>:<view id>`) into nested boundaries.
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use crate::core::Core;
 use crate::error::RuntimeError;
@@ -103,7 +104,8 @@ pub(crate) struct Walk<'a> {
 pub(crate) struct Stub<'a> {
     /// The key the call's node has in the tree.
     pub key: &'a str,
-    pub target: ViewTarget,
+    /// Shared: every row of a loop calls the one view.
+    pub target: Rc<ViewTarget>,
     pub args: Vec<Value>,
     /// A row of a `list`: rendered when the host shows it, not now.
     pub lazy: bool,
@@ -294,7 +296,7 @@ impl Core {
             props.retain(|name, _| !name.starts_with(ARG_PREFIX));
             let children = boundaries.boundary(Stub {
                 key: &key,
-                target: vt,
+                target: Rc::new(vt),
                 args,
                 lazy: walk.in_list,
                 depth: cx.offer.depth.saturating_add(1),
@@ -384,6 +386,7 @@ impl Core {
             _ => "",
         };
         let (vt, args_of) = self.rows_call(target, &n.props)?;
+        let vt = Rc::new(vt);
         // The sizing and placement the compiler took out of a one-node body: each row's.
         let layout: std::collections::BTreeMap<String, Value> = n
             .props
@@ -408,7 +411,7 @@ impl Core {
             let children = if let Some(boundaries) = hook.as_deref_mut() {
                 boundaries.boundary(Stub {
                     key: &row_key,
-                    target: vt.clone(),
+                    target: Rc::clone(&vt),
                     args,
                     lazy: walk.in_list,
                     depth: cx.offer.depth.saturating_add(1),

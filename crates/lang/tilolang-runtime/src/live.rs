@@ -29,7 +29,7 @@ pub(crate) type BoundId = usize;
 pub(crate) struct Bound {
     /// The key of the call's `fragment` in the tree; empty for the root.
     pub key: String,
-    pub target: ViewTarget,
+    pub target: Rc<ViewTarget>,
     pub args: Vec<Value>,
     pub depth: usize,
     pub children: Vec<BoundId>,
@@ -141,6 +141,9 @@ pub(crate) struct Live {
     /// Where each list the host asked about was last found: checked before use, searched for
     /// again when the tree moved it.
     list_paths: RefCell<HashMap<String, Vec<usize>>>,
+    /// Where each other node [`Self::find`] walked the tree for was last found, checked the same
+    /// way: a host edits and presses the same few nodes again and again.
+    found_paths: RefCell<HashMap<String, Vec<usize>>>,
     /// The view-state clock last checked.
     state_clock: u64,
 }
@@ -156,7 +159,7 @@ impl Live {
     ) -> Result<Self, RuntimeError> {
         let root = Bound {
             key: String::new(),
-            target,
+            target: Rc::new(target),
             args,
             depth: 0,
             children: Vec::new(),
@@ -185,6 +188,7 @@ impl Live {
             to_release: Vec::new(),
             shown: HashMap::new(),
             list_paths: RefCell::default(),
+            found_paths: RefCell::default(),
             state_clock: core.view_states.borrow().clock(),
         };
         let tree = live.render(core, ROOT)?;
@@ -674,7 +678,22 @@ impl Live {
             }
             rest = prefix;
         }
-        self.tree.find(key)
+        // Anything else (the root view's own nodes, an anchored node in any boundary) is found
+        // by walking the tree once; where it was is kept, and checked before it is used again.
+        if let Some(node) = self
+            .found_paths
+            .borrow()
+            .get(key)
+            .and_then(|path| self.node_at(path))
+            .filter(|n| n.key == key)
+        {
+            return Some(node);
+        }
+        let node = self.tree.find(key)?;
+        if let Some(path) = path_to(&self.tree, node) {
+            self.found_paths.borrow_mut().insert(key.to_owned(), path);
+        }
+        Some(node)
     }
 
     /// The list with key `list`. A host asks for its rows one by one as they scroll into
