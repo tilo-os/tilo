@@ -1994,18 +1994,32 @@ mod history_integration_tests {
         let history = Arc::new(
             crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap(),
         );
+        let person = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
         let actor = FileActor {
-            person: Ed25519PublicKey([1; 32]),
-            device: Ed25519PublicKey([2; 32]),
+            person: Ed25519PublicKey(person.verifying_key().to_bytes()),
+            device: Ed25519PublicKey(device.verifying_key().to_bytes()),
         };
+        let repository = Arc::new(
+            crate::record_repository::RecordRepository::open(dir.path().join("records")).unwrap(),
+        );
+        let publisher = Arc::new(
+            crate::record_publisher::RecordPublisher::new(
+                repository.clone(),
+                uuid::Uuid::from_u128(0x77),
+                actor,
+                device,
+            )
+            .unwrap(),
+        );
         let fs = QuickFS::new(namespace.clone(), hydrator, heuristics)
             .with_history(history.clone(), actor)
+            .unwrap()
+            .with_record_publisher(publisher.clone())
             .unwrap();
-
         let baseline = history.snapshot(record_id).unwrap();
         assert_eq!(baseline.versions.len(), 1);
         assert_eq!(baseline.versions[0].provenance, FileProvenance::Create);
-
         fs.commit_content(ino, b"durable bytes").unwrap();
         let after_edit = history.snapshot(record_id).unwrap();
         assert_eq!(after_edit.versions.len(), 2);
@@ -2024,7 +2038,6 @@ mod history_integration_tests {
             2,
             "flush/fsync/release of unchanged bytes must not invent versions"
         );
-
         assert!(
             !fs.rename_named(
                 crate::namespace::ROOT_INO,
@@ -2039,11 +2052,17 @@ mod history_integration_tests {
         assert_eq!(after_rename.versions.len(), 3);
         assert_eq!(after_rename.versions[2].provenance, FileProvenance::Rename);
         assert_eq!(namespace.lock_recover().record_id_for(ino), Some(record_id));
-
-        drop(fs);
+        drop((fs, publisher));
         drop(history);
+        drop(repository);
         let reopened =
             crate::history::FileHistoryStore::open(dir.path().join("history.json")).unwrap();
+        let repository = Arc::new(
+            crate::record_repository::RecordRepository::open(dir.path().join("records")).unwrap(),
+        );
+        reopened
+            .rebuild_from_repository(&repository, uuid::Uuid::from_u128(0x77))
+            .unwrap();
         assert_eq!(reopened.snapshot(record_id).unwrap().versions.len(), 3);
     }
 
@@ -2857,14 +2876,17 @@ mod record_publisher_integration_tests {
                 .is_none(),
             "durably staged namespace bytes remain invisible before publication"
         );
+        let staged_journal = journal.lock_recover();
+        let staged = staged_journal.get(keep_both_transaction_id).unwrap();
         assert_eq!(
-            journal
-                .lock_recover()
-                .get(keep_both_transaction_id)
-                .unwrap()
-                .phase,
-            crate::record_transaction::RecordTransactionPhase::HistoryCommitted
+            staged.phase,
+            crate::record_transaction::RecordTransactionPhase::ParticipantRecordsCommitted
         );
+        assert!(
+            staged.namespace_delta.is_some(),
+            "the exact namespace delta is durable before its publication"
+        );
+        drop(staged_journal);
         drop(publisher);
         drop(history);
         drop(journal);

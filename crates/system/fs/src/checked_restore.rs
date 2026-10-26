@@ -886,10 +886,10 @@ impl QuickFS {
         drop(repository);
         #[cfg(test)]
         test_fault(request.intent_id, TestFault::Records).map_err(|_| pending())?;
-        history.install(history_candidate).map_err(|_| pending())?;
-        journal
-            .advance(request.intent_id, Phase::HistoryCommitted, None)
-            .map_err(|_| pending())?;
+        // The repository commit above is the durable history: this fold only
+        // refreshes the derived query index, and its idempotent replay is the
+        // crash recovery for it.
+        history.install(history_candidate);
         #[cfg(test)]
         test_fault(request.intent_id, TestFault::History).map_err(|_| pending())?;
         journal

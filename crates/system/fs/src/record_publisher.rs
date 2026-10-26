@@ -1084,6 +1084,8 @@ pub enum RecordPublisherError {
     Signing(#[from] CanonicalError),
     #[error("record repository rejected publication: {0}")]
     Repository(#[from] RecordRepositoryError),
+    #[error("derived history does not match the signed record log: {0}")]
+    History(#[from] crate::history::HistoryError),
     #[error("transaction coordinator rejected publication: {0}")]
     TransactionCoordinator(
         #[from] crate::transaction_coordinator::RecordTransactionCoordinatorError,

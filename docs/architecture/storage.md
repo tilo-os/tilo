@@ -1017,8 +1017,10 @@ rule, and two physical backings:
   served, until the whole batch is signed once as a `SignedChangesetV1`
   (per-device sequence, Merkle root over per-record leaves of
   `(record, first..last sequence, digest of the envelopes)`) and written with it
-  in one redb transaction. The history lines of the batch are one synced write
-  before it; the namespace that places its records is persisted after it. After
+  in one redb transaction. File history is derived from these signed
+  `AppendVersion`, `AppendConflict` and `ResolveConflict` operations; its query
+  index is rebuilt from the log and its checkpoint names the log digest. The
+  namespace that places its records is persisted after the record write. After
   a crash either the whole changeset is in the log or none of it, and the epoch
   is captured again.
 - Peers see nothing of a changeset before it is durable: its namespace deltas
@@ -2046,8 +2048,11 @@ One `HistorySource` over every record kind. [R5, R6]
   history. That is the nesting in `rooms.md`, "History nests", and it feeds the
   existing Glance / Catch up / Investigate surfaces
   (`docs/history-experience.md`).
-- **One store.** History moves from the global JSON file (`history.rs:615-634`,
-  O(N) rewrite per edit) into `meta.redb`, keyed by `(record, version)`.
+- **One store.** File history is the signed record operation log itself. The
+  former global JSON file (`history.rs`) is read only as a legacy import; the
+  live query index is derived and its checkpoint is a cache keyed by the
+  signed-log digest. Other record kinds keep their own signed change history in
+  the same derived index.
 - **Retention.** Per room, with a person override:
   - keep every version for 24 h;
   - then hourly for 7 days;

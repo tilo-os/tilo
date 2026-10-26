@@ -2386,7 +2386,7 @@ cargo test --locked -p tilo-fs --test corruption_matrix -- --nocapture --test-th
 cargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture
 cargo test --locked -p tilo-fs --lib -- --exact record_repository::tests::signed_transactions_merges_and_batches_project_whole_and_survive_restart record_repository::tests::a_received_changeset_applies_whole_or_not_at_all durable_backup::tests::backups_retain_generations_and_recover_from_the_newest_valid_one
 cargo test --locked -p tilo-fs namespace::tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture
-cargo test --locked -p tilo-fs history::tests::history_logs_read_legacy_and_fail_closed_on_damage --lib -- --nocapture
+cargo test --locked -p tilo-fs history::tests::legacy_history_is_imported_read_only_and_damage_fails_closed --lib -- --nocapture
 cargo test --locked -p tilo-fs record_transaction::tests::journal_restarts_exactly_with_monotonic_phases_and_whole_batches --lib -- --nocapture
 cargo test --locked -p tilo-fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture
 cargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_record_id_and_rejects_tampering --lib -- --nocapture
