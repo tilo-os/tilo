@@ -3494,8 +3494,8 @@ pub use search_field::{
 };
 pub mod window_search;
 pub use window_search::{
-    InPlace, Queryable, SearchDriver, SearchHandoff, SearchReach, SearchableWindow, WindowSearch,
-    WindowSearchRequest, with_queryable,
+    InPlace, QueryView, Queryable, SearchDriver, SearchHandoff, SearchReach, SearchableWindow,
+    WindowSearch, WindowSearchRequest, with_queryable,
 };
 pub mod search_results;
 pub use search_results::SearchResultsView;

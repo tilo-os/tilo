@@ -166,6 +166,14 @@ impl FrameHarness {
         self.window_search.query()
     }
 
+    /// What the window bar's search counts: the rows a list or a query view
+    /// kept of all of them, the current match of all matches in a document;
+    /// `None` before anything is typed.
+    #[must_use]
+    pub fn window_search_count(&self) -> Option<crate::widget::FilterCount> {
+        self.window_search.count()
+    }
+
     /// Whether the window bar's search offers Replace on what the window
     /// shows.
     #[must_use]
