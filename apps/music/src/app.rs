@@ -332,6 +332,9 @@ pub struct MusicApp {
     /// The committed heads and pending operation count that produced `lib`.
     /// Reuse the projection without committing a pending transaction to read it.
     library_heads: Option<(Vec<ChangeHash>, usize)>,
+    /// Why the newest read of the document's library did not read, while
+    /// `lib` and `stored_library` keep the library that last read whole.
+    library_read: ui::tilo_resource::DocumentRead,
     /// Shared, preindexed Ctrl+K catalog. Cloning the provider is O(1), so
     /// host/provider retrieval never walks the whole music corpus.
     /// Monotonic diagnostic used by tests to prove provider retrieval does not
@@ -845,6 +848,7 @@ impl MusicApp {
         Self {
             lib: Library::default(),
             library_heads: None,
+            library_read: ui::tilo_resource::DocumentRead::default(),
             opened: Rc::default(),
             device_cache,
             media_cache,
@@ -1037,13 +1041,27 @@ impl MusicApp {
         if self.library_heads.as_ref() == Some(&heads) {
             return;
         }
-        let next_library =
-            <crate::model::Library as ui::tilo_resource::Resource>::read(state).unwrap_or_default();
+        // A read that fails is not an empty library: what was last read whole
+        // stays — searchable, playable and editable — and the bar says why the
+        // document cannot be read. Recording these heads still makes the next
+        // change to the document read it again.
+        let next_library = self
+            .library_read
+            .adopt(<crate::model::Library as ui::tilo_resource::Resource>::read(state));
+        self.library_heads = Some(heads);
+        if let Some(reason) = self.library_read.take_report() {
+            self.notify(
+                ToastKind::Error,
+                format!("This music library can't be read: {reason}"),
+            );
+        }
+        let Some(next_library) = next_library else {
+            return;
+        };
         self.stored_library.clone_from(&next_library);
         self.library_revision = self.library_revision.wrapping_add(1);
         self.lib = next_library;
         self.inject_live_hits();
-        self.library_heads = Some(heads);
         self.sync_playlist_covers();
     }
 
@@ -5604,6 +5622,9 @@ mod window_bar;
 #[cfg(test)]
 #[path = "app/home_arrival_tests.rs"]
 mod home_arrival_tests;
+#[cfg(test)]
+#[path = "app/library_read_tests.rs"]
+mod library_read_tests;
 #[cfg(test)]
 #[path = "app/stream_start_tests.rs"]
 mod stream_start_tests;
