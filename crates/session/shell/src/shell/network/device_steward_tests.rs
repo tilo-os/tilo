@@ -387,3 +387,65 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
     );
     drop((owner, member));
 }
+
+/// An app's broker connection asks for its channel's keys from a task on
+/// the broker's own runtime. A room placed on this device's host after the
+/// app connected answers there with the host steward's keys, and the
+/// connection's task goes on: asking once panicked inside that runtime and
+/// ended the app's connection.
+#[test]
+#[serial_test::serial]
+fn a_connection_asking_for_keys_of_a_room_placed_here_after_it_started_survives() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = SigningKey::from_bytes(&[52; 32]);
+    home.env().set("TILO_USER_ID", person_of(&root));
+
+    let tree = WorkspaceTree {
+        persist_path: Some(dir.path().join("owner/workspaces.json")),
+        ..WorkspaceTree::default()
+    }
+    .shared();
+    let (net, key) = device(
+        tree.clone(),
+        &dir.path().join("owner"),
+        &root,
+        DeviceCapabilities::primary(),
+    );
+    assert!(net.join_default_workspace());
+    let access = crate::shell::channel_encryption::ChannelKeyAccess::new(channels(
+        &net,
+        &tree,
+        &dir.path().join("owner"),
+        &key,
+    ));
+    // The broker's runtime: its connections are tasks on one thread.
+    let broker = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let connection = tokio::task::LocalSet::new();
+
+    // The workspace is made, and its room placed on this device's host,
+    // while the broker already runs.
+    let (_, room) = tree.write().create_hosted_workspace("Home");
+    until("this device's host to place the workspace", || {
+        net.tick();
+        net.administered_room(room)
+    });
+    let channel = document_channel_id(NOTES, &room.to_string(), "plan");
+    let asked = connection.block_on(&broker, async move {
+        tokio::task::spawn_local(async move { access.access(room, channel).0 }).await
+    });
+    let answer = asked.expect("the connection's task survives asking for its channel's keys");
+    assert!(
+        matches!(answer, ChannelAccess::Ready(_)),
+        "the host's steward hands this device the channel's keys: {answer:?}"
+    );
+    assert!(
+        net.hosted_channel_keys(room, channel, None, false)
+            .is_some_and(|keys| keys.is_ok()),
+        "the room is hosted here"
+    );
+    drop(net);
+}

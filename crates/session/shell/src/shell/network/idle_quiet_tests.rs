@@ -1,6 +1,7 @@
 //! What a converged, idle two-desktop session costs on the wire: two devices
-//! of one person share a workspace room (and the person's own continuity
-//! topic), one of them with its pointer resting over a shared tab. Both run
+//! of one person share a workspace room, hosted on the first and held by
+//! the second as a member (and the person's own continuity topic), one of
+//! them with its pointer resting over a shared tab. Both run
 //! their network tick and pointer presence the way the compositor's frame
 //! loop does, ten times a second, as a loop woken by something unrelated (a
 //! clock, a blinking caret) would. Nobody does anything for a minute, so
@@ -16,7 +17,8 @@ use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use ui::presence::PresenceCtx;
 
-use super::{HostIdentity, NetCmd, Reach, ShellNetwork};
+use super::one_host_tests::{Device, Person, Wakes, hosted_workspace, scratch, until};
+use super::{HostIdentity, Reach, ShellNetwork};
 use crate::shell::peer_presence::{Desk, PeerPresence};
 use crate::shell::state::{RoomId, WorkspaceTree, WorkspaceTreeHandle};
 
@@ -318,16 +320,8 @@ fn session_threads_but(left_out: &[Option<u32>]) -> Vec<tilo_test_env::idle::Thr
     threads
 }
 
-fn device(
-    tree: WorkspaceTreeHandle,
-    dir: &std::path::Path,
-    root: &SigningKey,
-    capabilities: DeviceCapabilities,
-) -> Arc<ShellNetwork> {
-    device_reaching(tree, dir, root, capabilities, Reach::Loopback)
-}
-
-/// [`device`] reaching peers as `reach` says.
+/// A device of the person `root` names, over `tree`, reaching peers as
+/// `reach` says.
 pub(super) fn device_reaching(
     tree: WorkspaceTreeHandle,
     dir: &std::path::Path,
@@ -368,8 +362,8 @@ pub(super) fn device_reaching(
 }
 
 /// One desktop as its frame loop drives it.
-struct Desktop {
-    net: Arc<ShellNetwork>,
+struct Desktop<'a> {
+    device: &'a Device,
     tree: WorkspaceTreeHandle,
     presence: PeerPresence,
     ctx: PresenceCtx,
@@ -377,11 +371,28 @@ struct Desktop {
     repaints: u64,
 }
 
-impl Desktop {
-    fn new(net: Arc<ShellNetwork>, tree: WorkspaceTreeHandle) -> Self {
-        let presence = PeerPresence::for_network(&net, Vec::new());
+impl<'a> Desktop<'a> {
+    /// `device` with `room`'s workspace in front, its person showing where
+    /// they are there, as the desktop says on start: until it does, nothing
+    /// of them leaves.
+    fn new(device: &'a Device, room: RoomId) -> Self {
+        let net = device.net();
+        let tree = device.tree().clone();
+        {
+            let mut tree = tree.write();
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room() == room)
+                .map(|workspace| workspace.id)
+                .expect("the device holds the shared workspace");
+            tree.desktop.active = workspace;
+        }
+        net.set_presence_visibility(&room.to_string(), ui::PresenceVisibility::WhereIAm);
+        let presence = PeerPresence::for_network(net, Vec::new());
         Self {
-            net,
+            device,
             tree,
             presence,
             ctx: PresenceCtx::default(),
@@ -394,10 +405,10 @@ impl Desktop {
         }
     }
 
-    /// One frame: the network tick, then pointer presence, as the native
+    /// One frame: the network's turn, then pointer presence, as the native
     /// compositor runs them.
     fn frame(&mut self) {
-        self.net.tick();
+        self.device.frame();
         if self.presence.frame(&mut self.ctx, &self.desk, &self.tree) {
             self.repaints = self.repaints.saturating_add(1);
         }
@@ -406,20 +417,11 @@ impl Desktop {
 
 const SHARED_TAB: u64 = 7;
 
-fn workspace_name(tree: &WorkspaceTreeHandle, room: RoomId) -> Option<String> {
-    tree.read()
-        .desktop
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.room() == room)
-        .map(|workspace| workspace.name.clone())
-}
-
 /// Run both desktops' frame loops for `span`, or until `done` holds.
 fn run(
-    desktops: &mut [&mut Desktop],
+    desktops: &mut [&mut Desktop<'_>],
     span: Duration,
-    mut done: impl FnMut(&[&mut Desktop]) -> bool,
+    mut done: impl FnMut(&[&mut Desktop<'_>]) -> bool,
 ) -> bool {
     let started = Instant::now();
     let deadline = started.checked_add(span).unwrap_or(started);
@@ -506,78 +508,49 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
         return;
     }
     let mut home = tilo_test_env::TestHome::new().unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let root = SigningKey::from_bytes(&[43; 32]);
-    let person = match collab_types::caps::Principal::person_from_key(
-        collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-    ) {
-        collab_types::caps::Principal::Person(id) => id,
-        other => panic!("a root key names a person: {other:?}"),
-    };
-    home.env().set("TILO_USER_ID", &person);
-
-    let mut first_tree = WorkspaceTree::default();
-    let home_workspace = first_tree.create_hosted_workspace("Home").0;
-    first_tree.own_workspaces_for_test(|_| person.clone());
-    // The pointer is said in the room on screen.
-    first_tree.desktop.active = home_workspace;
-    let room = first_tree.room_of(home_workspace).unwrap();
-    let first_tree = first_tree.shared();
-    let first_net = device(
-        first_tree.clone(),
+    let dir = scratch();
+    let wakes = Arc::new(Wakes::default());
+    let person = Person::new(43);
+    home.env().set("TILO_USER_ID", person.id());
+    let first_device = Device::start(
+        &person,
+        "Desktop",
         &dir.path().join("first"),
-        &root,
+        0x0A43,
         DeviceCapabilities::primary(),
+        &wakes,
     );
-    assert!(first_net.join_default_workspace());
-    let mut second_tree = WorkspaceTree::default();
-    assert!(second_tree.join_room("Home", room).is_some());
-    let second_tree = second_tree.shared();
-    let second_net = device(
-        second_tree.clone(),
+    let second_device = Device::start(
+        &person,
+        "Laptop",
         &dir.path().join("second"),
-        &root,
+        0x0A44,
         DeviceCapabilities::member(),
+        &wakes,
     );
-    assert!(second_net.join_default_workspace());
-    // What each person chose to show there, as the desktop says on start:
-    // until it does, nothing of them leaves.
-    for net in [&first_net, &second_net] {
-        net.set_presence_visibility(&room.to_string(), ui::PresenceVisibility::WhereIAm);
-    }
-
-    let mut first = Desktop::new(Arc::clone(&first_net), first_tree);
-    let mut second = Desktop::new(Arc::clone(&second_net), second_tree.clone());
-    let deadline = Instant::now() + tilo_test_env::hang_bound();
-    let first_addr = loop {
-        if let Some(addr) = first_net.dial_addr() {
-            break addr;
-        }
-        assert!(Instant::now() < deadline, "the first device never listened");
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    second_net
-        .cmd_tx
-        .try_send(NetCmd::Connect { addr: first_addr })
-        .unwrap();
-    assert!(
-        run(
-            &mut [&mut first, &mut second],
-            tilo_test_env::hang_bound(),
-            |_| { workspace_name(&second_tree, room).as_deref() == Some("Home") }
-        ),
-        "the two desktops never converged on the shared room"
+    // The first device makes the workspace, hosted on it; the second finds
+    // it in the person's workspace list and holds it as a member.
+    let (_, room) = hosted_workspace(&first_device, &[&second_device], "Home");
+    second_device.reach(&first_device);
+    until(
+        &[&first_device, &second_device],
+        "the second device to hold the shared workspace",
+        || second_device.holds(room).then_some(()),
     );
+    let first_net = Arc::clone(first_device.net());
+    let second_net = Arc::clone(second_device.net());
+    let mut first = Desktop::new(&first_device, room);
+    let mut second = Desktop::new(&second_device, room);
 
-    // The first desktop's person points at the shared tab, the second sees
-    // it arrive, and then the hand comes off the mouse.
+    // The first desktop's person points at the shared tab, the second draws
+    // that pointer (the pointer itself: a roster change repaints too), and
+    // then the hand comes off the mouse.
     first.desk.pointer = Some((120.0, 80.0));
-    let before = second.repaints;
     assert!(
         run(
             &mut [&mut first, &mut second],
             tilo_test_env::hang_bound(),
-            |desktops| desktops[1].repaints > before,
+            |desktops| !desktops[1].ctx.remote_cursors.is_empty(),
         ),
         "the peer never drew the pointer"
     );
@@ -662,6 +635,7 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
     }
     assert_eq!(repaints, (0, 0), "{report}");
     drop((first, second, first_net, second_net));
+    drop((first_device, second_device));
 }
 
 /// A desktop alone with a room of its own, as most are, wakes nothing while
