@@ -342,6 +342,7 @@ dependencies = [
  "settings-store",
  "tempfile",
  "tilo-agent-models",
+ "tilo-automerge",
  "tilo-resource",
  "url",
  "uuid",

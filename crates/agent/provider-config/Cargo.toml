@@ -32,6 +32,8 @@ uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+# The model tests merge two replicas' changes, through the one apply path.
+tilo-automerge.workspace = true
 
 [lints]
 workspace = true
