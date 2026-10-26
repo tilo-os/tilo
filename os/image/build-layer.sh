@@ -101,10 +101,12 @@ guest_devices() {
 }
 
 # The frozen RPM snapshot, as os-image.sh resolves it: the published one for this package
-# set, else this run's image-rpms-ARCH, unsigned. Loaded only for an action that installs
-# from it (rpms_read=1); one that doesn't, such as the binaries' and the derived state's, is
-# given only its name and the clock it sets (RPMS_CREATED), read from the archive, rather than
-# gigabytes of packages to unpack into its storage.
+# set, else this run's image-rpms-ARCH, unsigned, dated by its newest package signature
+# (RPMS_CREATED, image-rpms-ARCH's epoch) rather than by when it was resolved, so a snapshot
+# resolved again to the same packages builds the same layers. Loaded only for an action that
+# installs from it (rpms_read=1); one that doesn't, such as the binaries' and the derived
+# state's, is given only its name and that clock rather than gigabytes of packages to unpack
+# into its storage.
 rpms_read=1
 rpms_snapshot() {
   local built=/target/publish/rpms/$arch status=0 id
@@ -115,34 +117,18 @@ rpms_snapshot() {
     1)
       [[ -f $built/image.oci.tar ]] || die "no published RPM snapshot for this package set and no image-rpms-$arch in this run"
       [[ $(archive_digest "$built/image.oci.tar") == "$(cat "$built/digest")" ]] || die "$built/image.oci.tar is not the build"
+      RPMS_CREATED=$(cat "$built/epoch")
+      [[ $RPMS_CREATED =~ ^[1-9][0-9]*$ ]] || die "image-rpms-$arch left no clock in $built/epoch"
       RPMS_REF=localhost/tilo-rpms:$(bash os/dev/resolve-rpm-snapshot.sh --tag)-$arch
       if [[ $rpms_read == 1 ]]; then
         id=$(podman pull -q "oci-archive:$built/image.oci.tar")
         podman tag "$id" "$RPMS_REF"
-      else
-        RPMS_CREATED=$(archive_created "$built/image.oci.tar")
       fi
       export TILO_RPMS_TRUST=unsigned
       printf 'no published RPM snapshot for this package set: installing from image-rpms-%s, unsigned\n' "$arch" ;;
     *) die 'could not ask the registry for the published RPM snapshot' ;;
   esac
   export RPMS_REF
-}
-
-# The creation time of the single image in the OCI archive $1, as seconds (what
-# os/dev/image-epoch.sh reads of a loaded image: its configuration's `created`).
-archive_created() {
-  python3 -I - "$1" <<'PY'
-import datetime, json, sys, tarfile
-with tarfile.open(sys.argv[1]) as t:
-    names = {m.name.removeprefix("./"): m for m in t}
-    blob = lambda d: json.load(t.extractfile(names["blobs/sha256/" + d.split(":", 1)[1]]))
-    doc = json.load(t.extractfile(names["index.json"]))
-    while "config" not in doc:
-        doc = blob(doc["manifests"][0]["digest"])
-    created = blob(doc["config"]["digest"])["created"]
-print(int(datetime.datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()))
-PY
 }
 
 # Whether layer NAME's piece, given the stages it is given as images, installs from the RPM

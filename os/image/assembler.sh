@@ -20,10 +20,19 @@ case $status in
     built=/target/publish/rpms/$arch
     [[ -f $built/image.oci.tar ]] || die "no published RPM snapshot for this package set and no image-rpms-$arch in this run"
     RPMS_REF=localhost/tilo-rpms:assembler
-    podman tag "$(podman pull -q "oci-archive:$built/image.oci.tar")" "$RPMS_REF" ;;
+    podman tag "$(podman pull -q "oci-archive:$built/image.oci.tar")" "$RPMS_REF"
+    rpms_epoch=$(cat "$built/epoch")
+    [[ $rpms_epoch =~ ^[1-9][0-9]*$ ]] || die "image-rpms-$arch left no clock in $built/epoch" ;;
   *) die 'could not ask the registry for the published RPM snapshot' ;;
 esac
-epoch=$(bash os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")
+# An unpublished snapshot is dated by its newest package signature (rpms-build.sh), not by when
+# it was resolved.
+if [[ -n ${rpms_epoch:-} ]]; then
+  epoch=$(bash os/dev/image-epoch.sh "$BASE_REF")
+  if (( rpms_epoch > epoch )); then epoch=$rpms_epoch; fi
+else
+  epoch=$(bash os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")
+fi
 podman build --security-opt label=disable --format oci --source-date-epoch "$epoch" --rewrite-timestamp \
   --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$RPMS_REF" \
   -f os/image/assembler.Containerfile -t localhost/tilo-assembler:latest os/image
