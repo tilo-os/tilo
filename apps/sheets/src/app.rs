@@ -1080,10 +1080,7 @@ impl SheetsApp {
             self.grid.select_only(addr);
         }
         match scenario {
-            Some(
-                name
-                @ ("docsettings" | "tabmenu" | "tabcolour" | "tabrename" | "find" | "cellmenu"),
-            ) => {
+            Some(name @ ("docsettings" | "tabmenu" | "tabcolour" | "tabrename" | "cellmenu")) => {
                 self.staged_overlay = Some(name.to_owned());
             }
             Some("editing") => self.grid.begin_edit_in_place(),
@@ -1152,9 +1149,6 @@ impl SheetsApp {
         match name.as_str() {
             "docsettings" => self.open_doc_settings(),
             "tabmenu" => self.open_tab_menu(0),
-            // The workbook's matches with the fourth current, as stepping
-            // the search through them leaves them.
-            "find" => self.stage_find_for_shot(),
             "cellmenu" => {
                 self.grid.select_only((1, 1));
                 let anchor = self.grid.cell_screen_rect(1, 1).center();
@@ -4626,15 +4620,6 @@ impl SheetsApp {
     fn open_find(&mut self, opening: ui::window_toolbar::SearchOpening) {
         self.close_overlays();
         ui::window_toolbar::open_search(opening);
-    }
-
-    /// Show the matches of the shot's query with the fourth one current, as
-    /// stepping the window's search through them leaves them: the query runs
-    /// over the whole workbook, as the search's does.
-    fn stage_find_for_shot(&mut self) {
-        use ui::widget::{FindOptions, Findable as _};
-        self.find("a", FindOptions::default());
-        self.reveal(3.min(self.find_matches.len().saturating_sub(1)));
     }
 
     // --- name box (Go-To) + fx formula entry -------------------------------
