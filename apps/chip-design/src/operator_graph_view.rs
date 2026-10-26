@@ -1,16 +1,34 @@
-//! Generic structural graph, rendered by the shared retained canvas.
+//! Generic structural graph, rendered by the shared retained canvas inside
+//! the toolkit's zoom/pan viewport.
+//!
+//! The graph is a place to move around in, so it fills the window and every
+//! way of seeing more of it is here: the viewport's own zoom and pan (Ctrl+
+//! wheel, a pinch, Ctrl+`+`/`-`, arrows, drag), the toolbar's Zoom out, level
+//! and Zoom in, and Fit — the whole design on opening. The operator list is
+//! the other way in: every operator by name, so one is reachable without
+//! hunting the canvas for it.
+use std::cell::Cell;
+use std::rc::Rc;
+
 use crate::operator_graph::{OperatorKind, OperatorNode, OperatorState};
 use crate::resource::{Project as ChipProject, project};
 use crate::view::ChipEffect;
 use ui::framework::{EffectCx, Effected, ViewCx};
 use ui::graph_editor::{Edge, connection_targets};
 use ui::i18n::I18nManager;
+use ui::icons::Icon;
 use ui::tilo_resource::{Id, Invoke};
 use ui::tokens::TextRole;
 use ui::widget::{
-    Button, Column, Container, Dropdown, Element, Field, GraphCanvas, GraphCanvasConnection,
-    GraphCanvasNode, Property, PropertyList, Row, ScrollAxis, Scrollable, Text, TextInput,
+    Button, Column, Container, DocumentViewport, Dropdown, Element, Field, GraphCanvas,
+    GraphCanvasConnection, GraphCanvasNode, ListRow, Property, PropertyList, Row, Scrollable, Text,
+    TextInput, ViewportZoom,
 };
+
+/// A node's own box in the graph's coordinates: its width, and the height it
+/// is given before the canvas measures the real one. Not a breakpoint: a node
+/// is this size in every window.
+const NODE_BOX: (f32, f32) = (248.0, 320.0);
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
@@ -109,7 +127,15 @@ fn add_menu(cx: &ViewCx<ChipProject>) -> Element {
     Box::new(cx.actions().bind_effect(menu, ChipEffect::ADD_OPERATOR))
 }
 
-pub fn body(cx: &ViewCx<ChipProject>, state: &OperatorState, selection: &Selection) -> Element {
+/// The graph, as the window's content: the ways to change what is drawn,
+/// then the canvas, filling the room the window has for it.
+pub fn body(
+    cx: &ViewCx<ChipProject>,
+    state: &OperatorState,
+    selection: &Selection,
+    zoom: &ui::LocalState<ViewportZoom>,
+    scroll: &Rc<Cell<(f32, f32)>>,
+) -> Element {
     let graph = state.graph();
     let targets = selection
         .output
@@ -130,11 +156,12 @@ pub fn body(cx: &ViewCx<ChipProject>, state: &OperatorState, selection: &Selecti
             to: port_id(&edge.to_node, &edge.to_port, true),
         })
         .collect();
-    let mut page = Column::new()
-        .push(Box::new(
-            Text::new(&tr("chip-graph-scope")).with_role(TextRole::Caption),
-        ))
-        .push(add_menu(cx));
+
+    let mut tools = Row::new().push(add_menu(cx));
+    tools = tools.push(zoom_controls(cx, zoom));
+    let mut page = Column::new().push(Box::new(tools)).push(Box::new(
+        Text::new(&tr("chip-graph-scope")).with_role(TextRole::Caption),
+    ));
     if let Some((node, port)) = &selection.output {
         let from = state
             .nodes
@@ -159,28 +186,144 @@ pub fn body(cx: &ViewCx<ChipProject>, state: &OperatorState, selection: &Selecti
             Text::new(&tr("chip-graph-connect-hint")).with_role(TextRole::Caption),
         ));
     }
-    page = page.push(Box::new(
-        Container::new().with_height(540.0).with_child(Box::new(
-            Scrollable::new(ScrollAxis::Both)
-                .with_child(Box::new(GraphCanvas::new(nodes, connections)))
-                .with_height(540.0),
-        )),
-    ));
-    if let Some(node) = selection.node.as_ref().and_then(|id| state.nodes.get(id)) {
-        page = page.push(inspector(cx, node, state));
-    }
     for rejected in &state.rejected {
-        page = page.push(Box::new(Text::new(&format!(
-            "{} {}.{} → {}.{}: {}",
-            tr("chip-graph-conflict"),
-            rejected.edge.from_node,
-            rejected.edge.from_port,
-            rejected.edge.to_node,
-            rejected.edge.to_port,
-            tr(&format!("chip-graph-{}", rejected.reason))
+        let edge = &rejected.edge;
+        page = page.push(Box::new(Text::new(&I18nManager::format(
+            "chip-graph-conflict-line",
+            &[
+                ("from_node", edge.from_node.clone().into()),
+                (
+                    "from_port",
+                    tr(&format!("chip-port-{}", edge.from_port)).into(),
+                ),
+                ("to_node", edge.to_node.clone().into()),
+                ("to_port", tr(&format!("chip-port-{}", edge.to_port)).into()),
+                (
+                    "reason",
+                    tr(&format!("chip-graph-{}", rejected.reason)).into(),
+                ),
+            ],
         ))));
     }
-    Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(page)))
+    let (width, height) = extent(state);
+    let mut canvas = DocumentViewport::new(Box::new(GraphCanvas::new(nodes, connections)))
+        .with_zoom(zoom)
+        .with_scroll(scroll)
+        .with_alignment(
+            ui::widget::SmallContentAlign::Start,
+            ui::widget::SmallContentAlign::Start,
+        );
+    canvas.set_content_size(width, height);
+    // The canvas takes the room the window has after the choices above it,
+    // so a wider window is a wider graph rather than a wider margin.
+    page = page.push(Box::new(
+        Row::new()
+            .with_fill_remaining_height()
+            .push(Box::new(canvas)),
+    ));
+    Box::new(page)
+}
+
+/// The graph's extent in its own coordinates: how far its nodes reach.
+fn extent(state: &OperatorState) -> (f64, f64) {
+    let mut right: f32 = NODE_BOX.0;
+    let mut bottom: f32 = NODE_BOX.1;
+    for node in state.nodes.values() {
+        right = right.max(f32::from(node.x) + NODE_BOX.0);
+        bottom = bottom.max(f32::from(node.y) + NODE_BOX.1);
+    }
+    (f64::from(right), f64::from(bottom))
+}
+
+/// Zoom out, the level the canvas shows, zoom in, and fit the whole graph to
+/// the room it has. The level is a word while the whole graph is visible and
+/// a percentage once it is not, and it follows a wheel or a pinch, because it
+/// reads the same state the canvas answers.
+fn zoom_controls(cx: &ViewCx<ChipProject>, zoom: &ui::LocalState<ViewportZoom>) -> Element {
+    let step = |id: &str, icon: Icon, label: &str, name: &str| {
+        cx.actions().bind_effect_invocation(
+            Button::icon_only(id, icon, label),
+            &ChipEffect::ZoomGraph {
+                step: name.to_owned(),
+            },
+        )
+    };
+    let level = Text::from_state(zoom, |shown| {
+        shown.percent().map_or_else(
+            || tr("chip-graph-zoom-fitted"),
+            |percent| {
+                I18nManager::format("chip-graph-zoom-percent", &[("percent", percent.into())])
+            },
+        )
+    });
+    Box::new(
+        Row::new()
+            .push(Box::new(step(
+                "chip-graph-zoom-out",
+                Icon::Minus,
+                &tr("chip-graph-zoom-out"),
+                "out",
+            )))
+            .push(Box::new(level))
+            .push(Box::new(step(
+                "chip-graph-zoom-in",
+                Icon::Plus,
+                &tr("chip-graph-zoom-in"),
+                "in",
+            )))
+            .push(Box::new(cx.effect_button(
+                tr("chip-graph-zoom-fit"),
+                &ChipEffect::ZoomGraph {
+                    step: "fit".to_owned(),
+                },
+            ))),
+    )
+}
+
+/// Every operator, by name, as the list beside the canvas: one is reachable
+/// from here without hunting for it on the canvas, and choosing one shows it
+/// in the inspector.
+pub fn operators(
+    cx: &ViewCx<ChipProject>,
+    state: &OperatorState,
+    selection: &Selection,
+) -> Element {
+    let mut list = Column::new().with_intrinsic_height();
+    if state.nodes.is_empty() {
+        list = list.push(Box::new(
+            Text::new(&tr("chip-graph-no-operators"))
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        ));
+    }
+    for node in state.nodes.values() {
+        let row = ListRow::new(format!("chip-operator-{}", node.id), tr(node.kind.key()))
+            .secondary(I18nManager::format(
+                "chip-graph-node-at",
+                &[("x", node.x.into()), ("y", node.y.into())],
+            ))
+            .selected(selection.node.as_deref() == Some(node.id.as_str()));
+        list = list.push(Box::new(cx.actions().bind_effect_invocation(
+            row,
+            &ChipEffect::InspectOperator {
+                node: Some(node.id.clone()),
+            },
+        )));
+    }
+    Box::new(Scrollable::new_vertical().with_child(Box::new(list)))
+}
+
+/// One operator's own facts and edits, beside the canvas when the window has
+/// the room and over it when it does not.
+pub fn details(
+    cx: &ViewCx<ChipProject>,
+    state: &OperatorState,
+    selection: &Selection,
+) -> Option<Element> {
+    let node = selection.node.as_ref().and_then(|id| state.nodes.get(id))?;
+    Some(Box::new(
+        Scrollable::new_vertical().with_child(inspector(cx, node, state)),
+    ))
 }
 
 fn node_view(
@@ -442,8 +585,44 @@ pub fn present(
     cx: &EffectCx<ChipProject>,
     opened: &ui::LocalState<Option<String>>,
     selection: &ui::LocalState<Selection>,
+    zoom: &ui::LocalState<ViewportZoom>,
+    details: &ui::LocalState<bool>,
 ) -> Result<Effected, String> {
     match effect {
+        ChipEffect::ZoomGraph { step } => {
+            let level = zoom.with(|shown| *shown);
+            let level = match step.as_str() {
+                "fit" => ViewportZoom::Fit,
+                "in" | "out" => {
+                    // Step from the factor on screen, which a wheel or a
+                    // pinch may have moved since the buttons were drawn.
+                    let factor = match level {
+                        ViewportZoom::Factor(factor) => factor,
+                        ViewportZoom::Fit => 1.0,
+                    };
+                    let step = if step == "in" {
+                        ui::content_zoom::ZoomStep::In
+                    } else {
+                        ui::content_zoom::ZoomStep::Out
+                    };
+                    ViewportZoom::Factor(
+                        step.apply(
+                            #[allow(
+                                clippy::cast_possible_truncation,
+                                reason = "a zoom factor is a small positive float"
+                            )]
+                            {
+                                factor as f32
+                            },
+                        )
+                        .into(),
+                    )
+                }
+                _ => return Err(tr("chip-graph-zoom-missing")),
+            };
+            zoom.set(level);
+            return Ok(Effected::done());
+        }
         ChipEffect::OperatorGraph => {}
         ChipEffect::AddOperator { kind } => {
             let kind = kind_named(&kind).ok_or_else(|| tr("chip-graph-unknown-operator"))?;
@@ -457,6 +636,9 @@ pub fn present(
             {
                 return Err(tr("chip-graph-node-missing"));
             }
+            // Choosing an operator is asking to see it: the pane holding its
+            // facts comes with the choice, and closing the pane keeps it.
+            details.set(node.is_some());
             selection.set(Selection { node, output: None });
         }
         ChipEffect::SelectOutput { node, port } => {
