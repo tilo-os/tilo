@@ -187,9 +187,10 @@ fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
 /// the list shows, rendered by the view when the list asks for them and read as `S` says.
 pub struct Rows<S: RowRead = RowSource> {
     source: Option<Rc<S>>,
-    /// Shared, so the order is copied cheaply when the list needs it before and after a change.
     keys: Vec<Rc<str>>,
-    /// Where each key is, built when first asked after the keys changed.
+    /// Where each key was last found, built when first asked. A row inserted, removed or moved
+    /// moves each other row by at most one place, so a key is looked for around where it was
+    /// and the place found is kept: a change costs the rows it touches, not the list's length.
     index: RefCell<Option<HashMap<Rc<str>, usize>>>,
     /// The rows shown, by key.
     shown: RefCell<HashMap<String, S::Data>>,
@@ -254,13 +255,83 @@ impl<S: RowRead> Rows<S> {
     /// and moved. Returns them as the list widget takes them, each against the order the ones
     /// before it left.
     pub fn apply(&mut self, patches: &[Patch]) -> Vec<ListModelChange<String>> {
-        let changes = apply_to_keys(&mut self.keys, patches, |key| {
-            self.shown.borrow_mut().remove(key);
-        });
-        if !changes.is_empty() {
-            *self.index.borrow_mut() = None;
+        let mut out = Vec::new();
+        for patch in patches {
+            let change = match patch {
+                Patch::Insert { index, node, .. } => {
+                    let index = (*index).min(self.keys.len());
+                    let key: Rc<str> = Rc::from(node.key.as_str());
+                    self.keys.insert(index, Rc::clone(&key));
+                    self.found(key, index);
+                    ListModelChange::RowsInserted { index, count: 1 }
+                }
+                Patch::Remove { key, .. } => {
+                    let Some(index) = self.index_of(key) else {
+                        continue;
+                    };
+                    self.keys.remove(index);
+                    if let Some(index) = self.index.get_mut().as_mut() {
+                        index.remove(key.as_str());
+                    }
+                    self.shown.get_mut().remove(key);
+                    ListModelChange::RowsRemoved { index, count: 1 }
+                }
+                Patch::Move { key, to, .. } => {
+                    let Some(from) = self.index_of(key) else {
+                        continue;
+                    };
+                    let moved = self.keys.remove(from);
+                    let to = (*to).min(self.keys.len());
+                    self.keys.insert(to, Rc::clone(&moved));
+                    self.found(moved, to);
+                    ListModelChange::RowsMoved { from, to, count: 1 }
+                }
+                _ => continue,
+            };
+            out.push(change);
         }
-        changes
+        out
+    }
+
+    /// The changes `patches` would make, as [`Self::apply`] returns them, without making
+    /// them: what the list widget is told before the rows change. One change is read against
+    /// the rows as they are; several against a copy.
+    #[must_use]
+    pub fn changes_of(&self, patches: &[Patch]) -> Vec<ListModelChange<String>> {
+        let one = match patches {
+            [Patch::Insert { index, .. }] => ListModelChange::RowsInserted {
+                index: (*index).min(self.keys.len()),
+                count: 1,
+            },
+            [Patch::Remove { key, .. }] => match self.index_of(key) {
+                Some(index) => ListModelChange::RowsRemoved { index, count: 1 },
+                None => return Vec::new(),
+            },
+            [Patch::Move { key, to, .. }] => match self.index_of(key) {
+                Some(from) => ListModelChange::RowsMoved {
+                    from,
+                    to: (*to).min(self.keys.len().saturating_sub(1)),
+                    count: 1,
+                },
+                None => return Vec::new(),
+            },
+            [_] | [] => return Vec::new(),
+            _ => {
+                let mut copy: Rows<S> = Rows {
+                    keys: self.keys.clone(),
+                    ..Rows::default()
+                };
+                return copy.apply(patches);
+            }
+        };
+        vec![one]
+    }
+
+    /// Keep that `key` is at `index` now.
+    fn found(&mut self, key: Rc<str>, index: usize) {
+        if let Some(found) = self.index.get_mut().as_mut() {
+            found.insert(key, index);
+        }
     }
 
     /// Read the shown rows of `keys` again from the view. Returns the keys whose row shows
@@ -347,17 +418,27 @@ impl<S: RowRead> ListModel for Rows<S> {
     }
 
     fn index_of(&self, key: &String) -> Option<usize> {
-        self.index
-            .borrow_mut()
-            .get_or_insert_with(|| {
-                self.keys
-                    .iter()
-                    .enumerate()
-                    .map(|(at, key)| (Rc::clone(key), at))
-                    .collect()
-            })
-            .get(key.as_str())
-            .copied()
+        let mut index = self.index.borrow_mut();
+        let found = index.get_or_insert_with(|| {
+            self.keys
+                .iter()
+                .enumerate()
+                .map(|(at, key)| (Rc::clone(key), at))
+                .collect()
+        });
+        let (stored, was) = found.get_key_value(key.as_str())?;
+        let (stored, was) = (Rc::clone(stored), *was);
+        // Out from where it was, one place each way at a time.
+        let is_it = |at: usize| self.keys.get(at).is_some_and(|k| **k == **key);
+        let len = self.keys.len();
+        let at = (0..=len.max(was)).find_map(|step| {
+            let below = was.checked_sub(step).filter(|at| is_it(*at));
+            below.or_else(|| was.checked_add(step).filter(|at| is_it(*at)))
+        })?;
+        if at != was {
+            found.insert(stored, at);
+        }
+        Some(at)
     }
 
     /// The view renders the rows in `range` it has not shown yet, and forgets those it showed
@@ -802,43 +883,6 @@ impl ListPane {
     }
 }
 
-/// The view's changes of a list's own children (`patches`, in order) applied to its row
-/// `keys`: rows inserted, removed and moved, each as the list widget takes it, against the order
-/// the ones before it left. `removed` hears of each row taken out.
-pub fn apply_to_keys(
-    keys: &mut Vec<Rc<str>>,
-    patches: &[Patch],
-    mut removed: impl FnMut(&str),
-) -> Vec<ListModelChange<String>> {
-    let mut out = Vec::new();
-    for patch in patches {
-        match patch {
-            Patch::Insert { index, node, .. } => {
-                let index = (*index).min(keys.len());
-                keys.insert(index, Rc::from(node.key.as_str()));
-                out.push(ListModelChange::RowsInserted { index, count: 1 });
-            }
-            Patch::Remove { key, .. } => {
-                if let Some(index) = keys.iter().position(|k| **k == **key) {
-                    keys.remove(index);
-                    removed(key);
-                    out.push(ListModelChange::RowsRemoved { index, count: 1 });
-                }
-            }
-            Patch::Move { key, to, .. } => {
-                if let Some(from) = keys.iter().position(|k| **k == **key) {
-                    let moved = keys.remove(from);
-                    let to = (*to).min(keys.len());
-                    keys.insert(to, moved);
-                    out.push(ListModelChange::RowsMoved { from, to, count: 1 });
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
 /// The view inserted, removed or moved rows of the list `list` shows (`structure`, in order)
 /// and changed the rows of `rows` (by key): the list takes each change as it is, and rebuilds
 /// alone each shown row that shows something else now.
@@ -848,10 +892,7 @@ pub fn apply_changes<S: RowRead>(
     rows: Vec<String>,
 ) {
     if !structure.is_empty() {
-        // The changes are only known once applied, so the model applies them on a copy of its
-        // order first.
-        let mut keys = list.model().keys.clone();
-        let changes = apply_to_keys(&mut keys, structure, |_| {});
+        let changes = list.model().changes_of(structure);
         list.update_model_changes(&changes, |rows| {
             rows.apply(structure);
         });
@@ -972,6 +1013,8 @@ mod tests {
             keys: shared(&old),
             ..Rows::default()
         };
+        // Where each row is was looked up before the change: it is kept up to date.
+        assert_eq!(rows.index_of(&"d".to_owned()), Some(3));
         let parent = vec!["list".to_owned()];
         let changes = rows.apply(&[
             Patch::Remove {
@@ -992,7 +1035,43 @@ mod tests {
         let new = keys(&["n", "c", "a", "d"]);
         assert_eq!(rows.keys, shared(&new));
         assert_eq!(replay(old, &new, &changes), new, "{changes:?}");
-        assert_eq!(rows.index_of(&"a".to_owned()), Some(2));
+        for (at, key) in new.iter().enumerate() {
+            assert_eq!(rows.index_of(key), Some(at), "{key}");
+        }
+        assert_eq!(rows.index_of(&"b".to_owned()), None);
+    }
+
+    #[test]
+    fn one_change_is_told_against_the_rows_as_they_are() {
+        let keys: Vec<Rc<str>> = (0..1_000).map(|i| Rc::from(format!("r{i}"))).collect();
+        let mut rows: Rows = Rows {
+            keys,
+            ..Rows::default()
+        };
+        assert_eq!(rows.index_of(&"r999".to_owned()), Some(999));
+        let parent = vec!["list".to_owned()];
+        let insert = [Patch::Insert {
+            parent: parent.clone(),
+            index: 0,
+            node: node("new"),
+        }];
+        let told = rows.changes_of(&insert);
+        assert_eq!(rows.apply(&insert), told);
+        let remove = [Patch::Remove {
+            parent,
+            key: "r500".to_owned(),
+        }];
+        let told = rows.changes_of(&remove);
+        assert_eq!(
+            told,
+            [ListModelChange::RowsRemoved {
+                index: 501,
+                count: 1
+            }]
+        );
+        assert_eq!(rows.apply(&remove), told);
+        assert_eq!(rows.index_of(&"r999".to_owned()), Some(999));
+        assert_eq!(rows.index_of(&"r0".to_owned()), Some(1));
     }
 
     fn action(label: &str, destructive: bool) -> RowAction {
