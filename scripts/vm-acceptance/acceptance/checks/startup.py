@@ -23,7 +23,7 @@ import tomllib
 from pathlib import Path
 
 from .. import app_startup, core, gpu, records, session_unit
-from ..core import CheckFailed, Unobservable, check
+from ..core import CheckFailed, Skipped, Unobservable, check
 from ..vm import VmError, wait_until
 from .apps import _close, _lifecycle
 from .resources import shell_anon_mib, slope
@@ -350,6 +350,9 @@ def files_start(ctx, res):
 
 @check("R05", "resources", "App windows render on the machine's GPU, not on a CPU fallback")
 def gpu_adapters(ctx, res):
+    if ctx.facts.get("software_rendering"):
+        raise Skipped("needs a GPU render node; this run renders in software")
+
     def read():
         out = ctx.vm.exec(gpu.PROBE, timeout=90, check=False)
         health_text, log = gpu.split_probe(out)

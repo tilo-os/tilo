@@ -550,6 +550,7 @@ suites = [
   "scripts/vm-acceptance/test_device_fidelity.py",
   "scripts/vm-acceptance/test_session_restart.py",
   "scripts/vm-acceptance/test_session_guard.py",
+  "scripts/vm-acceptance/test_skip.py",
   "scripts/vm-acceptance/test_ui.py",
   "scripts/vm-acceptance/test_vm_actions.py",
 ]

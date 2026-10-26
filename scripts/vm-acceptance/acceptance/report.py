@@ -28,9 +28,10 @@ EVIDENCE_FILE_BYTES = 4096
 EVIDENCE_TOTAL_BYTES = 96 * 1024
 TEXT_SUFFIXES = {".txt", ".log", ".json", ".jsonl", ".csv", ".md"}
 
-# `xfail` is a named, expected failure (core.ExpectedFailure): it does not fail the run.
-PASSING = ("pass", "xfail")
-ICONS = {"pass": "✅ pass", "xfail": "⚠️ xfail"}
+# `xfail` is a named, expected failure (core.ExpectedFailure) and `skip` a check the run
+# could not have (core.Skipped): neither fails the run, and neither counts as a pass.
+PASSING = ("pass", "xfail", "skip")
+ICONS = {"pass": "✅ pass", "xfail": "⚠️ xfail", "skip": "⏭️ skip"}
 
 
 def _compact(v, limit=220):
@@ -44,6 +45,7 @@ def write(out: Path, meta: dict, results: list[Result], owners: dict) -> dict:
         rs = [r for r in results if r.area == area]
         summary[area] = {"pass": sum(r.status == "pass" for r in rs),
                          "xfail": sum(r.status == "xfail" for r in rs),
+                         "skip": sum(r.status == "skip" for r in rs),
                          "fail": sum(r.status not in PASSING for r in rs),
                          "unobservable": sum(r.unobservable for r in rs),
                          "owner": owners.get(area)}
@@ -104,10 +106,12 @@ def _markdown(meta, summary, results, owners, overall) -> str:
     L.append("| | |\n|---|---|")
     L += [f"| {k} | {v} |" for k, v in rows]
     L.append("\n## Per essential\n")
-    L.append("| Essential | Pass | Expected fail | Fail | of which unobservable | Owner |\n|---|---|---|---|---|---|")
+    L.append("| Essential | Pass | Expected fail | Skipped | Fail | of which unobservable | Owner |\n"
+             "|---|---|---|---|---|---|---|")
     for area, title in ESSENTIALS:
         s = summary[area]
-        L.append(f"| {title} | {s['pass']} | {s['xfail']} | {s['fail']} | {s['unobservable']} | {owners.get(area, '')} |")
+        L.append(f"| {title} | {s['pass']} | {s['xfail']} | {s['skip']} | {s['fail']} | {s['unobservable']} "
+                 f"| {owners.get(area, '')} |")
     L.append("\n## Failures by owning area\n")
     for area, title in ESSENTIALS:
         fails = [r for r in results if r.area == area and r.status != "pass"]  # xfail too: named, not hidden
@@ -115,7 +119,8 @@ def _markdown(meta, summary, results, owners, overall) -> str:
             continue
         L.append(f"### {title} — {owners.get(area, '')}\n")
         for r in fails:
-            tag = " (unobservable)" if r.unobservable else " (expected failure)" if r.status == "xfail" else ""
+            tag = (" (unobservable)" if r.unobservable else " (expected failure)" if r.status == "xfail"
+                   else " (skipped)" if r.status == "skip" else "")
             L.append(f"- **{r.id} {r.title}**{tag}: {r.detail}")
     L.append("\n## All checks\n")
     for area, title in ESSENTIALS:
