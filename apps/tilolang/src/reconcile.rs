@@ -548,7 +548,8 @@ impl Reconciler {
                     _ => TextRole::Body,
                 },
             );
-        let value = crate::date::shown(node, "value").unwrap_or_default();
+        // A time in running text reads as briefly as is still clear (a message's `11:36`).
+        let value = crate::date::shown_brief(node, "value").unwrap_or_default();
         self.text_of(node, &value, role)
     }
 
@@ -583,12 +584,15 @@ impl Reconciler {
         };
         let enabled = prop(node, "enabled").is_none_or(|_| flag(node, "enabled"))
             && node.events.contains_key("press");
-        let mut button = Button::new(&node.key, &label);
-        if let Some(icon) =
-            token(node, "icon").and_then(|name| ui::icons::Icon::from_name(&name.replace('_', "-")))
-        {
-            button = button.with_icon(icon);
-        }
+        let icon = token(node, "icon")
+            .and_then(|name| ui::icons::Icon::from_name(&name.replace('_', "-")));
+        let button = match icon {
+            Some(icon) if token(node, "presentation") == Some("icon") => {
+                Button::icon_only(&node.key, icon, &label)
+            }
+            Some(icon) => Button::new(&node.key, &label).with_icon(icon),
+            None => Button::new(&node.key, &label),
+        };
         Box::new(
             button
                 .role(role)
@@ -1080,7 +1084,7 @@ impl Reconciler {
         match new_node.kind.as_str() {
             "text" | "heading" | "image" => {
                 if same_shell_without_value(old_node, new_node) {
-                    let value = crate::date::shown(new_node, "value").unwrap_or_default();
+                    let value = crate::date::shown_brief(new_node, "value").unwrap_or_default();
                     self.set_text(&new_node.key, &value);
                     return old;
                 }

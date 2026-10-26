@@ -87,6 +87,12 @@ pub(crate) type Requests = Rc<RefCell<Vec<Request>>>;
 /// The participants at each resource of the package (by its id), from presence.
 type Peers = HashMap<String, String>;
 
+/// What a list's rows show of the room: who is at each item, and what everyone is called.
+struct Around<'a> {
+    peers: &'a Peers,
+    names: &'a Names,
+}
+
 /// An answer to the Ask bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Answer {
@@ -233,7 +239,9 @@ fn content_page(frame: &UiNode) -> UiNode {
         .filter(|child| !matches!(child.kind.as_str(), "sidebar" | "inspector" | "composer"))
         .collect();
     let mut page = bare("page", frame.key.clone());
-    if frame.kind == "canvas" {
+    // A transcript spans its column, as a native conversation does, rather than a reading
+    // measure.
+    if frame.kind == "canvas" || part(frame, "composer").is_some() {
         page.props.insert("full".to_owned(), Value::Int(1));
     }
     page.children = vec![body];
@@ -266,16 +274,30 @@ fn unscroll(mut scroll: Element) -> Element {
 /// A frame's composer as the page under its content: the same readable measure, so the two
 /// share one content edge.
 fn composer_page(frame: &UiNode) -> Option<UiNode> {
-    let composer = part(frame, "composer")?;
+    let mut composer = side_stack(part(frame, "composer")?);
+    iconic_buttons(&mut composer);
+    let mut props = std::collections::BTreeMap::new();
+    props.insert("full".to_owned(), Value::Int(1));
     Some(UiNode {
         kind: "page".to_owned(),
         key: format!("{}~composer", frame.key),
-        props: std::collections::BTreeMap::new(),
+        props,
         binding: None,
         events: std::collections::BTreeMap::new(),
         anchor: None,
-        children: vec![side_stack(composer)],
+        children: vec![composer],
     })
+}
+
+/// A composer's buttons that have an icon show only it, as a native composer's Send does.
+fn iconic_buttons(node: &mut UiNode) {
+    if node.kind == "button" && node.props.contains_key("icon") {
+        node.props
+            .insert("presentation".to_owned(), Value::Text("icon".to_owned()));
+    }
+    for child in &mut node.children {
+        iconic_buttons(child);
+    }
 }
 
 /// A transcript: the content scrolls above the composer, which stays at the bottom of the
@@ -555,6 +577,16 @@ fn mark_cards(host: &Host, node: &mut UiNode) {
     }
 }
 
+/// Whether `node` shows nothing: it holds containers only, no text, control or card.
+fn shows_nothing(node: &UiNode) -> bool {
+    node.children.iter().all(|child| {
+        matches!(
+            child.kind.as_str(),
+            "stack" | "column" | "fragment" | "row" | "grid" | "page" | "layers" | "spacer"
+        ) && shows_nothing(child)
+    })
+}
+
 /// How many list rows `node` holds, under any containers.
 fn rows_in(node: &UiNode) -> usize {
     node.children
@@ -742,6 +774,14 @@ impl Window {
             }
         };
         host.runtime().set_name_host(self.names.clone());
+        // `now` is the toolkit's clock, as every time the window shows is: a capture pins it, so
+        // a scenario's messages are stamped with the capture's time.
+        host.set_clock(|| {
+            ui::clock::local_now()
+                .with_timezone(&chrono::Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        });
         if let Some(sink) = self.sink.borrow_mut().take() {
             host.runtime().set_sink(BoxedSink(sink));
         }
@@ -965,7 +1005,7 @@ impl Window {
 
     /// What the root's `list` frame shows.
     /// The row of the list item `item`, when it names what it shows.
-    fn row_of(host: &Host, lane: &Lane, item: &UiNode, peers: &Peers) -> Option<RowData> {
+    fn row_of(host: &Host, lane: &Lane, item: &UiNode, around: &Around<'_>) -> Option<RowData> {
         let Some(Value::Ref(reference)) = item.props.get("item") else {
             return None;
         };
@@ -980,17 +1020,14 @@ impl Window {
                 _ => None,
             });
         let avatar = row.as_ref().and_then(|row| match row.props.get("avatar") {
-            Some(Value::Principal(who)) => Some((
-                crate::reconcile::display(&Value::Principal(who.clone())),
-                who.0.clone(),
-            )),
+            Some(Value::Principal(who)) => Some((around.names.label(&who.0), who.0.clone())),
             _ => None,
         });
         Some(RowData {
             key: item.key.clone(),
             label: describe::title_of(host, &target),
             actions: describe::offered_in(host, &target, &lane.target),
-            presence: peers.get(&target.id_string()).cloned(),
+            presence: around.peers.get(&target.id_string()).cloned(),
             item: target,
             row,
             checked,
@@ -1025,12 +1062,12 @@ impl Window {
         })
     }
 
-    fn listing(host: &Host, lane: &Lane, frame: &UiNode, peers: &Peers) -> Listing {
+    fn listing(host: &Host, lane: &Lane, frame: &UiNode, around: &Around<'_>) -> Listing {
         let rows: Vec<RowData> = frame
             .children
             .iter()
             .filter(|child| child.kind == "item")
-            .filter_map(|item| Self::row_of(host, lane, item, peers))
+            .filter_map(|item| Self::row_of(host, lane, item, around))
             .collect();
         let item_type = rows.first().map(|row| row.item.ty.clone());
         let declared_item = match frame.props.get("item_type") {
@@ -1288,8 +1325,17 @@ impl Window {
         let Some(kind) = Frame::of(&frame) else {
             return;
         };
-        let listing =
-            (kind == Frame::List).then(|| Self::listing(&host, root, &frame, &self.peers));
+        let listing = (kind == Frame::List).then(|| {
+            Self::listing(
+                &host,
+                root,
+                &frame,
+                &Around {
+                    peers: &self.peers,
+                    names: &self.names,
+                },
+            )
+        });
         let root_target = root.target.clone();
         let detail_frame = self
             .detail
@@ -1440,17 +1486,39 @@ impl Window {
                 window.action_buttons(&actions, &title, controls)
             });
             let composer = composer_page(&frame);
+            // A canvas with nothing on it (a board pointing at nothing yet) says so, as a native
+            // app's empty window does, rather than showing a blank page.
+            let blank = frame.kind == "canvas" && composer.is_none() && shows_nothing(&page);
+            let icon = app_icon(&host, &self.app);
             let Self { body, root, .. } = self;
-            if let (Some(shell), Some(lane)) = (shell_of(body), root.as_mut())
-                && let Some(pane) = shell.content_mut::<Pane>()
-            {
-                fill_framed(
-                    pane,
-                    &mut lane.reconciler,
-                    (&mut lane.content, &mut lane.composer),
-                    &page,
-                    composer.as_ref(),
-                );
+            if let (Some(shell), Some(lane)) = (shell_of(body), root.as_mut()) {
+                if blank {
+                    if shell.content_mut::<EmptyState>().is_none() {
+                        let empty = EmptyState::new(t("tilolang-empty"));
+                        let empty = match icon {
+                            Some(icon) => empty.with_icon(icon),
+                            None => empty,
+                        };
+                        shell.set_content(Box::new(empty));
+                        lane.content = None;
+                        lane.composer = None;
+                    }
+                } else {
+                    if shell.content_mut::<Pane>().is_none() {
+                        shell.set_content(Box::new(Pane::new(Box::new(Spacer::fixed(0.0)))));
+                        lane.content = None;
+                        lane.composer = None;
+                    }
+                    if let Some(pane) = shell.content_mut::<Pane>() {
+                        fill_framed(
+                            pane,
+                            &mut lane.reconciler,
+                            (&mut lane.content, &mut lane.composer),
+                            &page,
+                            composer.as_ref(),
+                        );
+                    }
+                }
             }
         }
 
