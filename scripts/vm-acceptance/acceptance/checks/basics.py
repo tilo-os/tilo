@@ -37,9 +37,20 @@ def _availability(action: dict) -> dict:
     return (action.get("contract") or {}).get("availability") or UNDECLARED
 
 
+# The provider of Settings' pages: its `page:<slug>` rows open Settings at that page.
+SETTINGS_PAGES = "settings-pages"
+
+
 def _shows_only(action: dict) -> bool:
-    """Whether a row only changes what is shown (opens a page, selects a view)."""
-    return str(action.get("operation_kind", "")).lower() == "view"
+    """Whether a row only changes what is shown, so it is no toggle of the hardware: a view
+    or navigation (`operation_kind` View), an action whose contract only reads, or a row
+    that opens a Settings page (`page:bluetooth`, which launches Settings there and
+    declares no contract)."""
+    if str(action.get("operation_kind", "")).lower() == "view":
+        return True
+    if (action.get("contract") or {}).get("kind") == "read":
+        return True
+    return action.get("provider") == SETTINGS_PAGES and str(action.get("id", "")).startswith("page:")
 
 
 def _offered(ctx, names) -> list:
