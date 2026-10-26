@@ -14,7 +14,7 @@ use ui::platform::Shortcut;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 
 use crate::shell::i18n::{t, t_args};
-use crate::shell::state::{StripId, WorkspaceId};
+use crate::shell::state::{StripId, WindowWidth, WorkspaceId};
 
 /// One thing the window menu does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,6 +30,10 @@ pub enum WindowMenuAction {
     /// Take the window's tab into another workspace (through the consent
     /// sheet when a client window crosses the sandbox boundary).
     MoveToWorkspace(WorkspaceId),
+    /// Give the window a preset share of its strip.
+    Width(WindowWidth),
+    /// Give every window in the strip the same share.
+    EqualizeWidths,
     /// A new tab of the same app, beside this one.
     NewTab,
     /// Name the tab in place, in its pill: only a host (non-Tilo) window's
@@ -53,6 +57,7 @@ pub enum WindowMenuAction {
 
 const MOVE_TO_STRIP_KEY: &str = "tabmenu:move-to-strip";
 const MOVE_TO_WORKSPACE_KEY: &str = "tabmenu:move-to-workspace";
+const WIDTH_KEY: &str = "tabmenu:width";
 
 impl WindowMenuAction {
     /// Stable semantic address of the row (`tabmenu:<slug>`): the
@@ -67,6 +72,13 @@ impl WindowMenuAction {
             Self::MoveToWorkspace(workspace) => {
                 format!("{MOVE_TO_WORKSPACE_KEY}:{}", workspace.raw())
             }
+            Self::Width(WindowWidth::Narrow) => "tabmenu:width:narrow".into(),
+            Self::Width(WindowWidth::Normal) => "tabmenu:width:normal".into(),
+            Self::Width(WindowWidth::Wide) => "tabmenu:width:wide".into(),
+            Self::Width(WindowWidth::Fraction(permille)) => {
+                format!("tabmenu:width:{permille}")
+            }
+            Self::EqualizeWidths => "tabmenu:width:equal".into(),
             Self::NewTab => "tabmenu:new-tab".into(),
             Self::RenameTab => "tabmenu:rename".into(),
             Self::SplitRight => "tabmenu:split-right".into(),
@@ -94,6 +106,21 @@ impl WindowMenuAction {
                 .parse()
                 .ok()
                 .map(|raw| Self::MoveToWorkspace(WorkspaceId(raw)));
+        }
+        if let Some(raw) = key
+            .strip_prefix(WIDTH_KEY)
+            .and_then(|rest| rest.strip_prefix(':'))
+        {
+            return match raw {
+                "narrow" => Some(Self::Width(WindowWidth::Narrow)),
+                "normal" => Some(Self::Width(WindowWidth::Normal)),
+                "wide" => Some(Self::Width(WindowWidth::Wide)),
+                "equal" => Some(Self::EqualizeWidths),
+                permille => permille
+                    .parse()
+                    .ok()
+                    .map(|permille| Self::Width(WindowWidth::Fraction(permille))),
+            };
         }
         [
             Self::Reveal,
@@ -259,6 +286,47 @@ fn move_rows(facts: &WindowMenuFacts) -> [WindowMenuRow; 2] {
     ]
 }
 
+/// The shares of its strip a window can take, and Equalise all.
+fn width_row() -> WindowMenuRow {
+    WindowMenuRow::Submenu {
+        key: WIDTH_KEY,
+        label: t("shell-window-menu-width"),
+        icon: Icon::Columns2,
+        entries: vec![
+            WindowMenuEntry {
+                action: WindowMenuAction::Width(WindowWidth::Fraction(500)),
+                label: t("shell-window-menu-width-half"),
+                icon: None,
+                shortcut: None,
+            },
+            WindowMenuEntry {
+                action: WindowMenuAction::Width(WindowWidth::Narrow),
+                label: t("shell-window-menu-width-narrow"),
+                icon: None,
+                shortcut: None,
+            },
+            WindowMenuEntry {
+                action: WindowMenuAction::Width(WindowWidth::Normal),
+                label: t("shell-window-menu-width-normal"),
+                icon: None,
+                shortcut: None,
+            },
+            WindowMenuEntry {
+                action: WindowMenuAction::Width(WindowWidth::Wide),
+                label: t("shell-window-menu-width-wide"),
+                icon: None,
+                shortcut: None,
+            },
+            WindowMenuEntry {
+                action: WindowMenuAction::EqualizeWidths,
+                label: t("shell-window-menu-width-equal"),
+                icon: None,
+                shortcut: None,
+            },
+        ],
+    }
+}
+
 /// The window menu's rows for a window `facts` describes, with the
 /// shortcuts `config` binds:
 ///
@@ -318,6 +386,7 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
         WindowMenuRow::Separator,
     ]);
     rows.extend(move_rows(facts));
+    rows.push(width_row());
     rows.extend([
         WindowMenuRow::Separator,
         entry(
@@ -473,6 +542,42 @@ mod tests {
     }
 
     #[test]
+    fn the_window_menu_offers_width_presets_and_equalise() {
+        let rows = window_menu_rows(&facts(2), &ShortcutConfig::default());
+        let width = rows
+            .iter()
+            .find(|row| row.label() == Some("Width"))
+            .expect("a Width submenu");
+        let labels = width
+            .actions()
+            .into_iter()
+            .map(|action| action.semantic_key())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            [
+                "tabmenu:width:500",
+                "tabmenu:width:narrow",
+                "tabmenu:width:normal",
+                "tabmenu:width:wide",
+                "tabmenu:width:equal",
+            ]
+        );
+        assert_eq!(
+            WindowMenuAction::from_semantic_key("tabmenu:width:500"),
+            Some(WindowMenuAction::Width(WindowWidth::Fraction(500)))
+        );
+        assert_eq!(
+            WindowMenuAction::from_semantic_key("tabmenu:width:narrow"),
+            Some(WindowMenuAction::Width(WindowWidth::Narrow))
+        );
+        assert_eq!(
+            WindowMenuAction::from_semantic_key("tabmenu:width:equal"),
+            Some(WindowMenuAction::EqualizeWidths)
+        );
+    }
+
+    #[test]
     fn a_window_that_is_asking_offers_to_take_you_to_it_first() {
         let config = ShortcutConfig::default();
         let asking = WindowMenuFacts {
@@ -509,6 +614,7 @@ mod tests {
                 "Maximize",
                 "Move to strip",
                 "Move to workspace",
+                "Width",
                 "New tab",
                 "Split right",
                 "Move to new group",
