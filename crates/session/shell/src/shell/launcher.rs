@@ -2858,11 +2858,20 @@ fn build_launch_command_for(
 
 /// Run the package `app` with the surface its signed package ships, so the
 /// records of the person's it declares there are kept in their room as a
-/// built-in app's are. A package whose surface no longer matches its
-/// signature declares none.
+/// built-in app's are, and the installed apps it declares it reads are
+/// known to the broker whether or not they run. A package whose surface no
+/// longer matches its signature declares none.
 fn register_signed_surface(app: &InstalledApp, installed: &package_store::InstalledPackage) {
     if let Some(surface) = package_store::integrity::signed_surface(installed) {
-        tilo_action_broker::register_package_surface(&app.package_id, &surface);
+        tilo_action_broker::register_package_surface_and_reads(&app.package_id, &surface, || {
+            package_store::list_installed()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|package| {
+                    package_store::integrity::signed_surface(&package)
+                        .map(|surface| (package.id, surface))
+                })
+        });
     }
 }
 

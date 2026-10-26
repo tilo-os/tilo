@@ -5,12 +5,24 @@
 //! ```text
 //! tilo-collab-probe write:<text>      # author an edit, publish it
 //! tilo-collab-probe read:<seconds>    # wait for one, print it
+//! tilo-collab-probe routes:<app>,...  # what this launch may do on each app's route
 //! ```
 //!
 //! The room comes from `TILO_WORKSPACE_ID`. `write` publishes a signed
 //! Automerge change through the broker, and `read` loads the change into its
 //! own document. Exit status is zero only when the requested operation
 //! succeeds; failures identify the step that failed.
+//!
+//! `routes` asks, as the attested launch of whatever package the probe was
+//! launched as (`TILO_PACKAGE_ID`), to join each named app's route and to
+//! write on it, and prints one `probe: ROUTE` line per app with what the
+//! broker and the identity service answered. It changes nothing it may not:
+//! the write it offers another app's route is not a valid operation, so only
+//! a broker that admits writes there would even look at it. A package whose
+//! entrypoint is the probe and that the shell launches without arguments
+//! reads the instruction from `probe-routes` in its payload
+//! (`TILO_APP_MODULE`): how `docs/tilolang-e2e.md` checks a tilolang app's
+//! route access as that app.
 
 use std::process::ExitCode;
 use tilo_automerge::ApplyIncoming;
@@ -38,7 +50,17 @@ fn usage() -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.is_empty()
+        && let Some(routes) = std::env::var_os("TILO_APP_MODULE")
+            .map(|payload| std::path::PathBuf::from(payload).join("probe-routes"))
+            .and_then(|file| std::fs::read_to_string(file).ok())
+    {
+        args.push(format!(
+            "routes:{}",
+            routes.split_whitespace().collect::<Vec<_>>().join(",")
+        ));
+    }
     let Some(instruction) = args.first() else {
         return usage();
     };
@@ -92,6 +114,7 @@ fn main() -> ExitCode {
                 let secs: u64 = arg.parse().unwrap_or(30);
                 read(&channel, secs).await
             }
+            "routes" => routes(&channel, arg.split(',').filter(|app| !app.is_empty())).await,
             _ => usage(),
         }
     })
@@ -315,6 +338,54 @@ async fn read(workspace_id: &str, timeout_secs: u64) -> ExitCode {
             ExitCode::from(10)
         }
     }
+}
+
+/// What the attested launch this probe runs as may do on each of `apps`'
+/// routes in `workspace_id`: one `probe: ROUTE <app> ...` line per app.
+#[allow(
+    clippy::future_not_send,
+    reason = "only ever driven inside the single-threaded `LocalSet` this binary sets up; \
+              never spawned across threads"
+)]
+async fn routes<'a>(workspace_id: &str, apps: impl Iterator<Item = &'a str>) -> ExitCode {
+    let launched_as = std::env::var("TILO_PACKAGE_ID").unwrap_or_default();
+    println!("probe: launched as {launched_as:?}");
+    let (presentation, identity) = match certified_join(workspace_id) {
+        Ok(joined) => joined,
+        Err(error) => {
+            eprintln!("probe: FAIL {error}");
+            return ExitCode::from(5);
+        }
+    };
+    let broker = match runtime_collab::try_connect() {
+        Ok(broker) => broker,
+        Err(error) => {
+            eprintln!("probe: FAIL could not reach the broker over the service fd: {error}");
+            return ExitCode::from(5);
+        }
+    };
+    for app in apps {
+        let channel = format!("{workspace_id}#app:{app}");
+        let handle = match broker.join_channel(&channel, &presentation).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                println!("probe: ROUTE {app} JOIN-REFUSED {error}");
+                continue;
+            }
+        };
+        // The identity service lends the device signature only to changes of
+        // the launch's own route.
+        let signing = match identity.sign_collaboration_op(workspace_id, app, "", b"probe") {
+            Ok(_) => "SIGN-LENT".to_owned(),
+            Err(error) => format!("SIGN-REFUSED {error}"),
+        };
+        let write = match handle.send(b"probe: not an operation").await {
+            Ok(()) => "WRITE-ADMITTED".to_owned(),
+            Err(error) => format!("WRITE-REFUSED {error}"),
+        };
+        println!("probe: ROUTE {app} JOINED; {write}; {signing}");
+    }
+    ExitCode::SUCCESS
 }
 
 #[cfg(test)]

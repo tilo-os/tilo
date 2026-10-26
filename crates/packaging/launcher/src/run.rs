@@ -2015,7 +2015,10 @@ fn start_egress_gate(
         return Ok((None, None));
     };
 
-    let host_socket = crate::netgate::gate_socket_path(current_uid(), std::process::id());
+    let host_socket = crate::netgate::gate_socket_path(
+        &crate::dbus_proxy::session_runtime_dir(),
+        std::process::id(),
+    );
     match crate::netgate::NetGate::start(&host_socket, policy.clone()) {
         Ok(gate) => {
             let bind = crate::sandbox::NetGateBind {
@@ -4871,10 +4874,10 @@ fn resolve_dbus_bind(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
     graphical: bool,
 ) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
-    let (uid, pid) = (current_uid(), std::process::id());
+    let (runtime, pid) = (dbus_proxy::session_runtime_dir(), std::process::id());
     let sockets = ProxySockets {
-        session: dbus_proxy::proxy_socket_path(uid, pid),
-        atspi: dbus_proxy::atspi_proxy_socket_path(uid, pid),
+        session: dbus_proxy::proxy_socket_path(&runtime, pid),
+        atspi: dbus_proxy::atspi_proxy_socket_path(&runtime, pid),
     };
     resolve_dbus_bind_at(portals, graphical, &sockets)
 }

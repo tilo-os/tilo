@@ -13,10 +13,12 @@ usage:
                  [--tilo-runtime tilo-runtime/<release>] [--version V]
       compile the package in DIR (default: .) and the packages it uses, and write each as a
       signed Tilo app: OUT/<name>.tapp (default OUT: DIR/target)
-  tilolang run [DIR] [--search DIR]... [--peers N] [--headless] [--state DIR] [--repo DIR]
+  tilolang run [DIR] [--search DIR]... [--peers N] [--headless] [--software] [--state DIR]
+               [--repo DIR]
       build the package, install it into a locally built nested Tilo session
       (dist/dev/nested-session-build.sh target/nested-session) and open it there; every .tl edit
-      rebuilds and reinstalls it. --peers N runs N sessions in one workspace.
+      rebuilds and reinstalls it. --peers N runs N sessions in one workspace; --software
+      renders with lavapipe only and never opens this machine's GPU.
   tilolang check|fmt|ids ...
       the compiler's commands (tilolangc --help)";
 
@@ -97,6 +99,7 @@ fn run_command(args: &[String]) -> Result<(), String> {
         search: Vec::new(),
         peers: 1,
         headless: false,
+        software: false,
         state: None,
         repo: None,
     };
@@ -113,6 +116,7 @@ fn run_command(args: &[String]) -> Result<(), String> {
                     .ok_or_else(|| format!("--peers {peers}: a number of sessions from 1 to 26"))?;
             }
             "--headless" => options.headless = true,
+            "--software" => options.software = true,
             "--state" => options.state = Some(value(&mut iter, arg)?.into()),
             "--repo" => options.repo = Some(value(&mut iter, arg)?.into()),
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n{USAGE}")),

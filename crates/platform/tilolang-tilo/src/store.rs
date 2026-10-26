@@ -673,7 +673,7 @@ impl TiloStore {
         let action = DynAction {
             app: record.app.clone(),
             kind: format!("tl.{}.{}", record.app, schema.name),
-            action_id: "$create".to_owned(),
+            action_id: crate::action::CREATE_ACTION.to_owned(),
             args: Json::String(id.to_owned()),
             authorship: Authorship::default(),
             edits: vec![edit],
