@@ -8287,5 +8287,6 @@ requirement = { cores = 8, memory = "16GiB" }
 git = true
 isolation = "vm"
 timeout_secs = 5400
+on = ["idle"]
 default = false
 cache = false
