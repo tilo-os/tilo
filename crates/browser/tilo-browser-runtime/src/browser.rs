@@ -328,6 +328,8 @@ struct Gpu {
     /// The surface's target keeps the last presented frame; each frame
     /// repaints only what changed since, the way the native hosts do.
     retained: Retained,
+    /// Frames submitted that the GPU has not finished.
+    pacing: crate::frame_pacing::FramePacing,
 }
 
 impl Gpu {
@@ -2230,6 +2232,7 @@ async fn set_up_gpu(setup: GpuSetup) {
                     shared,
                     surface,
                     retained: Retained::new(),
+                    pacing: crate::frame_pacing::FramePacing::default(),
                 });
                 m.viewport.surface_installed();
                 m.queue_resize();
@@ -2402,6 +2405,13 @@ impl Mount {
             if !self.skipped_frame {
                 self.held = "nothing to draw";
             }
+            return Ok(());
+        }
+        if !gpu.pacing.may_draw() {
+            // The GPU still draws earlier frames: what changed waits for
+            // the frame after it caught up, rather than queue behind them.
+            self.held = "the GPU drawing earlier frames";
+            self.window.request_redraw();
             return Ok(());
         }
         let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
@@ -2718,6 +2728,8 @@ impl Mount {
         );
         let target = &gpu.surface.target_texture;
         crate::feedback_crops::service(&handle.device, &handle.queue, target, viewport.dpr);
+        let done = gpu.pacing.submitted();
+        handle.queue.on_submitted_work_done(move || done.finished());
         // The first frame is out: the pipelines it did not need compile once
         // the page has stayed a while (`compile_deferred_pipelines_later`).
         drop(shared_guard);
