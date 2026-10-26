@@ -646,6 +646,10 @@ impl Room {
                         context.permitted_at(node, ui::permissions::KindSet::UNDOABLE)
                     },
                 );
+            // Its windows sync again, so what they offer (a bar's "View
+            // only", an editor that takes typing) follows at once rather
+            // than at the next change of their record.
+            attachment.changed.set(true);
             // A window waiting to learn whether its person starts the
             // room's record now knows.
             if let Some((handle, shared)) = &attachment.desktop {
