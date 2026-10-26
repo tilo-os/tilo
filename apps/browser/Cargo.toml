@@ -26,9 +26,11 @@ thin = ["dep:runtime-dylib"]
 # (dist/apps/app-collections.toml); a `thin` build without it (`tilo-app dev`)
 # links them statically, because an engine library links only through
 # tools/ci/rustc-thin-app-wrapper.sh. Signed-in website sessions' custody
-# (account-custody's service sessions, through tilo-browser-sessions) comes
-# from the accounts engine (libtilo_accounts_engine.so) Mail and Settings
-# already load, rather than a second copy in the tapp.
+# (account-custody's service sessions, through tilo-browser-sessions in
+# browser-parts) comes from the accounts engine (libtilo_accounts_engine.so)
+# Mail and Settings already load, rather than a second copy in the tapp: the
+# import engine, which carries browser-parts, names it DT_NEEDED, so Browser
+# loads it through that engine (tools/apps/release-smoke.sh checks the chain).
 runtime-engine = ["thin", "tilo-browser-import-engine/thin", "tilo-accounts-engine/thin"]
 
 [dependencies]
