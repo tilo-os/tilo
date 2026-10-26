@@ -175,7 +175,9 @@ pub struct AgentArgs {
     /// credits). The
     /// key comes from `TILO_AGENT_API_KEY`, or `TILO_AGENT_API_KEY_FILE`,
     /// read before every call so a rotated token needs no restart. Default
-    /// `$TILO_AGENT_MODEL`, else `settings`.
+    /// `$TILO_AGENT_MODEL`, else `settings`. The items of a coordinated
+    /// task may plan with another model, `$TILO_AGENT_DECOMPOSE_ITEM_MODEL`
+    /// with its own key (`TILO_AGENT_DECOMPOSE_ITEM_API_KEY_FILE`).
     #[arg(long = "agent-model", value_name = "MODEL")]
     pub model: Option<String>,
     /// The model id for `openai:` and `anthropic:` (required) or `cloud:` (default
@@ -217,7 +219,9 @@ impl AgentArgs {
                 env("TILO_AGENT_API_KEY_FILE"),
             ),
         )
-        .map_err(|error| anyhow::anyhow!("--agent-model: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("--agent-model: {error}"))?
+        .with_items_from(&env)
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
         tracing::info!(model = %model.describe(), state = %state_dir.display(), "agents on this host");
         Ok(Some(tilo_relay::agents::AgentOptions {
             state_dir,

@@ -34,6 +34,26 @@ pub const TOKEN_LIMIT_ENV: &str = "TILO_AGENT_TOKEN_LIMIT_PARAM";
 /// (`1`) for every agent, or a comma-separated list of agent ids or labels
 /// for those agents alone ([`named_on`]).
 pub const DECOMPOSE_ENV: &str = "TILO_AGENT_DECOMPOSE";
+/// Plan the items of a coordinated task ([`DECOMPOSE_ENV`]) with this
+/// model, while the coordinator (the list, news, an item not done, the
+/// check) plans with the agent's own: a model id, asked at Anthropic's
+/// Messages API when it is a `claude-` one and at `OpenAI`'s otherwise,
+/// unless [`DECOMPOSE_ITEM_URL_ENV`] names the endpoint. Unset, the items
+/// plan with the agent's own model.
+pub const DECOMPOSE_ITEM_MODEL_ENV: &str = "TILO_AGENT_DECOMPOSE_ITEM_MODEL";
+/// The endpoint of [`DECOMPOSE_ITEM_MODEL_ENV`], as the agent's own model's
+/// is named: `openai:<base url>`, `anthropic:<base url>` or
+/// `cloud:<base url>`.
+pub const DECOMPOSE_ITEM_URL_ENV: &str = "TILO_AGENT_DECOMPOSE_ITEM_URL";
+/// The key of [`DECOMPOSE_ITEM_MODEL_ENV`]: the key itself.
+pub const DECOMPOSE_ITEM_API_KEY_ENV: &str = "TILO_AGENT_DECOMPOSE_ITEM_API_KEY";
+/// The key of [`DECOMPOSE_ITEM_MODEL_ENV`]: a file holding it, read before
+/// each call. One of the two is needed unless [`DECOMPOSE_ITEM_URL_ENV`]
+/// names an `openai:` endpoint, which may take none.
+pub const DECOMPOSE_ITEM_API_KEY_FILE_ENV: &str = "TILO_AGENT_DECOMPOSE_ITEM_API_KEY_FILE";
+/// The preset of [`DECOMPOSE_ITEM_MODEL_ENV`], in place of [`PRESET_ENV`]:
+/// the item model's provider may serve another tier than the agent's own.
+pub const DECOMPOSE_ITEM_PRESET_ENV: &str = "TILO_AGENT_DECOMPOSE_ITEM_PRESET";
 /// Ask an OpenAI-compatible endpoint through `responses` or
 /// `chat_completions`, whatever its address suggests (a proxy in front of
 /// `OpenAI` takes Responses); unset, `OpenAI`'s own API takes Responses and
@@ -190,6 +210,20 @@ impl Profile {
                 .map(std::time::Duration::from_millis);
         }
         profile
+    }
+
+    /// The profile of the model a coordinated task's items plan with
+    /// ([`DECOMPOSE_ITEM_MODEL_ENV`]): [`DECOMPOSE_ITEM_PRESET_ENV`] in place
+    /// of [`PRESET_ENV`] when set, and the agent's own model's class, output
+    /// limit and API left out, as they describe that model and its endpoint.
+    /// The other settings are the agent's own.
+    #[must_use]
+    pub fn resolve_items(model: &str, explicit: &dyn Fn(&str) -> Option<String>) -> Self {
+        Self::resolve(model, &|name| match name {
+            PRESET_ENV => explicit(DECOMPOSE_ITEM_PRESET_ENV).or_else(|| explicit(PRESET_ENV)),
+            MODEL_CLASS_ENV | TOKEN_LIMIT_ENV | OPENAI_API_ENV => None,
+            _ => explicit(name),
+        })
     }
 
     /// Whether a finished task is checked against its request.
@@ -448,6 +482,38 @@ mod tests {
             });
             assert_eq!(profile.hedge_after(), None, "{unhedged:?}");
         }
+    }
+
+    /// The item model's profile takes its own preset, else the agent's,
+    /// and its own class and output limit, never the agent's model's.
+    #[test]
+    fn the_item_model_takes_its_own_preset_and_class() {
+        let told = |item_preset: Option<&'static str>| {
+            move |name: &str| match name {
+                PRESET_ENV => Some("fastest".to_owned()),
+                MODEL_CLASS_ENV => Some("very-large".to_owned()),
+                TOKEN_LIMIT_ENV => Some("max_tokens".to_owned()),
+                DECOMPOSE_ITEM_PRESET_ENV => item_preset.map(str::to_owned),
+                _ => None,
+            }
+        };
+        // The agent's own model: its class override makes `fastest` Flex.
+        let own = Profile::resolve("gpt-6.1-terra", &told(None));
+        assert_eq!(own.service_tier(), Some("flex"));
+        // The items' small model, under the agent's preset: priority, as
+        // its own class says.
+        let items = Profile::resolve_items("gpt-6-luna", &told(None));
+        assert_eq!(items.service_tier(), Some("priority"));
+        assert_eq!(
+            items.token_limit_param(),
+            Some(TokenLimitParam::MaxCompletionTokens)
+        );
+        let cheapest = Profile::resolve_items("gpt-6-luna", &told(Some("cheapest")));
+        assert_eq!(cheapest.service_tier(), Some("flex"));
+        assert_eq!(
+            Profile::resolve_items("claude-haiku-5-5", &told(Some("balanced"))).token_limit_param(),
+            None
+        );
     }
 
     /// Every agent's tasks are coordinated when the setting turns it on;
