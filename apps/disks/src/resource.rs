@@ -100,7 +100,7 @@ pub enum DisksEffect {
     /// Show detail tab.
     #[effect(kind = "read")]
     ShowTab {
-        #[param("overview | smart | partitions")]
+        #[param("The tab to show", choices = ["overview", "smart", "partitions"])]
         tab: String,
     },
     /// Mount.
@@ -134,6 +134,22 @@ pub enum DisksEffect {
         #[param("Kernel name of the removable drive")]
         device: String,
     },
+    /// Open a mounted filesystem where it lives, in Files.
+    ///
+    /// A mount is only useful once its files are reachable: this is the way
+    /// there, without copying the path out of the row.
+    #[effect(job, label = "Open in Files")]
+    OpenFolder {
+        #[param("Kernel name of the mounted partition")]
+        device: String,
+    },
+    /// Show how much room a mounted filesystem's files take up, in the Disk
+    /// Usage analyzer.
+    #[effect(job, label = "Show disk usage")]
+    DiskUsage {
+        #[param("Kernel name of the mounted partition")]
+        device: String,
+    },
 }
 
 impl DisksEffect {
@@ -148,6 +164,23 @@ impl DisksEffect {
             ActionKind::Eject => Self::Eject { device },
         }
     }
+}
+
+/// The session link that opens the Disk Usage analyzer in the workspace the
+/// window is in. Its job is a different one from partitioning — what the
+/// person's own files take up, not what the hardware is — so the two apps
+/// find each other by link and stay two apps.
+pub(crate) const USAGE_LINK: &str = "tilo://open#/me/so.tilo.disk-usage";
+
+/// The mount point of `device` on `topology`, when it is mounted.
+pub(crate) fn mount_point(topology: &Topology, device: &str) -> Option<String> {
+    topology
+        .drives
+        .iter()
+        .flat_map(|drive| drive.partitions.iter())
+        .find(|part| part.name == device)
+        .and_then(|part| part.mountpoint.clone())
+        .filter(|mount| !mount.trim().is_empty())
 }
 
 /// The published row of the drive named `leaf`.
@@ -244,7 +277,7 @@ fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
     .effect(&DisksEffect::Select {
         device: part.name.clone(),
     });
-    operations(
+    let row = operations(
         row,
         drive,
         Some(part),
@@ -255,7 +288,32 @@ fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
             ActionKind::Benchmark,
             ActionKind::Format,
         ],
-    )
+    );
+    // A mounted filesystem's files are reachable, so both ways to go and
+    // look at them are offered where the mount is.
+    if part.mountpoint.is_none() {
+        return row;
+    }
+    row.operation(row_view_operation(
+        &DisksEffect::OpenFolder {
+            device: part.name.clone(),
+        },
+        "Open in Files",
+    ))
+    .operation(row_view_operation(
+        &DisksEffect::DiskUsage {
+            device: part.name.clone(),
+        },
+        "How much space is left?",
+    ))
+}
+
+/// `effect` as a row operation, named `label`: what a row can do that
+/// changes nothing on the machine.
+fn row_view_operation(effect: &DisksEffect, label: &str) -> ui::tilo_actions::ActionSpec {
+    let mut spec = effect.bound();
+    spec.label.clone_from(&label.to_owned());
+    spec
 }
 
 /// The row of one drive, with its partitions beneath it.
@@ -523,6 +581,146 @@ mod tests {
             .filter(|row| row.actions.iter().any(|action| action.id == "eject"))
             .count();
         assert_eq!(removable, 1, "only the removable drive ejects");
+    }
+
+    #[test]
+    fn a_mounted_filesystem_offers_both_ways_on_its_files() {
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        let resources = app.harness().resources();
+        let mounted = find(&resources, "partition:sdb1").expect("the media partition");
+        assert!(
+            mounted
+                .actions
+                .iter()
+                .any(|action| action.id == "open-folder"),
+            "a mounted row offers the way to its files: {:?}",
+            action_ids(mounted)
+        );
+        assert!(
+            mounted
+                .actions
+                .iter()
+                .any(|action| action.id == "disk-usage"),
+            "and how much room they take: {:?}",
+            action_ids(mounted)
+        );
+        let sample = crate::model::Topology::sample();
+        let unmounted_row = sample
+            .drives
+            .iter()
+            .flat_map(|drive| drive.partitions.iter())
+            .find(|part| part.mountpoint.is_none());
+        if let Some(unmounted) = unmounted_row {
+            let row = find(&resources, &format!("partition:{}", unmounted.name))
+                .expect("an unmounted partition row");
+            assert!(
+                row.actions
+                    .iter()
+                    .all(|action| !matches!(action.id.as_str(), "open-folder" | "disk-usage")),
+                "a filesystem that is not mounted has nowhere to go: {:?}",
+                action_ids(row)
+            );
+        }
+
+        // Both are offered on the sample machine, which says what it would do.
+        let said = |output: ui::tilo_actions::ActionOutput| {
+            output
+                .value
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_default()
+        };
+        let opened = said(
+            app.effect(&DisksEffect::OpenFolder {
+                device: "sdb1".into(),
+            })
+            .unwrap(),
+        );
+        assert!(
+            opened.contains("would open /mnt/media in Files"),
+            "{opened:?}"
+        );
+        let usage = said(
+            app.effect(&DisksEffect::DiskUsage {
+                device: "sdb1".into(),
+            })
+            .unwrap(),
+        );
+        assert!(usage.contains("would open Disk Usage"), "{usage:?}");
+    }
+
+    #[test]
+    fn a_filesystem_that_is_not_mounted_has_nowhere_to_go() {
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        // A whole disk has no mount point of its own.
+        assert!(
+            app.effect(&DisksEffect::OpenFolder {
+                device: "nvme0n1".into()
+            })
+            .is_err(),
+            "a device that is not a mounted filesystem is refused, not opened"
+        );
+        assert!(
+            app.effect(&DisksEffect::DiskUsage {
+                device: "nvme0n1".into()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn the_usage_link_names_the_analyzer_in_the_persons_own_workspace() {
+        assert_eq!(
+            USAGE_LINK, "tilo://open#/me/so.tilo.disk-usage",
+            "an app and no record opens the app as launching it would"
+        );
+        assert!(
+            ui::tilo_reference::link::Link::parse_native(USAGE_LINK).is_ok(),
+            "the session's own grammar takes it"
+        );
+        let topology = crate::model::Topology::sample();
+        assert_eq!(
+            mount_point(&topology, "sdb1").as_deref(),
+            Some("/mnt/media")
+        );
+        assert_eq!(mount_point(&topology, "sdb"), None, "a disk is not mounted");
+    }
+
+    /// The drive page's two ways on reach the machine's own effects: the
+    /// buttons name the mounted filesystem the section has selected, and the
+    /// sample machine says what it would do rather than doing it.
+    #[test]
+    fn the_drive_pages_ways_on_run_the_effects_they_name() {
+        // The drive page acts for the filesystem holding the most, not for
+        // whichever partition comes first.
+        let topology = crate::model::Topology::sample();
+        let mount = topology.drives[0]
+            .partitions
+            .iter()
+            .filter(|part| part.mountpoint.is_some())
+            .max_by_key(|part| part.used.unwrap_or(0))
+            .and_then(|part| part.mountpoint.clone())
+            .expect("the sample drive has a mounted filesystem");
+        assert_ne!(mount, "/boot/efi", "a boot partition is not the drive");
+
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        app.harness()
+            .click_named("disks-open-in-files")
+            .expect("the drive page offers the way to the files");
+        app.settle();
+        let opened = app.harness().inspection_json().unwrap();
+        assert!(
+            opened.contains(&format!("would open {mount} in Files")),
+            "the button opened {mount}: {opened}"
+        );
+        app.harness()
+            .click_named("disks-space-left")
+            .expect("the drive page offers how much space is left");
+        app.settle();
+        let usage = app.harness().inspection_json().unwrap();
+        assert!(
+            usage.contains(&format!("would open Disk Usage for {mount}")),
+            "the button asked the analyzer about {mount}: {usage}"
+        );
     }
 
     #[test]
