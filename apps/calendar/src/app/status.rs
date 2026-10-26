@@ -1,11 +1,74 @@
 //! Transient status: the result of a sync, an import or an edit, as the
 //! window bar's notice until it is replaced or has been up for a notice's
 //! lifetime (the shared [`ui::widget::toast::Transient`] keeps it).
+//!
+//! Each message carries its own severity from where it is raised, so what
+//! the person reads as a failure is a failure in every language: the words
+//! are the catalogue's, and nothing decides a kind by looking for "failed"
+//! in them.
 
-use ui::widget::toast::ToastKind;
+use ui::time::Instant;
+use ui::widget::toast::{ToastKind, Transient};
 use ui::window_toolbar::{ToolbarAction, ToolbarNotice};
 
 use super::CalendarApp;
+
+/// The one message the window's bar says, with the severity its reason
+/// carries.
+#[derive(Default)]
+pub(super) struct Status {
+    current: Transient<(String, ToastKind)>,
+}
+
+impl Status {
+    /// Say `text` of `kind`, replacing anything already up.
+    pub(super) fn show(&mut self, text: impl Into<String>, kind: ToastKind) {
+        self.current.show((text.into(), kind));
+    }
+
+    /// Say `text` as a failure: what the person asked for did not happen.
+    pub(super) fn failed(&mut self, text: impl Into<String>) {
+        self.show(text, ToastKind::Error);
+    }
+
+    /// Say `text` as work under way: it stays while the work runs.
+    pub(super) fn show_progress(&mut self, text: impl Into<String>) {
+        self.current.show_progress((text.into(), ToastKind::Info));
+    }
+
+    /// The message up, if one is.
+    pub(super) fn text(&self) -> Option<&str> {
+        self.current.get().map(|(text, _)| text.as_str())
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_shown(&self) -> bool {
+        self.current.is_shown()
+    }
+
+    pub(super) fn dismiss(&mut self) -> bool {
+        self.current.dismiss()
+    }
+
+    pub(super) fn expire(&mut self) -> bool {
+        self.current.expire()
+    }
+
+    pub(super) fn keep_while(&mut self, busy: bool) -> bool {
+        self.current.keep_while(busy)
+    }
+
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        self.current.deadline()
+    }
+
+    /// Put the message up in the window's bar, `decorate` adding what the
+    /// person may do about it; call on every sync.
+    fn publish(&self, decorate: impl FnOnce(ToolbarNotice) -> ToolbarNotice) {
+        self.current
+            .publish(|(text, kind)| decorate(ToolbarNotice::new(text.clone(), *kind)));
+    }
+}
 
 /// The bar action id of a failed sync's "Sync again".
 pub(super) const SYNC_AGAIN_ACTION: &str = "calendar.notice.sync-again";
@@ -65,27 +128,23 @@ impl StatusAction {
     }
 }
 
-fn kind_of(message: &str) -> ToastKind {
-    if message.starts_with("Sync failed") || message.contains("failed") {
-        ToastKind::Error
-    } else if message.starts_with("Offline") || message.contains("changed on the server") {
-        ToastKind::Warning
-    } else {
-        ToastKind::Info
-    }
-}
-
 impl CalendarApp {
-    /// Show `text`, which asks the person to act, with `actions` beside it.
-    pub(super) fn show_status_with(&mut self, text: String, actions: &[StatusAction]) {
-        self.status.show(text.clone());
+    /// Show `text` of `kind`, which asks the person to act, with `actions`
+    /// beside it.
+    pub(super) fn show_status_with(
+        &mut self,
+        text: String,
+        kind: ToastKind,
+        actions: &[StatusAction],
+    ) {
+        self.status.show(text.clone(), kind);
         self.status_actions.shown = (!actions.is_empty()).then(|| (text, actions.to_vec()));
         self.dirty = true;
     }
 
     /// The actions of the status up.
     fn status_actions(&self) -> &[StatusAction] {
-        let Some(shown) = self.status.as_deref() else {
+        let Some(shown) = self.status.text() else {
             return &[];
         };
         self.status_actions
@@ -133,11 +192,10 @@ impl CalendarApp {
         self.status.keep_while(self.syncing);
         self.status.expire();
         let actions = self.status_actions().to_vec();
-        self.status.publish(|message| {
-            actions.iter().fold(
-                ToolbarNotice::new(message.clone(), kind_of(message)),
-                |notice, action| notice.action(action.button()),
-            )
+        self.status.publish(|notice| {
+            actions
+                .iter()
+                .fold(notice, |notice, action| notice.action(action.button()))
         });
     }
 }
@@ -146,25 +204,23 @@ impl CalendarApp {
 mod tests {
     use super::*;
 
+    /// A failure is an error notice in the window's bar because the place
+    /// that raised it said so, not because of the words it chose.
     #[test]
-    fn a_message_takes_the_severity_it_reports() {
-        assert_eq!(kind_of("Sync failed. Check the account."), ToastKind::Error);
-        assert_eq!(
-            kind_of("Offline. Changes sync when you reconnect."),
-            ToastKind::Warning
-        );
-        assert_eq!(kind_of("Event deleted"), ToastKind::Info);
-    }
-
-    /// A failed sync is an error notice in the window's bar.
-    #[test]
-    fn a_failed_sync_is_an_error_in_the_window_bar() {
+    fn a_message_says_the_severity_it_was_raised_with() {
         let mut app = CalendarApp::new_detached();
-        app.status.show("Sync failed. Check the account.".into());
+        app.status.failed("Sync failed. Check the account.");
         app.publish_status();
         let notice = ui::window_toolbar::notice().expect("the bar shows the status");
         assert_eq!(notice.kind, ToastKind::Error);
         assert_eq!(notice.text, "Sync failed. Check the account.");
+
+        // The same words raised as a passing confirmation read as one.
+        app.status
+            .show("Sync failed. Check the account.", ToastKind::Info);
+        app.publish_status();
+        let notice = ui::window_toolbar::notice().expect("the bar shows the status");
+        assert_eq!(notice.kind, ToastKind::Info);
     }
 
     /// A status leaves on its own once it has been up for a notice's
@@ -176,7 +232,9 @@ mod tests {
         let mut app = CalendarApp::new_detached();
         let start = ui::time::now();
         let at = |seconds: u64| start + std::time::Duration::from_secs(seconds);
-        with_monotonic_time(start, || app.status.show("Event deleted".into()));
+        with_monotonic_time(start, || {
+            app.status.show("Event deleted", ToastKind::Info);
+        });
         let due = start + ui::widget::toast::NOTICE_LIFETIME;
         assert_eq!(app.status.deadline(), Some(due));
         assert!(
@@ -184,11 +242,11 @@ mod tests {
             "the app wakes when the status is due to leave"
         );
         with_monotonic_time(at(2), || {
-            app.status.show("Imported calendar items".into());
+            app.status.show("Imported calendar items", ToastKind::Info);
         });
         with_monotonic_time(at(5), || {
             assert!(!app.status.expire(), "the newer status keeps its time");
-            assert_eq!(app.status.as_deref(), Some("Imported calendar items"));
+            assert_eq!(app.status.text(), Some("Imported calendar items"));
         });
         with_monotonic_time(at(5), || app.publish_status());
         assert_eq!(
@@ -296,7 +354,7 @@ mod tests {
             let mut window = failed_sync();
             press(&mut window, width, 0, semantic);
             let app = window.surface_mut::<CalendarApp>();
-            let status = app.status.as_deref().unwrap_or_default().to_owned();
+            let status = app.status.text().unwrap_or_default().to_owned();
             assert!(
                 status.starts_with("Synced"),
                 "the calendars synced again at {width} px (semantic: {semantic}): {status}"
