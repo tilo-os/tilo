@@ -1116,7 +1116,6 @@ impl DesktopSurface {
         };
         let started = ui::time::now();
         let shared = self.shared.borrow();
-        let mut built = false;
         let mut waiting = Vec::new();
         let mut queue = std::mem::take(&mut self.unbuilt).into_iter();
         for (strip, tab) in queue.by_ref() {
@@ -1134,17 +1133,17 @@ impl DesktopSurface {
             }) else {
                 continue;
             };
-            let mut rebuilt = build_tile(
+            let rebuilt = build_tile(
                 self.tiles.as_mut(),
                 self.controls.as_ref(),
                 workspace,
                 model,
             );
             // A window that held an app's place (its code or record still
-            // coming) hands its arrival to what is built there now.
-            rebuilt.continue_arrival(host);
-            *host = rebuilt;
-            built = true;
+            // coming) hands its arrival, and its place in the layout, to
+            // what is built there now: the window says how its layout
+            // changes, so the rest of the desktop's is kept.
+            host.take_place_of(rebuilt);
             if ui::time::now().duration_since(started) >= BUILD_BUDGET {
                 break;
             }
@@ -1152,7 +1151,6 @@ impl DesktopSurface {
         waiting.extend(queue);
         drop(shared);
         self.unbuilt = waiting;
-        self.structure_dirty |= built;
     }
 
     /// Bring the rows to a replaced tree, keeping live content by tab id.
@@ -2747,9 +2745,18 @@ impl Widget for DesktopSurface {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let row = self.shown_row().is_some_and(Widget::take_structure_dirty);
-        own || row
+        self.take_structure_change().rebuilds()
+    }
+
+    /// A change the shown strip's windows carry out in place stays in
+    /// place; the surface's own changes rebuild.
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        let own = ui::widget::StructureChange::of(std::mem::take(&mut self.structure_dirty));
+        let row = self.shown_row().map_or(
+            ui::widget::StructureChange::None,
+            Widget::take_structure_change,
+        );
+        own.join(row)
     }
 }
 

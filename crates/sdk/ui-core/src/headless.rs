@@ -552,6 +552,9 @@ pub struct FrameHarness {
     last_relayout: RelayoutStats,
     /// Completed relayout frames since construction.
     relayout_frames: u64,
+    /// Layout nodes built since construction: every node of each rebuilt
+    /// tree, and those a change carried out in place mounted.
+    layout_nodes_built: u64,
     /// Retained (non-rebuilt) frames completed since construction, used by
     /// the opt-in geometry check.
     retained_frames: u64,
@@ -1169,10 +1172,15 @@ impl FrameHarness {
         {
             return false;
         }
+        let mapped = self.node_map.len();
         let mut remount =
             crate::widget::Remount::new(&mut self.taffy, &self.theme, &mut self.node_map);
         let applied = self.root.remount_children(&mut remount);
         let (mounted, unmounted) = remount.finish();
+        let built = (self.node_map.len() + unmounted.len()).saturating_sub(mapped);
+        self.layout_nodes_built = self
+            .layout_nodes_built
+            .saturating_add(u64::try_from(built).unwrap_or(u64::MAX));
         // The rows it mounted are checked against the live tree at once, as
         // a build's are, so the next structure check finds the maps live.
         self.admit_layout_maps();
@@ -1813,6 +1821,7 @@ impl FrameHarness {
             full_relayout_override: None,
             last_relayout: RelayoutStats::default(),
             relayout_frames: 0,
+            layout_nodes_built: 0,
             retained_frames: 0,
             retained_geometry_check_every: 0,
             verifying_geometry: false,
@@ -3575,7 +3584,7 @@ impl FrameHarness {
             self.owner_service_layout_retired
                 .then(|| CompositionFocus::capture_live(self.root.as_ref()))
                 .flatten()
-        } else if structure_changed {
+        } else if structure_changed || self.remount {
             CompositionFocus::capture_live(self.root.as_ref())
         } else {
             // SAFETY: no structural mutation since these maps were admitted.
@@ -3784,6 +3793,17 @@ impl FrameHarness {
             let in_place = self.remount && !structure && (!rebuild || remount_only);
             let remounted = in_place && self.remount_in_place();
             stats.remounted |= remounted;
+            // Focus inside widgets laid out again in place goes back to the
+            // control it was on, as after a rebuild.
+            if remounted
+                && let Some(focus) = &focus
+                && self
+                    .focused
+                    .is_none_or(|node| !self.node_map.contains_key(&node))
+            {
+                // SAFETY: the remount just admitted every mounted widget.
+                self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
+            }
             if structure || (rebuild && !remount_only) || (in_place && !remounted) {
                 self.remount = false;
                 rebuilt_this_pass = true;
@@ -3829,6 +3849,9 @@ impl FrameHarness {
                         .build_layout(&mut self.taffy, &self.theme, &mut self.node_map)
                 };
                 self.admit_layout_maps();
+                self.layout_nodes_built = self
+                    .layout_nodes_built
+                    .saturating_add(u64::try_from(self.node_map.len()).unwrap_or(u64::MAX));
                 // Newly composed controls need sync. If it replaces delegates,
                 // discard these raw maps without admitting or measuring them.
                 self.root.sync(&self.state.doc, &self.state.root);
