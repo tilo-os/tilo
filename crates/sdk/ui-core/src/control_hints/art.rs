@@ -6,6 +6,7 @@
 //! tile, at a phase of its loop (`0..1`, [`crate::motion::Beckon`]).
 
 use super::Gesture;
+use super::card::Contents;
 use crate::motion::Beckon;
 use vello::Scene;
 use vello::kurbo::{
@@ -37,12 +38,13 @@ impl Ink {
     }
 }
 
-/// Paint `gesture` at `phase` of its loop into `tile`, whole at `alpha`.
+/// Paint the gesture `contents` shows at `phase` of its loop into `tile`,
+/// whole at `alpha`.
 pub(super) fn paint(
     scene: &mut Scene,
     transform: Affine,
     tile: Rect,
-    gesture: Gesture,
+    contents: &Contents<'_>,
     phase: f64,
     ink: Ink,
     alpha: f32,
@@ -50,6 +52,7 @@ pub(super) fn paint(
     if alpha <= 0.0 || tile.is_zero_area() {
         return;
     }
+    let gesture = contents.gesture;
     let scale = (tile.width() / ART_W).min(tile.height() / ART_H);
     let origin = Vec2::new(
         tile.x0 + (tile.width() - ART_W * scale) / 2.0,
@@ -81,7 +84,7 @@ pub(super) fn paint(
         Gesture::OpenFromSearch => open_from_search(scene, t, phase, ink),
         Gesture::MoveWindow => move_window(scene, t, phase, ink),
         Gesture::ResizeEdge => resize_edge(scene, t, phase, ink),
-        Gesture::PanView => pan_view(scene, t, phase, ink),
+        Gesture::PanView => pan_view(scene, t, phase, ink, contents.touch),
     }
     scene.pop_layer();
 }
@@ -285,10 +288,13 @@ fn resize_edge(scene: &mut Scene, t: Affine, phase: f64, ink: Ink) {
     }
 }
 
-/// A hand drags the empty canvas; the windows slide with it, and back.
-fn pan_view(scene: &mut Scene, t: Affine, phase: f64, ink: Ink) {
-    let pressed = held(phase, 0.2, 0.9);
-    let slide = -26.0 * (Beckon::stroke(phase, 0.24, 0.54) - Beckon::stroke(phase, 0.62, 0.88));
+/// The windows slide sideways under the person's fingers, and back: two
+/// fingers scrolling on a touchpad, or, on a touchscreen, one finger
+/// swiping a window's bar.
+fn pan_view(scene: &mut Scene, t: Affine, phase: f64, ink: Ink, touch: bool) {
+    let down = held(phase, 0.2, 0.9);
+    let stroke = Beckon::stroke(phase, 0.24, 0.54) - Beckon::stroke(phase, 0.62, 0.88);
+    let slide = -26.0 * stroke;
     for x in [-16.0, 10.0, 36.0, 62.0] {
         window(
             scene,
@@ -298,29 +304,45 @@ fn pan_view(scene: &mut Scene, t: Affine, phase: f64, ink: Ink) {
             0.0,
         );
     }
-    let grip = Point::new(34.0 + slide, 31.5);
-    let rest = Point::new(50.0, 39.0);
-    let tip = if phase < 0.2 {
-        between(rest, grip, Beckon::stroke(phase, 0.0, 0.18))
-    } else if phase < 0.92 {
-        grip
-    } else {
-        between(grip, rest, Beckon::stroke(phase, 0.92, 1.0))
-    };
-    if pressed > 0.0 {
-        // The press on empty canvas, as a small ring under the hand.
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "an opacity is drawn at f32 precision"
-        )]
-        let alpha = (0.5 * pressed) as f32;
-        scene.stroke(
-            &Stroke::new(1.0),
+    if touch {
+        // The finger rides the bar it swipes.
+        fingertip(
+            scene,
             t,
-            ink.line.multiply_alpha(alpha),
-            None,
-            &Circle::new(grip, 3.0 + 1.5 * pressed),
+            Point::new(42.0 + slide, 7.0 + BAR_H / 2.0),
+            3.6,
+            down,
+            ink,
         );
+        return;
     }
-    pointer(scene, t, tip, pressed, ink);
+    // A touchpad under the windows, two fingers scrolling across it.
+    let pad = RoundedRect::from_rect(Rect::new(20.0, 30.0, 44.0, 39.5), 2.5);
+    scene.stroke(&Stroke::new(1.0), t, ink.soft(0.45), None, &pad);
+    let x = 35.0 - 8.0 * stroke;
+    for dx in [-3.4, 3.4] {
+        fingertip(scene, t, Point::new(x + dx, 34.75), 2.4, down, ink);
+    }
+}
+
+/// A fingertip resting at `at`, `down` (`0..=1`) as it lands and lifts.
+fn fingertip(scene: &mut Scene, t: Affine, at: Point, radius: f64, down: f64, ink: Ink) {
+    let down = down.clamp(0.0, 1.0);
+    if down <= 0.0 {
+        return;
+    }
+    let tip = Circle::new(at, radius * (0.7 + 0.3 * down));
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "an opacity is drawn at f32 precision"
+    )]
+    let alpha = down as f32;
+    scene.stroke(
+        &Stroke::new(1.6),
+        t,
+        ink.ground.multiply_alpha(alpha),
+        None,
+        &tip,
+    );
+    scene.fill(Fill::NonZero, t, ink.line.multiply_alpha(alpha), None, &tip);
 }

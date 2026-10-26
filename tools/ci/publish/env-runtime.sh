@@ -5,8 +5,13 @@
 # registry.tilo.so/tilo/env-runtime:set-<fingerprint>, which the OS image and the
 # tilo-session-apps RPM resolve (os/dev/resolve-env-runtime.sh).
 #
-#   env-runtime.sh tree ARCH SNAPSHOT OUT   install the runtime into an empty root and export
-#                                           OUT/env-runtime-tree-ARCH.tar (buildah image, native)
+#   env-runtime.sh tree ARCH SNAPSHOT RPMS OUT
+#                                           install the runtime into an empty root and export
+#                                           OUT/env-runtime-tree-ARCH.tar from the snapshot
+#                                           rpm-snapshot-ref.sh named in SNAPSHOT: the published
+#                                           one, or this run's image-rpms-ARCH in RPMS while it
+#                                           is not published, which no publisher seals (buildah
+#                                           image, native)
 #   env-runtime.sh packer OUT               build the packer into OUT/tilo-app-package (builder)
 #   env-runtime.sh seal TREES PACKER OUT    seal both trees into OUT/env-runtime-ARCH.tapp: with
 #                                           TAPP_PUBLISHER_IDENTITY when given, else a throwaway
@@ -93,13 +98,13 @@ seal_index() {
 
 case ${1:-} in
   tree)
-    arch=${2:?usage: env-runtime.sh tree ARCH SNAPSHOT OUT}
+    arch=${2:?usage: env-runtime.sh tree ARCH SNAPSHOT RPMS OUT}
     snapshot=${3:?}
-    out=${4:?}
-    rpms_ref=$(cat "$snapshot/rpms-ref")
-    [[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]] || die "unexpected snapshot $rpms_ref"
+    rpms=${4:?}
+    out=${5:?}
     use_buildah_overlay
-    build_tree "$arch" "$rpms_ref" "$rpms_ref" "$out"
+    snapshot_for_build "$snapshot" "$rpms" "$arch"
+    build_tree "$arch" "$rpms_ref" "$rpms_source" "$out"
     ;;
   dev-tree)
     arch=${2:?usage: env-runtime.sh dev-tree ARCH RPMS OUT}
@@ -128,6 +133,8 @@ case ${1:-} in
       (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$identity")
       trap 'rm -f "$identity"' EXIT
       identity_args=(--identity "$identity")
+      # A publisher seals only runtimes built from the published snapshot.
+      for arch in x86_64 aarch64; do require_published_snapshot "$trees/env-runtime-rpms-$arch.txt"; done
     else
       [[ ${T_REF:-} != stable && ${T_REF:-} != tag:* ]] \
         || die 'TAPP_PUBLISHER_IDENTITY is required to seal a release'

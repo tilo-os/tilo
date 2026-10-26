@@ -49,6 +49,7 @@ pub struct ResourceKind {
     label: &'static str,
     action_type: &'static str,
     app: Option<(&'static str, &'static str)>,
+    version: u32,
     read: fn(&Doc) -> Result<Box<dyn Any>, ModelError>,
     name: fn(&dyn Any) -> Option<String>,
     publish: fn(&str, &str, &dyn Any) -> Option<tilo_actions::Resource>,
@@ -139,6 +140,7 @@ impl ResourceKind {
             label: R::LABEL,
             action_type: R::ACTION_TYPE,
             app: None,
+            version: R::VERSION,
             read: read::<R>,
             name: resource_label::<R>,
             publish: publish::<R>,
@@ -199,6 +201,13 @@ impl ResourceKind {
     /// The title of the app hosting it, when one registered it.
     pub fn app_title(&self) -> Option<&'static str> {
         self.app.map(|(_, title)| title)
+    }
+
+    /// The storage version the resource reads; an older record is brought
+    /// up to it when it opens ([`crate::evolution`]).
+    #[must_use]
+    pub fn version(&self) -> u32 {
+        self.version
     }
 
     /// The state views render, read from `doc`; downcast it to the

@@ -33,7 +33,7 @@ use ui::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::contract::{
-    AGENTS_AUDIENCE_TAG, ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, ResultSpec,
+    ActionContract, ActionKind, Audience, ConfirmationPolicy, ExecutionMode, ResultSpec,
     RetryPolicy, RiskLevel,
 };
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
@@ -317,7 +317,7 @@ pub struct Turn {
 }
 
 fn contract_of(action: &str) -> ActionContract {
-    ActionContract {
+    let mut contract = ActionContract {
         // Spending the person's model budget is an act, even though nothing
         // is edited: a read-only guest does not get to run it.
         kind: ActionKind::Undoable,
@@ -328,9 +328,12 @@ fn contract_of(action: &str) -> ActionContract {
         result: ResultSpec::Json {
             schema: result_schema_of(action),
         },
-        tags: vec![AGENTS_AUDIENCE_TAG.to_string()],
         ..ActionContract::default()
-    }
+    };
+    // A transform is what a program asks for on someone's behalf, never a
+    // row a person picks from the palette or a menu.
+    contract.set_audience(Audience::Agents);
+    contract
 }
 
 /// The transform actions, as the agent publishes them.
@@ -1197,6 +1200,10 @@ mod tests {
         assert_eq!(descriptors.len(), 5);
         for descriptor in &descriptors {
             assert!(descriptor.contract.validate_declaration().is_empty());
+            // The audience is the contract's own declaration, not a stray tag:
+            // a transform is offered to agents and never to a person's palette.
+            assert_eq!(descriptor.contract.audience(), Audience::Agents);
+            assert!(descriptor.contract.reaches_agents());
             assert!(!descriptor.contract.reaches_people());
             assert_eq!(descriptor.contract.risk, RiskLevel::Low);
             assert_eq!(descriptor.contract.confirmation, ConfirmationPolicy::None);
@@ -1214,6 +1221,14 @@ mod tests {
         };
         assert_eq!(app_id, AGENT_APP_ID);
         assert!(actions.iter().all(|action| action.resource == RESOURCE_ID));
+        // The audience crosses the publication boundary too, so the session
+        // that serves these into search leaves them out of people's listings.
+        let published: Vec<ExportedAction> = descriptors.iter().map(exported).collect();
+        assert!(
+            published
+                .iter()
+                .all(|action| !action.contract.reaches_people())
+        );
     }
 
     #[test]

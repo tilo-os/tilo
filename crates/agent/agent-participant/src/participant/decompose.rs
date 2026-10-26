@@ -333,7 +333,10 @@ impl AgentParticipant {
         }
         running.produced.clone_from(&coordinator.produced);
         running.produced_by.clone_from(&coordinator.produced_by);
-        running.last.clone_from(&coordinator.last);
+        if let Some((last, handed_on)) = &coordinator.last {
+            running.last = Some(last.clone());
+            running.last_handed_on = *handed_on;
+        }
     }
 
     /// What a plan of the running item's agent said in reply, kept for

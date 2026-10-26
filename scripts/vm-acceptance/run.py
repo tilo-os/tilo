@@ -404,6 +404,10 @@ def main() -> int:
     ap.add_argument("--outputs", default="1920x1080@1,1280x800@1.25")
     ap.add_argument("--locales", default="en,de", help="en and optionally de (a second, German slot)")
     ap.add_argument("--only", help="comma-separated check ids or areas")
+    ap.add_argument("--shard", choices=sorted(SHARDS),
+                    help="run one part of the suite (SHARDS) in a session of its own: only its areas' "
+                    "checks run, and the checks that judge the whole session (SESSION_JUDGES) judge "
+                    "this one; with none of its checks selected, nothing boots")
     ap.add_argument("--idle-seconds", type=int, default=30)
     ap.add_argument("--memory-mb", type=int, default=4608)
     ap.add_argument("--cpus", type=int, default=6)
@@ -431,6 +435,13 @@ def main() -> int:
     ap.add_argument("--runner", default="local", help="the runner class the records name")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
+    selected = select(args.only, SHARDS[args.shard] if args.shard else None)
+    if args.shard and not selected - FRAME:
+        # A part of the suite with nothing selected in it: no VM, no records, and a pass.
+        print(f"no check of shard {args.shard} is selected ({args.only or 'all'}); nothing to boot")
+        if args.records:
+            records.write(args.records, [])
+        return 0
 
     if bool(args.bootstrap_tilo_vm) != bool(args.bootstrap_from):
         ap.error("--bootstrap-tilo-vm and --bootstrap-from must be supplied together")
@@ -559,7 +570,6 @@ def main() -> int:
         de = "de" in args.locales.split(",")
         if not de:
             ctx.facts["locale_de:why"] = "the German pass was not requested (--locales)"
-        selected = select(args.only)
         by_id = {c.id: c for c in core.REGISTRY}
         german = de
         main_ids = [i for i in ORDER + list(DE_PASS) if i in selected and (i not in DE_PASS or not german)]
@@ -624,14 +634,36 @@ def main() -> int:
 
 
 PROVIDERS = {"two_windows": "W01", "workspaces": "W10"}
+# The parts of the suite t runs apart (t.toml's `shards` of vm-acceptance), each in a VM of its
+# own, by the areas whose checks they run. Every area is in exactly one; the checks that depend
+# on another's order or facts (ORDER, PROVIDERS, DE_PASS) share their part with them.
+SHARDS = {
+    "session": "provenance,resources,secrets,agent,basics",
+    "apps": "apps",
+    "window": "window,input",
+    "shell": "ui,search",
+}
+# What every run states: the image it runs, and that its slot is up.
+FRAME = {"P01", "P02"}
+# The checks that judge everything a session did rather than one area: no failed or looping
+# service, every presented frame within the render budgets, every app launch within its budget.
+# A run of some areas (--areas) has a session of its own, so they judge it too.
+SESSION_JUDGES = {"P03", "R07", "A16"}
 
 
-def select(only: str | None) -> set[str]:
+def select(only: str | None, areas: str | None = None) -> set[str]:
     ids = {c.id for c in core.REGISTRY}
     if not only:
-        return ids
-    want = {w.strip() for w in only.split(",")}
-    chosen = {c.id for c in core.REGISTRY if c.id in want or c.area in want}
+        chosen = set(ids)
+    else:
+        want = {w.strip() for w in only.split(",")}
+        chosen = {c.id for c in core.REGISTRY if c.id in want or c.area in want}
+    if areas:
+        part = {a.strip() for a in areas.split(",")}
+        chosen = {c.id for c in core.REGISTRY
+                  if c.id in chosen and (c.area in part or c.id in SESSION_JUDGES)}
+        if not chosen - SESSION_JUDGES:
+            chosen = set()
     # A check that needs a fact runs after the check that establishes it.
     for c in core.REGISTRY:
         if c.id in chosen:

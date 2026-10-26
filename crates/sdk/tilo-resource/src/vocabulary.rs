@@ -258,6 +258,17 @@ pub struct Vocabulary {
 }
 
 impl Vocabulary {
+    /// The field edit `edit` a caller sent, its path read from the record's
+    /// root ([`Edit::past_record_name`]): the record answers to the last
+    /// part of its kind and to its label.
+    pub(crate) fn rooted_edit(&self, edit: Edit<()>) -> Result<Edit<()>, String> {
+        let Some(shape) = (self.shape)() else {
+            return Ok(edit);
+        };
+        let kind = self.kind.rsplit('.').next().unwrap_or(self.kind);
+        edit.past_record_name(shape, &[kind, self.label])
+    }
+
     /// Every declaration of the resource. They depend on its type alone, so
     /// each thread builds them once per generation of app code
     /// ([`reset_type_schemas`](crate::reset_type_schemas)) and answers the

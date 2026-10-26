@@ -86,6 +86,7 @@ impl PagePrivate {
                         .map(|contact| Contact {
                             public_key: contact.public_key,
                             display_name: contact.display_name.unwrap_or_default(),
+                            conversation: contact.conversation,
                         })
                         .collect(),
                 ))

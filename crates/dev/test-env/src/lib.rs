@@ -16,6 +16,8 @@
 //!   when dropped, including while unwinding from a failed assertion.
 //! - [`TestHome`] points `HOME` and every XDG base directory at a fresh
 //!   temporary tree.
+//! - [`Fixture`] is a temporary tree a test fills with the files, documents
+//!   and workspace it starts from, for a test that needs no environment.
 //! - [`runtime_tempdir`] is a private temporary directory with a path as
 //!   short as a real runtime directory's, for tests that bind sockets.
 //! - [`lock`] is the single process-wide lock both of them hold. Every
@@ -81,6 +83,7 @@
 pub mod allocation;
 mod capability;
 mod desktop;
+mod fixture;
 pub mod hang;
 pub mod idle;
 mod own_process;
@@ -93,6 +96,7 @@ pub use capability::{bubblewrap, mount_namespace, user_namespace};
 #[cfg(unix)]
 pub use capability::{chown_to, switch_identity};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
+pub use fixture::{Fixture, WORKSPACE_DOCUMENT};
 pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, within};
 pub use own_process::in_own_process;
 

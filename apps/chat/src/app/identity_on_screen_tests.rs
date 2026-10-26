@@ -266,6 +266,7 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
     let listed = ui::person_chat::Contact {
         public_key: "ada-root".into(),
         display_name: "Swift Lynx".into(),
+        conversation: false,
     };
     let mut presence = PresenceCtx::default();
     presence.set_display_name(UserId("ada-device".into()), "Ada");

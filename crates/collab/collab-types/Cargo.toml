@@ -19,7 +19,7 @@ name = "collab_types"
 path = "src/lib.rs"
 
 # Cryptographic foundation for Tilo Spaces and Channels:
-# Identity, Attestation, Role/OpClass permission tables, SignedOp
+# Identity, Attestation, Role presets, SignedOp
 # envelope, ChannelEvent governance log, deterministic
 # canonical-bytes serialisation, Ed25519 signing primitives, and the
 # inbound-op validator. Pure types + pure functions — no I/O, no async,

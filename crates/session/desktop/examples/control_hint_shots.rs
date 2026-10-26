@@ -7,7 +7,8 @@
 //!
 //! Run:  `cargo run -p tilo-desktop --example control_hint_shots -- [OUT_DIR]`
 //! Out:  `OUT_DIR` (default `target/look/control-hints`):
-//!       `<theme>-<size>/<hint>-<moment>-<ms>.png`
+//!       `<theme>-<size>/<hint>-<moment>-<ms>.png`, with `-touch` after
+//!       the hint for a person who points by touch
 
 #![allow(
     clippy::expect_used,
@@ -95,6 +96,8 @@ struct Stage {
     hints: ControlHints,
     /// The clock the hints read, stepped by the capture.
     now: Instant,
+    /// The person points by touch.
+    touch: bool,
     rect: Rect,
 }
 
@@ -109,6 +112,7 @@ impl Stage {
             colour: Some(COLOUR),
             quiet: None,
             presented: true,
+            touch: self.touch,
         }
     }
 }
@@ -194,6 +198,8 @@ struct Moment {
     /// When it comes after the desktop opened.
     at: Duration,
     done_by: Performed,
+    /// The person points by touch.
+    touch: bool,
 }
 
 const MOMENTS: &[Moment] = &[
@@ -203,6 +209,7 @@ const MOMENTS: &[Moment] = &[
         cue: None,
         at: Duration::from_secs(17),
         done_by: Performed::OpenedSearch,
+        touch: false,
     },
     Moment {
         id: "move-window",
@@ -210,6 +217,7 @@ const MOMENTS: &[Moment] = &[
         cue: Some(Performed::OpenedWindow),
         at: Duration::ZERO,
         done_by: Performed::MovedWindow,
+        touch: false,
     },
     Moment {
         id: "resize-window",
@@ -217,6 +225,7 @@ const MOMENTS: &[Moment] = &[
         cue: None,
         at: Duration::ZERO,
         done_by: Performed::ResizedWindow,
+        touch: false,
     },
     Moment {
         id: "pan-view",
@@ -224,6 +233,15 @@ const MOMENTS: &[Moment] = &[
         cue: None,
         at: Duration::ZERO,
         done_by: Performed::PannedView,
+        touch: false,
+    },
+    Moment {
+        id: "pan-view",
+        windows: &["Chat", "Notes", "Files", "Music", "Calendar"],
+        cue: None,
+        at: Duration::ZERO,
+        done_by: Performed::PannedView,
+        touch: true,
     },
 ];
 
@@ -260,6 +278,7 @@ fn stage(moment: &Moment) -> Stage {
         handle,
         hints: ControlHints::new(learned),
         now: ui::time::now(),
+        touch: moment.touch,
         rect: Rect::ZERO,
     }
 }
@@ -305,7 +324,11 @@ fn main() {
                 let shown = start
                     .checked_add(moment.at)
                     .expect("a capture's clock stays in range");
-                let id = moment.id;
+                let id = if moment.touch {
+                    format!("{}-touch", moment.id)
+                } else {
+                    moment.id.to_owned()
+                };
                 let entrance: Vec<u64> = if full {
                     (0..=18).map(|k| k * 33).collect()
                 } else {
@@ -352,7 +375,7 @@ fn main() {
                         &dir.join(format!("{id}-done-{ms:04}.png")),
                     );
                 }
-                println!("{}", dir.join(id).display());
+                println!("{}", dir.join(&id).display());
             }
         }
     }

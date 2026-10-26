@@ -120,6 +120,9 @@ pub struct TubeApp {
     /// What the platform search last asked this window for, so its results
     /// can offer to search `YouTube` for it.
     palette_query: String,
+    /// What `YouTube` answered for the platform search's query, shown under
+    /// the row that searches it.
+    suggested: crate::suggest::Suggested,
 
     /// The user's explicit sidebar preference for this session, carried
     /// across the structural rebuilds that recreate the widget tree. `None`
@@ -245,6 +248,7 @@ impl TubeApp {
             structure_dirty: false,
             search_query: ui::LocalState::new(String::new()),
             palette_query: String::new(),
+            suggested: crate::suggest::Suggested::default(),
             sidebar_open: None,
             force_sidebar_open_shot: false,
             online: false,
@@ -329,6 +333,7 @@ impl TubeApp {
                 self.shell.toggle_sidebar();
             }
             TubeEffect::OpenVideo { video } => {
+                self.adopt_suggested(&video);
                 if self.model.video(&video).is_none() {
                     return Err("That video is no longer available".into());
                 }
@@ -1088,14 +1093,75 @@ impl TubeApp {
     /// The videos, creators, playlists and watch history shown here, as
     /// search entries.
     pub(crate) fn search_entries_of_model(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        let suggested = self.suggested.videos_for(&self.palette_query);
         let mut entries = crate::search_type::model_entries(&self.model);
+        // A video `YouTube` offers for the query shows once, under it.
+        entries.retain(|entry| {
+            !suggested.iter().any(|video| {
+                entry.anchor.as_deref() == Some(&*crate::search_type::video_anchor(&video.id))
+            })
+        });
         entries.extend(crate::search_type::query_entry(&self.palette_query));
+        entries.extend(crate::search_type::suggested_entries(
+            &self.palette_query,
+            suggested,
+            self.model.settings.dearrow_titles_on(),
+        ));
         entries
     }
 
-    /// Take the platform search's latest query.
+    /// Take the platform search's latest query, and ask `YouTube` for its
+    /// top videos when this window is live.
     pub(crate) fn follow_palette_query(&mut self, query: &str) {
         query.trim().clone_into(&mut self.palette_query);
+        if !self.online || crate::search_type::query_entry(&self.palette_query).is_none() {
+            self.suggested.awaiting = false;
+            return;
+        }
+        if self.suggested.answered(&self.palette_query) {
+            self.suggested.awaiting = false;
+            return;
+        }
+        if self.worker.is_none() {
+            self.worker = Some(crate::api::Worker::spawn(self.wake.clone()));
+        }
+        self.suggested.awaiting = self
+            .worker
+            .as_ref()
+            .is_some_and(|worker| worker.suggest(&self.palette_query));
+    }
+
+    /// Whether `YouTube` has yet to answer the platform search's query.
+    pub(crate) fn suggestions_pending(&self) -> bool {
+        self.suggested.awaiting
+    }
+
+    /// Take `YouTube`'s answer for `query`; one for a query since replaced
+    /// is dropped, so it never stands in for the newer one's.
+    pub(crate) fn take_suggestions(&mut self, query: String, videos: Vec<crate::model::Video>) {
+        if query != self.palette_query {
+            return;
+        }
+        self.suggested = crate::suggest::Suggested {
+            query,
+            videos,
+            awaiting: false,
+        };
+    }
+
+    /// Bring a video the platform search offered from `YouTube` into the
+    /// catalogue, so opening it finds it.
+    fn adopt_suggested(&mut self, video: &str) {
+        if self.model.video(video).is_some() {
+            return;
+        }
+        let Some(found) = self.suggested.videos.iter().find(|v| v.id == video) else {
+            return;
+        };
+        let found = found.clone();
+        self.model
+            .ensure_channel_stub(&found.channel_id, &found.channel_name);
+        self.model.upsert_video(found);
     }
 }
 

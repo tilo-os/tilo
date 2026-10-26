@@ -54,7 +54,7 @@ pane or a permission-specific explanation, observe the host instead of copying
 the participant's role into the shared model:
 
 ```rust
-let admin = cx.permission_state(PermissionRequirement::Admin);
+let admin = cx.govern_state();
 let owner_tools = cx.switch(&admin, |_, allowed| {
     if *allowed {
         Box::new(Text::new("app-owner-tools"))
@@ -71,8 +71,9 @@ resource edit, reopening or app-owned role tracker is needed. Custom surfaces
 can obtain the same state from their dispatcher. History views have no live
 owner authority.
 
-This is presentation state. Resource actions and effects still declare and
-enforce their own permission requirements. Keep device-private review data out
+This is presentation state. Resource actions and effects are decided by the
+host against the room's grants like any other action; they do not carry a
+permission declaration of their own. Keep device-private review data out
 of the shared resource; hiding a pane does not remove data from a replicated
 document.
 

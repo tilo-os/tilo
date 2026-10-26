@@ -361,6 +361,96 @@ fn a_guarded_field_asks_before_any_edit_and_a_weakening_one_is_privileged() {
     assert!(!need(&paths.label.set(String::new())).privileged);
 }
 
+/// The field edit setting `value` at the fields `path`, as a caller sends
+/// it.
+fn set_at<R: tilo_resource::Resource>(path: &[&str], value: &str) -> Invoke<R> {
+    let path = path
+        .iter()
+        .map(|key| tilo_resource::Segment::Field((*key).to_owned()))
+        .collect();
+    let op = tilo_resource::EditOp::Set {
+        value: serde_json::json!(value),
+    };
+    Invoke::edit(&tilo_resource::Edit::new(path, op)).unwrap()
+}
+
+/// A record read that nests its fields under the record's name is written
+/// back as `board.title`: a path starting at the record's own name (the
+/// last part of its kind, or its label) edits the field after it, through
+/// the published field edit and when built from JSON alike.
+#[test]
+fn a_field_edit_may_start_at_the_record_s_own_name() {
+    let mut board = Replica::<Board>::new();
+    board.apply(set_at(&["board", "title"], "Plan")).unwrap();
+    board.apply(set_at(&["Board", "author"], "Ada")).unwrap();
+    let state = board.state().unwrap();
+    assert_eq!(
+        (state.title.as_str(), state.author.as_str()),
+        ("Plan", "Ada")
+    );
+
+    let built = tilo_resource::build_action::<Board>(
+        tilo_resource::FIELD_EDIT,
+        &serde_json::Map::from_iter([(
+            "edit".to_owned(),
+            serde_json::json!({ "path": [{ "field": "board" }, { "field": "title" }], "op": "set", "value": "Sprint" }),
+        )]),
+        0,
+    );
+    assert!(built.is_ok(), "{built:?}");
+}
+
+/// A field edit naming no field, nor the record, still says which fields
+/// there are; one naming the record alone says to start at a field.
+#[test]
+fn a_field_edit_naming_neither_a_field_nor_the_record_lists_the_fields() {
+    let mut board = Replica::<Board>::new();
+    let unknown = format!(
+        "{:?}",
+        board.apply(set_at(&["deck", "title"], "Plan")).unwrap_err()
+    );
+    assert!(
+        unknown.contains("no field `deck`; the fields here are layer, title, author"),
+        "{unknown}"
+    );
+    let below = format!(
+        "{:?}",
+        board.apply(set_at(&["board", "deck"], "Plan")).unwrap_err()
+    );
+    assert!(
+        below.contains("no field `deck`; the fields here are"),
+        "the field after the record's name is the one refused: {below}"
+    );
+    let bare = format!("{:?}", board.apply(set_at(&["board"], "Plan")).unwrap_err());
+    assert!(
+        bare.contains("`board` is the record itself") && bare.contains("title"),
+        "{bare}"
+    );
+    assert_eq!(board.state().unwrap().title, "");
+}
+
+/// A door decides an edit's confirmation from the path as sent: a guarded
+/// field under the record's name is not edited, but sent again from the
+/// root, where the door sees which field it is.
+#[test]
+fn a_guarded_field_under_the_record_s_name_is_sent_again_from_the_root() {
+    let mut lock = Replica::<Lock>::new();
+    for field in ["minutes", "shown_name"] {
+        let refused = format!(
+            "{:?}",
+            lock.apply_confirmed(set_at(&["lock", field], "5"))
+                .unwrap_err()
+        );
+        assert!(
+            refused.contains(&format!("start the path at `{field}`")),
+            "{refused}"
+        );
+    }
+    lock.apply(set_at(&["lock", "label"], "Desk")).unwrap();
+    let state = lock.state().unwrap();
+    assert_eq!((state.minutes, state.label.as_str()), (0, "Desk"));
+}
+
 /// A screen whose lock delay weakens when longer (`0` is never) and whose
 /// notifications on the lock screen weaken it when shown.
 #[derive(Model, Default, Debug, Clone, PartialEq)]

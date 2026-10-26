@@ -33,6 +33,9 @@ pub struct HintPlace {
     /// where its gesture leads (search, which no control on screen opens)
     /// points at nothing.
     pub points: bool,
+    /// The person points by touch: the picture shows a finger on the
+    /// screen rather than a pointer or a touchpad.
+    pub touch: bool,
 }
 
 /// What the host's frame says about the person and the screen.
@@ -225,6 +228,7 @@ impl<S: Copy + PartialEq + 'static> HintLayer<S> {
         let colours = Look::of(person, theme);
         let contents = Contents {
             gesture: spec.gesture,
+            touch: placed.place.touch,
             words: &placed.place.words,
             keys: &placed.place.keys,
         };

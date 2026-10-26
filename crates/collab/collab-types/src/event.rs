@@ -3,7 +3,7 @@
 //! Every channel-level governance action (genesis, attestation
 //! issuance/revocation, ownership transfer, rename, settings update) is
 //! recorded as a `ChannelEvent`. Peers replay the event log to
-//! reconstruct the channel's current role table; the validator consults
+//! reconstruct the channel's grants; the validator consults
 //! that state to decide whether an inbound `SignedOp` is valid.
 //!
 //! Each variant carries its own `signature`, produced by a per-variant
@@ -119,7 +119,7 @@ pub enum ChannelEvent {
         welcome: Vec<u8>,
         /// Identity that issued the addition — must be authorised to add members
         /// (channel owner, or a delegate holding an equivalent `Govern` grant;
-        /// enforced via the role table on replay).
+        /// enforced against the author's grants on replay).
         signed_by: Ed25519PublicKey,
         /// Detached signature by `signed_by` over the canonical view minus this field.
         signature: Signature,

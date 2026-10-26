@@ -502,7 +502,7 @@ pub const EDIT_PARAM: &str = "edit";
 
 /// Read a field edit given as JSON into the action it is.
 fn read_edit(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built, String> {
-    let edit = Edit::<()>::from_json(value)?;
+    let edit = vocabulary.rooted_edit(Edit::<()>::from_json(value)?)?;
     match (vocabulary.edit)(edit) {
         Some(action) => Ok(action),
         None => Err(format!("{} has no field edits", vocabulary.label)),

@@ -57,6 +57,7 @@ impl ShellOverlayHost {
             quiet: self.control_hints_quiet(now),
             // Setup owns the screen until the person reaches the desktop.
             presented: !self.onboarding_active(),
+            touch: self.interaction.pointer_precision == ui::PointerPrecision::Coarse,
         }
     }
 

@@ -49,6 +49,7 @@ mod rows;
 pub mod sample;
 pub mod screens;
 pub mod search_type;
+pub mod suggest;
 pub mod sync;
 pub mod util;
 pub mod widgets;

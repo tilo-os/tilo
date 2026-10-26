@@ -326,7 +326,8 @@ that an unpublished local-only report
 cannot return a receipt. A second fixture admits a separate person as Commenter:
 they file through the owner, get the signed receipt at once, file again without a
 second report, and are refused triage, which needs Write. Raw document frames
-still need Write (`OpClass::Splice`); filing never publishes one as the reporter.
+still need a grant for the change they claim; filing never publishes one as
+the reporter.
 
 Private component paints propagate declared capture protection through the
 existing `SecretPaint` boundary. The browser binds protection to the scene only

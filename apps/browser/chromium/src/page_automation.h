@@ -213,7 +213,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // A held file chooser waits this long for `fill_files`, then is cancelled so
   // the page is never left waiting on input that will not come.
   static constexpr int64_t kFileDialogWaitMs=60000;
-  enum class Stage { FrameTree, World, FrameOffset, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, Evaluate, Fence, GestureBegin, Path, Hover, Pointer, GestureEnd, FrameSettle, Scroll };
+  enum class Stage { FrameTree, World, FrameOffset, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, TypeKey, FillTyped, Evaluate, Fence, GestureBegin, Path, Hover, Pointer, GestureEnd, FrameSettle, Scroll };
   // A gesture's own stages are numbered above every page stage, so one kind of
   // stage never stands for the other.
   enum class GestureStage { Tree, World, Locate, Place, PlaceWorld };
@@ -224,6 +224,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   static constexpr int Gesture(GestureStage stage) { return kGestureBase+static_cast<int>(stage)+1; }
   // Long enough for hover, the press and the drop to paint what they set.
   static constexpr int64_t kPointerFrameMs=60;
+  // The most lines one fill into a region types, so one action stays bounded.
+  static constexpr size_t kMaxFillRuns=2000;
+  // Long enough for one key of a typed fill to reach the page and be handled
+  // before the next is sent, as a person's keys arrive one at a time.
+  static constexpr int64_t kTypeKeyMs=8;
+  // Long enough for the edit that emptied the region to settle before the first
+  // key is sent.
+  static constexpr int64_t kTypeStartMs=120;
   struct TextFrame { std::string id,loader;int world=0,document=0;bool same_origin=true; };
   struct Pending {
     // Named, so an aggregate initializer names each field once: a member added
@@ -1137,6 +1145,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
         pending_->retried=true;Begin();return;
       }
       if(At(Stage::FrameOffset)) { FrameOffsetResult(success,result);return; }
+      if(At(Stage::FillTyped)) { FillTypedResult(success,result);return; }
 
       auto remote=result?result->GetDictionary("result"):nullptr;
       auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
@@ -1497,6 +1506,11 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(PrivateText() && (action=="cancel_text_input" || action=="commit_text_input" || action=="undo_text_input" || action=="redo_text_input")) { text_owner_.reset();text_lease_.clear(); }
     // An edit runs the page's input handlers.
     if(action=="commit_text_input" || action=="undo_text_input" || action=="redo_text_input") pending_->navigation="possible";
+    // A fill may end in a key that submits the form it is in.
+    if(action=="fill" || action=="fill_secret") pending_->navigation="possible";
+    // A fill is answered by what it left behind, and by the typing when a
+    // region has to be written key by key.
+    if(action=="fill") { FillResult(value);return; }
     // A read runs none of the page's code, so it cannot have led anywhere.
     if(action=="outline" || action=="changes") { pending_->navigation="none";Succeed(Text(value,"message"),Text(value,"outline"));return; }
     if(action=="fill_files") { FileTarget(value);return; }
@@ -1526,6 +1540,98 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     params->SetBool("awaitPromise",true);params->SetBool("silent",true);
     Call(Stage::Fence,"Runtime.evaluate",params);
   }
+  // What the fill left behind. A field answers as it always has. A region the
+  // page kept as it was given is written again as typing (see `TypeFill`); a
+  // region whose own editor changed it says what it holds instead, so the
+  // fill never claims a text the page is not showing.
+  void FillResult(CefRefPtr<CefDictionaryValue> value) {
+    if(value->GetType("input")!=VTYPE_LIST) { Succeed(Text(value,"message"),std::nullopt);return; }
+    if(value->GetType("kept")==VTYPE_BOOL && value->GetBool("kept")) { TypeFill(value);return; }
+    const auto shown=value->GetType("shown")==VTYPE_STRING?value->GetString("shown").ToString():std::string();
+    const auto asked=pending_->command->GetString("text").ToString();
+    if(shown==asked) { Fail("rejected",Text(pending_->command,"element")+" did not take the text");return; }
+    Fail("rejected",Text(pending_->command,"element")+" did not take the text; it holds \""+
+      CefString(shown.substr(0,200)).ToString()+"\"");
+  }
+  // A fill into a contenteditable region is written as a person writes it:
+  // the region was emptied, and its lines are typed through the browser's own
+  // key input. Only keys ask the page first, with beforeinput, so an editor
+  // that keeps its own model (ProseMirror, Quill and the like) hears the edit
+  // it would hear from the keyboard and writes the text itself.
+  void TypeFill(CefRefPtr<CefDictionaryValue> value) {
+    const auto runs=value->GetList("input");
+    if(!runs || runs->GetSize()==0 || runs->GetSize()>kMaxFillRuns) {
+      Fail("rejected","The field did not keep the edited text");return;
+    }
+    for(size_t run=0;run<runs->GetSize();++run)
+      if(runs->GetType(run)!=VTYPE_STRING) { Fail("rejected","The field did not keep the edited text");return; }
+    // The region is empty and focused, its caret where its text was: what the
+    // keys write is what it holds afterwards.
+    auto region=CefDictionaryValue::Create();
+    region->SetList("lines",runs->Copy());
+    region->SetInt("run",0);region->SetInt("offset",0);
+    pending_->command->SetDictionary("typed",region);
+    // The edit that emptied the region has not settled in the page yet, so the
+    // first key waits a turn, as a person's first key follows their selection.
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) {
+      if(self->pending_) self->TypeStep();
+    },CefRefPtr<PageAutomation>(this)),kTypeStartMs);
+  }
+  // One step: a key at a time while the run has text left, and then the Enter
+  // that starts the next line the way a key press would.
+  void TypeStep() {
+    auto region=pending_->command->GetDictionary("typed");
+    if(!region) { Fail("rejected","The field did not keep the edited text");return; }
+    const int run=region->GetInt("run");
+    const CefRefPtr<CefListValue> lines=region->GetList("lines");
+    if(run>=static_cast<int>(lines->GetSize())) { Typed();return; }
+    const std::u16string line=lines->GetString(run).ToString16();
+    auto offset=static_cast<size_t>(region->GetInt("offset"));
+    // Every line after the first starts the way a person starts it: with Enter.
+    if(offset>=line.size()) {
+      // The run is typed; the next one starts with Enter, and the last one
+      // ends the fill without a line after it.
+      if(run+1>=static_cast<int>(lines->GetSize())) { Typed();return; }
+      region->SetInt("run",run+1);region->SetInt("offset",0);
+      TypeKey(CefDictionaryValue::Create(),"",true);return;
+    }
+    const char16_t unit=line[offset];
+    const bool pair=unit>=0xd800 && unit<=0xdbff && offset+1<line.size() && line[offset+1]>=0xdc00 && line[offset+1]<=0xdfff;
+    const size_t width=pair?2:1;
+    region->SetInt("offset",static_cast<int>(offset+width));
+    TypeKey(CefDictionaryValue::Create(),CefString(line.substr(offset,width)).ToString(),false);
+  }
+  // One key of that typing, sent from the next turn of the loop: a key sent
+  // while a DevTools call of this step is answering is not one the page can
+  // count on, and the page handles each key before the next is sent.
+  void TypeKey(CefRefPtr<CefDictionaryValue> key,const std::string& text,bool enter) {
+    key->SetBool("typed",true);key->SetString("text",text);key->SetBool("enter",enter);
+    for(const char* flag:{"ctrl","shift","alt","meta"}) key->SetBool(flag,false);
+    key_(key);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) {
+      if(self->pending_) self->TypeStep();
+    },CefRefPtr<PageAutomation>(this)),kTypeKeyMs);
+  }
+  void Typed() {
+    auto params=CefDictionaryValue::Create();
+    auto region=CefValue::Create();region->SetDictionary(pending_->command->GetDictionary("typed"));
+    params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.typed("+
+      CefWriteJSON(region,JSON_WRITER_DEFAULT).ToString()+")");
+    params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("silent",true);
+    Call(Stage::FillTyped,"Runtime.evaluate",params);
+  }
+  void FillTypedResult(bool success,CefRefPtr<CefDictionaryValue> result) {
+    auto remote=success && result?result->GetDictionary("result"):nullptr;
+    auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
+    if(!value || value->GetType("ok")!=VTYPE_BOOL || !value->GetBool("ok")) {
+      Fail(value && value->GetType("code")==VTYPE_STRING?value->GetString("code").ToString():"rejected",
+        value && value->GetType("message")==VTYPE_STRING?value->GetString("message").ToString()
+          :"The field did not keep the edited text");return;
+    }
+    Succeed(Text(value,"message"),std::nullopt);
+  }
+  // The page's code has run and the fill into its region has finished: what
+  // the page did with it, if anything, is what the caller is told.
   void Fenced(const std::string& navigation) {
     pending_->navigation=navigation=="started"?"started":"possible";
     // A click that opened the page's file chooser is held, not shown: say so,

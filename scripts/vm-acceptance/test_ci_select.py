@@ -10,6 +10,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ci_select import select  # noqa: E402
+import importlib.util  # noqa: E402
+import tomllib  # noqa: E402
+
+HERE = Path(__file__).resolve().parent
+_spec = importlib.util.spec_from_file_location("acceptance_run_shards", HERE / "run.py")
+run = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(run)
 
 S = "scripts/vm-acceptance/"
 
@@ -55,6 +62,33 @@ class SelectTest(unittest.TestCase):
 
     def test_a_removed_check_module_runs_everything(self):
         self.assertEqual(select([S + "acceptance/checks/gone.py"]), "")
+
+
+class ShardTest(unittest.TestCase):
+    """t runs vm-acceptance's shards apart; together they are the whole suite."""
+
+    def test_the_shards_are_t_tomls_and_cover_every_area_once(self):
+        checks = {c["name"]: c for c in tomllib.loads((HERE.parents[1] / "t.toml").read_text())["check"]}
+        self.assertEqual(checks["vm-acceptance"]["shards"], list(run.SHARDS))
+        areas = [a for part in run.SHARDS.values() for a in part.split(",")]
+        self.assertEqual(sorted(areas), sorted(run.core.AREAS))
+
+    def test_a_shard_runs_its_areas_and_judges_its_own_session(self):
+        window = run.select(None, run.SHARDS["window"])
+        self.assertIn("W01", window)
+        self.assertIn("I01", window)
+        self.assertNotIn("A01", window)
+        self.assertLessEqual(run.SESSION_JUDGES | run.FRAME, window)
+        self.assertNotIn("R05", window)
+        every = set().union(*(run.select(None, part) for part in run.SHARDS.values()))
+        self.assertEqual(every, run.select(None))
+
+    def test_a_shard_with_nothing_selected_runs_nothing_but_its_frame(self):
+        self.assertEqual(run.select("W01", run.SHARDS["apps"]), run.FRAME)
+        self.assertEqual(run.select("apps", run.SHARDS["session"]), run.FRAME)
+        self.assertEqual(run.select("provenance", run.SHARDS["session"]), {"P01", "P02", "P03"})
+        self.assertEqual(run.select("W03", run.SHARDS["window"]) - run.SESSION_JUDGES - run.FRAME,
+                         {"W01", "W03"})
 
 
 if __name__ == "__main__":

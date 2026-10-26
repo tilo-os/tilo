@@ -92,17 +92,14 @@ impl AgentParticipant {
             })
             .cloned()
             .collect();
-        let about = if named.is_empty() {
+        let mut about = if named.is_empty() {
             open.iter().map(|(route, _)| route.clone()).collect()
         } else {
             open.retain(|(route, _)| named.contains(route));
             named
         };
         let others = self.set_aside_others_documents(&naming, &touched, &mut open, &mut known);
-        let about: Vec<DocumentRoute> = about
-            .into_iter()
-            .filter(|route| !others.contains(route))
-            .collect();
+        about.retain(|route| !others.contains(route));
         // Only an app of which the room has no record yet: where it has
         // one, a task about the app may well mean it ("add a sheet"), and
         // is offered to open it rather than to start another. Others'
@@ -160,6 +157,8 @@ impl AgentParticipant {
             searchable,
             may_plan_nothing: false,
             pictures,
+            // Filled where a plan of the running task is asked for.
+            read_pictures: Vec::new(),
             rendered,
             room_pictures: self.room_pictures == crate::vision::RoomPictures::Shown,
             new_documents: self.new_documents(),

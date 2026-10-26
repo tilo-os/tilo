@@ -20,6 +20,7 @@ static SPECS: &[HintSpec<Sig>] = &[
         learned_by: &[Sig::Opened],
         gesture: Gesture::OpenFromSearch,
         words: "open",
+        touch_words: None,
     },
     HintSpec {
         id: "move",
@@ -28,6 +29,7 @@ static SPECS: &[HintSpec<Sig>] = &[
         learned_by: &[Sig::Moved],
         gesture: Gesture::MoveWindow,
         words: "move",
+        touch_words: None,
     },
     HintSpec {
         id: "resize",
@@ -36,6 +38,7 @@ static SPECS: &[HintSpec<Sig>] = &[
         learned_by: &[],
         gesture: Gesture::ResizeEdge,
         words: "resize",
+        touch_words: None,
     },
 ];
 

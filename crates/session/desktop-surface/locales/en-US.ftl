@@ -129,7 +129,8 @@ profile-control-hints = Show control hints
 control-hint-open = Open anything
 control-hint-move = Drag to move
 control-hint-resize = Drag to resize
-control-hint-pan = Drag empty space
+control-hint-pan = Scroll sideways
+control-hint-pan-touch = Swipe left or right
 
 # Workspace activity
 a11y-shell-workspace-activity = Workspace activity

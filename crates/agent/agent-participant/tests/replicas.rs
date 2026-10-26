@@ -17,6 +17,51 @@ use tilo_agent_participant::{Replica, Seed};
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
 #[test]
+fn a_record_kept_at_an_older_storage_version_opens_and_is_brought_up() {
+    use ui::tilo_resource::evolution::{VERSION_KEY, stored_version};
+    let catalogue = catalogue();
+    let app = "so.tilo.chat";
+    let mut page = Replica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "ada",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let Some(DocumentMutation::Snapshot(snapshot)) = page.take_mutation() else {
+        panic!("a new record is published whole");
+    };
+    let mut kept = automerge::AutoCommit::load(&snapshot).unwrap();
+    let current = stored_version(&kept);
+    assert!(current > 1, "Chat has changed its storage");
+    automerge::transaction::Transactable::put(
+        &mut kept,
+        automerge::ROOT,
+        VERSION_KEY,
+        automerge::ScalarValue::Uint(u64::from(current - 1)),
+    )
+    .unwrap();
+
+    // A host, a bot or an agent opens what the room kept: it is brought up
+    // to the app's version as a window brings it up.
+    let held = Replica::open(
+        &catalogue,
+        app,
+        ROOM,
+        "host",
+        tilo_agent_participant::ReplicaActor::Owner,
+        Seed::Existing {
+            record: page.record_id().clone(),
+            changes: vec![kept.save()],
+        },
+    )
+    .expect("an older record opens");
+    assert_eq!(held.read(stored_version), Some(current));
+}
+
+#[test]
 fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
     use ui::permissions::{PermissionContext, Role};
     let catalogue = catalogue();
