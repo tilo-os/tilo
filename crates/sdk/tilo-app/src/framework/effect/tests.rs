@@ -252,6 +252,60 @@ fn cancelling_a_job_stops_its_worker_and_drops_its_result() {
 }
 
 #[test]
+fn a_job_left_to_answer_later_stops_when_its_caller_gives_up() {
+    // A window that keeps a reply answers it after its handler returned, so
+    // the caller stops waiting on the reply's own signal. The job that reply
+    // started must hear it: otherwise a page action nobody waits for runs to
+    // its deadline in a tab nobody is reading.
+    let mut runner = runner();
+    let invocation = InvocationId::new();
+    let payload = payload(&Work::Count);
+    let op = ResourceOperation::local(
+        invocation,
+        tilo_actions::OperationKind::Effect,
+        Work::OPERATION,
+        &payload,
+    );
+    let caller = Arc::new(AtomicBool::new(false));
+    let (stopped, observed) = channel();
+    let worker = Arc::clone(&caller);
+    let started = runner
+        .start(&op, &mut (), None, |(), _, cx| {
+            cx.cancel_by(Arc::clone(&worker));
+            Ok(cx.thread(
+                move |progress| {
+                    while !progress.is_cancelled() {
+                        std::thread::yield_now();
+                    }
+                    let _ = stopped.send(());
+                    7
+                },
+                |(), count: i32, _| Ok(Effected::value(count)),
+            ))
+        })
+        .unwrap();
+    assert!(matches!(started, Some(ResourceOperationStart::Accepted)));
+    assert!(runner.poll(invocation, false, &mut ()).is_none());
+    // The caller gives up: the signal it owns is set, not the runner's.
+    caller.store(true, Ordering::Release);
+    assert!(matches!(
+        runner.poll(invocation, false, &mut ()),
+        Some(InvocationUpdate::Cancelled { .. })
+    ));
+    assert!(
+        !matches!(
+            observed.recv_timeout(tilo_test_env::hang_bound()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ),
+        "the job stops when its caller gives up"
+    );
+    assert!(
+        runner.poll(invocation, false, &mut ()).is_none(),
+        "the stopped job's result is dropped"
+    );
+}
+
+#[test]
 fn a_failed_handler_cancels_the_job_it_already_started() {
     let mut runner = runner();
     let invocation = InvocationId::new();
