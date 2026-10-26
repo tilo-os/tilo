@@ -7047,6 +7047,25 @@ impl CapnpBrokerState {
             }
             collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
         };
+        // A room that seals its records takes every write encrypted under
+        // the record channel's keys. An unencrypted one is refused here, on
+        // the device that wrote it, and never reaches the room.
+        if envelope.encryption.is_none()
+            && self
+                .services
+                .committed_documents
+                .as_ref()
+                .is_some_and(|service| service.seals_records(&route.cluster_id))
+        {
+            tracing::warn!(
+                app = %route.app_id,
+                room = %route.cluster_id,
+                "an unencrypted write to a sealed room was refused"
+            );
+            return Err(capnp::Error::failed(
+                "this room seals every write: an unencrypted write is refused".into(),
+            ));
+        }
         let broker_channels = self.broker_channels.lock().map_err(|_| {
             capnp::Error::failed("collaboration governance state is unavailable".into())
         })?;

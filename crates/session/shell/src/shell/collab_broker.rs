@@ -169,6 +169,40 @@ impl BrokerHandle {
         self.channel_encryption.clone()
     }
 
+    /// The channel keys this session's identity service hands an app, for
+    /// an app connected with an explicit endpoint identity
+    /// ([`ui::collaboration::CertifiedEndpointIdentity::with_channel_keys`]):
+    /// what its writes are encrypted under, as a launched app's are.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn endpoint_channel_keys(&self) -> ui::collaboration::EndpointChannelKeys {
+        use tilo_identity_host::broker::ChannelKeySource as _;
+        let keys = session_channel_keys(self.channel_encryption.clone());
+        Arc::new(
+            move |workspace_id: &str, app_id: &str, record_id: &str, generation: u64| {
+                let unavailable = |why: String| {
+                    runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::other(why))
+                };
+                let room = crate::shell::state::RoomId::parse(workspace_id)
+                    .ok_or_else(|| unavailable(format!("{workspace_id} is not a room")))?;
+                let route = collab_types::ChannelRoute::new(app_id, record_id);
+                let (access, generation, bytes) = match keys.access(room, &route, generation) {
+                    Some(Ok(answer)) => answer,
+                    Some(Err(error)) => return Err(unavailable(error)),
+                    None => (
+                        runtime_identity::wire::ChannelAccess::Unavailable,
+                        generation,
+                        Vec::new(),
+                    ),
+                };
+                Ok(runtime_identity::wire::ChannelKeysReply {
+                    access,
+                    generation,
+                    keys: (!bytes.is_empty()).then_some(bytes),
+                })
+            },
+        )
+    }
+
     pub(crate) fn local_session_lifecycle(
         &self,
     ) -> crate::shell::collab_broker_capnp::LocalSessionLifecycle {

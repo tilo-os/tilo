@@ -152,6 +152,8 @@ pub enum Request {
     },
     /// Original authenticated principal and exact channel route; no caller claims.
     ConnectionSnapshot,
+    /// How this channel's writes travel: answered [`Reply::Writes`].
+    Writes,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reply {
@@ -199,6 +201,13 @@ pub enum Reply {
         token: [u8; 16],
     },
     ConnectionSnapshot(ConnectionSnapshot),
+    /// The answer to [`Request::Writes`]. `sealed`: the record's room seals
+    /// every write under its channel's keys, so the app encrypts each one
+    /// and a write it cannot encrypt is refused, never sent as written.
+    /// Otherwise the room's owner commits the writes as they are.
+    Writes {
+        sealed: bool,
+    },
 }
 impl Request {
     /// Encode a valid request for the wire.
@@ -232,6 +241,7 @@ impl Request {
         match self {
             Self::Open { .. }
             | Self::ConnectionSnapshot
+            | Self::Writes
             | Self::PrivateWindowBinding
             | Self::Await { .. }
             | Self::OpenChanges { .. } => true,
