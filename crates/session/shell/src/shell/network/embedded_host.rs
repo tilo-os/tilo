@@ -51,8 +51,9 @@ pub(super) struct State {
     /// This device's host, shared with the actor; `None` for a network
     /// without a router of its own (tests).
     host: Option<LocalHost>,
-    /// Held while the host opens, so it opens once.
-    opening: Mutex<()>,
+    /// Held while the host opens, so it opens once: by a task on the
+    /// network's runtime, however the opening was asked.
+    opening: Arc<tokio::sync::Mutex<()>>,
     /// Rooms being placed now, so a second pass leaves them alone.
     placing: Mutex<BTreeSet<RoomId>>,
     /// A placement pass is queued on the peer-sync worker and has not run.
@@ -88,6 +89,34 @@ impl State {
             host: Some(host),
             ..Self::default()
         }
+    }
+}
+
+/// Everything opening this device's host takes ([`ShellNetwork::local_host`]).
+struct HostOpening {
+    handle: LocalHost,
+    lock: Arc<tokio::sync::Mutex<()>>,
+    config: HostConfig,
+    identity: room_host::HostIdentity,
+    endpoint: iroh::Endpoint,
+}
+
+/// The opening of this device's host, held by the caller that opened it
+/// until its rooms are governed.
+type OpeningHeld = tokio::sync::OwnedMutexGuard<()>;
+
+impl HostOpening {
+    /// The host, opened now unless another caller opened it first; the
+    /// held opening when this call opened it.
+    async fn open(self) -> Result<(Arc<RoomHost>, Option<OpeningHeld>), String> {
+        let held = self.lock.lock_owned().await;
+        if let Some(host) = self.handle.get() {
+            return Ok((host, None));
+        }
+        let host = RoomHost::open(self.config, self.identity, self.endpoint)
+            .await
+            .map_err(|error| format!("this device's room host did not open: {error}"))?;
+        Ok((self.handle.install(Arc::new(host)), Some(held)))
     }
 }
 
@@ -169,6 +198,11 @@ impl ShellNetwork {
     /// opens the room's records with. `None` for a room hosted elsewhere, or
     /// while the host is not open. Blocks on the host: call it off the frame
     /// loop.
+    ///
+    /// The steward answers on this network's runtime, never on the caller's
+    /// thread: the broker asks from its connections' own runtime, where
+    /// entering another runtime to wait panics and takes the asking app's
+    /// connection with it.
     pub(crate) fn hosted_channel_keys(
         &self,
         room: RoomId,
@@ -187,12 +221,19 @@ impl ShellNetwork {
             Ok(runtime) => runtime,
             Err(error) => return Some(Err(error)),
         };
-        runtime.block_on(host.rooms().steward_channel_keys(
-            &room.to_string(),
-            channel,
-            route,
-            create,
-        ))
+        let (room, route) = (room.to_string(), route.cloned());
+        let (answer, answered) = std::sync::mpsc::sync_channel(1);
+        runtime.spawn(async move {
+            let keys = host
+                .rooms()
+                .steward_channel_keys(&room, channel, route.as_ref(), create)
+                .await;
+            let _ = answer.send(keys);
+        });
+        // The task ends without answering only when the runtime shuts down.
+        answered
+            .recv()
+            .unwrap_or_else(|_| Some(Err("this device's network stopped".into())))
     }
 
     /// Whether this device's own host holds `room`, as the native owner,
@@ -238,25 +279,35 @@ impl ShellNetwork {
         }
     }
 
-    /// This device's host, opened now when it is not open yet. Blocks on
-    /// the disk: call it off the frame loop.
+    /// This device's host, opened now when it is not open yet. Waits for
+    /// the disk on the network's runtime ([`Self::wait_on`]): call it from
+    /// a thread that may block, never from a task.
     pub(super) fn local_host(&self) -> Result<Arc<RoomHost>, String> {
+        if let Some(host) = self.room_host() {
+            return Ok(host);
+        }
+        let (host, opened) = self.wait_on(self.host_opening()?.open())??;
+        Ok(self.host_opened(host, opened))
+    }
+
+    /// [`Self::local_host`] for a task on the network's runtime: the same
+    /// opening, awaited.
+    async fn local_host_awaited(&self) -> Result<Arc<RoomHost>, String> {
+        if let Some(host) = self.room_host() {
+            return Ok(host);
+        }
+        let (host, opened) = self.host_opening()?.open().await?;
+        Ok(self.host_opened(host, opened))
+    }
+
+    /// Everything opening this device's host takes, owned, so it opens on
+    /// the network's runtime.
+    fn host_opening(&self) -> Result<HostOpening, String> {
         let handle = self
             .embedded_host
             .host
-            .as_ref()
+            .clone()
             .ok_or("this device hosts no rooms")?;
-        if let Some(host) = handle.get() {
-            return Ok(host);
-        }
-        let _opening = self
-            .embedded_host
-            .opening
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(host) = handle.get() {
-            return Ok(host);
-        }
         let root = self.host_state_root()?;
         let identity = self
             .host_identity
@@ -273,18 +324,27 @@ impl ShellNetwork {
                 .insert(entry)
                 .map_err(|error| error.to_string())?;
         }
-        let config = HostConfig::new(root, HostMode::Device);
-        let host_identity = room_host::HostIdentity {
-            user_public_key: certificate.user_public_key,
-            device_signing_key: identity.device_signing_key.clone(),
-            device_cert: certificate,
-            revocations,
+        Ok(HostOpening {
+            handle,
+            lock: Arc::clone(&self.embedded_host.opening),
+            config: HostConfig::new(root, HostMode::Device),
+            identity: room_host::HostIdentity {
+                user_public_key: certificate.user_public_key,
+                device_signing_key: identity.device_signing_key.clone(),
+                device_cert: certificate,
+                revocations,
+            },
+            endpoint,
+        })
+    }
+
+    /// The host [`HostOpening::open`] answered; when this call opened it,
+    /// its rooms are governed and joined from here on. The opening stays
+    /// held until then, so no caller gets the host before.
+    fn host_opened(&self, host: Arc<RoomHost>, opened: Option<OpeningHeld>) -> Arc<RoomHost> {
+        let Some(_held) = opened else {
+            return host;
         };
-        let host = self
-            .runtime_handle()?
-            .block_on(RoomHost::open(config, host_identity, endpoint))
-            .map_err(|error| format!("this device's room host did not open: {error}"))?;
-        let host = handle.install(Arc::new(host));
         tracing::info!("this device's room host is open");
         self.embedded_host
             .host_generation
@@ -294,7 +354,7 @@ impl ShellNetwork {
         }
         // The rooms hosted here that the native owner holds join now.
         let _ = self.cmd_tx.try_send(NetCmd::LocalHostReady);
-        Ok(host)
+        host
     }
 
     /// Run the host operation `action` with `arguments` at this device's own
@@ -329,7 +389,7 @@ impl ShellNetwork {
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
-        let host = self.local_host()?;
+        let host = self.local_host_awaited().await?;
         let identity = self
             .host_identity
             .as_ref()
@@ -605,11 +665,10 @@ impl ShellNetwork {
         let ws = personal_continuity_topic_id(&certificate.user_public_key);
         // A placement cut short after the host made the room goes on from
         // there: the room it is, never another.
-        let held = self
-            .runtime_handle()?
-            .block_on(host.rooms().summary(&room.to_string()))
-            .is_ok();
-        drop(host);
+        let held = self.wait_on({
+            let room = room.to_string();
+            async move { host.rooms().summary(&room).await.is_ok() }
+        })?;
         if !held {
             let created: CreatedRoom = relay_rooms::answer_of(self.local_host_action(
                 ws,
@@ -741,7 +800,7 @@ fn serve_in_process(
     invoke: tilo_actions::remote::InvokeRequest,
 ) -> Result<serde_json::Value, String> {
     let pending = serve_in_process_pending(host, identity, ws, invoke)?;
-    receipt_of(runtime.block_on(pending))
+    receipt_of(super::native_enrollment::wait_on_runtime(runtime, pending)?)
 }
 
 /// Ask this device's open `host` `invoke` as this device, in process: the

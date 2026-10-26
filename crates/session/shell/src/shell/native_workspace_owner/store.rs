@@ -335,6 +335,15 @@ impl NativeStateRuntime {
         }
         Ok(())
     }
+    /// Write nothing more, once any write in progress has finished: the
+    /// state file stays as this writer last left it, as at the end of the
+    /// process that held it. For a test that starts a device again in the
+    /// same process, where the old session's work can outlive it.
+    #[cfg(test)]
+    pub(crate) fn close_for_shutdown(&self) {
+        let _writer = self.0.writer.lock();
+        self.0.healthy.store(false, Ordering::Release);
+    }
     pub(super) fn healthy(&self) -> bool {
         self.0.healthy.load(Ordering::Acquire)
     }
