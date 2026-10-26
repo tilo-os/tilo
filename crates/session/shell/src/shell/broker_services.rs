@@ -150,6 +150,12 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
         super::state::RoomId::parse(room)
             .is_some_and(|room| self.tree.read().commits_native_documents(room))
     }
+    /// A held room's effect receipts are its governance, whichever model its
+    /// records follow: committed here when this device governs it, or at the
+    /// host that governs it ([`Committed::Elsewhere`]).
+    fn records_effects(&self, room: &str) -> bool {
+        super::state::RoomId::parse(room).is_some_and(|room| self.tree.read().projects_room(room))
+    }
     fn health(&self) -> Result<(), String> {
         self.opened_owner("native durable owner unavailable")?
             .health()
@@ -358,6 +364,20 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 super::launcher::native_app_open_access(&owner, room, certificate, app)
             })
             .is_ok_and(|access| access == super::launcher::NativeAppOpenAccess::Delegate)
+    }
+
+    /// A held room whose admitted governor is this device: its checkpoints
+    /// are this device's custody, sealed records or not.
+    fn keeps_checkpoints(&self, room: &str) -> bool {
+        let Some(room) = super::state::RoomId::parse(room) else {
+            return false;
+        };
+        if !self.tree.read().projects_room(room) {
+            return false;
+        }
+        self.opened_owner("native checkpoint governor unavailable")
+            .and_then(|owner| owner.with_current(room, |view| Ok(view.device() == view.governor())))
+            .unwrap_or(false)
     }
 
     /// A room this device's own host serves: what an app opening there needs
