@@ -164,6 +164,54 @@ fn a_published_action_builds_the_planned_dyn_action() {
     assert!(publish_package(&meta, &planner).actions.is_empty());
 }
 
+/// A parameter of another app's record type (`list: todo.TodoList` in a package that uses the
+/// todo app) is a resource id, as one of the package's own records is: the door takes text for
+/// it and says what kind of resource it names. Published as an array, no caller could pass one.
+#[test]
+fn a_parameter_of_another_apps_record_is_a_resource_id() {
+    const BOARD: &str = r#"app so.tilo.board "Board"
+
+use so.tilo.todo as todo
+
+type Board {
+  list: Option<todo.TodoList>
+}
+
+root Board
+
+default view main for Board
+
+view main(b: Board) {
+  page {
+    text("Board")
+  }
+}
+
+action attach(b: Board, list: todo.TodoList) {
+  b.list = .some(list)
+}
+"#;
+    let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, ""), (BOARD, "")]);
+    let meta = &packages[1].meta;
+    let planner: Arc<dyn Planner> = Arc::new(Recording);
+    let resource = publish_record(&ActionTypes::new(meta, &planner), "Board", "b1", "Board");
+    let attach = meta.actions.iter().find(|a| a.name == "attach").unwrap();
+    let spec = resource
+        .actions
+        .iter()
+        .find(|spec| spec.id == attach.id)
+        .unwrap();
+    let list = spec
+        .params()
+        .iter()
+        .find(|param| &*param.name == "list")
+        .unwrap();
+    assert_eq!(list.ty, tilo_actions::ParamType::Text);
+    let schema = list.schema.as_deref().unwrap();
+    assert_eq!(schema["type"], "string");
+    assert_eq!(schema["resource_kind"], "tl.so.tilo.todo.TodoList");
+}
+
 #[test]
 fn the_host_surface_declares_the_commit() {
     let surface = host_surface();
