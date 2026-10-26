@@ -104,5 +104,40 @@ class SessionGuardTest(unittest.TestCase):
         self.assertEqual(vm.calls, [])
 
 
+
+class KeepAwakeTest(unittest.TestCase):
+    """The person's idle period is restarted before a check once the last press is old."""
+
+    class Vm:
+        def __init__(self, fails=False):
+            self.keys, self.fails = [], fails
+
+        def key(self, *combos):
+            if self.fails:
+                raise VmError("error: input failed")
+            self.keys.append(combos)
+
+    class Ctx:
+        def __init__(self, vm):
+            self.vm, self.facts = vm, {}
+
+    def test_presses_once_then_not_again_until_the_last_press_is_old(self):
+        ctx = self.Ctx(self.Vm())
+        with patch.object(core.time, "sleep"), patch.object(core.time, "monotonic", return_value=1000.0):
+            core.keep_awake(ctx)
+            core.keep_awake(ctx)
+        self.assertEqual(ctx.vm.keys, [("shift",)])
+        with patch.object(core.time, "sleep"), \
+                patch.object(core.time, "monotonic", return_value=1000.0 + core.AWAKE_EVERY_S):
+            core.keep_awake(ctx)
+        self.assertEqual(ctx.vm.keys, [("shift",), ("shift",)])
+
+    def test_input_that_fails_is_noted_not_raised(self):
+        ctx = self.Ctx(self.Vm(fails=True))
+        core.keep_awake(ctx)
+        self.assertIn("input failed", ctx.facts["awake_failed"])
+        self.assertNotIn("awake_at", ctx.facts)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -616,6 +616,15 @@ def every_launch(ctx, res):
     if not startups:
         raise Unobservable("no app logged an APP-STARTUP line in the session's logs")
     problems = app_startup.over_budget(startups) + app_startup.history_over_budget(opens)
+    # A failed check keeps no files, so the slowest late launch's own phases go into the
+    # failure text: which marks the first frame waited on, and whether the window named
+    # its adapter (a launch with no adapter line is judged on the hardware budget).
+    late = [s for s in startups if s["total_ms"] > app_startup.budget_ms(s["app"], s["renderer"])]
+    if late:
+        slowest = max(late, key=lambda s: s["total_ms"])
+        unnamed = (f" ({slowest['app']} logged no `tilo-gpu: window adapter` line before it)"
+                   if slowest["renderer"] == "unknown" else "")
+        problems.append(f"slowest late launch{unnamed}: {slowest['line'][:900]}")
     if "so.tilo.notes" not in apps:
         problems.append("so.tilo.notes logged no APP-STARTUP line")
     if problems:

@@ -559,6 +559,7 @@ def main() -> int:
         german = de
         main_ids = [i for i in ORDER + list(DE_PASS) if i in selected and (i not in DE_PASS or not german)]
         for cid in main_ids:
+            core.keep_awake(ctx)
             r = core.run_check(ctx, by_id[cid])
             results.append(r)
             print(f"{r.id} {r.status.upper():4} {r.seconds:6.1f}s  {r.title}" + (f"\n      {r.detail}" if r.detail else ""),
@@ -572,6 +573,7 @@ def main() -> int:
             except VmError as exc:
                 ctx.facts["locale_de:why"] = f"the session could not be restarted in German: {exc.reason()}"
             for cid in de_ids:
+                core.keep_awake(ctx)
                 r = core.run_check(ctx, by_id[cid])
                 results.append(r)
                 print(f"{r.id} {r.status.upper():4} {r.seconds:6.1f}s  {r.title}" + (f"\n      {r.detail}" if r.detail else ""),

@@ -262,6 +262,17 @@ def describe_painters(by: dict[str, int]) -> str:
     return ", ".join(f"{label} {n}" for label, n in by.items())
 
 
+def loop_wakes(rows: list[dict]) -> dict[str, int]:
+    """Loop ticks by what ended the park before them (the trace's `wake` column): `io`
+    for a readable fd (a client, input, a worker ping), else the deadline that fired.
+    An idle loop over budget names its waker without the window's trace file."""
+    out: dict[str, int] = {}
+    for r in rows:
+        label = str(r.get("wake") or "") or "unrecorded"
+        out[label] = out.get(label, 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
 def named_threads(sample: dict, names: tuple[str, ...], seconds: float) -> list[dict]:
     """Every thread called one of `names` in any of the slot user's processes over the
     window, summed per process and name: its CPU and context switches. A thread started
@@ -298,6 +309,7 @@ def measure(ctx, seconds: int, name: str | None = None, threads: tuple[str, ...]
         "seconds": seconds,
         **summarize(sample, seconds),
         "shell_loop_ticks_per_s": round(len(rows) / seconds, 2),
+        "loop_woke_by": loop_wakes(rows),
         "frames_painted": len(painted),
         "painted_by": painters(painted),
         **({"named_threads": named_threads(sample, threads, seconds)} if threads else {}),
@@ -737,7 +749,9 @@ def _budget_problems(m, budgets, prefix, software=False):
         problems.append(f"{m['frames_painted']} frames painted while idle > {budgets[f'{prefix}_frames']}"
                         + (f" ({why})" if why else ""))
     if m["shell_loop_ticks_per_s"] > budgets["idle_loop_ticks_per_s"]:
-        problems.append(f"compositor loop woke {m['shell_loop_ticks_per_s']}/s > {budgets['idle_loop_ticks_per_s']}/s")
+        woke = describe_painters(m.get("loop_woke_by") or {})
+        problems.append(f"compositor loop woke {m['shell_loop_ticks_per_s']}/s > {budgets['idle_loop_ticks_per_s']}/s"
+                        + (f" (woken by {woke})" if woke else ""))
     if m["user_cpu_pct_total"] > budgets[f"{prefix}_user_cpu_pct"]:
         top = ", ".join(f"{p['comm']} {p['cpu_pct']}%" for p in m["top"][:4])
         problems.append(f"session CPU {m['user_cpu_pct_total']}% > {budgets[f'{prefix}_user_cpu_pct']}% ({top})")
