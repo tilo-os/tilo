@@ -11,7 +11,7 @@ use serde_json::{Value as Json, json};
 use tilo_actions::ActionKind;
 use tilo_actions::surface::{FieldSurface, ParamSurface, Surface, VerbSurface};
 
-use crate::action::{EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
+use crate::action::{CREATE_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 
 use crate::meta::{MetaExt as _, action_kind};
@@ -159,7 +159,21 @@ fn edit_verbs() -> Vec<VerbSurface> {
         writes: vec![RECORD_UNIT.to_owned()],
         field: None,
     };
+    // The host creates a package's root resource on its own the first time a window wants it,
+    // as a committed change of its own; receivers decide that change against this verb.
+    let create = VerbSurface {
+        id: CREATE_ACTION.to_owned(),
+        label: "Create".to_owned(),
+        description: Some("The resource is made the first time it is wanted.".to_owned()),
+        kind: ActionKind::Undoable,
+        destructive: false,
+        incoming_message: false,
+        params: Vec::new(),
+        writes: vec![RECORD_UNIT.to_owned()],
+        field: None,
+    };
     vec![
+        create,
         verb(
             EDIT_TEXT_ACTION,
             "Edit a text field",

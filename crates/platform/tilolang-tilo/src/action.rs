@@ -34,6 +34,10 @@ pub const EDIT_TEXT_ACTION: &str = "edit-text";
 /// The action id of a bound checkbox changing its field.
 pub const EDIT_FLAG_ACTION: &str = "edit-flag";
 
+/// The action id of a resource the host creates on its own, outside any action: a package's
+/// per-room root, the first time it is wanted ([`crate::store::TiloStore::create_with_id`]).
+pub const CREATE_ACTION: &str = "$create";
+
 /// Who is behind the code that planned an action.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authorship {
