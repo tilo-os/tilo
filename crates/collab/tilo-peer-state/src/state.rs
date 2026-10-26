@@ -3689,6 +3689,57 @@ pub fn workspace_seed(
     })
 }
 
+/// [`workspace_seed`] carrying what a workspace this device already showed
+/// into its new native room: its strips and windows in this device's own
+/// topology namespace, and the record index its apps had referenced.
+///
+/// An existing store is brought onto the native owner by this seed, never by
+/// silently creating an empty room: a room made for a workspace with tabs
+/// keeps them, and a room with records keeps their index. The caller reads
+/// both under the same tree it is about to stop writing on the older engine.
+///
+/// # Errors
+///
+/// The room is not a UUID, the salt names no namespace, or a projection the
+/// room schema refuses.
+pub fn workspace_seed_with_layout(
+    room: &str,
+    authority: &DeviceCert,
+    roster: &[DeviceCert],
+    name: &str,
+    salt: u16,
+    strips: &[tilo_desktop_model::layout::Strip],
+    records: &BTreeMap<String, String>,
+) -> Result<SeedState, String> {
+    use tilo_automerge::ApplyIncoming as _;
+    let mut seed = workspace_seed(room, authority, roster, name, salt)?;
+    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(
+        authority.device_public_key.to_vec(),
+    ));
+    let changes = seed
+        .room_changes
+        .iter()
+        .map(|bytes| automerge::Change::from_bytes(bytes.clone()).map_err(err))
+        .collect::<Result<Vec<_>, _>>()?;
+    doc.apply_incoming(changes).map_err(err)?;
+    tilo_desktop_model::projection::project_owned_contents(
+        &mut doc,
+        strips,
+        salt,
+        None,
+        tilo_desktop_model::projection::EmptyStrips::Skip,
+    )
+    .map_err(err)?;
+    tilo_desktop_model::projection::project_room_records(&mut doc, records).map_err(err)?;
+    doc.commit();
+    seed.room_changes = doc
+        .get_changes(&[])
+        .iter()
+        .map(|change| change.raw_bytes().to_vec())
+        .collect();
+    Ok(seed)
+}
+
 /// The same native room CRDT keys projected by `WorkspaceTree::sync_room_doc`.
 ///
 /// # Errors
@@ -3931,3 +3982,6 @@ mod sharing_tests;
 #[cfg(test)]
 #[path = "state/superseded_checkpoint_tests.rs"]
 mod superseded_checkpoint_tests;
+#[cfg(test)]
+#[path = "state/workspace_seed_tests.rs"]
+mod workspace_seed_tests;
