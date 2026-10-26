@@ -66,8 +66,8 @@ pub mod record_content;
 mod route_keys;
 #[cfg(feature = "broker-transport")]
 pub use broker::{
-    CertifiedEndpointIdentity, HostSessionConnector, display_control, speaker_command,
-    wifi_continuity_command,
+    CertifiedEndpointIdentity, EndpointChannelKeys, HostSessionConnector, display_control,
+    speaker_command, wifi_continuity_command,
 };
 // Committed reads live with the broker worker that retains them. Without the
 // broker transport no committed capture can exist, but the type stays part of

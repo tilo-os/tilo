@@ -26,6 +26,18 @@ impl Device {
     /// device to its broker: the device's certificate, and its proof of the
     /// key, for the room.
     pub(crate) fn endpoint_identity(&self, room: RoomId) -> CertifiedEndpointIdentity {
+        let identity = self.keyless_endpoint_identity(room);
+        // An app of a session that serves through its broker encrypts under
+        // the keys that session hands it, as a launched app does.
+        let keys = self.endpoint_keys.lock().expect("endpoint keys").clone();
+        match keys {
+            Some(keys) => identity.with_channel_keys(keys),
+            None => identity,
+        }
+    }
+
+    /// [`Self::endpoint_identity`] with no channel keys to encrypt under.
+    pub(crate) fn keyless_endpoint_identity(&self, room: RoomId) -> CertifiedEndpointIdentity {
         let key = self.key();
         let presentation = runtime_collab::CertifiedJoinIdentity {
             workspace_id: room.to_string(),
@@ -49,14 +61,16 @@ impl Device {
         socket: &Path,
     ) -> crate::shell::collab_broker::BrokerHandle {
         self.serve_through_broker();
-        crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
+        let broker = crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
             socket.to_path_buf(),
             self.tree.clone(),
             vec![self.cert().device_public_key],
             self.net(),
             None,
         )
-        .expect("bind the collaboration service")
+        .expect("bind the collaboration service");
+        *self.endpoint_keys.lock().expect("endpoint keys") = Some(broker.endpoint_channel_keys());
+        broker
     }
 
     /// A connection of `app` in `room` to this device's broker at
