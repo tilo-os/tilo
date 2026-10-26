@@ -90,6 +90,7 @@ fn now_ns(now: SystemTime) -> u64 {
         .try_into()
         .unwrap_or(u64::MAX)
 }
+#[cfg(test)]
 fn now_secs(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
@@ -1738,7 +1739,7 @@ impl StatePeer {
                 },
                 authority: room::AuthorityPin::Device(&pinned),
                 contents: room::ContentOwnership::Registry,
-                caps_now: now_secs(now),
+                now_ns: now_ns(now),
             },
             room_changes,
         )
