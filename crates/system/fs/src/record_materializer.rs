@@ -659,6 +659,19 @@ impl RecordMaterializer {
                 report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
                 continue;
             }
+            if repository.transaction_is_partially_superseded(self.workspace_id, &transaction) {
+                // The accepted transaction is atomic for the participants it
+                // still owns. A later rename, move, restore or edit of one
+                // participant must not force every other participant to be
+                // superseded before this replay can run.
+                self.reconcile_partially_superseded_transaction(
+                    repository,
+                    &transaction,
+                    history,
+                    report,
+                )?;
+                continue;
+            }
             let history_complete = versions.iter().all(|version| {
                 history.snapshot(version.record_id).is_some_and(|snapshot| {
                     snapshot.versions.iter().any(|existing| existing == version)
@@ -834,6 +847,161 @@ impl RecordMaterializer {
             }
             report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
         }
+        Ok(())
+    }
+
+    /// Project a completed transaction after an ordinary per-record edit,
+    /// rename, move or restore superseded only some of its participants.
+    ///
+    /// Every participant's *current* signed projection is applied: the
+    /// transaction's proposal where it still owns the structure, and the
+    /// later ordinary binding where it does not. The transaction's immutable
+    /// versions and any content it still owns stay in history and content.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "history, per-participant current-state bindings, content revisions and dependency retries stay together so partial supersession cannot rewind an unsuperseded participant"
+    )]
+    fn reconcile_partially_superseded_transaction(
+        &self,
+        repository: &RecordRepository,
+        transaction: &fs_protocol::FileMutationTransaction,
+        history: &FileHistoryStore,
+        report: &mut RecordReconciliationReport,
+    ) -> Result<(), RecordMaterializerError> {
+        let versions = transaction
+            .manifest
+            .participants
+            .iter()
+            .map(|participant| participant.proposed_version.clone())
+            .collect::<Vec<_>>();
+        history
+            .append_batch(&versions)
+            .map_err(|error| match error {
+                HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
+                _ => RecordMaterializerError::HistoryRejected,
+            })?;
+        if let Some((source_record, conflict_id, strategy, role)) =
+            match &transaction.manifest.operation {
+                fs_protocol::FileMutationOperation::KeepBothContentConflict {
+                    source_record,
+                    conflict_id,
+                    ..
+                } => Some((
+                    *source_record,
+                    *conflict_id,
+                    fs_protocol::ConflictStrategy::KeepBoth,
+                    fs_protocol::FileMutationParticipantRole::KeepBothSource,
+                )),
+                fs_protocol::FileMutationOperation::MergeContentConflict {
+                    source_record,
+                    conflict_id,
+                    ..
+                } => Some((
+                    *source_record,
+                    *conflict_id,
+                    fs_protocol::ConflictStrategy::Merge,
+                    fs_protocol::FileMutationParticipantRole::MergeSource,
+                )),
+                fs_protocol::FileMutationOperation::ReplacementRename { .. }
+                | fs_protocol::FileMutationOperation::AtomicSave { .. }
+                | fs_protocol::FileMutationOperation::RestoreContent { .. } => None,
+            }
+        {
+            let source = transaction
+                .manifest
+                .participants
+                .iter()
+                .find(|participant| participant.role == role)
+                .ok_or(RecordMaterializerError::TransactionRejected)?;
+            history
+                .resolve(
+                    source_record,
+                    conflict_id,
+                    &fs_protocol::ConflictResolution {
+                        strategy,
+                        result: source.proposed_version.id,
+                        actor: transaction.manifest.actor,
+                        timestamp_ms: transaction.manifest.timestamp_ms,
+                    },
+                )
+                .map_err(|_| RecordMaterializerError::HistoryRejected)?;
+        }
+
+        let mut pending = transaction
+            .manifest
+            .participants
+            .iter()
+            .map(|participant| {
+                repository
+                    .projection_lease(crate::record_repository::RecordRepositoryKey {
+                        workspace_id: self.workspace_id,
+                        record_id: participant.record_id,
+                    })
+                    .map(|lease| lease.snapshot)
+                    .map_err(|_| RecordMaterializerError::TransactionRejected)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut changed = false;
+        let mut rounds = 0_usize;
+        while !pending.is_empty() && rounds < MAX_RECONCILE_ROUNDS {
+            rounds = rounds.saturating_add(1);
+            let before = pending.len();
+            let mut next = Vec::new();
+            for snapshot in pending {
+                let record_id = snapshot.record_id;
+                let Some(binding) = snapshot.binding.clone() else {
+                    continue;
+                };
+                let mut namespace = self
+                    .namespace
+                    .lock()
+                    .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?;
+                match namespace.apply_signed_binding(&binding) {
+                    Ok(applied) => {
+                        changed |= applied;
+                        if !binding.tombstoned
+                            && let Some(ino) = namespace.ensure_ino_for_record_id(record_id)
+                            && let Some(revision) = snapshot.content_revision.as_ref()
+                            && namespace.content_revision_for(ino) != Some(*revision)
+                            && namespace.set_content_revision(
+                                ino,
+                                revision,
+                                transaction.manifest.timestamp_ms,
+                            )
+                        {
+                            changed = true;
+                        }
+                    }
+                    Err(crate::namespace::BindingProjectionError::UnknownParent) => {
+                        next.push(snapshot);
+                    }
+                    Err(_) => return Err(RecordMaterializerError::TransactionRejected),
+                }
+            }
+            if next.len() == before {
+                report.deferred_records = report.deferred_records.saturating_add(next.len());
+                for snapshot in &next {
+                    self.mark_unplaced(crate::record_repository::RecordRepositoryKey {
+                        workspace_id: self.workspace_id,
+                        record_id: snapshot.record_id,
+                    });
+                }
+                break;
+            }
+            pending = next;
+        }
+        if let Some(delta) = changed.then(|| {
+            self.namespace
+                .lock()
+                .map(|mut namespace| namespace.save_incremental())
+                .unwrap_or_default()
+        }) && !delta.is_empty()
+            && let Ok(sync) = self.sync.read()
+            && let Some(sync) = sync.as_ref()
+        {
+            sync.broadcast_delta(delta);
+        }
+        report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
         Ok(())
     }
 

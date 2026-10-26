@@ -1995,9 +1995,12 @@ impl RecordRepository {
             .map(|record| record.replica.converged_binding())
     }
 
-    /// Records whose structure is owned by a completed transaction whose
-    /// participant binding is newer than the record's ordinary binding. A
-    /// replay must not apply the older ordinary binding first.
+    /// Records whose structure must wait for a completed transaction before
+    /// their ordinary binding may be replayed. A fully transaction-owned
+    /// record waits so the transaction's atomic result wins. When only some
+    /// participants have since been superseded, every participant waits:
+    /// replaying a later ordinary binding before the accepted transaction
+    /// would lose the participants it has not superseded.
     pub(crate) fn transaction_owned_bindings(
         &self,
         workspace_id: Uuid,
@@ -2009,21 +2012,22 @@ impl RecordRepository {
             .filter(|(key, _)| key.workspace_id == workspace_id)
         {
             for (transaction, committed) in record.replica.transactions() {
-                if !committed
-                    || transaction.manifest.workspace_id != workspace_id
-                    || !transaction_participants_complete(&records, workspace_id, transaction)
-                {
+                if !committed || transaction.manifest.workspace_id != workspace_id {
                     continue;
                 }
-                let Some(commit_sequence) =
-                    transaction_commit_sequence(record, transaction.manifest.transaction_id)
+                let Some((any_superseded, any_owned)) =
+                    transaction_supersession(&records, workspace_id, transaction)
                 else {
                     continue;
                 };
-                if record
-                    .replica
-                    .transaction_binding_is_newer(transaction, commit_sequence)
-                {
+                if any_superseded && any_owned {
+                    for participant in &transaction.manifest.participants {
+                        owned.insert(RecordRepositoryKey {
+                            workspace_id,
+                            record_id: participant.record_id,
+                        });
+                    }
+                } else if !any_superseded {
                     owned.insert(*key);
                 }
             }
@@ -2041,7 +2045,7 @@ impl RecordRepository {
             .is_some_and(|record| record.replica.has_file_content())
     }
 
-    /// The content revision a completed transaction owns for this record, if    /// The content revision a completed transaction owns for this record, if
+    /// The content revision a completed transaction owns for this record, if
     /// its participant binding is still the newest structure. Reconciliation
     /// must not overwrite that revision with an older ordinary metadata or
     /// content projection.
@@ -2091,7 +2095,6 @@ impl RecordRepository {
     }
 
     /// The per-record form of [`Self::transaction_owned_bindings`], used on
-    /// the direct record-protocol write path.    /// The per-record form of [`Self::transaction_owned_bindings`], used on
     /// the direct record-protocol write path.
     pub(crate) fn completed_transaction_owns_binding(&self, key: RecordRepositoryKey) -> bool {
         let records = self.records.lock_recover();
@@ -2125,24 +2128,22 @@ impl RecordRepository {
         transaction: &FileMutationTransaction,
     ) -> bool {
         let records = self.records.lock_recover();
-        if !transaction_participants_complete(&records, workspace_id, transaction) {
-            return false;
-        }
-        transaction.manifest.participants.iter().all(|participant| {
-            records
-                .get(&RecordRepositoryKey {
-                    workspace_id,
-                    record_id: participant.record_id,
-                })
-                .is_some_and(|record| {
-                    transaction_commit_sequence(record, transaction.manifest.transaction_id)
-                        .is_some_and(|sequence| {
-                            record
-                                .replica
-                                .binding_supersedes_transaction(transaction, sequence)
-                        })
-                })
-        })
+        transaction_supersession(&records, workspace_id, transaction)
+            .is_some_and(|(any_superseded, any_owned)| any_superseded && !any_owned)
+    }
+
+    /// A complete transaction only some of whose participants have since
+    /// been renamed, moved, restored or edited over. The accepted transaction
+    /// remains atomic for the participants it still owns; the superseding
+    /// ordinary bindings stay at their current placement.
+    pub(crate) fn transaction_is_partially_superseded(
+        &self,
+        workspace_id: Uuid,
+        transaction: &FileMutationTransaction,
+    ) -> bool {
+        let records = self.records.lock_recover();
+        transaction_supersession(&records, workspace_id, transaction)
+            .is_some_and(|(any_superseded, any_owned)| any_superseded && any_owned)
     }
 
     /// Clone one record-sized recovery batch without holding the repository
@@ -2302,6 +2303,39 @@ fn transaction_commit_sequence(record: &StoredRecord, transaction_id: Uuid) -> O
         )
         .then_some(envelope.sequence)
     })
+}
+
+/// Whether each participant's ordinary binding has superseded the completed
+/// transaction. `None` means the transaction is incomplete or one commit
+/// sequence is missing. `(true, false)` is fully superseded; `(true, true)` is
+/// a legitimate partial supersession; `(false, true)` is wholly owned by the
+/// transaction.
+fn transaction_supersession(
+    records: &Records,
+    workspace_id: Uuid,
+    transaction: &FileMutationTransaction,
+) -> Option<(bool, bool)> {
+    if !transaction_participants_complete(records, workspace_id, transaction) {
+        return None;
+    }
+    let mut any_superseded = false;
+    let mut any_owned = false;
+    for participant in &transaction.manifest.participants {
+        let record = records.get(&RecordRepositoryKey {
+            workspace_id,
+            record_id: participant.record_id,
+        })?;
+        let sequence = transaction_commit_sequence(record, transaction.manifest.transaction_id)?;
+        if record
+            .replica
+            .binding_supersedes_transaction(transaction, sequence)
+        {
+            any_superseded = true;
+        } else {
+            any_owned = true;
+        }
+    }
+    Some((any_superseded, any_owned))
 }
 
 fn transaction_participants_complete(
