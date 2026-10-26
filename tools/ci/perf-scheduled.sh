@@ -115,7 +115,7 @@ case $group in
       https://code.tilo.so/tilo/tilo.git "$TMPDIR/history.git"
     status=0
     for arch in x86_64 aarch64; do
-      python3 tools/perf/image_size.py --dev-base registry.tilo.so/tilo/tilo-vm:main-ci \
+      python3 tools/perf/image_size.py --dev-base "registry.tilo.so/tilo/tilo-vm:$arch-ci" \
         --arch "$arch" --records "$out/image-$arch.jsonl" --runner none \
         --update-from-previous 'main-{sha7}-{arch}' --git-dir "$TMPDIR/history.git" \
         --json "$out/image-size-$arch.json" --markdown "$out/image-size-$arch.md" > /dev/null || status=1

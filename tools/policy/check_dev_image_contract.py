@@ -259,8 +259,9 @@ def check_production_policy(repo: Path) -> list[Finding]:
     findings = []
     docker = policy.get("transports", {}).get("docker", {})
     for repository, why, admitted in (
-        (DEV_REPOSITORY, WHY_FLAVOUR + "; dev images are unsigned by design, so the production policy "
-         "refuses them by name", "only the dev image's own policy (os/scripts/finalize-dev-image.py) admits it."),
+        (DEV_REPOSITORY, WHY_FLAVOUR + "; dev images run dev-only code, so the production policy "
+         "refuses them by name", "only the dev image's own policy (os/scripts/finalize-dev-image.py) admits "
+         "them, signed with the development key."),
         (INTEGRATION_REPOSITORY, WHY_INTEGRATION, "nothing on an installed system may pull it."),
     ):
         scope = docker.get(repository)
