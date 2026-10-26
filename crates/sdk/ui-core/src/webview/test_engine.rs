@@ -580,9 +580,6 @@ impl WebViewEngine for TestEngine {
         let mut inner = self.lock_inner();
         inner.commands.push(cmd.clone());
         match cmd {
-            // The test engine runs a page action as it arrives, so there is
-            // never one left to stop.
-            WebViewCommand::CancelPage => {}
             WebViewCommand::CancelScopedNavigation { request_id } => {
                 inner.events.retain(|event| !matches!(event, WebViewEvent::NavigationOutcome { request_id: id, .. } if *id == request_id));
             }
@@ -709,7 +706,10 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ImeComposition { .. }
             | WebViewCommand::ImeCommit(_)
             | WebViewCommand::ImeCancel
-            | WebViewCommand::ImeFinish => {}
+            | WebViewCommand::ImeFinish
+            // The test engine runs a page action as it arrives, so there is
+            // never one left to stop.
+            | WebViewCommand::CancelPage => {}
             WebViewCommand::CopySelection { request_id } => {
                 let text = inner.selection.clone();
                 inner
