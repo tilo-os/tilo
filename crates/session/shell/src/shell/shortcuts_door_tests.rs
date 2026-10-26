@@ -961,21 +961,9 @@ fn assert_attributed_to(doc: &mut AutoCommit, run: InvocationId) {
     }
 }
 
-#[test]
-fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
-    let mut door = Door::open();
-
-    // Save through the door; the shortcut is then offered as its own action.
-    let shortcut = publish_draft("publish-draft", &["draft", "publish"]);
-    let resource = shortcut_resource_id("publish-draft");
-    match door.save(&shortcut).expect("the shortcut is saved") {
-        ReceiptStatus::Completed { output } => assert_eq!(
-            output.resources,
-            std::slice::from_ref(&resource),
-            "saving answers with the shortcut's resource"
-        ),
-        other => panic!("saving completes at once: {other:?}"),
-    }
+/// The room's workspace holds `shortcut` alone, as the owner saved it,
+/// under their device's proof.
+fn assert_held_as_saved_by_the_owner(door: &Door, shortcut: Shortcut) {
     let held = room_workspace(&door.membership.read(), door.room)
         .shortcuts
         .clone();
@@ -1002,6 +990,24 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
         },
         "the workspace holds the shortcut as saved"
     );
+}
+
+#[test]
+fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
+    let mut door = Door::open();
+
+    // Save through the door; the shortcut is then offered as its own action.
+    let shortcut = publish_draft("publish-draft", &["draft", "publish"]);
+    let resource = shortcut_resource_id("publish-draft");
+    match door.save(&shortcut).expect("the shortcut is saved") {
+        ReceiptStatus::Completed { output } => assert_eq!(
+            output.resources,
+            std::slice::from_ref(&resource),
+            "saving answers with the shortcut's resource"
+        ),
+        other => panic!("saving completes at once: {other:?}"),
+    }
+    assert_held_as_saved_by_the_owner(&door, shortcut);
     assert!(
         door.offers(SHORTCUTS_APP_ID, &resource, "run"),
         "the saved shortcut is offered as `{resource}#run`"
