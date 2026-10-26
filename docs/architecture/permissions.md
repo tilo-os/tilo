@@ -169,6 +169,31 @@ Discovery uses it too: a catalogue lists exactly the actions the caller may
 invoke, with Ask marked, so nobody learns "not allowed" only after trying.
 A lookup that cannot resolve an action refuses.
 
+A door says who is calling and gets back one of three answers, never a
+boolean it interprets itself (`tilo_action_policy::admit`):
+
+| Question | Where the door answers it |
+|---|---|
+| Whose authority is this? | the person the call acts for, and every delegation bounding them |
+| Is this their own gesture? | a person on a device of theirs answering their own ask, or `false` for an agent, a bot, an app, a Shortcut, a task |
+| Can anyone ask them? | their host on their device (witnessed Ask), or nobody, where the ask refuses rather than waits |
+| Does it wait for them? | an attended action asks even where the grants allow |
+
+Three answers come back (`DoorAnswer`), and each door maps them once:
+
+- **Admitted**: run it, spending the `Once` grants the answer relied on.
+- **Ask**: hold it until the person answers on their own device. Nothing a
+  request carries stands in for that answer.
+- **Refused**: refuse it, saying whose grant refused — the action's or the
+  record's.
+
+A window takes its own person's answer (`admit_in_window`)
+and a broker takes a caller's; both weigh the same answers, so a person cannot
+learn one outcome by clicking and get another from a script. A door holding a
+plain standing and a room policy builds one from them, and hands the standing
+on to whatever decides further: `Asked::standing` is the same `Standing` a
+replica's permissions are made from.
+
 ### 5.2 On receipt
 
 Every peer checks every incoming change before merging it.
