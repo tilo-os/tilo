@@ -199,6 +199,15 @@ impl super::ShellOverlayHost {
     /// The pointer moved to `p` (layout pixels): the ribbon and rail
     /// thicken the segment under it, and the labels read its path.
     pub(super) fn strip_switcher_pointer_moved(&mut self, p: Point) {
+        // The name field is painted by the toolkit's TextInput outside the
+        // retained tree: forward the local cursor so hover and an owned drag
+        // reach the same editor.
+        let moved = winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        };
+        self.strip_navigator
+            .field_pointer(&moved, 1.0, winit::event::Modifiers::default());
         let frame = self.strip_frame();
         if self
             .strip_navigator
@@ -225,7 +234,15 @@ impl super::ShellOverlayHost {
             return false;
         }
         if *state == ElementState::Released {
+            self.strip_navigator
+                .field_pointer(event, 1.0, winit::event::Modifiers::default());
             return self.strip_navigator.release();
+        }
+        if self
+            .strip_navigator
+            .field_pointer(event, 1.0, winit::event::Modifiers::default())
+        {
+            return true;
         }
         let Some(p) = self.last_cursor else {
             return false;

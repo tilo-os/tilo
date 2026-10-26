@@ -188,6 +188,16 @@ pub struct StripNavigator {
 }
 
 impl StripNavigator {
+    /// Let the switcher's painted name field take a pointer event.
+    pub fn field_pointer(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        self.switcher.field_pointer(event, scale_factor, modifiers)
+    }
+
     /// The switcher, for hosts and harnesses that read its labels.
     pub fn switcher(&self) -> &StripSwitcher {
         &self.switcher

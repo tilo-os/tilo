@@ -365,6 +365,34 @@ impl SearchField {
         self.input.set_focus(on);
     }
 
+    /// The field's selection, when a chrome surface owning it outside the
+    /// retained tree needs to mirror pointer placement back into its own
+    /// query model.
+    pub fn selection_anchor_focus_public(&self) -> Option<(usize, usize)> {
+        self.input.selection_anchor_focus_public()
+    }
+
+    /// The selection a host should paint after a pointer event, collapsed to
+    /// the caret when nothing is selected.
+    pub fn selection_anchor_focus_or_caret(&self) -> (usize, usize) {
+        self.input.selection_anchor_focus_or_caret()
+    }
+
+    /// Handle a pointer event for a chrome surface that lays this field out
+    /// itself. Returns whether the field took it.
+    pub fn handle_chrome_pointer(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+        self.input
+            .handle_chrome_pointer(event, scale_factor, modifiers)
+    }
+
     /// Select the current query for conventional Find/Search re-entry.
     pub fn select_all(&mut self) {
         self.input.select_all();
