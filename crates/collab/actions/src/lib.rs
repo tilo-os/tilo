@@ -190,7 +190,7 @@ pub use interaction::{
     InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES, MAX_INTERACTION_BYTES,
     MAX_LABEL_BYTES, SemanticInteraction,
 };
-pub use key::ActionKey;
+pub use key::{ActionKey, CREATE_ACTION};
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use outcome::{
     ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, EffectReceiptStatus, InvocationId,

@@ -118,6 +118,22 @@ pub struct TypeSchema {
 }
 
 impl TypeSchema {
+    /// The type's name as a sentence says it: `TodoList` as "Todo list". What a resource of the
+    /// type with no title of its own is called.
+    #[must_use]
+    pub fn spoken_name(&self) -> String {
+        let mut out = String::new();
+        for (at, ch) in self.name.replace('_', " ").chars().enumerate() {
+            if at > 0 && ch.is_uppercase() {
+                out.push(' ');
+                out.extend(ch.to_lowercase());
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
     #[must_use]
     pub fn new(id: impl Into<String>, app: impl Into<String>, name: impl Into<String>) -> Self {
         Self {

@@ -696,14 +696,39 @@ impl Host {
             .any(|package| &package.id == module)
     }
 
-    /// The resource kind and label of a published record.
+    /// The label of a published record; see [`Self::label_at`].
     #[must_use]
     pub fn label_of(&self, doc: &str) -> String {
-        let store = &self.inner.store;
-        let ty = store.resource_type(doc).unwrap_or_default();
-        store
-            .first_text(&ResourceRef::root(doc, ty))
-            .map_or_else(|| doc.to_owned(), |(text, _)| text)
+        let ty = self.inner.store.resource_type(doc).unwrap_or_default();
+        self.label_at(&ResourceRef::root(doc, ty))
+    }
+
+    /// The label of the resource `at`, as it is published: its first text, and while it has
+    /// none, what its package calls one of its type (see [`crate::publish::untitled`]); never its
+    /// id.
+    #[must_use]
+    pub fn label_at(&self, at: &ResourceRef) -> String {
+        if let Some((text, _)) = self.inner.store.first_text(at) {
+            return text;
+        }
+        let package = self
+            .inner
+            .packages
+            .borrow()
+            .iter()
+            .find(|package| {
+                package
+                    .meta
+                    .types
+                    .iter()
+                    .any(|declared| declared.id == at.ty)
+            })
+            .cloned();
+        match (package, lookup(&at.ty)) {
+            (Some(package), Some(schema)) => crate::publish::untitled(&package.meta, schema),
+            (None, Some(schema)) => schema.spoken_name(),
+            (_, None) => at.ty.clone(),
+        }
     }
 
     /// Whether the type `ty` is registered (a package of it was loaded here).
