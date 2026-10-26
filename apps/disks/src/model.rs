@@ -287,6 +287,14 @@ impl Partition {
         }
     }
 
+    /// The folder the filesystem is mounted at, when it is one a person can
+    /// open: a swap area is mounted without a folder.
+    pub fn mounted_folder(&self) -> Option<&str> {
+        self.mountpoint
+            .as_deref()
+            .filter(|mount| mount.starts_with('/'))
+    }
+
     /// Where the filesystem is mounted, as a person reads it: the kernel's
     /// `[SWAP]` marker is "Swap". `None` when it is not mounted.
     pub fn mount_display(&self) -> Option<String> {

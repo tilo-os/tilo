@@ -30,6 +30,9 @@ live = ["block-devices/udisks"]
 
 [dependencies]
 block-devices = { path = "../../crates/system/block-devices" }
+# The session's tools service: the door to another app (a terminal in a
+# mounted folder, Disk Usage beside this window).
+runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # vello / taffy / winit / automerge are reached through `ui::` — the toolkit
 # re-exports its own stack so there is exactly one copy of each in the binary,

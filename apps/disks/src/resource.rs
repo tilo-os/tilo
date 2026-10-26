@@ -134,6 +134,15 @@ pub enum DisksEffect {
         #[param("Kernel name of the removable drive")]
         device: String,
     },
+    /// Open a terminal in a mounted filesystem's folder.
+    #[effect(job, returns)]
+    OpenInTerminal {
+        #[param("Kernel name of the mounted partition")]
+        device: String,
+    },
+    /// See what is taking up the room, in Disk Usage.
+    #[effect(job)]
+    OpenDiskUsage,
 }
 
 impl DisksEffect {
@@ -234,7 +243,8 @@ fn operations(
 }
 
 /// The row of one partition: select it, and the operations it shows, the
-/// same ones its context menu offers.
+/// same ones its context menu offers. A mounted filesystem's row also leads
+/// to what is in it, which is the reason to mount one.
 fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
     let row = LiveRow::new(
         partition_row_id(&part.name),
@@ -244,7 +254,7 @@ fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
     .effect(&DisksEffect::Select {
         device: part.name.clone(),
     });
-    operations(
+    let row = operations(
         row,
         drive,
         Some(part),
@@ -255,7 +265,16 @@ fn partition_row(drive: &Drive, part: &Partition) -> LiveRow {
             ActionKind::Benchmark,
             ActionKind::Format,
         ],
-    )
+    );
+    match part.mounted_folder().is_some() {
+        true => row.operation(
+            DisksEffect::OpenInTerminal {
+                device: part.name.clone(),
+            }
+            .bound(),
+        ),
+        false => row,
+    }
 }
 
 /// The row of one drive, with its partitions beneath it.
@@ -523,6 +542,36 @@ mod tests {
             .filter(|row| row.actions.iter().any(|action| action.id == "eject"))
             .count();
         assert_eq!(removable, 1, "only the removable drive ejects");
+    }
+
+    /// A mounted filesystem's row leads to what is in it; a swap area has no
+    /// folder to lead to.
+    #[test]
+    fn a_mounted_filesystems_row_offers_a_terminal_in_its_folder() {
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        let resources = app.harness().resources();
+        let home = find(&resources, "partition:nvme0n1p3").expect("the sample home partition");
+        assert!(
+            action_ids(home).contains(&"open-in-terminal"),
+            "{:?}",
+            action_ids(home)
+        );
+        let swap = find(&resources, "partition:nvme0n1p4").expect("the sample swap area");
+        assert!(
+            !action_ids(swap).contains(&"open-in-terminal"),
+            "a swap area is mounted without a folder: {:?}",
+            action_ids(swap)
+        );
+        let opened = app
+            .effect(&DisksEffect::OpenInTerminal {
+                device: "nvme0n1p3".into(),
+            })
+            .unwrap();
+        let status = format!("{:?}", opened.value);
+        assert!(
+            status.contains("/home"),
+            "the sample machine says which folder it would open: {status}"
+        );
     }
 
     #[test]

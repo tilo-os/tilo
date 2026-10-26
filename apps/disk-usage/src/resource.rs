@@ -65,6 +65,12 @@ pub enum DiskUsageEffect {
     /// Show locations.
     #[effect(view)]
     Home,
+    /// Open Disks.
+    ///
+    /// Partitioning, mounting and formatting a drive are Disks' job, in its
+    /// own window: this one measures what is already on them.
+    #[effect(job)]
+    OpenDisks,
 }
 
 /// The disk-usage analyzer: the door its effects and live rows are
@@ -214,6 +220,7 @@ impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
                 self.go_home();
                 Ok(Effected::done())
             }
+            DiskUsageEffect::OpenDisks => Ok(self.open_disks(cx)),
         }
     }
 

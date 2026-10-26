@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::mpsc;
 
+use runtime_portal::tools::{ToolIntent, open_tool};
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, LiveRow, RunMode};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -206,7 +207,39 @@ struct ViewKey {
 /// A reading of this machine's storage, or why it could not be read.
 type Probed = Result<Topology, String>;
 
-/// Where a [`DisksApp`]'s devices come from.
+/// The package that shows what is taking up the room.
+pub(crate) const DISK_USAGE: &str = "so.tilo.disk-usage";
+
+/// How this window asks the session to open something for it: the tools
+/// service, whose round trip blocks, so it is called on a worker.
+pub(crate) type ShellDoor = fn(ToolIntent, Option<[u8; 16]>) -> Result<(), String>;
+
+/// The invocation this window is answering, when an agent asked it to open
+/// something: the shell admits the open as that invocation's caller.
+fn delivered() -> Option<[u8; 16]> {
+    ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes())
+}
+
+/// Open a terminal in `folder`: what the person's press asks the session
+/// for when they open a mounted filesystem.
+fn ask_terminal(ask: ShellDoor, folder: String) -> Result<(), String> {
+    ask(
+        ToolIntent::Terminal {
+            directory: Some(folder),
+        },
+        delivered(),
+    )
+}
+
+/// What this window asks the session to open: Disk Usage, which says what is
+/// taking up the room in a window of its own.
+fn open_disk_usage_intent() -> ToolIntent {
+    ToolIntent::OpenApplication {
+        app: DISK_USAGE.to_owned(),
+    }
+}
+
+/// What a [`DisksApp`]'s devices come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
     /// This machine: described by the session's system information service,
@@ -252,6 +285,9 @@ pub struct DisksApp {
     built: Option<ViewKey>,
     /// The slots last declared to the bar.
     declared_bar: Option<ui::window_toolbar::WindowToolbar>,
+    /// How this window asks the session to open something for it. A test
+    /// swaps in a recorder that answers without a session.
+    ask_shell: ShellDoor,
 }
 
 impl Default for DisksApp {
@@ -299,6 +335,7 @@ impl DisksApp {
             scroll: Rc::new(Cell::new((0.0, 0.0))),
             built: None,
             declared_bar: None,
+            ask_shell: open_tool,
         }
     }
 
@@ -519,8 +556,35 @@ impl DisksApp {
                 Intent::SelectPartition(part) => self.select_part(part),
                 Intent::RunOn { action, partition } => self.trigger_action(action, partition),
                 Intent::Rescan => self.rescan(),
+                Intent::OpenTerminal(partition) => self.request_terminal(partition),
+                Intent::OpenDiskUsage => self.ask_disk_usage(),
             }
         }
+    }
+
+    /// The window's own buttons ask through the published effects, so a
+    /// person's press and an agent's invocation take one path.
+    fn request_terminal(&mut self, partition: usize) {
+        let Some(drive) = self.drive() else { return };
+        let Some(part) = drive.partitions.get(partition) else {
+            return;
+        };
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect_on(
+                &crate::resource::partition_row_id(&part.name),
+                &DisksEffect::OpenInTerminal {
+                    device: part.name.clone(),
+                },
+            );
+        }
+        self.dirty = true;
+    }
+
+    fn ask_disk_usage(&mut self) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect(&DisksEffect::OpenDiskUsage);
+        }
+        self.dirty = true;
     }
 
     /// Record a result: the status the window announces and the toast that
@@ -667,8 +731,88 @@ impl DisksApp {
             DisksEffect::Format { device } => (ActionKind::Format, device),
             DisksEffect::Benchmark { device } => (ActionKind::Benchmark, device),
             DisksEffect::Eject { device } => (ActionKind::Eject, device),
+            DisksEffect::OpenInTerminal { device } => return self.open_terminal(&device, cx),
+            DisksEffect::OpenDiskUsage => return Ok(self.open_disk_usage(cx)),
         };
         self.run_operation(operation.0, &operation.1, cx)
+    }
+
+    /// The folder a mounted partition is reachable at, or why it is not.
+    fn mounted_folder(&self, device: &str) -> Result<String, String> {
+        for drive in &self.topo.drives {
+            for part in &drive.partitions {
+                if part.name != device {
+                    continue;
+                }
+                return part.mounted_folder().map(str::to_owned).ok_or_else(|| {
+                    format!("/dev/{device} is not mounted; mount it to open a terminal in it")
+                });
+            }
+        }
+        Err(format!(
+            "/dev/{device} is no longer present; rescan storage and try again"
+        ))
+    }
+
+    /// Open a terminal in the folder of mounted partition `device`.
+    ///
+    /// The session's tools service is the door to another app, and the only
+    /// one that reaches a mounted folder: this app is granted no filesystem
+    /// paths, so the chooser's open has none of them to hand on.
+    fn open_terminal(&mut self, device: &str, cx: &mut EffectCx<Disks, Self>) -> EffectAnswer {
+        let folder = self.mounted_folder(device)?;
+        if self.backend == Backend::Sample {
+            self.report(
+                format!("Sample machine: would open a terminal in {folder}"),
+                StatusTone::Info,
+            );
+            return Ok(Effected::value(&self.status));
+        }
+        let ask = self.ask_shell;
+        let asked = folder.clone();
+        Ok(cx.thread(
+            move |_| ask_terminal(ask, asked),
+            move |app: &mut Self, result: Result<(), String>, _| match result {
+                Ok(()) => {
+                    app.report(
+                        format!("Opened a terminal in {folder}"),
+                        StatusTone::Success,
+                    );
+                    Ok(Effected::value(&app.status))
+                }
+                Err(error) => {
+                    app.report(error.clone(), StatusTone::Danger);
+                    Err(error)
+                }
+            },
+        ))
+    }
+
+    /// Ask the session to open Disk Usage, which says what is taking up the
+    /// room on these drives: a different job from partitioning, in its own
+    /// window.
+    fn open_disk_usage(&mut self, cx: &mut EffectCx<Disks, Self>) -> Effected {
+        if self.backend == Backend::Sample {
+            self.report(
+                "Sample machine: would open Disk Usage".to_owned(),
+                StatusTone::Info,
+            );
+            return Effected::value(&self.status);
+        }
+        let ask = self.ask_shell;
+        cx.thread(
+            move |_| ask(open_disk_usage_intent(), delivered()),
+            |app: &mut Self, result: Result<(), String>, _| match result {
+                Ok(()) => {
+                    app.report("Opening Disk Usage…".to_owned(), StatusTone::Info);
+                    Ok(Effected::value(&app.status))
+                }
+                Err(error) => {
+                    app.report(error.clone(), StatusTone::Danger);
+                    Err(error)
+                }
+            },
+        )
     }
 
     /// Select the drive or partition named `device`.
@@ -1004,6 +1148,92 @@ mod tests {
     use ui::headless::Framed;
     use ui::vello::kurbo::{Point, Rect};
     use ui::widget::SidebarPlacement;
+
+    /// A recorder for the session's tools door: what this window asked for,
+    /// without a session to ask.
+    static ASKED: std::sync::Mutex<Vec<ToolIntent>> = std::sync::Mutex::new(Vec::new());
+
+    fn record(intent: ToolIntent, _on_behalf_of: Option<[u8; 16]>) -> Result<(), String> {
+        ASKED.lock().unwrap().push(intent);
+        Ok(())
+    }
+
+    fn asked() -> Vec<ToolIntent> {
+        std::mem::take(&mut *ASKED.lock().unwrap())
+    }
+
+    /// A mounted filesystem leads to what is in it: the row offers a
+    /// terminal there, and the person's press asks the session for exactly
+    /// that folder. An unmounted partition offers no such thing.
+    #[test]
+    fn a_mounted_filesystem_leads_to_its_folder() {
+        assert_eq!(
+            ask_terminal(record, "/media/you/MEDIA".to_owned()),
+            Ok(()),
+            "the ask reaches the session"
+        );
+        assert_eq!(
+            asked(),
+            [ToolIntent::Terminal {
+                directory: Some("/media/you/MEDIA".to_owned()),
+            }]
+        );
+
+        let app = sample_app();
+        let drive = app.drive().unwrap();
+        let mounted = drive
+            .partitions
+            .iter()
+            .find(|part| part.mountpoint.is_some())
+            .expect("the sample machine has a mounted partition");
+        assert_eq!(
+            app.mounted_folder(&mounted.name),
+            Ok(mounted.mountpoint.clone().unwrap())
+        );
+        let unmounted = crate::model::Partition {
+            mountpoint: None,
+            ..mounted.clone()
+        };
+        let mut app = app;
+        app.topo.drives[app.selected].partitions = vec![unmounted.clone()];
+        assert!(
+            app.mounted_folder(&unmounted.name)
+                .unwrap_err()
+                .contains("is not mounted"),
+            "an unmounted partition has no folder to open"
+        );
+        assert!(
+            app.mounted_folder("gone1")
+                .unwrap_err()
+                .contains("no longer"),
+            "a partition the probe no longer lists opens nothing"
+        );
+    }
+
+    /// The partition's own page offers the terminal in its folder, and the
+    /// sentence says where that is.
+    #[test]
+    fn the_partition_page_offers_a_terminal_in_its_folder() {
+        let mut app = at_width(1500.0);
+        app.select_part(Some(2)); // the sample home filesystem, at /home
+        app.refresh_view();
+        Framed::harness_mut(&mut app).poll_frame().unwrap();
+        let page = Framed::harness(&app).inspection_json().unwrap();
+        assert!(page.contains("Open a Terminal Here"), "{page}");
+        assert!(page.contains("/home"), "the folder is named: {page}");
+    }
+
+    /// Opening Disk Usage asks the session for that app: measuring is its
+    /// job, partitioning is this window's.
+    #[test]
+    fn disk_usage_is_asked_for_by_name() {
+        assert_eq!(
+            open_disk_usage_intent(),
+            ToolIntent::OpenApplication {
+                app: "so.tilo.disk-usage".to_owned()
+            }
+        );
+    }
 
     fn sample_app() -> DisksApp {
         let mut app = DisksApp::sample();

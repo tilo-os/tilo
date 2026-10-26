@@ -15,9 +15,9 @@ use ui::text_render::TextKind;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::{
-    Chip, ChipStyle, ContextMenuArea, Element, EmptyState, ListRow, MenuEntry, NavItem, NavList,
-    NavSection, Property, PropertyList, Row, RowStatus, Scrollable, Section, SkeletonShape,
-    StatGroup, StatTile, Text, Tone,
+    Button, Chip, ChipStyle, ContextMenuArea, Element, EmptyState, ListRow, MenuEntry, NavItem,
+    NavList, NavSection, Property, PropertyList, Row, RowStatus, Scrollable, Section,
+    SkeletonShape, StatGroup, StatTile, Text, Tone,
 };
 use ui::window_toolbar::{
     LocationSegment, ToolbarAction, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
@@ -45,6 +45,11 @@ pub(crate) enum Intent {
         partition: Option<usize>,
     },
     Rescan,
+    /// Open a terminal in the folder of partition `partition` of the
+    /// selected drive.
+    OpenTerminal(usize),
+    /// See what is taking up the room, in Disk Usage.
+    OpenDiskUsage,
 }
 
 /// The queue controls write to and the app drains.
@@ -176,10 +181,24 @@ fn operations_menu(
     intents: &Intents,
 ) -> impl Fn(Option<ui::vello::kurbo::Point>) -> Vec<MenuEntry> + 'static {
     let part = partition.and_then(|i| drive.partitions.get(i));
+    let mounted = part.is_some_and(|part| part.mounted_folder().is_some());
     let offers = offer::shown(drive, part);
     let intents = intents.clone();
     move |_| {
         let mut entries = Vec::new();
+        // A mounted filesystem's row leads to what is in it: the reason to
+        // mount one at all.
+        if mounted {
+            let intents = intents.clone();
+            entries.push(
+                MenuEntry::new("Open a Terminal Here", move || {
+                    if let Some(partition) = partition {
+                        intents.push(Intent::OpenTerminal(partition));
+                    }
+                })
+                .with_icon(Icon::SquareTerminal),
+            );
+        }
         for &(action, offer) in &offers {
             let intents = intents.clone();
             let run = move || intents.push(Intent::RunOn { action, partition });
@@ -411,11 +430,16 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
         .with_rhythm(Rhythm::Group);
     page = page.push(Box::new(Section::titled(
         "Partition map",
-        vec![Box::new(map)],
+        vec![Box::new(map), usage_row(intents)],
     )));
     page = page.push(Box::new(filesystems(drive, model.partition, intents)));
     if let Some(part) = model.partition.and_then(|i| drive.partitions.get(i)) {
-        page = page.push(Box::new(partition_details(drive, part)));
+        page = page.push(Box::new(partition_details(
+            drive,
+            part,
+            model.partition,
+            intents,
+        )));
         page = page.push(Box::new(Section::titled(
             "Drive",
             vec![Box::new(PropertyList::new(drive_facts(drive)))],
@@ -427,6 +451,21 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
         )));
     }
     Box::new(page)
+}
+
+/// Under the partition map: what is taking up the room, in the app whose
+/// whole job that is. Partitioning and measuring are different jobs, in
+/// different windows, and neither is hidden inside the other.
+fn usage_row(intents: &Intents) -> Element {
+    let open = intents.clone();
+    Box::new(
+        Row::new().push(Box::new(
+            Button::new("open-disk-usage", "Disk Usage…")
+                .with_icon(Icon::HardDrive)
+                .tooltip("See what is taking up the space, in Disk Usage Analyzer")
+                .on_view(move || open.push(Intent::OpenDiskUsage)),
+        )),
+    )
 }
 
 fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Section {
@@ -688,9 +727,15 @@ fn partition_summary(drive: &Drive, part: &Partition) -> String {
     summary
 }
 
-/// The partition's facts: its device, size, type, filesystem, encryption,
+/// A partition's facts: its device, size, type, filesystem, encryption,
 /// where it is mounted and its room, and what of the running system it holds.
-fn partition_details(drive: &Drive, part: &Partition) -> Section {
+/// A mounted filesystem's own page leads to what is in it.
+fn partition_details(
+    drive: &Drive,
+    part: &Partition,
+    partition: Option<usize>,
+    intents: &Intents,
+) -> Section {
     let mut facts = vec![
         Property::new("Device", format!("/dev/{}", part.name)).with_kind(TextKind::Identifier),
         Property::new("Size", size(part.size)).with_kind(TextKind::Numeric),
@@ -723,7 +768,19 @@ fn partition_details(drive: &Drive, part: &Partition) -> Section {
     if let Some(purpose) = purpose(drive, part) {
         facts.push(Property::new("Used for", purpose));
     }
-    Section::titled("Details", vec![Box::new(PropertyList::new(facts))])
+    let mut items: Vec<Element> = vec![Box::new(PropertyList::new(facts))];
+    if part.mounted_folder().is_some()
+        && let Some(partition) = partition
+    {
+        let open = intents.clone();
+        let id = format!("open-terminal-{partition}");
+        items.push(Box::new(
+            Button::new(&id, "Open a Terminal Here")
+                .with_icon(Icon::SquareTerminal)
+                .on_view(move || open.push(Intent::OpenTerminal(partition))),
+        ));
+    }
+    Section::titled("Details", items)
 }
 
 fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
@@ -762,7 +819,12 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
                 .with_no_padding()
                 .with_rhythm(Rhythm::Group)
                 .push(Box::new(list))
-                .push(Box::new(partition_details(drive, part))),
+                .push(Box::new(partition_details(
+                    drive,
+                    part,
+                    model.partition,
+                    intents,
+                ))),
         ),
         None => Box::new(list),
     }

@@ -19,6 +19,9 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 tracing.workspace = true
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
+# The session's tools service: the door to Disks, where a drive is
+# partitioned, mounted or formatted.
+runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 serde = { workspace = true, features = ["derive"] }

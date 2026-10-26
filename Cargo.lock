@@ -3722,6 +3722,7 @@ name = "disk-usage"
 version = "0.1.0"
 dependencies = [
  "runtime-dylib",
+ "runtime-portal",
  "serde",
  "serde_json",
  "tilo-app",
@@ -3737,6 +3738,7 @@ version = "0.1.0"
 dependencies = [
  "block-devices",
  "runtime-dylib",
+ "runtime-portal",
  "serde",
  "serde_json",
  "tilo-actions",

@@ -10,6 +10,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
+use runtime_portal::tools::{ToolIntent, open_tool};
 use ui::tokens::TextRole;
 use ui::vello::Scene;
 use ui::vello::kurbo::Affine;
@@ -64,6 +65,10 @@ pub(crate) const CHOOSE_FOLDER: &str = "disk-usage.choose";
 /// The window bar's action that opens what wants a person.
 pub(crate) const NEEDS_YOU: &str = "disk-usage.needs";
 
+/// The window bar's action that opens Disks, where a drive is partitioned,
+/// mounted or formatted: what this app measures, the other one changes.
+pub(crate) const OPEN_DISKS: &str = "disk-usage.disks";
+
 /// What a control in the current view asks for. Controls run inside the
 /// widget tree; the app applies their requests on its next update.
 enum Request {
@@ -72,6 +77,8 @@ enum Request {
     Back,
     /// Open what wants a person.
     Needs,
+    /// Open Disks.
+    Disks,
     /// Go to a folder a job was working on.
     Show(PathBuf),
 }
@@ -310,6 +317,10 @@ pub struct DiskUsageApp {
     pub(crate) immediate: bool,
     pub(crate) dispatcher: Option<Dispatcher<DiskUsage>>,
     pub(crate) actions: Option<Actions<DiskUsage>>,
+    /// How this window asks the session to open Disks for it: a blocking
+    /// round trip on the shell's door, so it runs on a worker. A test swaps
+    /// in a recorder that answers without a session.
+    ask_shell: fn(ToolIntent, Option<[u8; 16]>) -> Result<(), String>,
 }
 
 /// The places a capture lists: the sample's home and workspace, and the
@@ -388,6 +399,7 @@ impl DiskUsageApp {
             immediate: false,
             dispatcher: None,
             actions: None,
+            ask_shell: open_tool,
         };
         app.rebuild();
         app
@@ -426,6 +438,12 @@ impl DiskUsageApp {
                 self.open_needs();
                 return;
             }
+            Request::Disks => {
+                if let Some(dispatcher) = &self.dispatcher {
+                    dispatcher.effect(&DiskUsageEffect::OpenDisks);
+                }
+                return;
+            }
             Request::Show(path) => {
                 if let Some(finished) = self.finished.as_ref().filter(|done| done.path == path) {
                     let finished = finished.clone();
@@ -446,6 +464,24 @@ impl DiskUsageApp {
     /// the way the button does.
     fn back_effect(&self) -> DiskUsageEffect {
         DiskUsageEffect::Back
+    }
+
+    /// Ask the session to open Disks, where a drive is partitioned, mounted
+    /// or formatted. The shell's tools service is the only door to another
+    /// app, and it answers on a blocking round trip, so it runs on a worker.
+    pub(crate) fn open_disks(&mut self, cx: &mut EffectCx<DiskUsage, Self>) -> Effected {
+        let ask = self.ask_shell;
+        cx.thread(
+            move |_| {
+                ask(
+                    ToolIntent::Disks {
+                        route: runtime_portal::tools::DisksRoute::Overview,
+                    },
+                    ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes()),
+                )
+            },
+            |_app: &mut Self, result: Result<(), String>, _| result.map(|()| Effected::done()),
+        )
     }
     /// Measure `path` as a job: the people's window keeps working, the band
     /// says what it has seen and offers Stop, and the job survives this page
@@ -841,6 +877,9 @@ impl DiskUsageApp {
                 if id == NEEDS_YOU {
                     self.inbox.borrow_mut().push(Request::Needs);
                 }
+                if id == OPEN_DISKS {
+                    self.inbox.borrow_mut().push(Request::Disks);
+                }
             }
         }
         let mut toolbar = self.content.window_toolbar();
@@ -852,6 +891,16 @@ impl DiskUsageApp {
         let mut actions = vec![
             ToolbarAction::new(CHOOSE_FOLDER, Icon::FolderOpen.name(), "Choose folder")
                 .enabled(live),
+            ToolbarAction::new(
+                OPEN_DISKS,
+                Icon::HardDrive.name(),
+                "Partition, mount and format drives in Disks",
+            )
+            .enabled(
+                self.actions
+                    .as_ref()
+                    .is_some_and(|actions| actions.effect(&DiskUsageEffect::OpenDisks).is_some()),
+            ),
         ];
         if let Some(label) = needs {
             actions.push(ToolbarAction::new(NEEDS_YOU, Icon::Bell.name(), label).labelled());
@@ -981,6 +1030,25 @@ mod navigation_tests {
         let (_, recent) = app.locations();
         assert!(recent.iter().all(|place| place.path.as_os_str() != "/"));
     }
+    /// The window bar says where a drive is partitioned, mounted or
+    /// formatted: this app measures what is already on them.
+    #[test]
+    fn the_window_bar_reaches_disks() {
+        let mut app =
+            ui::prelude::TestApp::<crate::resource::DiskUsageShell>::capture(Some("home")).unwrap();
+        app.settle();
+        let bar = ui::window_toolbar::declared().expect("the window's slots");
+        let disks = bar
+            .actions
+            .iter()
+            .find(|action| action.id == OPEN_DISKS)
+            .unwrap_or_else(|| panic!("{bar:?}"));
+        assert_eq!(
+            disks.name, "Partition, mount and format drives in Disks",
+            "the action says what the other window is for"
+        );
+    }
+
     #[test]
     fn narrow_home_keeps_common_places_visible() {
         let mut app =
