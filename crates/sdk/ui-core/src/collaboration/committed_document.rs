@@ -1613,16 +1613,24 @@ pub(super) async fn install(
                 Err(_) if !renewed => true,
                 _ => {
                     #[cfg(any(test, feature = "test-support"))]
-                    if let Ok(Err(error)) = &result {
-                        tracing::warn!(error = %error, route = ?spec, "committed document polling RPC failed");
+                    tracing::warn!(route = ?spec, "committed document polling stopped");
+                    // Collaboration ends here, so say why in every build: the
+                    // broker's refusal, a second deadline, or a reply that
+                    // fits no read this channel started.
+                    match &result {
+                        Ok(Err(error)) => tracing::warn!(
+                            error = %error,
+                            "committed document read refused; collaboration stops"
+                        ),
+                        Ok(Ok(reply)) => tracing::warn!(
+                            reply = reply_kind(reply),
+                            reader_holds_revision = known.is_some(),
+                            "committed document read answered out of turn; collaboration stops"
+                        ),
+                        Err(_) => tracing::warn!(
+                            "committed document read missed its deadline again; collaboration stops"
+                        ),
                     }
-                    #[cfg(any(test, feature = "test-support"))]
-                    tracing::warn!(
-                        timed_out = result.is_err(),
-                        rpc_failed = matches!(&result, Ok(Err(_))),
-                        unexpected_reply = matches!(&result, Ok(Ok(_))),
-                        "committed document polling stopped"
-                    );
                     inbound
                         .state
                         .fail_closed("committed document read outcome unknown");
@@ -1699,4 +1707,21 @@ pub(super) async fn install(
         }
     });
     Ok(true)
+}
+
+/// The variant of `reply`, for a log line that must not carry its bytes.
+fn reply_kind(reply: &Reply) -> &'static str {
+    match reply {
+        Reply::Legacy => "legacy",
+        Reply::Unavailable => "unavailable",
+        Reply::Unchanged { .. } => "unchanged from another revision",
+        Reply::Chunk { .. } => "chunk",
+        Reply::Cancelled => "cancelled",
+        Reply::Created { .. } => "created",
+        Reply::Initialized { .. } => "initialized",
+        Reply::PrivateWindowBinding { .. } => "private window binding",
+        Reply::Stale => "stale",
+        Reply::Changes { .. } => "changes",
+        Reply::ConnectionSnapshot(_) => "connection snapshot",
+    }
 }
