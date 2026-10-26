@@ -684,12 +684,17 @@ fn quick_settings_toggles_chips_and_wifi_rows_route_to_their_actions() {
 #[test]
 fn only_the_invite_button_opens_the_signed_composer() {
     // Phase `workspace_settings_invite_button_opens_the_signed_composer`.
+    // The room is placed on this device's own host and governed here, as a
+    // booted desktop holds a workspace it made: only its host issues an
+    // invitation, so a room no host holds offers none.
+    #[cfg(feature = "test-support")]
     {
         use shell::shell::chrome_state::WsTab;
 
-        let mut tree = minimal_tree();
-        tree.own_workspaces_for_test(shell::shell::state::local_user_id_for_room);
+        let tree = minimal_tree();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let hosted = shell::shell::test_support::host_active_room(&chrome.borrow().tree_handle());
+        chrome.borrow_mut().act_as(hosted.person.clone());
         host.set_peer_sync_enabled(true);
         {
             let mut st = chrome.borrow_mut();
