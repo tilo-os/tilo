@@ -147,7 +147,7 @@ pub const CHOICES: &[Choice] = &[
     Choice {
         kind: "text_role",
         name: "TextRole",
-        variants: &["body", "title", "caption", "numeric"],
+        variants: &["body", "title", "label", "caption", "numeric"],
     },
     Choice {
         kind: "width_class",

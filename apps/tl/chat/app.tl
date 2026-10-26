@@ -140,7 +140,7 @@ view message(m: Message) {
         avatar(m.author)
         stack(gap: .tight, fill) {
             row(gap: .related) {
-                text(m.author.name(), role: .caption)
+                text(m.author.name(), role: .label)
                 text(m.at, role: .caption)
             }
             parts(m)
