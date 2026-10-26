@@ -149,12 +149,12 @@ type Thread {
     labels: Set<Label>
     search { filter unread  filter participants  filter last  filter labels  sort last newest }
 }
-actions on Thread  (you may: ✓ yes  ? asks  ✗ no)
-  ✓ archive(thread)                        /// Moves the thread out of the inbox.
-  ✓ label(thread, label: Label)
-  ✓ draft_reply(thread, body: Text) -> Draft
-  ? send(draft: Draft)                     /// Sends a draft. Leaves the workspace.
-  ✗ delete(thread)
+actions on Thread                          this task
+  archive(thread)                          may     /// Moves the thread out of the inbox.
+  label(thread, label: Label)              may
+  draft_reply(thread, body: Text) -> Draft may
+  send(draft: Draft)                       asks    /// Sends a draft. Leaves the workspace.
+  delete(thread)                           no
 
 > describe mail
 app mail "Mail" · types: Mailbox Thread Message Draft Label Person · start: look mail
