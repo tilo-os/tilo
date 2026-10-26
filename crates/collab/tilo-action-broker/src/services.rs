@@ -242,6 +242,14 @@ pub trait WorkspaceMemberships: Send + Sync {
 
     fn requires_room(&self, room: &str) -> bool;
 
+    /// Whether this device keeps `room`'s checkpoints. They are its
+    /// governor's custody, so a room this device governs offers them
+    /// whichever model its records follow, and a room governed elsewhere
+    /// does not.
+    fn keeps_checkpoints(&self, room: &str) -> bool {
+        self.requires_room(room)
+    }
+
     /// Where `room` stands for the apps on this device: ready, waiting for
     /// its join or its placement on its host, or refused, as when no host
     /// holds it and it has no documents to open. A join is held while it
