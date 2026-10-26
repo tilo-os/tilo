@@ -27,11 +27,9 @@ git-confirm-discard-body = Your edits are lost. This can't be undone.
 git-confirm-delete-branch-body = Commits that only this branch holds are lost.
 git-confirm-discard = Discard
 git-confirm-switch-title = Switch to { $name }?
-git-confirm-switch-body = The working tree is clean, so nothing changes hands but the branch.
-git-confirm-switch-dirty-body = You have uncommitted changes. Park them on the stash and switch, or take them with you; a change that would be overwritten refuses either way.
+git-confirm-switch-body = You have uncommitted changes. Park them on the stash and switch, or take them with you; a change that would be overwritten refuses either way.
 git-switch-stash = Stash and switch
 git-switch-carry = Keep my changes
-git-switch-go = Switch
 git-cancel = Cancel
 
 # Changes
