@@ -8,7 +8,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tilo_workspace_emoji::{OWNER, WorkspaceEmoji as Record, workspace_emoji as actions};
-use ui_core::workspace_emoji::{CustomEmoji, EmojiSource, Small, WorkspaceEmoji, make_small};
+use ui_core::workspace_emoji::{
+    Adding, CustomEmoji, EmojiSource, Small, WorkspaceEmoji, make_small,
+};
 
 use super::workspace::{WorkspaceRecord, WorkspaceState};
 
@@ -32,6 +34,8 @@ pub(crate) struct WindowEmoji {
     choosing: RefCell<Vec<ui_core::portal::ContentsChannel>>,
     /// Pictures chosen whose making small waits for the image tools.
     waiting: RefCell<Vec<ui_core::portal::PickedContents>>,
+    /// What became of the last picture chosen, and how many were settled.
+    added: RefCell<(u64, Option<Adding>)>,
 }
 
 impl WindowEmoji {
@@ -42,6 +46,7 @@ impl WindowEmoji {
             read: RefCell::default(),
             choosing: RefCell::default(),
             waiting: RefCell::default(),
+            added: RefCell::default(),
         })
     }
 
@@ -72,6 +77,7 @@ impl WindowEmoji {
                 }
                 Ok(ui_core::portal::ContentsOutcome::Failed(error)) => {
                     tracing::warn!(%error, "no picture was chosen for an emoji");
+                    self.settled(Adding::Failed(error));
                     false
                 }
                 Ok(ui_core::portal::ContentsOutcome::Cancelled)
@@ -96,12 +102,21 @@ impl WindowEmoji {
             let added = self
                 .record()
                 .and_then(|record| record.get().free_name(stem))
-                .ok_or_else(|| "the workspace's emoji are unavailable".to_owned())
-                .and_then(|name| self.add_small(&name, small));
-            if let Err(error) = added {
-                tracing::warn!(%error, file = %file.name, "the chosen picture was not added as an emoji");
+                .ok_or_else(unavailable)
+                .and_then(|name| self.add_small(&name, small).map(|()| name));
+            match added {
+                Ok(name) => self.settled(Adding::Added(name)),
+                Err(error) => {
+                    tracing::warn!(%error, file = %file.name, "the chosen picture was not added as an emoji");
+                    self.settled(Adding::Failed(error));
+                }
             }
         }
+    }
+
+    fn settled(&self, adding: Adding) {
+        let mut added = self.added.borrow_mut();
+        *added = (added.0.wrapping_add(1), Some(adding));
     }
 
     fn add_small(&self, name: &str, small: Small) -> Result<(), String> {
@@ -110,9 +125,7 @@ impl WindowEmoji {
                 .refusal()
                 .unwrap_or_else(|| "the picture was not made small".into()));
         };
-        let record = self
-            .record()
-            .ok_or_else(|| "the workspace's emoji are unavailable".to_owned())?;
+        let record = self.record().ok_or_else(unavailable)?;
         record
             .invoke(&Record::ADD_EMOJI.with(actions::AddEmoji {
                 name: name.to_owned(),
@@ -160,15 +173,15 @@ impl EmojiSource for WindowEmoji {
 
     fn add(&self, name: &str, image: &[u8]) -> Result<(), String> {
         if !self.can_manage() {
-            return Err("you may not add emoji to this workspace".into());
+            return Err(ui_core::i18n::I18nManager::lookup_plain(
+                "workspace-emoji-not-allowed",
+            ));
         }
         self.add_small(name, make_small(image))
     }
 
     fn remove(&self, name: &str) -> Result<(), String> {
-        let record = self
-            .record()
-            .ok_or_else(|| "the workspace's emoji are unavailable".to_owned())?;
+        let record = self.record().ok_or_else(unavailable)?;
         let state = record.get();
         let emoji = state
             .get(name)
@@ -212,6 +225,15 @@ impl EmojiSource for WindowEmoji {
             .and_then(|window| window.enter_if_open().ok());
         self.choosing.borrow_mut().push(request.send_contents());
     }
+
+    fn last_added(&self) -> (u64, Option<Adding>) {
+        self.added.borrow().clone()
+    }
+}
+
+/// Why nothing of the workspace's emoji can change: its record is not open.
+fn unavailable() -> String {
+    ui_core::i18n::I18nManager::lookup_plain("workspace-emoji-unavailable")
 }
 
 /// Register the workspace's emoji for the window whose wake scope `window`
@@ -265,5 +287,11 @@ impl EmojiSource for Held {
         if let Some(source) = self.0.upgrade() {
             source.choose_and_add();
         }
+    }
+
+    fn last_added(&self) -> (u64, Option<Adding>) {
+        self.0
+            .upgrade()
+            .map_or((0, None), |source| source.last_added())
     }
 }
