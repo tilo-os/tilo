@@ -35,7 +35,6 @@
 "apps/osk/src/widget.rs" = 5500
 "apps/pdf-viewer/src/app.rs" = 10000
 "apps/pdf-viewer/src/source.rs" = 3500
-"apps/remote/src/app.rs" = 3500
 "apps/settings-rare/src/panes/accounts.rs" = 5000
 "apps/settings-rare/src/panes/device_mesh.rs" = 3500
 "apps/settings-rare/src/panes/updates.rs" = 4000
