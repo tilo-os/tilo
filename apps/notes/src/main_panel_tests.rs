@@ -219,6 +219,37 @@ fn main_panel_loads_snapshots_and_clears_page_bodies() {
     }
 }
 
+#[test]
+fn the_word_count_reads_the_bodies_not_the_markdown_around_them() {
+    let mut p = MainPanel::new();
+    p.load_page(fresh_page_id(), "Counting", "# Title\n\n- one **two**\n");
+    assert_eq!(p.word_count(), 3, "a heading and two marked-up words");
+    p.load_page(fresh_page_id(), "Counting", "```rust\nfn main() {}\n```\n");
+    let words: Vec<&str> = p
+        .editor()
+        .blocks()
+        .iter()
+        .map(ui::widget::Block::text)
+        .collect();
+    assert_eq!(
+        p.word_count(),
+        words.iter().map(|text| count_words(text)).sum::<usize>(),
+        "the code's own words, counted off its plain text ({words:?})"
+    );
+    assert!(
+        !words.iter().any(|text| text.contains("```")),
+        "no fence chrome is text of the code's own ({words:?})"
+    );
+    p.load_page(fresh_page_id(), "Counting", "\n- \n");
+    assert_eq!(
+        p.word_count(),
+        1,
+        "a bullet carrying no text still marks one"
+    );
+    p.clear();
+    assert_eq!(p.word_count(), 0, "an empty note holds no words");
+}
+
 // Catches a note maximised on a large display drawing a laptop-sized
 // strip of small text in a field of empty space.
 #[test]

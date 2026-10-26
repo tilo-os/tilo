@@ -166,6 +166,7 @@ mod tests {
             pinned: false,
             work: None,
             appearance: None,
+            share: None,
             mentions: mentions
                 .iter()
                 .map(|user| crate::mention::Mention {

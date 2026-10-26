@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,9 +35,13 @@ class Violation:
     line: int
     token: str
 
-    def __str__(self) -> str:
+    def headline(self) -> str:
+        """The finding, one line: what main prints on stdout."""
+        return f"{self.path}:{self.line}: production image build enables `{self.token}`."
+
+    def detail(self) -> str:
+        """Why and the fix: what main prints on stderr after the headline."""
         return (
-            f"{self.path}:{self.line}: production image build enables `{self.token}`.\n"
             "  Why: `dev-overrides` binaries accept a fixed lock-screen password and open a\n"
             "  socket that drives the session as the user; `dev-session` marks a binary as\n"
             "  loggable by the developer session entry; `agent-control` lets a local socket drive\n"
@@ -44,6 +49,9 @@ class Violation:
             "  Fix: remove the feature from this build. Dev-only binaries belong in\n"
             "  os/Containerfile.dev (the dev image), never in a production Containerfile."
         )
+
+    def __str__(self) -> str:
+        return f"{self.headline()}\n{self.detail()}"
 
 
 def production_containerfiles(os_dir: Path = OS_DIR) -> list[Path]:
@@ -85,10 +93,12 @@ def main() -> int:
     violations = audit()
     if violations:
         for violation in violations:
-            print(violation)
+            sys.stderr.flush()
+            print(violation.headline(), flush=True)
+            print(violation.detail(), file=sys.stderr)
         return 1
     count = len(production_containerfiles())
-    print(f"Dev-override feature contract OK ({count} production Containerfiles)")
+    print(f"Dev-override feature contract OK ({count} production Containerfiles)", file=sys.stderr)
     return 0
 
 

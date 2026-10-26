@@ -190,16 +190,91 @@ it the service refuses to start. The full design is in
 **The door of an invite-only room.** With `TILO_ROOMS_ADMISSION=invite`
 a stranger's `POST /join` is refused, and the page offers the room's wait
 list, signing in with an existing Tilo identity, and pasting an invitation
-link. `POST /wait-list` `{email}` keeps one address, normalized (trimmed,
-lowercased, at most 254 characters), on the room's wait list in the relay's
-room store (`<room>.wait-list` beside the room on
-`TILO_ROOMS_STATE`). It answers `200 {email}`, also for an address already
-listed, so nobody learns who else is on it; `400 invalid-email`; `429
-too-many` with `Retry-After` past 5 addresses in ten minutes or 20 a day from
-one network; `503 wait-list-full`; `404 no-wait-list` in an open room. The
-room's inviters find the addresses in its "Waiting to join" list, with when
-each was left: Invite makes an ordinary invitation link to send by email
-(the service sends no mail) and Remove takes the address off.
+link. `POST /wait-list` `{email, language}` keeps one address, as typed but
+trimmed (at most 254 characters; one address however its letters are
+cased), on the room's wait list in the relay's room store
+(`<room>.wait-list` beside the room on `TILO_ROOMS_STATE`). It answers
+`200 {email, removal, mail}`, also for an address already listed, so nobody
+learns who else is on it; `400 invalid-email`; `429 too-many` with
+`Retry-After` past 5 addresses in ten minutes or 20 a day from one network;
+`503 wait-list-full`; `404 no-wait-list` in an open room. `removal` is a
+random 256-bit secret (64 hex characters) the page keeps in that browser;
+the room keeps only its SHA-256. `POST /wait-list/remove` `{secret}` takes
+the entry off and answers `200 {}` whether or not any entry had that secret,
+so it tells nobody what is listed; `400 invalid-secret` for anything but 64
+hex characters, `429 too-many` past 10 removals in ten minutes or 50 a day
+from one network. `POST /wait-list/standing` `{secret}` answers `{standing}`
+(`pending`, `listed`, `invited` or `gone`), so a door opened again says
+where the entry stands. The room's inviters find the addresses in its
+"Waiting to join" list, with when each was left; Remove takes one off by
+hand, and an entry leaves the list once someone joins with an invitation
+sent for it. No log line names an address, a link or a secret.
+
+**The door's mail.** With `TILO_ROOMS_MAIL_FROM` and
+`TILO_ROOMS_RESEND_KEY_FILE` the door mails through Resend's HTTP API
+(`https://api.resend.com/emails`, over the system's trust store), and
+`mail` is `true`:
+
+- Leaving an address mails it a link that confirms it
+  (`<TILO_ROOMS_WEB_ENTRY>?wait-list-confirm=<secret>`). Until it is opened
+  the entry is hidden from inviters, and after 48 hours unconfirmed it is
+  forgotten. One address is mailed at most once an hour, however often it
+  is left, and the answer is the same either way.
+  `POST /wait-list/confirm` `{token}` answers `{confirmed}`, counted with
+  the standing lookups (30 in ten minutes, 300 a day from one network).
+- Every mail carries a removal link
+  (`<TILO_ROOMS_WEB_ENTRY>?wait-list-remove=<secret>`); the room keeps only
+  each secret's SHA-256. The door page does what the link asks and takes it
+  out of the address bar. A confirmed address that leaves is mailed that it
+  did.
+- Invite on a confirmed entry has the door mail the inviter's ordinary
+  invitation link there (only a link on `TILO_ROOMS_WEB_ENTRY`, at most once
+  in ten minutes per address), and marks the entry invited; the inviter can
+  still copy the link.
+
+Without them the door sends no mail and says so: an address is listed at
+once, and Invite hands the inviter the link to send. The words are the ones
+built into the service (`mail/` beside the sources: plain text and HTML,
+English and German), unless `TILO_ROOMS_MAIL_TEMPLATES` names a directory of
+the same shape — `layout.html` and `<language>/<mail>.{txt,html}` — as the
+shared mail repository's `generated/coffee` set, laid out in the image (for
+example `/usr/local/share/tilo/room-mail`). A configured directory that is
+missing, or that holds a file the door cannot fill, stops the service: it
+never falls back to the built-in words. Only `{{workspace}}`, `{{email}}`,
+`{{link}}`, `{{remove_link}}` and `{{door}}` are filled in a mail, and only
+`{{body}}` (and, if the layout wants it, `{{language}}`) in a layout; each is
+filled once, so a name or address that spells a placeholder stays text; a
+link the door mails is `https`, or a plain `http` loopback address in the
+local review mode (`TILO_ROOMS_LOCAL`) only.
+`tilo-room-service mail-preview <dir>` writes every mail as it would be sent,
+in every language, from the same templates (`TILO_ROOMS_MAIL_TEMPLATES` is
+read here too) and prints the paths.
+
+Every mail is kept in the room's outbox until the mail service takes it
+(`TILO_ROOMS_STATE/<name>/mail-outbox`, one `0600` file in a `0700`
+directory, written atomically): a restart, a busy service or an unreachable
+one delays a mail instead of losing it, and the next start sends what the
+last one did not. An attempt the service answers with `429`, `5xx` or no
+answer at all is tried again, honouring `Retry-After`, seven times at most
+over the day before the door gives up; a mail refused with any other `4xx`
+is not tried again. Each
+mail carries one id as Resend's `Idempotency-Key`, kept across attempts and
+restarts, so a repeated attempt after an uncertain answer is still one mail.
+The outbox keeps at most 512 mails and 16 MiB of mail fields, including on
+recovery, and refuses serialized entries above 1 MiB before acknowledging
+them. It drops mail more than a day old and records each bounded attempt
+before sending. Confirmations and invitations are checked against the
+relay's durable wait-list state before every attempt; removal cancels
+queued mail, including after restart. A provider request already in flight
+cannot be recalled.
+
+The door acknowledges invitation enqueue to the relay, so queue failure is
+reported to the inviter rather than counted as completed mailing. A bounded,
+private `receipts.json` records accepted confirmation addresses as hashes
+for one hour; without this evidence a suppressed repeat returns unavailable,
+not a claim that mail was queued. Mail bodies and links are kept only until
+sent or discarded; the API key is never written there. Nothing logs an
+address, a link or a secret.
 
 **One origin.** The room API and the relay share one public origin
 (e.g. `https://rooms.example`). The relay serves browsers on its plain HTTP
@@ -220,6 +295,9 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_NAME` | `<name>`, capitalized | the name people see for the room (1–80 characters) |
 | `TILO_ROOMS_DESCRIPTION` | unset: none | what the directory of public workspaces says the room is (at most 280 characters) |
 | `TILO_ROOMS_CHAT_CHANNELS` | unset: `general` | channels Chat starts with while it has none, comma-separated names of lowercase letters, digits and `-` |
+| `TILO_ROOMS_FEEDBACK_CHANNEL` | unset: none | the channel members report problems to, by name; kept in Chat on every start under the id `c_<name>` (`-` as `_`), which the web entry's `TILO_WEB_HOME_FEEDBACK` names |
+| `TILO_ROOMS_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` when that file exists, else unset: none | a file holding the Anthropic API key the room's moderation agent asks with, kept in the host's secret store. The same model looks over the reports members write in the feedback channel before they send them: their pages ask through the room, never holding the key, at most 12 reviews per person and 240 per room every 10 minutes, and the review names the model. Unset, the room has no moderation agent and reports are checked by rules alone unless the reporter's page has a model of its own |
+| `TILO_ROOMS_MODERATION_MODEL` | `claude-haiku-5-5` | the model that key asks, for moderation and report reviews |
 | `TILO_ROOMS_STRIPS` | unset: none | strips the shared desktop has, comma-separated names of up to 48 characters |
 | `TILO_ROOMS_RELAY_ORIGIN` | required | the relay's public origin, e.g. `https://rooms.example` |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the relay's plain listener the ingress forwards `/peer/` to |
@@ -233,14 +311,18 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_MAX_SPECTATORS` | `1000` | watching sessions at once |
 | `TILO_ROOMS_ADMISSION` | `open` | who the door lets in: `open`, anyone as a guest; `invite`, only the room's members and people with an invitation, the rest are refused with `403 {code: "invitation-only"}` and, while the room keeps a wait list, `waitList: true` and `contact` |
 | `TILO_ROOMS_WAIT_LIST_MAX` | `10000` | addresses (0–1000000) the wait list of an `invite` room keeps; past it `POST /wait-list` answers `503 wait-list-full`. `0`: no wait list |
-| `TILO_ROOMS_CONTACT` | unset | an email address or `https://` page the door names for being taken off the wait list |
+| `TILO_ROOMS_CONTACT` | unset | an email address or `https://` page the door names for questions about the wait list or removal from it, beside its own button to leave the list |
+| `TILO_ROOMS_MAIL_FROM` | unset | the sender of the door's mail, `Name <address>` or an address; set with `TILO_ROOMS_RESEND_KEY_FILE` (and `TILO_ROOMS_WEB_ENTRY`), or neither |
+| `TILO_ROOMS_RESEND_KEY_FILE` | unset | a file holding the Resend API key the door mails with; read at start, never logged |
+| `TILO_ROOMS_RESEND_URL` | Resend's API | where mail is posted; only a test points it at a stand-in on loopback |
+| `TILO_ROOMS_MAIL_TEMPLATES` | unset: the built-in words | a directory of the door's mail: `layout.html` and `<language>/<mail>.{txt,html}` for English and German, as the shared mail repository's `generated/coffee` holds them. A file that is missing or that the door cannot fill stops the service; `mail-preview` reads it too |
 | `TILO_ROOMS_GUEST_JOINS_PER_10_MIN`, `TILO_ROOMS_GUEST_JOINS_PER_DAY` | `5`, `30` | guest joins one address may make (an IPv6 address counts by its /64); a visitor past them watches until the window frees up. The windows are rebuilt from the guest ledger on the volume at start, so a restart does not reset them; a join the room never answered (it was restarting) does not count. Raise them where many visitors share an address: offices, schools, mobile carriers' NAT |
 | `TILO_ROOMS_SPECTATES_PER_10_MIN` | `30` | spectator certificates one address may take |
 | `TILO_ROOMS_OWNERS`, `TILO_ROOMS_MODERATORS` | none | user keys (hex), comma-separated |
 | `TILO_ROOMS_ROLES_FILE` | none | more owners and moderators, `{"owners": [hex], "moderators": [hex]}`, taken in within seconds of each change, no restart |
 | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat,so.tilo.notes,so.tilo.canvas` | apps added to the room once, comma-separated; each starts empty, as in any other workspace |
 | `TILO_ROOMS_AUTHOR_APPS` | the seeded apps | apps the room's members write through, comma-separated: each authors the room's content (so a guest, an Editor, can talk in its Chat), settled at every start; an app taken out of the list stops authoring the room. `none`: guests read the room only |
-| `TILO_ROOMS_BOTS` | none | bots installed at the first start, `;`-separated, each `<entry> key=value …`, where the entry is a directory bot or a program file such as the image's `/usr/local/share/tilo/bots/discord-bridge.json`; the Discord bridge takes `guild=<server id>`, optionally `channel=<channel id>` to bridge only that channel and `server=<name>`, and the host connects the room's Chat to that server before the bridge runs |
+| `TILO_ROOMS_BOTS` | none | bots installed at the first start, `;`-separated, each `<source> key=value …`, where the source is a directory bot or a program file such as the image's `/usr/local/share/tilo/bots/discord-bridge.json` (the room shows the program's own name, not the path); the Discord bridge takes `guild=<server id>`, optionally `channel=<channel id>` to bridge only that channel and `server=<name>`, and the host connects the room's Chat to that server before the bridge runs |
 | `TILO_ROOMS_DISCORD_TOKEN_FILE` | `/run/secrets/discord-bot-token` if present | the Discord bot token, read only when bots run |
 | `TILO_ROOMS_ATTACHMENT_MAX_MIB` | `25` | the largest file (at most 64 MiB) a member posts in the room's Chat that the room keeps a copy of, so it stays after they leave; a larger one is there only while someone who has it is online |
 | `TILO_ROOMS_ATTACHMENT_MEMBER_MIB` | `250` | what one member's kept files may take together; past it their oldest go first |

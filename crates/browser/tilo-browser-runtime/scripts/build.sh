@@ -10,11 +10,14 @@
 #                       the Typst editor's fonts), with sizes and hashes
 #   build.json          revision, tools, profile and output hashes
 #
-# usage: build.sh OUTPUT_DIR [--profile release|dev|quick] [--[no-]wasm-opt]
+# usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt]
 #                 [--bundle runtime|desktop] [--no-split] [--update]
 # `--profile release` compiles with Cargo's `wasm-release` profile and runs
 # wasm-opt (binaryen) unless `--no-wasm-opt`; `dev` skips it unless `--wasm-opt`.
-# `quick` is the development loop's: Cargo's `wasm-dev` profile (no debug
+# `assert` is release optimisation with the assertions and overflow checks a
+# dev build keeps (`wasm-assert`): qualification and performance measurement
+# run on it, so a faster bundle is never one that stopped checking. `quick`
+# is the development loop's: Cargo's `wasm-dev` profile (no debug
 # information, light optimisation), whose much smaller module wasm-bindgen
 # and the splitter get through in half the time, and no wasm-opt.
 # `--bundle desktop` builds crates/browser/tilo-web-desktop instead: the same
@@ -35,7 +38,7 @@ set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-usage='usage: build.sh OUTPUT_DIR [--profile release|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop] [--no-split] [--update]'
+usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop] [--no-split] [--update]'
 out=${1:?$usage}
 shift
 profile=release
@@ -56,12 +59,14 @@ while [[ $# -gt 0 ]]; do
 done
 case "$profile" in
   release) cargo_profile=wasm-release artifact=wasm-release optimize=${optimize:-1} ;;
+  assert) cargo_profile=wasm-assert artifact=wasm-assert optimize=${optimize:-1} ;;
   dev) cargo_profile=dev artifact=debug optimize=${optimize:-0} ;;
   quick) cargo_profile=wasm-dev artifact=wasm-dev optimize=${optimize:-0} ;;
   *) echo "unsupported profile: $profile" >&2; exit 2 ;;
 esac
-# A release bundle is always built whole from source and split: what ships.
-[[ $profile != release || ( $split == 1 && $update == 0 ) ]] || {
+# A release or qualification bundle is always built whole from source and
+# split: what ships, and what is measured.
+[[ $profile != release && $profile != assert || ( $split == 1 && $update == 0 ) ]] || {
   echo '--no-split and --update are for dev and quick bundles' >&2; exit 2;
 }
 case "$bundle" in
@@ -70,10 +75,14 @@ case "$bundle" in
   *) echo "unsupported bundle: $bundle" >&2; exit 2 ;;
 esac
 # The splitter reads the linked module's symbol table, which `wasm-release`
-# strips; `wasm-split` is that profile with the table kept.
+# and `wasm-assert` strip; `wasm-split` and `wasm-assert-split` are those
+# profiles with the table kept.
 bindgen_flags=()
 if [[ $bundle == desktop ]]; then
-  [[ $profile == release ]] && cargo_profile=wasm-split artifact=wasm-split
+  case $profile in
+    release) cargo_profile=wasm-split artifact=wasm-split ;;
+    assert) cargo_profile=wasm-assert-split artifact=wasm-assert-split ;;
+  esac
   bindgen_flags=(--keep-lld-exports --no-demangle)
 fi
 [[ "$out" == /* ]] || { echo 'OUTPUT_DIR must be absolute' >&2; exit 2; }
@@ -105,7 +114,7 @@ pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$crate/Cargo.toml")
 # A development bundle may be built from a tree without its git metadata (a
 # build container's synced copy); it records an unknown revision. A release
 # bundle names the commit it was built from.
-if [[ $profile != release ]] && ! git rev-parse HEAD >/dev/null 2>&1; then
+if [[ $profile != release && $profile != assert ]] && ! git rev-parse HEAD >/dev/null 2>&1; then
   git() { [[ $1 == rev-parse ]] && echo unknown; return 0; }
 fi
 revision=$(git rev-parse HEAD)
@@ -142,8 +151,9 @@ else
     bash "$repo/tools/web/wasm-split/split.sh" --unsplit "$next"
   fi
   if [[ -d "$out/pkg/compute" ]]; then mv "$out/pkg/compute" "$next/compute"; fi
-  # A release bundle ships exactly what it was built from; no stamp.
-  if [[ $profile != release && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
+  # A release or qualification bundle ships exactly what it was built from; no
+  # stamp.
+  if [[ $profile != release && $profile != assert && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
   rm -rf "$out/pkg"
   mv "$next" "$out/pkg"
 fi

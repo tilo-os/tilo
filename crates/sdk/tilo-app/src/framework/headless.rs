@@ -317,6 +317,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
+    /// The record `P` every app of the room opens that `owner` keeps, as
+    /// the app's views open it.
+    pub fn workspace<P: Resource>(
+        &mut self,
+        owner: &'static str,
+    ) -> Option<super::WorkspaceRecord<P>> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot| root.storage.workspace::<P>(owner))
+            .flatten()
+    }
+
     /// The person's shared record `P`, as the app's views open it.
     pub fn shared_person<P: tilo_resource::SharedRecord>(
         &mut self,

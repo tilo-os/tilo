@@ -38,6 +38,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 pub mod person;
 pub mod transfer;
+pub mod workspace;
 
 /// Key, in a record's own document, of the map holding its identity.
 const META: &str = "tilo:record";
@@ -4550,7 +4551,8 @@ impl RecordStore {
 
     /// The open records that belong to another's tree ([`RecordId::tree`]),
     /// ready to read; none while a frame holds the store.
-    pub(crate) fn open_tree_records(&self) -> Vec<RecordCheckout> {
+    #[must_use]
+    pub fn open_tree_records(&self) -> Vec<RecordCheckout> {
         let Ok(set) = self.0.try_borrow() else {
             return Vec::new();
         };

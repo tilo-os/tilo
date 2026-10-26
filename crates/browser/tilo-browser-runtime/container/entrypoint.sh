@@ -5,6 +5,8 @@
 #   TILO_WEB_HOME_HOST  host name of the home workspace's host (unset: no home)
 #   TILO_WEB_HOME_NAME  its name, required with a host
 #   TILO_WEB_HOME_APP   the app in front, optional (unset: its desktop)
+#   TILO_WEB_HOME_FEEDBACK  the id of its Chat channel members report
+#                       problems to, optional (unset: reports are not offered)
 # Tilo computers list the site's public workspaces from its directory: the
 # home host's own (https://<host>/directory) unless one is named:
 #   TILO_WEB_DIRECTORY  the directory's https:// address (unset: the home's)
@@ -19,17 +21,20 @@ set -eu
 host=${TILO_WEB_HOME_HOST:-}
 name=${TILO_WEB_HOME_NAME:-}
 app=${TILO_WEB_HOME_APP:-}
+feedback=${TILO_WEB_HOME_FEEDBACK:-}
 mkdir -p /tmp/tilo-web
 fields=
 if [ -z "$host" ]; then
-  [ -z "$name$app" ] || { echo "TILO_WEB_HOME_NAME and TILO_WEB_HOME_APP need TILO_WEB_HOME_HOST" >&2; exit 2; }
+  [ -z "$name$app$feedback" ] || { echo "TILO_WEB_HOME_NAME, TILO_WEB_HOME_APP and TILO_WEB_HOME_FEEDBACK need TILO_WEB_HOME_HOST" >&2; exit 2; }
 else
   # Values land in JSON as they are: only characters that need no escaping.
   case "$host" in *[!a-z0-9.:-]*) echo "TILO_WEB_HOME_HOST must be a host name: $host" >&2; exit 2 ;; esac
   case "$name" in '' | *[!A-Za-z0-9\ ._-]*) echo "TILO_WEB_HOME_NAME is required with a host and may use letters, digits, space, . _ -" >&2; exit 2 ;; esac
   case "$app" in *[!a-z0-9._-]*) echo "TILO_WEB_HOME_APP must be an app id" >&2; exit 2 ;; esac
+  case "$feedback" in *[!a-z0-9_]*) echo "TILO_WEB_HOME_FEEDBACK must be a channel id like c_feedback" >&2; exit 2 ;; esac
   front=
   [ -z "$app" ] || front=",\"app\":\"$app\""
+  [ -z "$feedback" ] || front="$front,\"feedback\":{\"channel\":\"$feedback\"}"
   fields=$(printf '"home":{"name":"%s","host":{"origin":"https://%s"},"admission":"https://%s/"%s}' \
     "$name" "$host" "$host" "$front")
 fi

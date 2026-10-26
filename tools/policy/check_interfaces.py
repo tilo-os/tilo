@@ -873,7 +873,7 @@ def check(root: Path = ROOT) -> list[str]:
     served = served_versions(root)
     files = interface_files(root)
     if not files:
-        problems.append(f"no {FILE} is committed")
+        problems.append(f"crates/: no {FILE} is committed under crates/*/*/")
     for path in files:
         rel = path.relative_to(root)
         try:
@@ -1065,6 +1065,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "check":
         problems = check()
+        for problem in problems:
+            print(problem)
+        return 1 if problems else 0
     elif args.command == "write":
         problems = write()
     else:

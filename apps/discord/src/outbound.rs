@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, JsonSchema};
 
 use crate::record::{Guild, MAX_CONTENT_CHARS, MAX_UPLOAD_BYTES, MappedKind, Origin};
-use crate::slug;
 use crate::tilo::{self, Message};
+use crate::{emoji, slug};
 
 /// A send, and the thread root the posted message maps under.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -39,6 +39,98 @@ pub struct Context {
     /// The message's Tilo link, for the line a cut or a large file adds.
     #[serde(default)]
     pub link: String,
+    /// Where the room's resources open on the web, for the link a shared
+    /// window or resource carries; none when the room's host serves no web
+    /// page.
+    #[serde(default)]
+    pub links: Option<Box<Links>>,
+}
+
+/// Where a room's host serves its resources on the web: what `share-link`
+/// mints its links from (`ResourceViewLocator`), less the record, which
+/// each message names.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Links {
+    /// The web entry the browser bundle is served under (`https://…/`).
+    pub web_entry: String,
+    /// The host's browser origin.
+    pub origin: String,
+    /// The room.
+    pub room: String,
+    /// The certified host device key, hex.
+    pub host_device: String,
+}
+
+impl Links {
+    /// The link that opens `reference` in the record `provider`
+    /// (`record:<app>:<record>`) on the web: the URL `share-link` mints for
+    /// it on the room's host.
+    ///
+    /// # Errors
+    /// Why there is no such link: `provider` names no record, or the link
+    /// grammar refuses one of its parts.
+    pub fn resource(&self, provider: &str, reference: &tilo::Reference) -> Result<String, String> {
+        let (app, record) = provider
+            .strip_prefix("record:")
+            .and_then(|rest| rest.split_once(':'))
+            .ok_or_else(|| format!("{provider} names no record"))?;
+        let request = tilo_resource::share::ShareRequest {
+            resource: reference.id.clone(),
+            kind: reference.kind.clone(),
+            views: vec![tilo_resource::share::SharedView {
+                id: "main".into(),
+                primary: true,
+                range: false,
+            }],
+            invite: false,
+            args: serde_json::Map::new(),
+        };
+        let locator = ui::tilo_actions::remote::ResourceViewLocator {
+            origin: self.origin.clone(),
+            room: self.room.clone(),
+            host_device: self.host_device.clone(),
+            provider: provider.to_owned(),
+            web_entry: Some(self.web_entry.clone()),
+        };
+        ui::framework::host_link(&request, app, record, &locator)
+    }
+}
+
+/// `text` with Discord's markdown marks shown as written.
+fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '*' | '_' | '~' | '`' | '|' | '\\' | '<' | '>') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The line a message that shares something ends with: a live window says
+/// so and links to where it opens, a window its sharer has closed says it
+/// is not live right now, an ended share says it is no longer shared, and a
+/// shared resource links to it. `None` for any other message.
+fn shared_line(message: &Message, context: &Context) -> Option<String> {
+    let reference = message.reference.as_ref()?;
+    let label = plain(&reference.label);
+    let url = message
+        .source_provider
+        .as_deref()
+        .zip(context.links.as_ref())
+        .and_then(|(provider, links)| links.resource(provider, reference).ok());
+    Some(match (&message.share, url) {
+        (Some(share), _) if share.ended => format!("**{label}** is no longer shared"),
+        (Some(share), Some(url)) if !share.open => {
+            format!("Shared **{label}**, not live right now. Open it in Tilo: {url}")
+        }
+        (Some(share), None) if !share.open => format!("Shared **{label}**, not live right now"),
+        (Some(_), Some(url)) => format!("Sharing **{label}** live. Open it in Tilo: {url}"),
+        (Some(_), None) => format!("Sharing **{label}** live in Tilo"),
+        (None, Some(url)) => format!("**{label}**: {url}"),
+        (None, None) => return None,
+    })
 }
 
 /// The plan for the Chat message `message` of `chat`.
@@ -169,6 +261,17 @@ fn body(guild: &Guild, message: &Message, context: &Context) -> (String, Vec<Out
 
     let mut attachments = Vec::new();
     let mut extra = Vec::new();
+    if let Some(line) = shared_line(message, context) {
+        // A share's words default to its label, which the line names.
+        if message
+            .reference
+            .as_ref()
+            .is_some_and(|reference| reference.label == message.text)
+        {
+            text.clear();
+        }
+        extra.push(line);
+    }
     if let Some(file) = &message.attachment {
         match file.size {
             Some(size) if size > MAX_UPLOAD_BYTES => {
@@ -300,10 +403,12 @@ pub fn plan_delete(guild: &Guild, channel: &str, message: &str) -> Vec<DeleteIte
     }]
 }
 
-/// The bot's reaction plan after a Tilo `react` or `unreact`: the bot
-/// reacts once while any Tilo person has the emoji, and takes it back with
-/// the last one. Reactions the bridge made for Discord users do not count;
-/// Discord shows those itself.
+/// The bot's reaction plan after a Tilo reaction with `emoji` was added
+/// (`added`) or taken back: the bot reacts once while any Tilo person has
+/// the emoji, and takes it back with the last one. Reactions the bridge
+/// made for Discord users do not count (Discord shows those itself), so
+/// nothing mirrored in comes back out. A workspace emoji goes across only
+/// as the server's emoji of its name ([`emoji::to_discord`]).
 #[must_use]
 pub fn plan_reaction(
     guild: &Guild,
@@ -313,9 +418,9 @@ pub fn plan_reaction(
     added: bool,
 ) -> (Vec<ReactOp>, Vec<ReactOp>) {
     let none = (Vec::new(), Vec::new());
-    if emoji.starts_with(':') {
+    let Some(discord_emoji) = emoji::to_discord(guild, emoji) else {
         return none;
-    }
+    };
     let Some(mapped) = guild.mapping(MappedKind::Message, message) else {
         return none;
     };
@@ -333,15 +438,17 @@ pub fn plan_reaction(
             None => return none,
         },
     };
+    let wanted = emoji::key(&discord_emoji);
     let tilo_people = row
         .reactions
         .iter()
-        .filter(|r| r.emoji == emoji && r.persona.is_none())
+        .filter(|r| r.persona.is_none())
+        .filter(|r| emoji::to_discord(guild, &r.emoji).is_some_and(|e| emoji::key(&e) == wanted))
         .count();
     let op = ReactOp {
         channel: channel_id,
         message: mapped.discord.clone(),
-        emoji: emoji.to_owned(),
+        emoji: discord_emoji,
     };
     match (added, tilo_people) {
         (true, 1) => (vec![op], Vec::new()),

@@ -11,6 +11,8 @@ pub mod approved_checks;
 mod committed_document;
 #[cfg(target_os = "linux")]
 mod file_clipboard;
+mod host_membership;
+
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 pub(crate) use file_clipboard::test_support::TestTransferPause;
@@ -23,6 +25,7 @@ mod person_chat;
 #[cfg(test)]
 pub(crate) use owner_source::OPENING as NATIVE_OWNER_OPENING;
 mod resource_views;
+mod room_nodes;
 #[cfg(target_os = "linux")]
 mod service_sessions;
 mod tracker_runs;
@@ -338,7 +341,10 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
                 if network.governed_elsewhere(room) {
-                    return grant_authorship_at_host(network, &owner, room, &request).await;
+                    return self::host_membership::commit_membership_at_host(
+                        network, &owner, room, &request,
+                    )
+                    .await;
                 }
             }
             let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
@@ -355,68 +361,6 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             Ok(receipt)
         })
     }
-}
-
-/// How long the app authorship a host committed may take to reach this
-/// device's admitted room. With the host's own answer (at most
-/// `relay_rooms::ADMIN_TIMEOUT`) it stays inside the 30 s a launch waits.
-const HOST_AUTHORSHIP_ADMISSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// In a room a host of this person governs (a home relay), opening an app
-/// there for the first time asks that host to let the app author the room's
-/// records: the host is the one party that may commit it. Every other
-/// membership change in a room governed elsewhere stays refused here.
-/// Answers with this device's committed view once it carries the authorship.
-async fn grant_authorship_at_host(
-    network: &super::network::ShellNetwork,
-    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
-    room: super::state::RoomId,
-    request: &tilo_owner_commit::OwnerCommitRequest,
-) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
-    const REFUSED: &str = "workspace membership requires the governing owner";
-    let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
-        caller,
-        command:
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                app,
-            },
-        ..
-    } = &request.operation
-    else {
-        return Err(REFUSED.into());
-    };
-    network
-        .grant_app_authorship_at_host(room, caller, app)
-        .await
-        .ok_or(REFUSED)??;
-    // The host's answer is not this device's commit barrier: wait until the
-    // authorship it published is in this device's actual admitted room.
-    tokio::time::timeout(HOST_AUTHORSHIP_ADMISSION_TIMEOUT, async {
-        loop {
-            network.check_native_custody(owner, room)?;
-            let receipt = owner.with_current(room, |view| {
-                let now = std::time::SystemTime::now();
-                let member = view.peer().permissions(caller.device_public_key, now)?;
-                if !member
-                    .policy
-                    .app_authors(app, &tilo_action_policy::Context::at_time(now))
-                {
-                    return Ok(None);
-                }
-                Ok(Some(tilo_owner_commit::OwnerCommitReceipt {
-                    binding: request.binding()?,
-                    generation: view.generation(),
-                    aggregate_hash: *blake3::hash(&view.peer().durable()?).as_bytes(),
-                }))
-            })?;
-            if let Some(receipt) = receipt {
-                return Ok(receipt);
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .map_err(|_| "the host committed the app authorship but it did not reach this device in time")?
 }
 
 /// A commit's outcome on the owner's thread: done here, or a receipt for
@@ -2150,12 +2094,14 @@ pub fn native_services(
         }),
         #[cfg(target_os = "linux")]
         drives: Some(Arc::new(NativeDrives)),
+        applications: Some(Arc::new(NativeApplications)),
         wifi_continuity: network.clone().map(|network| {
             Arc::new(NativeWifiContinuity(network))
                 as Arc<dyn tilo_action_broker::services::WifiContinuityServices>
         }),
         nearby_transfer,
         own_device: NativeOwnDevice::service(network.as_ref()),
+        room_nodes: room_nodes::NativeRoomNodes::service(network.as_ref()),
         workspace_control: network.map(|network| {
             Arc::new(NativeWorkspaceControl(network)) as Arc<dyn WorkspaceControlServices>
         }),
@@ -2229,6 +2175,7 @@ pub(crate) fn test_broker_with_membership(
         shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone()))),
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         app_action_grants: Some(Arc::new(NativeAppActionGrants(membership))),
+        applications: Some(Arc::new(NativeApplications)),
         ..Default::default()
     };
     tilo_action_broker::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
@@ -2265,6 +2212,16 @@ impl tilo_action_broker::services::DriveServices for NativeDrives {
         Some(Box::pin(crate::shell::drives::changed(after)))
     }
 }
+/// The person's apps, which tell the certified Files route when the list it
+/// is given changes.
+pub struct NativeApplications;
+
+impl tilo_action_broker::services::ApplicationServices for NativeApplications {
+    fn changed(&self, after: u64) -> Option<tilo_action_broker::services::ApplicationChange> {
+        Some(Box::pin(crate::shell::app_list::changed(after)))
+    }
+}
+
 /// Wi-Fi credentials carried between the person's certified devices.
 pub struct NativeWifiContinuity(pub Arc<super::network::ShellNetwork>);
 impl tilo_action_broker::services::WifiContinuityServices for NativeWifiContinuity {

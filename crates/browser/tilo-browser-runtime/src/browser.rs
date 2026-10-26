@@ -27,11 +27,10 @@ use winit::window::{Window, WindowId};
 use tilo_desktop::feedback::PrivateFeedback;
 
 use crate::viewport::{SurfaceCaps, Viewport, ViewportState};
+use crate::workspace_records::in_page;
 use tilo_lock::MutexRecover as _;
 
 thread_local! {
-    static FEEDBACK_STARTUPS: RefCell<HashMap<u32, tilo_desktop::feedback::transport::Startup>> =
-        RefCell::new(HashMap::new());
     static LOOP: RefCell<Option<EventLoopProxy<u64>>> = const { RefCell::new(None) };
     static MOUNTS: RefCell<HashMap<u64, Mount>> = RefCell::new(HashMap::new());
     static SERVICING: RefCell<std::collections::HashSet<u64>> = RefCell::new(std::collections::HashSet::new());
@@ -244,6 +243,9 @@ struct Config {
     /// the web host's `entry.json`); one left empty is not offered.
     #[serde(default)]
     about: tilo_desktop::about::AboutLinks,
+    /// The build the page runs (the site's `version.json` revision).
+    #[serde(default)]
+    build: Option<String>,
 }
 
 impl Config {
@@ -461,6 +463,8 @@ struct Mount {
     live_place: RefCell<Option<serde_json::Value>>,
     /// The last `liveWave` the page was told.
     live_wave: RefCell<Option<serde_json::Value>>,
+    /// The last `liveFollowing` the page was told.
+    live_following: RefCell<Option<String>>,
     /// Calls into this mount that can change what its semantics tree
     /// shows without a frame saying so: every call but a redraw, a wheel,
     /// pointer motion the frame lays out and the idle scheduler
@@ -496,6 +500,8 @@ struct Desktop {
     session: std::sync::Arc<tilo_desktop_surface::session::DesktopSession>,
     /// The desktop's end of that session.
     openings: tilo_desktop_surface::session::Openings,
+    /// What the session asked of the page for its windows, still open.
+    asks: session_asks::Asks,
     /// What this person may do here, which decides what the session opens
     /// as the workspace broker decides it on a native desktop.
     permissions: Rc<RefCell<PermissionContext>>,
@@ -518,10 +524,12 @@ impl Desktop {
     /// Open the apps the windows asked for since the last frame. Whether
     /// any were asked.
     fn open_requested_apps(&self) -> bool {
+        self.ask_room_of_nodes();
         let permissions = self.permissions.borrow();
-        self.openings.open(&self.handle, &self.generation, |app| {
-            crate::desktop::may_open(&permissions, app)
-        })
+        self.openings
+            .open(&self.handle, &self.generation, |app, existing| {
+                crate::desktop::may_open(&permissions, app, existing)
+            })
     }
 
     /// Tell this person, in a banner that retires to the notification
@@ -1296,34 +1304,6 @@ enum Root {
     Desktop(Box<crate::shell::BrowserShell>),
 }
 
-/// Trusted Rust startup handoff, separate from deserialized mount configuration.
-/// The certified peer must already exist. This never creates a peer or joins.
-pub(crate) fn register_feedback_startup(
-    peer: u32,
-    startup: tilo_desktop::feedback::transport::Startup,
-) -> Result<(), String> {
-    let device = startup
-        .reporter()
-        .device_public_key()
-        .ok_or("feedback reporter has no certified device")?;
-    if crate::replication::device_of(peer).as_deref() != Some(hex::encode(device).as_str()) {
-        return Err("feedback reporter does not own this certified peer".into());
-    }
-    FEEDBACK_STARTUPS.with_borrow_mut(|startups| {
-        if startups.contains_key(&peer) {
-            return Err("feedback startup already registered".into());
-        }
-        startups.insert(peer, startup);
-        Ok(())
-    })
-}
-
-pub(crate) fn forget_feedback_startup(peer: u32) {
-    FEEDBACK_STARTUPS.with_borrow_mut(|startups| {
-        startups.remove(&peer);
-    });
-}
-
 /// What the page's desktop mounts with: its stores, identity and settings.
 fn desktop_inputs(
     config: &Config,
@@ -1335,9 +1315,7 @@ fn desktop_inputs(
             .map_err(error)?,
     );
     Ok(crate::desktop::Inputs {
-        feedback: config
-            .peer
-            .and_then(|peer| FEEDBACK_STARTUPS.with_borrow_mut(|startups| startups.remove(&peer))),
+        feedback: config.peer.and_then(crate::feedback_delivery::take_startup),
         owners: RecordOwners::with_store(Rc::clone(dyn_store)),
         views,
         device: config.device.clone(),
@@ -1349,6 +1327,11 @@ fn desktop_inputs(
         author: config.author(),
         permissions,
         models: config.models()?,
+        model_name: config
+            .models
+            .as_ref()
+            .map(crate::host_services::ModelConfig::name)
+            .unwrap_or_default(),
         provider_admin: config.provider_admin()?,
         peer: config.peer,
     })
@@ -1408,6 +1391,7 @@ fn present_desktop(
             mac: config.mac,
             host: config.host.clone(),
             about: config.about.clone(),
+            build: config.build.clone(),
         },
         Rc::clone(&requests),
         crate::shell::ChromeSources {
@@ -1437,6 +1421,7 @@ fn present_desktop(
             people,
             session,
             openings,
+            asks: session_asks::Asks::new(config.peer),
             permissions: opening_permissions,
             room: config.room.clone(),
         }),
@@ -1452,9 +1437,12 @@ fn present_component(
     if definition.app_id == tilo_desktop::feedback::PACKAGE {
         return present_private_feedback(config);
     }
-    let record = RecordOwners::with_store(Rc::clone(&dyn_store))
+    let owners = RecordOwners::with_store(Rc::clone(&dyn_store));
+    let record = owners
+        .clone()
         .open(definition.app_id, &config.room)
         .map_err(error)?;
+    let stores = Rc::new(RefCell::new(vec![record.clone()]));
     // The instance's default record, named by the host so a reload opens the
     // same document, as a native launch does.
     let default = RecordCheckout::new(
@@ -1503,7 +1491,7 @@ fn present_component(
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
     let inputs = HostContextInputs {
-        records: record.clone(),
+        records: record,
         views,
         device_id: config.device.clone(),
         instance_id: config.instance,
@@ -1518,6 +1506,7 @@ fn present_component(
     .map_err(error)?;
     context.provide_models(config.models()?);
     context.provide_content(crate::page_content());
+    context.provide_workspace_records(in_page(&owners, &stores, &config.room, config.author()));
     crate::host_services::provide_provider_admin(&mut context, config.provider_admin()?)
         .map_err(error)?;
     let loaders = Rc::new(RefCell::new(Vec::new()));
@@ -1541,7 +1530,7 @@ fn present_component(
     );
     Ok(Presentation {
         root: Root::Component(Box::new(component)),
-        stores: Rc::new(RefCell::new(vec![record])),
+        stores,
         checkout: Some(checkout),
         images: loaders,
         image_owners,
@@ -1782,6 +1771,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         focus_presence: RefCell::new(None),
         live_place: RefCell::new(None),
         live_wave: RefCell::new(None),
+        live_following: RefCell::new(None),
         entries: 0,
         tree_entries: std::cell::Cell::new(0),
         tree_root_rect: std::cell::Cell::new([0.0; 4]),
@@ -2343,6 +2333,8 @@ impl Mount {
             self.held = "an empty canvas";
             return Ok(());
         }
+        // A window the last frame opened shows what its open named.
+        self.reveal_opened();
         let Some(gpu) = self.gpu.as_mut() else {
             self.held = "no surface";
             return Ok(());
@@ -2730,6 +2722,8 @@ impl Mount {
             &gpu.surface,
             &output.texture,
         );
+        let target = &gpu.surface.target_texture;
+        crate::feedback_crops::service(&handle.device, &handle.queue, target, viewport.dpr);
         // The first frame is out: the pipelines it did not need compile once
         // the page has stayed a while (`compile_deferred_pipelines_later`).
         drop(shared_guard);
@@ -2740,6 +2734,11 @@ impl Mount {
         self.viewport.did_present();
         self.pending = false;
         self.frames = self.frames.saturating_add(1);
+        if !self.hidden
+            && let Some(desktop) = &self.desktop
+        {
+            desktop.shared.presented.set(true);
+        }
         if let Some(reasons) = reasons {
             self.metrics.borrow_mut().presented(reasons);
         }
@@ -2802,32 +2801,6 @@ impl Mount {
         Some(
             serde_json::json!({"anchor": hex::encode(anchor.cursor), "head": hex::encode(head.cursor)}),
         )
-    }
-
-    /// Where this person is on the desktop, for the room's presence:
-    /// `{focus, place}`, the record of the focused window (the desktop's
-    /// own record where no window is focused or it has none yet) and the
-    /// strip shown. `None` for a single application.
-    fn live_place_value(&self) -> Option<serde_json::Value> {
-        let desktop = self.desktop.as_ref()?;
-        let (focus, place) = desktop.handle.read(|tree| {
-            let place = tree.active_workspace().and_then(|workspace| {
-                tilo_desktop_surface::navigation::active_strip(tree, workspace)
-            });
-            let focus = tilo_desktop_surface::navigation::active_route(tree)
-                .and_then(|route| desktop.shared.live_record_of(tree, route.tab));
-            (focus, place)
-        });
-        let (app, record) = focus.unwrap_or_else(|| {
-            (
-                crate::desktop::DESKTOP_PACKAGE.to_owned(),
-                crate::replication::DESKTOP_RECORD.to_owned(),
-            )
-        });
-        Some(serde_json::json!({
-            "focus": {"app": app, "record": record},
-            "place": place.map(|strip| strip.0.to_string()),
-        }))
     }
 
     /// Add the focus presence and the place in the room to a status where
@@ -2987,23 +2960,7 @@ impl Mount {
         if !(unbuilt && change == FrameChange::Nothing) {
             self.add_presence_changes(&mut value);
         }
-        // This person's latest wave, for the page's presence to carry.
-        let wave = self.desktop.as_ref().and_then(|desktop| {
-            desktop
-                .here
-                .borrow()
-                .sent_wave()
-                .and_then(|wave| serde_json::to_value(wave).ok())
-        });
-        if *self.live_wave.borrow() != wave
-            && let Some(object) = value.as_object_mut()
-        {
-            object.insert(
-                "liveWave".into(),
-                wave.clone().unwrap_or(serde_json::Value::Null),
-            );
-            *self.live_wave.borrow_mut() = wave;
-        }
+        self.add_live_signals(&mut value);
         if self.error.is_none() && self.frames > 0 {
             FIRST_FRAME_PRESENTED.store(true, std::sync::atomic::Ordering::Release);
         }
@@ -3315,6 +3272,9 @@ pub fn request_semantics(id: u64) -> Result<(), JsValue> {
 
 mod desktop_exports;
 mod fonts;
+mod live_layout;
+mod live_signals;
+mod session_asks;
 use crate::first_frame::{self, GpuStep};
 pub(crate) mod pointers;
 mod retained;
@@ -3445,6 +3405,54 @@ pub fn desktop_here_people(id: u64) -> Result<Option<String>, JsValue> {
     })
 }
 
+/// The picture `user` (root key, hex) chose for their profile, decoded by
+/// the page into `width` × `height` straight-alpha RGBA pixels; empty
+/// pixels take it away. Every avatar of theirs wears it from the next frame.
+///
+/// # Errors
+///
+/// Rejects pixels that do not fill the size, a picture larger than a
+/// profile's, or a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_person_photo(
+    id: u64,
+    user: &str,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+) -> Result<(), JsValue> {
+    /// The largest side a profile picture is drawn from.
+    const MAX_SIDE: u32 = 256;
+    let image = if rgba.is_empty() {
+        None
+    } else {
+        let expected = usize::try_from(width.saturating_mul(height).saturating_mul(4)).ok();
+        if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+            return Err(error("a profile picture is at most 256 pixels square"));
+        }
+        if expected != Some(rgba.len()) {
+            return Err(error("the pixels do not fill the picture"));
+        }
+        Some(ui::peniko::ImageData {
+            data: ui::peniko::Blob::new(std::sync::Arc::new(rgba)),
+            format: ui::peniko::ImageFormat::Rgba8,
+            alpha_type: ui::peniko::ImageAlphaType::Alpha,
+            width,
+            height,
+        })
+    };
+    ui::people_photos::set(user, image);
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        desktop.here.borrow_mut().photos_changed();
+        m.apply_here();
+        Ok(())
+    })
+}
+
 /// The host's answer to `/here` (`peer.here`): each person's line.
 ///
 /// # Errors
@@ -3493,9 +3501,9 @@ pub fn desktop_set_watching(id: u64, watching: u32) -> Result<(), JsValue> {
 
 /// What this page's person is doing, for the page to post to `/here`:
 /// `{window: hex | null, share, actions: [{id, action, resource, app,
-/// at_ms}]}`. `window` is the focused window's tab id; `actions` are their own steps in the active workspace's records since
-/// `since_ms` (titles only), and empty unless they share an automatic
-/// status (`share`).
+/// at_ms}], status}`: the focused window's tab id, their own steps in the active workspace since
+/// `since_ms` (titles only; none unless they share an automatic status) and their own words for
+/// their live presence (`null` while they said nothing or share nothing).
 ///
 /// # Errors
 ///
@@ -3539,6 +3547,7 @@ pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
             "window": window,
             "share": share,
             "actions": actions,
+            "status": desktop.here.borrow().shared_words(),
         }))
         .map_err(error)
     })

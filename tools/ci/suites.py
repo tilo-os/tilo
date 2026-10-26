@@ -629,10 +629,10 @@ def audit_cargo(root: Path, tracked: list[str], manifest: Manifest) -> list[str]
     entries = {entry.package: entry for entry in manifest.cargo}
     for entry in manifest.cargo:
         if entry.package not in names:
-            problems.append(f"cargo {entry.package}: no tracked Cargo.toml declares this package")
+            problems.append(f"{MANIFEST}: cargo {entry.package}: no tracked Cargo.toml declares this package")
         for pattern in entry.inputs:
             if not any(matches(path, pattern) for path in tracked):
-                problems.append(f"cargo {entry.package}: input {pattern} matches no tracked file")
+                problems.append(f"{MANIFEST}: cargo {entry.package}: input {pattern} matches no tracked file")
         for reader in entry.readers:
             directory = package_dir(reader, packages)
             if reader not in tracked_set:
@@ -665,7 +665,7 @@ def audit_cargo(root: Path, tracked: list[str], manifest: Manifest) -> list[str]
     for entry in manifest.cargo:
         for directory in entry.dependencies_of:
             if not any(package.startswith(directory) for package in packages):
-                problems.append(f"cargo {entry.package}: dependencies_of {directory} holds no tracked package")
+                problems.append(f"{MANIFEST}: cargo {entry.package}: dependencies_of {directory} holds no tracked package")
     return problems
 
 
@@ -750,13 +750,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "check":
         problems = audit(ROOT, tracked_files(ROOT))
+        # Findings on stdout, everything else on stderr (tools/policy/findings.py).
         for problem in problems:
-            print(problem, file=sys.stderr)
+            print(problem)
         if not problems:
             manifest = load(ROOT)
             print(f"suite manifest OK: {len(manifest.suites())} path-selected, "
                   f"{len(manifest.covered)} covered, {len(manifest.unrequired)} unrequired; "
-                  f"{len(manifest.cargo)} Cargo packages with cross-package inputs")
+                  f"{len(manifest.cargo)} Cargo packages with cross-package inputs", file=sys.stderr)
         return 1 if problems else 0
     if sum(map(bool, (args.all, args.suites, args.group))) > 1:
         parser.error("run takes either suite paths, --group or --all")

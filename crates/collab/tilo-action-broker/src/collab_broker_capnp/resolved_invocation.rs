@@ -5,8 +5,8 @@ use super::{
     DIRECTORY_MAX_QUERY_REVISION_BYTES, DirectoryActionConfirmation, Duration, HostWorkerReadGuard,
     InvocationCaller, InvocationInputs, LocalActionDirectoryRegistry, PrivateWorkerRegistration,
     Promise, PublishedAction, PublishedSurface, Rc, RegisteredActionDirectory, channel_handle,
-    invocation_target_peer, published_directory_action, validate_directory_identifier,
-    validate_directory_target_input, validate_directory_text,
+    invocation_target_peer, legacy_door_may_act_as_person, published_directory_action,
+    validate_directory_identifier, validate_directory_target_input, validate_directory_text,
 };
 
 enum ResolutionRevision<'a> {
@@ -658,6 +658,13 @@ fn invoke_checked(
             return Err(capnp::Error::failed(
                 "resolved worker original authorizer unavailable".into(),
             ));
+        }
+        // The peer names the target, so the target's application must be the
+        // caller's own. Checked before any confirmation is minted.
+        let invoke_access = state.app_action_access(&route.app_id).invoke;
+        if !legacy_door_may_act_as_person(&current, &route, &offer.registered.app_id, invoke_access)
+        {
+            return Err(capnp::Error::failed(super::LEGACY_DOOR_FOREIGN_APP.into()));
         }
         state.revalidate_admission(&offer.registered.route, &target)?;
         let actor = current.broker_actor();

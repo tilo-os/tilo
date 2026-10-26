@@ -125,6 +125,12 @@ impl ViewTabs {
         self.strip.apply_layout_external(rect);
     }
 
+    /// Where the tab at `index` stands since the last layout.
+    #[must_use]
+    pub fn tab_rect(&self, index: usize) -> Option<vello::kurbo::Rect> {
+        self.strip.segment_rect(index)
+    }
+
     fn map(self, f: impl FnOnce(ToggleGroup) -> ToggleGroup) -> Self {
         Self {
             strip: f(self.strip),
@@ -229,5 +235,35 @@ mod tests {
         assert!(acted);
         assert_eq!(tabs.selected(), 3);
         assert_eq!(chosen.get(), Some(3));
+    }
+
+    #[test]
+    fn a_hand_placed_strip_names_where_each_tab_stands() {
+        let theme = crate::theme::Theme::dark();
+        let mut tabs = tabs();
+        let strip = vello::kurbo::Rect::new(10.0, 20.0, 410.0, 60.0);
+        tabs.apply_layout_external(strip);
+        tabs.draw(
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
+            &mut crate::text_render::TextRenderer::new(),
+            &theme,
+            &crate::presence::PresenceCtx::default(),
+        );
+        tabs.apply_layout_external(strip);
+        let rects: Vec<_> = (0..4).map(|i| tabs.tab_rect(i).expect("a tab")).collect();
+        assert_eq!(tabs.tab_rect(4), None);
+        for pair in rects.windows(2) {
+            if let [left, right] = pair {
+                assert!(
+                    left.x1 <= right.x0,
+                    "tabs run left to right without overlap"
+                );
+            }
+        }
+        for rect in &rects {
+            assert!(rect.width() > 0.0);
+            assert!(rect.x0 >= strip.x0 && rect.x1 <= strip.x1);
+        }
     }
 }

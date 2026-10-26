@@ -253,9 +253,10 @@ impl CalcScreen {
             })
             .fold(0.0, f64::max);
         self.field.set_source(&model.expr);
-        self.field.set_size(mathfield::formula_size(theme, tr));
-        let formula_h = (self.field.content_height(tr) * f64::from(tr.text_scale()))
-            .min(mathfield::CARD_MAX_H * theme.responsive_scale());
+        self.field.set_size(mathfield::formula_size(theme));
+        let formula_h = (self.field.content_height(tr)
+            / f64::from(tr.text_scale().max(f32::EPSILON)))
+        .min(mathfield::CARD_MAX_H * theme.responsive_scale());
         let extra = (formula_h - self.m.expr_tall_line).max(0.0);
         self.m.expr_tall_line += extra;
         self.m.display_tall += extra;
@@ -677,20 +678,42 @@ mod tests {
     #[test]
     fn enlarged_calculator_keeps_a_stacked_display_and_usable_keypad() {
         for theme in [
+            Theme::dark(),
             Theme::dark().with_ui_scale(1.5),
             Theme::light().with_ui_scale(1.5),
             Theme::dark().with_ui_scale(1.5).with_text_scale(1.5),
+            Theme::dark().with_text_scale(2.0),
         ] {
             let mut screen = CalcScreen::default();
             let mut text = TextRenderer::new();
+            // The live desktop's renderer carries the reader's text scale;
+            // the formula is set at the theme's size already.
+            text.set_text_scale(theme.text_scale);
             let model = CalcModel {
                 expr: "sqrt(2)/3".into(),
                 ..CalcModel::seeded()
             };
             let area = Rect::new(0.0, 0.0, 1440.0, 810.0);
             screen.prepare(&mut text, &theme, &model, area);
+            // The display grows with the formula it holds: re-place the field
+            // as the draw pass does and measure what is actually set.
+            let band = screen.expression_rect;
+            screen.field.set_rect(band, &mut text);
+            let content = screen.field.content_height(&mut text);
             assert!(area.contains_rect(screen.display_rect));
-            assert!(screen.expression_rect.height() >= screen.field.content_height(&mut text));
+            assert!(
+                band.height() >= content || screen.field.overflows(),
+                "a formula that fits its display must not scroll: band {} vs content {content}",
+                band.height()
+            );
+            // The display grows for a reader with a larger text scale instead
+            // of clipping the formula it holds.
+            let plain = CalcScreen::default().m.display_tall;
+            assert!(
+                screen.m.display_tall > plain,
+                "the display must grow with the text scale ({} vs {plain})",
+                screen.m.display_tall
+            );
             for key in &screen.key_rects {
                 assert!(area.contains_rect(*key));
                 assert!(key.height() > 0.0 && key.width() > 0.0);

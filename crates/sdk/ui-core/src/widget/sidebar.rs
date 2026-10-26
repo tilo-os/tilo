@@ -5,14 +5,16 @@
 //! same decisions the shell makes, from the same metrics: docked beside the
 //! content while it fits beside the content's minimum (shrinking toward its
 //! own minimum first), the eased reveal, and the person's show/hide choice
-//! per size class. Too narrow to dock, a sidebar whose app said what its
-//! content is ([`SidebarDrawer::content_kind`]) takes turns with the content
-//! as `NavShell`'s push layout does: open, the list fills the window
+//! per size class. Too narrow to dock, a panel that asked for the push
+//! layout ([`SidebarDrawer::with_push`]: a list of rows the drawer would
+//! cover, as `NavShell` decides from the content's kind) takes turns with
+//! the content: open, the list fills the window
 //! ([`SidebarDrawer::is_push`]) and the toggle in the header row brings the
-//! content back, which is also where a choice in the list lands. A
-//! content-primary app ([`crate::widget::ContentKind::Document`]), an
-//! inspector and an [`SidebarDrawer::overlay_only`] panel float as a drawer
-//! over the content instead. A drawer is not modal and dims nothing: a
+//! content back, which is also where a choice in the list lands. Every other
+//! panel — a content-primary app ([`crate::widget::ContentKind::Document`]),
+//! an inspector, a video library beside the picture, an
+//! [`SidebarDrawer::overlay_only`] panel — floats as a drawer over the
+//! content. A drawer is not modal and dims nothing: a
 //! press on the content beside it ([`SidebarDrawer::scrim_rect`]) puts it
 //! away. It hands back the resolved
 //! rects; the host paints the panel with [`SidebarDrawer::paint_panel`] and
@@ -97,6 +99,9 @@ pub struct SidebarDrawer {
     /// `metrics.rail_width` of the theme last handed to [`Self::scale_for`],
     /// or the width its destinations' words need ([`Self::rail_labels`]).
     rail_column: f64,
+    /// The narrowest the docked panel shrinks to ([`Self::panel_min_width`]),
+    /// else the theme's `sidebar_min_width`.
+    panel_min_width: Option<AuthoredExtent>,
     /// The rail's destination labels, when it shows captions: the rail then
     /// grows with the text to fit the longest word, as every shared rail does
     /// ([`crate::chrome::rail_width_fitting`]).
@@ -166,12 +171,13 @@ impl SidebarDrawer {
             with_rail: false,
             rail_column: f64::from(Metrics::BASE.rail_width),
             rail_labels: Vec::new(),
+            panel_min_width: None,
             pending_snap: None,
             resolved_once: false,
             header_bottom: None,
             toggle: DrawerToggle::default(),
             resize: SplitHandle::new(SplitOrientation::Horizontal, SplitRatio::default()),
-            resize_min_width: f64::from(Metrics::BASE.sidebar_min_width),
+            resize_min_width: f64::from(Metrics::BASE.panel_min_width),
             sheet_least_half: f64::from(Metrics::BASE.sidebar_min_width),
             resize_max_width: f64::from(Metrics::BASE.sidebar_max_width),
             resize_redraw: false,
@@ -194,7 +200,10 @@ impl SidebarDrawer {
     pub fn right(self) -> Self {
         self.side(SidebarSide::Right)
     }
-    /// Authored at 1× (text-sized); see [`Self::scale_for`].
+    /// An authored dock width instead of the panel's own width beside the
+    /// content's minimum ([`Self::content_min_width`]). Prefer stating what
+    /// the content is: a threshold written down beside the panel's width and
+    /// the content it stands beside goes stale the moment either moves.
     #[must_use]
     pub fn breakpoint(mut self, px: f64) -> Self {
         self.breakpoint = AuthoredExtent::text(px);
@@ -210,14 +219,43 @@ impl SidebarDrawer {
         self
     }
     /// Dock while the content keeps the minimum its kind needs
-    /// ([`crate::widget::ContentKind`]), as `NavShell` does. Narrower, a
-    /// leading sidebar and the content take turns filling the window (the
-    /// push layout, [`Self::is_push`]); only content-primary content
-    /// ([`crate::widget::ContentKind::Document`]) keeps a floating drawer.
+    /// ([`crate::widget::ContentKind`]), as `NavShell` does. Narrower, the
+    /// panel floats as a drawer over the content ([`Self::is_overlay`]): a
+    /// panel that states no content kind never takes the window over as a
+    /// screen of its own. Content that cannot spare the width for a drawer
+    /// over it ([`crate::widget::ContentKind::List`]) keeps the panel on the
+    /// push layout instead ([`Self::is_push`], [`Self::with_push`]).
     #[must_use]
     pub fn content_kind(mut self, kind: crate::widget::ContentKind) -> Self {
-        self.push = !kind.is_content_primary();
+        self.push = kind == crate::widget::ContentKind::List;
         self.content_min_width(f64::from(kind.min_width(&Metrics::BASE)))
+    }
+    /// The content is a column in its own right — a page or a cheatsheet a
+    /// person keeps in view beside the panel — so the panel docks while it
+    /// fits beside that column at its own width ([`Self::panel_min_width`]),
+    /// and floats over it below that. The column then pans out of view
+    /// rather than becoming a phone width to make room for the panel.
+    #[must_use]
+    pub fn content_is_column(self, min_width: f64) -> Self {
+        self.content_min_width(min_width)
+    }
+    /// The narrowest the docked panel shrinks to beside the content before
+    /// it floats: the panel's own minimum (`metrics.panel_min_width`) unless
+    /// it states another. Each panel is authored at 1×; the resolved width
+    /// follows [`Theme::responsive_scale`] like every other text-sized one.
+    #[must_use]
+    pub fn panel_min_width(mut self, px: f64) -> Self {
+        self.panel_min_width = Some(AuthoredExtent::text(px));
+        self
+    }
+    /// Too narrow to dock, the panel takes turns with the content as the
+    /// first screen of the window (the push layout, [`Self::is_push`])
+    /// rather than floating over it: for content a drawer would cover, such
+    /// as a list of rows.
+    #[must_use]
+    pub fn with_push(mut self) -> Self {
+        self.push = true;
+        self
     }
     /// Docked width of a text-sized drawer (a page or destination list),
     /// authored at 1×.
@@ -307,7 +345,7 @@ impl SidebarDrawer {
             })
         };
         let growth = f64::from(theme.text_growth());
-        self.resize_min_width = f64::from(theme.tokens.metrics.sidebar_min_width) * growth;
+        self.resize_min_width = f64::from(theme.tokens.metrics.panel_min_width) * growth;
         self.sheet_least_half = f64::from(theme.tokens.metrics.sidebar_min_width);
         self.resize_max_width = f64::from(theme.tokens.metrics.sidebar_max_width) * growth;
         self.resize.set_rect(self.outer, theme);
@@ -339,25 +377,32 @@ impl SidebarDrawer {
         )
     }
     /// The narrowest the docked panel shrinks to before it stops docking:
-    /// its minimum width (with the rail), never wider than it is.
+    /// its own minimum width ([`Self::panel_min_width`], or the docked width
+    /// where that is narrower, with the rail), never wider than it is. The
+    /// content's minimum is the column's, not the panel standing there.
     fn narrowest_docked_width(&self) -> f64 {
         let docked = self.resolved_docked_width();
         if self.docked_width.sizing() == crate::widget::layout::ExtentSizing::Icon {
             return docked;
         }
-        (self.resize_min_width + self.rail_column_width()).min(docked)
+        let own = self
+            .panel_min_width
+            .map(|minimum| self.resolve_extent(minimum))
+            .unwrap_or(self.resize_min_width);
+        (own + self.rail_column_width()).min(docked)
     }
     /// The docked panel's width in a window `extent` wide: its width, shrunk
     /// toward [`Self::narrowest_docked_width`] while the content would get
-    /// less than its minimum.
+    /// less than its minimum. A content *column* ([`Self::content_is_column`])
+    /// pans out of view below that instead of the panel shrinking to a phone
+    /// beside it.
     fn docked_width_in(&self, extent: f64) -> f64 {
         let docked = self.resolved_docked_width();
-        match self.content_min_width {
-            Some(minimum) => docked
-                .min(extent - self.resolve_extent(minimum))
-                .max(self.narrowest_docked_width()),
-            None => docked,
-        }
+        let Some(minimum) = self.content_min_width else {
+            return docked;
+        };
+        let beside = extent - self.resolve_extent(minimum);
+        docked.min(beside).max(self.narrowest_docked_width())
     }
     /// The docked width as laid out (with the rail, where it has one).
     pub fn resolved_docked_width(&self) -> f64 {
@@ -389,12 +434,12 @@ impl SidebarDrawer {
     pub fn is_docked(&self) -> bool {
         self.layout == SplitLayout::Docked
     }
-    /// Too narrow to dock, a leading sidebar of an app that said what its
-    /// content is takes turns with the content: open, the panel fills the
-    /// window under the header row as the sidebar region (no float, no
-    /// shadow); closed, the content does. It is still the overlay size
-    /// class ([`Self::is_overlay`]): a choice in the list closes it, and
-    /// narrowing lands on the content.
+    /// Too narrow to dock, a panel that asked for the push layout
+    /// ([`Self::with_push`], or content of a kind that keeps it) takes turns
+    /// with the content: open, the panel fills the window under the header
+    /// row as the sidebar region (no float, no shadow); closed, the content
+    /// does. It is still the overlay size class ([`Self::is_overlay`]): a
+    /// choice in the list closes it, and narrowing lands on the content.
     pub fn is_push(&self) -> bool {
         self.is_overlay() && self.pushes()
     }
@@ -1336,36 +1381,53 @@ mod tests {
         assert!(drawer.is_docked(), "a media grid keeps its sidebar at 600");
     }
 
-    /// Too narrow to dock, a sidebar of an app that said what its content
-    /// is takes turns with the content instead of floating over it: the
-    /// list fills the window on the sidebar region, the content comes back
-    /// with the toggle. A content-primary app keeps its floating drawer.
+    /// Too narrow to dock, a panel that asked for the push layout takes
+    /// turns with the content instead of floating over it: the list fills
+    /// the window on the sidebar region, the content comes back with the
+    /// toggle. A content-primary app keeps its floating drawer, and so does
+    /// a panel that states no content kind — a video library beside the
+    /// picture is a drawer over it, never a screen that replaces it.
     #[test]
     fn too_narrow_to_dock_the_list_and_the_content_take_turns() {
         let theme = Theme::dark();
         let window = Rect::new(0.0, 0.0, 360.0, 800.0);
-        let mut drawer = SidebarDrawer::new().content_kind(crate::widget::ContentKind::List);
-        drawer.scale_for(&theme);
-        drawer.resolve(window);
-        assert!(drawer.is_push());
-        assert!(!drawer.is_open(), "narrowing lands on the content");
-        assert_eq!(drawer.content_rect(), window);
-        drawer.snap(true);
-        drawer.resolve(window);
-        assert_eq!(drawer.sidebar_rect(), window, "the list fills the window");
-        assert_eq!(drawer.scrim_rect(), Rect::ZERO, "nothing beside it");
-        assert!(!drawer.press_dismisses(Point::new(300.0, 400.0)));
-        let local = drawer.paint_panel(&mut Scene::new(), Affine::IDENTITY, &theme);
-        assert_eq!(
-            local.tokens.colors.surfaces.content,
-            theme
-                .in_region(crate::surface::Region::Sidebar)
-                .tokens
-                .colors
-                .surfaces
-                .content,
-            "on the sidebar region, not a floating panel"
-        );
+        // Both ways of asking for it: the kind, and the explicit builder.
+        let mut pushes = vec![SidebarDrawer::new().content_kind(crate::widget::ContentKind::List)];
+        pushes.extend([
+            SidebarDrawer::new()
+                .content_kind(crate::widget::ContentKind::Document)
+                .with_push(),
+            SidebarDrawer::new()
+                .content_kind(crate::widget::ContentKind::Grid)
+                .with_push(),
+        ]);
+        for mut drawer in pushes {
+            drawer.scale_for(&theme);
+            drawer.resolve(window);
+            assert!(!drawer.is_open(), "narrowing lands on the content");
+            assert_eq!(drawer.content_rect(), window);
+            drawer.resolve(window);
+            drawer.snap(true);
+            drawer.resolve(window);
+            assert_eq!(
+                drawer.sidebar_rect().width(),
+                window.width(),
+                "the list fills the window"
+            );
+            assert_eq!(drawer.scrim_rect(), Rect::ZERO, "nothing beside it");
+            assert!(!drawer.press_dismisses(Point::new(300.0, 400.0)));
+            let local = drawer.paint_panel(&mut Scene::new(), Affine::IDENTITY, &theme);
+            assert_eq!(
+                local.tokens.colors.surfaces.content,
+                theme
+                    .in_region(crate::surface::Region::Sidebar)
+                    .tokens
+                    .colors
+                    .surfaces
+                    .content,
+                "on the sidebar region, not a floating panel"
+            );
+        }
 
         let mut document = SidebarDrawer::new().content_kind(crate::widget::ContentKind::Document);
         document.scale_for(&theme);
@@ -1376,6 +1438,72 @@ mod tests {
             document.sidebar_rect().width() < window.width(),
             "a content-primary app's sidebar floats over the content"
         );
+
+        let mut plain = SidebarDrawer::new().content_min_width(280.0);
+        plain.scale_for(&theme);
+        plain.snap(true);
+        plain.resolve(window);
+        assert!(plain.is_overlay(), "too narrow to dock");
+        assert!(
+            !plain.is_push(),
+            "a panel that states no content kind floats over the content"
+        );
+        assert!(plain.sidebar_rect().width() < window.width());
+    }
+
+    #[test]
+    fn a_panel_docks_at_its_own_width_beside_a_content_column() {
+        let theme = Theme::dark();
+        let docked = f64::from(Metrics::BASE.sidebar_width);
+        let least = f64::from(Metrics::BASE.panel_min_width);
+        let column = f64::from(Metrics::BASE.content_min_width);
+        let mut drawer = SidebarDrawer::new().content_is_column(column);
+        drawer.scale_for(&theme);
+
+        // Roomy: the panel is its own width, never the leftover room, and
+        // the column beside it takes the rest.
+        let roomy = Rect::new(0.0, 0.0, 1400.0, 800.0);
+        let content = drawer.resolve(roomy);
+        assert!(drawer.is_docked());
+        assert!((drawer.sidebar_rect().width() - docked).abs() < 0.5);
+        assert!((content.width() - (1400.0 - docked)).abs() < 0.5);
+
+        // Shrinking to the least it works at, then the column pans out of
+        // view under the panel rather than the column becoming a phone.
+        let just_fits = Rect::new(0.0, 0.0, least + column, 800.0);
+        drawer.resolve(just_fits);
+        assert!(drawer.is_docked());
+        assert!((drawer.sidebar_rect().width() - least).abs() < 0.5);
+
+        let narrow = Rect::new(0.0, 0.0, (least + column) / 2.0, 800.0);
+        drawer.scale_for(&theme);
+        drawer.resolve(narrow);
+        assert!(drawer.is_overlay(), "below its own minimum it floats");
+        assert!(!drawer.is_push(), "a panel stated no push layout");
+        let floated = drawer.sidebar_rect().width();
+        assert!(
+            (floated - drawer.resolved_overlay_width()).abs() < 0.5,
+            "floating at the drawer width, not {floated}"
+        );
+    }
+
+    #[test]
+    fn a_panel_states_its_own_minimum() {
+        let theme = Theme::dark();
+        let mut drawer = SidebarDrawer::new()
+            .content_is_column(600.0)
+            .panel_min_width(420.0)
+            .docked_width(480.0);
+        drawer.scale_for(&theme);
+        let just_fits = Rect::new(0.0, 0.0, 1020.0, 800.0);
+        drawer.resolve(just_fits);
+        assert!(drawer.is_docked());
+        let width = drawer.sidebar_rect().width();
+        assert!(
+            (width - 420.0).abs() < 0.5,
+            "docked at its stated minimum, not {width}"
+        );
+        assert!((drawer.resolved_breakpoint() - 1020.0).abs() < 0.5);
     }
 
     #[test]

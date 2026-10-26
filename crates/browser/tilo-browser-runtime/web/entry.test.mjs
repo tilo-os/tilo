@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {boot, chosenRoute, initialRoute, readEntry, scopeHost} from './entry.mjs';
+import {boot, chosenRoute, configureFeedback, initialRoute, readEntry, scopeHost, shownLink} from './entry.mjs';
 import {UNAVAILABLE, openTarget, untilSnapshot, untilViewable, viewInvocation} from './open-target.mjs';
 
 const message = {kind: 'chat.message', id: 'chat.message:1'};
@@ -518,4 +518,79 @@ test('once admitted, the page names its host’s fetch proxy for the apps', asyn
   session = null;
   assert.equal(window.__tiloFetchProxy(), null);
   page.router.stop?.();
+});
+
+test('the home workspace sends reports to the channel its entry names, without holding the page', async () => {
+  const asked = [];
+  let settle;
+  const peer = {room: 'r1', configureFeedback: destination => {
+    asked.push(destination);
+    return new Promise((_, reject) => { settle = reject; });
+  }};
+  configureFeedback(peer, {feedback: {channel: 'c_feedback'}});
+  assert.deepEqual(asked, [{room: 'r1', provider: 'record:so.tilo.chat:', channel: 'c_feedback'}]);
+  const warn = console.warn;
+  console.warn = () => {};
+  settle(new Error('owner refused'));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  console.warn = warn;
+  configureFeedback(peer, {});
+  configureFeedback({configureFeedback: peer.configureFeedback}, {feedback: {channel: 'c_feedback'}});
+  assert.equal(asked.length, 1, 'no channel, or no room, asks nothing');
+});
+
+test('the address names the app in front, and the view a link opened, as a link to it would', () => {
+  const scope = {kind: 'room', host: 'https://acme.example', room: 'A'};
+  assert.deepEqual(shownLink({scope}), {mode: 'desktop', target: {scope}});
+  assert.deepEqual(shownLink({scope, app: 'so.tilo.chat'}), {mode: 'desktop', target: {scope, app: 'so.tilo.chat'}});
+  assert.deepEqual(shownLink({scope, app: 'so.tilo.notes', record: 'n1'}),
+    {mode: 'desktop', target: {scope, app: 'so.tilo.notes', record: 'n1'}});
+  // A window a link's resource opened: its view, never the link's secrets.
+  assert.deepEqual(shownLink({scope, app: 'so.tilo.chat', record: 'c1', resource: {kind: 'chat.message', id: 'chat.message:1'},
+    view: 'thread', ticket: 'secret'}), {mode: 'desktop', target: {scope, app: 'so.tilo.chat', record: 'c1', view: 'thread'}});
+});
+
+test('a link opened inside the desktop names its view in the address, and focus elsewhere takes it back', async () => {
+  const scope = {kind: 'room', host: 'https://acme.example', room: 'A'};
+  const opened = {scope, app: 'so.tilo.chat', record: 'c1', resource: message};
+  const page = roomPage({href: 'https://acme.example/open/#/@acme.example/w/A', hash: '#/@acme.example/w/A',
+    parse: () => ({mode: 'desktop', target: {scope}})});
+  const written = [];
+  page.runtime.formatLink = route => { written.push(JSON.parse(route).target); return `https://acme.example/open/#${written.length}`; };
+  // The app's window is in front from the start, so showing the link's
+  // resource needs no navigation command.
+  const inFront = {workspace: '1', strip: '1', group: '7', tab: '8'};
+  const snapshot = {generation: 'g', active: inFront, entries: [{route: inFront, app: 'so.tilo.chat'}]};
+  const listeners = new Set();
+  const navigation = {
+    getSnapshot: () => snapshot,
+    subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
+    dispatch: async () => {},
+  };
+  const peer = {room: 'A', whenReady: async () => {}, mountDesktop: async (_element, options) => {
+    options.onNavigation?.(navigation); return {navigation};
+  }};
+  const view = {kind: 'read', address: {resource: message.id, action: 'reveal'}, addressKey: 'k', view: {id: 'message', open_action: 'reveal', primary: true}};
+  page.runtime.parseLink = () => JSON.stringify({mode: 'desktop', target: {scope}});
+  const page_ = await boot({mode: 'desktop', window: page.window, deps: {
+    loadRuntime: async () => page.runtime, fetch: async () => ({ok: false}),
+    readAccounts: async () => [{userPublicKey: 'ab'}], connectMember: async () => peer,
+  }});
+  page.runtime.parseLink = () => JSON.stringify({mode: 'desktop', target: opened});
+  page.runtime.formatLink = route => { written.push(JSON.parse(route).target); return `https://acme.example/open/#${written.length}`; };
+  page_.mount.actions = () => [view];
+  page_.mount.invokeAction = () => ({state: 'completed'});
+  // Back to the link that names the view.
+  page.window.location.hash = '#/@acme.example/w/A/so.tilo.chat/-/chat.message:1';
+  // A typed fragment is a new address; the fake page's `href` stands for it.
+  page.window.location.href = 'https://acme.example/open/#/@acme.example/w/A/so.tilo.chat/-/chat.message:1';
+  await page.listeners.popstate();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(written.at(-1), {scope, app: 'so.tilo.chat', record: 'c1'}, 'the address now names the view the link opened');
+  // The person opens another window: the address is that window's again.
+  const other = {workspace: '1', strip: '1', group: '9', tab: '10'};
+  Object.assign(snapshot, {active: other, entries: [...snapshot.entries, {route: other, app: 'so.tilo.notes'}]});
+  for (const listener of [...listeners]) listener(snapshot);
+  assert.deepEqual(written.at(-1), {scope, app: 'so.tilo.notes'});
+  page_.router.stop();
 });

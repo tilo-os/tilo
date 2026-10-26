@@ -12,6 +12,10 @@ impl KeySource for Fixed {
     fn release(&self) -> Result<SymmetricKey, Locked> {
         Ok(SymmetricKey::from_bytes([3; 32]))
     }
+
+    fn another(&self) -> Box<dyn KeySource> {
+        Box::new(Self)
+    }
 }
 
 struct Fake {

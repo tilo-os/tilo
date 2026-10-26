@@ -28,9 +28,9 @@ use crate::shell::state::RoomId;
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ChannelId, PeerPresence, PeerPresencePayload};
 use tilo_relay_protocol::live::{
-    AnchorScope, CursorChat, LiveAnchor, LiveFrame, LiveParticipant, LivePointer, LiveReaction,
-    LiveRecord, LiveWave, ParticipantKind, PresenceFrame, SealedLiveFrame, read_selection_anchors,
-    selection_anchors,
+    AnchorScope, CursorChat, LiveAnchor, LiveFrame, LiveLayout, LiveParticipant, LivePointer,
+    LiveReaction, LiveRecord, LiveWave, ParticipantKind, PresenceFrame, SealedLiveFrame,
+    read_selection_anchors, selection_anchors,
 };
 
 /// Seal canonical live `frame` of room `cluster_id` with the content keys of
@@ -301,6 +301,76 @@ impl Outbound {
         frames
     }
 
+    /// Say where this device's windows are in the room whose workspace is
+    /// `ws` (`None` to stop saying), as [`Self::wave`] says a wave: a frame
+    /// that names no record yet names `desktop`. Returns the frames to
+    /// publish, in order; none when the layout is what the frame says
+    /// already, so an unchanged screen sends nothing until its keepalive.
+    pub fn lay_out(
+        &mut self,
+        ws: u64,
+        desktop: LiveRecord,
+        participant: LiveParticipant,
+        layout: Option<LiveLayout>,
+        now: Instant,
+    ) -> Vec<Vec<u8>> {
+        if self
+            .rooms
+            .get(&ws)
+            .is_some_and(|room| room.frame.layout == layout)
+            || (layout.is_none() && !self.rooms.contains_key(&ws))
+        {
+            return Vec::new();
+        }
+        let room = self.room(ws, now);
+        let before = room.frame.clone();
+        room.frame.participant = Some(participant);
+        room.frame.focus.get_or_insert(desktop);
+        room.frame.layout = layout;
+        let frame = self.publish(ws, now);
+        if frame.is_none()
+            && let Some(room) = self.rooms.get_mut(&ws)
+        {
+            room.frame = before;
+        }
+        frame.into_iter().collect()
+    }
+
+    /// Say whom this person follows in the room whose workspace is `ws`:
+    /// `following`, their live publisher in hex (`None` to stop saying),
+    /// restated with every later frame, as [`Self::lay_out`] says where the
+    /// windows are. Returns the frames to publish; none when the frame says
+    /// so already.
+    pub fn follow(
+        &mut self,
+        ws: u64,
+        desktop: LiveRecord,
+        participant: LiveParticipant,
+        following: Option<String>,
+        now: Instant,
+    ) -> Vec<Vec<u8>> {
+        if self
+            .rooms
+            .get(&ws)
+            .is_some_and(|room| room.frame.following == following)
+            || (following.is_none() && !self.rooms.contains_key(&ws))
+        {
+            return Vec::new();
+        }
+        let room = self.room(ws, now);
+        let before = room.frame.clone();
+        room.frame.participant = Some(participant);
+        room.frame.focus.get_or_insert(desktop);
+        room.frame.following = following;
+        let frame = self.publish(ws, now);
+        if frame.is_none()
+            && let Some(room) = self.rooms.get_mut(&ws)
+        {
+            room.frame = before;
+        }
+        frame.into_iter().collect()
+    }
+
     /// Frames to repeat because they were not sent for [`KEEPALIVE`].
     pub fn keepalives(&mut self, now: Instant) -> Vec<(u64, Vec<u8>)> {
         let mut due = Vec::new();
@@ -318,7 +388,9 @@ impl Outbound {
             if (now.saturating_duration_since(room.sent) < KEEPALIVE && !reaction_over)
                 || (room.frame.pointer.is_none()
                     && room.frame.selection.is_none()
-                    && room.frame.chat.is_none())
+                    && room.frame.chat.is_none()
+                    && room.frame.layout.is_none()
+                    && room.frame.following.is_none())
             {
                 continue;
             }
@@ -372,6 +444,10 @@ pub struct Inbound {
     pub reaction: Option<LiveReaction>,
     /// The sender's latest wave.
     pub wave: Option<LiveWave>,
+    /// Where the sender's windows are on its screen.
+    pub layout: Option<LiveLayout>,
+    /// Whose view the sender follows: their live publisher, in hex.
+    pub following: Option<String>,
     /// The sender's pointer when it is over the empty desktop (beside a
     /// window, or on a strip showing none): no app's to draw, so the
     /// desktop places it in its own layout ([`PointerLayout::place`]).
@@ -416,6 +492,8 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
         chat: presence.chat.clone(),
         reaction: presence.reaction.clone(),
         wave: presence.wave.clone(),
+        layout: presence.layout.clone(),
+        following: presence.following.clone(),
         desk_pointer,
         ..Inbound::default()
     };
@@ -470,6 +548,50 @@ mod tests {
             path: vec![ui::presence::PathSegment::Field("editor".into())],
         })
         .unwrap()
+    }
+
+    /// Where this desktop's windows are rides its frame once per change and
+    /// with its keepalives, and reads back as the sender's layout.
+    #[test]
+    fn a_layout_goes_out_once_per_change_and_reads_back() {
+        let desktop = LiveRecord {
+            app: "so.tilo.desktop".into(),
+            record: "desk".into(),
+        };
+        let layout = LiveLayout::place(
+            [0.0, 0.0, 800.0, 600.0],
+            &[(desktop.clone(), [0.0, 0.0, 400.0, 600.0], true)],
+        );
+        let who = || participant("Ada".into(), ui::tokens::PresenceHue::Violet);
+        let mut outbound = Outbound::default();
+        let now = Instant::now();
+        assert!(
+            outbound
+                .lay_out(1, desktop.clone(), who(), None, now)
+                .is_empty(),
+            "nothing to say in a room never spoken in"
+        );
+        let frames = outbound.lay_out(1, desktop.clone(), who(), layout.clone(), now);
+        assert_eq!(frames.len(), 1);
+        let inbound = inbound(&frames[0]).unwrap();
+        assert_eq!(inbound.layout, layout);
+        assert_eq!(inbound.app_id, "so.tilo.desktop");
+        assert!(
+            outbound
+                .lay_out(1, desktop.clone(), who(), layout, now)
+                .is_empty(),
+            "an unchanged layout sends nothing"
+        );
+        assert_eq!(outbound.keepalives(now + KEEPALIVE).len(), 1);
+        let cleared = outbound.lay_out(1, desktop, who(), None, now);
+        assert_eq!(inbound_layout(&cleared), vec![None]);
+    }
+
+    fn inbound_layout(frames: &[Vec<u8>]) -> Vec<Option<LiveLayout>> {
+        frames
+            .iter()
+            .map(|frame| inbound(frame).unwrap().layout)
+            .collect()
     }
 
     /// A key longer than an anchor (a resource key naming a long item id)

@@ -2,7 +2,8 @@
 use super::{RoomId, ShellNetwork};
 use std::sync::Arc;
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
-use tilo_relay_session::rooms::private::{PrivateClient, PrivateOperation, PrivateReply};
+use tilo_relay_protocol::rooms::private::{PrivateOperation, PrivateReply};
+use tilo_relay_session::rooms::private::PrivateClient;
 use tilo_user_identity::DeviceCert;
 
 // Deliberately not Debug: addresses and principals belong to the private route.

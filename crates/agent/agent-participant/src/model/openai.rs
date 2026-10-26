@@ -242,8 +242,10 @@ impl EndpointTurns {
             tier: self.tier(),
         };
         let (idle, answers) = (Arc::clone(&self.idle), answers.clone());
-        // The agent's name follows the call into the usage log.
+        // The agent's name, and its part of a coordinated task, follow the
+        // call into the usage log.
         let name = std::thread::current().name().map(str::to_owned);
+        let role = converse::plan_role();
         let mut thread = std::thread::Builder::new();
         if let Some(name) = name {
             thread = thread.name(name);
@@ -260,13 +262,15 @@ impl EndpointTurns {
                     &key,
                     deadline,
                 );
-                record_usage(
-                    (&call.model, call.tier.as_deref()),
-                    &call.request,
-                    started.elapsed(),
-                    &answer,
-                    attempt,
-                );
+                converse::as_role(role, || {
+                    record_usage(
+                        (&call.model, call.tier.as_deref()),
+                        &call.request,
+                        started.elapsed(),
+                        &answer,
+                        attempt,
+                    );
+                });
                 idle.lock_recover().push(client);
                 let _ = answers.send(answer);
             })
@@ -470,7 +474,7 @@ impl ModelChoice {
 
     /// A planner over this model, built on the agent's own thread. The
     /// profile (preset and explicit settings) says whether its tasks are
-    /// checked once done.
+    /// checked once done, and whether they are coordinated.
     #[must_use]
     pub fn planner(&self) -> ModelPlanner {
         let vision =
@@ -486,7 +490,7 @@ impl ModelChoice {
             } => {
                 let profile =
                     crate::profile::Profile::resolve(model, &|name| std::env::var(name).ok());
-                let checks_work = profile.checks_work();
+                let (checks_work, decomposes) = (profile.checks_work(), profile.decomposes());
                 ModelPlanner::new(Box::new(
                     OpenAiModel::new(base_url, model, api_key.clone(), PLAN_TIMEOUT, *target)
                         .with_profile(profile)
@@ -494,6 +498,7 @@ impl ModelChoice {
                         .with_vault(vault.clone()),
                 ))
                 .checking_work(checks_work)
+                .decomposing(decomposes)
             }
             Self::Anthropic {
                 base_url,
@@ -503,7 +508,7 @@ impl ModelChoice {
             } => {
                 let profile =
                     crate::profile::Profile::resolve(model, &|name| std::env::var(name).ok());
-                let checks_work = profile.checks_work();
+                let (checks_work, decomposes) = (profile.checks_work(), profile.decomposes());
                 ModelPlanner::new(Box::new(
                     OpenAiModel::anthropic(base_url, model, api_key.clone(), PLAN_TIMEOUT)
                         .with_profile(profile)
@@ -511,16 +516,16 @@ impl ModelChoice {
                         .with_vault(vault.clone()),
                 ))
                 .checking_work(checks_work)
+                .decomposing(decomposes)
             }
             Self::Settings => match tilo_agent::providers::default_selection() {
                 Some(selection) => {
-                    let checks_work =
-                        crate::profile::Profile::resolve(&selection.model.id, &|name| {
-                            std::env::var(name).ok()
-                        })
-                        .checks_work();
+                    let profile = crate::profile::Profile::resolve(&selection.model.id, &|name| {
+                        std::env::var(name).ok()
+                    });
                     ModelPlanner::new(Box::new(GatewayModel::new(selection, PLAN_TIMEOUT)))
-                        .checking_work(checks_work)
+                        .checking_work(profile.checks_work())
+                        .decomposing(profile.decomposes())
                 }
                 None => ModelPlanner::new(Box::new(Unconfigured)),
             },

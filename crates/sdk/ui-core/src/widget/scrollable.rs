@@ -86,6 +86,10 @@ pub struct Scrollable {
     offset_y: f32,
     content_w: f32,
     content_h: f32,
+    /// How far below the content's top its deepest widget reached when the
+    /// layout last solved it (`layout::max_bottom_edge`), kept while it
+    /// only moves.
+    walked_h: f32,
     viewport_w: f32,
     viewport_h: f32,
     /// The glide after a flick: the lists' decay
@@ -285,6 +289,7 @@ impl Scrollable {
             offset_y: 0.0,
             content_w: 0.0,
             content_h: 0.0,
+            walked_h: 0.0,
             viewport_w: 0.0,
             viewport_h: 0.0,
             glide: crate::virtual_viewport::ScrollGlide::new(),
@@ -1594,19 +1599,6 @@ impl crate::widget::Decorator for ViewportContent {
     }
 }
 
-/// Maximum `rect.y1` across a widget subtree, for finding the true bottom
-/// edge when taffy's `content_size` under-reports.
-fn max_bottom_edge(w: &dyn Widget) -> f64 {
-    let mut deepest = w.get_rect().y1;
-    if w.child_clip_rect().is_some() {
-        return deepest;
-    }
-    for c in w.children() {
-        deepest = deepest.max(max_bottom_edge(c));
-    }
-    deepest
-}
-
 impl Widget for Scrollable {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
@@ -1828,6 +1820,7 @@ impl Widget for Scrollable {
             self.content_h = cl.content_size.height.max(cl.size.height);
         }
         let previous_offset = (self.offset_x, self.offset_y);
+        let placing_again = crate::widget::placing_again(taffy);
         // Content placed below knows what this view shows of it
         // (`widget::layout_clip`), so a long collection lays out only that.
         let clip = self.content_viewport_rect();
@@ -1849,12 +1842,14 @@ impl Widget for Scrollable {
                 // taffy's content_size can still cap at the available block for
                 // a flex column shorter than the literal sum of its children.
                 // Walk the subtree and take the deeper of the two so scrolling
-                // always reaches the real last pixel.
-                let scroll_origin_y = origin.y;
-                let max_y = max_bottom_edge(c.as_ref());
-                let walked_h = f32_of_f64((max_y - scroll_origin_y).max(0.0));
-                if walked_h > self.content_h {
-                    self.content_h = walked_h;
+                // always reaches the real last pixel; placed again, the
+                // content only moved and the walk would find the same.
+                if !placing_again {
+                    let max_y = super::layout::max_bottom_edge(c.as_ref());
+                    self.walked_h = f32_of_f64((max_y - origin.y).max(0.0));
+                }
+                if self.walked_h > self.content_h {
+                    self.content_h = self.walked_h;
                 }
             }
         }
@@ -1870,7 +1865,8 @@ impl Widget for Scrollable {
             });
         }
         // Flash the overlay bar the first frame content overflows.
-        if self.reveal_focus {
+        // Placed again, focus is where it was and stands revealed.
+        if self.reveal_focus && !placing_again {
             fn focused(
                 widget: &dyn Widget,
                 path: &mut Vec<usize>,
@@ -1969,8 +1965,12 @@ impl Widget for Scrollable {
                 &clip,
             );
         }
+        // Unless fading in, what a copy keeps is not drawn (`draw_cull`).
+        let keep = self.shown.keep().filter(|_| !fading);
         if let Some(c) = &mut self.child {
-            crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme, presence);
+            crate::draw_cull::keeping(scene, keep, |scene| {
+                crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme, presence);
+            });
         }
         if fading {
             scene.pop_layer();
@@ -3776,7 +3776,7 @@ mod tests {
             scroll.set_offset_y(scroll.max_offset_y());
             for _ in 0..3 {
                 host_solve(&mut scroll, 311.0, 257.0);
-                let bottom = max_bottom_edge(scroll.children()[0]);
+                let bottom = crate::widget::layout::max_bottom_edge(scroll.children()[0]);
                 assert!(
                     bottom <= scroll.content_viewport_rect().y1,
                     "layout must not pull the last descendant below the viewport: {bottom}"

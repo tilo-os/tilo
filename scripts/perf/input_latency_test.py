@@ -220,7 +220,7 @@ class KeyLatencyFailureTests(unittest.TestCase):
     def test_ready_client_and_malformed_readiness(self):
         runner = self.runner()
         for line in ['READY 640x480', 'READY', 'READY nope']:
-            proc = subprocess.Popen([sys.executable, '-c', f'print({line!r})'], stdout=subprocess.PIPE)
+            proc = subprocess.Popen([sys.executable, '-c', f'print({line!r}, flush=True)'], stdout=subprocess.PIPE)
             try:
                 if line == 'READY 640x480':
                     self.assertEqual(runner.wait_client_ready(proc, 2), '640x480')
@@ -229,6 +229,24 @@ class KeyLatencyFailureTests(unittest.TestCase):
                         runner.wait_client_ready(proc, 2)
             finally:
                 proc.wait(timeout=5)
+                proc.stdout.close()
+
+    def test_a_line_read_before_the_wait_is_never_waited_for(self):
+        # A loaded runner can run the client to its exit between the line and
+        # this call; the bytes are then in the stream's buffer, and a read of
+        # the descriptor would block on a pipe that has nothing left to give.
+        runner = self.runner()
+        for line in ['READY 640x480', 'READY nope']:
+            proc = subprocess.Popen([sys.executable, '-c', f'print({line!r})'], stdout=subprocess.PIPE)
+            try:
+                proc.wait(timeout=5)
+                self.assertTrue(proc.stdout.peek())
+                if line == 'READY 640x480':
+                    self.assertEqual(runner.wait_client_ready(proc, 2), '640x480')
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'invalid.*readiness'):
+                        runner.wait_client_ready(proc, 2)
+            finally:
                 proc.stdout.close()
 
     def test_uncooperative_client_is_killed_and_reaped(self):

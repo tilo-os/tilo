@@ -75,7 +75,7 @@ class ImageInterpreterTests(unittest.TestCase):
                 if directory:
                     path.mkdir()
                 out = io.StringIO()
-                with mock.patch.object(checker, "ROOT", self.root), contextlib.redirect_stdout(out):
+                with mock.patch.object(checker, "ROOT", self.root), contextlib.redirect_stderr(out):
                     self.assertEqual(checker.main(), 1)
                 self.assertIn("Cannot inspect", out.getvalue())
                 self.assertIn("unobserved", out.getvalue())
@@ -117,7 +117,7 @@ class ImageInterpreterTests(unittest.TestCase):
         with mock.patch.object(checker, "ROOT", self.root), contextlib.redirect_stdout(out):
             self.assertEqual(checker.main(), 1)
         self.assertIn(
-            f"remove line 3 of {checker.BASELINE}",
+            f"{checker.BASELINE}:3: os/usr/libexec/tilo-legacy no longer ships",
             out.getvalue(),
         )
 

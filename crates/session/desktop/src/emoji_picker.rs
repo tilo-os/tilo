@@ -1683,6 +1683,14 @@ fn draw_emoji(
     );
 }
 
+/// Hand the desktop's emoji catalogue to the toolkit's shared picker and
+/// reaction strip as well, so the pickers a host opens from a window bar's
+/// reactions offer the whole catalogue, like this picker does. Calling it
+/// again is free; a host calls it before it draws its first window bar.
+pub fn offer_catalogue() {
+    tilo_emoji_catalogue::offer();
+}
+
 /// Where a card of `size` goes for a field whose caret is `caret`: its left
 /// edge on the caret, `gap` below it, or `gap` above it when the display
 /// ends first; when neither side has room, on whichever side has more, and

@@ -70,6 +70,8 @@ impl ShellDriver {
         "ws-settings-members",
         "ws-settings-permissions",
         "ws-settings-apps",
+        "ws-settings-emoji",
+        "ws-settings-emoji-empty",
         "ws-settings-agents",
         "ws-settings-agent-access",
         "ws-settings-agent-access-keyboard",

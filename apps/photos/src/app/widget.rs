@@ -745,8 +745,7 @@ impl Widget for PhotosApp {
             v.draw(scene, transform, text_renderer, theme, presence);
             self.draw_viewer_details(scene, transform, text_renderer, theme);
         } else {
-            let (title, body) = self.empty_state_text();
-            self.draw_empty_state(scene, transform, text_renderer, theme, &title, &body);
+            self.draw_empty_state(scene, transform, text_renderer, theme);
         }
 
         self.draw_directory_import_status(scene, transform, text_renderer, theme);

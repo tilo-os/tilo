@@ -19,7 +19,7 @@ use tilo_actions::door::ActionDescriptor;
 use tilo_actions::params::ActionParam;
 
 use crate::catalog::{ActionCatalog, ResourceTarget};
-use crate::grant::{grant_answer, step_node};
+use crate::grant::{EDIT_PARAM, FIELD_EDIT, edit_reach, grant_answer, step_node, step_node_at};
 use crate::path::StepPath;
 use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
 use crate::template::{self, Piece, is_identifier};
@@ -464,7 +464,19 @@ impl Checker<'_> {
             );
             return unknown;
         };
-        let node = step_node(None, app_id, &descriptor.resource_kind, &descriptor.address);
+        let at = (action == FIELD_EDIT)
+            .then(|| args.get(EDIT_PARAM).and_then(edit_reach))
+            .flatten();
+        let node = match &at {
+            Some(at) => step_node_at(
+                None,
+                app_id,
+                &descriptor.resource_kind,
+                &descriptor.address,
+                at,
+            ),
+            None => step_node(None, app_id, &descriptor.resource_kind, &descriptor.address),
+        };
         if grant_answer(&self.shortcut.grant, &node, descriptor.contract.kind).answer
             == Answer::Deny
         {
@@ -599,6 +611,18 @@ impl Checker<'_> {
                     }
                 }
                 Some(Ty::Text)
+            }
+            Binding::Object(members) => {
+                for member in members.values() {
+                    self.value(member, scope, path);
+                }
+                Some(Ty::Object(None))
+            }
+            Binding::List(items) => {
+                for item in items {
+                    self.value(item, scope, path);
+                }
+                Some(Ty::Array(None))
             }
         }
     }

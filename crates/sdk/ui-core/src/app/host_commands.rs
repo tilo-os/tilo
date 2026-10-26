@@ -320,7 +320,8 @@ impl App {
         .unwrap_or_default()
     }
 
-    fn palette_presented(&self) -> bool {
+    /// Whether the action palette covers the window.
+    pub(super) fn palette_presented(&self) -> bool {
         self.actions
             .action_palette
             .as_ref()

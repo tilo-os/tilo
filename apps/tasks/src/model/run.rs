@@ -129,6 +129,11 @@ pub struct Question {
     pub arguments_digest: String,
     /// The action's draft: one field per parameter, secrets withheld.
     pub draft: serde_json::Value,
+    /// The change the step makes, before and after, where it previews one:
+    /// the person decides on the difference rather than on the end state
+    /// alone. Absent for a step whose change is not a tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<serde_json::Value>,
 }
 
 /// Where a confirmation is.
@@ -161,6 +166,10 @@ pub struct Confirmation {
     /// parameter, secrets withheld (`tilo_actions::draft`). Shaped by the
     /// door that paused the run, never by this record.
     pub draft: serde_json::Value,
+    /// The change it makes, before and after, where it previews one. Shaped
+    /// by the door that paused the run like the draft, and carried so the
+    /// host puts the same two sides to the person who answers.
+    pub preview: Option<serde_json::Value>,
     pub state: ConfirmationState,
     /// The person's edits to the draft, when they confirmed with edits.
     pub edits: serde_json::Value,

@@ -29,6 +29,11 @@ pub const HEDGE_ENV: &str = "TILO_AGENT_HEDGE_MS";
 /// Name an OpenAI-compatible endpoint's output limit `max_tokens` or
 /// `max_completion_tokens`, whatever the model's family suggests.
 pub const TOKEN_LIMIT_ENV: &str = "TILO_AGENT_TOKEN_LIMIT_PARAM";
+/// Carry each item of a task's checklist out with an agent of its own,
+/// a coordinator listing the items and following news for them: `on`
+/// (`1`) for every agent, or a comma-separated list of agent ids or labels
+/// for those agents alone ([`named_on`]).
+pub const DECOMPOSE_ENV: &str = "TILO_AGENT_DECOMPOSE";
 /// Ask an OpenAI-compatible endpoint through `responses` or
 /// `chat_completions`, whatever its address suggests (a proxy in front of
 /// `OpenAI` takes Responses); unset, `OpenAI`'s own API takes Responses and
@@ -118,6 +123,10 @@ pub struct Profile {
     /// The API asked through ([`OPENAI_API_ENV`]); `None` as the endpoint
     /// suggests.
     openai_api: Option<OpenAiApi>,
+    /// Whether every agent's tasks are coordinated, an agent per item
+    /// ([`DECOMPOSE_ENV`]); a setting naming agents turns it on for them
+    /// where each starts.
+    decompose: bool,
 }
 
 impl Profile {
@@ -165,6 +174,12 @@ impl Profile {
                 "1" | "on" | "true" | "yes"
             );
         }
+        profile.decompose = matches!(
+            explicit(DECOMPOSE_ENV)
+                .map(|setting| setting.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("1" | "on" | "true" | "yes" | "all")
+        );
         if let Some(hedge) = explicit(HEDGE_ENV) {
             // `0` or anything not a number (`off`) leaves calls unhedged.
             profile.hedge_after = hedge
@@ -181,6 +196,12 @@ impl Profile {
     #[must_use]
     pub const fn checks_work(&self) -> bool {
         self.check_work
+    }
+
+    /// Whether every agent's tasks are coordinated, an agent per item.
+    #[must_use]
+    pub const fn decomposes(&self) -> bool {
+        self.decompose
     }
 
     /// After how long a planning call is sent again, if ever.
@@ -229,6 +250,7 @@ impl Profile {
             hedge_after: None,
             token_limit: None,
             openai_api: None,
+            decompose: false,
         }
     }
 
@@ -239,6 +261,24 @@ impl Profile {
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning_effort"] = effort.clone().into();
         }
+    }
+}
+
+/// Whether a per-agent `setting` turns a feature on for the agent `agent_id`
+/// labelled `label`: on for all (`1`, `on`, `true`, `yes`, `all`), off for
+/// all (`0`, `off`, `false`, `no`, `none`, unset), or a comma-separated list
+/// of the agent ids and labels it is on for.
+#[must_use]
+pub fn named_on(agent_id: &str, label: &str, setting: Option<&str>) -> bool {
+    let Some(setting) = setting.map(str::trim).filter(|setting| !setting.is_empty()) else {
+        return false;
+    };
+    match setting.to_ascii_lowercase().as_str() {
+        "1" | "on" | "true" | "yes" | "all" => true,
+        "0" | "off" | "false" | "no" | "none" => false,
+        _ => setting.split(',').map(str::trim).any(|named| {
+            !named.is_empty() && (named == agent_id || named.eq_ignore_ascii_case(label))
+        }),
     }
 }
 
@@ -408,5 +448,23 @@ mod tests {
             });
             assert_eq!(profile.hedge_after(), None, "{unhedged:?}");
         }
+    }
+
+    /// Every agent's tasks are coordinated when the setting turns it on;
+    /// a setting naming agents turns it on for them alone, where each
+    /// starts, so the profile leaves it off.
+    #[test]
+    fn decompose_is_on_for_all_or_for_the_agents_named() {
+        let told = |value: &'static str| {
+            move |name: &str| (name == DECOMPOSE_ENV).then(|| value.to_owned())
+        };
+        assert!(!Profile::resolve("gpt-6-luna", &|_| None).decomposes());
+        assert!(Profile::resolve("gpt-6-luna", &told(" ON ")).decomposes());
+        assert!(!Profile::resolve("gpt-6-luna", &told("ana-1")).decomposes());
+        assert!(named_on("ana-1", "Ana", Some("ben-2, ana-1")));
+        assert!(named_on("ana-1", "Ana", Some("ana")));
+        assert!(!named_on("ana-1", "Ana", Some("ben-2")));
+        assert!(!named_on("ana-1", "Ana", Some("off")));
+        assert!(!named_on("ana-1", "Ana", None));
     }
 }

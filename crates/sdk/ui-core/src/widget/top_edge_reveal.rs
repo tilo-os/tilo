@@ -178,10 +178,6 @@ pub struct TopEdgeReveal {
     suppressed: bool,
     path: Trajectory,
     touch_from: Option<Point>,
-    /// When `shown` last changed.
-    changed_at: Option<Instant>,
-    /// The bar fading in and out with it (`motion::CROSS_FADE`).
-    fade: crate::motion::Presence,
 }
 
 impl TopEdgeReveal {
@@ -191,45 +187,14 @@ impl TopEdgeReveal {
         self.shown
     }
 
-    /// When `shown` last changed.
-    #[must_use]
-    pub fn changed_at(&self) -> Option<Instant> {
-        self.changed_at
-    }
-
-    /// How far the bar has faded in at `now`, `0..=1`: it cross-fades in and
-    /// out with the standard cross-fade, and under reduced motion it is
-    /// there or not.
-    #[must_use]
-    pub fn opacity(&self, now: Instant, motion: crate::tokens::EffectiveMotion) -> f64 {
-        if motion.reduced() || self.changed_at.is_none() {
-            return if self.shown { 1.0 } else { 0.0 };
-        }
-        self.fade.progress(now)
-    }
-
-    /// Whether the fade is still running at `now`.
-    #[must_use]
-    pub fn fading(&self, now: Instant, motion: crate::tokens::EffectiveMotion) -> bool {
-        !motion.reduced() && self.changed_at.is_some() && self.fade.is_moving(now)
-    }
-
     /// Show or hide; returns whether that changed anything.
-    fn set_shown(&mut self, shown: bool, now: Instant) -> bool {
+    fn set_shown(&mut self, shown: bool) -> bool {
         self.due = None;
         self.hold = None;
         if self.shown == shown {
             return false;
         }
         self.shown = shown;
-        self.changed_at = Some(now);
-        self.fade.show(
-            shown,
-            crate::motion::CROSS_FADE,
-            crate::tokens::EffectiveMotion::default(),
-            crate::tokens::MotionSource::Pointer,
-            now,
-        );
         true
     }
 
@@ -240,15 +205,15 @@ impl TopEdgeReveal {
     }
 
     /// Hide now, e.g. after one of the bar's controls was used.
-    pub fn hide(&mut self, now: Instant) -> bool {
+    pub fn hide(&mut self) -> bool {
         self.pinned = false;
-        self.set_shown(false, now)
+        self.set_shown(false)
     }
 
     /// Show the bar for keyboard use until [`Self::unpin`].
-    pub fn pin(&mut self, now: Instant) -> bool {
+    pub fn pin(&mut self) -> bool {
         self.pinned = true;
-        self.set_shown(true, now)
+        self.set_shown(true)
     }
 
     /// Keyboard use ended; the pointer decides again on its next sample.
@@ -260,10 +225,10 @@ impl TopEdgeReveal {
     /// display's edge, where the band is the bezel's): show the bar. It
     /// stays until the pointer, or a tap, goes elsewhere. Returns whether
     /// that changed anything.
-    pub fn reveal_by_touch(&mut self, now: Instant) -> bool {
+    pub fn reveal_by_touch(&mut self) -> bool {
         self.pinned = false;
         self.touch_from = None;
-        self.set_shown(true, now)
+        self.set_shown(true)
     }
 
     /// A pointer sample. Returns whether `shown` changed.
@@ -320,7 +285,7 @@ impl TopEdgeReveal {
             if self.pinned {
                 return changed;
             }
-            changed |= self.set_shown(false, now);
+            changed |= self.set_shown(false);
             return changed;
         }
         if !in_band || self.suppressed {
@@ -328,7 +293,7 @@ impl TopEdgeReveal {
             return changed;
         }
         if self.pushed_up(p, geo, now) {
-            changed |= self.set_shown(true, now);
+            changed |= self.set_shown(true);
         } else if transit {
             // Sweeping through the band: the rest counts from when it
             // settles. A pointer that stops sends no further samples, so the
@@ -376,7 +341,7 @@ impl TopEdgeReveal {
     }
 
     /// The pointer left the surface: nothing to keep the bar for.
-    pub fn on_leave(&mut self, now: Instant) -> bool {
+    pub fn on_leave(&mut self) -> bool {
         self.path.clear();
         self.suppressed = false;
         self.touch_from = None;
@@ -384,7 +349,7 @@ impl TopEdgeReveal {
             self.due = None;
             return false;
         }
-        self.set_shown(false, now)
+        self.set_shown(false)
     }
 
     /// A touch went down at `p`.
@@ -393,11 +358,11 @@ impl TopEdgeReveal {
     }
 
     /// A touch moved to `p`. Returns whether `shown` changed.
-    pub fn on_touch_move(&mut self, p: Point, now: Instant) -> bool {
+    pub fn on_touch_move(&mut self, p: Point) -> bool {
         match self.touch_from {
             Some(from) if p.y - from.y >= TOUCH_SWIPE_PX => {
                 self.touch_from = None;
-                self.set_shown(true, now)
+                self.set_shown(true)
             }
             _ => false,
         }
@@ -414,13 +379,13 @@ impl TopEdgeReveal {
         if let Some(due) = self.due
             && now >= due
         {
-            return self.set_shown(true, now);
+            return self.set_shown(true);
         }
         if let Some(hold) = self.hold
             && now >= hold.until()
             && !self.pinned
         {
-            return self.set_shown(false, now);
+            return self.set_shown(false);
         }
         false
     }
@@ -440,8 +405,6 @@ impl TopEdgeReveal {
         self.due = None;
         self.hold = None;
         self.shown = shown;
-        self.changed_at = None;
-        self.fade.snap(shown);
     }
 
     /// Test and shot clock control: settle as if the pending dwell or hold
@@ -450,12 +413,8 @@ impl TopEdgeReveal {
         if let Some(deadline) = self.deadline() {
             self.settle(deadline);
         }
-        // The pointer rested that long: its next move starts from rest, and
-        // the fade (timed from a deadline that has not come yet on the real
-        // clock) has run.
+        // The pointer rested that long: its next move starts from rest.
         self.path.clear();
-        self.changed_at = None;
-        self.fade.snap(self.shown);
         self.shown
     }
 }
@@ -767,7 +726,7 @@ mod tests {
     fn keyboard_and_touch_reach_the_bar() {
         let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
-        assert!(r.pin(t0));
+        assert!(r.pin());
         r.on_motion(Point::new(600.0, 500.0), &geo(), ms(t0, 10));
         assert!(r.shown(), "pinned for the keyboard");
         r.unpin();
@@ -775,25 +734,25 @@ mod tests {
         assert!(!r.shown());
 
         r.on_touch_start(Point::new(300.0, 37.0), &geo());
-        assert!(!r.on_touch_move(Point::new(300.0, 50.0), ms(t0, 30)));
-        assert!(r.on_touch_move(Point::new(300.0, 70.0), ms(t0, 40)));
+        assert!(!r.on_touch_move(Point::new(300.0, 50.0)));
+        assert!(r.on_touch_move(Point::new(300.0, 70.0)));
         r.on_touch_start(Point::new(300.0, 300.0), &geo());
-        r.hide(ms(t0, 50));
-        assert!(!r.on_touch_move(Point::new(300.0, 400.0), ms(t0, 60)));
+        r.hide();
+        assert!(!r.on_touch_move(Point::new(300.0, 400.0)));
     }
 
+    /// The model decides whether the bar shows and nothing more: whoever
+    /// draws the bar draws its motion. A motion here nobody drew asked the
+    /// frame pump for frames each time the bar came or went.
     #[test]
-    fn the_fade_runs_in_place_and_reports_its_end() {
+    fn showing_and_hiding_asks_for_no_frames() {
         let t0 = crate::motion::frame_now();
         let mut r = TopEdgeReveal::default();
-        r.pin(t0);
-        let motion = crate::tokens::EffectiveMotion::default();
-        let mid = r.opacity(ms(t0, 40), motion);
-        assert!(mid > 0.0 && mid < 1.0, "{mid}");
-        assert!(r.fading(ms(t0, 40), motion));
-        assert!((r.opacity(ms(t0, 200), motion) - 1.0).abs() < 1e-9);
-        assert!(!r.fading(ms(t0, 200), motion));
-        let reduced = crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), true);
-        assert!((r.opacity(t0, reduced) - 1.0).abs() < 1e-9);
+        assert!(r.pin());
+        assert!(r.shown());
+        assert_eq!(crate::motion::frames_wanted_by(t0), Vec::<String>::new());
+        assert!(r.hide());
+        assert!(!r.shown());
+        assert_eq!(crate::motion::frames_wanted_by(t0), Vec::<String>::new());
     }
 }

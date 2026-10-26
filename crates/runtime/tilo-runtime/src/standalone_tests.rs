@@ -760,6 +760,7 @@ fn consent(room: &str, person: &str) -> tilo_action_broker::app_actions::AppActi
         needs_confirmation: false,
         confirming: false,
         moderation: None,
+        preview: None,
         scope: None,
         draft: None,
     }

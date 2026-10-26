@@ -30,7 +30,10 @@ pub use service_sessions::{ServiceSessionReply, ServiceSessionRequest};
 pub mod page;
 pub mod paint;
 pub mod text_input;
-pub use page::{PageFailure, PageKey, PageNavigation, PageReply, PageRequest};
+pub use page::{
+    MAX_POINTER_STEPS, PageFailure, PageKey, PageNavigation, PageReply, PageRequest, PointerButton,
+    PointerPoint, PointerStep, PointerStepKind,
+};
 pub mod profile;
 pub mod test_engine;
 

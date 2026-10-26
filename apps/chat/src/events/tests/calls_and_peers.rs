@@ -353,20 +353,25 @@ fn emoji_search_enter_picks_the_best_match() {
     let (mut app, mut doc) = app_with_doc();
     app.focus = Focus::Main;
     app.on_hit(
-        Hit::ComposerEmoji(Point::ZERO),
+        Hit::ComposerEmoji(Rect::ZERO),
         &mut ui::widget::Edits::lend(&mut doc),
     );
-    app.emoji_search.set_query("pizza");
-    app.pick_first_emoji_result(&mut ui::widget::Edits::lend(&mut doc));
+    type_str(&mut app, &mut doc, "pizza");
+    assert_eq!(
+        app.emoji_picker.query(),
+        "pizza",
+        "typing searches the picker"
+    );
+    feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
     assert_eq!(app.draft_main, "🍕");
     assert!(!app.emoji_open);
-    assert_eq!(app.emoji_recents.items()[0], "🍕");
+    assert_eq!(ui::emoji_catalogue::recents()[0], "🍕");
     // Reopening starts from an empty query.
     app.on_hit(
-        Hit::ComposerEmoji(Point::ZERO),
+        Hit::ComposerEmoji(Rect::ZERO),
         &mut ui::widget::Edits::lend(&mut doc),
     );
-    assert!(app.emoji_search.value().is_empty());
+    assert!(app.emoji_picker.query().is_empty());
 }
 
 // --- category + reorder + thread + workspace via the hit path -------
@@ -526,7 +531,7 @@ fn two_participants_converge_on_messages_and_edits() {
                 2,
                 "peer {who}: both distinct reactors counted once each"
             );
-            assert!(thumbs.reacted_by("u_alice") && thumbs.reacted_by("u_bob"));
+            assert!(thumbs.includes("u_alice") && thumbs.includes("u_bob"));
         }
 
         // Full convergence: identical timelines on both peers.

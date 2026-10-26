@@ -9,7 +9,11 @@
 //! Out:  `OUT_DIR` (default `target/look/web-bar`):
 //!       `bar-<dark|light|narrow>.png`, `workspace-menu.png`, `profile.png`,
 //!       `profile-linking.png`, `profile-linked.png`, `people.png`,
-//!       `people-pills.png`, `bar-unread.png`, `bar-unread-2x.png`
+//!       `people-pills.png`, `bar-unread.png`, `bar-unread-2x.png`,
+//!       `bar-pictures.png` (two people wearing pictures they chose),
+//!       `profile-own-edit.png` (your card with your picture and id),
+//!       `profile-other.png` (Ada's card, opened from her face),
+//!       `author-discord.png` (a bridged author's Discord mark and its tip)
 
 #![allow(
     clippy::expect_used,
@@ -48,6 +52,8 @@ use vello::kurbo::{Affine, Point, Rect};
 
 const ME: &str = "me";
 const MY_NAME: &str = "Quinn Davis";
+const ME_KEY: &str = "3f9a1c7e5b2d4f60a8c1e3b5d7f9a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5";
+const ADA_KEY: &str = "a6d40c19e7b25f83c1d9e0a4b7f26c58d3e1a9b0c7f4e2d6a8b5c3e1f0d9a7c2";
 
 /// A page's desktop on a room: two strips, three people here (two of them
 /// called Ada), and this page's own person.
@@ -70,6 +76,7 @@ impl DesktopChromeSource for Room {
             own: Some(OwnChip {
                 name: MY_NAME.into(),
                 rgb: (214, 140, 96),
+                identity: ME.into(),
             }),
             invite: tilo_desktop::chrome::Invite::Offered,
             notification_badge: self.unread,
@@ -183,6 +190,7 @@ impl Widget for Stage {
                     unavailable: None,
                     exposure: None,
                     may_invite: true,
+                    may_pin: false,
                     followed_id: None,
                     following_pairs: &[],
                     expanded_id: None,
@@ -351,6 +359,184 @@ impl Widget for Pills {
     }
 }
 
+/// A stand-in for a picture someone chose: a soft two-colour gradient with
+/// a lighter disc, `side` pixels square.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a mix of two channel values with a weight in 0..1 stays a channel value"
+)]
+fn sample_photo(side: u32, from: [u8; 3], to: [u8; 3]) -> vello::peniko::ImageData {
+    let mut rgba = Vec::new();
+    let centre = f64::from(side) / 2.0;
+    for y in 0..side {
+        for x in 0..side {
+            let t = (f64::from(x) + f64::from(y)) / (2.0 * f64::from(side));
+            let mix = |a: u8, b: u8| (f64::from(a) + (f64::from(b) - f64::from(a)) * t) as u8;
+            let (dx, dy) = (f64::from(x) - centre, f64::from(y) - centre * 0.85);
+            let face = (dx * dx + dy * dy).sqrt() < f64::from(side) * 0.22;
+            let lift = |c: u8| if face { c.saturating_add(70) } else { c };
+            rgba.extend_from_slice(&[
+                lift(mix(from[0], to[0])),
+                lift(mix(from[1], to[1])),
+                lift(mix(from[2], to[2])),
+                255,
+            ]);
+        }
+    }
+    vello::peniko::ImageData {
+        data: vello::peniko::Blob::new(std::sync::Arc::new(rgba)),
+        format: vello::peniko::ImageFormat::Rgba8,
+        alpha_type: vello::peniko::ImageAlphaType::Alpha,
+        width: side,
+        height: side,
+    }
+}
+
+/// What you see of yourself with a picture chosen: your id, and the
+/// picture's own buttons beside your avatar.
+fn own_edit_model() -> ProfileModel {
+    let mut model = profile_model(Vec::new());
+    model.key = Some(ME_KEY.into());
+    model.sharing = Some(ui::StatusSharing::Automatic);
+    model.status = "Sketching the welcome tour".into();
+    for (id, title) in [
+        ("set-photo", "Change your picture"),
+        ("reset-photo", "Use your initials again"),
+    ] {
+        model.actions.insert(
+            0,
+            ProfileAction {
+                id: id.into(),
+                title: title.into(),
+                group: ProfileGroup::Identity,
+                icon: ui::icons::Icon::Fingerprint,
+            },
+        );
+    }
+    model
+}
+
+/// Ada's card as you see it: what she is doing, written automatically, and
+/// writing to her or following her.
+fn other_model() -> ProfileModel {
+    ProfileModel {
+        name: "Ada".into(),
+        identity: "key-a".into(),
+        colour: Some(vello::peniko::Color::from_rgb8(120, 170, 230)),
+        key: Some(ADA_KEY.into()),
+        other: Some(tilo_desktop::profile_card::OtherPerson {
+            id: "key-a".into(),
+            status: Some(tilo_desktop::collaborators::RosterStatus {
+                text: "Reviewing the launch checklist in Notes".into(),
+                source: tilo_desktop::collaborators::LineSource::Generated,
+            }),
+            place: Some("Main · Notes".into()),
+            following: false,
+            can_follow: true,
+            can_message: true,
+        }),
+        ..ProfileModel::default()
+    }
+}
+
+/// Two Chat authors as a message header draws them: a person here, and a
+/// person writing from Discord through the bridge, whose mark shows its tip
+/// as hovering it does.
+struct Authors(Rect);
+impl Widget for Authors {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let style = Style {
+            size: Size::from_percent(1.0, 1.0),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, map, self)
+    }
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.0 = ui::widget::layout_rect(taffy, node, origin);
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.0,
+        );
+        let dana = tilo_actions::Appearance::new(
+            "Dana",
+            None,
+            Some(tilo_actions::Persona {
+                service: "discord".into(),
+                account: "dana_k".into(),
+                linked: None,
+            }),
+        )
+        .expect("appearance");
+        let authors = [
+            ui::author::Author::Person {
+                name: "Ada",
+                identity: "key-a",
+                avatar: None,
+                color: Some(vello::peniko::Color::from_rgb8(120, 170, 230)),
+            },
+            ui::author::Author::Bot {
+                bot_name: "Discord bridge",
+                installed_by: "",
+                appearance: Some(&dana),
+                linked: None,
+                linked_color: None,
+                image: None,
+            },
+        ];
+        let mut tip = None;
+        for (index, author) in authors.iter().enumerate() {
+            let origin = Point::new(40.0, if index == 0 { 40.0 } else { 112.0 });
+            let line = author.layout(&["Ada"], origin, 400.0, text, theme);
+            let mut ctx = ui::paint::PaintCtx::new(scene, transform, text, theme);
+            author.paint(&line, &mut ctx);
+            let body = theme.text(ui::TextRole::Body);
+            ctx.text(
+                if index == 0 {
+                    "Shipping the tour today"
+                } else {
+                    "hey all, joining from Discord"
+                },
+                &body,
+                theme.tokens.colors.text_primary,
+                Point::new(line.name.x0, origin.y + 26.0),
+                None,
+            );
+            if let (Some(badge), Some(words)) = (line.badge, author.service_tip()) {
+                tip = Some((badge, words));
+            }
+        }
+        if let Some((badge, words)) = tip {
+            ui::widget::tooltip::draw_hover_tooltip(
+                scene, transform, text, theme, badge, &words, self.0,
+            );
+        }
+    }
+    fn name(&self) -> &'static str {
+        "Authors"
+    }
+    fn get_rect(&self) -> Rect {
+        self.0
+    }
+}
+
 /// Cursor pills of two people called Ada, numbered as everyone sees them.
 fn pills(out: &std::path::Path) {
     let mut presence = PresenceCtx::empty();
@@ -384,6 +570,34 @@ fn main() {
         harness.render_png(&path);
         println!("{}", path.display());
     };
+    // Pictures people chose, on the bar and on their cards.
+    ui::people_photos::set(ME, Some(sample_photo(96, [222, 132, 88], [120, 60, 120])));
+    ui::people_photos::set(
+        "key-a",
+        Some(sample_photo(96, [70, 140, 210], [40, 190, 160])),
+    );
+    let mut harness = FrameHarness::for_root(State::new(), stage(), (1440, 900), Theme::dark());
+    shoot(&mut harness, "bar-pictures.png");
+    let shown = harness.root_mut::<Stage>();
+    let (anchor, area) = (shown.bar.own_avatar_rect(), shown.rect);
+    shown.profile.toggle(&own_edit_model(), anchor, area);
+    shoot(&mut harness, "profile-own-edit.png");
+    // A fresh stage: Ada's card opens from her face on the bar.
+    let mut harness = FrameHarness::for_root(State::new(), stage(), (1440, 900), Theme::dark());
+    harness.settle_for_capture(settle);
+    let shown = harness.root_mut::<Stage>();
+    let anchor = shown.bar.face_rect("key-a").expect("Ada's face on the bar");
+    let area = shown.rect;
+    shown.profile.toggle(&other_model(), anchor, area);
+    shoot(&mut harness, "profile-other.png");
+
+    let mut harness =
+        FrameHarness::for_root(State::new(), Authors(Rect::ZERO), (560, 220), Theme::dark());
+    shoot(&mut harness, "author-discord.png");
+    // The bar and the cards above wear the pictures; the rest do not.
+    ui::people_photos::set(ME, None);
+    ui::people_photos::set("key-a", None);
+
     for (variant, theme, viewport) in [
         ("dark", Theme::dark(), (1280, 480)),
         ("light", Theme::light(), (1280, 480)),

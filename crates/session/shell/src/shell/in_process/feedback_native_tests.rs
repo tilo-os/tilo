@@ -69,6 +69,8 @@ fn answer(connection: &Connection) -> FeedbackAnswer {
                 .as_secs(),
         },
         receipt: None,
+        reviewer: None,
+        review: None,
     }
 }
 fn admit(delivery: &Delivery) {

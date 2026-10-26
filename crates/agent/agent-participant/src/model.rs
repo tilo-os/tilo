@@ -37,6 +37,7 @@ mod scripted;
 #[cfg(test)]
 pub(crate) mod tests;
 
+pub(crate) use converse::as_role;
 pub use converse::{GatewayTurns, PlanTurns};
 pub use openai::{CLOUD_MODEL, ModelChoice, OpenAiModel};
 pub use scripted::ScriptedModel;
@@ -85,6 +86,9 @@ pub struct Briefing {
     /// The task's budget for asking a call lost to the network again
     /// ([`PlanContext::retries`]).
     pub retries: crate::planner::TurnRetries,
+    /// Which part of a coordinated task the plan is ([`PlanContext::role`]):
+    /// in one, the `plan` tool takes items as a coordinator lists them.
+    pub role: crate::planner::Role,
 }
 
 impl Briefing {
@@ -303,6 +307,8 @@ pub struct ModelPlanner {
     continued: Option<(String, usize)>,
     /// The checklist the last plan declared, until it is taken.
     obligations: Obligations,
+    /// Whether its tasks are coordinated, an agent per item.
+    decomposes: bool,
 }
 
 impl ModelPlanner {
@@ -315,7 +321,16 @@ impl ModelPlanner {
             by_model: false,
             continued: None,
             obligations: Obligations::default(),
+            decomposes: false,
         }
+    }
+
+    /// This planner, with each item of its tasks' checklists done by an
+    /// agent of its own when `on` ([`crate::profile::DECOMPOSE_ENV`]).
+    #[must_use]
+    pub fn decomposing(mut self, on: bool) -> Self {
+        self.decomposes = on;
+        self
     }
 
     /// This planner, with its tasks checked against their requests once
@@ -748,6 +763,7 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
         may_plan_nothing: context.may_plan_nothing,
         pictures: Vec::new(),
         retries: context.retries.clone(),
+        role: context.role.clone(),
     }
 }
 
@@ -1067,6 +1083,10 @@ impl Planner for ModelPlanner {
         std::mem::take(&mut self.obligations)
     }
 
+    fn decomposes(&self) -> bool {
+        self.decomposes
+    }
+
     fn plan_reading(
         &mut self,
         task: &str,
@@ -1089,8 +1109,9 @@ impl Planner for ModelPlanner {
         briefing.pictures = read.newest_look();
         // A request that names exactly one operation of an open record, all
         // of whose arguments it states, is that operation: the model would
-        // only repeat it.
-        let direct = (replans == 0 && context.request.is_none())
+        // only repeat it. Not an item of a coordinated task, whose values
+        // come from the items before it.
+        let direct = (replans == 0 && context.request.is_none() && !context.role.coordinated())
             .then(|| single_operation(task, &catalogue, &targets))
             .flatten();
         self.by_model = direct.is_none();
@@ -1110,6 +1131,9 @@ impl Planner for ModelPlanner {
         self.obligations = Obligations {
             items: answer.obligations.clone(),
             set_aside: answer.set_aside.clone(),
+            plans: answer.items.clone(),
+            adjust: answer.adjust.clone(),
+            reply: answer.reply.clone(),
         };
         let (mut steps, rest, wait) = answer_steps(
             answer,
@@ -1356,6 +1380,9 @@ const OBSERVED_INTRO: &str = "What the steps so far answered";
 const ORIGINAL_INTRO: &str = "The original request (for reference):";
 /// What opens a re-plan's paragraph on the task's checklist.
 pub(crate) const OBLIGATIONS_INTRO: &str = "The request's obligations";
+/// What opens the paragraph a plan of a coordinated task is told its part
+/// in ([`crate::planner::Role::note`]).
+pub(crate) const ROLE_INTRO: &str = "This request is carried out item by item";
 
 /// What an open record's view is said to do, so the model plans a view
 /// whose answer a later step needs rather than asking for the value.
@@ -1405,6 +1432,10 @@ fn with_results(task: &str, context: &PlanContext) -> String {
     if !context.obligations.is_empty() {
         let _ = write!(text, "\n\n{}", context.obligations);
     }
+    let role = context.role.note();
+    if !role.is_empty() {
+        let _ = write!(text, "\n\n{role}");
+    }
     text
 }
 
@@ -1417,6 +1448,7 @@ fn requested(task: &str) -> &str {
         PRODUCED_INTRO,
         OBSERVED_INTRO,
         OBLIGATIONS_INTRO,
+        ROLE_INTRO,
     ]
     .iter()
     .filter_map(|intro| task.find(&format!("\n\n{intro}")))

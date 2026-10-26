@@ -40,8 +40,8 @@ pub enum TileResolution {
     /// Retain failed setup owners, including retryable persistence reports.
     Failed(LaunchError),
     /// The app's record is still being opened off the frame loop (see
-    /// [`LaunchError::is_opening`]): its window holds the place with the
-    /// opening card, and the tab is resolved again on the next
+    /// [`LaunchError::is_opening`]): its window reserves the place for the
+    /// app's arrival, and the tab is resolved again on the next
     /// reconciliation, which the host's storage wake causes.
     Opening,
 }

@@ -4,7 +4,6 @@
 //! reports typed hits, while the host applies them through the existing
 //! authenticated `Workspace` mutation methods.
 
-use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
 use ui::num::{f32_of_f64, f64_of_usize};
 use ui::time::Instant;
@@ -17,35 +16,16 @@ use ui::ColorCompat;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::ButtonRole;
 
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{DesktopTree, UserId};
 
 use super::{
     AppDirectory, DefaultAppsCtx, GrantDraft, WsTab, agents_add_rect, agents_pane_rows,
-    default_app_rows, draw_agents_pane, draw_default_apps_pane, draw_members_pane,
-    draw_permissions_pane, members_pane_rows, ownership_action_rect, permission_profiles_rect,
-    permissions_pane_layout,
+    default_app_rows, draw_agents_pane, draw_default_apps_pane, draw_permissions_pane,
+    permission_profiles_rect, permissions_pane_layout,
 };
 use ui::TextRole;
-use ui::text_render::TextStyle;
-
-/// The "At a glance" stat tiles: the base surface inside the raised summary
-/// card, with a hairline derived against the card. Where a palette makes
-/// `base` and `raised` the same colour (high contrast), the lift alone
-/// cannot separate the tile from its card (HIG §9.3's caveat) and the edge
-/// does the job; `tests::stat_tiles_keep_an_edge_on_every_palette` holds it.
-fn stat_tile_face(theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color) {
-    let colors = &theme.tokens.colors;
-    (
-        colors.surfaces.base,
-        ui::tokens::colors::Colors::hairline_on(
-            colors.surfaces.raised,
-            ui::chrome::shell::HAIRLINE_ALPHA,
-        ),
-    )
-}
 
 /// What the lens paints, read from the host once per frame. Everything is
 /// borrowed, so building it costs no copy of the desktop.
@@ -74,6 +54,8 @@ pub struct WorkspaceSettingsModel<'a> {
     /// The workspaces this device keeps archived: off its switcher and
     /// desktop, each restorable or deletable from here.
     pub archived: &'a [ArchivedWorkspace],
+    /// The workspace's emoji, for the Emoji tab.
+    pub emoji: super::emoji_pane::EmojiPaneModel<'a>,
 }
 
 /// A workspace this device keeps archived, as the General tab lists it.
@@ -98,6 +80,8 @@ pub enum PublicCard {
     },
     /// It cannot be public here, or its host did not answer: why.
     Unavailable(String),
+    /// There is no network to reach its host through.
+    Offline,
 }
 
 /// One of the person's devices as the General tab offers it.
@@ -190,6 +174,12 @@ pub enum EventOutcome {
     RestoreArchived(usize),
     /// Delete the `n`th archived workspace, after the usual confirmation.
     DeleteArchived(usize),
+    /// Choose a picture and add it as the workspace's emoji.
+    AddEmoji,
+    /// Remove the workspace's emoji of this name, the way given.
+    RemoveEmoji(String, super::emoji_pane::Removal),
+    /// Put away the note about the last emoji not added or removed.
+    DismissEmojiNotice,
 }
 
 /// Keyboard operations understood by the focused member-permission sheet.
@@ -246,12 +236,19 @@ pub struct DrawPlan {
 pub struct WorkspaceSettingsOverlay {
     viewport: Rect,
     general_scroll_y: f64,
-    /// General body geometry reserves both OS UI and text scaling.
-    general_text_scale: f64,
+    /// The General page's first group stands `s2` under the body's top: the
+    /// other half of the strip's `s4` rhythm, in the theme's spacing.
+    general_lead: f64,
     /// Measured footer plus its themed inset/gap, reserved outside the body clip.
     general_footer_height: f64,
     transition: ui::motion::Presence,
-    tab_pill_rects: [Rect; 5],
+    tab_pill_rects: [Rect; WsTab::COUNT],
+    /// The strip that switches between the lens's tabs, and the labels it
+    /// was built with (the catalogue's, which follow the language).
+    tabs: Option<(Vec<String>, ui::widget::ViewTabs)>,
+    /// The Emoji tab as painted, and how far its grid is scrolled.
+    emoji: super::emoji_pane::EmojiPaneLayout,
+    emoji_scroll: f64,
     default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
     revoke_rects: Vec<(String, Rect)>,
     grant_composer_rects: Option<GrantComposerRects>,
@@ -282,21 +279,10 @@ pub struct WorkspaceSettingsOverlay {
     member_sheet: Option<MemberSheet>,
     member_sheet_focus: usize,
     member_sheet_option_rects: Vec<Rect>,
-    /// The General tab's devices card: one toggle per device, the two move
-    /// buttons and Delete, as painted (scroll applied).
-    device_toggle_rects: Vec<Rect>,
-    move_rects: [Rect; 2],
-    delete_rect: Rect,
-    /// Rows the devices card had when last painted, for the scroll range.
-    device_rows: usize,
-    /// The Public card's switch, role and description controls, as
-    /// painted (scroll applied); zero while they take no input.
-    public_rects: [Rect; 3],
-    /// The archived workspaces card: each row's Restore and Delete, as
-    /// painted (scroll applied).
-    archived_rects: Vec<[Rect; 2]>,
-    /// Rows the archived card had when last painted, for the scroll range.
-    archived_rows: usize,
+    /// The General tab's body, laid out by the toolkit.
+    general: general::GeneralPage,
+    /// The People tab's body, laid out by the toolkit.
+    people: people::PeoplePage,
     /// Shaped caret/scroll cache; the host owns the rename draft and selection.
     name_input: Option<ui::widget::TextInput>,
 }
@@ -306,10 +292,13 @@ impl Default for WorkspaceSettingsOverlay {
         Self {
             viewport: Rect::ZERO,
             general_scroll_y: 0.0,
-            general_text_scale: 1.0,
+            general_lead: f64::from(ui::tokens::Spacing::BASE.s2),
             general_footer_height: 48.0,
             transition: ui::motion::Presence::closed(),
-            tab_pill_rects: [Rect::ZERO; 5],
+            tab_pill_rects: [Rect::ZERO; WsTab::COUNT],
+            tabs: None,
+            emoji: super::emoji_pane::EmojiPaneLayout::default(),
+            emoji_scroll: 0.0,
             default_app_rects: Vec::new(),
             revoke_rects: Vec::new(),
             grant_composer_rects: None,
@@ -329,13 +318,8 @@ impl Default for WorkspaceSettingsOverlay {
             member_sheet: None,
             member_sheet_focus: 0,
             member_sheet_option_rects: Vec::new(),
-            device_toggle_rects: Vec::new(),
-            move_rects: [Rect::ZERO; 2],
-            delete_rect: Rect::ZERO,
-            device_rows: 0,
-            public_rects: [Rect::ZERO; 3],
-            archived_rects: Vec::new(),
-            archived_rows: 0,
+            general: general::GeneralPage::default(),
+            people: people::PeoplePage::default(),
             name_input: None,
         }
     }
@@ -483,25 +467,9 @@ impl WorkspaceSettingsOverlay {
         body
     }
 
+    /// The "At a glance" statistics, as last laid out (scroll applied).
     pub fn general_summary_rect(&self) -> Rect {
-        Self::summary_card_rect_for(
-            self.general_body_rect(),
-            self.general_text_scale,
-            self.general_scroll_y,
-        )
-    }
-
-    /// The "At a glance" card of the General tab: its authored place under
-    /// the identity and sharing cards, scaled with the body's text and
-    /// shifted by the body's scroll. One definition for hit-testing and
-    /// painting.
-    pub fn summary_card_rect_for(body: Rect, text_scale: f64, scroll_y: f64) -> Rect {
-        Rect::new(
-            body.x0,
-            body.y0 + 268.0 * text_scale - scroll_y,
-            body.x1,
-            body.y0 + 374.0 * text_scale - scroll_y,
-        )
+        self.general.rect(general::GLANCE)
     }
 
     /// Scroll only General's body; headers, tabs and footer remain anchored.
@@ -509,138 +477,55 @@ impl WorkspaceSettingsOverlay {
         if !delta.is_finite() || self.member_sheet.is_some() {
             return false;
         }
-        let content = 382.0
-            + Self::devices_card_height(self.device_rows)
-            + 16.0
-            + PUBLIC_CARD_HEIGHT
-            + 16.0
-            + Self::archived_card_height(self.archived_rows);
-        let max = (content * self.general_text_scale - self.general_body_rect().height()).max(0.0);
+        let content = self.general_lead + self.general.height();
+        let max = (content - self.general_body_rect().height()).max(0.0);
         let old = self.general_scroll_y;
         self.general_scroll_y = (old + delta).clamp(0.0, max);
+        let body = self.general_body_rect();
+        self.general.place(Point::new(
+            body.x0,
+            body.y0 + self.general_lead - self.general_scroll_y,
+        ));
         (old - self.general_scroll_y).abs() > f64::EPSILON
     }
 
-    fn devices_card_height(rows: usize) -> f64 {
-        let rows = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
-        48.0 + rows * 40.0 + 56.0
-    }
-
-    /// The devices card under "At a glance": where this workspace shows,
-    /// its place in the list, and Delete. Scroll applied.
-    pub fn devices_card_rect(&self) -> Rect {
-        let body = self.general_body_rect();
-        let scale = self.general_text_scale;
-        let top = body.y0 + 390.0 * scale - self.general_scroll_y;
-        Rect::new(
-            body.x0,
-            top,
-            body.x1,
-            top + Self::devices_card_height(self.device_rows) * scale,
-        )
-    }
-
-    /// The Public card under the devices card. Scroll applied.
-    pub fn public_card_rect(&self) -> Rect {
-        let devices = self.devices_card_rect();
-        let scale = self.general_text_scale;
-        let top = devices.y1 + 16.0 * scale;
-        Rect::new(
-            devices.x0,
-            top,
-            devices.x1,
-            top + PUBLIC_CARD_HEIGHT * scale,
-        )
-    }
-
-    /// Unscaled height of the archived card for `rows` workspaces, its gap
-    /// above included; none when nothing is archived.
-    fn archived_card_height(rows: usize) -> f64 {
-        if rows == 0 {
-            return 0.0;
-        }
-        let rows = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
-        48.0 + rows * 40.0 + 8.0 + 16.0
-    }
-
-    /// The archived workspaces card under the Public card. Scroll applied.
-    pub fn archived_card_rect(&self) -> Rect {
-        let public = self.public_card_rect();
-        let scale = self.general_text_scale;
-        let height = Self::archived_card_height(self.archived_rows);
-        if height <= 0.0 {
-            return Rect::new(public.x0, public.y1, public.x1, public.y1);
-        }
-        let top = public.y1 + 16.0 * scale;
-        Rect::new(public.x0, top, public.x1, top + (height - 16.0) * scale)
-    }
-
-    fn archived_card_hit(&self, point: Point) -> Option<EventOutcome> {
-        let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
-        self.archived_rects
-            .iter()
-            .enumerate()
-            .find_map(|(index, [restore, delete])| {
-                if hit(restore) {
-                    Some(EventOutcome::RestoreArchived(index))
-                } else {
-                    hit(delete).then_some(EventOutcome::DeleteArchived(index))
-                }
-            })
-    }
-
-    pub fn archived_rects(&self) -> &[[Rect; 2]] {
-        &self.archived_rects
-    }
-
-    fn public_card_hit(&self, point: Point) -> Option<EventOutcome> {
-        let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
-        let [switch, role, description] = &self.public_rects;
-        if hit(switch) {
-            return Some(EventOutcome::TogglePublic);
-        }
-        if hit(role) {
-            return Some(EventOutcome::CycleDefaultRole);
-        }
-        hit(description).then_some(EventOutcome::EditDescription)
-    }
-
-    fn devices_card_hit(&self, point: Point) -> Option<EventOutcome> {
-        let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
-        if let Some(index) = self.device_toggle_rects.iter().position(hit) {
+    /// The General control under `point`, by the id it carries in the page.
+    fn general_hit(&self, point: Point) -> Option<EventOutcome> {
+        let hit = |id: &str| {
+            let rect = self.general.rect(id);
+            rect.area() > 0.0 && rect.contains(point)
+        };
+        let rows = |id: fn(usize) -> String| {
+            (0..)
+                .map(id)
+                .take_while(|id| self.general.rect(id).area() > 0.0)
+        };
+        if let Some(index) = rows(general::device_id).position(|id| hit(&id)) {
             return Some(EventOutcome::ToggleDevice(index));
         }
-        if hit(&self.move_rects[0]) {
-            return Some(EventOutcome::MoveWorkspace(-1));
+        if let Some(index) = rows(general::restore_id).position(|id| hit(&id)) {
+            return Some(EventOutcome::RestoreArchived(index));
         }
-        if hit(&self.move_rects[1]) {
-            return Some(EventOutcome::MoveWorkspace(1));
+        if let Some(index) = rows(general::delete_archived_id).position(|id| hit(&id)) {
+            return Some(EventOutcome::DeleteArchived(index));
         }
-        hit(&self.delete_rect).then_some(EventOutcome::DeleteWorkspace)
+        [
+            (general::MOVE_UP, EventOutcome::MoveWorkspace(-1)),
+            (general::MOVE_DOWN, EventOutcome::MoveWorkspace(1)),
+            (general::PUBLIC_SWITCH, EventOutcome::TogglePublic),
+            (general::PUBLIC_ROLE, EventOutcome::CycleDefaultRole),
+            (general::PUBLIC_DESCRIBE, EventOutcome::EditDescription),
+            (general::DELETE, EventOutcome::DeleteWorkspace),
+            (general::INVITE, EventOutcome::CreateInvite),
+            (general::NAME, EventOutcome::EditName),
+        ]
+        .into_iter()
+        .find_map(|(id, outcome)| hit(id).then_some(outcome))
     }
 
-    pub fn device_toggle_rects(&self) -> &[Rect] {
-        &self.device_toggle_rects
-    }
-
+    /// The workspace's name field, as last laid out (scroll applied).
     pub fn name_rect(&self) -> Rect {
-        let body = self.general_body_rect();
-        Rect::new(
-            body.x0 + 16.0,
-            body.y0 + 62.0 * self.general_text_scale - self.general_scroll_y,
-            body.x1 - 16.0,
-            body.y0 + 96.0 * self.general_text_scale - self.general_scroll_y,
-        )
-    }
-
-    pub fn name_rect_for(card: Rect) -> Rect {
-        let body = Self::body_rect_for(card);
-        Rect::new(
-            body.x0 + 16.0,
-            body.y0 + 62.0,
-            body.x1 - 16.0,
-            body.y0 + 96.0,
-        )
+        self.general.rect(general::NAME)
     }
 
     pub fn close_rect(&self) -> Rect {
@@ -663,21 +548,9 @@ impl WorkspaceSettingsOverlay {
         )
     }
 
+    /// The button that opens the invite composer, as last laid out.
     pub fn invite_rect(&self) -> Rect {
-        let body = self.general_body_rect();
-        let y = body.y0 + 202.0 * self.general_text_scale - self.general_scroll_y;
-        Rect::new(
-            body.x1 - 16.0 - 72.0 * self.general_text_scale,
-            y,
-            body.x1 - 16.0,
-            y + 34.0 * self.general_text_scale,
-        )
-    }
-
-    pub fn invite_rect_for(card: Rect) -> Rect {
-        let body = Self::body_rect_for(card);
-        let link_y = body.y0 + 202.0;
-        Rect::new(body.x1 - 88.0, link_y, body.x1 - 16.0, link_y + 34.0)
+        self.general.rect(general::INVITE)
     }
 
     pub fn force_settled(&mut self) {
@@ -690,15 +563,25 @@ impl WorkspaceSettingsOverlay {
 
     pub fn tab_pill_rect(&self, tab: WsTab) -> Rect {
         self.tab_pill_rects
-            .get(match tab {
-                WsTab::General => 0,
-                WsTab::Members => 1,
-                WsTab::Agents => 2,
-                WsTab::Permissions => 3,
-                WsTab::Apps => 4,
-            })
+            .get(tab.index())
             .copied()
             .unwrap_or(Rect::ZERO)
+    }
+
+    /// The Emoji tab as last painted: its controls and cells.
+    pub fn emoji_layout(&self) -> &super::emoji_pane::EmojiPaneLayout {
+        &self.emoji
+    }
+
+    /// Scroll the Emoji tab's grid by `delta`; whether it moved. Nothing
+    /// moves while the tab is not shown.
+    pub fn scroll_emoji(&mut self, delta: f64) -> bool {
+        if !delta.is_finite() || self.emoji.grid.area() <= 0.0 {
+            return false;
+        }
+        let old = self.emoji_scroll;
+        self.emoji_scroll = (old + delta).clamp(0.0, self.emoji.max_scroll);
+        (old - self.emoji_scroll).abs() > f64::EPSILON
     }
 
     pub fn revoke_rects(&self) -> &[(String, Rect)] {
@@ -804,7 +687,8 @@ impl WorkspaceSettingsOverlay {
     }
 
     fn clear_hits(&mut self) {
-        self.tab_pill_rects = [Rect::ZERO; 5];
+        self.tab_pill_rects = [Rect::ZERO; WsTab::COUNT];
+        self.emoji = super::emoji_pane::EmojiPaneLayout::default();
         self.default_app_rects.clear();
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
@@ -817,6 +701,21 @@ impl WorkspaceSettingsOverlay {
         self.bot_remove_rects.clear();
         self.agent_access = super::agent_access::AgentAccessLayout::default();
         self.member_sheet_option_rects.clear();
+    }
+
+    /// Forget every pane's controls, keeping the tab strip just painted.
+    fn clear_hits_but_tabs(&mut self) {
+        let tabs = self.tab_pill_rects;
+        self.clear_hits();
+        self.tab_pill_rects = tabs;
+    }
+
+    /// What a press at `point` on the Agents or Emoji tab means.
+    fn pane_outcome(&self, point: Point, active_tab: WsTab) -> Option<EventOutcome> {
+        match active_tab {
+            WsTab::Emoji => self.emoji.hit(point),
+            _ => self.agents_outcome(point, active_tab),
+        }
     }
 
     /// What a press at `point` on the Agents tab means: the agent view's
@@ -1160,7 +1059,7 @@ impl WorkspaceSettingsOverlay {
         if self.ownership_action_rect.area() > 0.0 && self.ownership_action_rect.contains(point) {
             return EventOutcome::ManageOwnership;
         }
-        if let Some(outcome) = self.agents_outcome(point, active_tab) {
+        if let Some(outcome) = self.pane_outcome(point, active_tab) {
             return outcome;
         }
         for (id, rect) in &self.revoke_rects {
@@ -1179,29 +1078,10 @@ impl WorkspaceSettingsOverlay {
         if matches!(active_tab, WsTab::General) && !self.general_body_rect().contains(point) {
             return EventOutcome::CommitName;
         }
-        if matches!(active_tab, WsTab::General)
-            && let Some(outcome) = self.devices_card_hit(point)
-        {
-            return outcome;
+        if matches!(active_tab, WsTab::General) {
+            return self.general_hit(point).unwrap_or(EventOutcome::CommitName);
         }
-        if matches!(active_tab, WsTab::General)
-            && let Some(outcome) = self.public_card_hit(point)
-        {
-            return outcome;
-        }
-        if matches!(active_tab, WsTab::General)
-            && let Some(outcome) = self.archived_card_hit(point)
-        {
-            return outcome;
-        }
-        if matches!(active_tab, WsTab::General) && self.invite_rect().contains(point) {
-            return EventOutcome::CreateInvite;
-        }
-        if self.name_rect().contains(point) {
-            EventOutcome::EditName
-        } else {
-            EventOutcome::CommitName
-        }
+        EventOutcome::CommitName
     }
 
     pub fn draw_contents(
@@ -1255,59 +1135,27 @@ impl WorkspaceSettingsOverlay {
             return;
         }
 
-        self.general_text_scale = f64::from(theme.text_scale * theme.ui_scale);
+        self.general_lead = f64::from(tokens.spacing.s2);
         let editing = model.owner_controls && model.editing_name.is_some();
         let hint = Self::footer_hints(editing);
         let footer = Self::footer_hint_rect(rect, &hint, text_renderer, theme);
         self.general_footer_height = rect.y1 - footer.y0 + f64::from(tokens.spacing.s2);
+        let body = self.general_body_rect();
+        let content = general::content(model);
+        self.general
+            .lay_out(&content, body.width(), theme, text_renderer);
         self.scroll_general(0.0);
-        let body_clip = self.general_body_rect();
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &body_clip,
-        );
-        let content_rect = Rect::new(
-            rect.x0,
-            rect.y0 - self.general_scroll_y,
-            rect.x1,
-            rect.y1 - self.general_scroll_y,
-        );
-        let body_y = rect.y0 + 168.0;
-        self.draw_ws_settings_name_input(
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
+        self.general.draw(scene, transform, text_renderer, theme);
+        let shown = model
+            .editing_name
+            .filter(|_| model.owner_controls)
+            .unwrap_or(active_name.as_str());
+        self.paint_name_field(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            content_rect,
             model,
-            active_name.as_str(),
+            shown,
         );
-        let can_invite = model.desktop.active_workspace().is_some_and(|workspace| {
-            model.governs_active_room && workspace.may_administer(model.acting_user)
-        });
-        let invite_y = self.draw_ws_settings_invite_link(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            content_rect,
-            can_invite,
-            body_y,
-        );
-        let collab_y = invite_y + 72.0;
-        Self::draw_ws_settings_collaborators(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            content_rect,
-            model,
-            collab_y,
-        );
-        self.draw_ws_settings_devices(scene, transform, text_renderer, theme, model);
-        self.draw_ws_settings_public(scene, transform, text_renderer, theme, model);
-        self.draw_ws_settings_archived(scene, transform, text_renderer, theme, model);
-
         scene.pop_layer();
 
         ui::widget::KeyHintsFace::new(&hint).paint(
@@ -1749,12 +1597,10 @@ impl WorkspaceSettingsOverlay {
         (identity, close)
     }
 
-    /// Tab strip. Every pill is a real destination: a host who has
-    /// granted nothing yet still needs to reach the tab that grants.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered paint pass keeps responsive label bounds aligned with tab hit targets"
-    )]
+    /// The tab strip: [`ui::widget::ViewTabs`] over the lens's five tabs,
+    /// each a real destination (a host who has granted nothing yet still
+    /// needs to reach the tab that grants). A narrow lens shows the short
+    /// labels; the strip's tab rects are the click targets.
     fn draw_ws_settings_tab_strip(
         &mut self,
         scene: &mut Scene,
@@ -1764,159 +1610,43 @@ impl WorkspaceSettingsOverlay {
         rect: Rect,
         active_tab: WsTab,
     ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let label_style = tokens.typography.style(TextRole::Body);
         let tabs = WsTab::all();
-        let nav = Self::nav_rect_for(rect);
-        // The strip's track: a quiet lift under the Selector pills and a
-        // hairline derived against the panel ground (HIG §9.2/§9.5), not a
-        // ramp slot inside a faded declared border.
-        let nav_rr = RoundedRect::from_rect(nav, f64::from(tokens.radii.control));
-        scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &nav_rr);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::tokens::colors::Colors::hairline_on(
-                ui::chrome::shell::panel_ground(theme),
-                ui::chrome::shell::HAIRLINE_ALPHA,
-            ),
-            None,
-            &nav_rr,
-        );
-        let segment_w = nav.width() / f64_of_usize(tabs.len());
-        // Every pill gets the same treatment: the plan is measured once for
-        // the whole strip, so the strip never shows one elided label next to
-        // four intact ones or one icon next to four bare labels.
-        let plan = tab_strip_plan(
-            text_renderer,
-            &label_style,
-            segment_w - 2.0 * Self::PILL_INSET,
-        );
-        // Segment widths follow the measured labels once equal fifths cannot
-        // hold the widest one (the `s1` pill margins each side are part of
-        // the need), so "General" at 200 % is not elided beside pills with
-        // slack.
-        let reserved = TAB_LABEL_INSET
-            + 2.0 * Self::PILL_INSET
-            + if plan.icons {
-                TAB_ICON_PX + TAB_ICON_GAP
-            } else {
-                0.0
-            };
-        let needs: Vec<f64> = tabs
-            .iter()
-            .map(|tab| {
-                let label = if plan.compact {
-                    tab.compact_label()
-                } else {
-                    tab.label()
-                };
-                f64::from(text_renderer.measure_style(&label, None, &label_style).0) + reserved
-            })
-            .collect();
-        let widths = tab_pill_widths(&needs, nav.width());
-        // Written into the component's cache after the loop
-        // so one source of geometry feeds draw and click-routing.
-        let mut pill_rects = [Rect::ZERO; 5];
-        for (i, tab) in tabs.iter().enumerate() {
-            let active = *tab == active_tab;
-            let label = if plan.compact {
-                tab.compact_label()
-            } else {
-                tab.label()
-            };
-
-            let seg_x0 = nav.x0 + widths.iter().take(i).sum::<f64>();
-            let seg_w = widths.get(i).copied().unwrap_or(segment_w);
-            let pill_rect = Rect::new(
-                seg_x0 + Self::PILL_INSET,
-                nav.y0 + Self::PILL_INSET,
-                seg_x0 + seg_w - Self::PILL_INSET,
-                nav.y1 - Self::PILL_INSET,
-            );
-            if let Some(slot) = pill_rects.get_mut(i) {
-                *slot = pill_rect;
-            }
-            // Selector role (HIG §9.1/§9.3): a capsule, and the chosen tab is
-            // a lift with a derived hairline — never a declared border on a
-            // raised fill, which is invisible on the dark preset.
-            let pill_radius = ui::chrome::ChromeRole::Selector.radius(theme, pill_rect.height());
-            let pill = RoundedRect::from_rect(pill_rect, pill_radius);
-            if active {
-                let tier =
-                    ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true));
-                scene.fill(Fill::NonZero, transform, tier.fill, None, &pill);
-                if let Some(border) = tier.border {
-                    // Crisp: the hairline covers the pill's outermost pixel
-                    // row, the same row every `ui::surface::card` edge uses.
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(1.0),
-                        transform,
-                        border,
-                        None,
-                        &ui::surface::edge_outline(pill_rect, pill_radius),
-                    );
-                }
-            }
-            let color = if active {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            };
-            let icon = match tab {
-                WsTab::General => ui::icons::Icon::Settings2,
-                WsTab::Members => ui::icons::Icon::Home,
-                WsTab::Agents => ui::icons::Icon::Sparkles,
-                WsTab::Permissions => ui::icons::Icon::Shield,
-                WsTab::Apps => ui::icons::Icon::LayoutGrid,
-            };
-            let show_icon = plan.icons;
-            let icon_size = if show_icon { TAB_ICON_PX } else { 0.0 };
-            let icon_gap = if show_icon { TAB_ICON_GAP } else { 0.0 };
-            let label = text_renderer.elide_to_width_style(
-                &label,
-                f32_of_f64(pill_rect.width() - icon_size - icon_gap - 8.0),
-                &label_style,
-            );
-            let (w, h) = text_renderer.measure_style(&label, None, &label_style);
-            let content_w = icon_size + icon_gap + f64::from(w);
-            let content_x = pill_rect.center().x - content_w / 2.0;
-            if show_icon {
-                ui::icons::draw_icon(
-                    scene,
-                    transform,
-                    Rect::new(
-                        content_x,
-                        pill_rect.center().y - icon_size / 2.0,
-                        content_x + icon_size,
-                        pill_rect.center().y + icon_size / 2.0,
-                    ),
-                    icon,
-                    if active {
-                        colors.intent.accent_hover
-                    } else {
-                        color
-                    },
-                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                );
-            }
-            text_renderer.draw_style(
-                scene,
-                &label,
-                color,
-                transform.pre_translate(
-                    (
-                        content_x + icon_size + icon_gap,
-                        pill_rect.center().y - f64::from(h) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                &label_style,
-            );
+        let labels: Vec<String> = tabs.iter().map(WsTab::label).collect();
+        if self.tabs.as_ref().is_none_or(|(built, _)| *built != labels) {
+            let segments = tabs
+                .iter()
+                .zip(&labels)
+                .map(|(tab, label)| {
+                    ui::widget::Segment::new(label.clone()).short(tab.compact_label())
+                })
+                .collect();
+            let strip = ui::widget::ViewTabs::new(segments, 0)
+                .with_id("ws_settings_tabs")
+                .with_accessible_name(t("workspace-settings-title"));
+            self.tabs = Some((labels, strip));
         }
-        self.tab_pill_rects = pill_rects;
+        let Some((_, strip)) = self.tabs.as_mut() else {
+            return;
+        };
+        let selected = tabs.iter().position(|tab| *tab == active_tab).unwrap_or(0);
+        if strip.selected() != selected {
+            strip.set_selected(selected);
+        }
+        let nav = Self::nav_rect_for(rect);
+        strip.apply_layout_external(nav);
+        ui::widget::Widget::draw(
+            strip,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ui::presence::PresenceCtx::default(),
+        );
+        // The first draw measures the labels in this theme; place again so
+        // the targets are where the tabs now stand.
+        strip.apply_layout_external(nav);
+        self.tab_pill_rects =
+            std::array::from_fn(|index| strip.tab_rect(index).unwrap_or(Rect::ZERO));
     }
 
     /// Dispatches to the Members/Permissions/Apps tab body when one of
@@ -1934,6 +1664,9 @@ impl WorkspaceSettingsOverlay {
         active_tab: WsTab,
         model: &WorkspaceSettingsModel<'_>,
     ) -> bool {
+        if active_tab != WsTab::Emoji {
+            self.emoji = super::emoji_pane::EmojiPaneLayout::default();
+        }
         match active_tab {
             WsTab::Members => {
                 self.draw_ws_settings_members_tab(
@@ -1972,6 +1705,25 @@ impl WorkspaceSettingsOverlay {
                 self.draw_ws_settings_apps_tab(scene, transform, text_renderer, theme, rect, model);
                 true
             }
+            WsTab::Emoji => {
+                self.clear_hits_but_tabs();
+                let body = Self::body_rect(rect);
+                if let Some(ws) = model.desktop.active_workspace() {
+                    self.emoji = super::emoji_pane::draw_emoji_pane(
+                        &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                        body,
+                        &model.emoji,
+                        &super::emoji_pane::EmojiPaneContext {
+                            ws,
+                            people: model.people,
+                        },
+                        self.emoji_scroll,
+                    );
+                    self.emoji_scroll = self.emoji_scroll.min(self.emoji.max_scroll);
+                }
+                Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
+                true
+            }
             WsTab::General => {
                 // Fall through to the General body below.
                 self.revoke_rects.clear();
@@ -2003,28 +1755,37 @@ impl WorkspaceSettingsOverlay {
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
-        let body_rect = Self::body_rect(rect);
-        let is_owner = model.owner_controls;
-        if let Some(ws) = model.desktop.active_workspace() {
-            let actor = model.acting_user;
-            if super::ownership_button(ws, actor).is_some() {
-                self.ownership_action_rect = ownership_action_rect(body_rect);
+        let Some(ws) = model.desktop.active_workspace() else {
+            Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
+            return;
+        };
+        let lead = f64::from(theme.tokens.spacing.s2);
+        let hint = Self::footer_hints(false);
+        let footer = Self::footer_hint_rect(rect, &hint, text_renderer, theme);
+        let mut body = Self::body_rect(rect);
+        body.y1 = (footer.y0 - lead).max(body.y0);
+        let content = people::content(ws, model.people, model.acting_user, model.owner_controls);
+        self.people
+            .lay_out(&content, body.width(), theme, text_renderer);
+        self.people.place(Point::new(body.x0, body.y0 + lead));
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
+        self.people.draw(scene, transform, text_renderer, theme);
+        scene.pop_layer();
+        // What the body clips away takes no press.
+        let shown = |rect: Rect| {
+            if rect.y0 >= body.y0 && rect.y1 <= body.y1 {
+                rect
+            } else {
+                Rect::ZERO
             }
-            for row in members_pane_rows(ws, body_rect) {
-                let (role, remove) = super::member_row_controls(&row, actor);
-                self.member_control_rects
-                    .push((row.user.clone(), role, remove));
-            }
-            draw_members_pane(
-                scene,
-                transform,
-                body_rect,
-                (ws, model.people),
-                model.acting_user,
-                is_owner,
-                text_renderer,
-                theme,
-            );
+        };
+        self.ownership_action_rect = shown(self.people.rect(people::OWNERSHIP));
+        for (index, person) in content.people.iter().enumerate() {
+            self.member_control_rects.push((
+                person.user.clone(),
+                shown(self.people.rect(&people::role_id(index))),
+                shown(self.people.rect(&people::remove_id(index))),
+            ));
         }
         Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
     }
@@ -2196,89 +1957,6 @@ impl WorkspaceSettingsOverlay {
         Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
     }
 
-    fn draw_ws_settings_name_input(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        model: &WorkspaceSettingsModel<'_>,
-        active_name: &str,
-    ) -> bool {
-        let (scene, transform, text_renderer, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let body = Self::body_rect(rect);
-        let identity_card = Rect::new(
-            body.x0,
-            body.y0 + 8.0 * f64::from(theme.text_scale * theme.ui_scale),
-            body.x1,
-            body.y0 + 112.0 * f64::from(theme.text_scale * theme.ui_scale),
-        );
-        ui::surface::card(
-            scene,
-            transform,
-            identity_card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-identity-title"),
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    identity_card.x0 + 16.0,
-                    identity_card.y0 + 13.0 * f64::from(theme.text_scale * theme.ui_scale),
-                )
-                    .into(),
-            ),
-            None,
-            &tokens.typography.style(TextRole::Body),
-        );
-        let description = text_renderer.elide_to_width_style(
-            &t("workspace-settings-identity-description"),
-            f32_of_f64(identity_card.width() - 32.0),
-            &tokens.typography.style(TextRole::Caption),
-        );
-        text_renderer.draw_style(
-            scene,
-            &description,
-            colors.text_dim,
-            transform.pre_translate(
-                (
-                    identity_card.x0 + 16.0,
-                    identity_card.y0 + 36.0 * f64::from(theme.text_scale * theme.ui_scale),
-                )
-                    .into(),
-            ),
-            None,
-            &tokens.typography.style(TextRole::Caption),
-        );
-        let can_rename = model.owner_controls;
-        let editing = can_rename && model.editing_name.is_some();
-        let shown = if editing {
-            model.editing_name.unwrap_or(active_name)
-        } else {
-            active_name
-        };
-        self.paint_name_field(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            model,
-            shown,
-        );
-        if !editing && !can_rename {
-            text_renderer.draw_style(
-                scene,
-                &t("workspace-settings-rename-admin-only"),
-                colors.text_dim,
-                transform.pre_translate((identity_card.x0 + 16.0, identity_card.y1 - 12.0).into()),
-                None,
-                &tokens.typography.style(TextRole::Caption),
-            );
-        }
-        editing
-    }
-
     fn paint_name_field(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -2327,808 +2005,6 @@ impl WorkspaceSettingsOverlay {
             &ui::presence::PresenceCtx::default(),
         );
     }
-
-    /// Sharing card that opens the signed invite composer.
-    fn draw_ws_settings_invite_link(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        can_invite: bool,
-        _body_y: f64,
-    ) -> f64 {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let body = Self::body_rect(rect);
-        let sharing_card =
-            Self::draw_ws_settings_invite_link_card(scene, transform, theme, text_renderer, body);
-        let invite_y = body.y0 + 202.0 * f64::from(theme.text_scale * theme.ui_scale);
-        let url_pill = Rect::new(
-            sharing_card.x0 + 16.0,
-            invite_y,
-            sharing_card.x1 - 24.0 - 72.0 * f64::from(theme.text_scale * theme.ui_scale),
-            invite_y + 34.0 * f64::from(theme.text_scale * theme.ui_scale),
-        );
-        ui::surface::card(
-            scene,
-            transform,
-            url_pill,
-            f64::from(tokens.radii.detail),
-            colors.surfaces.base,
-        );
-        let invite_url = t(if can_invite {
-            "workspace-settings-invite-hint"
-        } else {
-            "workspace-settings-invite-admin-only"
-        });
-        let invite_url = text_renderer.elide_to_width_style(
-            &invite_url,
-            f32_of_f64(url_pill.width() - 24.0),
-            &tokens.typography.style(TextRole::Caption),
-        );
-        text_renderer.draw_style(
-            scene,
-            &invite_url,
-            colors.text_primary,
-            transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 9.0).into()),
-            None,
-            &tokens.typography.style(TextRole::Caption),
-        );
-        let invite_btn = self.invite_rect();
-        let invite_label = t("workspace-settings-invite-create");
-        ui::widget::Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ui::widget::ButtonFace::new(invite_btn, &invite_label)
-                .role(ui::widget::ButtonRole::Primary)
-                .disabled(!can_invite),
-        );
-        invite_y
-    }
-
-    /// The sharing card's background, icon and title/subtitle — split out
-    /// of [`Self::draw_ws_settings_invite_link`] to keep that under
-    /// `too_many_lines`. Returns the card's rect, since the caller's URL
-    /// pill and copy button are placed relative to it.
-    fn draw_ws_settings_invite_link_card(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        body: Rect,
-    ) -> Rect {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let sharing_card = Rect::new(
-            body.x0,
-            body.y0 + 128.0 * f64::from(theme.text_scale * theme.ui_scale),
-            body.x1,
-            body.y0 + 252.0 * f64::from(theme.text_scale * theme.ui_scale),
-        );
-        ui::surface::card(
-            scene,
-            transform,
-            sharing_card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        let share_icon = Rect::new(
-            sharing_card.x0 + 16.0,
-            sharing_card.y0 + 14.0 * f64::from(theme.text_scale * theme.ui_scale),
-            sharing_card.x0 + 48.0,
-            sharing_card.y0 + 46.0 * f64::from(theme.text_scale * theme.ui_scale),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.text_primary.with_alpha_factor(SHARE_TILE_WASH),
-            None,
-            &RoundedRect::from_rect(share_icon, f64::from(tokens.radii.control)),
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            share_icon.inset(-8.0),
-            ui::icons::Icon::Copy,
-            accent_icon_on_tile(theme, SHARE_TILE_WASH),
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-invite-title"),
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    sharing_card.x0 + 60.0,
-                    sharing_card.y0 + 13.0 * f64::from(theme.text_scale * theme.ui_scale),
-                )
-                    .into(),
-            ),
-            None,
-            &tokens.typography.style(TextRole::Body),
-        );
-        let description = text_renderer.elide_to_width_style(
-            &t("workspace-settings-invite-description"),
-            f32_of_f64(sharing_card.width() - 76.0),
-            &tokens.typography.style(TextRole::Caption),
-        );
-        text_renderer.draw_style(
-            scene,
-            &description,
-            colors.text_dim,
-            transform.pre_translate(
-                (
-                    sharing_card.x0 + 60.0,
-                    sharing_card.y0 + 36.0 * f64::from(theme.text_scale * theme.ui_scale),
-                )
-                    .into(),
-            ),
-            None,
-            &tokens.typography.style(TextRole::Caption),
-        );
-        sharing_card
-    }
-
-    /// Paint the devices card and record its controls' rects. A workspace
-    /// that is not the person's own lists no devices but still offers its
-    /// place in the list and Delete.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one card painted top to bottom from shared running offsets, recording each control's rect as it goes"
-    )]
-    fn draw_ws_settings_devices(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        model: &WorkspaceSettingsModel<'_>,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let scale = f64::from(theme.text_scale * theme.ui_scale);
-        self.device_rows = model.devices.len();
-        let card = self.devices_card_rect();
-        ui::surface::card(
-            scene,
-            transform,
-            card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        let style = theme.text(TextRole::Caption);
-        let text = |text_renderer: &mut TextRenderer,
-                    scene: &mut Scene,
-                    label: &str,
-                    color,
-                    x: f64,
-                    y: f64| {
-            text_renderer.draw_style(
-                scene,
-                label,
-                color,
-                transform.pre_translate((x, y).into()),
-                None,
-                &style,
-            );
-        };
-        let title = t("workspace-settings-devices-title");
-        text_renderer.draw_style(
-            scene,
-            &title,
-            colors.text_primary,
-            transform.pre_translate((card.x0 + 16.0, card.y0 + 16.0 * scale).into()),
-            None,
-            &theme.text(TextRole::Body),
-        );
-        // What stays on each device, beside the devices it is about: the
-        // workspace's content is shared, its arrangement here is not.
-        let (title_w, _) = text_renderer.measure_style(&title, None, &theme.text(TextRole::Body));
-        let local_x = card.x0 + 16.0 + f64::from(title_w) + 12.0;
-        let local = text_renderer.elide_to_width_style(
-            &t("workspace-settings-devices-local"),
-            f32_of_f64((card.x1 - 16.0 - local_x).max(0.0)),
-            &style,
-        );
-        text(
-            text_renderer,
-            scene,
-            &local,
-            colors.text_dim,
-            local_x,
-            card.y0 + 18.0 * scale,
-        );
-        let button = |scene: &mut Scene, text_renderer: &mut TextRenderer, face: CardButton<'_>| {
-            paint_card_button(scene, transform, text_renderer, theme, face);
-        };
-        self.device_toggle_rects.clear();
-        let mut y = card.y0 + 48.0 * scale;
-        for device in model.devices {
-            let label = if device.here {
-                t_args(
-                    "workspace-settings-device-here",
-                    &[("device", device.label.clone().into())],
-                )
-            } else {
-                device.label.clone()
-            };
-            text(
-                text_renderer,
-                scene,
-                &label,
-                colors.text_primary,
-                card.x0 + 16.0,
-                y + 10.0 * scale,
-            );
-            let toggle = Rect::new(
-                card.x1 - 16.0 - 96.0 * scale,
-                y,
-                card.x1 - 16.0,
-                y + 32.0 * scale,
-            );
-            // A shown device is the toggle pressed in, never an accent.
-            let label = t(if device.shown {
-                "workspace-settings-device-shown"
-            } else {
-                "workspace-settings-device-hidden"
-            });
-            button(
-                scene,
-                text_renderer,
-                CardButton {
-                    toggled: device.shown,
-                    ..CardButton::new(toggle, &label)
-                },
-            );
-            self.device_toggle_rects.push(toggle);
-            y += 40.0 * scale;
-        }
-        let row = y + 8.0 * scale;
-        let first = model
-            .desktop
-            .workspaces
-            .first()
-            .is_some_and(|workspace| workspace.id == model.desktop.active);
-        let last = model
-            .desktop
-            .workspaces
-            .last()
-            .is_some_and(|workspace| workspace.id == model.desktop.active);
-        let earlier = Rect::new(
-            card.x0 + 16.0,
-            row,
-            card.x0 + 16.0 + 96.0 * scale,
-            row + 32.0 * scale,
-        );
-        let later = Rect::new(
-            earlier.x1 + 8.0,
-            row,
-            earlier.x1 + 8.0 + 96.0 * scale,
-            row + 32.0 * scale,
-        );
-        for (rect, key, enabled) in [
-            (earlier, "workspace-settings-move-earlier", !first),
-            (later, "workspace-settings-move-later", !last),
-        ] {
-            let label = t(key);
-            button(
-                scene,
-                text_renderer,
-                CardButton {
-                    enabled,
-                    ..CardButton::new(rect, &label)
-                },
-            );
-        }
-        self.move_rects = [
-            if first { Rect::ZERO } else { earlier },
-            if last { Rect::ZERO } else { later },
-        ];
-        let deletable = model.desktop.workspaces.len() > 1;
-        let delete_label = t("workspace-settings-delete");
-        // As wide as its label needs on the shared face, never narrower
-        // than the row's other buttons.
-        let delete_w = ui::widget::ButtonFace::new(Rect::ZERO, &delete_label)
-            .role(ButtonRole::Destructive)
-            .intrinsic_width(text_renderer, theme)
-            .max(120.0 * scale);
-        let delete = Rect::new(
-            card.x1 - 16.0 - delete_w,
-            row,
-            card.x1 - 16.0,
-            row + 32.0 * scale,
-        );
-        button(
-            scene,
-            text_renderer,
-            CardButton {
-                role: ButtonRole::Destructive,
-                enabled: deletable,
-                ..CardButton::new(delete, &delete_label)
-            },
-        );
-        self.delete_rect = if deletable { delete } else { Rect::ZERO };
-    }
-
-    /// The archived workspaces card: each workspace this device keeps off
-    /// its switcher, with Restore and Delete. Painted only while there are
-    /// any.
-    fn draw_ws_settings_archived(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        model: &WorkspaceSettingsModel<'_>,
-    ) {
-        self.archived_rows = model.archived.len();
-        self.archived_rects.clear();
-        if model.archived.is_empty() {
-            return;
-        }
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let scale = f64::from(theme.text_scale * theme.ui_scale);
-        let card = self.archived_card_rect();
-        ui::surface::card(
-            scene,
-            transform,
-            card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        let style = theme.text(TextRole::Caption);
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-archived-title"),
-            colors.text_primary,
-            transform.pre_translate((card.x0 + 16.0, card.y0 + 16.0 * scale).into()),
-            None,
-            &theme.text(TextRole::Body),
-        );
-        let button = |scene: &mut Scene, text_renderer: &mut TextRenderer, face: CardButton<'_>| {
-            paint_card_button(scene, transform, text_renderer, theme, face);
-        };
-        let mut y = card.y0 + 48.0 * scale;
-        for archived in model.archived {
-            let delete = Rect::new(
-                card.x1 - 16.0 - 96.0 * scale,
-                y,
-                card.x1 - 16.0,
-                y + 32.0 * scale,
-            );
-            let restore = Rect::new(
-                delete.x0 - 8.0 - 96.0 * scale,
-                y,
-                delete.x0 - 8.0,
-                y + 32.0 * scale,
-            );
-            let name = text_renderer.elide_to_width_style(
-                &archived.name,
-                f32_of_f64((restore.x0 - 12.0 - card.x0 - 16.0).max(0.0)),
-                &style,
-            );
-            text_renderer.draw_style(
-                scene,
-                &name,
-                colors.text_primary,
-                transform.pre_translate((card.x0 + 16.0, y + 10.0 * scale).into()),
-                None,
-                &style,
-            );
-            let restore_label = t("workspace-settings-archived-restore");
-            button(
-                scene,
-                text_renderer,
-                CardButton::new(restore, &restore_label),
-            );
-            let delete_label = t("workspace-settings-archived-delete");
-            button(
-                scene,
-                text_renderer,
-                CardButton {
-                    role: ButtonRole::Destructive,
-                    ..CardButton::new(delete, &delete_label)
-                },
-            );
-            self.archived_rects.push([restore, delete]);
-            y += 40.0 * scale;
-        }
-    }
-
-    /// The Public card: a switch that lists the workspace in its host's
-    /// directory, what the listing says, and the role people who join get.
-    /// Its host answers the listing only to whoever may change the
-    /// workspace's settings; everyone else sees why not.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a paint routine that lays the card out top to bottom from shared running offsets"
-    )]
-    fn draw_ws_settings_public(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        model: &WorkspaceSettingsModel<'_>,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let scale = f64::from(theme.text_scale * theme.ui_scale);
-        let card = self.public_card_rect();
-        self.public_rects = [Rect::ZERO; 3];
-        ui::surface::card(
-            scene,
-            transform,
-            card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        let caption = theme.text(TextRole::Caption);
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-public-title"),
-            colors.text_primary,
-            transform.pre_translate((card.x0 + 16.0, card.y0 + 16.0 * scale).into()),
-            None,
-            &theme.text(TextRole::Body),
-        );
-        let (known, line) = match model.public {
-            PublicCard::Asking => (None, t("workspace-settings-public-asking")),
-            PublicCard::Unavailable(why) => (None, why.clone()),
-            PublicCard::Known {
-                public,
-                description,
-                default_role,
-            } => (
-                Some((*public, *default_role)),
-                if *public && !description.is_empty() {
-                    description.replace('\n', " ")
-                } else if *public {
-                    t("workspace-settings-public-on")
-                } else {
-                    t("workspace-settings-public-off")
-                },
-            ),
-        };
-        let width = ui::num::f32_of_f64((card.width() - 32.0).max(0.0));
-        let line = text_renderer.elide_to_width_style(&line, width, &caption);
-        text_renderer.draw_style(
-            scene,
-            &line,
-            colors.text_dim,
-            transform.pre_translate((card.x0 + 16.0, card.y0 + 44.0 * scale).into()),
-            None,
-            &caption,
-        );
-        let Some((public, role)) = known else {
-            return;
-        };
-        // The host answers the listing only to someone the room lets change
-        // its settings, and decides each change again: a known listing has
-        // working controls.
-        let button = |scene: &mut Scene, text_renderer: &mut TextRenderer, face: CardButton<'_>| {
-            paint_card_button(scene, transform, text_renderer, theme, face);
-        };
-        // The switch, at the title's end: pressed in while public.
-        let switch = Rect::new(
-            card.x1 - 16.0 - 96.0 * scale,
-            card.y0 + 12.0 * scale,
-            card.x1 - 16.0,
-            card.y0 + 44.0 * scale,
-        );
-        let switch_label = t(if public {
-            "workspace-settings-public-switch-on"
-        } else {
-            "workspace-settings-public-switch-off"
-        });
-        button(
-            scene,
-            text_renderer,
-            CardButton {
-                toggled: public,
-                ..CardButton::new(switch, &switch_label)
-            },
-        );
-        // Who joins as what, and what it says, once it is public.
-        let row = card.y0 + 76.0 * scale;
-        let role_label = t_args(
-            "workspace-settings-public-role",
-            &[("role", super::role_label(role).into())],
-        );
-        let role_rect = Rect::new(
-            card.x0 + 16.0,
-            row,
-            card.x0 + 16.0 + 200.0 * scale,
-            row + 32.0 * scale,
-        );
-        let description_rect = Rect::new(
-            card.x1 - 16.0 - 160.0 * scale,
-            row,
-            card.x1 - 16.0,
-            row + 32.0 * scale,
-        );
-        button(
-            scene,
-            text_renderer,
-            CardButton::new(role_rect, &role_label),
-        );
-        let describe_label = t("workspace-settings-public-describe");
-        button(
-            scene,
-            text_renderer,
-            CardButton::new(description_rect, &describe_label),
-        );
-        self.public_rects = [switch, role_rect, description_rect];
-    }
-
-    /// Live workspace summary. Detailed member management belongs to the
-    /// Members tab; General stays an honest overview rather than inventing
-    /// a placeholder collaborator.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a paint routine that lays the summary out top to bottom from shared running offsets"
-    )]
-    fn draw_ws_settings_collaborators(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        model: &WorkspaceSettingsModel<'_>,
-        _collab_y: f64,
-    ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let body = Self::body_rect(rect);
-        let summary_card =
-            Self::summary_card_rect_for(body, f64::from(theme.text_scale * theme.ui_scale), 0.0);
-        ui::surface::card(
-            scene,
-            transform,
-            summary_card,
-            f64::from(tokens.radii.control),
-            colors.surfaces.raised,
-        );
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-glance-title"),
-            colors.text_primary,
-            transform.pre_translate(
-                (
-                    summary_card.x0 + 16.0,
-                    summary_card.y0 + 13.0 * f64::from(theme.text_scale * theme.ui_scale),
-                )
-                    .into(),
-            ),
-            None,
-            &tokens.typography.style(TextRole::Body),
-        );
-        let (members, grants, app_rules) =
-            model.desktop.active_workspace().map_or((0, 0, 0), |ws| {
-                let members = ws.roster().len();
-                let sandbox = ws
-                    .sandbox
-                    .iter()
-                    .filter(|cap| cap.effect == collab_types::caps::Effect::Grant);
-                let given =
-                    ws.policy.grants.iter().filter(|grant| {
-                        !matches!(grant.subject, tilo_action_policy::Subject::Role(_))
-                    });
-                let grants = sandbox.count().saturating_add(given.count());
-                (members, grants, ws.default_apps.policy.len())
-            });
-        let stats = [
-            (
-                members.to_string(),
-                t_args(
-                    "workspace-settings-stat-members",
-                    &[("count", members.into())],
-                ),
-            ),
-            (
-                grants.to_string(),
-                t_args(
-                    "workspace-settings-stat-grants",
-                    &[("count", grants.into())],
-                ),
-            ),
-            (
-                app_rules.to_string(),
-                t_args(
-                    "workspace-settings-stat-app-rules",
-                    &[("count", app_rules.into())],
-                ),
-            ),
-        ];
-        let stat_gap = 8.0;
-        let stat_y0 = summary_card.y0 + 44.0 * f64::from(theme.text_scale * theme.ui_scale);
-        let stat_w = (summary_card.width() - 32.0 - stat_gap * 2.0) / 3.0;
-        for (i, (value, label)) in stats.iter().enumerate() {
-            let x0 = summary_card.x0 + 16.0 + f64_of_usize(i) * (stat_w + stat_gap);
-            let stat = Rect::new(
-                x0,
-                stat_y0,
-                x0 + stat_w,
-                summary_card.y1 - 14.0 * f64::from(theme.text_scale * theme.ui_scale),
-            );
-            let stat_rr = RoundedRect::from_rect(stat, f64::from(tokens.radii.control));
-            let (stat_fill, stat_edge) = stat_tile_face(theme);
-            scene.fill(Fill::NonZero, transform, stat_fill, None, &stat_rr);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                stat_edge,
-                None,
-                &stat_rr,
-            );
-            text_renderer.draw_style(
-                scene,
-                value,
-                colors.text_primary,
-                transform.pre_translate(
-                    (
-                        stat.x0 + 12.0,
-                        stat.y0 + 8.0 * f64::from(theme.text_scale * theme.ui_scale),
-                    )
-                        .into(),
-                ),
-                None,
-                &tokens.typography.style(TextRole::Heading),
-            );
-            text_renderer.draw_style(
-                scene,
-                label,
-                colors.text_dim,
-                transform.pre_translate(
-                    (
-                        stat.x0 + 12.0,
-                        stat.y0 + 33.0 * f64::from(theme.text_scale * theme.ui_scale),
-                    )
-                        .into(),
-                ),
-                None,
-                &tokens.typography.style(TextRole::Caption),
-            );
-        }
-    }
-}
-
-/// Glyph size and gap for a tab pill's leading icon.
-/// The Public card: its title and switch, the listing's line, and the role
-/// and description controls.
-const PUBLIC_CARD_HEIGHT: f64 = 124.0;
-const TAB_ICON_PX: f64 = 15.0;
-const TAB_ICON_GAP: f64 = 7.0;
-/// Text inset inside a tab pill, both sides together.
-const TAB_LABEL_INSET: f64 = 8.0;
-
-/// One decision for the whole tab strip: which label set to show, and
-/// whether the pills have room for their icons.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TabStripPlan {
-    /// Use every tab's `compact_label` instead of its full label.
-    pub compact: bool,
-    /// Paint the leading icon in every pill.
-    pub icons: bool,
-}
-
-/// A card's button: the shared [`ui::widget::ButtonFace`] of `role`,
-/// pressed in while `toggled`, dimmed and inert while not `enabled`.
-#[derive(Clone, Copy)]
-struct CardButton<'a> {
-    rect: Rect,
-    label: &'a str,
-    role: ButtonRole,
-    toggled: bool,
-    enabled: bool,
-}
-
-impl<'a> CardButton<'a> {
-    fn new(rect: Rect, label: &'a str) -> Self {
-        Self {
-            rect,
-            label,
-            role: ButtonRole::Secondary,
-            toggled: false,
-            enabled: true,
-        }
-    }
-}
-
-/// Paints one [`CardButton`] the way every General-tab card draws its
-/// buttons, so the cards cannot drift apart: the shared button face, drawn
-/// with the theme as seen from the card's raised ground, so a secondary
-/// button steps off the card as it steps off a window.
-fn paint_card_button(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    button: CardButton<'_>,
-) {
-    let on_card = theme.on_ground(theme.tokens.colors.surfaces.raised);
-    ui::widget::Button::paint(
-        scene,
-        transform,
-        text_renderer,
-        &on_card,
-        &ui::widget::ButtonFace::new(button.rect, button.label)
-            .role(button.role)
-            .toggled(button.toggled)
-            .disabled(!button.enabled),
-    );
-}
-
-/// Measure the strip's labels at the size they are drawn and choose the
-/// densest treatment where **every** tab still fits its pill intact.
-///
-/// The previous rule switched to compact labels on the lens width alone
-/// and decided icons per pill, so at 200 % text the active "General"
-/// pill elided while its neighbours did not and one pill out of five kept
-/// an icon. Elision is the last resort, applied uniformly, never the first.
-pub(crate) fn tab_strip_plan(
-    text_renderer: &mut TextRenderer,
-    style: &TextStyle,
-    pill_w: f64,
-) -> TabStripPlan {
-    let mut widest = |labels: &[String]| -> f64 {
-        labels
-            .iter()
-            .map(|label| f64::from(text_renderer.measure_style(label, None, style).0))
-            .fold(0.0, f64::max)
-    };
-    let full: Vec<String> = WsTab::all().iter().map(WsTab::label).collect();
-    let compact: Vec<String> = WsTab::all().iter().map(WsTab::compact_label).collect();
-    let icon_w = TAB_ICON_PX + TAB_ICON_GAP;
-    let fits = |label_w: f64, with_icon: bool| {
-        label_w + TAB_LABEL_INSET + if with_icon { icon_w } else { 0.0 } <= pill_w
-    };
-    let full_w = widest(&full);
-    if fits(full_w, true) {
-        return TabStripPlan {
-            compact: false,
-            icons: true,
-        };
-    }
-    let compact_w = widest(&compact);
-    if fits(compact_w, true) {
-        return TabStripPlan {
-            compact: true,
-            icons: true,
-        };
-    }
-    if fits(full_w, false) {
-        return TabStripPlan {
-            compact: false,
-            icons: false,
-        };
-    }
-    TabStripPlan {
-        compact: true,
-        icons: false,
-    }
-}
-
-/// Segment widths for the tab strip. Equal shares while every label fits
-/// its share; otherwise each segment takes its measured share of the strip,
-/// so one long label is not elided while its neighbours keep slack. Always
-/// sums to `nav_width`.
-pub(crate) fn tab_pill_widths(needs: &[f64], nav_width: f64) -> Vec<f64> {
-    let count = needs.len();
-    if count == 0 {
-        return Vec::new();
-    }
-    let equal = nav_width / f64_of_usize(count);
-    let total: f64 = needs.iter().sum();
-    if needs.iter().all(|need| *need <= equal) || total <= 0.0 {
-        return vec![equal; count];
-    }
-    needs.iter().map(|need| need / total * nav_width).collect()
 }
 
 /// Accent-toned text on `ground`: the accent as ink, stepped out until it
@@ -3145,10 +2021,9 @@ fn accent_text_on(theme: &Theme, ground: vello::peniko::Color) -> vello::peniko:
     colors.ink_on(ground, colors.intent.accent_ink, floor)
 }
 
-/// How strongly the identity card's and the sharing card's icon tiles wash
-/// the raised card with primary ink.
+/// How strongly the identity card's icon tile washes the raised card with
+/// primary ink.
 const IDENTITY_TILE_WASH: f32 = 0.18;
-const SHARE_TILE_WASH: f32 = 0.16;
 
 /// An accent icon on a tile washed `wash` over a raised card: the accent as
 /// ink, stepped out until it stands there as a mark (WCAG 1.4.11).
@@ -3200,7 +2075,8 @@ mod tests {
                 );
             }
             let colors = &theme.tokens.colors;
-            for wash in [IDENTITY_TILE_WASH, SHARE_TILE_WASH] {
+            {
+                let wash = IDENTITY_TILE_WASH;
                 let tile =
                     ui::tokens::colors::over(colors.surfaces.raised, colors.text_primary, wash);
                 let ratio = ui::a11y::contrast_ratio(accent_icon_on_tile(&theme, wash), tile);
@@ -3220,7 +2096,6 @@ mod tests {
         let mut overlay = WorkspaceSettingsOverlay::default();
         overlay.layout(Rect::new(0.0, 0.0, 600.0, 700.0));
         let theme = Theme::dark().with_text_scale(2.0);
-        overlay.general_text_scale = 2.0;
         let mut scene = Scene::new();
         let desktop = DesktopTree::default();
         let local_user = "owner".to_string();
@@ -3241,7 +2116,9 @@ mod tests {
             devices: &[],
             archived: &[],
             public: &PublicCard::Asking,
+            emoji: super::super::emoji_pane::EmojiPaneModel::unavailable(&local_user),
         };
+        overlay.draw_contents(&mut scene, Affine::IDENTITY, &mut tr, &theme, &model);
         overlay.paint_name_field(
             &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
             &model,
@@ -3281,14 +2158,15 @@ mod tests {
             devices: &[],
             archived: &[],
             public: &PublicCard::Asking,
+            emoji: super::super::emoji_pane::EmojiPaneModel::unavailable(&local_user),
         };
         let mut overlay = WorkspaceSettingsOverlay::default();
         let mut renderer = TextRenderer::new();
         for (width, scale) in [(1280.0, 1.0), (600.0, 2.0), (480.0, 2.0)] {
             let theme = Theme::dark().with_text_scale(scale);
             overlay.layout(Rect::new(0.0, 0.0, width, 800.0));
-            overlay.general_text_scale = f64::from(scale);
             let mut scene = Scene::new();
+            overlay.draw_contents(&mut scene, Affine::IDENTITY, &mut renderer, &theme, &model);
             overlay.paint_name_field(
                 &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme),
                 &model,
@@ -3380,7 +2258,6 @@ mod tests {
         ] {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.layout(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
-            overlay.general_text_scale = f64::from(theme.text_scale * theme.ui_scale);
             let model = WorkspaceSettingsModel {
                 desktop: &desktop,
                 tab: WsTab::General,
@@ -3395,25 +2272,11 @@ mod tests {
                 devices: &[],
                 archived: &[],
                 public: &PublicCard::Asking,
+                emoji: super::super::emoji_pane::EmojiPaneModel::unavailable(&user),
             };
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
-            let clip = overlay.general_body_rect();
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                1.0,
-                Affine::IDENTITY,
-                &clip,
-            );
-            let rect = overlay.rect();
-            overlay.draw_ws_settings_name_input(
-                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-                rect,
-                &model,
-                &name,
-            );
-            scene.pop_layer();
+            overlay.draw_contents(&mut scene, Affine::IDENTITY, &mut text, &theme, &model);
             let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
             renderer.render_png(
                 &scene,
@@ -3445,37 +2308,6 @@ mod tests {
 
     #[test]
     fn overlay_tiles_cards_and_fields_keep_an_edge_on_every_palette() {
-        // Phase `stat_tiles_keep_an_edge_on_every_palette`.
-        // HIG §9.3's caveat: where a palette makes `base` and `raised` the same
-        // colour, a tile filled with `base` inside a `raised` card has no lift
-        // left to separate it. The derived hairline must therefore move
-        // against the card on every shipped palette — measured as the
-        // composite of the edge over the card, not asserted from its alpha.
-        {
-            use ui::a11y::relative_luminance;
-            let over = |top: vello::peniko::Color, bottom: vello::peniko::Color| {
-                let a = top.components[3];
-                let t = top.components;
-                let b = bottom.components;
-                vello::peniko::Color::new([
-                    t[0] * a + b[0] * (1.0 - a),
-                    t[1] * a + b[1] * (1.0 - a),
-                    t[2] * a + b[2] * (1.0 - a),
-                    1.0,
-                ])
-            };
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let card = theme.tokens.colors.surfaces.raised;
-                let (_, edge) = stat_tile_face(&theme);
-                let delta = (relative_luminance(over(edge, card)) - relative_luminance(card)).abs();
-                assert!(
-                    delta >= 0.008,
-                    "{}: the stat tile's edge must separate it from the card (Δ luminance {delta:.4})",
-                    theme.name
-                );
-            }
-        }
-
         // Phase `lens_cards_and_fields_keep_an_edge_on_every_palette`.
         // Every card class the lens paints — raised cards (identity, sharing,
         // summary), base-filled fields (name, invite link) and the base-filled
@@ -3538,41 +2370,6 @@ mod tests {
             }
         }
 
-        // Phase `general_name_field_sits_on_the_card_pad_and_clears_the_summary_card`.
-        // General at 1×: the name field sits on the card pad (`s4`) inside the
-        // body and the "At a glance" card starts a token step or more under it,
-        // sharing the body's left edge. ux-bench cannot measure this pair at
-        // 200 % text, where the two are never co-visible on an 800 px body, so
-        // the production geometry helpers carry the assertion.
-        {
-            let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
-            let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
-            for card in [
-                Rect::new(720.0, 68.0, 1260.0, 780.0),
-                Rect::new(0.0, 0.0, 540.0, 700.0),
-            ] {
-                let body = WorkspaceSettingsOverlay::body_rect_for(card);
-                let name = WorkspaceSettingsOverlay::name_rect_for(card);
-                let summary = WorkspaceSettingsOverlay::summary_card_rect_for(body, 1.0, 0.0);
-                assert_eq!(name.x0 - body.x0, s4, "name field sits on the card pad");
-                assert_eq!(
-                    body.x1 - name.x1,
-                    s4,
-                    "name field keeps the card pad on the right"
-                );
-                assert!(
-                    summary.y0 - name.y1 >= s1,
-                    "summary card clears the name field (gap {})",
-                    summary.y0 - name.y1
-                );
-                assert_eq!(
-                    summary.x0, body.x0,
-                    "summary card shares the body's left edge"
-                );
-                assert_eq!(summary.x1, body.x1);
-            }
-        }
-
         {
             let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
             let lens = WorkspaceSettingsOverlay::rect_for(viewport);
@@ -3614,6 +2411,60 @@ mod tests {
         }
     }
 
+    /// General at 1×: the name field keeps the same margin on both sides
+    /// of the body and the "At a glance" statistics start a token step or
+    /// more under it, inside the body's edges.
+    #[test]
+    fn general_name_field_stands_inside_the_body_and_clears_the_summary() {
+        let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
+        let desktop = DesktopTree::default();
+        let user = "owner".to_string();
+        let model = WorkspaceSettingsModel {
+            desktop: &desktop,
+            tab: WsTab::General,
+            grant_draft: GrantDraft::default(),
+            acting_user: &user,
+            people: &crate::collaborators::PeopleNames::default(),
+            editing_name: None,
+            name_selection: ui::text_selection::Selection::collapsed(0),
+            governs_active_room: false,
+            owner_controls: true,
+            apps: &super::super::NoAppDirectory,
+            devices: &[],
+            archived: &[],
+            public: &PublicCard::Asking,
+            emoji: super::super::emoji_pane::EmojiPaneModel::unavailable(&user),
+        };
+        for viewport in [
+            Rect::new(0.0, 0.0, 1600.0, 900.0),
+            Rect::new(0.0, 0.0, 600.0, 900.0),
+        ] {
+            let mut overlay = WorkspaceSettingsOverlay::default();
+            overlay.layout(viewport);
+            overlay.draw_contents(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &model,
+            );
+            let body = overlay.general_body_rect();
+            let name = overlay.name_rect();
+            let summary = overlay.general_summary_rect();
+            assert!(name.width() > 0.0 && summary.width() > 0.0);
+            assert!(
+                ((name.x0 - body.x0) - (body.x1 - name.x1)).abs() < 0.5,
+                "the name field keeps one margin on both sides: {name:?} in {body:?}"
+            );
+            assert!(
+                summary.y0 - name.y1 >= s1,
+                "summary clears the name field (gap {})",
+                summary.y0 - name.y1
+            );
+            assert!(summary.x0 >= body.x0 && summary.x1 <= body.x1);
+        }
+    }
+
     #[test]
     fn closing_is_one_pointer_target_and_stays_visible_until_exit_settles() {
         {
@@ -3640,78 +2491,13 @@ mod tests {
     }
 
     #[test]
-    fn tab_strip_compacts_labels_before_eliding_and_measures_only_when_needed() {
-        {
-            let mut text = TextRenderer::new();
-            // The 540 px laptop lens at 100 %: five ~95 px pills.
-            let base = Theme::dark();
-            let plan = tab_strip_plan(&mut text, &base.text(TextRole::Body), 95.6);
-            assert!(plan.icons, "at 100% every pill has room for its icon");
-            // The same lens at 200 % text: no pill can hold a full label, so the
-            // whole strip drops to compact labels (and icons only if they all
-            // fit) instead of eliding the active tab alone.
-            let large = Theme::dark().with_text_scale(2.0);
-            let label_style = large.text(TextRole::Body);
-            // In the 540 px lens even compact labels overflow a 95.6 px pill at
-            // 28 px type, so the plan drops to compact labels without icons and
-            // every pill elides by the same rule — never the active tab alone.
-            let plan = tab_strip_plan(&mut text, &label_style, 95.6);
-            assert_eq!(
-                plan,
-                TabStripPlan {
-                    compact: true,
-                    icons: false
-                }
-            );
-            // In the 800 px lens (145.6 px pills) compact labels fit with icons.
-            let plan = tab_strip_plan(&mut text, &label_style, 145.6);
-            assert_eq!(
-                plan,
-                TabStripPlan {
-                    compact: true,
-                    icons: true
-                }
-            );
-            let widest = WsTab::all()
-                .iter()
-                .map(|tab| {
-                    f64::from(
-                        text.measure_style(&tab.compact_label(), None, &label_style)
-                            .0,
-                    )
-                })
-                .fold(0.0, f64::max);
-            assert!(
-                widest + TAB_LABEL_INSET + TAB_ICON_PX + TAB_ICON_GAP <= 145.6,
-                "the chosen plan fits its widest label ({widest}) into the pill"
-            );
-        }
-
-        {
-            let equal = tab_pill_widths(&[80.0, 60.0, 70.0, 75.0, 50.0], 500.0);
-            assert_eq!(equal.len(), 5);
-            assert!(equal.iter().all(|w| (*w - 100.0).abs() < f64::EPSILON));
-
-            let measured = tab_pill_widths(&[120.0, 80.0, 80.0, 90.0, 70.0], 500.0);
-            assert!(
-                (measured.iter().sum::<f64>() - 500.0).abs() < 1e-9,
-                "fills the strip exactly"
-            );
-            for (need, width) in [120.0, 80.0, 80.0, 90.0, 70.0].iter().zip(&measured) {
-                assert!(width >= need, "every label fits its pill: {measured:?}");
-            }
-            assert!(measured[0] > measured[4]);
-            assert!(tab_pill_widths(&[], 500.0).is_empty());
-        }
-    }
-
-    #[test]
     fn overlay_hits_are_typed_policy_controls_carrying_their_identity() {
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
             overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
             let hit_rect = Rect::new(700.0, 200.0, 760.0, 240.0);
-            overlay.tab_pill_rects = [hit_rect, Rect::ZERO, Rect::ZERO, Rect::ZERO, Rect::ZERO];
+            overlay.tab_pill_rects = [Rect::ZERO; WsTab::COUNT];
+            overlay.tab_pill_rects[0] = hit_rect;
             let Ok(resource) = desktop_policy::ResourceKind::extension("pdf") else {
                 panic!("pdf is a valid extension resource");
             };
@@ -3839,6 +2625,10 @@ mod tests {
         }
     }
 }
+
+mod general;
+mod page;
+mod people;
 
 #[cfg(test)]
 mod general_scroll_tests;

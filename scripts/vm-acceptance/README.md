@@ -141,6 +141,25 @@ report descriptor (see `crates/dev/tilo-vm-protocol/src/profile.rs`).
 Pull requests touching the input path, tilo-vm(d), the profiles or the agent door run only
 these areas (`ci_select.py`).
 
+### Secret custody (C01, C02)
+
+The compositor loads the device key and is therefore non-dumpable, so the store cannot read
+its executable; it proves the device key on each bus connection instead
+(docs/identity-security.md). C01 (`checks/secrets.py`) judges that in the slot: its
+`/proc/<pid>/exe` is hidden from its own user, `tilo-secret-service apps list` names
+`binary:/usr/bin/shell` with the MLS key it keeps, the sealed MLS state sits in an
+owner-only directory with no custody warning in the session log, and Notes' portal secret
+(`org.freedesktop.portal.Secret`, asked from an `app-tilo-so.tilo.notes-<n>.scope` as a
+host-launched app asks) comes from the store, and comes back the same after
+`tilo-secret-service` restarts under the running compositor. C02 takes the dev account
+R08 signed in at seat0 through first use on its own control socket's `onboarding` actions:
+its identity must name `secret_ref.backend = secret-service-v1` with no key file beside it,
+and after signing out and in again the store still holds what the compositor keeps and
+the MLS state is intact. A slot's throwaway identity uses owner-only files by design, so
+only a person's login shows the identity part. No secret is printed: the portal secret is
+compared with itself inside the guest. Changes to the store, its client, the MLS vault,
+the portal backend or the identity's secret providers select these checks (`ci_select.py`).
+
 ### Startup and GPU (A14, R05)
 
 A14 opens Files before anything else in the run does and times it from the app's own

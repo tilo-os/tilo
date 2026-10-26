@@ -386,7 +386,7 @@ fixed credentials in the server config, limited by reference and node, only wher
 | ~~`os-dev.yml`, `os-dev-x86.yml`, `os-dev-arm.yml`~~ | PR with a label, dispatch | none (called workflows get no OIDC) | as above | development images | retired: `os-dev-image-<arch>` builds the development image |
 | ~~`dev-disk.yml`~~ | dispatch | `GITHUB_TOKEN`, `REGISTRY_TOKEN` | `disk-100g` both arches, KVM | `tilo-vm` disks and `latest` (from main or `v*` only) | retired: `publish-os-dev-<arch>` publishes the gated dev disks |
 | `os-dev-installer.yml`, `dev-disk-boot-diagnostic.yml` | dispatch | none | arm64/`disk-100g`, KVM, loop | artifacts only | `dev-installer-medium-<arch>` builds the self-install medium without capture or signing inputs (`t outputs`); the Windows-direct variants still need their own checks |
-| ~~`extension-manifests.yml`~~ | daily, dispatch | `REGISTRY_TOKEN`; Cosign through a separate role and key for extension manifests (OIDC) | podman with the OS image, both arches | signed manifests in generic packages | moved to t (above) |
+| ~~`extension-manifests.yml`~~ | daily, dispatch | `TILO_PACKAGES_TOKEN`; an identity token for the extension-manifest audience, whose role holds the KMS key | podman with the OS image, both arches | signed manifests in generic packages | retired: `extension-manifests-<arch>` resolves and `publish-extension-manifests` signs and publishes, on t's issuer and audience (`tilo-extension-manifests`, above) |
 
 ### Apps, desktop and models
 
@@ -424,7 +424,7 @@ them is t's server config; what they may do is the other side's:
 
 | audience | refs | accepted by |
 |---|---|---|
-| `registry.tilo.so` | `main`, `stable`, `tag:v*` | registry.tilo.so, as the password of the user `oidc`: tilo/tilo may push under `tilo/` from `main`, `stable` and `v*` tags |
+| `registry.tilo.so` | any branch, `tag:v*` | registry.tilo.so, as the password of the user `oidc`: tilo/tilo may push under `tilo/` from `main`, `stable` and `v*` tags, and from any other branch only to `tilo/tilo-vm-ref` (per-ref dev images), so no branch moves the tags devices follow in `tilo/tilo-vm` |
 | `sts.amazonaws.com` | `stable`, `tag:v*`, `tag:desktop-v*`, `tag:imager-v*` | the AWS role `TiloTReleaseSigner`, for `stable` and `v*` tags of tilo/tilo only: `kms:Sign`, `kms:GetPublicKey` and `kms:DescribeKey` on the three release keys |
 
 More roles trust t's issuer the same way, each with its own keys:
@@ -433,7 +433,7 @@ More roles trust t's issuer the same way, each with its own keys:
 |---|---|---|
 | `TiloTPackageSigner` | `sts.amazonaws.com`; `stable`, `desktop-v*` and `imager-v*` tags | `alias/tilo-rpm-signing` (RSA 4096, digests only), `alias/tilo-authenticode-signing` (RSA 3072) |
 | `TiloTExtensionManifestSigner` | `tilo-extension-manifests`; `main` | `alias/tilo-extension-manifests` |
-| `TiloTDevSigner` | `tilo-dev-signing`; `main` | `alias/tilo-dev-signing` (P-256), development candidates only, never trusted for releases |
+| `TiloTDevSigner` | `tilo-dev-signing`; any branch | `alias/tilo-dev-signing` (P-256), development candidates only, never trusted for releases |
 
 The key reference (`COSIGN_KEY_REF`) and the role (`AWS_SIGNING_ROLE_ARN`) are not secret; the
 signing checks set them in `t.toml`. What has no OpenID Connect verifier yet stays a secret in

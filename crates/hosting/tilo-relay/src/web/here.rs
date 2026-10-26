@@ -453,6 +453,7 @@ impl Entry {
             sources: line.sources.clone(),
             generated: model.is_some(),
             updated_ms: self.updated_ms,
+            profile_ms: 0,
         })
     }
 }
@@ -478,6 +479,7 @@ pub(crate) fn pair_members(reply: &mut HereReply, members: &[([u8; 32], [u8; 32]
             sources: Vec::new(),
             generated: false,
             updated_ms: 0,
+            profile_ms: 0,
         })
         .collect::<Vec<_>>();
     if bare.is_empty() {

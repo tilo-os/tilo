@@ -10,7 +10,7 @@ use ui::widget::{SplitLayout, Widget};
 use ui::window_toolbar::{ToolbarEvent, WindowToolbar};
 use vello::kurbo::Rect;
 
-use super::{EXPORT, IMPORT, INSPECTOR, SPLIT};
+use super::{EXPORT, IMPORT, INSPECTOR, SIDE_BY_SIDE, SPLIT};
 use crate::actions::VideoEditorEffect;
 use crate::app::VideoEditorApp;
 use crate::model::{Project, TrackKind};
@@ -99,7 +99,7 @@ fn the_editor_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
             "{width}px: the bar names the project"
         );
         let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, [SPLIT, EXPORT, INSPECTOR, IMPORT]);
+        assert_eq!(ids, [SPLIT, SIDE_BY_SIDE, EXPORT, INSPECTOR, IMPORT]);
         assert!(bar_action(&toolbar, IMPORT).menu, "Import is in the menu");
 
         let mut drawn = Vec::new();

@@ -4,11 +4,11 @@
 // t's perf-stream check has.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {CODE_BITS, MAX_DESKTOP_FPS, analyse, codeCheck, codeGeometry, desktopFailures, desktopFramesPerSecond, judgeGoals, parseArgs,
-  readCode}
+import {CODE_BITS, MAX_DESKTOP_FPS, PLATFORMS, acceptHostCertificate, analyse, askForUrl, codeCheck, codeGeometry,
+  desktopFailures, desktopFramesPerSecond, hostSocketUrl, judgeGoals, parseArgs, readCode}
   from './native_stream_qualification.mjs';
 import {stats} from './browser_qualification.mjs';
-import {focusDiscipline, inputsOf, judgeIme, judgePaste, judgeStream, pointFor} from './native_stream_acceptance.mjs';
+import {focusDiscipline, inputText, inputsOf, judgeIme, judgePaste, judgeStream, pointFor} from './native_stream_acceptance.mjs';
 
 /** Three RGBA rows through the number blocks of frame `index`, as the session draws them. */
 function rows(index, width, {flip} = {}) {
@@ -59,6 +59,42 @@ test('arguments: required pieces, carrier, codec, window and defaults', () => {
   assert.throws(() => parseArgs([...base, '--window', '641x360']), /even/);
   assert.equal(options.reopen, false, 'the measured window is the page\'s first by default');
   assert.equal(parseArgs([...base, '--reopen']).reopen, true);
+  assert.equal(options.platform, 'chrome', 'Chrome by default');
+  assert.deepEqual(PLATFORMS, ['chrome', 'safari']);
+  assert.equal(parseArgs([...base, '--platform', 'safari']).platform, 'safari');
+  assert.throws(() => parseArgs([...base, '--platform', 'firefox']), /--platform/);
+});
+
+test('the host\'s socket is the WebSocket at the origin\'s own path', () => {
+  assert.equal(hostSocketUrl('https://127.0.0.1:4443'), 'wss://127.0.0.1:4443/peer/v1/ws');
+  assert.equal(hostSocketUrl('https://relay.example:8443/'), 'wss://relay.example:8443/peer/v1/ws');
+});
+
+test('a Safari run waits for the person who accepts the host\'s certificate', async () => {
+  let asked = 0;
+  const waits = [];
+  const refused = () => { throw Error('this must not be reached'); };
+  // A browser that trusts the host answers at once, and no one waits.
+  assert.equal(await acceptHostCertificate({ask: async () => 'trusted', socket: 'wss://h/peer/v1/ws', log: refused}), 'trusted');
+  // One that does not is asked again until it does.
+  assert.equal(await acceptHostCertificate({ask: async () => (++asked < 3 ? 'TypeError: Load failed' : 'trusted'),
+    socket: 'wss://h/peer/v1/ws', waitMs: 60_000, sleep: async ms => waits.push(ms), log: () => {}}), 'trusted');
+  assert.equal(asked, 3);
+  assert.deepEqual(waits, [2000, 2000], 'the run asks every two seconds, and stops when the certificate is trusted');
+  // Never accepted: the run is invalid, and says who accepts it.
+  await assert.rejects(acceptHostCertificate({ask: async () => 'Error: cancelled', socket: 'wss://h/peer/v1/ws', waitMs: 0,
+    sleep: async () => {}, log: () => {}}), /not given the host's certificate/);
+  // The fetch is the page's, with no credentials: a certificate question, nothing else.
+  const sent = [];
+  await askForUrl(async expression => { sent.push(expression); return 'trusted'; }, 'wss://h/peer/v1/ws')();
+  assert.match(sent[0], /fetch\("wss:\/\/h\/peer\/v1\/ws", \{mode: 'no-cors'\}\)/);
+});
+
+test('a browser that can type no input method still commits its text', () => {
+  const input = text => ({value: {Text: {text}}});
+  assert.equal(inputText([input('にほん'), input('🎉')], '🎉', 1), true);
+  assert.match(inputText([input('にほん')], '🎉', 1), /got undefined, not "🎉"/);
+  assert.match(inputText([input('にほん')], 'に', 1), /the window got undefined/);
 });
 
 /** A run: `n` frames 33 ms apart from t0, each drawn `lag` µs after capture. */

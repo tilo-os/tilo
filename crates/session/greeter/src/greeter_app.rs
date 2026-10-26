@@ -50,7 +50,7 @@ use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
-use ui::a11y::{AccessibilityRequest, Politeness};
+use ui::a11y::AccessibilityRequest;
 use ui::app::UserEvent;
 use ui::caps_lock::CapsLockEstimate;
 use ui::icons::Icon;
@@ -59,8 +59,8 @@ use ui::text_render::{NumericStyle, OpenTypeTag, TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Avatar, AvatarSize, Button, ButtonRole, ControlSize, Dropdown, IconSize, IconWidget, Row,
-    Scrollable, Spacer, Spinner, Text, TextInput, Widget,
+    Avatar, AvatarSize, Button, ButtonRole, ControlSize, Dropdown, FieldRole, IconWidget,
+    Presentation, Row, Scrollable, SecretKind, SecretPrompt, Spacer, Text, TextInput, Widget,
 };
 
 mod console;
@@ -88,12 +88,6 @@ const FORM_WIDTH: f32 = 360.0;
 const FIELD_HEIGHT: f32 = 40.0;
 /// The footer's session picker, wide enough for a session's name.
 const SESSION_PICKER_WIDTH: f32 = 200.0;
-/// Avatar diameter on a roomy display, and when space or large text is tight.
-/// The status line is reserved at this height in *every* state, so a message
-/// appearing — or a spinner replacing it — never resizes the form. Without
-/// the reservation the form jumps the moment a passcode is wrong, which is
-/// exactly when the person is least able to absorb it.
-const STATUS_HEIGHT: f32 = 20.0;
 /// Below this logical height, or at large text, the screen tightens its
 /// spacing and avatar so the form stays above the footer.
 const COMPACT_VIEWPORT_HEIGHT: f64 = 600.0;
@@ -148,7 +142,6 @@ struct Stack {
     /// `None` fills the parent's width.
     width: Option<f32>,
     max_width: Option<f32>,
-    min_height: Option<f32>,
     fill_height: bool,
     width_auto: bool,
     grow: bool,
@@ -173,7 +166,6 @@ impl Stack {
             justify: JustifyContent::Start,
             width: None,
             max_width: None,
-            min_height: None,
             fill_height: false,
             width_auto: false,
             grow: false,
@@ -213,11 +205,6 @@ impl Stack {
 
     fn max_width(mut self, width: f32) -> Self {
         self.max_width = Some(width);
-        self
-    }
-
-    fn min_height(mut self, height: f32) -> Self {
-        self.min_height = Some(height);
         self
     }
 
@@ -295,10 +282,6 @@ impl Widget for Stack {
             max_size: Size {
                 width: self.max_width.map_or(Dimension::auto(), length),
                 height: Dimension::auto(),
-            },
-            min_size: Size {
-                width: Dimension::auto(),
-                height: self.min_height.map_or(Dimension::auto(), length),
             },
             flex_grow: if self.grow { 1.0 } else { 0.0 },
             flex_shrink: if self.grow { 1.0 } else { 0.0 },
@@ -1257,82 +1240,39 @@ impl GreeterApp {
         )
     }
 
-    /// The single status line, reserved at a constant height in every state
-    /// so the form never jumps, with the Caps-Lock note beneath it while the
-    /// form is editable.
-    fn build_status(&self, theme: &Theme) -> Stack {
-        let c = &theme.tokens.colors;
-        let mut rows: Vec<Box<dyn Widget>> = Vec::new();
-        let line = |lead: Box<dyn Widget>, text: String, color, live| -> Box<dyn Widget> {
-            Box::new(
-                Row::new()
-                    .with_gap(theme.tokens.spacing.s2)
-                    .no_wrap()
-                    .push(lead)
-                    .push(Box::new(
-                        Text::new(&text)
-                            .with_id("greeter.status")
-                            .with_role(TextRole::Label)
-                            .with_color(color)
-                            .with_live(live),
-                    )),
+    /// The passcode, asked with the one password prompt every part of Tilo
+    /// uses: its label, its show/hide button, Caps Lock, and one line under
+    /// it saying what the attempt is doing or why it was refused. The tree
+    /// is built afresh as the form changes, so what is typed lives in the
+    /// greeter's buffer and the prompt starts from it.
+    fn build_passcode(&self, challenge: bool) -> SecretPrompt {
+        let line = Some(self.status_text()).filter(|line| !line.trim().is_empty());
+        let mut prompt = SecretPrompt::new(SecretKind::Secret)
+            .with_presentation(Presentation::DialogBody)
+            .with_id("greeter.password")
+            .with_label(
+                FieldRole::Secret,
+                t(if challenge {
+                    "greeter-auth-response"
+                } else {
+                    "greeter-passcode"
+                }),
             )
+            .with_secret_buffer(Arc::clone(&self.password_buffer))
+            .with_caps_lock(self.caps_lock);
+        prompt = match (self.phase, self.notice) {
+            // A question from PAM is answered in the field: it stays open.
+            (AuthPhase::Authenticating, _) if challenge => prompt.with_notice(line),
+            // What PAM says while it checks (touch the reader) can need
+            // acting on now: it is said over "Signing in…".
+            (AuthPhase::Authenticating, _) if !self.prompt.trim().is_empty() => prompt
+                .with_busy(Some(t("greeter-signing-in")))
+                .with_notice(line),
+            (AuthPhase::Authenticating | AuthPhase::Starting, _) => prompt.with_busy(line),
+            (AuthPhase::Idle, Notice::Error(_)) => prompt.with_error(line),
+            (AuthPhase::Idle, Notice::Hint(_) | Notice::None) => prompt.with_notice(line),
         };
-        match (self.phase, self.notice) {
-            (AuthPhase::Authenticating, _) => rows.push(line(
-                Box::new(Spinner::with_size(14.0)),
-                self.status_text(),
-                c.text_dim,
-                // PAM prompts can require immediate physical action (for
-                // example, touching the fingerprint reader).
-                Politeness::Assertive,
-            )),
-            (AuthPhase::Starting, _) => rows.push(line(
-                Box::new(Spinner::with_size(14.0)),
-                self.status_text(),
-                c.semantic.success,
-                Politeness::Polite,
-            )),
-            (AuthPhase::Idle, Notice::Hint(_)) => rows.push(line(
-                Box::new(
-                    IconWidget::new(Icon::Info)
-                        .sized(IconSize::Small)
-                        .with_color(c.text_dim),
-                ),
-                self.status_text(),
-                c.text_dim,
-                Politeness::Assertive,
-            )),
-            (AuthPhase::Idle, Notice::Error(_)) => rows.push(line(
-                Box::new(
-                    IconWidget::new(Icon::CircleAlert)
-                        .sized(IconSize::Small)
-                        .with_color(c.semantic.danger),
-                ),
-                self.status_text(),
-                c.semantic.danger,
-                Politeness::Assertive,
-            )),
-            (AuthPhase::Idle, Notice::None) => {}
-        }
-        if self.phase == AuthPhase::Idle && self.caps_lock.on() {
-            rows.push(Box::new(
-                Row::new()
-                    .with_gap(theme.tokens.spacing.s2)
-                    .no_wrap()
-                    .push(Box::new(
-                        IconWidget::new(Icon::ArrowBigUp)
-                            .sized(IconSize::Small)
-                            .with_color(c.semantic.warning),
-                    ))
-                    .push(Box::new(
-                        Text::new(&t("greeter-caps-lock"))
-                            .with_role(TextRole::Label)
-                            .with_color(c.semantic.warning),
-                    )),
-            ));
-        }
-        Stack::column(theme.tokens.spacing.s1, rows).min_height(STATUS_HEIGHT)
+        prompt
     }
 
     /// Who is signing in: their avatar and name, or, when the accounts are
@@ -1404,55 +1344,61 @@ impl GreeterApp {
         let challenge = self.auth_session.as_ref().and_then(AuthSession::challenge);
         let mut form: Vec<Box<dyn Widget>> = Vec::new();
         if self.login_user.is_none() {
-            form.push(Box::new(
-                TextInput::from_state(&self.username)
-                    .with_id("greeter.username")
-                    .with_accessible_name(t("greeter-username"))
-                    .with_placeholder(t("greeter-username-placeholder"))
-                    .disabled(busy),
-            ));
+            // Labelled above, as the password is, and as wide as the
+            // password with its sign-in action.
+            form.push(Box::new(Stack::column(
+                s.s1,
+                vec![
+                    Box::new(Text::new(&t("greeter-username")).with_role(TextRole::Label)),
+                    Box::new(
+                        TextInput::from_state(&self.username)
+                            .with_id("greeter.username")
+                            .with_accessible_name(t("greeter-username"))
+                            .control_size(ControlSize::Regular)
+                            .disabled(busy),
+                    ),
+                ],
+            )));
         }
-        let password_input = {
-            let value = self.password_buffer.lock_recover();
-            TextInput::local()
-                .with_initial_value(&value)
-                .with_id("greeter.password")
-                .with_external_buffer(Arc::clone(&self.password_buffer))
-                .with_accessible_name(t(if challenge.is_some() {
-                    "greeter-auth-response"
-                } else {
-                    "greeter-passcode"
-                }))
-                .with_secret(true)
-                .control_size(ControlSize::Large)
-                .with_placeholder(t("greeter-passcode-placeholder"))
-                .disabled(busy && challenge.is_none())
-        };
         let sign_in = t(if challenge.is_some() {
             "greeter-auth-respond"
         } else {
             "greeter-sign-in"
         });
         let requests = Rc::clone(&self.requests);
+        // The sign-in action sits beside the field, as tall as it and past
+        // the prompt's label row; the username field is as tall too.
+        let field = SecretPrompt::field_height(theme);
+        let action = ControlSize::Regular.height(theme);
+        let label_row = (f64::from(theme.text(TextRole::Label).line_height_px() + s.s1)
+            + (field - action) / 2.0)
+            .max(0.0);
+        let label_row = ui::num::f32_of_f64(label_row);
         form.push(Box::new(
-            // The action takes the field's height, whatever the text scale
-            // makes it, so the two read as one control.
             Row::new()
                 .with_gap(s.s2)
                 .no_wrap()
-                .with_align_items(AlignItems::Stretch)
-                .push(Box::new(password_input))
+                .with_align_items(AlignItems::Start)
+                .push(Box::new(self.build_passcode(challenge.is_some())))
                 .push(Box::new(
-                    Button::new("greeter.login", "")
-                        .role(ui::widget::ButtonRole::Primary)
-                        .with_icon(Icon::ArrowRight)
-                        .with_accessible_name(&sign_in)
-                        .tooltip(sign_in.clone())
-                        .control_size(ControlSize::Large)
-                        .on_click(move || requests.sign_in.set(true)),
+                    Stack::column(
+                        0.0,
+                        vec![
+                            Box::new(Spacer::fixed(label_row)),
+                            Box::new(
+                                Button::new("greeter.login", "")
+                                    .role(ui::widget::ButtonRole::Primary)
+                                    .with_icon(Icon::ArrowRight)
+                                    .with_accessible_name(&sign_in)
+                                    .tooltip(sign_in.clone())
+                                    .control_size(ControlSize::Regular)
+                                    .on_click(move || requests.sign_in.set(true)),
+                            ),
+                        ],
+                    )
+                    .width_auto(),
                 )),
         ));
-        form.push(Box::new(self.build_status(theme)));
         if self.phase == AuthPhase::Authenticating && self.auth_session.is_some() {
             let requests = Rc::clone(&self.requests);
             form.push(Box::new(
@@ -2428,6 +2374,12 @@ impl Widget for GreeterApp {
         self.composed.children_mut()
     }
 
+    /// The card is rebuilt from state: each build keeps the input in use,
+    /// so a finger gets touch-sized fields and actions.
+    fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
+        self.composed.set_interaction_environment(environment);
+    }
+
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         if let Some(c) = self.composed.element() {
             visitor(c);
@@ -2630,6 +2582,7 @@ mod tests {
     use automerge::{AutoCommit, ReadDoc};
     use std::collections::HashMap;
     use taffy::AvailableSpace;
+    use ui::a11y::Politeness;
     use ui::widget::find_test_id;
 
     /// The shipped Tilo session plus a second, separately installed one, so
@@ -2848,10 +2801,18 @@ mod tests {
     /// Everything the panel announces, in tree order: the accessible name of
     /// every node that has one — what a screen reader reads out.
     fn spoken(w: &dyn Widget) -> Vec<String> {
+        fn said(node: ui::a11y::AccessNode, out: &mut Vec<String>) {
+            if let Some(name) = node.name {
+                out.push(name);
+            }
+            for child in node.children {
+                said(child, out);
+            }
+        }
         fn walk(w: &dyn Widget, out: &mut Vec<String>) {
             for c in w.children() {
-                if let Some(name) = Widget::accessibility(c).and_then(|n| n.name) {
-                    out.push(name);
+                if let Some(node) = Widget::accessibility(c) {
+                    said(node, out);
                 }
                 walk(c, out);
             }
@@ -2862,14 +2823,42 @@ mod tests {
     }
 
     fn live_politeness_for(w: &dyn Widget, name: &str) -> Option<Politeness> {
+        /// The node named `name` in `node`'s subtree.
+        fn named<'a>(
+            node: &'a ui::a11y::AccessNode,
+            name: &str,
+        ) -> Option<&'a ui::a11y::AccessNode> {
+            if node.name.as_deref() == Some(name) {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| named(child, name))
+        }
         if let Some(node) = w.accessibility()
-            && node.name.as_deref() == Some(name)
+            && let Some(found) = named(&node, name)
         {
-            return node.live;
+            return found.live;
         }
         w.children()
             .into_iter()
             .find_map(|child| live_politeness_for(child, name))
+    }
+
+    /// The passcode prompt's accessible node.
+    fn passcode_node(w: &dyn Widget) -> ui::a11y::AccessNode {
+        find_test_id(w, "greeter.password")
+            .and_then(Widget::accessibility)
+            .expect("the passcode prompt is accessible")
+    }
+
+    /// Where the passcode's field itself sits, inside its prompt.
+    fn passcode_field_rect(w: &dyn Widget) -> Option<Rect> {
+        let node = find_test_id(w, "greeter.password").and_then(Widget::accessibility)?;
+        let field = node
+            .children
+            .iter()
+            .find(|child| child.role == ui::a11y::Role::TextInput)?;
+        let b = field.bounds?;
+        Some(Rect::new(b.x0, b.y0, b.x1, b.y1))
     }
 
     /// A settled greeter laid out the way App does it, kept alive so it can
@@ -3476,21 +3465,20 @@ mod tests {
             hint.set_hint("greeter-hint-passcode");
             let mut err = GreeterApp::with_sessions(one_session());
             err.finish_failure(Failure::Credentials);
-            let icon = |app: &GreeterApp| {
-                fn walk(w: &dyn Widget, out: &mut Vec<String>) {
-                    for c in w.children() {
-                        if c.name() == "IconWidget" {
-                            out.push(format!("{c:p}"));
-                        }
-                        walk(c, out);
-                    }
-                }
-                let mut out = Vec::new();
-                walk(card_of(app).as_ref(), &mut out);
-                out.len()
-            };
-            assert_eq!(icon(&hint), 1, "a hint carries its quiet info glyph");
-            assert_eq!(icon(&err), 1, "an error carries its alert glyph");
+            // Both are said under the field, at once.
+            assert_eq!(
+                live_politeness_for(card_of(&hint).as_ref(), "Enter your password."),
+                Some(Politeness::Assertive),
+                "a hint is said under the field"
+            );
+            assert_eq!(
+                live_politeness_for(
+                    card_of(&err).as_ref(),
+                    "Incorrect username or password. Try again."
+                ),
+                Some(Politeness::Assertive),
+                "an error is said under the field"
+            );
             assert_eq!(hint.status_text(), "Enter your password.");
             assert_eq!(
                 err.status_text(),
@@ -3584,31 +3572,34 @@ mod tests {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let base = focus_shape(&app);
             let card = card_of(&app);
-            let reveal = find_test_id(card.as_ref(), "greeter.password_reveal")
+            let prompt = passcode_node(card.as_ref());
+            let reveal = prompt
+                .children
+                .iter()
+                .flat_map(|field| field.children.iter())
+                .find(|node| node.role == ui::a11y::Role::ToggleButton)
                 .expect("the shared field retains an addressable reveal control");
-            let accessible = reveal.accessibility().expect("reveal is accessible");
-            assert_eq!(accessible.role, ui::a11y::Role::Button);
-            assert_eq!(accessible.name.as_deref(), Some("Show password"));
+            assert_eq!(reveal.name.as_deref(), Some("Show password"));
             assert!(
-                accessible.value.is_none(),
+                reveal.value.is_none(),
                 "the reveal control exposes no passcode"
             );
             assert!(
-                !reveal.is_focusable(),
+                !reveal.state.focusable,
                 "Tab continues from field to sign-in"
             );
             assert_eq!(
                 base,
                 vec![
-                    "TextInput", // username
-                    "TextInput", // passcode
-                    "Button",    // sign in
-                    "Button",    // fingerprint
-                    "Button",    // larger text
-                    "Button",    // high contrast
-                    "Button",    // screen reader
-                    "Dropdown",  // session
-                    "Dropdown",  // power
+                    "TextInput",    // username
+                    "SecretPrompt", // passcode
+                    "Button",       // sign in
+                    "Button",       // fingerprint
+                    "Button",       // larger text
+                    "Button",       // high contrast
+                    "Button",       // screen reader
+                    "Dropdown",     // session
+                    "Dropdown",     // power
                 ]
             );
             app.selected_session = 1;
@@ -3617,13 +3608,20 @@ mod tests {
             assert_eq!(focus_shape(&app), base, "an error keeps order");
             app.notice = Notice::Hint("greeter-hint-passcode");
             assert_eq!(focus_shape(&app), base, "a hint keeps order too");
-            let texts = count_named(card_of(&app).as_ref(), "Text");
+            let line = |app: &GreeterApp| {
+                passcode_node(card_of(app).as_ref())
+                    .children
+                    .iter()
+                    .find(|node| node.role == ui::a11y::Role::StaticText)
+                    .and_then(|node| node.name.clone())
+            };
+            let hint = line(&app);
             app.caps_lock.observe('A', false);
             assert_eq!(focus_shape(&app), base, "the Caps-Lock note keeps order");
-            assert_eq!(
-                count_named(card_of(&app).as_ref(), "Text"),
-                texts + 1,
-                "the Caps-Lock note adds exactly one line"
+            assert_ne!(
+                line(&app),
+                hint,
+                "the Caps-Lock note is the line under the field"
             );
         }
     }
@@ -3777,7 +3775,10 @@ mod tests {
             let app = GreeterApp::for_shot(AuthScenario::PersonalAuthenticating);
             assert_eq!(app.status_text(), "Signing in…");
             let card = card_of(&app);
-            assert_eq!(count_named(card.as_ref(), "Spinner"), 1);
+            assert!(
+                passcode_node(card.as_ref()).state.busy,
+                "the prompt says it is checking"
+            );
             let said = spoken(card.as_ref());
             assert_eq!(
                 said.iter().filter(|s| s.as_str() == "Signing in…").count(),
@@ -4160,7 +4161,6 @@ mod tests {
                 let card = app.composed.element().expect("composed");
                 for id in [
                     "greeter.password",
-                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.larger-text",
                     "greeter.high-contrast",
@@ -4175,7 +4175,7 @@ mod tests {
                         "{id} {rect:?} is off screen at {viewport:?} x{scale} ({scenario:?})"
                     );
                 }
-                let field = rect_for(card, "greeter.password").unwrap();
+                let field = passcode_field_rect(card).unwrap();
                 let action = rect_for(card, "greeter.login").unwrap();
                 assert!(
                     (field.center().y - action.center().y).abs() < 1.0 && action.x0 >= field.x1,

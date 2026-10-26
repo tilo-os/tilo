@@ -194,9 +194,10 @@ impl CapnpBrokerState {
             if service.requires_room(&room) {
                 actions.extend(super::workspace_checkpoints::actions());
             } else if service.grants_authorship_at_host(&room) {
-                // Governed by the node that stewards it: the one change
-                // this device asks there is an opening app's authorship.
-                actions.retain(|action| action.action == GRANT_APP_AUTHORSHIP);
+                // Governed by the node that stewards it: this device keeps
+                // the room's own membership changes and asks that host to
+                // commit them, but a checkpoint is this device's custody
+                // and is not the host's to make.
             } else {
                 continue;
             }
@@ -820,6 +821,29 @@ mod tests {
 
     struct DiscoveryMemberships;
 
+    /// A service standing in for a room this device holds but a host
+    /// stewards: it commits nothing here and asks the host, so the room's
+    /// own membership changes are what it publishes.
+    struct HostedElsewhereMemberships;
+
+    impl WorkspaceMemberships for HostedElsewhereMemberships {
+        fn requires_room(&self, _: &str) -> bool {
+            false
+        }
+
+        fn grants_authorship_at_host(&self, _: &str) -> bool {
+            true
+        }
+
+        fn health(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn execute(&self, _: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
+            Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
+        }
+    }
+
     impl WorkspaceMemberships for DiscoveryMemberships {
         fn requires_room(&self, _: &str) -> bool {
             true
@@ -876,6 +900,77 @@ mod tests {
             actual, expected,
             "discovery exposes the exact action contract"
         );
+    }
+
+    #[tokio::test]
+    async fn a_room_a_host_stewards_offers_its_own_membership_but_no_checkpoint() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut tree = crate::test_support::WorkspaceTree::default();
+                tree.desktop
+                    .workspaces
+                    .push(tilo_desktop_model::Workspace::new(
+                        tilo_desktop_model::WorkspaceId(1),
+                        "Hosted elsewhere",
+                    ));
+                let room = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let tree = tree.shared();
+                let state = CapnpBrokerState::new_configured(
+                    &Arc::new(super::super::FanoutState::new()),
+                    Arc::new(std::sync::Mutex::new(
+                        super::super::BrokerChannels::default(),
+                    )),
+                    super::super::PeerPublisher::disabled(),
+                    Some(tree.authority()),
+                    None,
+                    None,
+                    HostServices {
+                        workspace_memberships: Some(Arc::new(HostedElsewhereMemberships)),
+                        ..Default::default()
+                    },
+                )
+                .0;
+                state.refresh_workspace_membership_services().unwrap();
+                // The room's own governance is offered, so adding and
+                // removing an agent and giving and taking back a grant are
+                // actions here, and the host is asked to commit them.
+                let mut expected = vec![
+                    (WORKSPACE, "add-agent"),
+                    (WORKSPACE, "grant-app-authorship"),
+                    (WORKSPACE, "grant"),
+                    (WORKSPACE, "revoke"),
+                    (WORKSPACE, "install-bot"),
+                    (WORKSPACE, "renew-bot"),
+                    (WORKSPACE, "adopt-bot"),
+                    (WORKSPACE, "uninstall-bot"),
+                    (WORKSPACE, "pause-bot"),
+                    (WORKSPACE, "resume-bot"),
+                    (WORKSPACE, "set-bot-appearance"),
+                    (WORKSPACE, "request-bot"),
+                    (WORKSPACE, "withdraw-bot-request"),
+                ];
+                assert_membership_action_set(&state, &room, &expected);
+                {
+                    use crate::test_support::{Grants as _, KindSet};
+                    tree.write()
+                        .desktop
+                        .workspaces
+                        .first_mut()
+                        .unwrap()
+                        .admit_agent("scribe", KindSet::READ);
+                }
+                state.refresh_workspace_membership_services().unwrap();
+                expected.push(("desktop:agent:scribe", "remove"));
+                assert_membership_action_set(&state, &room, &expected);
+                assert!(
+                    !expected
+                        .iter()
+                        .any(|(resource, _)| *resource == "desktop:checkpoints"),
+                    "a checkpoint is this device's custody, not the host's"
+                );
+                drop(state);
+            })
+            .await;
     }
 
     #[tokio::test]

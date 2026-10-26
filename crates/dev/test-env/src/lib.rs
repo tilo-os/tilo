@@ -38,6 +38,41 @@
 //!   test run put it, which an archived run moves away from Cargo's path.
 //! - [`in_own_process`] runs a test that changes what the whole process
 //!   sees, such as a held wall clock, in a process no other test shares.
+//! - [`scenario!`] folds a group of related tests into one test with a
+//!   labelled phase per former test, each phase in its own scope, and still
+//!   reports a failure by the case it came from.
+//!
+//! ## Scenarios
+//!
+//! A scenario is the one test a group of related tests becomes. Every case
+//! keeps its own fixture and every assertion; it is called a *phase*, and a
+//! second group of statements in the same scenario is a *step*. Both keep their
+//! own scope, so two of them may bind the same names, as two tests did:
+//!
+//! ```ignore
+//! scenario! {
+//!     fn a_saved_project_opens_as_the_same_timeline;
+//!
+//!     phase saving_writes_a_file_that_opens_back;
+//!     /// What a file is for, end to end through the app.
+//!     {
+//!         let (app, doc) = app_and_doc();
+//!         assert!(path.is_file(), "the file is on disk");
+//!     }
+//!
+//!     steps {
+//!         // Between two phases: a fixture the phases below share, run once.
+//!     }
+//! }
+//! ```
+//!
+//! [`scenario!`] writes the case function itself: a `#[test]` that runs every
+//! case in one pass, through the hook in [`scenario`]. `#[scenario]` is for a
+//! group that already has its test and only needs its cases collected. A case
+//! that fails is reported by phase, with the line inside it that raised, and
+//! the scenario's cases after it still run, so one pass shows every failure. A
+//! `#[cfg]` above the `fn` in [`scenario!`] applies to the function, as it
+//! would above any other `fn`.
 //!
 //! The lock only orders code that takes it. Code under test that reads the
 //! environment from a thread of its own is still racing any other test that
@@ -49,6 +84,7 @@ mod desktop;
 pub mod hang;
 pub mod idle;
 mod own_process;
+pub mod scenario;
 pub mod swtpm;
 
 pub use capability::{Capability, Probe, capability_unavailable};
@@ -67,6 +103,125 @@ use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread::{self, ThreadId};
 use std::{env, fs, io};
 use tilo_lock::MutexRecover as _;
+
+/// One test with a labelled case per former test.
+///
+/// Its body holds three kinds of statement. Anything else it holds — a
+/// constant, a helper, a declaration — stays exactly where it was written,
+/// ahead of the cases.
+///
+/// - `phase NAME;` — the case `NAME`, which starts here and runs the
+///   statements in the braces that follow it;
+/// - `step NAME;` — the same, kept apart for a fixture written between cases
+///   rather than a test of its own;
+/// - `steps;` — the same, named for the file it came from.
+///
+/// Each case runs in a scope of its own, so two may bind the same names as two
+/// separate tests did, and the whole scenario runs in one pass: a failure is
+/// reported by the phase it came from, and the cases after it still run.
+///
+/// ```ignore
+/// scenario! {
+///     fn a_saved_project_opens_as_the_same_timeline;
+///
+///     phase saving_writes_a_file_that_opens_back;
+///     {
+///         let (app, doc) = app_and_doc();
+///         assert!(app.save(&doc, path).is_ok(), "the file is on disk");
+///     }
+///
+///     phase an_open_is_one_undoable_action;
+///     {
+///         // A fresh fixture, as the test this came from built.
+///         let (app, doc) = app_and_doc();
+///         assert!(opened_in_one_edit(&app), "an open is one edit");
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! scenario {
+    ($(#[$meta:meta])* fn $name:ident; $($rest:tt)*) => {
+        #[test]
+        $(#[$meta])*
+        fn $name() {
+            $crate::__scenario! {
+                @cases [] @rest
+                $($rest)*
+            }
+        }
+    };
+}
+
+/// The scenario's cases so far, and the statements after them.
+///
+/// A case is buffered as its name, the `file!()` and `line!()` it is written
+/// at, and the tokens of its body — never as the expression that becomes it.
+/// A path written into a buffer with `$crate` and spliced back out is matched
+/// by this macro's `$crate`, which is the crate the case ends up in only by
+/// accident. Everything is expanded once, at the end, in the caller's file.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __scenario {
+    // A case named `NAME`, of kind `phase` or `step` (or `steps`), which runs
+    // the statements in the braces that follow it, in a closure that keeps its
+    // bindings inside — inside a scope of its own, as the test it came from
+    // had, so two cases may bind the same names.
+    //
+    // The braces are captured as tokens and become the closure's body where
+    // they were written. A `block` fragment would be checked against the
+    // closure's own context before it could be handed on, and a block checked
+    // there does not fit back into a body.
+    (
+        @cases [$($case:tt)*] @rest
+        $kind:ident $($name:ident)? ; { $($body:tt)* } $($rest:tt)*
+    ) => {
+        $crate::__scenario! {
+            @cases [
+                $($case)*
+                (
+                    $crate::__scenario_name!($kind $($name)?),
+                    ::core::concat!(::core::file!(), ":", ::core::line!()),
+                    { $($body)* }
+                )
+            ]
+            @rest $($rest)*
+        }
+    };
+
+    // Nothing left: make a phase of each case and run them together.
+    (@cases [$(($name:expr, $location:expr, $body:tt))*] @rest) => {
+        $crate::scenario::run(::std::vec![
+            $(
+                $crate::__scenario_phase!($name, $location, $body)
+            ),*
+        ])
+        .assert_green()
+    };
+}
+
+/// One buffered case, as a phase.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __scenario_phase {
+    ($name:expr, $location:expr, { $($body:tt)* }) => {
+        $crate::scenario::Phase::new($name, $location, || { $($body)* })
+    };
+}
+
+/// The name a case is reported by.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __scenario_name {
+    (phase $name:ident) => {
+        ::core::stringify!($name)
+    };
+    (step $name:ident) => {
+        ::core::stringify!($name)
+    };
+    (steps) => {
+        "steps"
+    };
+}
 
 /// A binary of the package under test, by its Cargo target name: where an
 /// archived nextest run relocated it (`NEXTEST_BIN_EXE_<name>`), else where
@@ -460,6 +615,7 @@ pub fn script(path: impl AsRef<Path>, body: &str) -> io::Result<Script> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scenario;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -740,6 +896,92 @@ mod tests {
             for handle in handles {
                 handle.join().unwrap();
             }
+        }
+    }
+    /// The cases a probe scenario ran, in order, so the test below can say
+    /// that a failure did not stop the cases after it.
+    fn note(ran: &std::sync::Mutex<Vec<&'static str>>, case: &'static str) {
+        ran.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(case);
+    }
+
+    #[test]
+    fn a_scenario_runs_every_case_in_its_own_scope_and_reports_each_by_name() {
+        let ran = std::sync::Mutex::new(Vec::new());
+        let report = scenario::run(vec![
+            scenario::Phase::new("first", "here:1", || note(&ran, "first")),
+            scenario::Phase::new("fails", "here:20", || {
+                note(&ran, "fails");
+                assert_eq!(1, 2, "a case that fails says which one");
+            }),
+            scenario::Phase::new("after_a_failure", "here:30", || {
+                note(&ran, "after_a_failure");
+            }),
+        ]);
+        assert_eq!(
+            ran.into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ["first", "fails", "after_a_failure"],
+            "a failing case does not stop the ones after it",
+        );
+        assert_eq!(report.total(), 3);
+        let failed: Vec<_> = report
+            .cases()
+            .filter(|(_, _, failure)| failure.is_some())
+            .collect();
+        assert_eq!(failed.len(), 1, "only the case that failed fails");
+        assert_eq!(failed[0].0, "fails");
+        let shown = std::panic::catch_unwind(|| report.assert_green());
+        let message = shown.expect_err("a failed case fails the scenario");
+        let message = message
+            .downcast_ref::<String>()
+            .map_or_else(String::new, Clone::clone);
+        assert!(
+            message.contains("phase `fails`") && message.contains("here:20"),
+            "the report names the case and where it starts: {message}",
+        );
+    }
+
+    #[test]
+    fn a_scenario_with_no_case_proves_nothing_and_says_so() {
+        let empty = scenario::run(Vec::new());
+        assert_eq!(empty.total(), 0);
+        assert!(
+            std::panic::catch_unwind(|| empty.assert_green()).is_err(),
+            "a scenario that ran nothing must not pass",
+        );
+    }
+
+    // A `scenario!` body collects its `phase`, `step` and `steps` statements
+    // into one test, in order, keeps a binding two phases share apart, and
+    // reads a declaration beside them without collecting it.
+    scenario! {
+        fn a_scenario_collects_phases_steps_and_declarations;
+
+        phase a_case_binds_a_name_the_next_one_binds_too;
+        {
+            const SHARED: usize = 7;
+            let value = SHARED;
+            assert_eq!(value, 7, "a declaration beside the cases is read");
+        }
+
+        step a_fixture_between_cases;
+        {
+            let shared = 1 + 1;
+            assert_eq!(shared, 2, "a step runs on its own");
+        }
+
+        steps;
+        {
+            let shared = "a name the cases also bind";
+            assert_eq!(shared.len(), 26, "a file of steps runs on its own");
+        }
+
+        phase the_last_case_runs_last;
+        {
+            let shared = [3, 1, 2];
+            assert_eq!(shared.len(), 3, "a case's bindings do not outlive it");
         }
     }
 }

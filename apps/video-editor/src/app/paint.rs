@@ -48,8 +48,13 @@ pub(super) fn filmstrip_cells(inner: Rect) -> (f64, i64) {
 
 /// The content rect inside a clip body, below its header strip. Shared for the
 /// same reason as [`filmstrip_cells`].
-pub(super) fn clip_inner_rect(cr: Rect) -> Rect {
-    let strip_y1 = (cr.y0 + 18.0).min(cr.y1);
+///
+/// `header_h` is the title band the caller reserved, from
+/// `VideoEditorApp::clip_header_rect`. It has to be the same number the header
+/// was drawn with: at a raised UI scale a filmstrip that still cut at an
+/// unscaled 18px began inside the scaled title and painted frames through it.
+pub(super) fn clip_inner_rect(cr: Rect, header_h: f64) -> Rect {
+    let strip_y1 = (cr.y0 + header_h).min(cr.y1);
     Rect::new(cr.x0 + 2.0, strip_y1, cr.x1 - 2.0, cr.y1 - 2.0)
 }
 

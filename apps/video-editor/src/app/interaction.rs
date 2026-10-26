@@ -1059,6 +1059,17 @@ impl VideoEditorApp {
                 return;
             }
         }
+        // The two halves of the frame.
+        for (_, side, rect) in l.sides.clone() {
+            if rect.contains(p) {
+                self.edit_selected(move |c| {
+                    if let Some(placement) = side.placement() {
+                        c.transform = placement;
+                    }
+                });
+                return;
+            }
+        }
         for (anchor, rect) in l.anchor.clone() {
             if rect.contains(p) {
                 self.edit_selected(move |c| {

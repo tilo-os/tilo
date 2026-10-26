@@ -147,6 +147,12 @@ pub fn refuse_run(run: &AgentRun, missing: &[&RunStep]) -> RunUndoReport {
 
 /// Undo one application's share of a run against the document that app owns.
 ///
+/// The record's own history does the undoing — [`revert_run`] over the
+/// step's one change, the same revert [`revert_step`] writes for an app's
+/// own Ctrl+Z — so a run undone from an agent's report and the same work
+/// undone in the app land alike, with the same charge for what a later
+/// writer has since changed.
+///
 /// The transaction is left open; the owning app commits, so the undo lands under
 /// the person who asked for it and replicates like any other edit.
 pub fn undo_step(
@@ -155,7 +161,10 @@ pub fn undo_step(
     by: Option<&str>,
     authors: &AuthorDirectory,
 ) -> StepOutcome {
-    let state = match revert_run(doc, &step.run, by, authors) {
+    // A step's run is one change, so reverting the run is reverting that
+    // change: exactly what an app's own undo writes for it.
+    let change = revert_run(doc, &step.run, by, authors);
+    let state = match change {
         Err(RevertError::UnknownRun | RevertError::Inverted) => StepState::NotInDocument,
         Ok(o) if !o.kept.is_empty() => StepState::KeptSome {
             changes: o.covered,
