@@ -660,7 +660,12 @@ globalThis.__tiloPage ||= (() => {
           : kind === 'iframe' ? clean(element.title || element.name || element.src, MAX_NAME)
           : name(element, kind);
         const size = kind === 'canvas' ? ` ${Math.round(element.width || element.clientWidth || 0)}x${Math.round(element.height || element.clientHeight || 0)} [ref=${refOf(element)}]` : '';
-        emit(depth, (label ? `${kind} ${quote(label)}` : kind) + size);
+        // A frame's own document is a world this one cannot read: its words
+        // are not in this outline, and an action on a ref here would not reach
+        // them. Say so, so a reader does not take silence for an empty frame.
+        const inner = kind === 'iframe' && element.src
+          ? ' — its own document, which this outline cannot read' : '';
+        emit(depth, (label ? `${kind} ${quote(label)}` : kind) + size + inner);
         return;
       }
       // A drawing surface is one element a gesture draws on, never the boxes
