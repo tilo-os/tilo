@@ -82,12 +82,13 @@ filter = 'package(shell) and test(shell::render::paint::tests::gpu_target_)'
 threads-required = "num-cpus"
 priority = 100
 
-# The loopback peer-sync latency measurements (a 50 ms p95) are wall-clock
-# and run only when asked for with --ignored; sharing the runner with the
-# parallel suite would measure scheduler contention instead of the push path,
-# so they run with the pool to themselves.
+# The loopback peer-sync latency measurements (a 50 ms p95, an edit from one
+# device through the room's host to another) are wall-clock and run only when
+# asked for with --ignored; sharing the runner with the parallel suite would
+# measure scheduler contention instead of the push path, so they run with the
+# pool to themselves.
 [[profile.default.overrides]]
-filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_target_input_stays_below_the_interactive_p95_budget) or test(=peer_sync_test::a_document_edit_reaches_the_other_device_within_the_interactive_budget))'
+filter = 'package(shell) and test(=shell::network::one_host_tests::edit_latency::a_note_edit_reaches_the_other_device_within_the_interactive_budget)'
 threads-required = "num-cpus"
 priority = 100
 
