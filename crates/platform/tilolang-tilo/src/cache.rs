@@ -59,9 +59,18 @@ pub struct ReadCache {
 
 /// What the store read of one document: per resource (the document's root, or an item, keyed
 /// by [`ResourceRef::id_string`]).
+///
+/// What is kept beside a resource's fields is kept beside the resources, for the few that have
+/// it, so that the many items of a collection cost no more than their fields.
 #[derive(Default)]
 struct DocCache {
     resources: Map<String, Cached>,
+    /// Per resource kept, its collections listed so far.
+    lists: Map<String, Map<&'static str, Listed>>,
+    /// Per resource kept, the items within it kept that were found one by one, by key, rather
+    /// than listed with their collection: forgotten with it, as its listed items are, without a
+    /// look at the other resources.
+    inside: Map<String, Vec<String>>,
 }
 
 /// One resource: where it is and the fields read so far, keyed by the field ids its schema
@@ -71,12 +80,6 @@ struct Cached {
     obj: Option<ObjId>,
     schema: &'static TypeSchema,
     fields: Map<&'static str, FieldValue>,
-    /// Its collections listed so far.
-    lists: Map<&'static str, Listed>,
-    /// The items within it kept that were found one by one, by key, rather than listed with
-    /// their collection: forgotten with it, as its listed items are, without a look at the
-    /// other resources.
-    inside: Vec<String>,
 }
 
 impl Cached {
@@ -85,8 +88,6 @@ impl Cached {
             obj,
             schema,
             fields: Map::default(),
-            lists: Map::default(),
-            inside: Vec::new(),
         }
     }
 }
@@ -94,8 +95,11 @@ impl Cached {
 impl DocCache {
     /// Keep `cached` as the resource `key`, an item within the resource `parent`.
     fn keep_within(&mut self, parent: &str, key: String, cached: Cached) {
-        if let Some(parent) = self.resources.get_mut(parent) {
-            parent.inside.push(key.clone());
+        if self.resources.contains_key(parent) {
+            self.inside
+                .entry(parent.to_owned())
+                .or_default()
+                .push(key.clone());
         }
         self.resources.insert(key, cached);
     }
@@ -104,12 +108,13 @@ impl DocCache {
     fn drop_resource(&mut self, key: &str) {
         let mut gone = vec![key.to_owned()];
         while let Some(key) = gone.pop() {
-            if let Some(cached) = self.resources.remove(&key) {
-                for (field, listed) in &cached.lists {
-                    gone.extend(listed.member_keys(&key, field));
-                }
-                gone.extend(cached.inside);
+            if self.resources.remove(&key).is_none() {
+                continue;
             }
+            for (field, listed) in self.lists.remove(&key).unwrap_or_default() {
+                gone.extend(listed.member_keys(&key, field));
+            }
+            gone.extend(self.inside.remove(&key).unwrap_or_default());
         }
     }
 
@@ -117,9 +122,9 @@ impl DocCache {
     /// with it: they are listed, and kept, again when next read.
     fn drop_listing(&mut self, key: &str, field: &str) {
         let Some(listed) = self
-            .resources
+            .lists
             .get_mut(key)
-            .and_then(|cached| cached.lists.remove(field))
+            .and_then(|lists| lists.remove(field))
         else {
             return;
         };
@@ -246,8 +251,8 @@ impl ReadCache {
         if let Some(listed) = self
             .docs
             .get(&at.doc)
-            .and_then(|d| d.resources.get(&key))
-            .and_then(|r| r.lists.get(field))
+            .and_then(|d| d.lists.get(&key))
+            .and_then(|lists| lists.get(field))
         {
             return Ok(Rc::clone(&listed.listing));
         }
@@ -264,12 +269,13 @@ impl ReadCache {
             Some(obj) => self.list(doc, obj, &key, spec)?,
         };
         let listing = Rc::clone(&listed.listing);
-        if let Some(cached) = self
-            .docs
-            .get_mut(&at.doc)
-            .and_then(|d| d.resources.get_mut(&key))
+        if let Some(d) = self.docs.get_mut(&at.doc)
+            && d.resources.contains_key(&key)
         {
-            cached.lists.insert(spec.id.as_str(), listed);
+            d.lists
+                .entry(key)
+                .or_default()
+                .insert(spec.id.as_str(), listed);
         }
         Ok(listing)
     }
@@ -280,9 +286,8 @@ impl ReadCache {
         let listed = self
             .docs
             .get(tilolang_runtime::store::doc_of(at))?
-            .resources
-            .get(at)?
             .lists
+            .get(at)?
             .get(field)?;
         let key = listed.keys.get(id)?;
         let at = listed.position(key, id);
@@ -299,17 +304,18 @@ impl ReadCache {
         coll: &FieldKey,
         items: &BTreeSet<String>,
     ) -> Option<Vec<Splice>> {
-        let cached = self
-            .docs
-            .get_mut(coll.doc())?
+        let cache = self.docs.get_mut(coll.doc())?;
+        let map = cache
             .resources
-            .get_mut(&coll.resource)?;
-        let map = cached
+            .get(&coll.resource)?
             .obj
             .as_ref()
             .and_then(|obj| doc.get(obj, coll.field.as_str()).ok().flatten())
             .and_then(|(value, id)| map_of(&Some((value.into_owned(), id))));
-        let listed = cached.lists.get_mut(coll.field.as_str())?;
+        let listed = cache
+            .lists
+            .get_mut(&coll.resource)?
+            .get_mut(coll.field.as_str())?;
         // Which items left, and which arrived or moved: an item whose key is the one listed
         // stays where it is.
         let mut leaving: Vec<(usize, String)> = Vec::new();
