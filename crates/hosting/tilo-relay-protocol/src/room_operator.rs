@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::rooms::RoomRole;
 
 /// Version of this protocol, announced in [`RoomEvent::Started`].
-pub const VERSION: u16 = 3;
+pub const VERSION: u16 = 4;
 
 /// The child reports [`RoomEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy room does not flood the service.
@@ -134,6 +134,8 @@ pub enum OperatorCommand {
         /// SHA-256 (hex) of the removal secret.
         removal_sha256: String,
     },
+    /// Acknowledge durable enqueue of an invitation, not provider delivery.
+    InviteMailQueued { request: String, queued: bool },
 }
 
 /// What the room relay reports to the room service.
@@ -261,6 +263,11 @@ pub enum RoomEvent {
         /// secret, and its address had been confirmed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         told: Option<WaitListMailbox>,
+        /// Relay-private SHA-256 of `rooms::contact_key`, even for a pending
+        /// entry, so the door can cancel its queued mail and receipts. Never
+        /// returned by the door's public removal endpoint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contact_sha256: Option<String>,
     },
     /// An [`OperatorCommand::Unlist`], [`OperatorCommand::Confirm`] or
     /// [`OperatorCommand::Standing`] the room could not do.
@@ -287,6 +294,7 @@ pub enum RoomEvent {
     /// Someone who may invite asked the room to mail an invitation to a
     /// confirmed wait-list entry: send it, from the room's door.
     InviteMail {
+        request: String,
         to: WaitListMailbox,
         /// The invitation's web link, on the room's own door.
         link: String,
@@ -534,6 +542,7 @@ mod tests {
                 full: true,
             },
             RoomEvent::Unlisted {
+                contact_sha256: None,
                 request: "12".repeat(32),
                 told: Some(WaitListMailbox {
                     contact: "Ada@example.org".into(),
@@ -553,6 +562,7 @@ mod tests {
                 standing: WaitListStanding::Invited,
             },
             RoomEvent::InviteMail {
+                request: "ab".repeat(32),
                 to: WaitListMailbox {
                     contact: "Ada@example.org".into(),
                     language: "en".into(),
@@ -564,8 +574,8 @@ mod tests {
     }
 
     #[test]
-    fn protocol_three_round_trips_and_pins_its_wire_form() {
-        assert_eq!(VERSION, 3);
+    fn protocol_four_round_trips_and_pins_its_wire_form() {
+        assert_eq!(VERSION, 4);
         let pre_admit = OperatorCommand::PreAdmit {
             user_public_key: "cd".repeat(32),
             token_sha256: "ab".repeat(32),
@@ -642,6 +652,14 @@ mod tests {
     #[test]
     fn wait_list_confirmations_and_standings_round_trip_and_name_no_address_in_a_log() {
         for command in [
+            OperatorCommand::InviteMailQueued {
+                request: "12".repeat(32),
+                queued: false,
+            },
+            OperatorCommand::InviteMailQueued {
+                request: "12".repeat(32),
+                queued: true,
+            },
             OperatorCommand::Confirm {
                 request: "12".repeat(32),
                 confirm_sha256: "cd".repeat(32),
@@ -674,6 +692,28 @@ mod tests {
         assert!(
             !format!("{mailbox:?}").contains("Ada"),
             "a mailbox is never logged with its address"
+        );
+    }
+
+    #[test]
+    fn pending_removal_contact_digest_round_trips_only_on_the_private_operator_wire() {
+        let event = RoomEvent::Unlisted {
+            request: "12".repeat(32),
+            told: None,
+            contact_sha256: Some("ab".repeat(32)),
+        };
+        assert_eq!(RoomEvent::from_line(&event.to_line()).unwrap(), event);
+        let old = format!(
+            "tilo-room-operator {{\"event\":\"unlisted\",\"request\":\"{}\"}}",
+            "12".repeat(32)
+        );
+        assert_eq!(
+            RoomEvent::from_line(&old).unwrap(),
+            RoomEvent::Unlisted {
+                request: "12".repeat(32),
+                told: None,
+                contact_sha256: None,
+            }
         );
     }
 

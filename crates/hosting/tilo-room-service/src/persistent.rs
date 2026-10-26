@@ -180,7 +180,7 @@ enum Answer {
     /// The room keeps as many requests left at its door as it takes.
     WaitListFull,
     /// No entry has the removal secret now; tell this address it left.
-    Unlisted(Option<WaitListMailbox>),
+    Unlisted(Option<WaitListMailbox>, Option<String>),
     /// Whether an entry had the confirmation secret.
     Confirmed(bool),
     Standing(WaitListStanding),
@@ -258,11 +258,23 @@ impl Shared {
             (shared.wait_list, &persistent.mail, &persistent.web_entry)
         {
             let resend = crate::mail::Resend::new(mail).context("the door's mail")?;
-            shared.mail = Some(crate::mail::DoorMail::new(
+            // A configured directory that is missing or malformed stops the
+            // room rather than mailing words nobody chose.
+            let templates = match &mail.templates {
+                Some(dir) => crate::mail::Templates::load(dir)
+                    .with_context(|| format!("the door's mail templates in {}", dir.display()))?,
+                None => crate::mail::Templates::baked(),
+            };
+            // Every mail waits in the room's own state until the service
+            // takes it, so a restart or a failing service delays one.
+            shared.mail = Some(crate::mail::DoorMail::durable(
                 Arc::new(resend),
                 door,
                 &workspace_name(persistent),
-            ));
+                templates,
+                config.local,
+                &shared.dir.join("mail-outbox"),
+            )?);
         }
         Ok(shared)
     }
@@ -673,12 +685,38 @@ fn size_sessions(command: &mut Command, config: &Config, persistent: &Persistent
 
 impl Persistent {
     fn new(shared: Arc<Shared>) -> Arc<Self> {
-        Arc::new(Self {
+        let this = Arc::new(Self {
             shared,
             child: Mutex::new(None),
             waiters: std::sync::Mutex::default(),
             failure: std::sync::Mutex::default(),
-        })
+        });
+        if let Some(door) = &this.shared.mail {
+            let weak = Arc::downgrade(&this);
+            door.set_eligibility(Arc::new(move |removal| {
+                let weak = weak.clone();
+                Box::pin(async move {
+                    let this = weak.upgrade()?;
+                    let request = hex::encode(rand::random::<[u8; 32]>());
+                    match this
+                        .ask(
+                            format!("wl:{request}"),
+                            OperatorCommand::Standing {
+                                request,
+                                removal_sha256: removal,
+                            },
+                        )
+                        .await
+                    {
+                        Ok((Answer::Standing(standing), _, _)) => {
+                            Some(standing != WaitListStanding::Gone)
+                        }
+                        _ => None,
+                    }
+                })
+            }));
+        }
+        this
     }
 
     /// Opens the room's state and starts supervising its child.
@@ -809,6 +847,9 @@ impl Persistent {
             origin: origin.unwrap_or(started.origin),
             room,
         });
+        if let Some(door) = &self.shared.mail {
+            door.start();
+        }
         let result = self.observe(&mut lines).await;
         *self.child.lock().await = None;
         self.fail_waiters();
@@ -847,7 +888,7 @@ impl Persistent {
                     | RoomEvent::Standing { .. }
                     | RoomEvent::WaitListFailed { .. }
                     | RoomEvent::InviteMail { .. }),
-                ) => self.wait_list_event(event),
+                ) => self.wait_list_event(event).await,
                 Ok(RoomEvent::SpectatorCertified {
                     device_public_key,
                     certificate,
@@ -933,10 +974,17 @@ impl Persistent {
 
     /// What the room said about an entry on its wait list, other than
     /// keeping one.
-    fn wait_list_event(&self, event: RoomEvent) {
+    async fn wait_list_event(&self, event: RoomEvent) {
         match event {
-            RoomEvent::Unlisted { request, told } => {
-                self.settle(&format!("wl:{request}"), Ok(Answer::Unlisted(told)));
+            RoomEvent::Unlisted {
+                request,
+                told,
+                contact_sha256,
+            } => {
+                self.settle(
+                    &format!("wl:{request}"),
+                    Ok(Answer::Unlisted(told, contact_sha256)),
+                );
             }
             RoomEvent::Confirmed { request, confirmed } => {
                 self.settle(&format!("wl:{request}"), Ok(Answer::Confirmed(confirmed)));
@@ -948,7 +996,25 @@ impl Persistent {
                 eprintln!("tilo-room-service: a wait-list request failed: {reason}");
                 self.settle(&format!("wl:{request}"), Err(reason));
             }
-            RoomEvent::InviteMail { to, link, removal } => self.mail_invite(&to, &link, &removal),
+            RoomEvent::InviteMail {
+                request,
+                to,
+                link,
+                removal,
+            } => {
+                let queued = self.mail_invite(&to, &link, &removal);
+                if let Some(child) = self.child.lock().await.as_mut() {
+                    let command = OperatorCommand::InviteMailQueued { request, queued };
+                    if child
+                        .stdin
+                        .write_all(command.to_line().as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        eprintln!("tilo-room-service: could not acknowledge invitation enqueue");
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1141,10 +1207,18 @@ impl Persistent {
                         contact: email.clone(),
                         language: language.to_owned(),
                     };
-                    door.send(
-                        "a confirmation link",
+                    if !door.send_for(
+                        crate::mail::Kind::Confirm,
                         door.confirm(&to, &hex::encode(confirm), &hex::encode(removal)),
-                    );
+                        &removal_digest(&removal),
+                    ) {
+                        // The room kept the entry, but nobody can confirm it:
+                        // say so rather than claim a mail went out.
+                        return Err(WaitRefusal::Unavailable);
+                    }
+                }
+                if !mail && mails.is_some_and(|door| !door.confirmation_kept(&email)) {
+                    return Err(WaitRefusal::Unavailable);
                 }
                 Ok(WaitListAnswer {
                     email,
@@ -1181,11 +1255,29 @@ impl Persistent {
                 }
             })
             .await?;
-        let Answer::Unlisted(told) = answer else {
+        let Answer::Unlisted(told, contact_sha256) = answer else {
             return Err(WaitRefusal::Unavailable);
         };
-        if let (Some(to), Some(door)) = (told, &self.shared.mail) {
-            door.send("word of a removal", door.removed(&to));
+        if let Some(door) = &self.shared.mail {
+            // Older operators supplied only the confirmed mailbox. Preserve
+            // cancellation by recipient while accepting the private digest
+            // for pending entries from current operators.
+            let contact_sha256 = contact_sha256.or_else(|| {
+                use sha2::Digest as _;
+                told.as_ref().map(|to| {
+                    hex::encode(sha2::Sha256::digest(
+                        tilo_relay_protocol::rooms::contact_key(&to.contact),
+                    ))
+                })
+            });
+            door.cancel(&removal_digest(&secret), contact_sha256.as_deref());
+            if let Some(to) = told
+                && !door.send(crate::mail::Kind::Removed, door.removed(&to))
+            {
+                // Removal already committed. A notification failure must not
+                // disclose whether this token belonged to a confirmed entry.
+                eprintln!("tilo-room-service: removal notification was not queued");
+            }
         }
         Ok(())
     }
@@ -1269,18 +1361,25 @@ impl Persistent {
     /// A member asked the room to mail their invitation `link` to an address
     /// on the wait list: mailed, if the door sends mail and the link is an
     /// invitation on it.
-    fn mail_invite(&self, to: &WaitListMailbox, link: &str, removal: &str) {
+    fn mail_invite(&self, to: &WaitListMailbox, link: &str, removal: &str) -> bool {
         let Some(door) = &self.shared.mail else {
             eprintln!(
                 "tilo-room-service: the room asked to mail an invitation, but the door sends no mail"
             );
-            return;
+            return false;
         };
         if !door.on_door(link) {
             eprintln!("tilo-room-service: an invitation to mail was not a link on this door");
-            return;
+            return false;
         }
-        door.send("an invitation", door.invite(to, link, removal));
+        let Some(secret) = hex32(removal) else {
+            return false;
+        };
+        door.send_for(
+            crate::mail::Kind::Invite,
+            door.invite(to, link, removal),
+            &removal_digest(&secret),
+        )
     }
 
     pub fn watching(&self) -> u32 {
@@ -1415,7 +1514,7 @@ impl Persistent {
             Answer::Certificate(_)
             | Answer::WaitListed { .. }
             | Answer::WaitListFull
-            | Answer::Unlisted(_)
+            | Answer::Unlisted(..)
             | Answer::Confirmed(_)
             | Answer::Standing(_) => {
                 unadmit();
