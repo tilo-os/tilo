@@ -15,6 +15,10 @@ pub type PreparedElsewhere = Result<Option<CreationWorkspace>, String>;
 pub type PreparingElsewhere =
     std::pin::Pin<Box<dyn std::future::Future<Output = PreparedElsewhere>>>;
 
+/// What [`NativeDocumentReads::await_sealed_history`] waits on, awaited on
+/// the broker's local set.
+pub type AwaitingHistory = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
+
 /// No public constructor. The route and original caller are retained from the
 /// admitted channel, together with live launcher/host-worker custody.
 #[derive(Clone)]
@@ -165,6 +169,18 @@ pub trait NativeDocumentReads: Send + Sync {
         &self,
         context: &NativeDocumentReadContext,
     ) -> Option<PreparingElsewhere> {
+        let _ = context;
+        None
+    }
+    /// Before an Open this owner would answer [`RecordRead::Own`], as a
+    /// record that is new: the wait for what decides it, when the record may
+    /// exist where this device has not seen it yet. In a room whose records
+    /// are sealed channels, a record this device holds nothing of may have
+    /// been made on another device or before this session, and reaches this
+    /// device only in the room's host's replay; deciding before it landed
+    /// would have the app make a second one. The broker awaits it without
+    /// blocking the channel, then decides. `None` when nothing is awaited.
+    fn await_sealed_history(&self, context: &NativeDocumentReadContext) -> Option<AwaitingHistory> {
         let _ = context;
         None
     }
@@ -601,6 +617,19 @@ impl CapnpChannelHandle {
         let context = self.document_read_context().ok()?;
         context.application_creation()?;
         service.prepare_application_elsewhere(&context)
+    }
+
+    /// For an Open this channel's record would answer as new
+    /// ([`RecordRead::Own`]): the wait before deciding, see
+    /// [`NativeDocumentReads::await_sealed_history`]. `None` for every other
+    /// request, and when nothing is awaited.
+    pub(super) fn committed_history_wait(&self, request: &Request) -> Option<AwaitingHistory> {
+        if !matches!(request, Request::Open { .. }) || self.record_read() != RecordRead::Own {
+            return None;
+        }
+        let service = self.state.services.committed_documents.clone()?;
+        let context = self.document_read_context().ok()?;
+        service.await_sealed_history(&context)
     }
 
     pub(super) fn committed_document_dispatch(&self, request: &Request) -> Result<Reply, String> {

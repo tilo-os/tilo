@@ -845,3 +845,54 @@ mod tests {
         );
     }
 }
+
+/// What a room host's session carries for the collaboration broker and no
+/// owner admits, taken by this actor straight to the broker's drain in the
+/// order the host said it. It reaches the broker without the frame loop,
+/// which an app opening a record may be holding while it waits for it.
+pub enum ChannelTraffic {
+    /// A member's sealed write to a record of a room whose records are
+    /// sealed channels.
+    Sealed(Input),
+    /// The room's host on topic `ws` finished replaying what it retains:
+    /// every sealed write it replayed is queued ahead of this.
+    Replayed(super::WorkspaceId),
+}
+
+/// The queue [`ChannelTraffic`] waits in for the broker's drain.
+pub struct ChannelQueue {
+    traffic: std::sync::Mutex<std::collections::VecDeque<ChannelTraffic>>,
+    wake: Arc<crate::idle_wake::DrainPark>,
+}
+
+impl ChannelQueue {
+    /// A queue whose drain parks on `wake`.
+    pub(crate) fn new(wake: Arc<crate::idle_wake::DrainPark>) -> Arc<Self> {
+        Arc::new(Self {
+            traffic: std::sync::Mutex::default(),
+            wake,
+        })
+    }
+
+    /// Queue `traffic` and wake the drain.
+    pub(crate) fn push(&self, traffic: ChannelTraffic) {
+        if let Ok(mut queued) = self.traffic.lock() {
+            queued.push_back(traffic);
+        }
+        self.wake.poke();
+    }
+
+    /// Everything queued, oldest first.
+    pub(crate) fn take(&self) -> std::collections::VecDeque<ChannelTraffic> {
+        self.traffic
+            .lock()
+            .map(|mut queued| std::mem::take(&mut *queued))
+            .unwrap_or_default()
+    }
+}
+
+impl std::fmt::Debug for ChannelQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChannelQueue").finish_non_exhaustive()
+    }
+}
