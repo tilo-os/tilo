@@ -1858,7 +1858,7 @@ ActionSpec::operation(
     "mail.archive",
     &ArchiveArgs { conversation_id },
 )?
-.requiring(PermissionRequirement::Write)
+.with_need(ActionNeed::of(ActionKind::Outside))
 .retry_policy(RetryPolicy::Idempotent)
 .returns(ResultSpec::Resource {
     resource_kind: "mail.conversation".into(),

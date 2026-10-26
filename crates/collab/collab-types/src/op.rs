@@ -5,7 +5,7 @@
 //! blob); the artifact id it applies to; the author's identity public
 //! key; the attestation id underwriting "this author may apply ops of
 //! this class to this artifact"; a self-declared op class (cross-checked
-//! against the role table); a wall-clock timestamp (checked against the
+//! against the author's grants); a wall-clock timestamp (checked against the
 //! attestation's validity window); a monotonic per-author sequence
 //! number (replay defence); and a detached Ed25519 signature over all of it.
 //!
@@ -630,10 +630,9 @@ pub struct SignedOp {
     /// Id of the attestation underwriting this op, resolved against the
     /// channel's attestation store by the validator.
     pub attestation_id: AttestationId,
-    /// The author's self-declared op class, cross-checked against the role
-    /// table (validator check 5). A lying client doesn't gain capability —
-    /// `role_permits(attestation.role, artifact.kind, kind)` must be
-    /// true regardless of what the client claims.
+    /// The author's self-declared op class. A lying client doesn't gain
+    /// capability: the change claims below decide every change against the
+    /// author's grants, whatever the client declares here (validator check 5).
     pub kind: OpKind,
     /// Wall-clock time the op was created, checked to fall inside
     /// `[attestation.valid_from, attestation.valid_until]` (validator check

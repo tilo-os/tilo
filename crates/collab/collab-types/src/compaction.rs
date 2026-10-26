@@ -324,7 +324,7 @@ mod tests {
         // Phase: parse_compaction_payload_rejects_wrong_op_kind.
         {
             // A SignedOp with kind=Splice carrying a checkpoint-shaped
-            // payload still must be rejected — the role table gives Editors
+            // payload still must be rejected — the grants give Editors
             // Splice but NOT Compaction, and a typed error here lets the audit
             // log distinguish forgery from a genuine malformed payload.
             let cp = CompactionCheckpoint {
