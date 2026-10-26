@@ -3678,8 +3678,10 @@ dependencies = [
 name = "discord-worker"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake3",
  "chat",
+ "collab-types",
  "davey",
  "discord",
  "discord-wire",
@@ -4372,6 +4374,7 @@ dependencies = [
 name = "fake-discord"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "davey",
  "futures-util",
@@ -19512,6 +19515,7 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-ui",
  "tilo-user-identity",
+ "tilo-workspace-emoji",
  "tokio",
  "tokio-rustls",
  "toml 1.0.6+spec-1.1.0",

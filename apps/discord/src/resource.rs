@@ -22,6 +22,8 @@ struct Shown {
     links: usize,
     /// Why calls do not reach Discord, as the bridge last heard it.
     voice_problem: Option<String>,
+    /// Why the workspace's emoji do not reach the server, likewise.
+    emoji_problem: Option<String>,
 }
 
 impl Shown {
@@ -32,6 +34,7 @@ impl Shown {
             channels: guild.channels.len(),
             links: guild.links.len(),
             voice_problem: guild.voice_problem.clone(),
+            emoji_problem: guild.emoji_problem.clone(),
         }
     }
 }
@@ -67,6 +70,15 @@ fn facts(shown: &Shown) -> Vec<Fact> {
             Icon::TriangleAlert,
             CATALOG.t_args(
                 "discord-voice-problem",
+                &[("problem", ArgValue::Text(problem.clone()))],
+            ),
+        ));
+    }
+    if let Some(problem) = &shown.emoji_problem {
+        facts.push(Fact::with_icon(
+            Icon::TriangleAlert,
+            CATALOG.t_args(
+                "discord-emoji-problem",
                 &[("problem", ArgValue::Text(problem.clone()))],
             ),
         ));

@@ -283,6 +283,8 @@ fn body(guild: &Guild, message: &Message, context: &Context) -> (String, Vec<Out
         at = end;
     }
     text.push_str(message.text.get(at..).unwrap_or_default());
+    // A workspace emoji the server has goes across as that emoji.
+    let mut text = emoji::to_discord_text(guild, &text);
 
     let mut attachments = Vec::new();
     let mut extra = Vec::new();

@@ -285,6 +285,94 @@ fn take_script(state: &mut State, method: &str, path: &str) -> Option<Scripted> 
     Some(answer)
 }
 
+/// Discord's rule for a custom emoji's name.
+fn emoji_name(name: &str) -> bool {
+    (2..=32).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+fn missing_permissions() -> Answer {
+    Answer::error(403, 50_013, "Missing Permissions")
+}
+
+/// `POST /guilds/{id}/emojis`: an upload, with Discord's checks of the
+/// bot's permission, the guild's slots, the name and the picture (a data
+/// URI of at most 256 KiB).
+fn create_emoji(state: &mut State, body: &Value) -> Answer {
+    use base64::Engine as _;
+    if !state.expressions.create && !state.expressions.manage {
+        return missing_permissions();
+    }
+    if state.emojis.len() >= state.expressions.slots {
+        return Answer::error(
+            400,
+            30_008,
+            &format!(
+                "Maximum number of emojis reached ({})",
+                state.expressions.slots
+            ),
+        );
+    }
+    let name = body["name"].as_str().unwrap_or_default();
+    let picture = body["image"]
+        .as_str()
+        .and_then(|uri| uri.strip_prefix("data:image/"))
+        .and_then(|rest| rest.split_once(";base64,"))
+        .filter(|(kind, _)| matches!(*kind, "png" | "jpeg" | "gif" | "webp"))
+        .and_then(|(_, data)| base64::engine::general_purpose::STANDARD.decode(data).ok());
+    let Some(picture) = picture.filter(|p| !p.is_empty() && p.len() <= 256 * 1024) else {
+        return Answer::error(400, 50_035, "Invalid Form Body (image)");
+    };
+    if !emoji_name(name) {
+        return Answer::error(400, 50_035, "Invalid Form Body (name)");
+    }
+    let id = state.snowflake();
+    let emoji = json!({
+        "id": id, "name": name, "animated": false, "available": true, "require_colons": true,
+        "managed": false, "roles": [], "user": {"id": BOT_USER, "username": "tilo-bridge", "bot": true},
+    });
+    state
+        .cdn
+        .insert(format!("emojis/{id}"), ("image/png".into(), picture));
+    state.emojis.push(emoji.clone());
+    let update = json!({"guild_id": GUILD, "emojis": state.emojis});
+    state.dispatch("GUILD_EMOJIS_UPDATE", update);
+    Answer::json(201, &emoji)
+}
+
+/// `GET`, `PATCH` (rename) or `DELETE /guilds/{id}/emojis/{emoji}`. An
+/// emoji the bot uploaded takes Create Expressions to change, any other
+/// Manage Expressions.
+fn change_emoji(state: &mut State, method: &str, emoji: &str, body: &Value) -> Answer {
+    let Some(index) = state.emojis.iter().position(|e| e["id"] == emoji) else {
+        return Answer::error(404, 10_014, "Unknown Emoji");
+    };
+    if method == "GET" {
+        return Answer::json(200, &state.emojis[index]);
+    }
+    let own = state.emojis[index]["user"]["id"] == BOT_USER;
+    let allowed = state.expressions.manage || (own && state.expressions.create);
+    if !allowed {
+        return missing_permissions();
+    }
+    if method == "DELETE" {
+        state.emojis.remove(index);
+        state.cdn.remove(&format!("emojis/{emoji}"));
+    } else {
+        let name = body["name"].as_str().unwrap_or_default();
+        if !emoji_name(name) {
+            return Answer::error(400, 50_035, "Invalid Form Body (name)");
+        }
+        state.emojis[index]["name"] = json!(name);
+    }
+    let changed = state.emojis.get(index).cloned();
+    let update = json!({"guild_id": GUILD, "emojis": state.emojis});
+    state.dispatch("GUILD_EMOJIS_UPDATE", update);
+    match changed {
+        Some(emoji) if method == "PATCH" => Answer::json(200, &emoji),
+        _ => Answer::json(204, &Value::Null),
+    }
+}
+
 fn decode(text: &str) -> String {
     percent_encoding::percent_decode_str(text)
         .decode_utf8_lossy()
@@ -535,6 +623,10 @@ fn route(state: &mut State, request: &Recorded) -> Answer {
             state.channels.push(channel.clone());
             state.dispatch("CHANNEL_CREATE", channel.clone());
             Answer::json(201, &channel)
+        }
+        ("POST", ["guilds", GUILD, "emojis"]) => create_emoji(state, body),
+        ("GET" | "PATCH" | "DELETE", ["guilds", GUILD, "emojis", emoji]) => {
+            change_emoji(state, &request.method, emoji, body)
         }
         ("GET", ["guilds", GUILD, "roles"]) => Answer::json(200, &json!(state.roles)),
         ("POST", ["guilds", GUILD, "roles"]) => {

@@ -308,8 +308,11 @@ pub fn plan_created(
         }
     };
     let mut text = match quote {
-        Some(quote) => format!("{quote}\n{}", event.content),
-        None => event.content.clone(),
+        Some(quote) => format!(
+            "{quote}\n{}",
+            crate::emoji::from_discord_text(&event.content)
+        ),
+        None => crate::emoji::from_discord_text(&event.content),
     };
     let mut files = Vec::new();
     for file in &event.attachments {
@@ -379,7 +382,7 @@ pub fn plan_updated(guild: &Guild, event: &MessageUpdated) -> InboundPlan {
     {
         plan.edits.push(EditItem {
             message: mapped.tilo.clone(),
-            text: event.content.clone(),
+            text: crate::emoji::from_discord_text(&event.content),
         });
     }
     plan

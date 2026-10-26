@@ -87,6 +87,8 @@ pub struct DRole { pub id: String, pub name: String, pub permissions: String,
 | `observe-layout(channels, roles, emojis)` | bots | Undoable | Records Discord's layout (and the server's custom emoji) as the latest layout event reported it, for the reconcile (§4) and for mirroring reactions (§3). |
 | `send`, `edit`, `delete`, `react`, `unreact`, `start-thread`, `create-webhook` | bots | Outside | Queues the matching webhook or REST call. |
 | `apply-channel`, `delete-channel`, `apply-role`, `delete-role`, `set-member-roles`, `kick`, `ban`, `unban`, `set-overwrite` | bots | Outside | Queues layout and membership calls (§4, §5). |
+| `apply-emoji`, `delete-emoji` | bots | Outside | Uploads, renames or deletes a custom emoji the bridge uploaded for a workspace emoji (§3, Reactions). |
+| `settle-emoji` | bots | Undoable | Records the emoji an `apply-emoji` or `delete-emoji` left in the server, or why there is none (`emoji_problem`). |
 | `map`, `unmap` | bots | Undoable | Writes the id map (§6). |
 | `begin-connect(state_sha256)` | a person (the `connect-account` effect) | Undoable | Stores the hash of a sign-in's OAuth2 state for ten minutes (§5). |
 | `set-sign-in(page)` | bots | Undoable | Holds Discord's consent page (without its state) when the room's host offers signing in with Discord; members are then offered "Connect Discord" (§5). |
@@ -253,15 +255,27 @@ itself for Discord members, under each member's appearance.
   message's Tilo reactions already use, so one emoji never shows as two.
 - **Custom emoji.** Tilo writes a workspace's own emoji `:name:`, under the
   rule Discord names custom emoji by (2 to 32 letters, digits and
-  underscores). A Discord custom emoji becomes its `:name:` in Tilo. A Tilo
-  reaction `:name:` becomes the server's custom emoji of that name, which the
-  worker learns from `GUILD_CREATE` and `GUILD_EMOJIS_UPDATE` and the layout
-  event carries to the record. When the server has none of that name, the
-  reaction stays in Tilo. Uploading the picture would need Manage Expressions
-  and spend the server's few emoji slots on whatever anyone reacts with, and a
-  Unicode emoji of a similar name would show Discord something nobody picked.
-  It crosses once the server adds an emoji of that name and someone reacts
-  again.
+  underscores). A Discord custom emoji becomes its `:name:` in Tilo, in a
+  reaction and in a message's text (`<:name:id>` is written `:name:`). The
+  bridge uploads each workspace emoji to the server as a custom emoji of the
+  same name (`apply-emoji`, its picture as a data URI), renames it when the
+  workspace's is renamed (one removed and another added with the same
+  picture) and deletes it when the workspace's goes (`delete-emoji`). It keeps
+  the ids of the emoji it uploaded in the map (`emoji` entries, with the
+  picture's content address) and never renames or deletes any other; where
+  the server has an emoji of its own under a workspace emoji's name, that one
+  stands for it and nothing is uploaded. The plan runs on every change to the
+  workspace's emoji and on every layout event (so on every start), and
+  compares, so running it again changes nothing. The host hands the bridge
+  the workspace's emoji as its `emoji` input (each name with its picture's
+  content address) and keeps each picture in its content store, where the
+  op's `attach` list reaches the worker. A Tilo reaction or text `:name:`
+  then becomes that emoji (`name:id`, `<:name:id>`). Uploading needs the
+  bot's role to hold Create Expressions; without it, or when the server's
+  emoji slots are full, the bridge's page says so ("The workspace's emoji
+  don't reach Discord: …", `emoji_problem`) and such an emoji stays in Tilo
+  as before, crossing once the next layout event (the role's change, or a
+  slot freed) lets it upload. A bridge of one channel uploads nothing.
 - **Echoes.** Reactions the bridge made for Discord members never count
   toward the bot's own reaction, and the dispatcher never fires the bridge
   on its own edits, so nothing mirrored in goes back out. The bot's own

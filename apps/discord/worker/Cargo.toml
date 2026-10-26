@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../../crates/platform/tilo-lock" }
+base64.workspace = true
 blake3.workspace = true
 discord-wire = { path = "../../discord-model" }
 futures-util = { workspace = true, features = ["sink"] }
@@ -42,6 +43,7 @@ tilo-seal = { path = "../../../crates/system/tilo-seal" }
 [dev-dependencies]
 fake-discord = { path = "../../../crates/dev/fake-discord" }
 tempfile.workspace = true
+collab-types = { path = "../../../crates/collab/collab-types" }
 tilo-test-env = { path = "../../../crates/dev/test-env" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }

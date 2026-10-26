@@ -51,6 +51,8 @@ pub enum DiscordOp {
     SetOverwrite(OverwriteOp),
     FetchAsset(FetchAssetOp),
     AnswerInteraction(AnswerInteractionOp),
+    ApplyEmoji(EmojiSpec),
+    DeleteEmoji(DeleteEmojiOp),
 }
 
 impl<'de> Deserialize<'de> for DiscordOp {
@@ -86,6 +88,8 @@ impl<'de> Deserialize<'de> for DiscordOp {
             "set-overwrite" => Self::SetOverwrite(op(fields)?),
             "fetch-asset" => Self::FetchAsset(op(fields)?),
             "answer-interaction" => Self::AnswerInteraction(op(fields)?),
+            "apply-emoji" => Self::ApplyEmoji(op(fields)?),
+            "delete-emoji" => Self::DeleteEmoji(op(fields)?),
             other => {
                 return Err(D::Error::unknown_variant(
                     other,
@@ -108,6 +112,8 @@ impl<'de> Deserialize<'de> for DiscordOp {
                         "set-overwrite",
                         "fetch-asset",
                         "answer-interaction",
+                        "apply-emoji",
+                        "delete-emoji",
                     ],
                 ));
             }
@@ -143,7 +149,9 @@ impl DiscordOp {
             | Self::Ban(_)
             | Self::Unban(_)
             | Self::FetchAsset(_)
-            | Self::AnswerInteraction(_) => None,
+            | Self::AnswerInteraction(_)
+            | Self::ApplyEmoji(_)
+            | Self::DeleteEmoji(_) => None,
         }
     }
 
@@ -162,6 +170,8 @@ impl DiscordOp {
                 | Self::Kick(_)
                 | Self::Ban(_)
                 | Self::Unban(_)
+                | Self::ApplyEmoji(_)
+                | Self::DeleteEmoji(_)
         )
     }
 }
@@ -380,6 +390,35 @@ pub struct AnswerInteractionOp {
     pub content: String,
 }
 
+/// Upload (`id: None`) or rename (`id: Some`) one of the server's custom
+/// emoji for a workspace emoji of Tilo's. Only emoji the bridge made itself
+/// are ever renamed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct EmojiSpec {
+    #[serde(default)]
+    pub id: Option<String>,
+    /// The name in Discord: 2 to 32 letters, digits and underscores.
+    pub name: String,
+    /// The picture's content-store blob, which the `apply-emoji` verb names
+    /// in `Queued::attach` so the host hands its bytes to the worker. A
+    /// rename carries it too: an emoji deleted in Discord meanwhile is
+    /// uploaded again.
+    #[serde(default)]
+    pub picture: Option<String>,
+    /// The workspace emoji's name in Tilo.
+    pub tilo: String,
+}
+
+/// Delete one of the custom emoji the bridge made.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct DeleteEmojiOp {
+    pub emoji: String,
+    /// The workspace emoji's name in Tilo it stood for.
+    pub tilo: String,
+}
+
 /// Copy a file from Discord's CDN into the room's content store.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
@@ -410,7 +449,7 @@ pub struct InAttachment {
 
 /// What an op settled with. Pointers the bridge program uses:
 /// `/message_id`, `/thread_id`, `/webhook_id`, `/channel_id`, `/role_id`,
-/// `/blob`, `/attachment`, `/tilo`.
+/// `/emoji_id`, `/problem`, `/blob`, `/attachment`, `/tilo`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 #[serde(tag = "result", rename_all = "kebab-case")]
@@ -434,6 +473,17 @@ pub enum DiscordResult {
     Role {
         role_id: String,
         tilo: String,
+    },
+    /// An emoji op: the emoji's id once Discord holds it (empty when it
+    /// did not, or after a delete), or why the server would not take it
+    /// (the bot may not create emoji there, the server has no free emoji
+    /// slot), said so a person can do something about it.
+    Emoji {
+        #[serde(default)]
+        emoji_id: String,
+        tilo: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        problem: Option<String>,
     },
     Asset {
         blob: String,

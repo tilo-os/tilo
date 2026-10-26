@@ -214,6 +214,7 @@ fn pass() -> Vec<Step> {
                 ("chat", plan_step("read", "")),
                 ("context", input("context")),
                 ("room", input("room")),
+                ("emoji", input("emoji")),
             ],
         ),
         each(
@@ -337,6 +338,39 @@ fn pass() -> Vec<Step> {
         each(
             "overwrites",
             vec![guild("set-overwrite", "set-overwrite", &[("op", item(""))])],
+        ),
+        // Deletes before uploads: a picture replaced under one name frees
+        // its slot first.
+        each(
+            "delete_emojis",
+            vec![
+                guild("delete-emoji", "delete-emoji", &[("op", item(""))]),
+                guild(
+                    "settle-deleted-emoji",
+                    "settle-emoji",
+                    &[
+                        ("tilo", item("tilo")),
+                        ("result", plan_step("delete-emoji", "")),
+                        ("deleted", Binding::Literal(json!(true))),
+                    ],
+                ),
+            ],
+        ),
+        each(
+            "apply_emojis",
+            vec![
+                guild("apply-emoji", "apply-emoji", &[("op", item("op"))]),
+                guild(
+                    "settle-emoji",
+                    "settle-emoji",
+                    &[
+                        ("tilo", item("op/tilo")),
+                        ("result", plan_step("apply-emoji", "")),
+                        ("picture", item("picture")),
+                        ("was", item("was")),
+                    ],
+                ),
+            ],
         ),
         each(
             "member_roles",
@@ -610,6 +644,13 @@ fn triggers() -> Vec<TriggerSpec> {
             fields: Vec::new(),
             by: ActorFilter::Anyone,
         },
+        // The workspace's emoji, which the bridge uploads to the server.
+        TriggerSpec::RecordChanged {
+            kind: discord::bridge::EMOJI_KIND.into(),
+            actions: Vec::new(),
+            fields: Vec::new(),
+            by: ActorFilter::Anyone,
+        },
         TriggerSpec::RecordChanged {
             kind: KIND.into(),
             actions: vec!["block-persona".to_owned(), "complete-link".to_owned()],
@@ -649,6 +690,13 @@ fn program() -> Shortcut {
                 "room",
                 ParamType::Object,
                 "The room's members with their roles: members [{person, role}]",
+            ),
+            // The host binds it on each firing from the room's workspace
+            // emoji, keeping each picture where the worker can upload it.
+            ActionParam::optional(
+                "emoji",
+                ParamType::Object,
+                "The workspace's emoji: emoji [{name, picture}]",
             ),
         ],
         steps: vec![
@@ -865,6 +913,7 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
             chat: &json!({}),
             context: &discord::outbound::Context::default(),
             room: &Value::Null,
+            emoji: None,
         },
         &firing.inputs["event"],
     );
