@@ -70,8 +70,8 @@ this README or unit tests changed, and every check when anything else in this di
 `tools/ci/vm-acceptance.sh` changed. A dispatched run, and `vm-acceptance-perf`, run every
 check unless `only` names some.
 
-The disk is the tree's own dev image as `os-dev-gate-x86_64` installed it with
-`os/dev/build-image.sh` (the disk the dev channel publishes, which the gate never boots
+The disk is the tree's own dev image as `os-dev-disk-x86_64` installed it with
+`os/dev/build-image.sh` (the disk the dev channel publishes, which nothing boots
 itself); each run boots a throwaway overlay of it, so R06 times a cold boot. tilo-vm is
 `tilo-vm-binary-x86_64`'s. Both come from t's cache when their inputs are unchanged, and
 so does the run itself when the suite, its driver and the files the scenarios read are
