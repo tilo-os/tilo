@@ -241,7 +241,11 @@ def block():
                 ("inputs", arr(files)),
                 ("needs", arr(list(dict.fromkeys(needs)))),
                 ("outputs", arr([f"/target/os/{arch}/layers/{name}/**"])),
-                ("git", "true"),
+                # No commit: the clock is the base's and the RPM snapshot's, the build context
+                # leaves .git out and the generation comes from the published series, so the
+                # files a layer reads and the layers below key it and an unchanged layer is
+                # reused on every later commit. A development image reusing the image layer has
+                # the same binaries, which need no newer generation to be told apart.
                 ("requires", req), ("isolation", '"vm"'), ("writable_sources", "true"),
                 ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "7200"),
                 ("default", "false")]))
