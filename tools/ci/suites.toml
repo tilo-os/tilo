@@ -1834,7 +1834,7 @@ reason = "runs inside a booted guest as its device admin, after first login; t's
 
 [[unrequired]]
 suite = "os/tests/live-update-check.sh"
-reason = "runs inside a booted dev VM as root and stages an update; t's os-acceptance-<arch> runs it"
+reason = "runs inside a booted dev VM as root and stages an update; t's os-dev-gate-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/input-hotplug-check.sh"
