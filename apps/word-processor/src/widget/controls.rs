@@ -1162,9 +1162,14 @@ impl WordProcessorWidget {
             .iter()
             .map(|block| block.text.chars().count())
             .sum();
+        // The page comes last, and the readouts are drawn from the right, so
+        // it is the one that survives a band too narrow for all three: where
+        // you are matters more than how many words got you there, and a
+        // paginating document is the one place the page is the position.
         vec![
             t_args("status-words", &[arg("words", num::i64_of_usize(words))]),
             t_args("status-chars", &[arg("chars", num::i64_of_usize(chars))]),
+            self.page_readout(),
         ]
     }
 
