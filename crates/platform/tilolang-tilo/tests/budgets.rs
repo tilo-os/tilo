@@ -109,6 +109,14 @@ fn the_runtime_meets_its_budgets() {
                 KEYSTROKE_MS,
                 &mut misses,
             );
+            // A peer's message: one row more, whatever the length of the conversation.
+            at_most(
+                &records,
+                ("thread_post", "10k"),
+                95,
+                PEER_MS,
+                &mut misses,
+            );
             at_most(
                 &records,
                 ("thread_scroll", "10k"),

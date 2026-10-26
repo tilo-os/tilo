@@ -73,7 +73,9 @@ struct Cached {
     fields: Map<&'static str, FieldValue>,
     /// Its collections listed so far.
     lists: Map<&'static str, Listed>,
-    /// The items within it kept, by key: forgotten with it, without a look at the others.
+    /// The items within it kept that were found one by one, by key, rather than listed with
+    /// their collection: forgotten with it, as its listed items are, without a look at the
+    /// other resources.
     inside: Vec<String>,
 }
 
@@ -103,8 +105,26 @@ impl DocCache {
         let mut gone = vec![key.to_owned()];
         while let Some(key) = gone.pop() {
             if let Some(cached) = self.resources.remove(&key) {
+                for (field, listed) in &cached.lists {
+                    gone.extend(listed.member_keys(&key, field));
+                }
                 gone.extend(cached.inside);
             }
+        }
+    }
+
+    /// Forget the listing of the collection `field` of the resource `key`, and the items kept
+    /// with it: they are listed, and kept, again when next read.
+    fn drop_listing(&mut self, key: &str, field: &str) {
+        let Some(listed) = self
+            .resources
+            .get_mut(key)
+            .and_then(|cached| cached.lists.remove(field))
+        else {
+            return;
+        };
+        for member in listed.member_keys(key, field) {
+            self.drop_resource(&member);
         }
     }
 }
@@ -117,6 +137,18 @@ struct Listed {
 }
 
 impl Listed {
+    /// The keys of its items, as resources within the resource `key`'s collection `field`.
+    fn member_keys<'a>(
+        &'a self,
+        key: &'a str,
+        field: &'a str,
+    ) -> impl Iterator<Item = String> + 'a {
+        self.listing
+            .items
+            .iter()
+            .map(move |id| format!("{key}/{field}:{id}"))
+    }
+
     /// Where the item `id` with the order key `key` is, or would go.
     fn position(&self, key: &str, id: &str) -> usize {
         self.listing.items.partition_point(|other| {
@@ -434,26 +466,20 @@ impl ReadCache {
             .collect();
         let listed = read_listing(doc, entries, item_schema);
         let mut stored: Vec<Stored> = Vec::with_capacity(listed.len());
-        let mut kept = Vec::new();
         for item in listed {
             let id = format!("{prefix}{}", item.stored.id.as_str());
             if let Some(schema) = item_schema {
-                let cached = match cache.resources.entry(id) {
-                    std::collections::hash_map::Entry::Occupied(found) => found.into_mut(),
-                    std::collections::hash_map::Entry::Vacant(new) => {
-                        kept.push(new.key().clone());
-                        new.insert(Cached::new(item.obj.clone(), schema))
-                    }
-                };
+                let cached = cache
+                    .resources
+                    .entry(id)
+                    .or_insert_with(|| Cached::new(item.obj.clone(), schema));
                 for (name, value) in item.fields {
                     cached.fields.entry(name).or_insert(value);
                 }
             }
             stored.push(item.stored);
         }
-        if let Some(parent) = cache.resources.get_mut(key) {
-            parent.inside.append(&mut kept);
-        }
+
         in_stored_order(&mut stored);
         let mut keys = Map::default();
         keys.reserve(stored.len());
@@ -535,9 +561,11 @@ impl ReadCache {
         };
         if key.field == ANY_FIELD {
             cache.drop_resource(&key.resource);
-        } else if let Some(cached) = cache.resources.get_mut(&key.resource) {
-            cached.fields.remove(key.field.as_str());
-            cached.lists.remove(key.field.as_str());
+        } else {
+            if let Some(cached) = cache.resources.get_mut(&key.resource) {
+                cached.fields.remove(key.field.as_str());
+            }
+            cache.drop_listing(&key.resource, &key.field);
         }
     }
 
