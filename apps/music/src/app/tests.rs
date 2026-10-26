@@ -11,7 +11,7 @@ fn library_source(app: &MusicApp) -> impl ui::search::SearchProvider + use<> {
 use std::io::Cursor;
 use ui::widget::Continuable as _;
 
-fn app_with_doc() -> (MusicApp, AutoCommit) {
+pub(crate) fn app_with_doc() -> (MusicApp, AutoCommit) {
     let mut app = MusicApp::new();
     // The behaviour tests exercise playback, queueing and playlists against
     // the bundled catalog, as the screenshot scenarios do. A new library
