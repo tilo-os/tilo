@@ -561,6 +561,7 @@ suites = [
   "scripts/vm-acceptance/test_vm_actions.py",
   "scripts/vm-acceptance/test_basics.py",
   "scripts/vm-acceptance/test_report.py",
+  "scripts/vm-acceptance/test_clock.py",
 ]
 
 [[group]]
