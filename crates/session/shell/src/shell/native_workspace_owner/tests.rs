@@ -1124,3 +1124,102 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         "stale save refusal must also refuse its authority export"
     );
 }
+
+/// A state file from before this migration keeps what it showed when its
+/// governed room is created: the workspace's windows are in the room under
+/// this device's namespace and the record index its apps referenced is
+/// there too. An upgrade is not a new, empty room.
+#[test]
+fn opening_a_governed_workspace_imports_its_windows_and_record_index() {
+    use crate::shell::state::{StripId, Tab, TileContent, WindowGroup, WindowWidth};
+    let directory = tempfile::tempdir().unwrap();
+    let salt = 0x0042_u16;
+    let own = |counter: u64| (u64::from(salt) << 48) | counter;
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tree.set_peer_salt(salt);
+    tree.persist_path = Some(directory.path().join("state.json"));
+    let workspace = tree.desktop.active;
+    let room = tree.room_of(workspace).unwrap();
+    let tab = |id: u64, title: &str| Tab {
+        id,
+        title: title.into(),
+        tile: TileContent::LocalApp {
+            app_id: "so.tilo.notes".into(),
+            label: title.into(),
+            note: String::new(),
+        },
+        app_title: None,
+    };
+    {
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.id == workspace)
+            .unwrap();
+        ws.name = "Garden".into();
+        ws.strips = vec![crate::shell::state::Strip {
+            id: StripId(own(1)),
+            name: "Work".into(),
+            window_groups: vec![WindowGroup {
+                id: own(2),
+                tabs: vec![tab(own(3), "Plan"), tab(own(4), "Notes")],
+                active_tab: own(3),
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            }],
+        }];
+    }
+    tree.desktop.room_records_held.insert(
+        room,
+        std::collections::BTreeMap::from([("record-1".to_string(), "notes".to_string())]),
+    );
+    let tree = tree.shared();
+    let owner = open(tree.clone()).unwrap();
+    let key = SigningKey::from_bytes(&[71; 32]);
+    let device =
+        tilo_joined_room::testing::certificate(&SigningKey::from_bytes(&[72; 32]), &key, "Desktop");
+    create_governed_workspace(&owner, &tree, room, workspace, &device, &key, salt).unwrap();
+
+    let (tabs, records) = owner
+        .with_current(room, |view| {
+            let doc = view.peer().admitted_room().ok_or("room missing")?;
+            let tabs = tilo_desktop_model::projection::contents_of(doc)
+                .iter()
+                .flat_map(|strip| &strip.groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>();
+            Ok((tabs, tilo_desktop_model::projection::room_records_of(doc)))
+        })
+        .unwrap();
+    assert_eq!(
+        tabs,
+        [own(3), own(4)],
+        "the room starts with the tabs shown"
+    );
+    assert_eq!(
+        records,
+        vec![("record-1".to_string(), "notes".to_string())],
+        "and with the records its apps referenced"
+    );
+    let shown = tree
+        .read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|ws| ws.id == workspace)
+        .unwrap()
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .map(|tab| tab.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        shown,
+        [own(3), own(4)],
+        "nothing is dropped on the way over"
+    );
+}

@@ -247,12 +247,27 @@ pub(crate) fn create_governed_workspace(
             .chain(&tree.archived_workspaces)
             .find(|ws| ws.id == workspace && ws.room() == room)
             .ok_or("the workspace made for the room is gone")?;
-        tilo_peer_state::workspace_seed(
+        // A state file from before this migration is brought onto the native
+        // owner, not replaced by an empty room: the windows this device shows
+        // and the records its apps referenced are the room's first state.
+        let strips = tree.window_hosting.as_ref().map_or_else(
+            || ws.strips.clone(),
+            |hosting| hosting.published(&ws.strips, &tree.package_launches),
+        );
+        let records = tree
+            .desktop
+            .room_records_held
+            .get(&room)
+            .cloned()
+            .unwrap_or_default();
+        tilo_peer_state::workspace_seed_with_layout(
             &room.to_string(),
             device,
             std::slice::from_ref(device),
             &ws.name,
             salt,
+            &strips,
+            &records,
         )?
     };
     owner.create_governed(
@@ -444,7 +459,9 @@ pub(crate) fn delete_archived_workspace(
 /// The owner already attached to `tree`'s writer, which an [`open`] of it
 /// would answer, found without waiting for the writer's file.
 pub(crate) fn attached(tree: &WorkspaceTreeHandle) -> Option<NativeWorkspaceOwner> {
-    let runtime = tree.read().native_runtime.clone();
+    // Asked from the frame loop, which must never wait for another writer:
+    // a tree held now is looked at again on the tick that wakes it.
+    let runtime = tree.try_read()?.native_runtime.clone();
     runtime.owner_of(tree).ok().flatten()
 }
 

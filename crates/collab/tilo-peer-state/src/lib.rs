@@ -32,7 +32,7 @@ pub use state::{
     ReceiveOutcome, RecordReaders, RequestedBot, Reseal, SealCheckpoint, SealDelta, SeedDocument,
     SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
     committed_document_revision, decide_with_surfaces, default_surfaces, peer_handle, seed_room,
-    succeeded_authority, workspace_seed,
+    succeeded_authority, workspace_seed, workspace_seed_with_layout,
 };
 pub mod coverage;
 mod governed_routes;
