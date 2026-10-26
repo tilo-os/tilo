@@ -482,11 +482,15 @@ printf 'gate\n' >>'{}'
             calls.display()
         ),
     );
+    // The device's channel names no other image, so the board successor
+    // decides what the update switches to.
+    let channel = script("channel", "exit 0\n");
     let run = |refuse: bool| {
         Command::new("bash")
             .arg(UPDATER)
             .arg("--quiet")
             .env("TILO_IMAGE_TRUST_BOOTC", &bootc)
+            .env("TILO_IMAGE_TRUST_CHANNEL", &channel)
             .env("TILO_IMAGE_TRUST_GATE", &gate)
             .env("TILO_IMAGE_TRUST_SUCCESSOR", &successor)
             .env("TILO_IMAGE_TRUST_UPDATE_LOCK", root.join("update.lock"))
