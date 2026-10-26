@@ -1111,10 +1111,12 @@ mod tests {
             max_wait_ms: 1,
             ..Limits::DEFAULT
         };
-        let mut now = tilo_clock::unix_now_ms();
         let outbox = Outbox::durable(root.path(), mailer(&scripted), limits).unwrap();
         assert!(outbox.enqueue(Kind::Invite, a_mail()));
         drop(outbox);
+        // Read the clock after the enqueue: its fsyncs can take longer than
+        // the steps below, and a mail queued "later" is not yet due.
+        let mut now = tilo_clock::unix_now_ms();
         for _ in 0..2 {
             let outbox = Outbox::durable(root.path(), mailer(&scripted), limits).unwrap();
             now += 10;
