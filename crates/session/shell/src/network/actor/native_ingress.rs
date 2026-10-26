@@ -162,6 +162,22 @@ pub(super) fn native_session(
 }
 
 impl ActorState {
+    /// Whether this device's own host serves the room on topic `ws`, on the
+    /// route it has or the material it would join by: its session then stays
+    /// in process, and nothing it commits is carried over the network.
+    fn host_governs_here(&self, ws: u64) -> bool {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return false;
+        };
+        self.native_routes.entries.get(&ws).is_some_and(|route| {
+            route
+                .connect
+                .material(identity)
+                .is_ok_and(|(hint, cert, ..)| {
+                    tilo_joined_room::session::hosted_by(&hint, &cert.device_public_key)
+                })
+        })
+    }
     /// Admit authenticated governance through the same durable owner before
     /// replayed app state can stall the compositor's event drain. This actor
     /// awaits one blocking admission at a time; the live scope still
@@ -400,7 +416,7 @@ impl ActorState {
         // A room this device's own host serves is joined again in process,
         // now: no heartbeat runs for it, and until it is, nothing the host
         // commits reaches this device's view of the room.
-        if self.native_routes.is_local(ws) {
+        if self.native_routes.is_local(ws) || self.host_governs_here(ws) {
             self.retry_native_routes();
             return;
         }
