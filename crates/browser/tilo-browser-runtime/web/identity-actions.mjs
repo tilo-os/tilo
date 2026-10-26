@@ -50,6 +50,8 @@ export const RECOVERY = Object.freeze({id: 'save-recovery-key', title: 'Save a r
   subtitle: 'To your password manager, or as a file', source: 'identity'});
 export const SIGN_IN = Object.freeze({id: 'sign-in-passkey', title: 'Sign in with a passkey',
   subtitle: 'Be the person you kept on another browser', source: 'identity'});
+/** Not offered: the desktop's own card asks it, to keep the person's status. */
+export const STATUS_ID = 'set-status';
 export const NAME = Object.freeze({id: 'set-name', title: 'Set your name',
   subtitle: 'How others see you in this workspace', source: 'identity'});
 export const PHOTO = Object.freeze({id: 'set-photo', title: 'Change your picture',
@@ -169,8 +171,11 @@ export function createIdentityActions({
     ...(identity.kept ? [RECOVERY] : unkept()), ...(pairing ? [PAIR] : [])];
   // Keep the profile (name and picture) on every host; a refusal throws,
   // an unreachable host is only reported.
+  // What the person says they are doing and how they share it, as their
+  // profile keeps it beside their name and picture.
+  let said = {status: '', sharing: ''};
   const keepProfile = async (displayName, photo, what) => {
-    const results = await Promise.allSettled(hosts().map(origin => profile({origin, identity, displayName, photo})));
+    const results = await Promise.allSettled(hosts().map(origin => profile({origin, identity, displayName, photo, ...said})));
     const refused = results.find(result => result.status === 'rejected' && result.reason?.code === 'publish-refused');
     for (const result of results) if (result.status === 'rejected' && result !== refused) onError(result.reason);
     if (refused) throw new IdentityError(`${what}-refused`, `This ${what} was not kept: ${refused.reason.message}`);
@@ -314,6 +319,14 @@ export function createIdentityActions({
           await keepProfile(named, url, 'picture');
           photos.show(url);
           refresh();
+        } else if (id === STATUS_ID) {
+          // From the desktop: what they said (kept now, for their other
+          // devices), or what their profile already holds (`keep: false`).
+          const next = {status: String(value?.status ?? ''), sharing: String(value?.sharing ?? '')};
+          if (next.status === said.status && next.sharing === said.sharing) return;
+          said = next;
+          const named = fitDisplayName(name() ?? '');
+          if (value?.keep && named) await keepProfile(named, photos?.current() ?? null, 'status');
         } else if (id === PAIR.id && pairing) {
           const invite = invites.open();
           const link = pairing.link(invite.id);
