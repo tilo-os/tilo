@@ -45,6 +45,8 @@ tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 tilo-desktop = { version = "0.1.0", path = "../../session/desktop" }
 serde.workspace = true
 serde_json.workspace = true
+# Warnings and errors reach the console (src/console_log.rs).
+tracing.workspace = true
 vello.workspace = true
 wgpu.workspace = true
 winit.workspace = true
