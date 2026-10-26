@@ -11,6 +11,7 @@
 #include <functional>
 #include <chrono>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,8 +50,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   using Key=std::function<void(CefRefPtr<CefDictionaryValue>)>;
   // One step of a pointer gesture, in the same CSS pixels.
   using Pointer=std::function<void(CefRefPtr<CefDictionaryValue>)>;
-  PageAutomation(CefRefPtr<CefBrowser> browser,Emit emit,Click click,Key key,Pointer pointer)
-      :browser_(browser),emit_(std::move(emit)),click_(std::move(click)),key_(std::move(key)),pointer_(std::move(pointer)) {}
+  // One turn of the page's wheel at a point in the page's CSS pixels.
+  using Wheel=std::function<void(double,double,double)>;
+  PageAutomation(CefRefPtr<CefBrowser> browser,Emit emit,Click click,Key key,Pointer pointer,Wheel wheel,
+      std::function<void()> action_began,std::function<void()> action_ended)
+      :browser_(browser),emit_(std::move(emit)),click_(std::move(click)),key_(std::move(key)),pointer_(std::move(pointer)),wheel_(std::move(wheel)),
+       action_began_(std::move(action_began)),action_ended_(std::move(action_ended)) {}
   void Attach() { registration_=browser_->GetHost()->AddDevToolsMessageObserver(this); }
   void Detach() { registration_=nullptr;browser_=nullptr;pending_.reset();CancelFileDialog(); }
   // A page asked for files. A click this automation is driving holds the
@@ -78,10 +83,52 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   void NavigationFinished() {
     if(pending_ && pending_->awaiting_load) Succeed(pending_->message,std::nullopt);
   }
+  // A request the engine refused before it reached the page is answered in
+  // the order the caller asked, behind anything still running. The tab is
+  // told the request is settled here, so the same request reaching it after
+  // this answer runs nothing.
+  void Refuse(CefRefPtr<CefDictionaryValue> command,const std::string& code,const std::string& message) {
+    const int request=command->GetInt("request_id");
+    if(!browser_ || refused_.count(request)) return;
+    // The tab's copy of each refused request is on its way here, so the set
+    // holds what is still to arrive. A caller that sends refusals faster than
+    // the tab answers them makes room from the oldest, which by then arrived.
+    if(refused_.size()>=kMaxRefused) refused_.erase(refused_.begin());
+    refused_.insert(request);
+    Reply(request,Failure(code,message),command->GetString("op")=="text_input");
+    RunQueued();
+  }
+  // The requests that waited on a refusal run now, in the order they came:
+  // each waits for the one before it, and the queue drains as they answer.
+  void RunQueued() {
+    if(queued_.empty()) return;
+    auto next=queued_.front();queued_.erase(queued_.begin());
+    CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,CefRefPtr<CefDictionaryValue> command) {
+      self->Run(command);
+    },CefRefPtr<PageAutomation>(this),next));
+  }
+  // A request that came while a refusal was still answering waits behind it,
+  // in the order the caller asked, however long that answer takes.
   void Request(CefRefPtr<CefDictionaryValue> command) {
+    if(!queued_.empty()) { queued_.push_back(command->Copy(false));return; }
+    Run(command);
+  }
+  void Run(CefRefPtr<CefDictionaryValue> command) {
     const int request=command->GetInt("request_id");
     if(!browser_) return;
-    if(pending_) { Reply(request,Failure("busy","Another page action is still running in this tab"),command->GetString("op")=="text_input");return; }
+    // An action runs over the page as if it were being looked at: a page the
+    // window is not showing never settles, never loads and takes no wheel.
+    if(action_began_) action_began_();
+    shown_=true;
+    // A request the engine answered for this tab already is not run again:
+    // it was judged before it ever reached the page.
+    if(refused_.erase(request)) { RunQueued();return; }
+    if(pending_) {
+      // The request that is running answers next, and the ones that waited on
+      // a refusal behind this one run as it does.
+      Reply(request,Failure("busy","Another page action is still running in this tab"),command->GetString("op")=="text_input");
+      RunQueued();return;
+    }
     const bool private_text=command->GetString("op")=="text_input";
     auto owned=command->Copy(false);
     if(private_text) {
@@ -145,16 +192,34 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // A drawing path's points are one per frame: pointer moves sent within a
   // single frame are coalesced, and the page would see only the last.
   static constexpr int64_t kPathPointMs=16;
+  // One turn of the scroll wheel is one frame: a page's scroll listeners and
+  // intersection observers run between two turns, as they do under a hand,
+  // so a lazy list loads while the wheel keeps turning.
+  static constexpr int64_t kScrollWheelMs=40;
+  // The most one scroll may turn the wheel, and the most one turn travels:
+  // bounded work whatever the page says is left, and an answer inside the
+  // time an action is waited for.
+  static constexpr int kMaxScrollTurns=64;
+  // The refusals still to be met by the tab's copy of the request.
+  static constexpr size_t kMaxRefused=256;
+  // A scroll answers inside the time an action is waited for, however much
+  // page a lazy list keeps giving: what the wheel reached by then is its
+  // answer, and a caller that wants more scrolls again.
+  static constexpr double kScrollBudgetMs=4000;
+  static constexpr double kMaxScrollTurn=2000;
   // A started navigation is awaited this long; a slower one is reported as
   // still loading and the caller waits for it.
   static constexpr int64_t kLoadWaitMs=10000;
   // A held file chooser waits this long for `fill_files`, then is cancelled so
   // the page is never left waiting on input that will not come.
   static constexpr int64_t kFileDialogWaitMs=60000;
-  enum class Stage { FrameTree, World, FrameOffset, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, Evaluate, Fence, GestureBegin, Path, Hover, Pointer, GestureEnd, FrameSettle };
+  enum class Stage { FrameTree, World, FrameOffset, TextWorld, TextFocus, TextFailureFrameTree, NativeElement, NativeDOM, NativeDocument, NativeNode, NativeEditors, NativeResolve, NativeConfigure, FileTarget, FileSet, Evaluate, Fence, GestureBegin, Path, Hover, Pointer, GestureEnd, FrameSettle, Scroll };
   // A gesture's own stages are numbered above every page stage, so one kind of
   // stage never stands for the other.
   enum class GestureStage { Tree, World, Locate, Place, PlaceWorld };
+  static double Now() {
+    return std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+  }
   static constexpr int kGestureBase=1000;
   static constexpr int Gesture(GestureStage stage) { return kGestureBase+static_cast<int>(stage)+1; }
   // Long enough for hover, the press and the drop to paint what they set.
@@ -264,6 +329,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     Call(Stage::TextWorld,"Page.createIsolatedWorld",params);
   }
   void Begin() {
+    // A turn of the wheel starts from what the page shows now, like a gesture:
+    // the page's own frame tree says which document the wheel turns in, and
+    // the page then says where to turn it.
+    if(pending_ && Action()=="scroll") { Call(Stage::FrameTree,"Page.getFrameTree",nullptr);return; }
     // The document generation (see host.cc's fences): a page action runs
     // against the document the caller saw. A click inside a frame is the
     // frame's own business, but the page around it is still the one the
@@ -621,6 +690,88 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     params->SetBool("awaitPromise",true);
     Call(stage,"Runtime.evaluate",params);
   }
+  // A turn of the wheel asks the page where the wheel turns and what it has
+  // left to move, in the action's own world: the page resolves the element
+  // the caller named, or the viewport, and the engine turns the wheel there.
+  void BeginScroll() {
+    scroll_=Scroll{};scroll_pending_=false;scroll_.began=Now();
+    auto command=CefDictionaryValue::Create();
+    const auto& source=pending_->command;
+    command->SetString("action","scroll_target");command->SetInt("doc",document_);
+    if(!world_frame_.number.empty()) command->SetString("frame",world_frame_.number);
+    for(const char* key:{"element","into_view","to"}) if(source->HasKey(key)) command->SetString(key,source->GetString(key));
+    if(source->HasKey("by")) command->SetInt("by",source->GetInt("by"));
+    auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
+    auto params=CefDictionaryValue::Create();
+    params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
+    params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("silent",true);params->SetBool("awaitPromise",true);params->SetInt("timeout",5000);
+    Call(Stage::Scroll,"Runtime.evaluate",params);
+  }
+  // One more step of the wheel, after a frame: the page says what is left,
+  // and the request it belongs to is still the one running.
+  void ScrollCall(CefRefPtr<CefDictionaryValue> command,uint64_t token) {
+    if(!pending_ || pending_->token!=token) return;
+    auto wrapped=CefValue::Create();wrapped->SetDictionary(command);
+    auto params=CefDictionaryValue::Create();
+    params->SetString("expression",std::string(kPageAutomation)+"\n;globalThis.__tiloPage.run("+CefWriteJSON(wrapped,JSON_WRITER_DEFAULT).ToString()+")");
+    params->SetInt("contextId",world_);params->SetBool("returnByValue",true);params->SetBool("silent",true);params->SetBool("awaitPromise",true);params->SetInt("timeout",5000);
+    Call(Stage::Scroll,"Runtime.evaluate",params);
+  }
+  // One turn of the wheel, or the answer that there is nothing left to turn.
+  // The wheel is real input at a point of the page, so the page's own scroll
+  // listeners, intersection observers and lazy loading run for it, and the
+  // page says after each turn how much of the distance is left.
+  void ScrollTurn(CefRefPtr<CefDictionaryValue> value) {
+    // A wheel whose page left the document under it has turned over nothing,
+    // and a request is never left waiting for a turn that will not come.
+    if(!value) { Fail("not_ready","The page left while the wheel was turning it");return; }
+    if(value->GetType("ok")!=VTYPE_BOOL) { Fail("script","The page did not return a result");return; }
+    if(!value->GetBool("ok")) {
+      const auto code=value->GetType("code")==VTYPE_STRING?value->GetString("code").ToString():"script";
+      Fail(code.size()<=64?code:"script",Text(value,"message"));return;
+    }
+    const auto x=Number(value,"x"),y=Number(value,"y"),left=Number(value,"left");
+    if(std::isfinite(x) && std::isfinite(y)) { scroll_.x=x;scroll_.y=y; }
+    scroll_.left=std::isfinite(left)?left:0;
+    // A page that still has something to give says so; the wheel turns again
+    // once that has had a frame, as a hand's next turn would.
+    if(scroll_.left==0 || scroll_.turns>=static_cast<int>(kMaxScrollTurns) || Now()-scroll_.began>=kScrollBudgetMs) {
+      // Nothing more to do: the answer is what the page shows, as every other
+      // action reads it back.
+      WorldRead();return;
+    }
+    // The wheel turns by the distance that is left, signed: a positive one
+    // carries the page down — its content up — and a negative one back up.
+    const auto turn=std::max(-kMaxScrollTurn,std::min(kMaxScrollTurn,scroll_.left));
+    scroll_.left-=turn;++scroll_.turns;
+    wheel_(scroll_.x,scroll_.y,-turn);
+    auto command=CefDictionaryValue::Create();
+    command->SetString("action","scroll_left");command->SetInt("doc",document_);
+    // The page is asked what is left after the frame the wheel moved it in.
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self,CefRefPtr<CefDictionaryValue> command,uint64_t token) {
+      self->ScrollCall(command,token);
+    },CefRefPtr<PageAutomation>(this),command,pending_->token),kScrollWheelMs);
+  }
+  // What the page shows once the wheel has stopped, read like any other
+  // action: the outline lines the turn added and removed.
+  void WorldRead() {
+    auto read=CefDictionaryValue::Create();
+    read->SetString("action","changes");
+    read->SetString("op",pending_->command->GetString("op"));
+    read->SetInt("request_id",pending_->request);
+    read->SetInt("doc",document_);
+    pending_->command=read;
+    pending_->navigation="none";
+    world_request_.clear();place_frame_=PageFrame{};
+    if(!main_world_ && !world_) {
+      world_request_=main_id_;
+      auto params=CefDictionaryValue::Create();
+      params->SetString("frameId",main_id_);params->SetString("worldName","tilo-page-actions");
+      Call(Stage::World,"Page.createIsolatedWorld",params);return;
+    }
+    if(!main_world_) main_world_=world_;
+    Evaluate();
+  }
   // Where the frame tree leads: the document this action runs in. The tree is
   // read once per page generation, so repeated actions on one page do not each
   // pay for it and none of them acts on a tree an older document described.
@@ -667,6 +818,20 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       if(named.size()>16 || !ResolveFrame(tree_,path,0,target)) {
         Fail("no_frame","No frame of this page has that id; read the page again for the frames it lists");return;
       }
+    }
+    // A turn of the wheel says where it turns before the page is asked
+    // anything: the box it signs into the page's script is the one the caller
+    // named, and the world it runs in is the frame's own.
+    if(Action()=="scroll") {
+      // The world the wheel turns in is the frame's own: a context left by an
+      // earlier action in that frame is reused, and a frame whose document was
+      // replaced gets a new one, so the wheel never turns in a stale document.
+      if(world_id_==target.id && world_ && target.loader==loader_) { BeginScroll();return; }
+      scroll_pending_=true;
+      // The page's own frame tree names the document, but it is a stale copy
+      // once the page it describes has gone: the world then has to be made
+      // again for the frame's new document, not the one the copy remembers.
+      tree_.reset();tree_generation_=0;
     }
     // An action names its frame: the world left by an earlier action in another
     // frame never stands in for it.
@@ -741,7 +906,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // it is being read. The request is read again in a fresh context, once per
     // request; a page that moved on still fails as changed.
     const bool scripted=At(Stage::Evaluate) || At(Stage::GestureBegin) || At(Stage::Path) ||
-      At(Stage::Hover) || At(Stage::Pointer) || At(Stage::GestureEnd);
+      At(Stage::Hover) || At(Stage::Pointer) || At(Stage::GestureEnd) || At(Stage::Scroll);
     if(scripted && world_ && (!success || !result || (result->GetType("result")!=VTYPE_DICTIONARY && result->GetType("exceptionDetails")!=VTYPE_DICTIONARY))) {
       const auto document=contexts_.count(world_)?contexts_[world_]:0;
       contexts_.erase(world_);world_=0;
@@ -919,6 +1084,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       // placing waits on the place of its frame, never on the page's read.
       if(gesture_ && PlaceFramePending()) { PlaceFrameRun();return; }
       if(Gesturing()) { BeginGesture();return; }
+      // A turn of the wheel waited for a world to turn in: it turns now, and
+      // only here is the wheel's own world known to be this action's.
+      if(scroll_pending_) { scroll_pending_=false;BeginScroll();return; }
       Evaluate();
     } else if(At(Stage::Fence)) {
       auto remote=success && result?result->GetDictionary("result"):nullptr;
@@ -930,6 +1098,10 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       // Where the page's own pointer rests is told around the gesture's own
       // step, which drives what happens next; its answer ends nothing.
       return;
+    } else if(At(Stage::Scroll)) {
+      auto remote=success && result?result->GetDictionary("result"):nullptr;
+      auto value=remote && remote->GetType("value")==VTYPE_DICTIONARY?remote->GetDictionary("value"):nullptr;
+      ScrollTurn(value);return;
     } else if(At(Stage::GestureBegin) || At(Stage::Hover) || At(Stage::GestureEnd) || At(Stage::Path)) {
       auto remote=success && result?result->GetDictionary("result"):nullptr;
       auto value=remote?remote->GetDictionary("value"):nullptr;
@@ -1302,6 +1474,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void Act(CefRefPtr<CefDictionaryValue> value) {
     const auto action=Action();
+    if(action=="scroll") { ScrollTurn(value);return; }
     // A click inside a frame is a pointer event in the top document, so its
     // point is moved by the frame's place in the page. The frame is where the
     // click settles: the page's own script hears neither the pointer nor what
@@ -1464,7 +1637,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     // A rest the gesture could not tell mid-step is told now, while the request
     // that asked for it is still the one running.
     if(rest_pending_) { rest_pending_=false;RestPointer(rest_point_);rest_pending_=false;call_=0; }
+    scroll_pending_=false;
     pending_.reset();call_=0;
+    if(!queued_.empty()) { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<PageAutomation> self) { self->RunQueued(); },CefRefPtr<PageAutomation>(this))); }
     if(native_attempted_) {
       auto params=CefDictionaryValue::Create();params->SetString("objectGroup","tilo-private-native-caret");
       browser_->GetHost()->ExecuteDevToolsMethod(0,"Runtime.releaseObjectGroup",params);
@@ -1480,10 +1655,37 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     }
     Reply(request,fields,text_input);
   }
-  void Reply(int request,CefRefPtr<CefDictionaryValue> fields,bool text_input=false) { fields->SetInt("request_id",request);emit_(text_input?"text_input_result":"page_result",fields); }
+  // Every answer to an action goes through here, so the page it was run over
+  // is put back however the action ended.
+  void Reply(int request,CefRefPtr<CefDictionaryValue> fields,bool text_input=false) {
+    // A refusal answers for a request that never ran, and the action that is
+    // running still needs the page: only the action shows and puts it back.
+    if(shown_) { shown_=false;if(action_ended_) action_ended_(); }
+    fields->SetInt("request_id",request);
+    emit_(text_input?"text_input_result":"page_result",fields);
+  }
   CefRefPtr<CefBrowser> browser_;CefRefPtr<CefRegistration> registration_;
-  Emit emit_;Click click_;Key key_;Pointer pointer_;
-  std::optional<Pending> pending_;int stage_=static_cast<int>(Stage::FrameTree);int call_=0;
+  Emit emit_;Click click_;Key key_;Pointer pointer_;Wheel wheel_;
+  // Said around every action: the page is shown for as long as one runs.
+  std::function<void()> action_began_,action_ended_;
+  // Whether the action that is answering is the one the page was shown for.
+  bool shown_=false;
+  // The wheel as it turns: how far down the page is left, the page point it
+  // turns at, how many turns it has taken and since when. A page with more to
+  // load says how much is left after each turn, so the wheel keeps turning
+  // until nothing is, within the turns and the time one scroll is allowed.
+  struct Scroll { double left=0,x=0,y=0,began=0;int turns=0; } scroll_;
+  // A turn of the wheel that is waiting for the world of its own frame.
+  bool scroll_pending_=false;
+  std::optional<Pending> pending_;
+  // The requests the engine refused before they reached this tab, answered
+  // where the page's own answers come from; the tab's copy of each runs
+  // nothing. A request id is answered once.
+  std::set<int> refused_;
+  // Requests that came while a refusal or an action was still answering:
+  // answered behind it, in the order they came.
+  std::vector<CefRefPtr<CefDictionaryValue>> queued_;
+  int stage_=static_cast<int>(Stage::FrameTree);int call_=0;
   // The stage that asked for that call, which its answer is answered in.
   int stage_at_call_=static_cast<int>(Stage::FrameTree);
   std::vector<TextFrame> text_candidates_;TextFrame text_frame_;std::optional<TextFrame> text_owner_;std::string text_lease_;

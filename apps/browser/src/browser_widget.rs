@@ -1986,6 +1986,13 @@ impl BrowserWidget {
                     request.action()
                 ));
             }
+            if let PageRequest::Scroll { .. } = request {
+                return Err(
+                    "`scroll` goes to an end of the page, by a distance, or brings an element \
+                     into view: one of them, and no two"
+                        .into(),
+                );
+            }
             return Err(format!(
                 "`{}` names no element of the page outline, or arguments the page cannot take",
                 request.action()
@@ -2140,10 +2147,13 @@ impl BrowserWidget {
                 return;
             }
             Ok(reply) => self.page_success(operation.invocation, &reply, None),
+            // A page action runs once, so its failure is reported once: a
+            // caller that wants the wheel turned again asks again, and no
+            // retry of a request already run at the page is advertised.
             Err(failure) => ui::tilo_actions::InvocationUpdate::Failed {
                 invocation: operation.invocation,
                 error: ui::tilo_actions::ActionFailure {
-                    retryable: matches!(failure.code.as_str(), "busy" | "timeout"),
+                    retryable: false,
                     code: format!("browser.page.{}", failure.code),
                     message: failure.message,
                     details: None,
@@ -5648,6 +5658,16 @@ impl BrowserWidget {
                     button: None,
                 },
                 &["steps", "button"][..],
+            ),
+            (
+                E::ScrollPage {
+                    element: None,
+                    to: Some(String::new()),
+                    by: None,
+                    into_view: Some(String::new()),
+                    frame: None,
+                },
+                &["element", "to", "by", "into_view", "frame"][..],
             ),
         ] {
             let spec = spec.bound_asking(asking);

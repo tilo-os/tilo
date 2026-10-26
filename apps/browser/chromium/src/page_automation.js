@@ -61,6 +61,134 @@ globalThis.__tiloPage ||= (() => {
   // pointer's rest has to be mirrored through the page's own style sheets.
   let gestureMirror = false;
   const MAX_POINTER_STYLES = 4000;
+  // What a turn of the wheel turned: the box it turns over, and where in it
+  // the wheel turns. The closest scroll container of the element the caller
+  // named — a list, a table's own body — moves before the document does, as it
+  // does under a hand resting there.
+  let scrolling = null;
+  const MAX_SCROLL_TURN = 2000;
+  // How many turns in a row the wheel may give nothing before the page is
+  // taken to have stopped moving for it.
+  const MAX_SCROLL_STILL = 4;
+  // How far the wheel is sent toward an end of the page: past any page.
+  const WHEEL_TO_THE_END = 1e6;
+  // The box an element's own overflow scrolls, found up its tree; the page's
+  // own scrolling box when it is the page.
+  function scrollBox(element) {
+    const root = document.scrollingElement || document.documentElement;
+    for (let node = element; node && node.nodeType === 1; node = node.parentElement || node.getRootNode().host) {
+      const style = getComputedStyle(node);
+      if (/(auto|scroll|overlay)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 1) return node;
+    }
+    return root;
+  }
+  const scrollable = element => Math.max(element.scrollHeight - element.clientHeight, 0);
+  const scrollRoot = () => document.scrollingElement || document.documentElement;
+  // How much further a box can go in the direction the wheel turns it.
+  const room = box => Math.max(scrollable(box) - scrollYOffset(box), 0);
+  // How far down a box is scrolled. The page's own box needs no special case:
+  // the window holds the document's scrolling element and the document, and
+  // asking either of them for what it holds never moves the page.
+  const scrollYOffset = box => box.scrollTop;
+  // How far the last scroll moved the box the wheel turned over, taken by the
+  // read that answers it: null when no scroll is being answered.
+  let scrollMoved = null;
+  const takeScrollMoved = () => { const moved = scrollMoved; scrollMoved = null; return moved; };
+  const FRAME_SETTLE_MS = 250, FRAME_SETTLE_STILL = 2, FRAME_MS = 16;
+  // The wheel turns over a page that has laid itself out, as a person's does:
+  // a sheet that arrives late, and the reflow it causes, are waited for. The
+  // wait ends as soon as the page's own size holds still. It is measured on a
+  // timer, not an animation frame: a window behind another draws no frames,
+  // and the wait must still end for a page nobody is looking at.
+  const scrollFrames = () => new Promise(done => {
+    const start = performance.now();
+    let size = '', still = 0;
+    const tick = () => {
+      const now = performance.now(), box = document.scrollingElement || document.documentElement;
+      const held = `${box.scrollHeight}x${innerWidth}x${innerHeight}`;
+      still = held !== size ? 0 : still + 1; size = held;
+      if (still >= FRAME_SETTLE_STILL || now - start >= FRAME_SETTLE_MS) { done(); return; }
+      setTimeout(tick, FRAME_MS);
+    };
+    setTimeout(tick, FRAME_MS);
+  });
+  // Where the wheel turns, and how far the box under it still has to go:
+  // the whole distance asked for, or everything the box still holds.
+  async function scrollTarget(command) {
+    scrollMoved = null;
+    await scrollFrames();
+    // Bringing an element into view turns the wheel over its nearest
+    // scrollable box, at a point inside it that is on screen now.
+    if (typeof command.into_view === 'string') {
+      const element = resolve(command.into_view);
+      const box = scrollBox(element);
+      const visible = element.getBoundingClientRect(), area = box.getBoundingClientRect();
+      const top = area.top + Math.max(0, Math.min(visible.top - area.top, area.height - 1));
+      const point = {x: area.left + Math.max(0, Math.min(area.width / 2, area.width - 1)), y: top};
+      if (!(point.x >= 0 && point.y >= 0 && point.x < innerWidth && point.y < innerHeight))
+        throw failure('not_visible', `${command.into_view} is off the page; scroll the page first`);
+      // The row is centred in its box when there is room for that, and the
+      // wheel turns toward it from where the box is scrolled to now.
+      const delta = Math.round(visible.top - area.top - (area.height - visible.height) / 2);
+      const from = scrollYOffset(box);
+      const left = delta > 0 ? Math.min(delta, room(box)) : Math.max(delta, -from);
+      scrolling = {box, x: point.x, y: point.y, rest: left, travelled: Math.sign(left), start: from, still: 0};
+      return {ok: true, x: point.x, y: point.y, left};
+    }
+    // The box the caller named, or the page itself; a point inside it that
+    // the wheel can turn over is its visible centre.
+    const element = typeof command.element === 'string' ? resolve(command.element) : null;
+    const box = element ? scrollBox(element) : (document.scrollingElement || document.documentElement);
+    // The box is remembered by what it is, not by what the last turn did to
+    // it: scrolling it makes it the document more records for good.
+    const root = !box || box === document.scrollingElement || box === document.documentElement;
+    const area = root ? {left: 0, top: 0, width: innerWidth, height: innerHeight} : box.getBoundingClientRect();
+    const point = element ? (clip(element.getBoundingClientRect()) || clip(area)) : {x: innerWidth / 2, y: innerHeight / 2};
+    if (!point) throw failure('not_visible', `${command.element} has no box on the page`);
+    const scroller = root ? scrollRoot() : box;
+    const from = scrollYOffset(scroller);
+    let left = 0, travelled = 0;
+    if (command.to === 'top' || command.to === 'bottom') {
+      // An end of the page is a whole page away, more than any distance the
+      // wheel is allowed: the wheel keeps turning until the page stops
+      // moving, so a page that loads more on the way down goes on, and the
+      // turns end only when a turn gives nothing.
+      travelled = command.to === 'bottom' ? 1 : -1;
+      left = travelled * WHEEL_TO_THE_END;
+    } else if (typeof command.by === 'number') {
+      // A distance is the whole distance asked for: how far it actually moves
+      // the page is the wheel's own business, and what the box cannot take it
+      // keeps looking for as the page under it grows.
+      travelled = Math.sign(command.by);
+      left = command.by;
+    }
+    // A box already at the end the wheel would take it to leaves the wheel
+    // nothing to do, and the answer says so at once.
+    if (left * travelled <= 0) { scrollMoved = 0; return {ok: true, x: point.x, y: point.y, left: 0}; }
+    scrolling = {box: scroller, x: point.x, y: point.y, rest: left, travelled, start: from, still: 0};
+    return {ok: true, x: point.x, y: point.y, left};
+  }
+  // What the box the wheel turns over has left of the distance after a turn:
+  // a list that renders more as it scrolls says so here, and the wheel turns
+  // again, as a hand's next turn would.
+  function scrollLeft() {
+    if (!scrolling) return {ok: true, x: innerWidth / 2, y: innerHeight / 2, left: 0};
+    const box = scrolling.box, now = scrollYOffset(box), moved = Math.abs(now - scrolling.start);
+    scrollMoved = (scrollMoved || 0) + Math.round(now - scrolling.start);
+    scrolling.rest -= scrolling.travelled > 0 ? Math.min(moved || now, scrolling.rest)
+      : -Math.min(moved || -now, -scrolling.rest);
+    scrolling.start = now;
+    // A turn that moved nothing may have been given nothing by the page yet —
+    // a frame still settling, a box whose content arrives later — so it is
+    // tried again, a few times, before the wheel says the page has stopped.
+    // The turns the wheel is allowed are what ends a page that never moves.
+    if (!moved && ++scrolling.still <= MAX_SCROLL_STILL)
+      return {ok: true, x: scrolling.x, y: scrolling.y, left: scrolling.travelled > 0 ? Math.min(scrolling.rest, room(box))
+        : -Math.max(-scrolling.rest - Math.max(now, 0), 0)};
+    const left = !moved ? 0 : scrolling.travelled > 0 ? Math.min(scrolling.rest, room(box))
+      : -Math.max(-scrolling.rest - Math.max(now, 0), 0);
+    return {ok: true, x: scrolling.x, y: scrolling.y, left: Math.round(left)};
+  }
   // The class the page's own sheets never use: a resting pointer puts it on
   // the elements it is over, and a hover-only rule reads `:hover` as it.
   const MARKER = '__tilo-hover__';
@@ -477,6 +605,9 @@ globalThis.__tiloPage ||= (() => {
   // subsequence; refs are stable within a document, so an unchanged element
   // keeps its line.
   function changes() {
+    // What a scroll answers says how far it took the page, so a turn that
+    // changed no line still tells the caller the page moved, and by how much.
+    const moved = takeScrollMoved();
     const before = getLastLines(), {lines} = outlineLines();
     setLastLines(lines);
     if (!before)
@@ -495,8 +626,9 @@ globalThis.__tiloPage ||= (() => {
       else if (j < m && (i >= n || table[i][j + 1] >= table[i + 1][j])) { out.push('+ ' + lines[j++]); added++; }
       else { out.push('- ' + before[i++]); removed++; }
     }
-    return {ok: true, message: added || removed ? `${added} lines added, ${removed} removed` : 'Nothing changed',
-      outline: out.join('\n')};
+    const diff = added || removed ? `${added} lines added, ${removed} removed` : 'Nothing changed';
+    const told = moved === null ? diff : moved ? `Scrolled ${Math.abs(moved)}px ${moved > 0 ? 'down' : 'up'}; ${diff[0].toLowerCase()}${diff.slice(1)}` : `Did not move; ${diff[0].toLowerCase()}${diff.slice(1)}`;
+    return {ok: true, message: told, outline: out.join('\n')};
   }
 
   // What a click or a hover at viewport point (x, y) would act on: the
@@ -818,6 +950,12 @@ globalThis.__tiloPage ||= (() => {
           ? name(element, kind) : '';
         const start = lines.length;
         if (!emit(depth, label ? `${kind} ${quote(label)}` : kind)) return;
+        // A box a person can scroll has to be reachable to turn a wheel over
+        // it: its ref is named even though a scroll is not its role.
+        if (element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth) {
+          const at = lines[lines.length - 1].lastIndexOf('[ref=');
+          if (at < 0) lines[lines.length - 1] += ` [ref=${refOf(element)}]`;
+        }
         walk(element, depth + 1, inner);
         flush();
         const count = lines.length - start - 1;
@@ -1597,6 +1735,10 @@ globalThis.__tiloPage ||= (() => {
           // is enough and nothing is applied.
           case 'need_styles': { const n = markHoverTargets(); return {ok: true, need_styles: n > 0, doc: typeof doc === 'number' ? doc : command.doc}; }
           case 'changes': return changes();
+          // A turn of the wheel: where it turns, and what is left of the
+          // distance once the page has given what it has.
+          case 'scroll_target': return scrollTarget(command);
+          case 'scroll_left': return scrollLeft();
           case 'at': return frameId() ? atInFrame() : at(command.x, command.y);
           case 'frame_offset': return frameOffset(command.frame, command.anchored);
           case 'frame_fence': return fence();

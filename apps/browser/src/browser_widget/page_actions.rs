@@ -64,6 +64,10 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             other => Err(format!("a page action must be accepted, got {other:?}")),
         }
     }
+    fn page_action_contract(id: &str) -> ui::tilo_actions::ActionContract {
+        let (_, widget, doc, _) = page_on("https://shop.test/");
+        page_action(&widget, &doc, id).contract
+    }
     fn page_requests(engine: &TestEngine) -> Vec<PageRequest> {
         engine
             .commands()
@@ -558,6 +562,47 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             )
             .is_ok()
         );
+    }
+
+    // Phase `a_page_action_answers_at_most_once_so_its_failure_asks_for_none`.
+    {
+        // Every page action runs once at the page: the wheel it turned, the
+        // click it pressed or the text it typed cannot be undone by running it
+        // again. A failure that invited a retry would break that promise, so
+        // even the refusals a later try could get past are finals: the caller
+        // asks again itself, with the page it read by then.
+        let scroll = page_action_contract("scroll-page");
+        assert_eq!(
+            scroll.retry,
+            ui::tilo_actions::RetryPolicy::AtMostOnce,
+            "a scroll turns the wheel once"
+        );
+        let (engine, mut widget, mut doc, root) = page_on("https://shop.test/");
+        for (code, message) in [
+            ("busy", "Another page action is still running in this tab"),
+            ("timeout", "The page did not answer in time."),
+        ] {
+            engine.push_page_reply(Err(PageFailure::new(code, message)));
+            let scroll = start(
+                &mut widget,
+                &mut doc,
+                &root,
+                "scroll-page",
+                &serde_json::json!({"to": "bottom"}),
+            )
+            .unwrap();
+            widget.sync(&doc, &root);
+            let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+                widget.poll_invocation(scroll)
+            else {
+                panic!("a refused scroll must fail its invocation");
+            };
+            assert_eq!(error.code, format!("browser.page.{code}"));
+            assert!(
+                !error.retryable,
+                "{code} must not advertise a retry of an action that already ran"
+            );
+        }
     }
 }
 #[test]

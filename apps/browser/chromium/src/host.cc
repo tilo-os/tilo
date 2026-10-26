@@ -321,6 +321,20 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
                      public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler, public CefJSDialogHandler, public CefAudioHandler, public CefDragHandler {
  public:
   explicit Client(int id):id_(id),credential_document_(private_mode),capabilities_(new tilo::Capabilities([this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
+  // A page request the engine refuses before the page sees it is answered by
+  // this tab's page automation, behind whatever it is still running.
+  void RefusePage(CefRefPtr<CefDictionaryValue> d,const std::string& message) {
+    // A refusal is judged before the tab's dispatch of the same request, so
+    // the request is taken as never having arrived: the answer is the one the
+    // word it was refused by says.
+    if(page_automation_) { page_automation_->Refuse(d,"invalid_request",message);return; }
+    auto fields=CefDictionaryValue::Create();
+    fields->SetInt("request_id",d->GetInt("request_id"));fields->SetBool("ok",false);
+    fields->SetString("code","invalid_request");fields->SetString("message",message);
+    fields->SetString("navigation","none");fields->SetBool("navigated",false);fields->SetBool("loading",false);
+    fields->SetNull("outline");
+    Event("page_result",fields);
+  }
   void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
     if(transfer_owner_ && name!="tab_detached" && name!="closed") return;
     if(!fields) fields=CefDictionaryValue::Create();fields->SetInt("tab",id_);::Event(name,fields);
@@ -728,7 +742,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     navigation_history_=new tilo::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
     page_automation_=new tilo::PageAutomation(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);},
         [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);},
-        [this](CefRefPtr<CefDictionaryValue> event){PagePointer(event);});
+        [this](CefRefPtr<CefDictionaryValue> event){PagePointer(event);},[this](double x,double y,double dy){PageWheel(x,y,dy);},
+        [this](){PageActionBegan();},[this](){PageActionEnded();});
     page_automation_->Attach();
     // A page's geolocation call reaches the person as its other permission
     // requests do: the engine has no location of Chromium's own to grant.
@@ -1182,6 +1197,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(op=="visibility") {
       const bool was_visible=visible_;
       visible_=d->GetBool("visible");
+      // The window's word is the last one: an action that had the page shown
+      // for its turn puts it back to what the window now says, not to what it
+      // said when the action started.
+      if(!visible_) shown_for_action_=false;
       credential_document_.SetVisible(visible_);
       if(!visible_) CancelCredentialRequests();
       // Its open page menu is answered before it hides: Chromium hiding a
@@ -1612,6 +1631,41 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!dragging_entered_) { host->DragTargetDragEnter(dragging_,event,kPageDragOps);dragging_entered_=true; }
     else host->DragTargetDragOver(event,kPageDragOps);
   }
+  // One turn of the wheel a page action asks for, at a point of the page in
+  // CSS pixels and `dy` CSS pixels down it: the same wheel a hand turns, so
+  // the page's scroll listeners and intersection observers run for it and
+  // content that loads on scroll arrives.
+  void PageWheel(double x,double y,double dy) {
+    if(!browser_)return;auto host=browser_->GetHost();const double zoom=std::pow(1.2,host->GetZoomLevel());
+    CefMouseEvent event;event.x=static_cast<int>(std::lround(x*zoom));event.y=static_cast<int>(std::lround(y*zoom));
+    event.modifiers=mouse_modifiers_|key_modifiers_;
+    // A wheel notch is a whole number of pixels, and what is left over is
+    // carried, as the scroll op does for a trackpad's fractions.
+    const double moved=dy*zoom+wheel_rest_y_;
+    const int whole=static_cast<int>(std::lround(moved));
+    wheel_rest_y_=moved-whole;
+    // The wheel reaches only the view being used, as a key does.
+    host->SetFocus(true);
+    // A wheel turn too small to round to a pixel is still a turn: the browser
+    // is told the pixel it rounds to, so a page waiting on a scroll hears it.
+    host->SendMouseWheelEvent(event,0,whole || !dy ? whole : (dy < 0 ? -1 : 1));
+  }
+  // An action runs over the page as if the caller were looking at it: a page
+  // the window is not showing takes no wheel, no caret and no navigation, so
+  // a tab that is in the background would answer every action with nothing.
+  // The page is put back as the window had it once the action answers.
+  void PageActionBegan() {
+    if(!browser_ || visible_ || shown_for_action_) return;
+    shown_for_action_=true;
+    visible_=true;
+    browser_->GetHost()->WasHidden(false);
+  }
+  void PageActionEnded() {
+    if(!browser_ || !shown_for_action_) return;
+    shown_for_action_=false;
+    visible_=false;
+    browser_->GetHost()->WasHidden(true);
+  }
   void PageKey(CefRefPtr<CefDictionaryValue> key) {
     if(!browser_)return;const int held=key_modifiers_;
     // Keys reach only a focused view; the page's own focused element is kept.
@@ -1936,7 +1990,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     message->GetArgumentList()->SetString(1,frame->GetURL());
     frame->SendProcessMessage(PID_RENDERER,message);
   }
-  int id_;bool visible_=true,transfer_owner_=false,native_closing_=false,popups_=false;int opener_=0,key_modifiers_=0;uint64_t favicon_generation_=0;
+  int id_;bool visible_=true,shown_for_action_=false,transfer_owner_=false,native_closing_=false,popups_=false;int opener_=0,key_modifiers_=0;uint64_t favicon_generation_=0;
   std::string title_,favicon_;bool extension_panel_=false;int panel_opener_=0;
   // The extension whose side panel this tab shows, if it shows one.
   std::string side_panel_;
@@ -2317,6 +2371,21 @@ void StartExtensionTabs() {
   for(auto context:{CefRequestContext::GetGlobalContext(),shared_context})
     if(context)context->RegisterSchemeHandlerFactory("https","extension-bridge.tilo.invalid",bridge);
 }
+// A command is judged before it reaches a tab, so a page request it refuses
+// is handed to that tab's automation where the page's own answers come from:
+// behind whatever is still running there, in the order the caller asked. The
+// tab's own dispatch is already on its way, so the refusal is posted behind it
+// and the tab answers the request it was never given.
+void RefuseOnThread(CefRefPtr<CefDictionaryValue> d,const std::string& message) {
+  // A command without a tab names the first one, as the rest of the host
+  // reads it.
+  const int tab=d->GetType("tab")==VTYPE_INT?d->GetInt("tab"):1;
+  CefPostTask(TID_UI,base::BindOnce([](int tab,CefRefPtr<CefDictionaryValue> d,std::string message) {
+    auto found=clients.find(tab);
+    if(found==clients.end()) return;
+    found->second->RefusePage(d,message);
+  },tab,d,message));
+}
 bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(d->HasKey("tab") && (d->GetType("tab")!=VTYPE_INT || d->GetInt("tab")<=0)) return false;
   auto op=d->GetString("op").ToString();
@@ -2443,10 +2512,10 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="fill_files" && action!="press" && action!="submit" &&
        action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" &&
        action!="reader" && action!="pointer" && action!="hover" && action!="drag" && action!="path" &&
-       action!="pointer_rest")return false;
+       action!="scroll" && action!="pointer_rest")return false;
     const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
       action=="console" || action=="network" || action=="reader" || action=="pointer" || action=="hover" ||
-      action=="drag" || action=="path" || action=="pointer_rest";
+      action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest";
     if(action=="pointer") {
       if(!type("steps",VTYPE_LIST) || !type("button",VTYPE_STRING))return false;
       const auto button=d->GetString("button").ToString();
@@ -2512,6 +2581,33 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
       if(d->HasKey("to") && (!type("to",VTYPE_STRING) || d->GetString("to").empty() || d->GetString("to").length()>64))return false;
     }
     if(action=="drag" && (!type("steps",VTYPE_INT) || d->GetInt("steps")<1 || d->GetInt("steps")>64))return false;
+    if(action=="scroll") {
+      // Where the wheel turns, and where it goes: one of `to`, `by` or
+      // `into_view`, each bounded so one request stays bounded work. A
+      // request outside those bounds is answered as failed, not dropped.
+      // The refusal is queued like any other page request, and the page's
+      // own actions behind it wait on it: a refused scroll keeps the caller's
+      // order, so the action after it runs after it.
+      const auto refuse=[&](const char* message) {
+        RefuseOnThread(d,message);
+        return true;
+      };
+      if(d->HasKey("to") && (!type("to",VTYPE_STRING) || (d->GetString("to")!="top" && d->GetString("to")!="bottom")))
+        return refuse("A scroll goes to the top or the bottom of the page");
+      // As far as one scroll may ask to travel at once, which the SDK also
+      // refuses beyond.
+      static constexpr int kMaxScrollBy=10000;
+      if(d->HasKey("by") && (!type("by",VTYPE_INT) || d->GetInt("by")<-kMaxScrollBy || d->GetInt("by")>kMaxScrollBy))
+        return refuse("A scroll by a distance stays within 10000 pixels");
+      if(d->HasKey("into_view") && (!type("into_view",VTYPE_STRING) || d->GetString("into_view").empty() || d->GetString("into_view").length()>64))
+        return refuse("Bringing an element into view names one ref");
+      // The wheel turns over the viewport's centre unless the caller names
+      // what it turns over, and it turns until exactly one place is reached:
+      // the top or bottom, a distance, or an element brought into view.
+      const int places=(d->HasKey("to")?1:0)+(d->HasKey("by")?1:0);
+      if(d->HasKey("into_view") ? places!=0 : places!=1)
+        return refuse("A scroll says where it goes once, and how far");
+    }
     if(action=="path") {
       if(!type("points",VTYPE_LIST))return false;
       auto points=d->GetList("points");

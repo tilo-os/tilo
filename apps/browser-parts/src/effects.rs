@@ -11,7 +11,7 @@
 use ui::tilo_resource::{self, Effect};
 use ui::webview::{
     FrameId, KeyModifiers, PageKey, PageRequest, PointerButton, PointerPoint, PointerStep,
-    PointerStepKind,
+    PointerStepKind, ScrollTarget,
 };
 
 /// How long a settle waits for the page to go quiet, and at most, by default.
@@ -652,6 +652,36 @@ pub enum BrowserEffect {
         #[param("Button the gesture presses and releases: left or right (default left)")]
         button: Option<String>,
     },
+    /// Scroll the page
+    ///
+    /// Turns the page's wheel as a hand does, so what a page loads or
+    /// reveals on scrolling appears: infinite lists, lazy sections and
+    /// virtualized tables. Answers with what changed in the outline. Say
+    /// where it goes with `to` (`top` or `bottom`), how far with `by` (CSS
+    /// pixels, negative to go back up), or which element to bring into
+    /// view with `into_view`, which is also where a clipped list or table is
+    /// scrolled. `element` names the box the wheel turns over, such as a
+    /// scrollable list that is not the page itself, and the viewport's
+    /// centre is used when no element is named. It works whatever holds the
+    /// keyboard, so it scrolls after a click a focused control would eat
+    /// `End` or `PageDown` for.
+    #[effect(row, job, returns, audience = "agents", untrusted)]
+    ScrollPage {
+        #[param(
+            "Element ref whose box the wheel turns over, such as d1e5; the viewport's centre by default"
+        )]
+        element: Option<String>,
+        #[param("End of the page to go to: top or bottom")]
+        to: Option<String>,
+        #[param("Distance in CSS pixels down the page, negative to go up (for example -600)")]
+        by: Option<i32>,
+        #[param("Element ref to bring into view, such as d1e5")]
+        into_view: Option<String>,
+        #[param(
+            "Frame id from the outline, such as 1 or 1.2: the action then runs in that frame's own document, with its own outline and refs"
+        )]
+        frame: Option<String>,
+    },
     /// Bookmark this page personally
     #[effect(row, returns, idempotent)]
     BookmarkPersonalPage {
@@ -943,6 +973,22 @@ impl BrowserEffect {
                 steps: steps.iter().filter_map(|step| pointer_step(step)).collect(),
                 button: PointerButton::parse(button.as_deref().unwrap_or("left")),
             }),
+            Self::ScrollPage {
+                element,
+                to,
+                by,
+                into_view,
+                frame,
+            } => {
+                let named = |element: Option<String>| element.filter(|value| !value.is_empty());
+                page(PageRequest::Scroll {
+                    element: named(element),
+                    to: to.as_deref().and_then(ScrollTarget::parse),
+                    by,
+                    into_view: named(into_view),
+                    frame: page_frame(frame),
+                })
+            }
         }
     }
 }
