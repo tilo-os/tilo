@@ -512,8 +512,6 @@ impl QuickFS {
     pub fn changeset<T>(&self, apply: impl FnOnce() -> T) -> T {
         let publisher = self.record_publisher.as_ref();
         let gate = publisher.map(|p| p.repository().publication_gate().blocking_write());
-        let history = self.history.as_ref().map(|(history, _)| history);
-        let deferral = history.map(|history| history.defer_durability());
         if let Some(publisher) = publisher
             && let Err(error) = publisher.begin_changeset()
         {
@@ -527,15 +525,7 @@ impl QuickFS {
         if let Err(error) = self.hydrator.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
-        let mut durable = if let Some(deferral) = deferral
-            && let Err(error) = deferral.finish()
-        {
-            // The records wait for the history that describes them.
-            eprintln!("history stays pending: {error}");
-            false
-        } else {
-            true
-        };
+        let mut durable = true;
         if durable && let Some(publisher) = publisher {
             match publisher.commit_changeset() {
                 Ok(Some(changeset)) if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() => {

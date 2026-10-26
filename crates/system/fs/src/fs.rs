@@ -2368,19 +2368,29 @@ impl QuickFS {
         self
     }
 
-    /// Attach durable history and create a migration baseline for records
-    /// that predate history support. Failure refuses the mount rather than
-    /// silently running with an incomplete audit trail.
+    /// Attach the derived history index and the certified actor attributed to
+    /// mutations made through this mount.
+    ///
+    /// The signed record repository is the durable history, so the migration
+    /// baseline for records that predate signed history is created once the
+    /// publisher (and therefore the repository) is attached, in
+    /// [`Self::with_record_publisher`]. Failure there refuses the mount rather
+    /// than silently running with an incomplete audit trail.
     ///
     /// # Errors
     ///
-    /// Returns a history error when the migration baseline cannot be written.
+    /// Kept fallible for the mount lifecycle; attaching an index performs no
+    /// I/O of its own.
     pub fn with_history(
         mut self,
         history: Arc<crate::history::FileHistoryStore>,
         actor: fs_protocol::FileActor,
     ) -> Result<Self, crate::history::HistoryError> {
         self.history = Some((history, actor));
+        // A history-only mount (no signed publisher) still needs the migration
+        // baseline for records that predate signed history. When a publisher is
+        // attached next, the repository rebuild replaces this provisional fold
+        // and the baseline runs again against the signed log.
         if self.allow_legacy_record_migration {
             self.ensure_history_baseline()?;
         }
@@ -2446,14 +2456,19 @@ impl QuickFS {
             .is_some_and(|attributions| !attributions.is_idle())
     }
 
-    /// Attach the signed record publisher and backfill locally authored
-    /// history that predates the record transport.
+    /// Attach the signed record publisher, rebuild the derived history from
+    /// its exact signed log, and backfill locally authored history that
+    /// predates the record transport.
     pub fn with_record_publisher(
         mut self,
         publisher: Arc<crate::record_publisher::RecordPublisher>,
     ) -> Result<Self, crate::record_publisher::RecordPublisherError> {
+        if let Some((history, _)) = &self.history {
+            history.rebuild_from_repository(publisher.repository(), publisher.workspace_id())?;
+        }
         self.record_publisher = Some(publisher);
         if self.allow_legacy_record_migration {
+            self.ensure_history_baseline()?;
             self.ensure_record_publication()?;
         }
         self.rebuild_signed_content_projection()?;
@@ -3519,7 +3534,7 @@ impl QuickFS {
         self.attribute_version(&result_version, None);
         history.append(result_version).map_err(|_| EIO)?;
         history
-            .resolve(record_id, conflict_id, resolution)
+            .resolve(record_id, conflict_id, &resolution)
             .map_err(|_| EIO)?;
 
         let converged = publisher

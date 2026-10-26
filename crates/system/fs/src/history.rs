@@ -1,12 +1,16 @@
-//! Crash-safe immutable file history and first-class conflict records.
+//! Immutable file history and first-class conflict records.
 //!
-//! History is keyed by [`FileRecordId`], never by path. Every mutation appends
-//! a node whose parents already exist locally; importing out-of-order history
-//! must therefore stage it before calling this store. Disk state is validated
-//! in full on open so corrupt ancestry cannot become an eviction or restore
-//! root.
+//! History is keyed by [`FileRecordId`], never by path, and is a derived query
+//! index over the signed record operation log in
+//! [`crate::record_repository`]. It owns no durable authority of its own: the
+//! signed `AppendVersion`, `AppendConflict` and `ResolveConflict` operations
+//! are the history, and every accepted projection is folded into this index.
+//! The index is rebuilt from the repository on open, with an optional
+//! checkpoint cache keyed by the log digest. Both rebuild and fold validate
+//! ancestry, immutable identity and conflict references, so corrupt or
+//! cross-record projections cannot become an eviction or restore root.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -24,6 +28,7 @@ use uuid::Uuid;
 mod read_query;
 
 const HISTORY_SCHEMA_VERSION: u16 = 1;
+const HISTORY_CHECKPOINT_SCHEMA_VERSION: u16 = 1;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HistoryDocument {
@@ -53,24 +58,23 @@ struct HistoryState {
     /// The record owning each version id; ids are unique workspace-wide, so
     /// collision checks are a lookup instead of a scan of every record.
     version_owner: HashMap<FileVersionId, FileRecordId>,
-    log: HistoryLog,
 }
 
-/// The open append-only log beside the snapshot and how much of it is
-/// known-good.
-#[derive(Debug, Default)]
-struct HistoryLog {
-    file: Option<std::fs::File>,
-    len: u64,
-    entries: usize,
-    /// Mutations already installed in memory whose log write is deferred
-    /// (see [`FileHistoryStore::defer_durability`]), in install order.
-    unwritten: Vec<LogEntry>,
+/// A derived-index cache. It is accepted only when it names the exact signed
+/// log digest it was folded from, and every document field is fully
+/// validated again on load.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryCheckpoint {
+    schema_version: u16,
+    workspace_id: Uuid,
+    source_digest: [u8; 32],
+    document: HistoryDocument,
 }
 
-/// One durable history mutation. Each is validated once when it is made and
-/// once when the log is replayed at open; appending never re-reads or
-/// re-validates the rest of the workspace's history.
+/// One entry in a legacy `history.json.log`, read only for import. Every
+/// entry is validated with the same staging rules as a live fold; the file is
+/// never appended to, truncated or compacted.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum LogEntry {
@@ -124,73 +128,31 @@ impl RecordHistorySnapshot {
     }
 }
 
-/// Single-writer, crash-safe history database for one workspace.
+/// The derived, rebuildable history query index for one workspace.
 ///
-/// State is a validated snapshot (`history.json`, the format written by
-/// earlier releases, read as-is) plus an append-only log of later mutations
-/// (`history.json.log`). Every line of the log carries the blake3 hash of
-/// its entry; a torn final line (a write that never returned) is discarded
-/// at open, any other damage fails the open. After
-/// [`LOG_COMPACT_AFTER_ENTRIES`] entries the log is folded into a new
-/// snapshot, so an append costs O(the record it touches), not O(workspace).
+/// The signed record operation log is the durable source. A legacy
+/// `history.json` (and its `.log`) from an earlier release is read once as a
+/// read-only import for records the signed repository does not know; it is
+/// never written, compacted or treated as authority. The checkpoint beside it
+/// caches this derived state and is ignored unless it names the repository's
+/// current log digest.
 pub struct FileHistoryStore {
-    path: PathBuf,
-    log_path: PathBuf,
+    /// The legacy read-only document path, also the cache's location anchor.
+    legacy_path: Option<PathBuf>,
+    checkpoint_path: Option<PathBuf>,
     state: Mutex<HistoryState>,
-    /// Threads whose appends are deferred to one durable write.
-    deferring: Mutex<HashSet<std::thread::ThreadId>>,
-    /// Log entries after which the log is folded into the snapshot;
-    /// [`LOG_COMPACT_AFTER_ENTRIES`] outside tests.
-    compact_after: usize,
+    /// Set once this index was replaced by a complete repository fold.
+    derived: Mutex<bool>,
 }
-
-/// Defers the durable log write of this thread's history appends until
-/// [`Self::finish`], which writes all of them at once with one sync. Memory
-/// is updated immediately, and any durable write made meanwhile (by any
-/// thread) writes the deferred mutations first, so the log keeps the order
-/// of memory.
-pub struct HistoryDeferral<'a> {
-    store: &'a FileHistoryStore,
-    finished: bool,
-}
-
-impl HistoryDeferral<'_> {
-    /// Write every deferred mutation durably.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the log write or its sync fails; the
-    /// mutations stay deferred and the next durable write retries them.
-    pub fn finish(mut self) -> Result<(), HistoryError> {
-        self.finished = true;
-        self.store.stop_deferring();
-        self.store.flush()
-    }
-}
-
-impl Drop for HistoryDeferral<'_> {
-    fn drop(&mut self) {
-        if !self.finished {
-            self.store.stop_deferring();
-        }
-    }
-}
-
-/// Log entries after which the log is folded into the snapshot.
-pub const LOG_COMPACT_AFTER_ENTRIES: usize = 4096;
 
 /// Existing history writer lock borrowed by a compound admission/projection.
 pub(crate) struct HistoryLease<'a> {
-    store: &'a FileHistoryStore,
     state: std::sync::MutexGuard<'a, HistoryState>,
-    /// Whether writes may wait for the thread's deferred durable write.
-    defer: bool,
 }
 
 pub(crate) struct HistoryCandidate {
     touched: BTreeMap<FileRecordId, RecordAdditions>,
     owners: Vec<(FileVersionId, FileRecordId)>,
-    accepted: Vec<FileVersionV1>,
     appended: Vec<bool>,
 }
 
@@ -199,23 +161,13 @@ impl HistoryLease<'_> {
         &mut self,
         record_id: FileRecordId,
         conflict_id: Uuid,
-        resolution: ConflictResolution,
+        resolution: &ConflictResolution,
     ) -> Result<bool, HistoryError> {
-        let Some(resolved) = stage_resolution(&self.state, record_id, conflict_id, &resolution)?
+        let Some(resolved) = stage_resolution(&self.state, record_id, conflict_id, resolution)?
         else {
             return Ok(false);
         };
-        self.store.append_entry(
-            &mut self.state,
-            &LogEntry::Resolve {
-                record_id,
-                conflict_id,
-                resolution,
-            },
-            self.defer,
-        )?;
         install_conflict(&mut self.state, resolved);
-        self.store.maybe_compact(&mut self.state);
         Ok(true)
     }
 
@@ -223,15 +175,7 @@ impl HistoryLease<'_> {
         if !stage_conflict(&self.state, &conflict)? {
             return Ok(false);
         }
-        self.store.append_entry(
-            &mut self.state,
-            &LogEntry::Conflict {
-                conflict: conflict.clone(),
-            },
-            self.defer,
-        )?;
         install_conflict(&mut self.state, conflict);
-        self.store.maybe_compact(&mut self.state);
         Ok(true)
     }
 
@@ -242,25 +186,13 @@ impl HistoryLease<'_> {
         stage_versions(&self.state, versions)
     }
 
-    pub fn install(&mut self, candidate: HistoryCandidate) -> Result<Vec<bool>, HistoryError> {
-        if candidate.accepted.is_empty() {
-            return Ok(candidate.appended);
-        }
-        self.store.append_entry(
-            &mut self.state,
-            &LogEntry::Versions {
-                versions: candidate.accepted.clone(),
-            },
-            self.defer,
-        )?;
-        let appended = install_versions(&mut self.state, candidate);
-        self.store.maybe_compact(&mut self.state);
-        Ok(appended)
+    pub fn install(&mut self, candidate: HistoryCandidate) -> Vec<bool> {
+        install_versions(&mut self.state, candidate)
     }
 
     pub fn append_batch(&mut self, versions: &[FileVersionV1]) -> Result<Vec<bool>, HistoryError> {
         let candidate = self.prepare_versions(versions)?;
-        self.install(candidate)
+        Ok(self.install(candidate))
     }
 
     pub fn snapshot(&self, record_id: FileRecordId) -> Option<RecordHistorySnapshot> {
@@ -289,7 +221,6 @@ fn stage_versions(
     }
     let mut touched: BTreeMap<FileRecordId, RecordAdditions> = BTreeMap::new();
     let mut owners: HashMap<FileVersionId, FileRecordId> = HashMap::new();
-    let mut accepted = Vec::new();
     let mut appended = Vec::with_capacity(versions.len());
     for version in versions {
         let owner = owners
@@ -346,13 +277,11 @@ fn stage_versions(
         additions.heads.insert(version.id);
         additions.versions.insert(version.id, version.clone());
         owners.insert(version.id, version.record_id);
-        accepted.push(version.clone());
         appended.push(true);
     }
     Ok(HistoryCandidate {
         touched,
         owners: owners.into_iter().collect(),
-        accepted,
         appended,
     })
 }
@@ -457,6 +386,7 @@ fn replay_entry(state: &mut HistoryState, entry: LogEntry) -> Result<(), History
     Ok(())
 }
 
+#[cfg(test)]
 fn encode_log_line(entry: &LogEntry) -> Result<Vec<u8>, HistoryError> {
     let json = serde_json::to_vec(entry)?;
     let mut line = Vec::with_capacity(json.len().saturating_add(66));
@@ -480,30 +410,23 @@ fn decode_log_line(line: &[u8]) -> Result<LogEntry, String> {
     serde_json::from_slice(json).map_err(|error| error.to_string())
 }
 
-/// Replay the log at `log_path` into `state`. Returns the length of the
-/// good prefix and its entry count; a torn final line is reported so the
-/// caller can drop it.
-fn replay_log(
-    log_path: &Path,
-    state: &mut HistoryState,
-) -> Result<(u64, usize, bool), HistoryError> {
+/// Fold the read-only legacy log at `log_path` into `state`. A torn final
+/// line (a write that never returned) is ignored; damage to any acknowledged
+/// entry fails closed. This function never truncates or rewrites the legacy
+/// file: the signed record log is the only durable history now.
+fn replay_legacy_log(log_path: &Path, state: &mut HistoryState) -> Result<(), HistoryError> {
     let bytes = match std::fs::read(log_path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((0, 0, false));
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     };
     let mut good = 0_usize;
-    let mut entries = 0_usize;
     let mut rest = bytes.as_slice();
     while let Some(newline) = rest.iter().position(|byte| *byte == b'\n') {
         let (line, tail) = rest.split_at(newline);
         let tail = tail.get(1..).unwrap_or_default();
         match decode_log_line(line) {
             Ok(entry) => replay_entry(state, entry)?,
-            // A write that never returned can leave a damaged last line;
-            // anything before it was acknowledged and must be intact.
             Err(_) if tail.is_empty() => break,
             Err(error) => {
                 return Err(HistoryError::DamagedLog(format!(
@@ -513,288 +436,218 @@ fn replay_log(
             }
         }
         good = good.saturating_add(newline).saturating_add(1);
-        entries = entries.saturating_add(1);
         rest = tail;
     }
-    Ok((good as u64, entries, good < bytes.len()))
+    Ok(())
 }
 
 impl FileHistoryStore {
-    /// The writer lock for a compound admission or projection. Its writes
-    /// are always durable when they return: callers advance their own
-    /// journals on it.
+    /// The writer lock for a compound admission or projection. Its folds are
+    /// published in memory when they return; the signed repository already
+    /// holds their durable form.
     pub(crate) fn lease(&self) -> Result<HistoryLease<'_>, HistoryError> {
         Ok(HistoryLease {
-            store: self,
             state: self.state.lock().map_err(|_| HistoryError::StatePoisoned)?,
-            defer: false,
         })
     }
 
-    /// The writer lock for a plain append, deferred when this thread defers.
     fn append_lease(&self) -> Result<HistoryLease<'_>, HistoryError> {
-        let defer = self.is_deferring();
-        Ok(HistoryLease {
-            store: self,
-            state: self.state.lock().map_err(|_| HistoryError::StatePoisoned)?,
-            defer,
+        self.lease()
+    }
+
+    /// Open the derived index anchored at `path`.
+    ///
+    /// A `history.json` (and `history.json.log`) written by an earlier
+    /// release is imported read-only for records the signed record repository
+    /// does not know. Nothing is written back to it. The checkpoint cache
+    /// lives beside it and is only used once a repository fold names its
+    /// workspace and exact log digest.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, HistoryError> {
+        let legacy_path = path.into();
+        let checkpoint_path = checkpoint_path_for(&legacy_path);
+        let state = import_legacy(&legacy_path)?;
+        Ok(Self {
+            legacy_path: Some(legacy_path),
+            checkpoint_path: Some(checkpoint_path),
+            state: Mutex::new(state),
+            derived: Mutex::new(false),
         })
     }
 
-    fn is_deferring(&self) -> bool {
-        self.deferring
-            .lock()
-            .is_ok_and(|threads| threads.contains(&std::thread::current().id()))
-    }
-
-    fn stop_deferring(&self) {
-        if let Ok(mut threads) = self.deferring.lock() {
-            threads.remove(&std::thread::current().id());
+    /// A derived index with no legacy import and no checkpoint cache.
+    #[must_use]
+    pub fn in_memory() -> Self {
+        Self {
+            legacy_path: None,
+            checkpoint_path: None,
+            state: Mutex::new(HistoryState::default()),
+            derived: Mutex::new(false),
         }
     }
 
-    /// Defer this thread's appends until the returned guard finishes.
-    pub fn defer_durability(&self) -> HistoryDeferral<'_> {
-        if let Ok(mut threads) = self.deferring.lock() {
-            threads.insert(std::thread::current().id());
-        }
-        HistoryDeferral {
-            store: self,
-            finished: false,
-        }
-    }
-
-    /// Write deferred mutations durably now.
-    pub fn flush(&self) -> Result<(), HistoryError> {
-        let mut state = self.state.lock().map_err(|_| HistoryError::StatePoisoned)?;
-        let result = self.write_lines(&mut state, None);
-        drop(state);
-        result
-    }
-
-    /// Durably append `entry`, or with `defer` keep it for the next durable
-    /// write.
-    fn append_entry(
-        &self,
-        state: &mut HistoryState,
-        entry: &LogEntry,
-        defer: bool,
-    ) -> Result<(), HistoryError> {
-        if defer {
-            // Consecutive version batches fold into one entry, so a
-            // deferred batch is one log line however many files it touched.
-            match (state.log.unwritten.last_mut(), entry) {
-                (Some(LogEntry::Versions { versions }), LogEntry::Versions { versions: more }) => {
-                    versions.extend(more.iter().cloned());
-                }
-                _ => state.log.unwritten.push(entry.clone()),
-            }
-            return Ok(());
-        }
-        self.write_lines(state, Some(entry))
-    }
-
-    /// Write the deferred mutations, then `entry`, in one write and one
-    /// sync. On failure the log is cut back to its last good length, so a
-    /// failed append never leaves a torn line in the middle of the log, and
-    /// the deferred mutations stay deferred.
-    fn write_lines(
-        &self,
-        state: &mut HistoryState,
-        entry: Option<&LogEntry>,
-    ) -> Result<(), HistoryError> {
-        use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
-
-        if state.log.unwritten.is_empty() && entry.is_none() {
-            return Ok(());
-        }
-        let mut line = Vec::new();
-        let mut count = 0_usize;
-        for pending in state.log.unwritten.iter().chain(entry) {
-            line.extend_from_slice(&encode_log_line(pending)?);
-            count = count.saturating_add(1);
-        }
-        if state.log.file.is_none() {
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .mode(0o600)
-                .open(&self.log_path)?;
-            if let Some(parent) = self.log_path.parent()
-                && !parent.as_os_str().is_empty()
-            {
-                tilo_files::native::atomic::sync_directory(parent)?;
-            }
-            file.set_len(state.log.len)?;
-            state.log.file = Some(file);
-        }
-        let Some(file) = state.log.file.as_mut() else {
-            return Err(HistoryError::StatePoisoned);
-        };
-        if let Err(error) = file.write_all(&line).and_then(|()| file.sync_data()) {
-            let _ = file.set_len(state.log.len);
-            state.log.file = None;
-            return Err(error.into());
-        }
-        state.log.len = state.log.len.saturating_add(line.len() as u64);
-        state.log.entries = state.log.entries.saturating_add(count);
-        state.log.unwritten.clear();
-        Ok(())
-    }
-
-    fn maybe_compact(&self, state: &mut HistoryState) {
-        if state.log.entries >= self.compact_after
-            && let Err(error) = self.compact_locked(state)
-        {
-            // The log already holds every entry durably; compaction only
-            // bounds its length and is retried on the next append.
-            eprintln!(
-                "could not fold history log {} into its snapshot: {error}",
-                self.log_path.display()
-            );
-        }
-    }
-
-    /// Write the full state as a new snapshot, then empty the log. A crash
-    /// between the two replays entries the snapshot already holds, which
-    /// are exact replays.
-    fn compact_locked(&self, state: &mut HistoryState) -> Result<(), HistoryError> {
-        // The snapshot holds everything in memory, deferred mutations too.
-        persist(&self.path, state)?;
-        state.log.unwritten.clear();
-        match state.log.file.as_mut() {
-            Some(file) => {
-                file.set_len(0)?;
-                file.sync_all()?;
-            }
-            None => match std::fs::OpenOptions::new().write(true).open(&self.log_path) {
-                Ok(file) => {
-                    file.set_len(0)?;
-                    file.sync_all()?;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            },
-        }
-        state.log.len = 0;
-        state.log.entries = 0;
-        Ok(())
-    }
-
-    /// Fold the log into the snapshot now.
+    /// Replace this index with the complete history of `workspace_id` as the
+    /// signed repository projects it. A checkpoint is used only when it names
+    /// the exact current log digest; otherwise the index is rebuilt from the
+    /// verified repository projections. Repeat calls are no-ops: later folds
+    /// keep the index current.
     ///
     /// # Errors
     ///
-    /// Returns an error when the snapshot cannot be written or the log
-    /// cannot be emptied.
-    pub fn compact(&self) -> Result<(), HistoryError> {
-        let mut state = self.state.lock().map_err(|_| HistoryError::StatePoisoned)?;
-        let result = self.compact_locked(&mut state);
-        drop(state);
-        result
-    }
-
-    /// Entries in the log that are not yet folded into the snapshot.
-    #[must_use]
-    pub fn pending_log_entries(&self) -> usize {
-        self.state.lock().map_or(0, |state| state.log.entries)
-    }
-
-    /// Open and fully validate a durable history store: the snapshot (with
-    /// recovery only from a retained generation that passes the same
-    /// validation), then every log entry.
-    pub fn open(path: impl Into<PathBuf>) -> Result<Self, HistoryError> {
-        let path = path.into();
-        let mut state = match crate::durable_backup::read_primary(&path)? {
-            Some(bytes) => match decode_document(&bytes) {
-                Ok(state) => state,
-                Err(primary_error) => {
-                    let outcome = match crate::durable_backup::read_or_recover(&path, |bytes| {
-                        decode_document(bytes).is_ok()
-                    }) {
-                        Ok(Some(outcome)) => outcome,
-                        Ok(None) => return Err(primary_error),
-                        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                            return Err(primary_error);
-                        }
-                        Err(error) => return Err(error.into()),
-                    };
-                    if let Some(recovery) = &outcome.recovery {
-                        eprintln!(
-                            "RECOVERED damaged history {} from {}; evidence {}; receipt {}",
-                            path.display(),
-                            recovery.backup_path.display(),
-                            recovery.damaged_evidence_path.display(),
-                            recovery.receipt_path.display()
-                        );
-                    }
-                    decode_document(&outcome.bytes)?
-                }
-            },
-            None => HistoryState::default(),
-        };
-        let log_path = log_path_for(&path);
-        let (good, entries, torn) = replay_log(&log_path, &mut state)?;
-        if torn {
-            let file = std::fs::OpenOptions::new().write(true).open(&log_path)?;
-            file.set_len(good)?;
-            file.sync_all()?;
+    /// Returns an error when a repository projection is unavailable or the
+    /// derived history violates ancestry, identity or conflict validation.
+    pub(crate) fn rebuild_from_repository(
+        &self,
+        repository: &crate::record_repository::RecordRepository,
+        workspace_id: Uuid,
+    ) -> Result<(), HistoryError> {
+        {
+            let derived = self
+                .derived
+                .lock()
+                .map_err(|_| HistoryError::StatePoisoned)?;
+            if *derived {
+                return Ok(());
+            }
         }
-        state.log.len = good;
-        state.log.entries = entries;
-        Ok(Self {
-            path,
-            log_path,
-            state: Mutex::new(state),
-            deferring: Mutex::new(HashSet::new()),
-            compact_after: LOG_COMPACT_AFTER_ENTRIES,
-        })
+        let digest = repository.history_digest();
+        let state = if let Some(state) = self.load_checkpoint(workspace_id, digest)? {
+            state
+        } else {
+            let state = self.build_from_repository(repository, workspace_id)?;
+            if let Err(error) = self.write_checkpoint(workspace_id, digest, &state) {
+                // The cache is an optimization; the repository rebuild is
+                // complete and authoritative, so a read-only cache dir does
+                // not make this mount unavailable.
+                eprintln!(
+                    "could not write the derived history checkpoint {}: {error}",
+                    self.checkpoint_path
+                        .as_ref()
+                        .map_or_else(String::new, |path| path.display().to_string())
+                );
+            }
+            state
+        };
+        *self.state.lock().map_err(|_| HistoryError::StatePoisoned)? = state;
+        *self
+            .derived
+            .lock()
+            .map_err(|_| HistoryError::StatePoisoned)? = true;
+        Ok(())
     }
 
-    /// Fold the log after `entries` instead of [`LOG_COMPACT_AFTER_ENTRIES`],
-    /// so a test crosses the bound without thousands of synced appends.
-    #[cfg(test)]
-    pub(crate) fn with_compact_after(mut self, entries: usize) -> Self {
-        self.compact_after = entries;
-        self
+    fn build_from_repository(
+        &self,
+        repository: &crate::record_repository::RecordRepository,
+        workspace_id: Uuid,
+    ) -> Result<HistoryState, HistoryError> {
+        let mut state = HistoryState::default();
+        let keys = repository.reconciliation_keys(workspace_id);
+        let mut known = BTreeSet::new();
+        for key in keys {
+            let lease = repository.projection_lease(key)?;
+            install_projection(&mut state, key.record_id, &lease.snapshot)?;
+            drop(lease);
+            known.insert(key.record_id);
+        }
+        if let Some(path) = &self.legacy_path {
+            let legacy = import_legacy(path)?;
+            for (record_id, record) in legacy.records {
+                if known.contains(&record_id) {
+                    continue;
+                }
+                merge_record(&mut state, record_id, record)?;
+            }
+        }
+        Ok(state)
     }
 
-    /// Append one immutable version. Returns `false` for an exact replay and
-    /// rejects an id reused with different bytes.
+    fn load_checkpoint(
+        &self,
+        workspace_id: Uuid,
+        digest: [u8; 32],
+    ) -> Result<Option<HistoryState>, HistoryError> {
+        let Some(path) = &self.checkpoint_path else {
+            return Ok(None);
+        };
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let checkpoint: HistoryCheckpoint = match serde_json::from_slice(&bytes) {
+            Ok(checkpoint) => checkpoint,
+            // A torn cache write is not history damage: the repository fold
+            // replaces it.
+            Err(_) => return Ok(None),
+        };
+        if checkpoint.schema_version != HISTORY_CHECKPOINT_SCHEMA_VERSION
+            || checkpoint.workspace_id != workspace_id
+            || checkpoint.source_digest != digest
+        {
+            return Ok(None);
+        }
+        match document_state(checkpoint.document) {
+            Ok(state) => Ok(Some(state)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    fn write_checkpoint(
+        &self,
+        workspace_id: Uuid,
+        digest: [u8; 32],
+        state: &HistoryState,
+    ) -> Result<(), HistoryError> {
+        let Some(path) = &self.checkpoint_path else {
+            return Ok(());
+        };
+        let checkpoint = HistoryCheckpoint {
+            schema_version: HISTORY_CHECKPOINT_SCHEMA_VERSION,
+            workspace_id,
+            source_digest: digest,
+            document: history_document(state),
+        };
+        let bytes = serde_json::to_vec(&checkpoint)?;
+        tilo_files::native::atomic::write_creating_parent(path, &bytes)?;
+        Ok(())
+    }
+
+    /// Fold one immutable version into the derived index. Returns `false` for
+    /// an exact replay and rejects an id reused with different bytes.
     pub fn append(&self, version: FileVersionV1) -> Result<bool, HistoryError> {
         let versions = [version];
         let appended = self.append_batch(&versions)?;
         Ok(appended.first().copied().unwrap_or(false))
     }
 
-    /// Atomically append versions which may belong to different records.
+    /// Atomically fold versions which may belong to different records.
     ///
     /// This is the history-side commit primitive for operations such as a
     /// POSIX replacement rename, where moving the source and deleting the
     /// destination are one logical mutation. Every item is validated against
-    /// copies of the records it touches (in input order), the accepted items
-    /// are written as one durable log entry, and only then are they published
-    /// in memory. A failure therefore exposes neither half of a multi-record
-    /// history transition. Exact replays are reported as `false` per item.
+    /// copies of the records it touches (in input order), and only then are
+    /// the accepted items published in the derived index. The signed record
+    /// repository is the durable authority; a failure here exposes neither
+    /// half of a multi-record history transition and is retried by the
+    /// repository fold. Exact replays are reported as `false` per item.
     pub fn append_batch(&self, versions: &[FileVersionV1]) -> Result<Vec<bool>, HistoryError> {
         self.append_lease()?.append_batch(versions)
     }
 
-    /// Persist an open or already-resolved conflict. Conflict records are
+    /// Fold an open or already-resolved conflict. Conflict records are
     /// immutable except for the explicit [`resolve`](Self::resolve) transition.
     pub fn record_conflict(&self, conflict: FileConflictV1) -> Result<bool, HistoryError> {
         self.append_lease()?.record_conflict(conflict)
     }
 
-    /// Resolve an open conflict. The result must already be a durable
+    /// Fold a conflict resolution. The result must already be a signed
     /// `ConflictResolution` version and its actor must match the resolution.
     /// Repeating the same resolution is idempotent; a different one is refused.
     pub fn resolve(
         &self,
         record_id: FileRecordId,
         conflict_id: Uuid,
-        resolution: ConflictResolution,
+        resolution: &ConflictResolution,
     ) -> Result<bool, HistoryError> {
         self.append_lease()?
             .resolve(record_id, conflict_id, resolution)
@@ -850,7 +703,10 @@ fn validate_conflict(record: &RecordState, conflict: &FileConflictV1) -> Result<
 }
 
 fn decode_document(bytes: &[u8]) -> Result<HistoryState, HistoryError> {
-    let document: HistoryDocument = serde_json::from_slice(bytes)?;
+    document_state(serde_json::from_slice(bytes)?)
+}
+
+fn document_state(document: HistoryDocument) -> Result<HistoryState, HistoryError> {
     if document.schema_version != HISTORY_SCHEMA_VERSION {
         return Err(HistoryError::UnsupportedVersion(document.schema_version));
     }
@@ -950,7 +806,7 @@ fn computed_heads(versions: &BTreeMap<FileVersionId, FileVersionV1>) -> BTreeSet
     heads
 }
 
-/// The log lives beside the snapshot: `history.json` → `history.json.log`.
+/// The legacy log lies beside its document: `history.json` → `history.json.log`.
 fn log_path_for(path: &Path) -> PathBuf {
     let mut name = path
         .file_name()
@@ -960,8 +816,99 @@ fn log_path_for(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-fn persist(path: &Path, state: &HistoryState) -> Result<(), HistoryError> {
-    let document = HistoryDocument {
+/// The derived checkpoint cache lies beside the legacy document, never in it:
+/// `history.json` → `history.index.json`.
+fn checkpoint_path_for(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_stem()
+        .map(std::ffi::OsStr::to_os_string)
+        .unwrap_or_default();
+    name.push(".index.json");
+    path.with_file_name(name)
+}
+
+/// Import any legacy document and log read-only. Nothing here writes.
+fn import_legacy(path: &Path) -> Result<HistoryState, HistoryError> {
+    let mut state = match crate::durable_backup::read_primary(path)? {
+        Some(bytes) => decode_document(&bytes)?,
+        None => HistoryState::default(),
+    };
+    replay_legacy_log(&log_path_for(path), &mut state)?;
+    Ok(state)
+}
+
+/// Install one verified repository projection, validating it as if it had
+/// arrived through the signed fold: unique immutable ids workspace-wide, a
+/// complete acyclic parent graph, exact heads and valid conflict references.
+fn install_projection(
+    state: &mut HistoryState,
+    record_id: FileRecordId,
+    projection: &crate::record_replication::RecordSnapshot,
+) -> Result<(), HistoryError> {
+    if projection.record_id != record_id {
+        return Err(HistoryError::WrongRecord);
+    }
+    if state.records.contains_key(&record_id) {
+        return Err(HistoryError::DuplicateRecord(record_id));
+    }
+    let mut record = RecordState::default();
+    for version in &projection.versions {
+        version.validate()?;
+        if version.record_id != record_id {
+            return Err(HistoryError::WrongRecord);
+        }
+        if state.version_owner.insert(version.id, record_id).is_some() {
+            return Err(HistoryError::VersionIdCollision(version.id));
+        }
+        if record
+            .versions
+            .insert(version.id, version.clone())
+            .is_some()
+        {
+            return Err(HistoryError::VersionIdCollision(version.id));
+        }
+    }
+    validate_graph(&record.versions)?;
+    record.heads = computed_heads(&record.versions);
+    for conflict in &projection.conflicts {
+        conflict.validate()?;
+        if conflict.record_id != record_id {
+            return Err(HistoryError::WrongRecord);
+        }
+        validate_conflict(&record, conflict)?;
+        if record
+            .conflicts
+            .insert(conflict.id, conflict.clone())
+            .is_some()
+        {
+            return Err(HistoryError::ConflictIdCollision(conflict.id));
+        }
+    }
+    state.records.insert(record_id, record);
+    Ok(())
+}
+
+/// Keep a record from the read-only legacy import only when the signed
+/// repository does not know it. Its document and log were already validated.
+fn merge_record(
+    state: &mut HistoryState,
+    record_id: FileRecordId,
+    record: RecordState,
+) -> Result<(), HistoryError> {
+    if state.records.contains_key(&record_id) {
+        return Ok(());
+    }
+    for version_id in record.versions.keys() {
+        if state.version_owner.insert(*version_id, record_id).is_some() {
+            return Err(HistoryError::VersionIdCollision(*version_id));
+        }
+    }
+    state.records.insert(record_id, record);
+    Ok(())
+}
+
+fn history_document(state: &HistoryState) -> HistoryDocument {
+    HistoryDocument {
         schema_version: HISTORY_SCHEMA_VERSION,
         records: state
             .records
@@ -976,10 +923,7 @@ fn persist(path: &Path, state: &HistoryState) -> Result<(), HistoryError> {
                 }
             })
             .collect(),
-    };
-    let bytes = serde_json::to_vec_pretty(&document)?;
-    crate::durable_backup::write(path, &bytes, |candidate| decode_document(candidate).is_ok())?;
-    Ok(())
+    }
 }
 
 #[derive(Debug, Error)]
@@ -990,6 +934,8 @@ pub enum HistoryError {
     Json(#[from] serde_json::Error),
     #[error("invalid file record: {0}")]
     Record(#[from] FileRecordError),
+    #[error("signed record repository cannot supply history: {0}")]
+    Repository(#[from] crate::record_repository::RecordRepositoryError),
     #[error("unsupported history schema version {0}")]
     UnsupportedVersion(u16),
     #[error("duplicate record {0:?}")]
@@ -1036,9 +982,29 @@ pub enum HistoryError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
     use super::*;
-    use collab_types::Ed25519PublicKey;
+    use collab_types::{Ed25519PublicKey, generate_keypair};
     use fs_protocol::{ConflictStrategy, ContentHash, FileActor, FileProvenance};
+    use uuid::Uuid;
+
+    use crate::record_replication::RecordEnvelopeV1;
+    use crate::record_replication::RecordOperationV1;
+    use crate::record_replication::test_authorizers::AllowActor;
+    use crate::record_repository::{RecordRepository, RecordRepositoryKey};
+
+    fn signed_version(
+        record_id: FileRecordId,
+        parents: Vec<FileVersionId>,
+        provenance: FileProvenance,
+        timestamp_ms: u64,
+        actor: FileActor,
+    ) -> FileVersionV1 {
+        let mut version = version(record_id, parents, provenance, timestamp_ms);
+        version.actor = actor;
+        version
+    }
 
     fn actor(byte: u8) -> FileActor {
         FileActor {
@@ -1070,395 +1036,393 @@ mod tests {
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
     )]
-    fn history_appends_and_batches_are_exact_atomic_and_durable() {
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("history.json");
-            let record = FileRecordId::new();
-            let root = version(record, vec![], FileProvenance::Create, 1);
-            let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
-            let store = FileHistoryStore::open(&path).unwrap();
-            let log = log_path_for(&path);
+    fn derived_history_appends_and_batches_are_exact_atomic_and_validated() {
+        let store = FileHistoryStore::in_memory();
+        let record = FileRecordId::new();
+        let root = version(record, vec![], FileProvenance::Create, 1);
+        assert!(store.append(root.clone()).unwrap());
+        assert!(!store.append(root.clone()).unwrap(), "exact replay");
+        let left = version(record, vec![root.id], FileProvenance::Edit, 2);
+        let right = version(record, vec![root.id], FileProvenance::Edit, 3);
+        store.append(left.clone()).unwrap();
+        store.append(right.clone()).unwrap();
+        let snapshot = store.snapshot(record).unwrap();
+        assert_eq!(
+            snapshot.versions,
+            vec![root.clone(), left.clone(), right.clone()]
+        );
+        let mut expected_heads = vec![left.id, right.id];
+        expected_heads.sort();
+        assert_eq!(snapshot.heads, expected_heads);
 
-            let batch = store.defer_durability();
-            store.append(root).unwrap();
-            store.append(edit.clone()).unwrap();
-            // Visible at once, on disk only when the batch finishes.
-            assert_eq!(store.snapshot(record).unwrap().versions.len(), 2);
-            assert!(std::fs::read(&log).unwrap_or_default().is_empty());
-            // Another thread's append is durable when it returns: it writes the
-            // deferred ones first, so the log keeps the order of memory.
-            let third = version(record, vec![edit.id], FileProvenance::Edit, 3);
-            std::thread::scope(|scope| {
-                scope.spawn(|| store.append(third.clone()).unwrap());
-            });
-            assert_eq!(store.pending_log_entries(), 2);
-            batch.finish().unwrap();
-            drop(store);
-            assert_eq!(
-                FileHistoryStore::open(&path)
-                    .unwrap()
-                    .snapshot(record)
-                    .unwrap()
-                    .versions
-                    .len(),
-                3
-            );
+        let before = store.snapshot(record).unwrap();
+        let orphan = version(record, vec![FileVersionId::new()], FileProvenance::Edit, 4);
+        assert!(matches!(
+            store.append(orphan),
+            Err(HistoryError::MissingParent(_))
+        ));
+        let mut collision = version(FileRecordId::new(), vec![], FileProvenance::Create, 1);
+        collision.id = root.id;
+        assert!(matches!(
+            store.append(collision),
+            Err(HistoryError::VersionIdCollision(_))
+        ));
+        assert_eq!(store.snapshot(record).unwrap(), before);
 
-            // A batch that never finishes (a crash) leaves nothing behind.
-            let other = FileRecordId::new();
-            let store = FileHistoryStore::open(&path).unwrap();
-            let batch = store.defer_durability();
+        let source_record = FileRecordId::new();
+        let destination_record = FileRecordId::new();
+        let source_root = version(source_record, vec![], FileProvenance::Create, 1);
+        let destination_root = version(destination_record, vec![], FileProvenance::Create, 1);
+        assert_eq!(
             store
-                .append(version(other, vec![], FileProvenance::Create, 4))
+                .append_batch(&[source_root.clone(), destination_root.clone()])
+                .unwrap(),
+            vec![true, true]
+        );
+        let source_move = version(
+            source_record,
+            vec![source_root.id],
+            FileProvenance::Rename,
+            2,
+        );
+        let mut destination_delete = version(
+            destination_record,
+            vec![destination_root.id],
+            FileProvenance::Delete,
+            2,
+        );
+        destination_delete.parents = vec![FileVersionId::new()];
+        let before_source = store.snapshot(source_record).unwrap();
+        let before_destination = store.snapshot(destination_record).unwrap();
+        assert!(matches!(
+            store.append_batch(&[source_move.clone(), destination_delete]),
+            Err(HistoryError::MissingParent(_))
+        ));
+        assert_eq!(store.snapshot(source_record).unwrap(), before_source);
+        assert_eq!(
+            store.snapshot(destination_record).unwrap(),
+            before_destination
+        );
+        let destination_delete = version(
+            destination_record,
+            vec![destination_root.id],
+            FileProvenance::Delete,
+            2,
+        );
+        assert_eq!(
+            store
+                .append_batch(&[source_move, destination_delete])
+                .unwrap(),
+            vec![true, true]
+        );
+
+        let conflict_id = Uuid::new_v4();
+        let conflict = FileConflictV1 {
+            id: conflict_id,
+            record_id: record,
+            versions: vec![left.id, right.id],
+            status: ConflictStatus::Open,
+            resolution: None,
+        };
+        assert!(store.record_conflict(conflict.clone()).unwrap());
+        assert!(!store.record_conflict(conflict).unwrap());
+        let result = version(
+            record,
+            vec![left.id, right.id],
+            FileProvenance::ConflictResolution,
+            4,
+        );
+        store.append(result.clone()).unwrap();
+        let resolution = ConflictResolution {
+            strategy: ConflictStrategy::KeepCurrent,
+            result: result.id,
+            actor: result.actor,
+            timestamp_ms: result.timestamp_ms,
+        };
+        assert!(store.resolve(record, conflict_id, &resolution).unwrap());
+        assert!(!store.resolve(record, conflict_id, &resolution).unwrap());
+        let conflict = &store.snapshot(record).unwrap().conflicts[0];
+        assert_eq!(conflict.status, ConflictStatus::Resolved);
+        assert_eq!(conflict.resolution.as_ref().unwrap().result, result.id);
+    }
+
+    #[test]
+    fn legacy_history_is_imported_read_only_and_damage_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        let record = FileRecordId::new();
+        let root = version(record, vec![], FileProvenance::Create, 1);
+        let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
+        let mut legacy = HistoryState::default();
+        let candidate = stage_versions(&legacy, &[root.clone(), edit.clone()]).unwrap();
+        install_versions(&mut legacy, candidate);
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&history_document(&legacy)).unwrap(),
+        )
+        .unwrap();
+        let legacy_bytes = std::fs::read(&path).unwrap();
+        let log = log_path_for(&path);
+        let next = version(record, vec![edit.id], FileProvenance::Edit, 3);
+        let later = version(record, vec![next.id], FileProvenance::Edit, 4);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .unwrap();
+        for versions in [vec![next.clone()], vec![later.clone()]] {
+            file.write_all(&encode_log_line(&LogEntry::Versions { versions }).unwrap())
                 .unwrap();
-            std::mem::forget(batch);
-            let on_disk = std::fs::read(&log).unwrap();
-            drop(store);
-            assert_eq!(std::fs::read(&log).unwrap(), on_disk);
-            assert!(
-                FileHistoryStore::open(&path)
-                    .unwrap()
-                    .snapshot(other)
-                    .is_none()
-            );
         }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("history.json");
-            let store = FileHistoryStore::open(&path).unwrap();
-            let record = FileRecordId::new();
-            let root = version(record, vec![], FileProvenance::Create, 1);
-            assert!(store.append(root.clone()).unwrap());
-            assert!(!store.append(root.clone()).unwrap(), "exact replay");
-            let left = version(record, vec![root.id], FileProvenance::Edit, 2);
-            let right = version(record, vec![root.id], FileProvenance::Edit, 3);
-            store.append(left.clone()).unwrap();
-            store.append(right.clone()).unwrap();
-            drop(store);
+        drop(file);
+        let log_bytes = std::fs::read(&log).unwrap();
 
-            let reopened = FileHistoryStore::open(path).unwrap();
-            let snapshot = reopened.snapshot(record).unwrap();
-            assert_eq!(snapshot.versions, vec![root, left.clone(), right.clone()]);
-            let mut expected_heads = vec![left.id, right.id];
-            expected_heads.sort();
-            assert_eq!(snapshot.heads, expected_heads);
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("history.json");
-            let store = FileHistoryStore::open(&path).unwrap();
-            let record = FileRecordId::new();
-            let root = version(record, vec![], FileProvenance::Create, 1);
-            store.append(root.clone()).unwrap();
-            let before = disk_state(&path);
-            let orphan = version(record, vec![FileVersionId::new()], FileProvenance::Edit, 2);
-            assert!(matches!(
-                store.append(orphan),
-                Err(HistoryError::MissingParent(_))
-            ));
-            let mut collision = version(FileRecordId::new(), vec![], FileProvenance::Create, 1);
-            collision.id = root.id;
-            assert!(matches!(
-                store.append(collision),
-                Err(HistoryError::VersionIdCollision(_))
-            ));
-            assert_eq!(disk_state(&path), before);
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("history.json");
-            let store = FileHistoryStore::open(&path).unwrap();
-            let source_record = FileRecordId::new();
-            let destination_record = FileRecordId::new();
-            let source_root = version(source_record, vec![], FileProvenance::Create, 1);
-            let destination_root = version(destination_record, vec![], FileProvenance::Create, 1);
-            assert_eq!(
-                store
-                    .append_batch(&[source_root.clone(), destination_root.clone()])
-                    .unwrap(),
-                vec![true, true]
-            );
+        let store = FileHistoryStore::open(&path).unwrap();
+        assert_eq!(
+            store.snapshot(record).unwrap().versions,
+            vec![root.clone(), edit, next, later]
+        );
+        assert!(!store.append(root).unwrap(), "exact replay");
+        assert_eq!(store.snapshot(record).unwrap().versions.len(), 4);
+        assert_eq!(std::fs::read(&path).unwrap(), legacy_bytes);
+        assert_eq!(std::fs::read(&log).unwrap(), log_bytes, "never compacted");
+        drop(store);
 
-            let source_move = version(
-                source_record,
-                vec![source_root.id],
-                FileProvenance::Rename,
-                2,
-            );
-            let mut destination_delete = version(
-                destination_record,
-                vec![destination_root.id],
-                FileProvenance::Delete,
-                2,
-            );
-            destination_delete.parents = vec![FileVersionId::new()];
-            let before = disk_state(&path);
-            assert!(matches!(
-                store.append_batch(&[source_move.clone(), destination_delete]),
-                Err(HistoryError::MissingParent(_))
-            ));
-            assert_eq!(disk_state(&path), before);
-            assert_eq!(store.snapshot(source_record).unwrap().versions.len(), 1);
-            assert_eq!(
-                store.snapshot(destination_record).unwrap().versions.len(),
-                1
-            );
+        // A torn final line is a write that never returned: ignored, and the
+        // legacy bytes stay untouched as evidence.
+        let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        file.write_all(b"0123456789abcdef {\"op\":\"vers").unwrap();
+        drop(file);
+        let damaged_tail = std::fs::read(&log).unwrap();
+        assert_eq!(
+            FileHistoryStore::open(&path)
+                .unwrap()
+                .snapshot(record)
+                .unwrap()
+                .versions
+                .len(),
+            4
+        );
+        assert_eq!(std::fs::read(&log).unwrap(), damaged_tail);
+        std::fs::write(&log, &log_bytes).unwrap();
 
-            let destination_delete = version(
-                destination_record,
-                vec![destination_root.id],
-                FileProvenance::Delete,
-                2,
-            );
-            assert_eq!(
-                store
-                    .append_batch(&[source_move.clone(), destination_delete.clone()])
-                    .unwrap(),
-                vec![true, true]
-            );
-            drop(store);
+        // Damage to an acknowledged entry is never silently skipped.
+        let mut damaged = log_bytes;
+        damaged[70] ^= 0x01;
+        std::fs::write(&log, &damaged).unwrap();
+        assert!(matches!(
+            FileHistoryStore::open(&path),
+            Err(HistoryError::DamagedLog(_))
+        ));
+        assert_eq!(std::fs::read(&log).unwrap(), damaged, "evidence kept");
 
-            let reopened = FileHistoryStore::open(path).unwrap();
-            assert_eq!(
-                reopened.snapshot(source_record).unwrap().versions,
-                vec![source_root, source_move]
-            );
-            assert_eq!(
-                reopened.snapshot(destination_record).unwrap().versions,
-                vec![destination_root, destination_delete]
-            );
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("history.json");
-            let store = FileHistoryStore::open(&path).unwrap();
-            let record = FileRecordId::new();
-            let root = version(record, vec![], FileProvenance::Create, 1);
-            let left = version(record, vec![root.id], FileProvenance::Edit, 2);
-            let right = version(record, vec![root.id], FileProvenance::Edit, 3);
-            for item in [root, left.clone(), right.clone()] {
-                store.append(item).unwrap();
-            }
-            let conflict_id = Uuid::new_v4();
-            let conflict = FileConflictV1 {
-                id: conflict_id,
-                record_id: record,
-                versions: vec![left.id, right.id],
-                status: ConflictStatus::Open,
-                resolution: None,
-            };
-            assert!(store.record_conflict(conflict.clone()).unwrap());
-            assert!(!store.record_conflict(conflict).unwrap());
+        // A legacy document whose heads do not match its graph is refused.
+        std::fs::remove_file(&log).unwrap();
+        let mut document: serde_json::Value = serde_json::from_slice(&legacy_bytes).unwrap();
+        document["records"][0]["heads"] = serde_json::json!([]);
+        std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+        assert!(matches!(
+            FileHistoryStore::open(&path),
+            Err(HistoryError::InvalidHeads)
+        ));
+    }
 
-            let result = version(
-                record,
-                vec![left.id, right.id],
-                FileProvenance::ConflictResolution,
-                4,
-            );
-            store.append(result.clone()).unwrap();
-            let resolution = ConflictResolution {
-                strategy: ConflictStrategy::KeepCurrent,
-                result: result.id,
-                actor: result.actor,
-                timestamp_ms: result.timestamp_ms,
-            };
-            assert!(
-                store
-                    .resolve(record, conflict_id, resolution.clone())
-                    .unwrap()
-            );
-            assert!(!store.resolve(record, conflict_id, resolution).unwrap());
-            drop(store);
-
-            let reopened = FileHistoryStore::open(path).unwrap();
-            let conflict = &reopened.snapshot(record).unwrap().conflicts[0];
-            assert_eq!(conflict.status, ConflictStatus::Resolved);
-            assert_eq!(conflict.resolution.as_ref().unwrap().result, result.id);
+    fn projection(
+        record_id: FileRecordId,
+        versions: Vec<FileVersionV1>,
+    ) -> crate::record_replication::RecordSnapshot {
+        crate::record_replication::RecordSnapshot {
+            record_id,
+            binding: None,
+            metadata: None,
+            content_revision: None,
+            versions,
+            conflicts: Vec::new(),
+            attributions: Vec::new(),
         }
     }
 
-    /// Everything the store keeps on disk: snapshot and log bytes.
-    fn disk_state(path: &Path) -> (Vec<u8>, Vec<u8>) {
+    #[test]
+    fn repository_fold_still_refuses_broken_ancestry_and_cross_record_ids() {
+        let mut state = HistoryState::default();
+        let record = FileRecordId::new();
+        let orphan = version(record, vec![FileVersionId::new()], FileProvenance::Edit, 1);
+        assert!(matches!(
+            install_projection(&mut state, record, &projection(record, vec![orphan])),
+            Err(HistoryError::MissingParent(_))
+        ));
+        assert!(state.records.is_empty());
+
+        let other = FileRecordId::new();
+        let first = version(other, vec![], FileProvenance::Create, 1);
+        install_projection(&mut state, other, &projection(other, vec![first.clone()])).unwrap();
+        let mut collided = first;
+        collided.record_id = record;
+        assert!(matches!(
+            install_projection(&mut state, record, &projection(record, vec![collided])),
+            Err(HistoryError::VersionIdCollision(_))
+        ));
+        assert!(!state.records.contains_key(&record));
+    }
+
+    fn repository_with_signed_history() -> (
+        tempfile::TempDir,
+        RecordRepository,
+        Uuid,
+        RecordRepositoryKey,
+        FileActor,
+        ed25519_dalek::SigningKey,
+        [FileVersionV1; 3],
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let repository = RecordRepository::open(dir.path().join("records")).unwrap();
+        let workspace_id = Uuid::new_v4();
+        let record_id = FileRecordId::new();
+        let key = RecordRepositoryKey {
+            workspace_id,
+            record_id,
+        };
+        let (signing_key, device) = generate_keypair();
+        let (_, person) = generate_keypair();
+        let actor = FileActor { person, device };
+        let root = signed_version(record_id, vec![], FileProvenance::Create, 1, actor);
+        let edit = signed_version(record_id, vec![root.id], FileProvenance::Edit, 2, actor);
+        let result = signed_version(
+            record_id,
+            vec![root.id, edit.id],
+            FileProvenance::ConflictResolution,
+            3,
+            actor,
+        );
+        let conflict = FileConflictV1 {
+            id: Uuid::new_v4(),
+            record_id,
+            versions: vec![root.id, edit.id],
+            status: ConflictStatus::Open,
+            resolution: None,
+        };
+        let operations = [
+            RecordOperationV1::AppendVersion(root.clone()),
+            RecordOperationV1::AppendVersion(edit.clone()),
+            RecordOperationV1::AppendVersion(result.clone()),
+            RecordOperationV1::AppendConflict(conflict.clone()),
+            RecordOperationV1::ResolveConflict {
+                conflict_id: conflict.id,
+                resolution: ConflictResolution {
+                    strategy: ConflictStrategy::KeepCurrent,
+                    result: result.id,
+                    actor,
+                    timestamp_ms: result.timestamp_ms,
+                },
+            },
+        ];
+        for (index, operation) in operations.into_iter().enumerate() {
+            let sequence = u64::try_from(index).unwrap().saturating_add(1);
+            let envelope =
+                RecordEnvelopeV1::signed(record_id, actor, sequence, operation, &signing_key)
+                    .unwrap();
+            repository
+                .apply(key, &envelope, &AllowActor(actor))
+                .unwrap();
+        }
         (
-            std::fs::read(path).unwrap_or_default(),
-            std::fs::read(log_path_for(path)).unwrap_or_default(),
+            dir,
+            repository,
+            workspace_id,
+            key,
+            actor,
+            signing_key,
+            [root, edit, result],
         )
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn history_logs_read_legacy_and_fail_closed_on_damage() {
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("history.json");
-            let record = FileRecordId::new();
-            let root = version(record, vec![], FileProvenance::Create, 1);
-            let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
-            let mut legacy = HistoryState::default();
-            let candidate = stage_versions(&legacy, &[root.clone(), edit.clone()]).unwrap();
-            install_versions(&mut legacy, candidate);
-            persist(&path, &legacy).unwrap();
-            let legacy_bytes = std::fs::read(&path).unwrap();
-
-            let store = FileHistoryStore::open(&path).unwrap();
-            assert_eq!(
-                store.snapshot(record).unwrap().versions,
-                vec![root.clone(), edit.clone()]
-            );
-            let next = version(record, vec![edit.id], FileProvenance::Edit, 3);
-            assert!(store.append(next.clone()).unwrap());
-            assert!(!store.append(root.clone()).unwrap(), "exact replay");
-            assert_eq!(
-                std::fs::read(&path).unwrap(),
-                legacy_bytes,
-                "an append writes only the log"
-            );
-            assert_eq!(store.pending_log_entries(), 1);
-            drop(store);
-
-            let reopened = FileHistoryStore::open(&path).unwrap();
-            assert_eq!(
-                reopened.snapshot(record).unwrap().versions,
-                vec![root.clone(), edit.clone(), next.clone()]
-            );
-            reopened.compact().unwrap();
-            assert_eq!(reopened.pending_log_entries(), 0);
-            assert!(disk_state(&path).1.is_empty());
-            drop(reopened);
-            let compacted = FileHistoryStore::open(&path).unwrap();
-            assert_eq!(
-                compacted.snapshot(record).unwrap().versions,
-                vec![root, edit, next]
-            );
-        }
-        {
-            use std::io::Write as _;
-
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("history.json");
-            let record = FileRecordId::new();
-            let root = version(record, vec![], FileProvenance::Create, 1);
-            let edit = version(record, vec![root.id], FileProvenance::Edit, 2);
-            let store = FileHistoryStore::open(&path).unwrap();
-            store.append(root).unwrap();
-            let edit_id = edit.id;
-            store.append(edit).unwrap();
-            drop(store);
-            let log = log_path_for(&path);
-            let intact = std::fs::read(&log).unwrap();
-
-            // A write that never returned: half a line, no newline.
-            let mut file = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
-            file.write_all(b"0123456789abcdef {\"op\":\"vers").unwrap();
-            drop(file);
-            let store = FileHistoryStore::open(&path).unwrap();
-            assert_eq!(store.snapshot(record).unwrap().versions.len(), 2);
-            assert_eq!(std::fs::read(&log).unwrap(), intact, "torn tail removed");
-            let later = version(record, vec![edit_id], FileProvenance::Edit, 3);
-            store.append(later).unwrap();
-            drop(store);
-            assert_eq!(
-                FileHistoryStore::open(&path)
-                    .unwrap()
-                    .snapshot(record)
-                    .unwrap()
-                    .versions
-                    .len(),
-                3
-            );
-
-            // Damage to an acknowledged entry is never silently skipped.
-            let mut damaged = std::fs::read(&log).unwrap();
-            damaged[70] ^= 0x01;
-            std::fs::write(&log, &damaged).unwrap();
-            assert!(matches!(
-                FileHistoryStore::open(&path),
-                Err(HistoryError::DamagedLog(_))
-            ));
-            assert_eq!(std::fs::read(&log).unwrap(), damaged, "evidence kept");
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("history.json");
-            let store = FileHistoryStore::open(&path).unwrap();
-            let record = FileRecordId::new();
-            store
-                .append(version(record, vec![], FileProvenance::Create, 1))
-                .unwrap();
-            store.compact().unwrap();
-            drop(store);
-            let mut document: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-            document["records"][0]["heads"] = serde_json::json!([]);
-            std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
-            assert!(matches!(
-                FileHistoryStore::open(path),
-                Err(HistoryError::InvalidHeads)
-            ));
-        }
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let store = FileHistoryStore::open(dir.path().join("history.json")).unwrap();
-            let record = FileRecordId::new();
-            let mut parent = None;
-            for timestamp in 0..20 {
-                let item = version(
-                    record,
-                    parent.into_iter().collect(),
-                    if timestamp == 0 {
-                        FileProvenance::Create
-                    } else {
-                        FileProvenance::Edit
-                    },
-                    timestamp,
-                );
-                parent = Some(item.id);
-                store.append(item).unwrap();
-            }
-            let projection = store.projection(record).unwrap();
-            assert_eq!(projection.total_versions, 20);
-            assert!(projection.versions_truncated);
-            assert_eq!(projection.versions.len(), MAX_PROJECTED_VERSIONS);
-            assert_eq!(projection.versions.first().unwrap().timestamp_ms, 8);
-            let bytes = projection.to_xattr_bytes().unwrap();
-            assert!(bytes.len() <= fs_protocol::projection::MAX_HISTORY_PROJECTION_BYTES);
-            assert_eq!(
-                HistoryProjectionV1::parse_xattr(&bytes).unwrap(),
-                projection
-            );
-        }
-    }
-
-    #[test]
-    fn the_log_folds_into_the_snapshot_after_its_bound() {
-        const BOUND: usize = 64;
-        let dir = tempfile::tempdir().unwrap();
+    fn checkpointed_query_index_rebuilds_from_the_signed_log_and_keeps_legacy_only_records() {
+        let (dir, repository, workspace_id, key, actor, signing_key, versions) =
+            repository_with_signed_history();
+        let record_id = key.record_id;
         let path = dir.path().join("history.json");
-        let store = FileHistoryStore::open(&path)
-            .unwrap()
-            .with_compact_after(BOUND);
-        let record = FileRecordId::new();
-        let mut parent = version(record, vec![], FileProvenance::Create, 0);
-        store.append(parent.clone()).unwrap();
-        for i in 1..BOUND {
-            assert_eq!(
-                store.pending_log_entries(),
-                i,
-                "the log is not folded before its bound"
-            );
-            let next = version(record, vec![parent.id], FileProvenance::Edit, i as u64);
-            store.append(next.clone()).unwrap();
-            parent = next;
-        }
-        assert_eq!(store.pending_log_entries(), 0, "compacted at the bound");
-        assert!(disk_state(&path).1.is_empty());
-        drop(store);
-        let reopened = FileHistoryStore::open(&path).unwrap();
-        assert_eq!(reopened.snapshot(record).unwrap().versions.len(), BOUND);
+        let extra_record = FileRecordId::new();
+        let extra = version(extra_record, vec![], FileProvenance::Create, 9);
+        let mut legacy = HistoryState::default();
+        let candidate = stage_versions(&legacy, std::slice::from_ref(&extra)).unwrap();
+        install_versions(&mut legacy, candidate);
+        let legacy_bytes = serde_json::to_vec(&history_document(&legacy)).unwrap();
+        std::fs::write(&path, &legacy_bytes).unwrap();
+
+        let store = FileHistoryStore::open(&path).unwrap();
+        store
+            .rebuild_from_repository(&repository, workspace_id)
+            .unwrap();
+        let snapshot = store.snapshot(record_id).unwrap();
+        assert_eq!(snapshot.versions, versions.to_vec());
+        assert_eq!(snapshot.conflicts.len(), 1);
+        assert_eq!(snapshot.conflicts[0].status, ConflictStatus::Resolved);
+        assert_eq!(
+            store.snapshot(extra_record).unwrap().versions,
+            vec![extra],
+            "a record the signed repository does not know keeps its legacy read view"
+        );
+        let checkpoint = checkpoint_path_for(&path);
+        assert!(checkpoint.exists(), "a complete fold leaves a cache");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            legacy_bytes,
+            "the derived index never writes the legacy history document"
+        );
+        assert!(
+            !log_path_for(&path).exists(),
+            "the derived index owns no second history log"
+        );
+        let cached: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+        assert_eq!(cached["schema_version"], 1);
+        assert_eq!(cached["workspace_id"], serde_json::json!(workspace_id));
+        assert_eq!(
+            cached["source_digest"],
+            serde_json::json!(repository.history_digest())
+        );
+
+        // A new signed version after the checkpoint is picked up by a fresh
+        // fold; the stale checkpoint cannot pin the index.
+        let later = signed_version(
+            record_id,
+            vec![versions[2].id],
+            FileProvenance::Edit,
+            4,
+            actor,
+        );
+        let envelope = RecordEnvelopeV1::signed(
+            record_id,
+            actor,
+            6,
+            RecordOperationV1::AppendVersion(later.clone()),
+            &signing_key,
+        )
+        .unwrap();
+        repository
+            .apply(key, &envelope, &AllowActor(actor))
+            .unwrap();
+        let restarted = FileHistoryStore::open(&path).unwrap();
+        restarted
+            .rebuild_from_repository(&repository, workspace_id)
+            .unwrap();
+        assert_eq!(
+            restarted.snapshot(record_id).unwrap().versions.last(),
+            Some(&later)
+        );
+
+        // A damaged checkpoint is a cache miss, never history damage: the
+        // signed repository rebuild replaces it.
+        std::fs::write(&checkpoint, b"{\"truncated\":").unwrap();
+        let repaired = FileHistoryStore::open(&path).unwrap();
+        repaired
+            .rebuild_from_repository(&repository, workspace_id)
+            .unwrap();
+        assert_eq!(
+            repaired.snapshot(record_id).unwrap().versions.last(),
+            Some(&later)
+        );
+        assert!(checkpoint.exists());
     }
 }
