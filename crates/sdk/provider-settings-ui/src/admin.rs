@@ -246,7 +246,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
                             .map(|()| None)
                     }),
                     ProviderEffect::RemoveProvider { provider } => {
-                        let config = self.proposed_config(ProviderEffect::RemoveProvider {
+                        let config = self.config_after(ProviderEffect::RemoveProvider {
                             provider: provider.clone(),
                         })?;
                         let uses_api_key = snapshot
@@ -268,7 +268,7 @@ impl<H: PanelBindings> ProviderPanel<H> {
                         })
                     }
                     metadata => {
-                        let config = self.proposed_config(metadata)?;
+                        let config = self.config_after(metadata)?;
                         Box::pin(async move { admin.set_config(revision, config).await.map(Some) })
                     }
                 };

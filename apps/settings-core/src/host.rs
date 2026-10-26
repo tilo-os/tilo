@@ -16,6 +16,7 @@ use ui::framework::{ActionControl, Actions, Dispatcher, EffectAnswer, Effected, 
 use ui::storage::{AppStorage, Settings as StoredSettings, SettingsRevision, SettingsSchema};
 use ui::tilo_resource::{Binds, Effect};
 
+use crate::area::missing;
 use crate::effects::SettingsEffect;
 use crate::resource::Settings;
 
@@ -63,9 +64,24 @@ pub fn held<T: Section>(
     sections: &mut HashMap<TypeId, Box<dyn Any>>,
 ) {
     let section = cx.settings::<T>();
-    if let Some(actions) = cx.record_actions(&section) {
-        sections.insert(TypeId::of::<T>(), Box::new(actions));
+    if let Some(actions) = cx.record_actions(&section)
+        && let Some(dispatcher) = cx.record_dispatcher(&section)
+    {
+        sections.insert(
+            TypeId::of::<T>(),
+            Box::new(HeldSection {
+                actions,
+                dispatcher,
+            }),
+        );
     }
+}
+
+/// A section's published actions for the panes' controls, and the door its
+/// effects run typed changes through.
+struct HeldSection<T: Section> {
+    actions: Actions<T>,
+    dispatcher: Dispatcher<T>,
 }
 
 /// Every section's published actions, for the panes of the surface attached
@@ -328,16 +344,28 @@ impl PaneCx {
         &self,
         decl: &ui::tilo_resource::ActionDecl<T>,
     ) -> Option<ui::tilo_actions::ActionSpec> {
-        self.section::<T>()?.operation(decl)
+        self.section::<T>()?.actions.operation(decl)
     }
 
     /// The published actions of section `T`; `None` outside a host.
-    fn section<T: Section>(&self) -> Option<&Actions<T>> {
+    fn section<T: Section>(&self) -> Option<&HeldSection<T>> {
         self.door
             .as_ref()?
             .sections
             .get(&TypeId::of::<T>())?
-            .downcast_ref::<Actions<T>>()
+            .downcast_ref::<HeldSection<T>>()
+    }
+
+    /// Change section `T` with `action` as the person, through the record
+    /// the panes follow: the same typed action its own controls use, so the
+    /// change writes the fields it made rather than the whole value.
+    ///
+    /// # Errors
+    /// When the window holds no such section.
+    pub fn apply_section<T: Section>(&self, action: &T::Action) -> Result<(), String> {
+        let section = self.section::<T>().ok_or_else(missing)?;
+        section.dispatcher.apply(action);
+        Ok(())
     }
 
     /// `control`, setting the field of section `T` at `path` to each
@@ -352,7 +380,7 @@ impl PaneCx {
     {
         match self
             .section::<T>()
-            .and_then(|actions| actions.field_binding(path))
+            .and_then(|section| section.actions.field_binding(path))
         {
             Some(binding) => control.bind_action(binding),
             None => control.unavailable(),
@@ -377,7 +405,7 @@ impl PaneCx {
     {
         match self
             .section::<T>()
-            .and_then(|actions| actions.set_binding(path, value))
+            .and_then(|section| section.actions.set_binding(path, value))
         {
             Some(binding) => control.bind_action(binding),
             None => control.unavailable(),
@@ -400,10 +428,11 @@ impl PaneCx {
         I: 'static,
         C: ActionControl<I>,
     {
-        match self
-            .section::<T>()
-            .and_then(|actions| actions.edit_binding_with(path, move |_, input| Ok(edit(input))))
-        {
+        match self.section::<T>().and_then(|section| {
+            section
+                .actions
+                .edit_binding_with(path, move |_, input| Ok(edit(input)))
+        }) {
             Some(binding) => control.bind_action(binding),
             None => control.unavailable(),
         }
@@ -419,7 +448,7 @@ impl PaneCx {
         C: ActionControl<I>,
     {
         match self.section::<T>() {
-            Some(actions) => actions.bind(control, verb),
+            Some(section) => section.actions.bind(control, verb),
             None => control.unavailable(),
         }
     }

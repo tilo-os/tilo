@@ -177,7 +177,14 @@ impl Preset {
     /// A new profile from this preset, with a fresh id. Its model is chosen
     /// afterwards, from the provider's list or typed.
     pub fn profile(self) -> ProviderProfile {
-        let id = uuid::Uuid::new_v4().to_string();
+        self.profile_with_id(uuid::Uuid::new_v4().to_string())
+    }
+
+    /// A new profile from this preset under `id`: an action replaying on
+    /// another device mints the same id, and the credential reference names
+    /// that id rather than a random one.
+    pub fn profile_with_id(self, id: impl Into<String>) -> ProviderProfile {
+        let id = id.into();
         let (credential, sign_in) = match self.authentication() {
             Authentication::None => (None, None),
             Authentication::ApiKey => (Some(SecretReference::provider_api_key(&id)), None),

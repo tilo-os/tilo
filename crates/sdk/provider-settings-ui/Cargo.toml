@@ -21,6 +21,8 @@ taffy.workspace = true
 [dev-dependencies]
 # Mounted native tests use the SDK's complete native test driver.
 ui = { package = "tilo-app", version = "0.1.0", path = "../tilo-app", features = ["test-support"] }
+# The record tests merge two replicas, through the one apply path.
+tilo-automerge.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
