@@ -15,6 +15,7 @@ use crate::panes::agent_vertex::{self, VertexSetup};
 use crate::widgets::{
     Item, SettingsSection, StatusTone, note, row, rows, section, semantic_status_pill, value_row,
 };
+use provider_settings_ui::ProviderEffect;
 
 /// Native sign-in actions augment the shared provider row at the same public door.
 pub(super) fn sign_in_provider_row(row: LiveRow, profile: &ProviderProfile) -> LiveRow {
@@ -336,7 +337,7 @@ impl AgentModelsModel {
                             t("agent-enable")
                         },
                     ),
-                    AgentModelsEffect::SetProviderEnabled {
+                    ProviderEffect::SetProviderEnabled {
                         provider: profile_id.clone(),
                         on: !profile.enabled,
                     },
@@ -347,7 +348,7 @@ impl AgentModelsModel {
                         &format!("agent-models-remove-provider-{profile_id}"),
                         &t("agent-remove-provider"),
                     ),
-                    AgentModelsEffect::RemoveProvider {
+                    ProviderEffect::RemoveProvider {
                         provider: profile_id,
                     },
                 ))),
