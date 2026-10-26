@@ -59,6 +59,7 @@ use std::sync::{Arc, Mutex};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use zeroize::Zeroizing;
@@ -459,6 +460,8 @@ pub struct SecretPrompt {
     /// What the prompt showed around its fields when it was last painted:
     /// while that holds, only what a field repaints is damage.
     painted: Option<Chrome>,
+    /// How the line under the fields arrives when the answer changes.
+    answer: answer::Answer,
 }
 
 /// Everything the prompt paints around its fields' text.
@@ -519,6 +522,7 @@ impl SecretPrompt {
             secret_buffer: None,
             on_submit: None,
             painted: None,
+            answer: answer::Answer::default(),
         };
         prompt.fields = kind
             .roles()
@@ -929,7 +933,7 @@ impl SecretPrompt {
             // what the person needs now; otherwise what is being done.
             return Some((
                 self.notice.as_ref().unwrap_or(busy).clone(),
-                NoticeTone::Quiet,
+                NoticeTone::Busy,
             ));
         }
         if self.caps_lock_on() {
@@ -978,9 +982,9 @@ impl SecretPrompt {
             // given; what it says while checking is set after this.
             self.notice = None;
         }
-        for field in &mut self.fields {
-            field.input.set_disabled(now);
-        }
+        // The fields keep their face while the answer is checked: the
+        // prompt takes no input then, and rings them in the informational
+        // role, so they read as checking rather than unavailable.
         if was && !now {
             self.sync_focus();
         }
@@ -1248,6 +1252,13 @@ impl SecretPrompt {
     /// control up beside it with this.
     pub fn field_height(theme: &Theme) -> f64 {
         ControlSize::Regular.height(theme)
+    }
+
+    /// How tall this prompt's fields stand under `theme` as it is now: a
+    /// touch target once a finger is in play, [`Self::field_height`]
+    /// otherwise.
+    pub fn current_field_height(&self, theme: &Theme) -> f64 {
+        Self::field_height(&self.effective_theme(theme))
     }
 
     fn line_height(theme: &Theme, role: TextRole) -> f64 {
@@ -1929,7 +1940,8 @@ impl SecretPrompt {
         }
     }
 
-    /// Paint the prompt where [`Self::place`] laid it out.
+    /// Paint the prompt where [`Self::place`] laid it out, its answer at
+    /// the frame's instant.
     pub fn paint(
         &mut self,
         scene: &mut Scene,
@@ -1937,6 +1949,27 @@ impl SecretPrompt {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
+        self.paint_at(scene, transform, text, theme, crate::motion::frame_now());
+    }
+
+    /// Paint the prompt with its answer at `now`: a host that draws outside
+    /// the widget tree and keeps its own frame clock passes its instant, so
+    /// a still or a retained frame shows the same pose as a full one.
+    pub fn paint_at(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        now: crate::time::Instant,
+    ) {
+        self.answer.observe(self.notice_line(), now, theme.motion());
+        if let Some(until) = self.answer.deadline() {
+            // Outside the tree the frame pump polls, a host still gets the
+            // answer's frames through the motion clock.
+            crate::motion::want_frames_until(until);
+        }
+        let answer = self.answer.paint(now);
         self.painted = Some(self.chrome());
         let theme = self.effective_theme(theme);
         if let Some(modal) = self.layout.modal.clone() {
@@ -1946,12 +1979,81 @@ impl SecretPrompt {
                 modal_dialog::paint_backdrop(scene, transform, text, &theme, &modal, &spec);
             }
             let on_sheet = theme.on_ground(crate::chrome::panel_ground(&theme));
-            self.paint_body(scene, transform, text, &on_sheet);
+            self.paint_body(scene, transform, text, &on_sheet, &answer);
             let actions = self.modal_actions();
             let spec = self.modal_spec(&actions, modal.body.height());
             modal_dialog::paint_actions(scene, transform, text, &theme, &modal, &spec);
         } else {
-            self.paint_body(scene, transform, text, &theme);
+            self.paint_body(scene, transform, text, &theme, &answer);
+        }
+        self.answer.rest_if_settled(now);
+    }
+
+    /// When the answer under the fields comes to rest; `None` once its
+    /// resting frame has been painted. A host drawing outside the widget
+    /// tree asks for frames until then.
+    pub fn answer_deadline(&self) -> Option<crate::time::Instant> {
+        self.answer.deadline()
+    }
+
+    /// A field whose answer is being checked: edged in the informational
+    /// role, where a refused one takes the danger role.
+    fn paint_checking_edge(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
+        let colors = &theme.tokens.colors;
+        let ink = colors.ink_on_any(
+            &[colors.surfaces.raised, colors.surfaces.content],
+            colors.semantic.info,
+            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
+        let radius = crate::chrome::ChromeRole::Control.radius(theme, rect.height());
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.5),
+            transform,
+            ink,
+            None,
+            &crate::surface::edge_outline(rect, radius),
+        );
+    }
+
+    /// The ink of a line under the fields in `tone`, at `alpha`.
+    fn notice_ink(theme: &Theme, tone: NoticeTone, dim: Color, alpha: f32) -> Color {
+        let colors = &theme.tokens.colors;
+        let color = match tone {
+            NoticeTone::Error => colors.semantic.danger,
+            NoticeTone::Warning => colors.semantic.warning,
+            NoticeTone::Busy => colors.semantic.info,
+            NoticeTone::Quiet => dim,
+        };
+        color.with_alpha(color.components[3] * alpha)
+    }
+
+    /// One line under the fields in `rect`, in `color`.
+    fn paint_notice(
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        (line, color): (&str, Color),
+    ) {
+        let style = theme.text(TextRole::Caption);
+        let line_h = Self::line_height(theme, TextRole::Caption);
+        let mut y = rect.y0;
+        for shown in text.clamp_to_lines(
+            line,
+            &style,
+            crate::num::f32_of_f64(rect.width().max(1.0)),
+            NOTICE_MAX_LINES,
+        ) {
+            text.draw_style(
+                scene,
+                &shown,
+                color,
+                transform.pre_translate(Vec2::new(rect.x0, y)),
+                None,
+                &style,
+            );
+            y += line_h;
         }
     }
 
@@ -1961,6 +2063,7 @@ impl SecretPrompt {
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
+        answer: &answer::AnswerPaint,
     ) {
         let (ink, dim) = if self.presentation == Presentation::Inline {
             (theme.text_primary, theme.text_dim)
@@ -2021,33 +2124,22 @@ impl SecretPrompt {
             );
             field.input.draw(scene, transform, text, theme, &presence);
         }
-        if let Some((line, tone)) = self.notice_line() {
-            let colors = &theme.tokens.colors;
-            let color = match tone {
-                NoticeTone::Error => colors.semantic.danger,
-                NoticeTone::Warning => colors.semantic.warning,
-                NoticeTone::Quiet => dim,
-            };
-            let style = theme.text(TextRole::Caption);
-            let rect = self.layout.notice;
-            let line_h = Self::line_height(theme, TextRole::Caption);
-            let mut y = rect.y0;
-            for shown in text.clamp_to_lines(
-                &line,
-                &style,
-                crate::num::f32_of_f64(rect.width().max(1.0)),
-                NOTICE_MAX_LINES,
-            ) {
-                text.draw_style(
-                    scene,
-                    &shown,
-                    color,
-                    transform.pre_translate(Vec2::new(rect.x0, y)),
-                    None,
-                    &style,
-                );
-                y += line_h;
+        if self.busy.is_some() {
+            for rect in &self.layout.fields {
+                Self::paint_checking_edge(scene, transform, theme, *rect);
             }
+        }
+        let rect = self
+            .layout
+            .notice
+            .with_origin((self.layout.notice.x0 + answer.dx, self.layout.notice.y0));
+        if let Some(((line, tone), alpha)) = &answer.replaced {
+            let ink = Self::notice_ink(theme, *tone, dim, *alpha);
+            Self::paint_notice(scene, transform, text, theme, rect, (line, ink));
+        }
+        if let Some((line, tone)) = &answer.shown {
+            let ink = Self::notice_ink(theme, *tone, dim, answer.shown_alpha);
+            Self::paint_notice(scene, transform, text, theme, rect, (line, ink));
         }
         if let Some((label, checked)) = &self.option {
             let rect = self.layout.option.unwrap_or(Rect::ZERO);
@@ -2166,6 +2258,11 @@ impl SecretPrompt {
             };
             node.name = Some(field.label.clone());
             node.state.required = field.required;
+            if self.busy.is_some() {
+                // Checking: not editable until the asker answers.
+                node.state.disabled = true;
+                node.state.busy = true;
+            }
             if let Some((error_index, error)) = &self.error
                 && *error_index == index
             {
@@ -2403,6 +2500,8 @@ pub enum NoticeTone {
     Warning,
     /// Information.
     Quiet,
+    /// The asker is checking the answer.
+    Busy,
 }
 
 impl Drop for SecretPrompt {
@@ -2417,13 +2516,15 @@ impl Drop for SecretPrompt {
 
 impl Widget for SecretPrompt {
     fn needs_redraw(&self) -> bool {
-        self.chrome_changed() || self.fields.iter().any(|field| field.input.needs_redraw())
+        self.chrome_changed()
+            || self.answer.deadline().is_some()
+            || self.fields.iter().any(|field| field.input.needs_redraw())
     }
 
     /// A keystroke repaints its field; the whole prompt only when what is
     /// around the fields (the line under them, focus, a button) changed.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.chrome_changed() {
+        if self.chrome_changed() || self.answer.deadline().is_some() {
             // A sheet paints its scrim over the whole window.
             let rect = self
                 .layout
@@ -2635,6 +2736,9 @@ impl Widget for SecretPrompt {
         self.perform_access_action(action, key_path, state, path)
     }
 }
+
+#[path = "secret_prompt_answer.rs"]
+mod answer;
 
 #[cfg(test)]
 #[path = "secret_prompt_tests.rs"]

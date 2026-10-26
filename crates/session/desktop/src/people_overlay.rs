@@ -199,6 +199,9 @@ pub enum PeopleHit {
     Moved(DockEdge),
     /// Say this in your own words as what you are doing; empty clears it.
     SetStatus(String),
+    /// Open the card of the person with this roster id, beside their row
+    /// (`anchor`): a click on a row, or Enter on it.
+    ShowPerson { id: String, anchor: Rect },
 }
 
 /// One painted row.
@@ -1278,10 +1281,18 @@ impl PeopleOverlay {
                 return Some(PeopleHit::ToggleFollow(person.to_owned()));
             }
             if let Some(person) = id.strip_prefix("row:") {
-                // A click opens the peek at once: a touch has no hover.
+                // A click opens their card, which a touch reaches too (it has
+                // no hover to peek with); the peek gives way to it.
+                let anchor = self
+                    .rows
+                    .iter()
+                    .find(|row| row.id == person)
+                    .map_or(self.panel, |row| row.rect);
                 let person = person.to_owned();
-                self.open_peek(&person);
-                continue;
+                if self.peek.person().is_some() {
+                    self.close_peek();
+                }
+                return Some(PeopleHit::ShowPerson { id: person, anchor });
             }
             if let Some(person) = id.strip_prefix("send:")
                 && let Some(text) = self.composer.text_to_send()
@@ -1301,6 +1312,20 @@ impl PeopleOverlay {
         let mut children = self.targets.accessibility_children();
         children.extend(self.composer.accessibility());
         children
+    }
+
+    /// Carry out what assistive technology asked of one of
+    /// [`Self::accessibility_children`] (its action target), as a press
+    /// on it would: what the host applies, if anything.
+    pub fn perform_semantic_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        target: &str,
+    ) -> Option<PeopleHit> {
+        if !self.targets.perform_semantic_action(action, target) {
+            return None;
+        }
+        self.take_activated()
     }
 
     /// What the last frame showed of the rows.

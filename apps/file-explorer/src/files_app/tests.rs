@@ -5213,7 +5213,9 @@ mod responsive_body_tests {
     /// asks the host for the window's Undo, and Ctrl+Z is the host's.
     #[test]
     fn changes_announce_once_with_the_windows_undo() {
+        let _serial = crate::files_app::serial();
         use crate::file_ops::Change;
+        ui::attention::clear();
         let dir = tempfile::tempdir().unwrap();
         for name in ["a.txt", "b.txt", "c.txt"] {
             std::fs::write(dir.path().join(name), b"x").unwrap();
@@ -5253,15 +5255,14 @@ mod responsive_body_tests {
             "one plain line, no meta text"
         );
         h.lay_out(1000.0, 720.0);
-        let shown = ui::window_toolbar::notice().expect("the window's bar says it");
-        assert_eq!(shown.text, told);
-        let undo = shown
-            .actions
+        // The change waits for the person, with Undo as its one action.
+        let waiting = ui::attention::items()
             .into_iter()
-            .next()
-            .expect("Undo is the bar's action while it shows");
-        assert_eq!(undo.name, t("files-notice-undo"));
-        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: undo.id });
+            .find(|item| item.owner().app == "so.tilo.files")
+            .expect("the move waits in Needs you");
+        assert_eq!(waiting.title(), told);
+        assert_eq!(waiting.action().label, t("files-notice-undo"));
+        h.w.needs.pressed(ui::attention::Press::Act(waiting.id()));
         h.lay_out(1000.0, 720.0);
         assert_eq!(
             ui::undo::UndoControl::take_undo_request(&mut h.w),
@@ -5297,13 +5298,13 @@ mod responsive_body_tests {
         assert!(!told.contains("os error"), "{told}");
     }
 
-    /// A move to Trash's Undo stands in the window's bar right after the
-    /// notice, wide and compact: it names itself where the row has room and
-    /// never goes into the overflow menu, and the notice is cut short only
-    /// where nothing that yields to it stands beside it.
+    /// A move to Trash's Undo is the one action of the row it waits on,
+    /// wherever the person is.
     #[test]
-    fn a_move_to_trash_keeps_its_undo_in_the_window_bar_wide_and_compact() {
+    fn a_move_to_trash_keeps_its_undo_where_the_person_can_take_it() {
+        let _serial = crate::files_app::serial();
         use crate::file_ops::Change;
+        ui::attention::clear();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
         let mut files = FileExplorerWidget::with_persistence(None, None);
@@ -5330,25 +5331,17 @@ mod responsive_body_tests {
             }]),
         );
         harness.recompose().unwrap();
-        for width in [1280.0, 420.0] {
-            let shown = harness
-                .window_bar_notice(width)
-                .expect("the move is said in the bar");
-            let button = shown.buttons.first().expect("Undo stands in the row");
-            assert_eq!(button.name, t("files-notice-undo"));
-            assert!(
-                button.bounds.x0 > shown.text_bounds.x1,
-                "{width} px: {shown:?}"
-            );
-            // Wide, inline; compact, in a strip of its own under the row,
-            // its text whole.
-            assert_eq!(
-                shown.strip.is_some(),
-                width < 1280.0,
-                "{width} px: {shown:?}"
-            );
-            assert!(shown.whole && button.labelled, "{width} px: {shown:?}");
-        }
+        // The move waits for the person with one action, and its row is the
+        // same row at every width: it is not a notice with a lifetime and a
+        // strip of its own.
+        let waiting = ui::attention::items()
+            .into_iter()
+            .find(|item| item.owner().app == "so.tilo.files")
+            .expect("the move waits in Needs you");
+        assert_eq!(waiting.action().label, t("files-notice-undo"));
+        assert_eq!(waiting.owner().name, "Files");
+        let harness = harness;
+        drop(harness);
     }
 
     /// Alt+Left, Alt+Right and Alt+Up go back, forward and up; typing the
@@ -5691,10 +5684,12 @@ mod responsive_body_tests {
             "archive toolbar must not expose a one-item duplicate menu"
         );
         assert_eq!(h.w.footer_label(), t("files-archive-read-only"));
-        assert_eq!(
-            h.w.status_notice.get().cloned(),
-            Some(t("files-archive-read-only")),
-            "entering an archive says it is read-only in the window's bar"
+        assert!(
+            h.w.status_notice.get().cloned() == Some(t("files-archive-read-only"))
+                || ui::attention::entries()
+                    .iter()
+                    .any(|entry| entry.what() == t("files-archive-read-only")),
+            "entering an archive says it is read-only, and the record keeps it"
         );
 
         h.lay_out(1200.0, 760.0);

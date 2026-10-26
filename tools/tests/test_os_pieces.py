@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gzip
 import importlib.util
 import json
 import os
@@ -99,6 +100,58 @@ class OciLayersTests(unittest.TestCase):
             layers.cmd_take(str(root / "base"), str(root / "built"), str(root / "again"), "mine",
                             str(root / "inputs.json"))
             self.assertEqual(json.loads((root / "again/fragment.json").read_text())["layers"], fragment["layers"])
+
+    def test_take_compresses_the_uncompressed_layers_it_keeps(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.layout(root / "base", [b"base"])
+            self.layout(root / "built", [b"base", b"mine", b"more"])
+            (root / "inputs.json").write_text(json.dumps({"inputs": {}, "inputsDigest": ""}))
+            for out in ("one", "two"):
+                layers.cmd_take(str(root / "base"), str(root / "built"), str(root / out), "mine",
+                                str(root / "inputs.json"))
+            fragment = json.loads((root / "one/fragment.json").read_text())
+            self.assertEqual([l["mediaType"] for l in fragment["layers"]], [layers.LAYER_GZIP] * 2)
+            for layer, data in zip(fragment["layers"], (b"mine", b"more")):
+                blob = (root / "one" / "blobs" / "sha256" / layer["digest"][7:]).read_bytes()
+                self.assertEqual(layers.sha256_bytes(blob), layer["digest"])
+                self.assertEqual(len(blob), layer["size"])
+                self.assertEqual(gzip.decompress(blob), data)
+            self.assertEqual(json.loads((root / "two/fragment.json").read_text())["layers"], fragment["layers"])
+
+    def test_an_export_given_placeholders_writes_only_the_layers_on_top(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.layout(root / "base", [b"base", b"empty"])
+            # As the export leaves it: the parent's layers are the empty placeholders it found,
+            # a layer repeating one of them (an instruction that changed nothing) is one too.
+            self.layout(root / "built", [b"base", b"empty", b"mine", b"empty"])
+            layers.cmd_placeholders(str(root / "base"), str(root / "placeholders"))
+            for digest in (layers.sha256_bytes(b"base"), layers.sha256_bytes(b"empty")):
+                self.assertEqual(Path(layers.blob_path(str(root / "placeholders"), digest)).stat().st_size, 0)
+                Path(layers.blob_path(str(root / "built"), digest)).write_bytes(b"")
+            (root / "inputs.json").write_text(json.dumps({"inputs": {}, "inputsDigest": ""}))
+            layers.cmd_take(str(root / "base"), str(root / "built"), str(root / "fragment"), "mine",
+                            str(root / "inputs.json"))
+            fragment = json.loads((root / "fragment/fragment.json").read_text())
+            self.assertEqual([l["diffID"] for l in fragment["layers"]],
+                             [layers.sha256_bytes(b"mine"), layers.sha256_bytes(b"empty")])
+            base = layers.image_of_layout(str(root / "base"))[0]["layers"][1]
+            self.assertEqual(fragment["layers"][1]["digest"], base["digest"])
+            self.assertEqual(layers.read_blob(str(root / "fragment"), base["digest"]), b"empty")
+            composed = layers.compose(str(root / "image"), [str(root / "base"), str(root / "fragment")], "0")
+            self.assertTrue(composed["digest"].startswith("sha256:"))
+
+    def test_a_view_links_and_a_composition_copies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.layout(root / "base", [b"base"])
+            first = layers.compose(str(root / "view"), [str(root / "base")], "0", symlink=True)
+            again = layers.compose(str(root / "kept"), [str(root / "base")], "0")
+            self.assertEqual(first["digest"], again["digest"])
+            digest = layers.sha256_bytes(b"base")
+            self.assertTrue(Path(layers.blob_path(str(root / "view/oci"), digest)).is_symlink())
+            self.assertFalse(Path(layers.blob_path(str(root / "kept/oci"), digest)).is_symlink())
 
     def test_take_refuses_an_image_not_built_on_its_parent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

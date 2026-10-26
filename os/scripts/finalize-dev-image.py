@@ -13,11 +13,13 @@ Run by os/Containerfile.dev as its last content step:
   `base_created` is the base image's creation time, which production builds
   clamp to their commit's time; `tilo-vm vm upgrade` refuses to move a VM onto
   a dev image whose base is older than the one it runs.
-* /etc/containers/policy.json lets the dev VM `bootc switch`/`upgrade` onto
-  registry.tilo.so/tilo/tilo-vm, which is deliberately unsigned. Production
-  policy rejects that repository outright (os/etc/containers/policy.json), so
-  this rewrites exactly that one scope and nothing else; the signed production
-  repository keeps its sigstore requirement.
+* /etc/containers/policy.json lets the dev image `bootc switch`/`upgrade` onto
+  registry.tilo.so/tilo/tilo-vm, the dev channel, and registry.tilo.so/tilo/tilo-vm-ref,
+  branches' own builds, each with the development key's
+  signature (keys/cosign-dev.pub, installed as DEV_KEY): only t's checks on main
+  sign with it. Production policy rejects that repository outright
+  (os/etc/containers/policy.json), so this rewrites exactly those scopes and
+  nothing else; the signed production repository keeps its sigstore requirement.
 * /usr/lib/tilo/image-flavour holds `dev`, so tools and humans can tell a dev
   deployment from a production one, and a dev image cannot be a dev base.
 """
@@ -33,7 +35,10 @@ import sys
 from pathlib import Path
 
 DEV_REPOSITORY = "registry.tilo.so/tilo/tilo-vm"
+# Branches' own builds, which a device follows only while one is pinned (tilo-update-channel).
+REF_REPOSITORY = "registry.tilo.so/tilo/tilo-vm-ref"
 PRODUCTION_REPOSITORY = "registry.tilo.so/tilo/tilo"
+DEV_KEY = "/usr/share/tilo/cosign-dev.pub"
 
 
 def fail(message: str) -> None:
@@ -75,12 +80,14 @@ def base_info(base_image: str, base_digest: str | None, cargo_lock: Path,
 
 def dev_policy(policy: dict) -> dict:
     docker = policy.setdefault("transports", {}).setdefault("docker", {})
-    current = docker.get(DEV_REPOSITORY)
-    if current is not None and current != [{"type": "reject"}]:
-        fail(f"the base image's policy already admits {DEV_REPOSITORY} ({current}); a production "
-             "image must reject it")
     production = json.dumps(docker.get(PRODUCTION_REPOSITORY), sort_keys=True)
-    docker[DEV_REPOSITORY] = [{"type": "insecureAcceptAnything"}]
+    for repository in (DEV_REPOSITORY, REF_REPOSITORY):
+        current = docker.get(repository)
+        if current is not None and current != [{"type": "reject"}]:
+            fail(f"the base image's policy already admits {repository} ({current}); a production "
+                 "image must reject it")
+        docker[repository] = [{"type": "sigstoreSigned", "keyPath": DEV_KEY,
+                               "signedIdentity": {"type": "matchRepository"}}]
     if json.dumps(docker.get(PRODUCTION_REPOSITORY), sort_keys=True) != production:
         fail(f"rewriting {DEV_REPOSITORY} changed the {PRODUCTION_REPOSITORY} policy")
     return policy
@@ -107,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(info, indent=2) + "\n")
 
+    if not (root / DEV_KEY.lstrip("/")).is_file():
+        fail(f"{DEV_KEY} is missing; the dev image must install keys/cosign-dev.pub there")
     policy_path = root / "etc/containers/policy.json"
     if not policy_path.is_file():
         fail(f"{policy_path} is missing; the base is not a Tilo image")

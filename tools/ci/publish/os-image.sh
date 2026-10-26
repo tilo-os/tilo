@@ -202,21 +202,25 @@ case ${1:-} in
     # tilo-vm moves a machine only onto a dev image whose base is no older than the one it
     # runs; the OS image's own clock is its base's and RPM snapshot's, so the commit's time
     # orders dev bases, as it did in Build / OS dev. The dev components come compiled
-    # (os-compile-dev-<arch>): nothing compiles here.
+    # (os-compile-dev-<arch>): nothing compiles here. While stable has not published this tree's
+    # env-runtime the OS image ships none; the dev image then ships env-runtime-dev-<arch>'s, built
+    # from this run's image-rpms-<arch> and sealed with a throwaway key, trusted by it alone.
     phase build
     TILO_DEV_BASE=localhost/tilo:ci TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
       TILO_DEV_BASE_CREATED=$(date -u -d "@$(git log -1 --format=%ct)" +%Y-%m-%dT%H:%M:%SZ) \
       TILO_COMPILED_DEV=$compiled \
+      TILO_DEV_ENV_RUNTIME=/target/publish/env-runtime/dev/$arch \
       TILO_DISTROBOX= TILO_OUTPUT=$scratch/dev-output TMPDIR=/var/tmp \
       bash os/dev/build-dev-image.sh
     # Kept as the layers it added over the OS image's, composed with them: the OS image's
     # layers are the same blobs in both, stored and sent once.
     phase push
     dev=$scratch/dev-built
-    rm -rf "$dev" "$out"
-    podman push -q --compression-format gzip --force-compression localhost/tilo-vm:ci "oci:$dev:tilo"
+    rm -rf "$out"
+    python3 -I tools/ci/os/oci_layers.py export localhost/tilo-vm:ci "$in/oci" "$dev"
     printf '{"inputs":{},"inputsDigest":""}' > "$scratch/dev-inputs.json"
     python3 -I tools/ci/os/oci_layers.py take "$in/oci" "$dev" "$scratch/dev-fragment" dev-image "$scratch/dev-inputs.json"
+    rm -rf "$dev"
     python3 -I tools/ci/os/oci_layers.py compose "$out" "$in/oci" "$scratch/dev-fragment"
     printf '%s\n' "$revision" > "$out/revision"
     ;;

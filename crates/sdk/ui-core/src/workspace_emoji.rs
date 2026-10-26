@@ -175,6 +175,79 @@ pub trait EmojiSource {
     /// it, as the picker's "Add emoji" does. The host's chooser answers
     /// later; the emoji arrives with the record's next change.
     fn choose_and_add(&self);
+
+    /// What became of the last picture chosen with [`Self::choose_and_add`],
+    /// once it was added or refused, with a count that moves each time one
+    /// is: the picker shows the new emoji, or why it was not added. `(0,
+    /// None)` until one was.
+    fn last_added(&self) -> (u64, Option<Adding>) {
+        (0, None)
+    }
+}
+
+/// What became of a picture chosen to add as an emoji
+/// ([`EmojiSource::last_added`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Adding {
+    /// It is the emoji of this name now.
+    Added(String),
+    /// It was not added: why, for the person.
+    Failed(String),
+}
+
+/// A picture made one a workspace emoji keeps ([`make_small`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Small {
+    /// A PNG at most [`IMAGE_SIDE`] a side and [`MAX_IMAGE_BYTES`] long.
+    Ready(Vec<u8>),
+    /// The image tools are still to come (a browser fetches them on first
+    /// use): ask again once they are in.
+    Pending,
+    /// It is no picture this can read (PNG, JPEG or WebP).
+    NotAPicture,
+    /// Even made smaller than [`IMAGE_SIDE`] it stays too large.
+    TooLarge,
+}
+
+/// `image` (PNG, JPEG or WebP of any size) made a picture a workspace
+/// emoji keeps: fitted within [`IMAGE_SIDE`], aspect kept, as a PNG; a
+/// picture too detailed to fit [`MAX_IMAGE_BYTES`] at that side is made
+/// smaller still, down to half of it.
+#[must_use]
+pub fn make_small(image: &[u8]) -> Small {
+    let mut side = IMAGE_SIDE;
+    while side >= IMAGE_SIDE / 2 {
+        match crate::image_store::small_png(image, side) {
+            crate::image_store::SmallPicture::Ready(png) if png.len() <= MAX_IMAGE_BYTES => {
+                return Small::Ready(png);
+            }
+            crate::image_store::SmallPicture::Ready(_) => side = side.saturating_sub(8),
+            crate::image_store::SmallPicture::Pending => return Small::Pending,
+            crate::image_store::SmallPicture::Broken => return Small::NotAPicture,
+        }
+    }
+    Small::TooLarge
+}
+
+/// Wake `window` once the image tools [`make_small`] waits for are in:
+/// a picture it answered [`Small::Pending`] for is made small then, on
+/// the frame that wake brings, and not only when something else changes.
+pub fn wake_when_tools_are_in(window: &WakeHandle) {
+    crate::image_decoders::wake_when_in(window.clone());
+}
+
+impl Small {
+    /// Why it was not made small, for the person; `None` when it was.
+    #[must_use]
+    pub fn refusal(&self) -> Option<String> {
+        let key = match self {
+            Self::Ready(_) => return None,
+            Self::Pending => "workspace-emoji-loading",
+            Self::NotAPicture => "workspace-emoji-not-a-picture",
+            Self::TooLarge => "workspace-emoji-too-detailed",
+        };
+        Some(crate::i18n::widget_format(key, &[]))
+    }
 }
 
 /// A picture made one a workspace emoji keeps ([`make_small`]).

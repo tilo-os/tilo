@@ -2139,6 +2139,46 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
         );
     }
 
+    // --- phase: the_unsaved_question_offers_keep_editing_and_keeps_the_form ---
+    {
+        let mut h = Harness::new(1280, 800);
+        let cur = h.app.selected.unwrap();
+        let c = h.app.store.contact(cur).cloned().unwrap();
+        h.app.begin_edit(c, false);
+        if let Some(form) = h.app.form.as_ref() {
+            form.set_value(Slot::Title, "Keep Me");
+        }
+        h.relayout();
+        let other_idx = (0..h.app.shared.borrow().painted.len())
+            .find(|i| h.app.shared.borrow().painted[*i].0 != cur)
+            .unwrap();
+        h.press_left(h.row_center(other_idx));
+        assert_eq!(
+            h.app.pending_switch.map(|id| id),
+            Some(h.row_id(other_idx)),
+            "the guard asks before dropping the edit"
+        );
+        // Three answers: Save, Don't save, and staying where the person is.
+        let tertiary = current_dialog(&*h.app).tertiary_rect();
+        assert!(
+            tertiary.width() > 0.0,
+            "Keep editing is a real answer, not a missing button"
+        );
+        h.press_left(tertiary.center());
+        assert_eq!(h.app.selected, Some(cur), "the switch did not happen");
+        assert!(h.app.pending_switch.is_none(), "the question is closed");
+        assert_eq!(h.app.mode, Mode::Edit, "the form is still open to edit");
+        assert_eq!(
+            h.app
+                .form
+                .as_ref()
+                .map(|form| form.draft.title.clone())
+                .unwrap_or_default(),
+            "Keep Me",
+            "what was typed is still there"
+        );
+    }
+
     // --- phase: switching_with_no_changes_switches_directly_no_modal ---
     {
         let mut h = Harness::new(1280, 800);

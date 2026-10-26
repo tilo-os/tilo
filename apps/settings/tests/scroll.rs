@@ -30,7 +30,7 @@ struct Harness {
 impl Harness {
     fn new(category: Category, w: f32, h: f32) -> Self {
         let config = crate::support::ScratchConfig::new();
-        let app = config.app().with_category(category).with_width_hint(w);
+        let app = config.app().with_category(category);
         Self {
             app: Framed::new(
                 ui::State::new(),

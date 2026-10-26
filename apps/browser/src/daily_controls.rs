@@ -14,7 +14,11 @@ use ui::{
 
 pub(crate) const FIND_INPUT: &str = "browser.find.input";
 /// The zoom steps a page goes through, `1.2` times apart each: five out,
-/// nine in.
+/// nine in. The engine holds a page's level per site, so the level is what it
+/// is told; what a person reads and can reach — the percentage, the bounds,
+/// the "Actual size" label — is the toolkit's [`ui::content_zoom::ZoomModel`]
+/// over these same factors, so this window states its zoom the way every
+/// other window does (`1.2^5` smaller than its own size … `1.2^9` larger).
 const ZOOM_STEPS: std::ops::RangeInclusive<i32> = -5..=9;
 
 /// The smallest zoom level, the page's level being the steps from its
@@ -26,6 +30,14 @@ fn zoom_min() -> f64 {
 /// The largest zoom level.
 fn zoom_max() -> f64 {
     f64::from(*ZOOM_STEPS.end())
+}
+
+/// The factors those steps stand for, ascending: one per level the page can
+/// take, so the model's bounds are the engine's bounds.
+fn zoom_levels() -> Vec<f32> {
+    ZOOM_STEPS
+        .map(|level| ui::num::f32_of_f64(1.2_f64.powf(f64::from(level))))
+        .collect()
 }
 #[derive(Clone, Copy)]
 pub(crate) enum Action {
@@ -316,29 +328,43 @@ impl DailyControls {
     }
     /// The page's size in percent of its own, rounded.
     pub fn zoom_percent(&self) -> f64 {
-        (100.0 * 1.2_f64.powf(self.zoom)).round()
+        self.zoom_model().percent()
+    }
+
+    /// The toolkit's model over this page's level: the same bounds, steps
+    /// and percentage every other app states its zoom with.
+    fn zoom_model(&self) -> ui::content_zoom::ZoomModel {
+        let mut model = ui::content_zoom::ZoomModel::stepping(zoom_levels(), 1.0);
+        model.adopt(self.zoom_factor());
+        model
     }
     /// Whether a zoom `step` would change the page's size: in (`1`) below
     /// the largest, out (`-1`) above the smallest, back (`0`) while zoomed.
     pub fn can_zoom(&self, step: i32) -> bool {
-        match step.signum() {
-            1 => self.zoom < zoom_max(),
-            -1 => self.zoom > zoom_min(),
-            _ => self.zoom.abs() >= f64::EPSILON,
+        if !(zoom_min()..=zoom_max()).contains(&self.zoom) {
+            // The engine reported a level outside the steps this window offers
+            // (a site with its own remembered zoom): only going back to the
+            // page's own size is meaningful.
+            return step.signum() == 0;
         }
+        self.zoom_model()
+            .can_step(crate::daily_controls::zoom_step(step))
     }
+
     /// The zoom row's label: the page's zoom level is always stated while it
     /// is not the default.
     pub fn zoom_label(&self) -> String {
         let catalog = &crate::resource::CATALOG;
         if self.zoom.abs() < f64::EPSILON {
-            catalog.t("browser-menu-actual-size")
-        } else {
-            catalog.t_args(
-                "browser-menu-actual-size-zoomed",
-                &[("percent", ui::i18n::ArgValue::Number(self.zoom_percent()))],
-            )
+            return catalog.t("browser-menu-actual-size");
         }
+        catalog.t_args(
+            "browser-menu-actual-size-zoomed",
+            &[(
+                "percent",
+                ui::i18n::ArgValue::Number(self.zoom_model().percent()),
+            )],
+        )
     }
     pub fn bar(&self, theme: &ui::theme::Theme) -> Box<dyn Widget> {
         // Room for "12 of 345", so the count never wraps under the field.
@@ -477,5 +503,15 @@ mod tests {
                 Some(&WebViewCommand::SetZoomLevel(0.0))
             );
         }
+    }
+}
+
+/// The toolkit's step a menu step stands for: in (`1`), out (`-1`), or back to
+/// the page's own size (`0`).
+pub(crate) fn zoom_step(step: i32) -> ui::content_zoom::ZoomStep {
+    match step.signum() {
+        1 => ui::content_zoom::ZoomStep::In,
+        -1 => ui::content_zoom::ZoomStep::Out,
+        _ => ui::content_zoom::ZoomStep::Reset,
     }
 }

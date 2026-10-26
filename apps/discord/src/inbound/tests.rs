@@ -3,8 +3,8 @@ use serde_json::json;
 
 use super::*;
 use crate::layout::tests::mapping;
-use crate::link;
-use crate::record::{Link, Mapping, Ownership, PendingLink};
+use crate::record::{Link, Mapping, Ownership};
+use discord_wire::event::{Authorized, link_check, link_proof};
 
 fn guild() -> Guild {
     let mut g = Guild {
@@ -340,7 +340,7 @@ fn edits_and_deletes_of_discord_messages_follow_the_map() {
         message_id: "dm1".into(),
         ..MessageDeleted::default()
     };
-    assert_eq!(plan_deleted(&g, &delete, &json!({})).deletes, ["m1"]);
+    assert_eq!(plan_deleted(&g, &delete).deletes, ["m1"]);
 }
 
 #[test]
@@ -372,38 +372,39 @@ fn deleting_a_discord_post_removes_every_attachment_copy() {
             message_id: event.message_id,
             ..MessageDeleted::default()
         },
-        &json!({}),
     );
     assert_eq!(deleted.deletes, ["m0", "m1", "m2"]);
     assert!(deleted.removes.is_empty());
-    assert!(deleted.resends.is_empty());
 }
 
 #[test]
-fn a_tilo_message_deleted_in_discord_is_resent_unless_a_linked_moderator_did_it() {
+fn a_tilo_message_deleted_in_discord_goes_in_tilo_too_whoever_deleted_it() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
-    g.links.push(Link {
-        discord_user: "d_mod".into(),
-        person: "u_mod".into(),
-        ..Link::default()
-    });
     g.links.push(Link {
         discord_user: "d_ed".into(),
         person: "u_ed".into(),
         ..Link::default()
     });
-    let room = json!({"members": [{"person": "u_mod", "role": "moderator"}, {"person": "u_ed", "role": "editor"}]});
     let by = |executor: Option<&str>| MessageDeleted {
         message_id: "dm1".into(),
         executor: executor.map(Into::into),
         ..MessageDeleted::default()
     };
-    assert_eq!(plan_deleted(&g, &by(Some("d_mod")), &room).removes.len(), 1);
-    assert_eq!(plan_deleted(&g, &by(Some("d_ed")), &room).resends, ["m1"]);
-    assert_eq!(plan_deleted(&g, &by(None), &room).resends, ["m1"]);
+    let removed = |executor| plan_deleted(&g, &by(executor)).removes;
+    // Its linked author (or anyone linked), an unlinked server admin, and a
+    // delete Discord names nobody for all take it away in Tilo.
     assert_eq!(
-        plan_deleted(&g, &by(Some("b0")), &room),
+        removed(Some("d_ed")),
+        [RemoveItem {
+            message: "m1".into(),
+            reason: "deleted in Discord by u_ed".into()
+        }]
+    );
+    assert_eq!(removed(Some("d_admin")).len(), 1);
+    assert_eq!(removed(None).len(), 1);
+    assert_eq!(
+        plan_deleted(&g, &by(Some("b0"))),
         InboundPlan::default(),
         "the bridge's own delete"
     );
@@ -533,59 +534,135 @@ fn a_ban_blocks_and_hand_made_role_changes_are_reverted() {
     );
 }
 
-#[test]
-fn link_commands_find_the_pending_code_or_count_a_failure() {
-    let mut g = guild();
-    g.pending_links.push(PendingLink {
-        person: "u_ada".into(),
-        code_sha256: link::hash("AAAABBBBCCCC"),
-        expires_ms: i64::MAX,
-    });
-    let cmd = |code: &str| Command {
-        user_id: "u7".into(),
-        name: "link".into(),
-        code_sha256: Some(link::hash(code)),
-        ..Command::default()
-    };
-    assert_eq!(
-        plan_command(&g, &cmd("aaaa bbbb cccc")).complete_links[0].person,
-        "u_ada"
-    );
-    assert_eq!(
-        plan_command(&g, &cmd("WRONG")).complete_links[0].person,
-        "",
-        "complete-link records the failure"
-    );
-    let unlink = Command {
-        user_id: "u7".into(),
-        name: "unlink".into(),
-        ..Command::default()
-    };
-    assert!(plan_command(&g, &unlink).unlinks.is_empty(), "not linked");
+fn named(user_name: &str, display_name: Option<&str>) -> UserName {
+    UserName {
+        user_name: user_name.into(),
+        display_name: display_name.map(str::to_owned),
+    }
+}
+
+fn chat_with_ada() -> serde_json::Value {
+    json!({"people": [{"id": "u_ada", "name": "Ada Lovelace"}]})
 }
 
 #[test]
-fn a_link_carries_the_names_and_a_member_seen_renamed_updates_them() {
-    let mut g = guild();
-    g.pending_links.push(PendingLink {
-        person: "u_ada".into(),
-        code_sha256: link::hash("aaaabbbbcccc"),
-        expires_ms: i64::MAX,
-    });
-    let named = |user_name: &str, display_name: Option<&str>| UserName {
-        user_name: user_name.into(),
-        display_name: display_name.map(str::to_owned),
-    };
+fn link_offers_the_account_under_the_tokens_check_only() {
+    let g = guild();
     let linking = Command {
         user_id: "u7".into(),
         name: "link".into(),
-        code_sha256: Some(link::hash("aaaabbbbcccc")),
+        interaction: "i_1".into(),
+        link_check: Some(link_check(&link_proof("T0KEN"))),
         user: Some(named("ada.l", Some("Ada L"))),
+        avatar: Some("a1b2".into()),
         ..Command::default()
     };
-    let item = &plan_command(&g, &linking).complete_links[0];
-    assert_eq!(item.user_name, "ada.l");
-    assert_eq!(item.display_name, "Ada L");
+    let plan = plan_command(&g, &json!({}), &linking);
+    assert_eq!(
+        plan.offers,
+        [OfferItem {
+            check: link_check(&link_proof("T0KEN")),
+            discord_user: "u7".into(),
+            user_name: "ada.l".into(),
+            display_name: "Ada L".into(),
+            avatar: "a1b2".into(),
+            interaction: "i_1".into(),
+            state_sha256: String::new(),
+        }]
+    );
+    assert!(
+        plan.answers.is_empty(),
+        "the worker answered with the button"
+    );
+    let without = Command {
+        link_check: None,
+        ..linking
+    };
+    assert!(
+        plan_command(&g, &json!({}), &without).offers.is_empty(),
+        "no token, nothing to offer"
+    );
+}
+
+#[test]
+fn unlink_answers_with_what_came_of_it() {
+    let mut g = guild();
+    let unlink = Command {
+        user_id: "u7".into(),
+        name: "unlink".into(),
+        interaction: "i_2".into(),
+        ..Command::default()
+    };
+    let plan = plan_command(&g, &chat_with_ada(), &unlink);
+    assert!(plan.unlinks.is_empty(), "not linked");
+    assert!(plan.answers[0].content.contains("nothing to unlink"));
+
+    g.links.push(Link {
+        discord_user: "u7".into(),
+        person: "u_ada".into(),
+        ..Link::default()
+    });
+    let plan = plan_command(&g, &chat_with_ada(), &unlink);
+    assert_eq!(plan.unlinks, ["u7"]);
+    assert_eq!(
+        plan.answers,
+        [AnswerItem {
+            interaction: "i_2".into(),
+            content: "Unlinked from Ada Lovelace. What you write here shows under your Discord name again."
+                .into(),
+        }]
+    );
+}
+
+#[test]
+fn a_sign_in_from_tilo_is_offered_with_its_state() {
+    let authorized = Authorized {
+        user_id: "u7".into(),
+        user: Some(named("ada.l", None)),
+        avatar: None,
+        state_sha256: "5".repeat(64),
+        link_check: "c".repeat(64),
+    };
+    let plan = plan_authorized(&authorized);
+    assert!(plan.offers.is_empty(), "not for whoever holds the token");
+    let offer = &plan.sign_in_offers[0];
+    assert_eq!(offer.state_sha256, "5".repeat(64));
+    assert_eq!(offer.check, "c".repeat(64));
+    assert_eq!(
+        (offer.user_name.as_str(), offer.interaction.as_str()),
+        ("ada.l", "")
+    );
+}
+
+#[test]
+fn a_link_made_from_discord_edits_its_reply_to_the_tilo_name() {
+    let mut g = guild();
+    g.links.push(Link {
+        discord_user: "u7".into(),
+        person: "u_ada".into(),
+        interaction: Some("i_1".into()),
+        ..Link::default()
+    });
+    assert_eq!(
+        plan_linked(&g, &chat_with_ada(), "u_ada").answers,
+        [AnswerItem {
+            interaction: "i_1".into(),
+            content: linked_reply("Ada Lovelace"),
+        }]
+    );
+    assert!(linked_reply("Ada Lovelace").starts_with("Linked to Ada Lovelace."));
+    g.links[0].interaction = None;
+    assert!(
+        plan_linked(&g, &chat_with_ada(), "u_ada")
+            .answers
+            .is_empty(),
+        "a sign-in from Tilo has no reply to edit"
+    );
+}
+
+#[test]
+fn a_member_seen_renamed_updates_the_link() {
+    let mut g = guild();
 
     g.links.push(Link {
         discord_user: "u7".into(),
@@ -611,8 +688,47 @@ fn a_link_carries_the_names_and_a_member_seen_renamed_updates_them() {
             discord_user: "u7".into(),
             user_name: "ada.lovelace".into(),
             display_name: String::new(),
+            avatar: String::new(),
         }]
     );
+}
+
+#[test]
+fn a_linked_accounts_new_avatar_is_fetched_as_its_picture() {
+    let mut g = Guild::default();
+    g.links.push(Link {
+        discord_user: "u7".into(),
+        person: "p_ada".into(),
+        user_name: "ada.l".into(),
+        avatar: Some("old".into()),
+        photo: Some("data:image/png;base64,AAAA".into()),
+        photo_avatar: Some("old".into()),
+        ..Link::default()
+    });
+    let seen = |avatar: Option<&str>| MemberChanged {
+        user_id: "u7".into(),
+        user: Some(named("ada.l", None)),
+        avatar: avatar.map(str::to_owned),
+        ..MemberChanged::default()
+    };
+    let same = plan_member(&g, &seen(Some("old")), &json!({}));
+    assert!(same.renames.is_empty() && same.photos.is_empty());
+    let plan = plan_member(&g, &seen(Some("new")), &json!({}));
+    assert_eq!(plan.renames[0].avatar, "new");
+    assert_eq!(plan.photos, [link_photo("u7", "new")]);
+    assert_eq!(plan.photos[0].op.url, "avatars/u7/new.png?size=64");
+    assert!(plan.photos[0].op.inline);
+    let dropped = plan_member(&g, &seen(None), &json!({}));
+    assert_eq!(dropped.renames[0].avatar, "");
+    assert!(dropped.photos.is_empty());
+    assert!(
+        plan_link_photos(&g).is_empty(),
+        "the picture is of the avatar"
+    );
+    g.links
+        .iter_mut()
+        .for_each(|l| l.avatar = Some("new".into()));
+    assert_eq!(plan_link_photos(&g), [link_photo("u7", "new")]);
 }
 
 #[test]

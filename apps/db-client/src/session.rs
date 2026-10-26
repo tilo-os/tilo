@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
+use crate::i18n::{t, t_args, text};
 use crate::model::{
     ConnectionProfile, DatabaseSchema, QueryResult, RelationKind, RelationRef, TableInfo,
 };
@@ -32,11 +33,11 @@ pub enum MainTab {
 }
 
 impl MainTab {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            MainTab::Query => "Query",
-            MainTab::Data => "Data",
-            MainTab::Structure => "Structure",
+            MainTab::Query => t("db-tab-query"),
+            MainTab::Data => t("db-tab-data"),
+            MainTab::Structure => t("db-tab-structure"),
         }
     }
 
@@ -216,6 +217,16 @@ impl Session {
 
     /// Whether the worker still has work in flight (drives the app's
     /// `needs_animation_frame`, so results land without extra input).
+    /// What the status line says now, whichever kind of news it is.
+    pub fn status_message(&self) -> &str {
+        match &self.status {
+            RunStatus::Idle => "",
+            RunStatus::Busy(message) | RunStatus::Ok(message) | RunStatus::Error(message) => {
+                message
+            }
+        }
+    }
+
     pub fn busy(&self) -> bool {
         self.worker.busy()
     }
@@ -258,7 +269,7 @@ impl Session {
         self.status = if self.active_connection().is_some_and(|c| c.is_sample) {
             RunStatus::Idle
         } else {
-            RunStatus::Ok(format!("Connected to {name}"))
+            RunStatus::Ok(t_args("db-connected", &[("name", text(&name))]))
         };
     }
 
@@ -287,7 +298,9 @@ impl Session {
                 self.active_query = None;
             }
             if was_active && self.active_connection_id() == Some(connection_id) {
-                self.status = RunStatus::Idle;
+                // The person stopped it: say the query was cancelled rather
+                // than going quiet as if it had never run.
+                self.status = RunStatus::Ok(t("db-cancelled"));
             }
             return;
         }
@@ -427,7 +440,7 @@ impl Session {
         self.query_result = None;
         self.data_result = None;
         self.set_schema(DatabaseSchema::default());
-        self.status = RunStatus::Busy(format!("Connecting to {}…", profile.name));
+        self.status = RunStatus::Busy(t_args("db-connecting", &[("name", text(&profile.name))]));
         self.worker.request(DbRequest::Connect(Box::new(profile)));
     }
 
@@ -519,16 +532,16 @@ impl Session {
     /// result is folded in by [`drain`](Self::drain).
     pub fn run_query(&mut self, sql: &str) {
         if self.active_connection().is_none() {
-            self.status = RunStatus::Error("No live connection".into());
+            self.status = RunStatus::Error(t("db-no-connection"));
             return;
         }
-        self.status = RunStatus::Busy("Running…".into());
+        self.status = RunStatus::Busy(t("db-running"));
         let Some(connection_id) = self.active_connection_id() else {
-            self.status = RunStatus::Error("No live connection".into());
+            self.status = RunStatus::Error(t("db-no-connection"));
             return;
         };
         if self.active_query.is_some() {
-            self.status = RunStatus::Error("A query is already running".into());
+            self.status = RunStatus::Error(t("db-query-running"));
             return;
         }
         let Some(generation) = self.next_query_generation.checked_add(1) else {
@@ -537,8 +550,7 @@ impl Session {
             // counter wraps could let a late reply for an ancient query
             // acquire ownership of a newly-started one, so exhaustion fails
             // closed and asks for a fresh process instead.
-            self.status =
-                RunStatus::Error("Query identity space exhausted; restart Database Client".into());
+            self.status = RunStatus::Error(t("db-identity-exhausted"));
             return;
         };
         self.next_query_generation = generation;
@@ -560,7 +572,7 @@ impl Session {
         };
         if self.worker.cancel_query(connection_id, generation) == CancelQueryResult::Requested {
             self.cancelled_query = Some((connection_id, generation));
-            self.status = RunStatus::Busy("Cancelling query…".into());
+            self.status = RunStatus::Busy(t("db-cancelling"));
             true
         } else {
             false
@@ -802,7 +814,7 @@ mod tests {
             assert!(s.active_query.is_none());
             assert!(matches!(
                 s.status,
-                RunStatus::Error(ref message) if message.contains("identity space exhausted")
+                RunStatus::Error(ref message) if message.contains("counter is exhausted")
             ));
         }
 
@@ -825,7 +837,11 @@ mod tests {
             assert!(requested, "the worker must publish the active SQLite query");
             s.block_until_idle();
             assert!(!s.busy());
-            assert!(matches!(s.status, RunStatus::Idle));
+            assert!(
+                matches!(s.status, RunStatus::Ok(ref message) if message.contains("cancelled")),
+                "the status says the query was cancelled: {:?}",
+                s.status
+            );
         }
 
         // --- phase: stale_table_page_is_ignored_after_selection_changes ---

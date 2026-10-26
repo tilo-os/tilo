@@ -1043,6 +1043,7 @@ def frame_work(ctx, res):
         ctx.new_terminal_window()
     time.sleep(2)
     mark = core.trace_mark(ctx)
+    evidence_mark, cpu_before = core.session_log_mark(ctx), core.cpu_ticks(ctx)
     for _ in range(3):
         ctx.vm.key("super+Tab")
         time.sleep(0.8)
@@ -1080,7 +1081,10 @@ def frame_work(ctx, res):
             problems.append(f"frame CPU {pct} {st[f'cpu_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
         if display.get("hardware") and st[f"work_ms_{pct}"] > b[f"work_ms_{pct}"]:
             problems.append(f"frame wall time {pct} {st[f'work_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
-    expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")
+    where = f" [renderer: {ctx.facts.get('renderer')}]"
+    if problems:
+        where += core.frame_pacing_evidence(ctx, "R04", evidence_mark, cpu_before)
+    expect(not problems, "; ".join(problems) + where)
 
 
 # -- the installed-desktop gates of os-acceptance-{arch}, on this run's VM ---------

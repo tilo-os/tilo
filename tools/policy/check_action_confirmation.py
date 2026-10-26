@@ -8,8 +8,7 @@ and offers Undo, with no confirmation at all. A typed confirmation
 so typing it means the person read it. This check refuses, in production Rust:
 
 - a typed phrase on an action declared undoable: in the same builder chain or
-  contract literal as `.reversible()`, `reversible: true`, a compensated undo
-  or `ActionKind::Undoable`;
+  contract literal as a compensated undo or `ActionKind::Undoable`;
 - a typed phrase that is a generic word ("CONFIRM", "YES", "DELETE", ...),
   which says nothing about what is lost;
 - a `"CONFIRM"` literal anywhere: no person is ever asked to type it.
@@ -42,11 +41,45 @@ PHRASE_LITERAL = re.compile(r'phrase\s*:\s*"([^"]*)"')
 CONFIRM_LITERAL = re.compile(r'"CONFIRM"')
 ASSIGNED = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*contract\s*\.\s*confirmation\s*=")
 UNDOABLE = re.compile(
-    r"\.\s*reversible\s*\(\s*\)"
-    r"|\breversible\s*:\s*true\b"
+    r"\bkind\s*:\s*ActionKind\s*::\s*Undoable\b"
+    r"|\bof_kind\s*\(\s*ActionKind\s*::\s*Undoable\s*\)"
     r"|\bCOMPENSATED_UNDO_TAG\b"
-    r"|\bActionKind\s*::\s*Undoable\b"
 )
+
+
+NAME_ASSIGNED = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*contract\s*\.")
+KIND_ASSIGNED = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*)(?:\s*\.\s*contract)?\s*\.\s*kind\s*=\s*"
+    r"ActionKind\s*::\s*(Undoable|Outside|Read)\b"
+)
+
+
+def names_undoable(statement: str, code: str, start: int) -> bool:
+    """Whether `statement` names an action Undo takes back: its own contract
+    says so, or it is a binding of one that does, reached through the builder
+    chain (`spec.kind = ActionKind::Undoable`) or a contract field
+    (`spec.contract.kind = ActionKind::Undoable`). A binding that goes on to
+    name another kind says what it is as well: one that reaches outside is
+    not undoable, whatever it started as."""
+    # The kind the chain names last is what it is: one a builder set later
+    # (the arm of a conditional) overrides one set before it.
+    kinds = list(KIND_ASSIGNED.finditer(statement))
+    if kinds:
+        return kinds[-1].group(2) == "Undoable"
+    named = NAME_ASSIGNED.search(statement)
+    if named is None:
+        # A contract literal, wherever it sits.
+        return bool(UNDOABLE.search(statement))
+    # The nearest binding before the statement that changes it, and what
+    # that binding is: never what this binding's own chain says.
+    name = re.escape(named.group(1))
+    binding = None
+    for binding in re.finditer(
+        rf"\b(?:let|const|static)\s+(?:mut\s+)?{name}\b", code[:start]
+    ):
+        pass
+    built_start = statement_bounds(code, binding.end())[0] if binding else start
+    return names_undoable(code[built_start:start], code, built_start)
 
 
 def statement_bounds(code: str, at: int) -> tuple[int, int]:
@@ -100,18 +133,10 @@ def check_source(relative: str, text: str) -> list[str]:
                 f'{relative}:{line}: typed confirmation "{literal.group(1)}" says nothing '
                 "about what is lost; make the phrase the name of what it destroys"
             )
-        # A phrase set on a spec built earlier: the statement that built it.
-        assigned = ASSIGNED.search(statement)
-        if assigned:
-            name = re.escape(assigned.group(1))
-            # The nearest binding before it is the one it changes.
-            built = None
-            for built in re.finditer(rf"\blet\s+(?:mut\s+)?{name}\b", code[:start]):
-                pass
-            if built is not None:
-                built_start, built_end = statement_bounds(code, built.end())
-                statement += code[built_start:built_end]
-        if UNDOABLE.search(statement):
+        # A phrase set on a spec built earlier is read with what that
+        # binding already says it is: `names_undoable` reaches the binding
+        # from the kind the statement sets, never from its own text.
+        if names_undoable(statement, code, start):
             errors.append(
                 f"{relative}:{line}: a typed confirmation on an action Undo takes back; it "
                 "runs at once and offers Undo instead"

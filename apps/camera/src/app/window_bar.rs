@@ -191,7 +191,7 @@ impl CameraApp {
     fn invoke(&mut self, effect: &CameraEffect) {
         match &self.dispatcher {
             Some(dispatcher) => dispatcher.effect(effect),
-            None => self.toast.show("Camera is not open on a record".into()),
+            None => self.toast.show("Camera is not open on a record"),
         }
     }
 

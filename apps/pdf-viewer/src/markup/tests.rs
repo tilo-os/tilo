@@ -695,7 +695,7 @@ fn document_resources_publish_items_and_bounded_stable_rows() {
         .find(|action| action.id == "duplicate-page")
         .expect("duplicate page action");
     assert_eq!(duplicate.kind, OperationKind::Document);
-    assert!(duplicate.contract.reversible);
+    assert!(duplicate.contract.can_be_undone());
     assert!(action_ids(page).contains(&"delete-page"));
 
     let anno =

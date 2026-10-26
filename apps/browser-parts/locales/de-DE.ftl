@@ -76,6 +76,7 @@ browser-address = Adresse und Suche
 browser-address-placeholder = Suchen oder Adresse eingeben
 browser-go = Öffnen
 browser-suggestion-search = Mit { $engine } suchen
+browser-suggestion-bookmark = Lesezeichen, { $url }
 browser-page-bookmarked = Seite ist ein Lesezeichen
 browser-bookmark-page = Lesezeichen für diese Seite
 browser-library-open = Browserbibliothek öffnen
@@ -218,3 +219,112 @@ browser-page-failed-not-secure = Die sichere Verbindung zur Website ist fehlgesc
 browser-page-failed-blocked = Diese Seite ist gesperrt und kann hier nicht geöffnet werden.
 browser-page-failed-retry = Die Seite wurde nicht geladen. Versuchen Sie es erneut.
 browser-page-retry = Erneut versuchen
+
+## The Library: its sections, its empty states and its rows
+browser-library-title = Bibliothek
+browser-library-done = Fertig
+browser-library-section-history = Verlauf
+browser-library-section-bookmarks = Lesezeichen
+browser-library-section-downloads = Downloads
+browser-library-section-extensions = Erweiterungen
+browser-library-pause = Verlauf pausieren
+browser-library-resume = Verlauf fortsetzen
+browser-library-clear-filter = Bibliotheksfilter löschen
+browser-library-no-match = Keine Treffer
+browser-library-history-paused = Der Verlauf ist in diesem Fenster pausiert
+browser-library-history-empty = Noch kein Verlauf
+browser-library-bookmarks-empty = Noch keine Lesezeichen
+browser-library-bookmarks-empty-hint = Wählen Sie den Stern in der Adressleiste, um eine Seite zu behalten.
+browser-library-extensions-empty = Keine Erweiterungen installiert
+browser-library-remove-bookmark = Lesezeichen { $title } entfernen
+browser-library-forget-visit = { $title } aus dem Verlauf entfernen
+
+## Downloads: the list in the Library and its progress
+browser-downloads-empty = Noch keine Downloads
+browser-download-open = Öffnen
+browser-download-cancel = Abbrechen
+browser-download-cancel-name = Download { $name } abbrechen
+browser-download-reveal = In Dateien anzeigen
+browser-download-reveal-name = { $name } in Dateien anzeigen
+browser-download-retry = Erneut versuchen
+browser-download-retry-name = Download { $name } erneut versuchen
+browser-download-cannot-retry = Erneuter Versuch nicht möglich
+browser-download-downloading = { $name } wird heruntergeladen
+browser-download-waiting-destination = Warten auf einen Speicherort …
+browser-download-progress = { $received } von { $total }
+browser-download-received = { $received } heruntergeladen
+browser-download-complete = Download abgeschlossen
+browser-download-saved-to = Gespeichert unter { $path }
+browser-download-failed = Der Download ist fehlgeschlagen
+browser-download-failed-notice = Download fehlgeschlagen
+browser-download-cancelled = Abgebrochen
+browser-downloads-progress-status = { $count ->
+    [one] { $count } Download bei { $percent } %
+   *[other] { $count } Downloads bei { $percent } %
+}
+browser-downloads-active-status = { $count ->
+    [one] { $count } aktiver Download
+   *[other] { $count } aktive Downloads
+}
+browser-download-prompt = { $name } von { $url } herunterladen? In einem neuen Ordner in Downloads speichern.
+browser-download-save = Speichern
+browser-download-unavailable = Die heruntergeladene Datei ist nicht mehr vorhanden.
+browser-download-open-failed = Der Download konnte nicht geöffnet werden. Versuchen Sie, seinen Ordner anzuzeigen.
+
+## A site asking for a permission
+browser-permission-request = { $origin } fordert { $rights } an. Die Anfrage läuft in { $seconds } Sekunden ab.
+browser-permission-allow = Zulassen
+browser-permission-deny = Ablehnen
+
+## The site panel: information, permissions and tracker protection
+browser-site-information = Website-Informationen
+browser-site-launcher-tooltip = Verbindung, Berechtigungen und gespeicherte Daten
+browser-site-page-protection = Schutz
+browser-site-page-connection = Verbindung und Daten
+browser-site-protection = Werbung und Tracker
+browser-site-done = Fertig
+browser-site-no-origin = Kein HTTP- oder HTTPS-Ursprung
+browser-site-connection-secure = Die Verbindung ist sicher
+browser-site-connection-mixed = Verschlüsselte Verbindung mit gemischten Inhalten
+browser-site-connection-insecure = Die HTTP-Verbindung ist nicht verschlüsselt
+browser-site-connection-unverified = Die Sicherheit der Verbindung ist nicht bestätigt
+browser-site-certificate = Zertifikat
+browser-site-issuer = Aussteller
+browser-site-connection = Verbindung
+browser-site-certificate-problem = Zertifikatsproblem
+browser-site-status-code = Statuscode { $code }
+browser-site-expires = Läuft ab
+browser-site-permission-camera = Kamera
+browser-site-permission-microphone = Mikrofon
+browser-site-permission-location = Standort
+browser-site-permission-notifications = Benachrichtigungen
+browser-site-permission-ask = Nachfragen
+browser-site-permission-blocked = Blockiert
+browser-site-permission-allowed = Erlaubt
+browser-site-block-permissions = Berechtigungen blockieren
+browser-site-block-note = Blockiert Kamera, Mikrofon, Standort und Benachrichtigungen. Laden Sie die Seite neu, um laufende Sitzungen zu beenden.
+browser-site-ask-again = Erneut fragen
+browser-site-clear-data = Websitedaten löschen
+browser-site-clear-note = Löscht Speicher und Cookies dieser Website, auch Cookies, die sie mit ihren Subdomains teilt. Laden Sie die Seite neu, um verbliebene Daten zurückzusetzen.
+browser-site-protection-off-settings = Der Schutz ist in den Einstellungen aus
+browser-site-protection-off = Der Schutz ist für diese Website aus
+browser-site-protection-on = Der Schutz ist für diese Website an
+browser-site-blocked-count = { $count } Anfragen auf dieser Seite blockiert oder ersetzt
+browser-site-protection-enable = Einschalten und neu laden
+browser-site-protection-disable = Ausschalten und neu laden
+browser-site-filters-updated-on = Filter zuletzt aktualisiert am { $date }
+browser-site-filters-update = Filter aktualisieren
+browser-site-working = Wird ausgeführt …
+browser-site-query-timeout = Die Website-Informationen kamen nicht an; neuer Versuch …
+browser-site-action-timeout = Die Aktion hat zu lange gedauert. Laden Sie die Seite neu und versuchen Sie es dann erneut.
+browser-site-reading = Website-Informationen werden gelesen …
+browser-site-tls-unknown = TLS-Version nicht verfügbar
+browser-site-unavailable = nicht verfügbar
+
+## The filter list the site panel reports
+browser-filters-built-in = Die eingebaute Filterliste wird verwendet
+browser-filters-updating = Filterlisten werden aktualisiert …
+browser-filters-updated = Filterlisten aktualisiert
+browser-filters-cached = Gespeicherte Filterlisten werden verwendet
+browser-filters-failed = Aktualisierung fehlgeschlagen: { $detail }. Die bisherigen Regeln bleiben erhalten.
+browser-filters-failed-worker = Aktualisierung fehlgeschlagen: Hilfsprozess nicht verfügbar. Die bisherigen Regeln bleiben erhalten.

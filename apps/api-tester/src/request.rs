@@ -132,7 +132,9 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
 }
 
 /// Save and Send: the request's actions, which the window's bar shows.
-pub(crate) fn request_actions(sink: &Sink) -> Element {
+/// Save and Send — or Cancel, while a request is on its way, so a server
+/// that never answers is never a locked app.
+pub(crate) fn request_actions(sink: &Sink, sending: bool) -> Element {
     let save = Button::icon_only("api.save-request", Icon::Check, "Save request")
         .tooltip("Save this request to a collection")
         // It opens the save form; the save it leads to is its own action.
@@ -140,8 +142,16 @@ pub(crate) fn request_actions(sink: &Sink) -> Element {
             sink,
             Cmd::OpenForm(FormMode::SaveRequest, FormTarget::default()),
         ));
-    let send = sink.send(Button::icon_only("api.send", Icon::Send, "Send"));
-    Box::new(Row::new().push(Box::new(save)).push(Box::new(send)))
+    let action = if sending {
+        sink.effect(
+            Button::icon_only("api.cancel-send", Icon::X, "Cancel request")
+                .tooltip("Stop waiting for the server"),
+            &crate::actions::ApiTesterEffect::CancelSend,
+        )
+    } else {
+        sink.send(Button::icon_only("api.send", Icon::Send, "Send"))
+    };
+    Box::new(Row::new().push(Box::new(save)).push(Box::new(action)))
 }
 
 /// What the `{{variables}}` in the URL resolve to, as one quiet line. Empty

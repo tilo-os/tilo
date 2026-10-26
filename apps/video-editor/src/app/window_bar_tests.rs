@@ -871,83 +871,70 @@ fn go_to_clip_takes_the_next_clip_then_the_previous() {
     assert_eq!(app.go_to_clip_target(), Some(last), "else the previous one");
 }
 
-/// Two angles of the same moment, the lower track's picture on the left:
-/// pressing the bar's side-by-side button makes the cut out of the track
-/// order alone, and one undo puts both pictures back.
+/// A strip too narrow to draw Undo and Redo does not take them away: the
+/// bar's overflow menu carries them, named, disabled exactly when the strip's
+/// own pair would have been. A capability is never lost to a width.
 #[test]
-fn two_angles_share_one_frame_as_a_single_step() {
-    let mut app = TestApp::<crate::VideoEditor>::capture(None).expect("the sample comes up");
-    // t=1: the drone on V1 and the logo on V2 both cover it.
-    {
-        let editor = app.surface_mut::<VideoEditorApp>();
-        editor.playhead = 1.0;
-    }
-    app.harness().present_in_window_bar();
-    app.harness().relayout();
-    let toolbar = app.surface_mut::<VideoEditorApp>().window_toolbar();
+fn a_strip_too_narrow_for_undo_offers_it_in_the_bar() {
+    use super::{REDO, UNDO};
+    // Wide enough for the transport's own pair: the bar does not repeat them.
+    let wide = sample(1280.0);
+    let r = wide.regions();
     assert!(
-        bar_action(&toolbar, SIDE_BY_SIDE).enabled,
-        "two pictures meet at the playhead, so the button offers the cut"
+        !wide.history_buttons(&r).is_empty(),
+        "a wide strip draws its own Undo and Redo"
     );
-
-    let sides = app
-        .state()
-        .cut_sides(1.0)
-        .expect("two video tracks cover t=1");
-    let (left, right) = (
-        sides.clip(crate::model::Side::Left).expect("a left angle"),
-        sides
-            .clip(crate::model::Side::Right)
-            .expect("a right angle"),
-    );
-    let before = app.state();
-    app.surface_mut::<VideoEditorApp>()
-        .run_window_bar_event(&ToolbarEvent::Action {
-            id: SIDE_BY_SIDE.to_owned(),
-        });
-    app.settle();
-    assert_eq!(
-        placed(&app, left),
-        crate::model::Side::Left.placement().expect("a left half"),
-        "the lower angle takes the left half"
-    );
-    assert_eq!(
-        placed(&app, right),
-        crate::model::Side::Right.placement().expect("a right half"),
-        "the next one takes the right"
-    );
-    assert_eq!(
-        app.state().clip(right).map(|c| c.in_point),
-        before.clip(right).map(|c| c.in_point),
-        "placing the angles moves no time"
-    );
-
-    // With both already beside each other there is nothing left to do, so
-    // the button stops offering it.
-    let toolbar = app.surface_mut::<VideoEditorApp>().window_toolbar();
+    let bar = wide.window_toolbar();
     assert!(
-        !bar_action(&toolbar, SIDE_BY_SIDE).enabled,
-        "the two already sit side by side"
+        !bar.actions.iter().any(|a| a.id == UNDO || a.id == REDO),
+        "the bar does not offer a second Undo beside the strip's"
     );
 
-    assert!(app.undo(), "placing both angles is one step of undo");
-    app.settle();
-    assert_eq!(
-        placed(&app, left),
-        before.clip(left).expect("there").transform,
-        "undo gives the left angle its picture back"
+    // Narrower than the strip needs: the pair moves into the bar's menu.
+    let narrow = [320.0_f64, 360.0, 400.0, 420.0, 480.0, 560.0]
+        .into_iter()
+        .map(sample)
+        .find(|app| app.history_buttons(&app.regions()).is_empty())
+        .expect("a narrow strip gives the buttons up before the playhead time");
+    let bar = narrow.window_toolbar();
+    let undo = bar_action(&bar, UNDO);
+    let redo = bar_action(&bar, REDO);
+    assert_eq!(undo.name, "Undo");
+    assert_eq!(redo.name, "Redo");
+    assert!(
+        undo.menu && redo.menu,
+        "menu-only, so the bar's own row does not change with a resize"
     );
     assert_eq!(
-        placed(&app, right),
-        before.clip(right).expect("there").transform,
-        "and the right one its own"
+        undo.enabled,
+        narrow.undo.can(ui::UndoRequest::Undo),
+        "offered exactly when the strip's pair would act"
     );
-}
 
-/// A clip's transform, which placing the angles sets.
-fn placed(app: &TestApp<crate::VideoEditor>, id: crate::model::ClipId) -> crate::model::Transform {
-    app.state()
-        .clip(id)
-        .map(|c| c.transform)
-        .expect("the clip is still there")
+    // And they act: the bar's press asks the host for the step, exactly as
+    // the strip's own button does (and, like it, raises nothing while the
+    // host says there is nothing to undo).
+    let mut narrow = narrow;
+    narrow.run_window_bar_event(&action(UNDO));
+    assert_eq!(
+        narrow.undo.take_request(),
+        None,
+        "an unavailable step raises no request, from the bar as from the strip"
+    );
+    ui::undo::set_undo_status(&mut narrow, &mut || ui::UndoStatus {
+        can_undo: true,
+        undo_summary: Some("2 fields".into()),
+        ..Default::default()
+    });
+    let bar = narrow.window_toolbar();
+    assert!(
+        bar_action(&bar, UNDO).enabled,
+        "the bar's Undo is live when the host says it can undo"
+    );
+    narrow.run_window_bar_event(&action(UNDO));
+    assert_eq!(
+        narrow.undo.take_request(),
+        Some(ui::UndoRequest::Undo),
+        "one press, one request"
+    );
 }

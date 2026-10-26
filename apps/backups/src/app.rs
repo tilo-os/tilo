@@ -999,17 +999,22 @@ impl BackupsApp {
     /// "All backups healthy", or how many need a look, in the window's bar
     /// for a while.
     fn say_health(&mut self, failed: u64) {
-        self.health.show(if failed == 0 {
-            (
-                i18n::t("backups-health-ok"),
-                ui::widget::toast::ToastKind::Success,
-            )
+        // A count of failed snapshots is a measurement; "all healthy" is not
+        // a claim this app can make while health is unknown or no source is
+        // configured.
+        let text = if self.catalog.sources.is_empty() {
+            "Backup health is unknown: no source is configured.".to_owned()
+        } else if failed == 0 {
+            i18n::t("backups-health-ok")
         } else {
-            (
-                i18n::counted("backups-health-attention", failed, ""),
-                ui::widget::toast::ToastKind::Warning,
-            )
-        });
+            i18n::counted("backups-health-attention", failed, "")
+        };
+        let kind = if failed == 0 && !self.catalog.sources.is_empty() {
+            ui::widget::toast::ToastKind::Success
+        } else {
+            ui::widget::toast::ToastKind::Warning
+        };
+        self.health.show((text, kind));
     }
 
     /// Say the health when it changes, and keep the bar's notice current.

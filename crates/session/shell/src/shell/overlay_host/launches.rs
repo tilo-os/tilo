@@ -219,6 +219,29 @@ impl ShellOverlayHost {
                 LaunchEventKind::Started { .. } => Vec::new(),
                 _ => crate::shell::launcher::take_lost_tabs(&event.package_id),
             };
+            // The app was ended to start again on the build its room runs:
+            // its windows go back where they were, on that build, and
+            // nothing is reported.
+            if matches!(
+                event.kind,
+                LaunchEventKind::Exited
+                    | LaunchEventKind::Failed { .. }
+                    | LaunchEventKind::OutOfMemory(_)
+            ) && crate::shell::launcher::restarting_on_new_build(&event.package_id)
+            {
+                crate::shell::launcher::clear_pending_placement(&event.package_id);
+                crate::shell::catalogue::take_pending_launch(&event.package_id);
+                let _ = crate::shell::launcher::take_launch_presented(&event.package_id);
+                let reopened = chrome_handle.borrow_mut().reopen_on_new_build(lost_tabs);
+                tracing::info!(
+                    target: "shell::launcher",
+                    package_id = %event.package_id,
+                    reopened,
+                    "the app starts again on the build its room runs"
+                );
+                posted = true;
+                continue;
+            }
             let event = event.with_window_lost(lost);
             // Memory ended the app or one of its jobs: say which and why,
             // whether or not its window had shown, and offer the app back

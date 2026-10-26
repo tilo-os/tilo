@@ -14,7 +14,7 @@ use crate::native_timers::{
 use crate::resource::ClocksEffect;
 use crate::schedule::{DueEvent, OnThisDevice, shell_activity};
 use crate::transport::{ShellCommand, ShellSnapshot};
-use chrono::{Offset, Utc};
+use chrono::{Datelike, Offset, TimeZone, Utc};
 use std::{collections::BTreeSet, time::Duration};
 use ui::framework::{Actions, Dispatcher, Setting};
 use ui::icons::Icon;
@@ -52,6 +52,37 @@ impl Shown {
             |pinned| pinned.naive_utc(),
         )
     }
+
+    /// The present on this device's clock, a capture's pinned moment read as
+    /// local wall time so next-ring labels are stable too.
+    fn local_now(&self) -> chrono::DateTime<chrono::Local> {
+        self.pinned_now.map_or_else(chrono::Local::now, |pinned| {
+            chrono::Local.from_utc_datetime(&pinned.naive_utc())
+        })
+    }
+}
+
+/// When `alarm` rings next, in words. A disabled alarm says so; an enabled
+/// one says "today", "tomorrow" or the weekday, then its time.
+pub(crate) fn next_ring(
+    alarm: &crate::model::Alarm,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
+    if !alarm.enabled {
+        return "Off".into();
+    }
+    let Some(next) = crate::schedule::next_occurrence(alarm, None, now) else {
+        return "No next ring".into();
+    };
+    let today = now.date_naive();
+    let day = if next.date_naive() == today {
+        "today".to_owned()
+    } else if next.date_naive() == today.succ_opt().unwrap_or(today) {
+        "tomorrow".to_owned()
+    } else {
+        ui::format::weekday_short(next.date_naive().weekday())
+    };
+    format!("Next {day}, {}", ui::clock::time_of_day(&next.time()))
 }
 
 /// How the window's controls reach the resource and the device.
@@ -414,16 +445,61 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     clippy::too_many_lines,
     reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one screen across helpers"
 )]
+/// The repeat-day strip, shared by the new-alarm form and the editor.
+fn repeat_control(selection: &ui::LocalState<BTreeSet<WeekdayKey>>, id: &'static str) -> Element {
+    let source = selection.clone();
+    Box::new(ModelView::from_state(selection, move |selected| {
+        // One multi-select strip: the week reads as one row, wrapping only
+        // when the form is too narrow for it.
+        let selection = source.clone();
+        let segments = WEEKDAYS
+            .iter()
+            .map(|(_, label)| ui::widget::Segment::new(*label))
+            .collect();
+        let chosen = WEEKDAYS
+            .iter()
+            .map(|(day, _)| selected.contains(day))
+            .collect();
+        Box::new(
+            ui::widget::ToggleGroup::multiple(segments, chosen)
+                .control_size(ui::widget::ControlSize::Large)
+                .with_id(id)
+                .with_accessible_name("Repeat on")
+                .on_chosen_change(move |chosen| {
+                    selection.set(
+                        WEEKDAYS
+                            .iter()
+                            .zip(chosen)
+                            .filter(|(_, on)| **on)
+                            .map(|((day, _), _)| *day)
+                            .collect(),
+                    );
+                }),
+        )
+    }))
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one screen across helpers"
+)]
 fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     let draft = ui::LocalState::new(TimeValue::new(7, 30));
     let draft_label = ui::LocalState::new(String::new());
     let draft_repeat = ui::LocalState::new(BTreeSet::<WeekdayKey>::new());
+    let editing = ui::LocalState::new(None::<Id>);
+    let edit_time = ui::LocalState::new(TimeValue::new(7, 30));
+    let edit_label = ui::LocalState::new(String::new());
+    let edit_repeat = ui::LocalState::new(BTreeSet::<WeekdayKey>::new());
     let add = controls.dispatcher.clone();
     let add_draft = draft.clone();
     let add_label = draft_label.clone();
     let add_repeat = draft_repeat.clone();
-    let repeat_controls = draft_repeat.clone();
     let list_controls = controls.clone();
+    let list_editing = editing.clone();
+    let list_time = edit_time.clone();
+    let list_label = edit_label.clone();
+    let list_repeat = edit_repeat.clone();
     let list = ModelView::from_state(state, move |s| {
         let mut col = Column::new()
             .with_no_padding()
@@ -438,19 +514,47 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
         alarms.sort_by_key(|(id, _)| s.selected_alarm.as_ref() != Some(id));
         for (id, alarm) in alarms {
             let repeat = repeat_summary(&alarm.weekdays());
+            let next = next_ring(alarm, s.local_now());
             let row = Row::new()
+                .align_start()
                 .push(Box::new(
-                    Text::new(&ui::clock::time_of_day(&alarm.local_time()))
-                        .with_role(ui::TextRole::LargeTitle),
-                ))
-                .push(Box::new(
-                    Text::new(&format!(
-                        "{repeat}, currently {}",
-                        if alarm.enabled { "On" } else { "Off" }
-                    ))
-                    .dimmed(),
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_rhythm(ui::tokens::Rhythm::Tight)
+                        .push(Box::new(
+                            Text::new(&ui::clock::time_of_day(&alarm.local_time()))
+                                .with_role(ui::TextRole::LargeTitle),
+                        ))
+                        .push(Box::new(
+                            Text::new(&format!(
+                                "{repeat}, currently {}",
+                                if alarm.enabled { "On" } else { "Off" }
+                            ))
+                            .dimmed(),
+                        ))
+                        .push(Box::new(Text::new(&next).dimmed())),
                 ))
                 .push(Box::new(Spacer::new()))
+                .push(Box::new({
+                    let editing = list_editing.clone();
+                    let edit_time = list_time.clone();
+                    let edit_label = list_label.clone();
+                    let edit_repeat = list_repeat.clone();
+                    let alarm_id = id.clone();
+                    let label = alarm.label.clone();
+                    let hour = alarm.hour;
+                    let minute = alarm.minute;
+                    let weekdays = alarm.weekdays();
+                    Button::new(&format!("clocks.alarm.{id}.edit"), "Edit")
+                        .control_size(ui::widget::ControlSize::Large)
+                        .on_view(move || {
+                            editing.set(Some(alarm_id.clone()));
+                            edit_label.set(label.clone());
+                            edit_time.set(TimeValue::new(hour, minute));
+                            edit_repeat.set(weekdays.clone());
+                        })
+                }))
                 .push(Box::new(
                     list_controls.button(
                         Button::new(
@@ -468,17 +572,88 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         Clocks::REMOVE_ALARM.with(id.clone()),
                     ),
                 ));
-            col = col.push(Box::new(
-                clock_card(&alarm.label, Box::new(row))
-                    .selected(s.selected_alarm.as_ref() == Some(id)),
-            ));
+            col = col.push(Box::new(clock_card(&alarm.label, Box::new(row)).selected(
+                s.selected_alarm.as_ref() == Some(id)
+                    || list_editing.with(|e| e.as_ref() == Some(id)),
+            )));
         }
         Box::new(col)
     });
+    let editor = {
+        let state = state.clone();
+        let controls = controls.clone();
+        let edit_label = edit_label.clone();
+        let edit_time = edit_time.clone();
+        let edit_repeat = edit_repeat.clone();
+        let editing_state = editing.clone();
+        ModelView::from_state(&editing, move |shown_editing| -> Element {
+            let editing = editing_state.clone();
+            let Some(id) = shown_editing.clone() else {
+                return Box::new(Column::new().with_no_padding().with_intrinsic_height())
+                    as Element;
+            };
+            if !state.with(|s| s.clocks.alarms.contains(&id)) {
+                return Box::new(Column::new().with_no_padding().with_intrinsic_height())
+                    as Element;
+            }
+            let save = controls.dispatcher.clone();
+            let save_id = id.clone();
+            let save_label = edit_label.clone();
+            let save_time = edit_time.clone();
+            let save_repeat = edit_repeat.clone();
+            let save_editing = editing.clone();
+            let cancel_editing = editing.clone();
+            Box::new(clock_card(
+                "Edit alarm",
+                Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .push(Box::new(
+                            TextInput::from_state(&edit_label)
+                                .with_id("clocks.alarm.edit.label")
+                                .with_kind(TextInputKind::Name)
+                                .with_placeholder("What is this alarm for?"),
+                        ))
+                        .push(Box::new(Text::new("Time").with_heading_level(3)))
+                        .push(Box::new(
+                            TimePicker::from_state(&edit_time)
+                                .with_id("clocks.alarm.edit.time")
+                                .with_accessible_name("Alarm time"),
+                        ))
+                        .push(Box::new(Text::new("Repeat days").with_heading_level(3)))
+                        .push(repeat_control(&edit_repeat, "clocks.alarm.edit.repeat"))
+                        .push(Box::new(
+                            Row::new()
+                                .with_padding_rhythm(None, None)
+                                .push(primary_button(
+                                    "clocks.alarm.edit.save",
+                                    "Save changes",
+                                    move || {
+                                        let time = save_time.get();
+                                        save.submit(Clocks::EDIT_ALARM.with((
+                                            save_id.clone(),
+                                            bounded_label(&save_label.get(), "Alarm"),
+                                            time.hours,
+                                            time.minutes,
+                                            save_repeat.get().into_iter().collect(),
+                                        )));
+                                        save_editing.set(None);
+                                    },
+                                ))
+                                .push(button("clocks.alarm.edit.cancel", "Cancel", move || {
+                                    cancel_editing.set(None)
+                                })),
+                        )),
+                ),
+            ))
+        })
+    };
     Box::new(
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Section)
             .push(Box::new(list))
+            .push(Box::new(editor))
             .push(Box::new(clock_card(
                 "New alarm",
                 Box::new(
@@ -501,39 +676,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                             Text::new("Use the arrows, scroll, or type two digits.").dimmed(),
                         ))
                         .push(Box::new(Text::new("Repeat days").with_heading_level(3)))
-                        .push(Box::new(ModelView::from_state(
-                            &draft_repeat,
-                            move |selected| {
-                                // One multi-select strip: the week reads as
-                                // one row, wrapping only when the form is
-                                // too narrow for it.
-                                let selection = repeat_controls.clone();
-                                let segments = WEEKDAYS
-                                    .iter()
-                                    .map(|(_, label)| ui::widget::Segment::new(*label))
-                                    .collect();
-                                let chosen = WEEKDAYS
-                                    .iter()
-                                    .map(|(day, _)| selected.contains(day))
-                                    .collect();
-                                Box::new(
-                                    ui::widget::ToggleGroup::multiple(segments, chosen)
-                                        .control_size(ui::widget::ControlSize::Large)
-                                        .with_id("clocks.alarm.repeat")
-                                        .with_accessible_name("Repeat on")
-                                        .on_chosen_change(move |chosen| {
-                                            selection.set(
-                                                WEEKDAYS
-                                                    .iter()
-                                                    .zip(chosen)
-                                                    .filter(|(_, on)| **on)
-                                                    .map(|((day, _), _)| *day)
-                                                    .collect(),
-                                            );
-                                        }),
-                                )
-                            },
-                        )))
+                        .push(repeat_control(&draft_repeat, "clocks.alarm.repeat"))
                         .push(primary_button("clocks.alarm.add", "Add alarm", move || {
                             let time = add_draft.get();
                             add.submit(Clocks::ADD_ALARM.with((
@@ -1011,7 +1154,7 @@ fn surface(
     selection: &ui::LocalState<Option<String>>,
     state: &ui::LocalState<Shown>,
     controls: &Controls,
-    notice: &ui::LocalState<Option<(String, String)>>,
+    notice: &ui::LocalState<Option<DueNotice>>,
     validation_error: &ui::LocalState<Option<String>>,
 ) -> Element {
     let st = state.clone();
@@ -1027,7 +1170,7 @@ fn surface(
     let due_notice = ModelView::from_state(notice, move |notice| {
         notice.as_ref().map_or_else(
             || Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element,
-            |(title, body)| {
+            |(title, body, alarm)| {
                 Box::new(
                     Column::new()
                         .with_intrinsic_height()
@@ -1038,13 +1181,37 @@ fn surface(
                                     .with_padding_rhythm(None, None)
                                     .push(Box::new(Text::new(body)))
                                     .push(Box::new(Spacer::new()))
-                                    .push(Box::new(
-                                        notice_controls.effect(
+                                    .push({
+                                        let dismiss = notice_controls.effect(
                                             Button::new("clocks.notice.dismiss", "Dismiss")
                                                 .control_size(ui::widget::ControlSize::Large),
                                             &ClocksEffect::DismissNotice,
-                                        ),
-                                    )),
+                                        );
+                                        match alarm {
+                                            Some(alarm) => Box::new(
+                                                Row::new()
+                                                    .with_padding_rhythm(None, None)
+                                                    .push(Box::new(dismiss))
+                                                    .push(Box::new(
+                                                        notice_controls.effect(
+                                                            Button::new(
+                                                                "clocks.notice.snooze",
+                                                                "Snooze 5 minutes",
+                                                            )
+                                                            .control_size(
+                                                                ui::widget::ControlSize::Large,
+                                                            ),
+                                                            &ClocksEffect::SnoozeAlarm {
+                                                                alarm: alarm.as_str().to_owned(),
+                                                                minutes: SNOOZE_MINUTES,
+                                                            },
+                                                        ),
+                                                    )),
+                                            )
+                                                as Element,
+                                            None => Box::new(dismiss) as Element,
+                                        }
+                                    }),
                             ),
                         ))),
                 )
@@ -1095,6 +1262,13 @@ fn surface(
 /// click opens.
 type PendingNotification = (String, String, String, &'static str);
 
+/// The in-app due notice: its title, its body, and the alarm it is for when
+/// it can be snoozed.
+pub(crate) type DueNotice = (String, String, Option<Id>);
+
+/// How long a snoozed alarm waits before ringing again.
+pub(crate) const SNOOZE_MINUTES: u32 = 5;
+
 /// The Clocks surface.
 pub struct ClocksApp {
     inner: Element,
@@ -1109,7 +1283,7 @@ pub struct ClocksApp {
     /// Whether the section was chosen from the first state presented.
     opened: bool,
     pub(crate) last_notification: Option<(String, String, String)>,
-    pub(crate) notice: ui::LocalState<Option<(String, String)>>,
+    pub(crate) notice: ui::LocalState<Option<DueNotice>>,
     next_clock_tick: ui::time::Instant,
     /// The open section: World, Alarms, Timers, Stopwatch.
     pub(crate) mode: ui::LocalState<usize>,
@@ -1246,9 +1420,9 @@ impl ClocksApp {
                 ..
             } => (native_alarm_id(id.as_str()), *native_scheduled),
         };
-        let (title, body, activation) = match event {
-            DueEvent::Alarm { label, .. } => ("Alarm".to_owned(), label, ALARMS_URI),
-            DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label, TIMERS_URI),
+        let (title, body, activation, alarm) = match event {
+            DueEvent::Alarm { id, label, .. } => ("Alarm".to_owned(), label, ALARMS_URI, Some(id)),
+            DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label, TIMERS_URI, None),
         };
         let notification_id = uuid::Uuid::new_v4().simple().to_string();
         if self.live {
@@ -1258,7 +1432,7 @@ impl ClocksApp {
                     .push((tag, title.clone(), body.clone(), activation));
             }
         }
-        self.notice.set(Some((title.clone(), body.clone())));
+        self.notice.set(Some((title.clone(), body.clone(), alarm)));
         if !native.1 {
             self.last_notification = Some((notification_id, title, body));
         }

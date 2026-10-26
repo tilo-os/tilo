@@ -16,7 +16,7 @@ use tilo_user_identity::{DeviceCert, sign_device_cert};
 use crate::rooms::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::rooms::{
     CancelInvitationRequest, IssueInvitationRequest, PreAdmitRequest, RemoveMemberRequest, Rooms,
-    SetMemberRoleRequest, WaitListSecrets, WaitListed,
+    SetMemberRoleRequest, WaitListMail, WaitListSecrets, WaitListed,
 };
 
 /// A new person admitted to `room` as an Editor, through the owner's
@@ -285,18 +285,24 @@ async fn a_mailed_address_is_listed_once_confirmed_mailed_its_invitation_and_lea
         .await,
         RoomsReply::Refused(_)
     ));
-    assert!(matches!(
-        ask(mail_invite(bo)).await,
-        RoomsReply::WaitList(_)
-    ));
-    let sent = mail.try_recv().unwrap();
+    let (answer, (to, link, removal)) = tokio::join!(ask(mail_invite(bo)), async {
+        let WaitListMail {
+            queued,
+            to,
+            link,
+            removal,
+        } = mail.recv().await.unwrap();
+        queued.send(true).unwrap();
+        (to, link, removal)
+    });
+    assert!(matches!(answer, RoomsReply::WaitList(_)));
     assert_eq!(
-        (sent.to.contact.as_str(), sent.to.language.as_str()),
+        (to.contact.as_str(), to.language.as_str()),
         ("bo@example.org", "de")
     );
-    assert_eq!(sent.link, "https://door.example/?invite=AAEC");
+    assert_eq!(link, "https://door.example/?invite=AAEC");
     assert_eq!(
-        rooms.wait_list_standing(&room, digest(&sent.removal)).await,
+        rooms.wait_list_standing(&room, digest(&removal)).await,
         Ok(WaitListStanding::Invited),
         "the mail's removal link names the entry"
     );
@@ -372,12 +378,24 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
         ask(invite(cy)).await,
         RoomsReply::Invitation { .. }
     ));
-    assert!(matches!(ask(mail_invite()).await, RoomsReply::WaitList(_)));
-    let sent = mail.try_recv().unwrap();
+    // A queue rejection is reported to the inviter and releases the
+    // reservation, rather than claiming that a channel send mailed it.
+    let (answer, ()) = tokio::join!(ask(mail_invite()), async {
+        mail.recv().await.unwrap().queued.send(false).unwrap();
+    });
+    assert!(matches!(answer, RoomsReply::Refused(_)));
+    let (answer, removal) = tokio::join!(ask(mail_invite()), async {
+        let WaitListMail {
+            queued, removal, ..
+        } = mail.recv().await.unwrap();
+        queued.send(true).unwrap();
+        removal
+    });
+    assert!(matches!(answer, RoomsReply::WaitList(_)));
     assert_eq!(rooms.leave_wait_list(&room, [0x99; 32]).await, Ok(None));
     assert_eq!(listed().await.len(), 1);
     let told = rooms
-        .leave_wait_list(&room, digest(&sent.removal))
+        .leave_wait_list(&room, digest(&removal))
         .await
         .unwrap()
         .unwrap();
@@ -385,6 +403,139 @@ async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_remov
     assert!(listed().await.is_empty());
     assert_eq!(rooms.leave_wait_list(&room, [0x0c; 32]).await, Ok(None));
     relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_lost_invitation_acknowledgement_keeps_the_reservation() {
+    uncertain_invitation_mail(false).await;
+}
+
+#[tokio::test]
+async fn a_timed_out_invitation_acknowledgement_keeps_the_reservation() {
+    uncertain_invitation_mail(true).await;
+}
+
+async fn uncertain_invitation_mail(timeout: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let shutdown = {
+        let relay = test_host(dir.path(), &key, &owner).await;
+        assert_uncertain_invitation_mail(relay.rooms(), &owner, timeout).await;
+        relay.shutdown()
+    };
+    shutdown.await;
+}
+
+async fn assert_uncertain_invitation_mail(rooms: &Rooms, owner: &DeviceCert, timeout: bool) {
+    let room = rooms.create("Team").await.unwrap().room;
+    let mut mail = rooms.mail_wait_list("https://door.example/").unwrap();
+    rooms
+        .wait(&room, "cy@example.org", listed_at_once(0x0c), "en", 10)
+        .await
+        .unwrap();
+    let cy = read_wait_list(rooms, owner, &room).await[0].request_id;
+    assert!(matches!(
+        rooms
+            .page_rooms(
+                owner,
+                RoomsRequest::Invite {
+                    room: room.clone(),
+                    request_id: rand::random(),
+                    role: RoomRole::Editor,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+                    inviter_name: None,
+                    wait_list_entry: Some(cy),
+                }
+            )
+            .await,
+        RoomsReply::Invitation { .. }
+    ));
+    let request = || RoomsRequest::MailInvite {
+        room: room.clone(),
+        wait_list_entry: cy,
+        link: "https://door.example/?invite=AAEC".into(),
+    };
+    if timeout {
+        tokio::time::pause();
+    }
+    let (answer, held) = tokio::join!(rooms.page_rooms(owner, request()), async {
+        let queued = mail.recv().await.unwrap().queued;
+        if timeout {
+            Some(queued)
+        } else {
+            drop(queued);
+            None
+        }
+    });
+    if timeout {
+        tokio::time::resume();
+    }
+    let RoomsReply::Refused(reason) = answer else {
+        panic!("missing acknowledgement must report uncertainty");
+    };
+    assert!(reason.contains("uncertain"));
+    assert!(reason.contains("may already be queued"));
+    let RoomsReply::Refused(reason) = rooms.page_rooms(owner, request()).await else {
+        panic!("uncertain acceptance must retain the throttle");
+    };
+    assert!(reason.contains("minutes ago"));
+    assert!(matches!(
+        mail.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    drop(held);
+}
+
+#[tokio::test]
+async fn pending_removal_returns_only_a_private_stable_contact_digest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let shutdown = {
+        let relay = test_host(dir.path(), &key, &owner).await;
+        assert_pending_removal_contact_digest(relay.rooms()).await;
+        relay.shutdown()
+    };
+    shutdown.await;
+}
+
+async fn assert_pending_removal_contact_digest(rooms: &Rooms) {
+    use sha2::Digest as _;
+    let room = rooms.create("Team").await.unwrap().room;
+    for removal in [[1; 32], [2; 32]] {
+        rooms
+            .wait(
+                &room,
+                "ÄDA@example.org",
+                WaitListSecrets {
+                    removal,
+                    confirm: Some([3; 32]),
+                },
+                "de",
+                10,
+            )
+            .await
+            .unwrap();
+    }
+    let expected: [u8; 32] =
+        sha2::Sha256::digest(tilo_relay_protocol::rooms::contact_key("äda@EXAMPLE.org")).into();
+    assert_eq!(
+        rooms
+            .leave_wait_list_for_operator(&room, [2; 32])
+            .await
+            .unwrap(),
+        (None, Some(expected))
+    );
+    assert_eq!(
+        rooms
+            .leave_wait_list_for_operator(&room, [1; 32])
+            .await
+            .unwrap(),
+        (None, None)
+    );
+    assert_eq!(
+        rooms.wait_list_standing(&room, [1; 32]).await.unwrap(),
+        tilo_relay_protocol::room_operator::WaitListStanding::Gone
+    );
 }
 
 /// `room`'s wait list as `owner` reads it.

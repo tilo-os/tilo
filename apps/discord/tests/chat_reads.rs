@@ -161,7 +161,10 @@ fn a_filed_report_reads_as_its_message_with_its_picture() {
         .unwrap();
     let message = tilo::message(&read, &id).expect("the report's message");
     assert_eq!(message.channel, channel);
-    assert_eq!(message.text, "Saving does nothing\n1. Files: Save (button)");
+    assert_eq!(
+        message.text,
+        "Saving does nothing\n1. The “Save” button in Files"
+    );
     let attachment = message.attachment.expect("its picture");
     assert_eq!(attachment.blob, picture);
     assert_eq!(attachment.name, "report.png");

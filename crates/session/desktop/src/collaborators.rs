@@ -1810,6 +1810,43 @@ impl CollaboratorsOverlay {
             .with_children(children)
     }
 
+    /// [`Self::accessibility_snapshot`] for a host that routes a reader's
+    /// press by target: each control says where it is painted and carries
+    /// its place in the focus order as its action target (`people:<n>`),
+    /// which [`Self::hit_for_target`] turns back into what it does.
+    #[must_use]
+    pub fn accessibility_with_targets(&self) -> ui::a11y::AccessNode {
+        let order = self.focus_order();
+        let mut node = self.accessibility_snapshot().with_bounds(self.panel_rect());
+        let controls = node
+            .children
+            .iter_mut()
+            .skip(1)
+            .filter(|child| child.role == ui::a11y::Role::Button);
+        for (index, (child, hit)) in controls.zip(&order).enumerate() {
+            let mut control =
+                std::mem::replace(child, ui::a11y::AccessNode::new(ui::a11y::Role::Button))
+                    .with_action_target(format!("people:{index}"));
+            let rect = self.rect_for_hit(*hit).map(|rect| match hit {
+                CollaboratorsHit::Invite | CollaboratorsHit::Pin => rect,
+                _ => self.view_rect(rect),
+            });
+            if let Some(rect) = rect {
+                control = control.with_bounds(rect);
+            }
+            *child = control;
+        }
+        node
+    }
+
+    /// What the control a reader pressed (`people:<n>`, from
+    /// [`Self::accessibility_with_targets`]) does.
+    #[must_use]
+    pub fn hit_for_target(&self, target: &str) -> Option<CollaboratorsHit> {
+        let index: usize = target.strip_prefix("people:")?.parse().ok()?;
+        self.focus_order().get(index).copied()
+    }
+
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         match path {
             [] | [0] => Some(self.panel_rect()),

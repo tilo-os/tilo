@@ -442,7 +442,7 @@ pub fn fingerprint(resource: &tilo_actions::Resource) -> String {
         let _ = write!(
             out,
             "|{}:{}:{:?}:{}",
-            spec.id, spec.label, spec.kind, spec.contract.reversible
+            spec.id, spec.label, spec.kind, spec.contract.kind
         );
         for param in spec.params() {
             let _ = write!(out, ",{}:{:?}:{}", param.name, param.ty, param.required);
@@ -908,7 +908,7 @@ fn bound_to(decl: &Declaration, values: Vec<(String, serde_json::Value)>) -> Act
     let all = decl.params.clone();
     let build = Arc::clone(&decl.build);
     let fixed = values.clone();
-    let mut spec = ActionSpec::typed(
+    let spec = ActionSpec::typed(
         decl.id,
         decl.label.clone(),
         decl.label.clone(),
@@ -931,9 +931,6 @@ fn bound_to(decl: &Declaration, values: Vec<(String, serde_json::Value)>) -> Act
     )
     .of_kind(decl.kind)
     .with_bound(fixed);
-    if decl.kind == crate::ActionKind::Undoable {
-        spec = spec.reversible();
-    }
     finish_bound(spec, decl)
 }
 

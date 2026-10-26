@@ -170,7 +170,12 @@ pub fn refusal(player: &Value) -> Option<String> {
 
 /// The progressive stream a player answer names, best first; or why the
 /// answer refused (a bot check, a removed or private video).
-pub fn stream(player: &Value) -> Result<Stream, String> {
+///
+/// `wanted` is the height a person asked for (`Some(480)` for 480p, `None`
+/// for the best available): the best stream that does not exceed it, so
+/// choosing a smaller size actually spends less data, and the smallest one
+/// when the source has nothing that small.
+pub fn stream(player: &Value, wanted: Option<u32>) -> Result<Stream, String> {
     let status = player
         .pointer("/playabilityStatus/status")
         .and_then(Value::as_str)
@@ -182,7 +187,7 @@ pub fn stream(player: &Value) -> Result<Stream, String> {
             .unwrap_or("not playable");
         return Err(format!("{status}: {reason}"));
     }
-    player
+    let mut formats: Vec<(u64, String, String)> = player
         .pointer("/streamingData/formats")
         .and_then(Value::as_array)
         .into_iter()
@@ -201,14 +206,64 @@ pub fn stream(player: &Value) -> Result<Stream, String> {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let rank = height.max(quality.trim_end_matches('p').parse().unwrap_or(0));
-            Some((rank, url, quality))
+            Some((rank, url.to_string(), quality.to_string()))
         })
-        .max_by_key(|(rank, ..)| *rank)
+        .collect();
+    formats.sort_by_key(|(rank, ..)| *rank);
+    let chosen = wanted
+        .and_then(|wanted| {
+            let wanted = u64::from(wanted);
+            formats.iter().rev().find(|(rank, ..)| *rank <= wanted)
+        })
+        .or_else(|| wanted.and(formats.first()))
+        .or_else(|| formats.last());
+    chosen
         .map(|(_, url, quality)| Stream {
-            url: url.to_string(),
-            quality: quality.to_string(),
+            url: url.clone(),
+            quality: quality.clone(),
         })
         .ok_or_else(|| "no progressive stream".into())
+}
+
+/// The caption tracks a player answer lists: `captionTracks` under
+/// `playerCaptionsTracklistRenderer`. A machine transcript (`kind="asr"`) is
+/// marked so the menu can say so. An answer with no captions offers none.
+pub fn caption_tracks(player: &Value) -> Vec<crate::captions::CaptionTrack> {
+    player
+        .pointer("/captions/playerCaptionsTracklistRenderer/captionTracks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|track| {
+            let url = track
+                .get("baseUrl")
+                .or_else(|| track.get("url"))?
+                .as_str()?;
+            let language = track
+                .get("languageCode")
+                .and_then(Value::as_str)?
+                .to_string();
+            Some(crate::captions::CaptionTrack {
+                label: track
+                    .get("name")
+                    .and_then(|name| {
+                        name.get("simpleText")
+                            .and_then(Value::as_str)
+                            .or_else(|| name.get("runs")?.get(0)?.get("text")?.as_str())
+                    })
+                    .unwrap_or(&language)
+                    .to_string(),
+                automatic: track
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind == "asr"),
+                // The timed text is served as WebVTT; asking for it explicitly
+                // is what makes one parser serve both sources.
+                url: format!("{url}&fmt=vtt"),
+                language,
+            })
+        })
+        .collect()
 }
 
 /// A channel page and its uploads, from a channel's videos tab.

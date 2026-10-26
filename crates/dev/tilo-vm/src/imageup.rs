@@ -130,10 +130,9 @@ pub fn ci_candidates(tag: &str, arch: &str) -> CiCandidates {
     let tag = tag.strip_suffix(&format!("-{arch}")).unwrap_or(tag);
     let dev_tag = tag.strip_suffix("-ci").unwrap_or(tag);
     CiCandidates {
-        dev_images: vec![
-            format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}-ci"),
-            format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}"),
-        ],
+        // The architecture's own image: what main signs (publish-os-dev-<arch>); a dev
+        // image's policy takes no unsigned index.
+        dev_images: vec![format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}-ci-{arch}")],
         bases: vec![
             format!("registry.tilo.so/tilo/tilo-ci:{dev_tag}-{arch}"),
             format!("registry.tilo.so/tilo/tilo:{dev_tag}"),
@@ -160,10 +159,12 @@ pub fn ci_commit(tag: &str) -> Option<&str> {
         .filter(|sha| sha.len() == 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// A dev build of a branch or pull request is tagged `<ref>-<sha7>`, so a
-/// commit that is not on main is found by listing the repositories' tags:
-/// `tilo-vm:<ref>-<sha7>-ci` is the published dev image,
-/// `tilo-ci:<ref>-<sha7>-<arch>` the image a dev image can be built FROM.
+/// A branch's own build is tagged `ref-<branch>-<sha7>-<target>` in the
+/// branches' repository `tilo-vm-ref` (t's publish-os-ref-<target>, which
+/// `vm upgrade --ref` dispatches), so a commit that is not on main is found by
+/// listing the repositories' tags: `tilo-vm-ref:ref-<branch>-<sha7>-<arch or
+/// board>` is the published, signed dev image, `tilo-ci:<ref>-<sha7>-<arch>` an
+/// image a dev image can be built FROM.
 /// `skopeo list-tags` output in, candidates out; several refs sort by name so
 /// the choice is stable.
 pub fn ci_ref_candidates(
@@ -189,11 +190,11 @@ pub fn ci_ref_candidates(
         })
     }
     // A board's dev image is the only one that boots it, and has no base here.
-    let dev_suffix = board.map_or_else(|| format!("-{sha}-ci"), |board| format!("-{sha}-{board}"));
+    let dev_suffix = format!("-{sha}-{}", board.unwrap_or(arch));
     let mut dev_images: Vec<String> = tags(vm_tags)
         .into_iter()
-        .filter(|tag| named_ref(tag, &dev_suffix))
-        .map(|tag| format!("registry.tilo.so/tilo/tilo-vm:{tag}"))
+        .filter(|tag| tag.starts_with("ref-") && named_ref(tag, &dev_suffix))
+        .map(|tag| format!("{}:{tag}", crate::ci::REF_IMAGE))
         .collect();
     let mut bases: Vec<String> = tags(ci_tags)
         .into_iter()
@@ -225,13 +226,17 @@ pub fn exists_command(reference: &str) -> CommandLine {
 /// `registry.tilo.so/tilo/tilo-vm`, with a tag or digest: the same rule
 /// `os/dev/build-dev-image.sh` enforces when it tags one.
 pub fn is_dev_name(reference: &str) -> bool {
-    ["localhost/tilo-vm", "registry.tilo.so/tilo/tilo-vm"]
-        .iter()
-        .any(|repo| {
-            reference.strip_prefix(repo).is_some_and(|rest| {
-                rest.len() > 1 && (rest.starts_with(':') || rest.starts_with("@sha256:"))
-            })
+    [
+        "localhost/tilo-vm",
+        "registry.tilo.so/tilo/tilo-vm",
+        crate::ci::REF_IMAGE,
+    ]
+    .iter()
+    .any(|repo| {
+        reference.strip_prefix(repo).is_some_and(|rest| {
+            rest.len() > 1 && (rest.starts_with(':') || rest.starts_with("@sha256:"))
         })
+    })
 }
 
 /// What `podman image inspect` and a look inside say about a local image.
@@ -616,8 +621,45 @@ pub fn bootc_line(words: &[&str]) -> String {
         .map(|w| sh_quote(w))
         .collect::<Vec<_>>()
         .join(" ");
+    esp_writable_for(&format!("bootc {command}"))
+}
+
+/// A subshell that runs the shell `command` with the ESP writable, as [`bootc_line`] does.
+fn esp_writable_for(command: &str) -> String {
     format!(
-        "(ro=; if findmnt -n -o FSTYPE,OPTIONS /boot 2>/dev/null | grep -q '^vfat *ro,'; then ro=1; mount -o remount,rw /boot || exit 1; fi; bootc {command}; rc=$?; [ -z \"$ro\" ] || mount -o remount,ro /boot; exit $rc)"
+        "(ro=; if findmnt -n -o FSTYPE,OPTIONS /boot 2>/dev/null | grep -q '^vfat *ro,'; then ro=1; mount -o remount,rw /boot || exit 1; fi; {command}; rc=$?; [ -z \"$ro\" ] || mount -o remount,ro /boot; exit $rc)"
+    )
+}
+
+/// The device's channel helper (os/usr/libexec/tilo-update-channel), and the first word of
+/// [`update_command`].
+pub const UPDATE_CHANNEL: &str = "/usr/libexec/tilo-update-channel";
+
+/// What `vm upgrade` runs to move a device onto a registry image: the device's own update path,
+/// the one its update timer runs. `Some(image)` pins that dev image in place of the device's
+/// channel until the channel moves on; `None` returns it to its channel. [`under_vm_lock`]
+/// turns it into the line.
+pub fn update_command(pin: Option<&str>) -> Vec<String> {
+    let mut words = vec![UPDATE_CHANNEL.to_owned()];
+    words.extend(pin.map(str::to_owned));
+    words
+}
+
+/// [`update_command`] as a shell line: pin (or unpin), then `tilo-verified-update`, which
+/// switches to what the channel helper names and stages it as the timer would. An image that
+/// predates channels has no helper: bootc switches it (or upgrades what it follows) directly.
+fn update_line(pin: Option<&str>) -> String {
+    let (follow, direct) = match pin {
+        Some(image) => (
+            format!("{UPDATE_CHANNEL} pin {}", sh_quote(image)),
+            vec!["switch", image],
+        ),
+        None => (format!("{UPDATE_CHANNEL} unpin"), vec!["upgrade"]),
+    };
+    format!(
+        "if [ -x {UPDATE_CHANNEL} ]; then {follow} && {}; else {}; fi",
+        esp_writable_for("/usr/libexec/tilo-verified-update"),
+        bootc_line(&direct)
     )
 }
 
@@ -633,9 +675,14 @@ pub const ESP_WRITABLE_UNTIL_BOOT: &str = "if findmnt -n -o FSTYPE,OPTIONS /boot
 /// holds it.
 pub fn under_vm_lock(words: &[String]) -> String {
     let args: Vec<&str> = words.iter().map(String::as_str).skip(1).collect();
+    let line = if words.first().map(String::as_str) == Some(UPDATE_CHANNEL) {
+        update_line(args.first().copied())
+    } else {
+        bootc_line(&args)
+    };
     format!(
         "mkdir -p {LOCKS} && flock --nonblock --conflict-exit-code 75 {LOCKS}/vm.lock sh -c {}",
-        sh_quote(&bootc_line(&args))
+        sh_quote(&line)
     )
 }
 
@@ -1207,21 +1254,21 @@ mod tests {
         );
     }
 
-    /// A commit off main is found by its `<ref>-<sha7>` tags.
+    /// A commit off main is found by its branch's `ref-<branch>-<sha7>-<target>` tags.
     #[test]
     fn a_pull_request_commit_resolves_through_its_ref_tags() {
         assert_eq!(ci_commit("main-1a2b3c4"), Some("1a2b3c4"));
         assert_eq!(ci_commit("main-1a2b3c4-x86_64"), None);
         assert_eq!(ci_commit("v1.2.3"), None);
-        let vm = r#"{"Repository":"registry.tilo.so/tilo/tilo-vm","Tags":["main-0000000-ci","pr-12-1a2b3c4-ci","pr-12-1a2b3c4-ci-x86_64","fix-x-1a2b3c4-ci","1a2b3c4-ci"]}"#;
+        let vm = r#"{"Repository":"registry.tilo.so/tilo/tilo-vm","Tags":["main-0000000-ci","pr-12-1a2b3c4-ci","ref-pr-12-1a2b3c4-x86_64","ref-fix-x-1a2b3c4-x86_64","ref-fix-x-1a2b3c4-aarch64","1a2b3c4-x86_64"]}"#;
         let ci =
             r#"{"Tags":["pr-12-1a2b3c4-x86_64","pr-12-1a2b3c4-aarch64","main-1a2b3c4x-x86_64"]}"#;
         let found = ci_ref_candidates("1a2b3c4", "x86_64", None, vm, ci);
         assert_eq!(
             found.dev_images,
             vec![
-                "registry.tilo.so/tilo/tilo-vm:fix-x-1a2b3c4-ci".to_owned(),
-                "registry.tilo.so/tilo/tilo-vm:pr-12-1a2b3c4-ci".to_owned(),
+                "registry.tilo.so/tilo/tilo-vm-ref:ref-fix-x-1a2b3c4-x86_64".to_owned(),
+                "registry.tilo.so/tilo/tilo-vm-ref:ref-pr-12-1a2b3c4-x86_64".to_owned(),
             ]
         );
         assert_eq!(
@@ -1231,11 +1278,11 @@ mod tests {
         let none = ci_ref_candidates("1a2b3c4", "aarch64", None, "not json", "{}");
         assert!(none.dev_images.is_empty() && none.bases.is_empty());
         // A board takes only its own board image, and never a base to build from.
-        let boards = r#"{"Tags":["pr-7-1a2b3c4-ci","pr-7-1a2b3c4-lenovo-83ed","pr-7-1a2b3c4-orangepi-3b-v2-1"]}"#;
+        let boards = r#"{"Tags":["ref-pr-7-1a2b3c4-aarch64","ref-pr-7-1a2b3c4-lenovo-83ed","ref-pr-7-1a2b3c4-orangepi-3b-v2-1"]}"#;
         let board = ci_ref_candidates("1a2b3c4", "aarch64", Some("lenovo-83ed"), boards, ci);
         assert_eq!(
             board.dev_images,
-            vec!["registry.tilo.so/tilo/tilo-vm:pr-7-1a2b3c4-lenovo-83ed".to_owned()]
+            vec!["registry.tilo.so/tilo/tilo-vm-ref:ref-pr-7-1a2b3c4-lenovo-83ed".to_owned()]
         );
         assert!(board.bases.is_empty());
         assert_eq!(
@@ -1267,10 +1314,7 @@ mod tests {
         // Phase: ci_candidates_try_published_dev_images_then_bases.
         {
             let expected = CiCandidates {
-                dev_images: vec![
-                    "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci".into(),
-                    "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4".into(),
-                ],
+                dev_images: vec!["registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64".into()],
                 bases: vec![
                     "registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64".into(),
                     "registry.tilo.so/tilo/tilo:main-1a2b3c4".into(),
@@ -1466,6 +1510,20 @@ mod tests {
                 "{locked}"
             );
             assert!(locked.contains("bootc upgrade; rc=$?"), "{locked}");
+            // A registry image goes the device's own update way: pinned, then its verified update.
+            let pinned = under_vm_lock(&update_command(Some("registry.tilo.so/tilo/tilo-vm:x")));
+            assert!(
+                pinned.contains("/usr/libexec/tilo-update-channel pin")
+                    && pinned.contains("/usr/libexec/tilo-verified-update; rc=$?")
+                    && pinned.contains("bootc switch"),
+                "{pinned}"
+            );
+            let channel = under_vm_lock(&update_command(None));
+            assert!(
+                channel.contains("/usr/libexec/tilo-update-channel unpin")
+                    && channel.contains("bootc upgrade"),
+                "{channel}"
+            );
             // bootc gets a writable ESP for the one command, and it is read-only again after.
             let line = bootc_line(&["status", "--json"]);
             assert!(line.contains("mount -o remount,rw /boot"), "{line}");

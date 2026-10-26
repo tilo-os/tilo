@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # The publishing half of an image: push OUT/image.oci.tar (one image, or an index of them from
-# oci-index.py) to REPOSITORY with its digest unchanged, attach the signature oci-sign.sh made if
-# there is one, and point TAG... at it.
+# oci-index.py), or the layout OUT/oci, to REPOSITORY with its digest unchanged, attach the
+# signature oci-sign.sh made if there is one, and point TAG... at it.
 # Writes OUT/receipt.json, the digest receipt deployments pin. Logs in to the registry as `oidc`
 # with an identity token from t for the registry (`id_token = ["registry.tilo.so"]`), which the
 # registry accepts for this repository's main, stable and v* tags, or to the forge's registry
 # code.tilo.so with REGISTRY_TOKEN (lib.sh registry_login); never signing credentials.
 #
-# usage: oci-publish.sh dev|release|any REPOSITORY OUT TAG...
+# usage: oci-publish.sh dev|release|branch|any REPOSITORY OUT TAG...
 # The first argument is the channel the check publishes to; it must be this run's (lib.sh), so a
-# release check can never publish main's tree and a development check never stable's. With
+# release check can never publish main's tree and a development check never stable's. A branch's
+# build is published only signed, with the development key. With
 # `any` the check publishes on both, and each TAG says its channel: `dev:dev-{commit}`,
 # `release:sha-{commit}`; only the run's channel's tags are pushed, so one check, with its
 # signature as an optional need, pushes development tags from main and the signed release from
@@ -37,13 +38,13 @@
 # attached as the image's SBOM, and read back to be the same bytes.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-wanted=${1:?usage: oci-publish.sh dev|release|any REPOSITORY OUT TAG...}
+wanted=${1:?usage: oci-publish.sh dev|release|branch|any REPOSITORY OUT TAG...}
 repository=${2:?}
 out=${3:?}
 shift 3
 run_channel=$(channel)
 case $wanted in
-  dev | release)
+  dev | release | branch)
     [[ $run_channel == "$wanted" ]] || die "this check publishes to $wanted; the run is for ${T_REF:-}"
     for tag; do
       [[ $tag != dev:* && $tag != release:* ]] || die "a $wanted check's tags name no channel: $tag"
@@ -67,15 +68,15 @@ if [[ $run_channel == release && -n ${TILO_RELEASE_OUT:-} ]]; then
   out=$TILO_RELEASE_OUT
   [[ -s $out/image.oci.tar ]] || die "no release image in $out: the step deriving it did not run"
 fi
-[[ $run_channel == dev || -s $out/signature ]] || die 'a release is published signed only'
+[[ $run_channel == dev || -s $out/signature ]] || die "a $run_channel build is published signed only"
 (($#)) || die 'no tags'
 require_commit
 # Releases verify against the release key; a signed development candidate against the
 # development key (oci-sign.sh, TILO_DEV_SIGNING).
 verify_key=$repo_root/keys/cosign.pub
-[[ $run_channel == dev ]] && verify_key=$repo_root/keys/cosign-dev.pub
+[[ $run_channel == release ]] || verify_key=$repo_root/keys/cosign-dev.pub
 digest=$(cat "$out/digest")
-[[ $(archive_digest "$out/image.oci.tar") == "$digest" ]] || die 'the archive is not the build'
+[[ $(built_digest "$out") == "$digest" ]] || die 'the image is not the build'
 registry=${repository%%/*}
 auth=$scratch/registry-auth.json
 # Where the image goes: the registry, or with TILO_PUBLISH_DRY_RUN a local OCI layout.
@@ -167,7 +168,7 @@ for tag; do
 done
 set -- "${tags[@]}"
 first=$(fill "$1")
-copy "oci-archive:$out/image.oci.tar" "$(target "$first")"
+copy "$(built_image "$out")" "$(target "$first")"
 pushed=$(skopeo inspect --raw --authfile "$auth" "$(pushed)" | sha256sum | cut -d' ' -f1)
 [[ sha256:$pushed == "$digest" ]] || die "the registry holds sha256:$pushed, not $digest"
 if [[ -s $out/signature && -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then

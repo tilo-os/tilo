@@ -1,0 +1,37 @@
+# Surfaces that still decide their shape from a number
+# (tools/policy/check_breakpoints.py). Counts only shrink: derive the
+# breakpoint from the rect this surface is laid out in, or mark a line
+# `allow-breakpoint: <why>` when it is not a breakpoint at all.
+1 apps/browser/src/browser_widget.rs
+1 apps/canvas/tests/history.rs
+4 apps/chat/src/local_voice.rs
+1 apps/chip-design/src/verification/operators.rs
+2 apps/feeds/src/list_pane/copy_tests.rs
+1 apps/file-explorer/src/files_app/tests.rs
+1 apps/music/src/app/spotify.rs
+2 apps/notes/examples/notes-latency.rs
+1 apps/notes/src/app.rs
+2 apps/notes/tests/accessibility_publication.rs
+2 apps/notes/tests/scroll_damage.rs
+2 apps/notes/tests/typing_damage.rs
+2 apps/pdf-viewer/src/app.rs
+2 apps/photos/tests/end_to_end.rs
+2 apps/settings/examples/settings-latency.rs
+1 apps/settings/src/keyboard_preview.rs
+1 apps/settings/tests/pane_geometry.rs
+1 apps/slides/src/app/tests_editing.rs
+2 apps/store/src/catalogue/details.rs
+2 apps/typst-editor/src/app/damage_tests.rs
+2 apps/video-editor/src/app.rs
+1 apps/video-editor/src/app/window_bar_tests.rs
+2 apps/video-editor/tests/support/generated_clip.rs
+1 apps/word-processor/src/style_color_picker.rs
+3 crates/session/desktop-surface/tests/surface.rs
+4 crates/session/shell/src/collab/flatpak_share.rs
+2 crates/session/shell/src/compositor/drag_feedback.rs
+2 crates/session/shell/src/compositor/lock_screen.rs
+2 crates/session/shell/src/portal/desktop_services.rs
+2 crates/session/shell/src/shell/device_fabric.rs
+1 crates/session/shell/src/shell/frame_retained_tests.rs
+2 crates/session/shell/src/shell/overlay_host/qs_motion.rs
+3 crates/session/shell/src/shell/overlay_host/shortcuts.rs

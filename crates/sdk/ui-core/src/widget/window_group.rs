@@ -172,6 +172,13 @@ impl<T: crate::motion::Animatable> FrameSpring<T> {
 }
 
 impl WindowGroup {
+    /// Whether the slot width is still moving — the window is opening, or a
+    /// resize has not landed.
+    #[cfg(test)]
+    pub(crate) fn has_width_spring_for_tests(&self) -> bool {
+        self.width_spring.is_some()
+    }
+
     /// Move this group and the chrome laid out inside it. Used while a
     /// retained strip is drawn, so the encoded scene stays in canvas
     /// coordinates and a pan does not rewrite it. The caller puts the
@@ -357,6 +364,15 @@ pub struct WindowGroup {
     /// renders at a stale top-left rect. `take_structure_dirty` diffs
     /// this against the live active id to force that rebuild.
     built_active: Option<u64>,
+    /// The window's node in the retained layout tree, while it has one.
+    node: Option<NodeId>,
+    /// What the node was built around: whether the bar shows, whether it
+    /// stands over the content, and the active tab. While these hold, a
+    /// new width, slide or maximized state restyles the nodes in place.
+    laid_shape: Option<(bool, bool, u64)>,
+    /// The bar's and the tile's own styles, before a slot in flight set
+    /// their width: what they go back to once it rests.
+    child_styles: Vec<(NodeId, Style)>,
     pending_maximize_change: Option<bool>,
     /// Per-mille, not px — a peer's output may be a different size.
     pending_width_change: Option<WindowWidth>,
@@ -395,9 +411,6 @@ pub struct WindowGroup {
     /// composition takes several passes and real time moves between them:
     /// stepping or asking on every pass kept the frame from ever settling.
     width_stepped: bool,
-    /// A rebuild found the frame token spent and left the spring where it
-    /// was: the next drawn frame must step it.
-    width_step_skipped: bool,
     close_rebuild_taken: bool,
     /// Last motion policy observed from the active theme. Widget scheduling
     /// has no `Theme` parameter, so draw latches it here and the next
@@ -579,7 +592,6 @@ impl WindowGroup {
             closing_at: None,
             close_requested: false,
             width_stepped: false,
-            width_step_skipped: false,
             close_rebuild_taken: false,
             close_duration: window_close_time(),
             close_lands: false,
@@ -587,6 +599,9 @@ impl WindowGroup {
             motion_source: crate::tokens::MotionSource::default(),
             style_dirty: false,
             built_active: Some(active_id),
+            node: None,
+            laid_shape: None,
+            child_styles: Vec::new(),
             pending_maximize_change: None,
             pending_width_change: None,
             pending_tab_reorder: None,
@@ -830,7 +845,6 @@ impl WindowGroup {
         // One step per drawn frame: composition settle rebuilds the same
         // frame up to eight times and must not walk the spring.
         if std::mem::replace(&mut self.width_stepped, true) {
-            self.width_step_skipped = true;
             return;
         }
         // The frame's time: after a stall the width lands where the motion
@@ -878,13 +892,12 @@ impl WindowGroup {
     /// that started the spring) asks for the rebuild that takes it, or the
     /// spring would stay where it stopped.
     pub fn next_frame(&mut self) {
-        if self.width_step_skipped
-            && !self.reduce_motion
-            && self.width_spring.as_ref().is_some_and(|s| !s.is_settled())
-        {
+        // A slot in flight takes its next step in the next frame's layout,
+        // which restyles its node in place; a remount that took this
+        // frame's step left nothing else to ask for it.
+        if !self.reduce_motion && self.width_spring.as_ref().is_some_and(|s| !s.is_settled()) {
             self.style_dirty = true;
         }
-        self.width_step_skipped = false;
         self.width_stepped = false;
         self.close_rebuild_taken = false;
     }
@@ -1690,9 +1703,130 @@ impl WindowGroup {
     }
 
     pub(crate) fn discard_layout_nodes(&mut self) {
+        self.node = None;
+        self.laid_shape = None;
+        self.child_styles.clear();
         for (_, host) in &mut self.hosts {
             host.discard_layout_nodes();
         }
+    }
+
+    /// The window's node in the retained layout tree, while it has one.
+    pub(crate) fn layout_node(&self) -> Option<NodeId> {
+        self.node
+    }
+
+    /// What the window's nodes are built around (see `laid_shape`).
+    fn layout_shape(&self) -> (bool, bool, u64) {
+        (
+            self.navigation_bar_visible(),
+            self.bar_over_content(),
+            self.bar.active_id(),
+        )
+    }
+
+    /// The window's own node style. `flex_grow: 0` keeps a group at its
+    /// declared `WindowWidth` regardless of sibling count or slack: placing
+    /// a new app never resizes siblings, the strip extends past the viewport
+    /// instead. A maximized window takes the room instead.
+    pub(crate) fn own_style(&self) -> Style {
+        let mut style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size {
+                width: Dimension::length(f32_of_f64(self.layout_width_px())),
+                height: Dimension::percent(1.0),
+            },
+            flex_grow: 0.0,
+            gap: taffy::Size {
+                width: length(0.0_f32),
+                height: length(0.0_f32),
+            },
+            ..Default::default()
+        };
+        if self.maximized {
+            style.size.width = Dimension::auto();
+            style.flex_grow = 1.0e6;
+            style.flex_basis = Dimension::length(0.0);
+        }
+        // Moved down, not shrunk, while the desktop's bar shows over the
+        // windows' top edge (a maximized window, or a bar hidden by choice):
+        // the window's own bar is never under the desktop's.
+        let slide = self.top_slide_now();
+        if slide > 0.0 {
+            style.inset.top = taffy::LengthPercentageAuto::length(f32_of_f64(slide));
+        }
+        style
+    }
+
+    /// Give the bar and the tile their own styles, at the slot's wide end
+    /// while it is in flight.
+    fn style_children(&self, taffy: &mut TaffyTree<()>) {
+        let laid = self.content_width_in_flight();
+        for (node, own) in &self.child_styles {
+            let mut style = own.clone();
+            if let Some(laid) = laid {
+                style.size.width = Dimension::length(f32_of_f64(laid));
+                style.min_size.width = Dimension::length(f32_of_f64(laid));
+                style.max_size.width = Dimension::length(f32_of_f64(laid));
+            }
+            if taffy.style(*node).ok() != Some(&style) {
+                let _ = taffy.set_style(*node, style);
+            }
+        }
+    }
+
+    /// What [`Widget::build_layout`] keeps up besides building nodes: the
+    /// chrome's motion, the controls offered to the bar and the app.
+    fn prepare_layout(&mut self, theme: &Theme) {
+        self.close_duration = window_close_time();
+        self.set_reduce_motion(theme.reduce_motion);
+        // This is the layout a maximized frame that came to rest is owed.
+        self.rest_layout_owed = false;
+        self.chrome_motion = theme.motion();
+        self.fullscreen_bar.laid_out = self.bar_over_content();
+    }
+
+    /// Carry out the window's changes in its retained nodes, for the row
+    /// that places it: the active tab's content remounts in place, and the
+    /// bar and tile take their widths. The row sets the window's own node
+    /// style (from [`Self::own_style`]). Returns `false` when the window
+    /// must be built again.
+    pub(crate) fn remount_in_row(&mut self, remount: &mut super::Remount<'_>) -> bool {
+        if self.node.is_none() || self.laid_shape != Some(self.layout_shape()) {
+            return false;
+        }
+        let theme = remount.theme();
+        let active_id = self.bar.active_id();
+        let Some(host) = self
+            .hosts
+            .iter_mut()
+            .find(|(id, _)| *id == active_id)
+            .map(|(_, host)| host)
+        else {
+            return false;
+        };
+        // A tile that lays its content out again sets its node's own style.
+        let relaid = host.relaid_layout_node();
+        if !host.remount_children(remount) {
+            return false;
+        }
+        if let Some(node) = relaid
+            && let Ok(style) = remount.taffy().style(node).cloned()
+            && let Some(entry) = self.child_styles.iter_mut().find(|(n, _)| *n == node)
+        {
+            entry.1 = style;
+        }
+        self.style_dirty = false;
+        self.prepare_layout(theme);
+        self.offer_history_controls();
+        self.offer_window_bar(active_id, theme);
+        let flush = self.external_navigation || self.fullscreen_presentation;
+        if let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active_id) {
+            host.set_flush_edges(flush);
+        }
+        self.style_children(remount.taffy());
+        true
     }
 
     /// Complete capture bounds for the active app, including this group's tab
@@ -2020,7 +2154,6 @@ impl WindowGroup {
             closing_at: None,
             close_requested: false,
             width_stepped: false,
-            width_step_skipped: false,
             close_rebuild_taken: false,
             close_duration: window_close_time(),
             close_lands: false,
@@ -2028,6 +2161,9 @@ impl WindowGroup {
             motion_source: crate::tokens::MotionSource::default(),
             style_dirty: false,
             built_active: Some(active_id),
+            node: None,
+            laid_shape: None,
+            child_styles: Vec::new(),
             pending_maximize_change: None,
             pending_width_change: None,
             pending_tab_reorder: None,
@@ -2368,6 +2504,14 @@ impl WindowGroup {
     /// desktop". `true` when that changed what the window shows.
     pub fn set_tab_desktop_control(&mut self, id: u64, on: bool) -> bool {
         self.bar.set_desktop_control(id, on)
+    }
+
+    /// Mark tab `id` as running a developer's own build, installed by
+    /// `installer` into the room it is in, or clear the mark: while it is in
+    /// front the bar says "Dev build · by …". `true` when that changed what
+    /// the window shows.
+    pub fn set_tab_dev_build(&mut self, id: u64, installer: Option<String>) -> bool {
+        self.bar.set_dev_build(id, installer)
     }
 
     /// Press the bar's "Controls your desktop" chip without a pointer, as an
@@ -3595,12 +3739,7 @@ impl Widget for WindowGroup {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.close_duration = window_close_time();
-        self.set_reduce_motion(theme.reduce_motion);
-        // This is the layout a maximized frame that came to rest is owed.
-        self.rest_layout_owed = false;
-        self.chrome_motion = theme.motion();
-        self.fullscreen_bar.laid_out = self.bar_over_content();
+        self.prepare_layout(theme);
         let bar_node = self
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
@@ -3622,49 +3761,17 @@ impl Widget for WindowGroup {
         } else {
             taffy.leaf_node(Style::default())
         };
-        // `flex_grow: 0` keeps a group at its
-        // declared `WindowWidth` regardless of sibling count or slack —
-        // placing a new app never resizes siblings, the strip extends
-        // past the viewport instead. Maximized overrides this below.
-        let mut style = Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: Size {
-                width: Dimension::length(f32_of_f64(self.layout_width_px())),
-                height: Dimension::percent(1.0),
-            },
-            flex_grow: 0.0,
-            gap: taffy::Size {
-                width: length(0.0_f32),
-                height: length(0.0_f32),
-            },
-            ..Default::default()
-        };
-        if self.maximized {
-            style.size.width = Dimension::auto();
-            style.flex_grow = 1.0e6;
-            style.flex_basis = Dimension::length(0.0);
-        }
-        // Moved down, not shrunk, while the desktop's bar shows over the
-        // windows' top edge (a maximized window, or a bar hidden by choice):
-        // the window's own bar is never under the desktop's.
-        let slide = self.top_slide_now();
-        if slide > 0.0 {
-            style.inset.top = taffy::LengthPercentageAuto::length(f32_of_f64(slide));
-        }
         let nodes = bar_node.map_or_else(|| vec![tile_node], |bar| vec![bar, tile_node]);
-        if let Some(laid) = self.content_width_in_flight() {
-            for &node in &nodes {
-                if let Ok(child) = taffy.style(node) {
-                    let mut child = child.clone();
-                    child.size.width = Dimension::length(f32_of_f64(laid));
-                    child.min_size.width = Dimension::length(f32_of_f64(laid));
-                    child.max_size.width = Dimension::length(f32_of_f64(laid));
-                    let _ = taffy.set_style(node, child);
-                }
-            }
-        }
-        taffy.widget_node(style, &nodes, node_map, self)
+        self.child_styles = nodes
+            .iter()
+            .map(|&node| (node, taffy.style(node).cloned().unwrap_or_default()))
+            .collect();
+        self.style_children(taffy);
+        let style = self.own_style();
+        let node = taffy.widget_node(style, &nodes, node_map, self);
+        self.node = Some(node);
+        self.laid_shape = Some(self.layout_shape());
+        node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let previous = (self.rect, self.active_host().map(Widget::get_rect));
@@ -3972,6 +4079,12 @@ impl Widget for WindowGroup {
                 .is_some_and(super::Widget::wants_pointer_capture)
     }
     fn take_structure_dirty(&mut self) -> bool {
+        self.take_structure_change().rebuilds()
+    }
+    /// A change the active tab's content carries out in place stays in
+    /// place; the window's own changes rebuild.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        use crate::widget::StructureChange;
         // Every child's flag is drained, but only the active host's counts:
         // inactive hosts have no layout nodes (see `is_layout_dirty`), and
         // selecting one rebuilds through `active_switched` anyway.
@@ -3983,11 +4096,11 @@ impl Widget for WindowGroup {
         self.style_dirty |= self.fullscreen_bar.laid_out != self.bar_over_content();
         let bar = self.bar.take_structure_dirty();
         let active = self.bar.active_id();
-        let mut active_host = false;
+        let mut active_host = StructureChange::None;
         for (id, host) in &mut self.hosts {
-            let dirty = host.take_structure_dirty();
+            let change = host.take_structure_change();
             if *id == active {
-                active_host = dirty;
+                active_host = change;
             }
         }
         let style = std::mem::take(&mut self.style_dirty);
@@ -3995,7 +4108,32 @@ impl Widget for WindowGroup {
         let closing = self.is_closing()
             && !self.close_complete()
             && !std::mem::replace(&mut self.close_rebuild_taken, true);
-        bar || active_host || style || active_switched || closing
+        // A new width, slide or maximized state moves nodes the window
+        // keeps; a bar that came or went, or another tab, builds it again.
+        let reshaped = self.node.is_some() && self.laid_shape != Some(self.layout_shape());
+        let own = if bar || active_switched || closing || reshaped || self.node.is_none() {
+            StructureChange::of(bar || style || active_switched || closing || reshaped)
+        } else if style {
+            StructureChange::Children
+        } else {
+            StructureChange::None
+        };
+        own.join(active_host)
+    }
+
+    /// Carry out a change in place outside a row: as in one, and the
+    /// window sets its own node's style.
+    fn remount_children(&mut self, remount: &mut super::Remount<'_>) -> bool {
+        if !self.remount_in_row(remount) {
+            return false;
+        }
+        if let Some(node) = self.node {
+            let style = self.own_style();
+            if remount.taffy().style(node).ok() != Some(&style) {
+                let _ = remount.taffy().set_style(node, style);
+            }
+        }
+        true
     }
     fn needs_redraw(&self) -> bool {
         // Redraw follows the presentation tree. Retained inactive hosts still

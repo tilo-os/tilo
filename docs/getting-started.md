@@ -142,3 +142,11 @@ changed. Keep the installer transcript and exact error. The complete recovery,
 rollback, alongside-install, and first-boot acceptance steps are in
 [`docs/installer-walkthrough.md`](installer-walkthrough.md); developer and
 nested-session setup is in [the development book](development/run-desktop.md).
+
+## Staying current, and development builds
+
+An installed device updates itself from the channel it follows: stable releases, or
+main's development builds on a device installed from a development image.
+[Development devices](development/devices.md) explains both channels, how to choose
+one in **Settings → Updates**, and how a developer puts their own build on one of
+their devices.

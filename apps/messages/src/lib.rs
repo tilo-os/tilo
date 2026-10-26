@@ -3,6 +3,7 @@
 //! privileged broker; it is never inferred from names or widget state.
 
 pub mod conversations;
+mod drafts;
 mod enrollment;
 mod groups;
 mod history;

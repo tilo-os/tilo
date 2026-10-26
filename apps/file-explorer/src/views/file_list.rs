@@ -158,6 +158,41 @@ pub(super) struct ListOutcome {
 #[derive(Clone)]
 pub struct ListSlot(Rc<RefCell<FileTable<ListRow>>>);
 
+impl ListSlot {
+    /// The column widths the person set by dragging an edge.
+    #[must_use]
+    pub fn widths(&self) -> std::collections::BTreeMap<String, u32> {
+        self.0
+            .try_borrow()
+            .map(|table| {
+                table
+                    .column_widths()
+                    .into_iter()
+                    .map(|(key, px)| {
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "a column is a few hundred whole pixels across"
+                        )]
+                        let whole = px.max(0.0) as u32;
+                        (key, whole)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Lay the columns out at the widths the person set on another launch.
+    pub fn set_widths(&self, widths: &std::collections::BTreeMap<String, u32>) {
+        if widths.is_empty() {
+            return;
+        }
+        if let Ok(mut table) = self.0.try_borrow_mut() {
+            table.set_column_widths(widths.iter().map(|(key, px)| (key.clone(), *px as f32)));
+        }
+    }
+}
+
 impl Default for ListSlot {
     fn default() -> Self {
         Self(Rc::new(RefCell::new(FileTable::new(

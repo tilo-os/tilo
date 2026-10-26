@@ -421,6 +421,27 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         let member = self.check_bot_governance(caller, governance::INSTALL_BOT, now)?;
+        if let Some(program) = &request.program {
+            // The host runs a developer's program as the room's root, so the
+            // person asking must hold everything it asks for themselves.
+            let shortcut = parse_program(program.as_bytes()).map_err(|error| error.to_string())?;
+            let grants = bot::grants(
+                &self.core.room,
+                &request.entry,
+                &member.person,
+                &shortcut.grant,
+            )
+            .map_err(|error| error.to_string())?;
+            let asking =
+                tilo_action_policy::Standing::person(member.policy.clone(), member.person.clone());
+            let authority = asking.authority();
+            let cx = Context::at_time(now);
+            for grant in &grants {
+                RoomPolicy::check_within(&authority, grant, &cx).map_err(|refusal| {
+                    format!("the bot's program asks for more than you hold: {refusal}")
+                })?;
+            }
+        }
         let previous = self.governance().bot_request(&request.entry);
         if previous
             .as_ref()

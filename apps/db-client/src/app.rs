@@ -104,6 +104,13 @@ pub struct DbClientApp {
     /// The caller of a running "Run SQL" effect, answered when the query
     /// settles.
     effect_reply: Option<EffectReply>,
+    /// A copy whose outcome the clipboard reports after it returned: a paste
+    /// that fails later is said, not confirmed.
+    copy: ui::CopyWatch,
+    /// The result row the person chose, and the result generation it belongs
+    /// to: a fresh result starts with nothing chosen.
+    selected_row: Option<usize>,
+    selected_generation: usize,
     /// The record as last presented.
     record: Rc<Record>,
     export_rx: Option<ui::portal::PortalChannel>,
@@ -155,6 +162,9 @@ impl DbClientApp {
             secrets: None,
             pending_connect_id: None,
             effect_reply: None,
+            copy: ui::CopyWatch::default(),
+            selected_row: None,
+            selected_generation: 0,
             record: Rc::default(),
             export_rx: None,
             export_snapshot: None,
@@ -277,6 +287,45 @@ impl DbClientApp {
         }
     }
 
+    /// Copy the row selected in the result table, as tab-separated text.
+    fn copy_row(&mut self) {
+        let (result, row) = self
+            .link
+            .read(|model| (model.query.clone(), model.selected_row));
+        let text = result
+            .as_ref()
+            .zip(row)
+            .and_then(|(result, row)| result.row_text(row));
+        match text {
+            Some(text) => self.copy_to_clipboard(text, "db-copied-row"),
+            None => {
+                self.session.status = RunStatus::Ok(crate::i18n::t("db-copy-nothing"));
+            }
+        }
+    }
+
+    /// Copy the whole result, header line first, as tab-separated text.
+    fn copy_result(&mut self) {
+        let result = self.link.read(|model| model.query.clone());
+        match result {
+            Some(result) => self.copy_to_clipboard(result.text(), "db-copied-result"),
+            None => {
+                self.session.status = RunStatus::Ok(crate::i18n::t("db-copy-nothing"));
+            }
+        }
+    }
+
+    /// Put `text` on the clipboard and say so — or say it did not take. A
+    /// copy can fail after it returns, so it is watched and the failure it
+    /// reports later replaces the confirmation.
+    fn copy_to_clipboard(&mut self, text: String, done: &str) {
+        if self.copy.watch(ui::try_clipboard_copy(&text)) {
+            self.session.status = RunStatus::Ok(crate::i18n::t(done));
+        } else {
+            self.session.status = RunStatus::Error(crate::i18n::t("db-copy-failed"));
+        }
+    }
+
     /// Do what a view asked.
     fn apply(&mut self, intent: Intent) {
         match intent {
@@ -322,6 +371,22 @@ impl DbClientApp {
                 }
             }
             Intent::DismissStatus => self.session.status = RunStatus::Idle,
+            Intent::Cancel => {
+                // The engine stops the exact query it is running; the reply
+                // that follows reports the cancellation honestly.
+                if !self.session.cancel_in_flight_query() {
+                    // Nothing was running: say that, rather than blaming a
+                    // query that is not there.
+                    self.session.status = RunStatus::Ok(crate::i18n::t("db-cancel-finished"));
+                }
+            }
+            Intent::CopyRow => self.copy_row(),
+            Intent::SelectRow(row) => {
+                let generation = self.link.read(|model| model.query_generation);
+                self.selected_row = row;
+                self.selected_generation = generation;
+            }
+            Intent::CopyResult => self.copy_result(),
             Intent::PreviousPage => self.session.prev_data_page(),
             Intent::NextPage => self.session.next_data_page(),
         }
@@ -329,6 +394,12 @@ impl DbClientApp {
 
     /// Describe the session to the views.
     fn publish(&mut self) {
+        // A fresh result is a different set of rows: the chosen one does not
+        // carry over to it.
+        if self.selected_generation != self.session.query_gen {
+            self.selected_row = None;
+            self.selected_generation = self.session.query_gen;
+        }
         let session = &self.session;
         let signature = schema_signature(&session.schema);
         if self.published.schema.as_ref().map(|(s, _)| *s) != Some(signature) {
@@ -397,6 +468,7 @@ impl DbClientApp {
                 .active_connection()
                 .map(|profile| profile.name.clone())
                 .unwrap_or_default(),
+            selected_row: self.selected_row,
         };
         self.link.publish(model);
     }
@@ -882,6 +954,9 @@ impl ui::widget::Decorator for DbClientApp {
         // remote query land on screen without further user input.
         self.session.drain();
         self.settle_effect();
+        if self.copy.failed() {
+            self.session.status = RunStatus::Error(crate::i18n::t("db-copy-failed"));
+        }
         if self.export_rx.is_some() {
             self.drain_export_portal();
         }
@@ -917,6 +992,25 @@ impl ui::widget::Decorator for DbClientApp {
             *ctx.handled = true;
             return;
         }
+        // Escape is the way out of a statement that will not come back.
+        if self.dialog.is_none()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+            && self.link.read(|model| model.busy)
+        {
+            self.link.ask(Intent::Cancel);
+            *ctx.handled = true;
+            return;
+        }
         if self.dialog.is_none() && is_command(event, *ctx.modifiers, "n") {
             self.link.ask(Intent::NewConnection);
             *ctx.handled = true;
@@ -941,6 +1035,12 @@ impl ui::widget::Decorator for DbClientApp {
 
 /// The window bar's action that runs the query in the editor.
 pub(crate) const RUN_QUERY: &str = "db.query.run";
+/// The window bar's action that stops the query in flight.
+pub(crate) const CANCEL_QUERY: &str = "db.query.cancel";
+/// The window bar's action that copies the selected row.
+pub(crate) const COPY_ROW: &str = "db.result.copy-row";
+/// The window bar's action that copies the whole result.
+pub(crate) const COPY_RESULT: &str = "db.result.copy-result";
 
 impl DbClientApp {
     /// Run what the person did in the window's bar, then declare its slots:
@@ -962,31 +1062,77 @@ impl DbClientApp {
             {
                 self.apply(Intent::Run(self.link.sql()));
                 self.publish();
+            } else if let ToolbarEvent::Action { id } = &event
+                && id == CANCEL_QUERY
+                && self.link.read(|model| model.busy)
+            {
+                self.apply(Intent::Cancel);
+                self.publish();
+            } else if let ToolbarEvent::Action { id } = &event
+                && (id == COPY_ROW || id == COPY_RESULT)
+            {
+                self.apply(if id == COPY_ROW {
+                    Intent::CopyRow
+                } else {
+                    Intent::CopyResult
+                });
+                self.publish();
             }
         }
-        let (name, connected, tab, can_run) = self.link.read(|model| {
+        let (name, connected, tab, can_run, busy, has_result) = self.link.read(|model| {
             (
                 model.active_name.clone(),
                 !model.connections.is_empty(),
                 model.tab,
                 model.connected && !model.busy,
+                model.busy,
+                model.query.as_ref().is_some_and(|query| query.is_select),
             )
         });
         let mut toolbar = self.shell.window_toolbar();
-        // Run stands in the bar while the query is in front; it waits for a
-        // connection that is not busy.
+        // Run stands in the bar while the query is in front; Cancel takes its
+        // place while a statement runs, because a disabled Run with no way
+        // out is how a long query used to end.
         if tab == MainTab::Query && connected {
-            ui::widget::NavShell::push_window_actions(
-                &mut toolbar,
-                [ToolbarAction::new(RUN_QUERY, Icon::Play.name(), "Run query").enabled(can_run)],
-            );
+            let mut actions = Vec::new();
+            if busy {
+                actions.push(ToolbarAction::new(
+                    CANCEL_QUERY,
+                    Icon::X.name(),
+                    crate::i18n::t("db-cancel-query"),
+                ));
+            } else {
+                actions.push(
+                    ToolbarAction::new(
+                        RUN_QUERY,
+                        Icon::Play.name(),
+                        crate::i18n::t("db-run-query"),
+                    )
+                    .enabled(can_run),
+                );
+            }
+            if has_result {
+                actions.push(
+                    ToolbarAction::new(COPY_ROW, Icon::Copy.name(), crate::i18n::t("db-copy-row"))
+                        .in_menu(),
+                );
+                actions.push(
+                    ToolbarAction::new(
+                        COPY_RESULT,
+                        Icon::ClipboardPaste.name(),
+                        crate::i18n::t("db-copy-result"),
+                    )
+                    .in_menu(),
+                );
+            }
+            ui::widget::NavShell::push_window_actions(&mut toolbar, actions);
         }
         toolbar.location = (!name.is_empty()).then(|| ToolbarLocation {
             label: name,
             ..ToolbarLocation::default()
         });
         toolbar.views = connected.then(|| ToolbarViews {
-            name: "View".to_owned(),
+            name: crate::i18n::t("db-view-switcher"),
             choices: MainTab::all()
                 .into_iter()
                 .map(|tab| ToolbarView {
@@ -1591,6 +1737,62 @@ mod tests {
             write_sql(&mut harness, "SELECT * FROM remote_table");
             assert_eq!(app(&harness).link.sql(), "SELECT * FROM remote_table");
         }
+    }
+
+    /// A statement that will not come back can be stopped from the window
+    /// bar: while one runs the bar offers Cancel in Run's place, and taking
+    /// it ends the query instead of leaving a disabled Run and no way out.
+    #[test]
+    fn a_running_statement_is_cancelled_from_the_window_bar() {
+        let mut harness = mounted(DbClientApp::sampled());
+        harness.relayout();
+        // A statement that takes long enough to be caught in flight: a
+        // billion rows counted one at a time. It runs through the same
+        // session path the Run action uses.
+        harness.root_mut::<DbClientApp>().session.run_query(
+            "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 1000000000) \
+             SELECT sum(x) FROM n",
+        );
+        harness.relayout();
+        assert!(
+            harness.wait_until(tilo_test_env::hang_bound(), |harness| {
+                app(harness).session.busy()
+            }),
+            "the statement is in flight"
+        );
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        assert!(
+            bar.actions.iter().any(|action| action.id == CANCEL_QUERY),
+            "Cancel takes Run's place while a statement runs: {:?}",
+            bar.actions
+        );
+        assert!(
+            !bar.actions
+                .iter()
+                .any(|action| action.id == RUN_QUERY && action.enabled),
+            "no disabled Run is left beside it: {:?}",
+            bar.actions
+        );
+
+        harness.press_window_slot(ToolbarEvent::Action {
+            id: CANCEL_QUERY.into(),
+        });
+        harness.relayout();
+        assert!(
+            harness.wait_until(tilo_test_env::hang_bound(), |harness| {
+                !app(harness).session.busy()
+            }),
+            "the cancellation is answered, so the app is no longer busy"
+        );
+        assert!(
+            app(&harness)
+                .session
+                .status_message()
+                .to_lowercase()
+                .contains("cancel"),
+            "the status says the query was cancelled: {:?}",
+            app(&harness).session.status_message()
+        );
     }
 
     /// Running a query writes nothing to the document, and a statement that changes data asks first.
