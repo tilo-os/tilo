@@ -2899,7 +2899,6 @@ mod command_path_tests {
             NearbyTransferDirection, NearbyTransferHandle, NearbyTransferPhase,
             NearbyTransferSnapshot, NearbyTransferStatus,
         };
-        use ui::tilo_actions::ActionInput;
 
         let transfer = NearbyTransferHandle::from_issued_bytes([0x62; 16]);
         let (mut widget, _config) = hermetic();
@@ -2939,7 +2938,7 @@ mod command_path_tests {
                 .expect("a read-only status action exists in every phase");
             assert_eq!(status.contract.kind, ActionKind::Read);
             assert_eq!(status.contract.confirmation, ConfirmationPolicy::None);
-            let ActionInput::Immediate(encoded) = &status.input else {
+            let Some(encoded) = status.encode_immediate() else {
                 panic!("status uses the app's opaque row payload")
             };
             let Some(ui::framework::Effected::Done(output)) = crate::files_app::published::start(
@@ -2986,7 +2985,6 @@ mod command_path_tests {
             CollabRequest, NearbyTransferCommand, NearbyTransferDirection, NearbyTransferHandle,
             NearbyTransferPhase, NearbyTransferSnapshot, NearbyTransferStatus,
         };
-        use ui::tilo_actions::ActionInput;
 
         let transfer = NearbyTransferHandle::from_issued_bytes([0x61; 16]);
         let (mut widget, _config) = hermetic();
@@ -3016,7 +3014,7 @@ mod command_path_tests {
             .find(|action| action.id == "decline")
             .expect("decline needs no destination grant");
         assert_eq!(decline.contract.confirmation, ConfirmationPolicy::Confirm);
-        let ActionInput::Immediate(encoded) = &decline.input else {
+        let Some(encoded) = decline.encode_immediate() else {
             panic!("decline must use the existing opaque action payload")
         };
         let mut document = automerge::AutoCommit::new();
@@ -3044,7 +3042,6 @@ mod command_path_tests {
             NearbyTransferHandle, NearbyTransferPhase, NearbyTransferSnapshot,
             NearbyTransferStatus,
         };
-        use ui::tilo_actions::ActionInput;
 
         let transfer = NearbyTransferHandle::from_issued_bytes([0x41; 16]);
         let destination = NearbyDestinationHandle::from_issued_bytes([0x42; 16]);
@@ -3083,7 +3080,7 @@ mod command_path_tests {
             .expect("accept action");
         assert_eq!(accept.contract.confirmation, ConfirmationPolicy::Confirm);
         assert!(!accept.id.contains("42424242"));
-        let ActionInput::Immediate(encoded) = &accept.input else {
+        let Some(encoded) = accept.encode_immediate() else {
             panic!("accept is nullary over an app-owned opaque payload")
         };
 

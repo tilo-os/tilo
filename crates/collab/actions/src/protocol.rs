@@ -92,14 +92,11 @@ fn validate_resource<S: BuildHasher>(
                 ));
             }
         }
-        let encoded = match &action.input {
-            ActionInput::Immediate(encoded) => Some(encoded),
-            ActionInput::Prompted { .. } | ActionInput::Deferred { .. } => None,
-        };
+        let encoded = action.encode_immediate();
         if let Err(error) = action.validate_deferred_shape() {
             violations.push(issue(&address, &error.to_string()));
         }
-        if let ActionInput::Deferred { type_id, .. } = &action.input {
+        if let ActionInput::Deferred { type_id } = action.input() {
             if action.kind == crate::OperationKind::Document && !registry.contains(type_id) {
                 violations.push(issue(&address, "document action type is not registered"));
             }

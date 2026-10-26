@@ -90,9 +90,11 @@
 //! `#[param("…", choices = EXPR)]` names the values it takes when they are a
 //! fixed list (`EXPR` yields strings: a constant table, an array of names).
 
+use std::sync::Arc;
+
 use tilo_actions::{
-    ActionContract, ActionKind, ActionParam, ActionSpec, ConfirmationPolicy, EncodedAction,
-    ExecutionMode, OperationKind, ResultSpec, RetryPolicy, RiskLevel,
+    ActionContract, ActionKind, ActionParam, ActionSpec, ActionType, ConfirmationPolicy,
+    EncodedAction, ExecutionMode, OperationKind, ResultSpec, RetryPolicy, RiskLevel, Target,
 };
 
 /// A typed vocabulary of effects. Derive it (`#[derive(Effect)]`); see the
@@ -144,7 +146,10 @@ pub trait Effect: Sized + 'static {
     /// declaration.
     fn bound(&self) -> ActionSpec {
         let id = self.id();
-        bound_spec(Self::OPERATION, id, Self::declaration(id), self.arguments())
+        kept_type((std::any::TypeId::of::<Self>(), id, None), || {
+            bound_type(Self::OPERATION, id, Self::declaration(id))
+        })
+        .bind(Target::new(self.arguments()))
     }
 
     /// This effect bound to the item it acts on, as [`bound`](Self::bound),
@@ -178,7 +183,13 @@ pub trait Effect: Sized + 'static {
     /// (`#[effect(item = field)]`), each with its first parameter bound to
     /// the item and the rest still asked.
     fn item_specs(field: &str, item: &crate::Id) -> Vec<ActionSpec> {
-        item_specs(Self::declarations(), Self::OPERATION, field, item)
+        item_specs(
+            std::any::TypeId::of::<Self>(),
+            Self::OPERATION,
+            Self::declarations,
+            field,
+            item,
+        )
     }
 
     /// This effect as the published resource `resource` offers it (the
@@ -228,16 +239,21 @@ enum Bound {
     OverCaller,
 }
 
+/// The arguments an effect spec's [`Target`] binds: the ones of the item it
+/// was offered on.
+type BoundArguments = serde_json::Map<String, serde_json::Value>;
+
 /// The one encoder of every effect spec: the invocation of effect `effect`
-/// under `operation`, with its arguments made as `mode` says of `bound` and
-/// the caller's.
+/// under `operation`, with its arguments made as `mode` says of the ones its
+/// target binds ([`BoundArguments`]) and the caller's.
 fn encoder(
     operation: &'static str,
     effect: &'static str,
-    bound: serde_json::Map<String, serde_json::Value>,
     mode: Bound,
-) -> impl Fn(&tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static {
-    move |args| {
+) -> impl Fn(&Target, &tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static {
+    move |target, args| {
+        let empty = BoundArguments::new();
+        let bound = target.get::<BoundArguments>().unwrap_or(&empty);
         let args = match mode {
             Bound::None => args.to_json(),
             Bound::Only => bound.clone(),
@@ -319,17 +335,17 @@ fn offered_specs(decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionS
         .collect()
 }
 
-/// [`Effect::bound`] of the effect `id`, declared as `decl`, with `args`.
-fn bound_spec(
+/// The type of [`Effect::bound`] of the effect `id`, declared as `decl`: its
+/// target binds every argument.
+fn bound_type(
     operation: &'static str,
     id: &'static str,
     decl: Option<EffectDecl>,
-    args: serde_json::Map<String, serde_json::Value>,
-) -> ActionSpec {
-    let build = encoder(operation, id, args, Bound::Only);
-    match decl {
+) -> Arc<ActionType> {
+    let build = encoder(operation, id, Bound::Only);
+    let spec = match decl {
         Some(decl) => decl.spec_with(operation, Vec::new(), build),
-        None => ActionSpec::typed_operation(
+        None => ActionSpec::typed_operation_on(
             id,
             id,
             id,
@@ -338,7 +354,8 @@ fn bound_spec(
             Vec::new(),
             build,
         ),
-    }
+    };
+    Arc::clone(spec.action_type())
 }
 
 /// [`Effect::bound_asking_params`] of the effect `decl` declares, bound to
@@ -347,32 +364,55 @@ fn asking_spec(
     operation: &'static str,
     decl: &EffectDecl,
     params: Vec<ActionParam>,
-    args: serde_json::Map<String, serde_json::Value>,
+    args: BoundArguments,
 ) -> ActionSpec {
-    let build = encoder(operation, decl.id, args, Bound::UnderCaller);
+    let build = encoder(operation, decl.id, Bound::UnderCaller);
     decl.spec_with(operation, params, build)
+        .action_type()
+        .bind(Target::new(args))
 }
 
-/// [`Effect::item_specs`] of the declarations `decls`.
+/// [`Effect::item_specs`] of the vocabulary `key`, whose declarations
+/// `declarations` are: each type is kept per field, bound here to `item`.
 fn item_specs(
-    decls: Vec<EffectDecl>,
+    key: std::any::TypeId,
     operation: &'static str,
+    declarations: fn() -> Vec<EffectDecl>,
     field: &str,
     item: &crate::Id,
 ) -> Vec<ActionSpec> {
-    decls
+    declarations()
         .into_iter()
         .filter(|decl| decl.item == Some(field))
         .filter_map(|decl| {
-            let (first, rest) = decl.params.split_first()?;
-            let bound = serde_json::Map::from_iter([(
-                first.name.to_string(),
+            let first = decl.params.first()?.name.to_string();
+            let ty = kept_type((key, decl.id, Some(decl.item?)), || {
+                let rest = decl.params.get(1..).unwrap_or_default().to_vec();
+                let build = encoder(operation, decl.id, Bound::OverCaller);
+                Arc::clone(decl.spec_with(operation, rest, build).action_type())
+            });
+            let bound = BoundArguments::from_iter([(
+                first,
                 serde_json::Value::String(item.as_str().to_owned()),
             )]);
-            let build = encoder(operation, decl.id, bound, Bound::OverCaller);
-            Some(decl.spec_with(operation, rest.to_vec(), build))
+            Some(ty.bind(Target::new(bound)))
         })
         .collect()
+}
+
+/// Where a kept effect type is offered: the vocabulary, the effect, and for
+/// an item effect the collection field whose items offer it.
+type TypeKey = (std::any::TypeId, &'static str, Option<&'static str>);
+
+/// The action type `key` names, kept once per thread and generation of app
+/// code, as [`kept_specs`] keeps a vocabulary's specs: what every item
+/// offering the effect shares.
+fn kept_type(key: TypeKey, build: impl FnOnce() -> Arc<ActionType>) -> Arc<ActionType> {
+    thread_local! {
+        static KEPT: std::cell::RefCell<crate::kept::KeptTypes<TypeKey>> =
+            std::cell::RefCell::default();
+    }
+    crate::kept::kept_type(&KEPT, key, build)
 }
 
 /// One effect of a derived vocabulary, as a constant: its declaration but for
@@ -539,7 +579,7 @@ pub enum Answers {
 impl EffectDecl {
     /// The published action of this effect under `operation`.
     pub fn spec(&self, operation: &'static str) -> ActionSpec {
-        let build = encoder(operation, self.id, serde_json::Map::new(), Bound::None);
+        let build = encoder(operation, self.id, Bound::None);
         self.spec_with(operation, self.params.clone(), build)
     }
 
@@ -601,10 +641,10 @@ impl EffectDecl {
         &self,
         operation: &'static str,
         params: Vec<ActionParam>,
-        build: impl Fn(&tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
+        build: impl Fn(&Target, &tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
     ) -> ActionSpec {
         let view = self.kind == OperationKind::View;
-        let mut spec = ActionSpec::typed_operation(
+        let mut spec = ActionSpec::typed_operation_on(
             self.id,
             self.label,
             self.label,
@@ -625,7 +665,7 @@ impl EffectDecl {
         } else {
             ActionContract::default()
         };
-        spec.contract = ActionContract {
+        spec.type_mut().contract = ActionContract {
             kind: self.action_kind,
             risk: self.risk,
             confirmation: if matches!(

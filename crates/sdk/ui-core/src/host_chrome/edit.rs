@@ -35,7 +35,7 @@ pub(crate) fn edit_resource(status: &UndoStatus) -> Resource {
         )
         .expect("unit Edit operation serializes");
         if !status.can(request) {
-            spec.contract.availability = Availability::Unavailable {
+            spec.type_mut().contract.availability = Availability::Unavailable {
                 code: "nothing_to_undo".into(),
                 reason: status.description(request),
             };

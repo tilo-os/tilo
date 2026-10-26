@@ -207,11 +207,11 @@ pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
     reason = "existing app impls still name this trait until they publish through tilo_resource"
 )]
 pub use resource::{
-    ActionBinding, ActionBindingError, ActionInput, ActionSpec, ArgsBuilder, Collects,
+    ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionType, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
     ControlInvocation, FlatAction, KEY_SEP, NESTED_RESOURCE_FACET, PROMPTED_PARAM, Resource,
     ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
-    ResourceViewRangeSpec, ResourceViewSpec, flatten, sole_text_argument,
+    ResourceViewRangeSpec, ResourceViewSpec, Target, flatten, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,

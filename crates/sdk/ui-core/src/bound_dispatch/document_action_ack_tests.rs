@@ -159,8 +159,9 @@ fn execute_mode(
     let mut spec =
         tilo_actions::ActionSpec::immediate("write", "Write", "ack.write", action).unwrap();
     if background {
-        spec.contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
-        spec.contract.result = tilo_actions::ResultSpec::Job;
+        spec.type_mut().contract.execution =
+            tilo_actions::ExecutionMode::Background { cancellable: true };
+        spec.type_mut().contract.result = tilo_actions::ResultSpec::Job;
     }
     let invocation = tilo_actions::InvocationId::new();
     let source_invocation = owner

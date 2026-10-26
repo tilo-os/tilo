@@ -38,7 +38,7 @@ pub fn resource(kind: &str, label: &str, action_id: &str, action_label: &str) ->
         &(),
     )
     .expect("the unit operation is serializable");
-    action.contract = ActionContract {
+    action.type_mut().contract = ActionContract {
         execution: ExecutionMode::Immediate,
         result: ResultSpec::None,
         ..ActionContract::default()

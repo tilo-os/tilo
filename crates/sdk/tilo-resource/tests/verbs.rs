@@ -471,7 +471,7 @@ fn content_inputs_nested_derived_places_and_edit_effects() {
         .find(|spec| spec.id == "place-picture")
         .unwrap();
     assert!(matches!(
-        place.input,
+        place.input(),
         tilo_actions::ActionInput::Prompted {
             collects: tilo_actions::Collects::Content,
             ..

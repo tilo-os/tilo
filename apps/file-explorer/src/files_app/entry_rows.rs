@@ -212,7 +212,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
             )),
         });
         if let Some(open) = resource.actions.last_mut() {
-            open.description = Some(description);
+            open.type_mut().description = Some(description);
         }
         resource.actions.push(row_action(
             &FilesEffect::ImportConverted { entry: id() },
@@ -229,7 +229,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
             folder: String::new(),
         }
         .bound_asking(&["folder"]);
-        copy_to.label = "Copy to folder…".into();
+        copy_to.type_mut().label = "Copy to folder…".into();
         resource.actions.push(copy_to);
         if importable_under(&entry.path, &context.import_mounts) {
             let mut import = FilesEffect::ImportOnce {
@@ -237,7 +237,7 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
                 folder: String::new(),
             }
             .bound_asking(&["folder"]);
-            import.label = t("files-import-once");
+            import.type_mut().label = t("files-import-once");
             resource.actions.push(import);
         }
         resource.actions.push(row_action(
@@ -269,9 +269,9 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
                 );
             }
             let mut action = effect.bound_asking_params(params);
-            action.description = Some(t("files-airdrop-action-detail"));
-            action.id = "send-airdrop".into();
-            action.label = t("files-action-send-airdrop");
+            action.type_mut().description = Some(t("files-airdrop-action-detail"));
+            action.type_mut().id = "send-airdrop".into();
+            action.type_mut().label = t("files-action-send-airdrop");
             resource.actions.push(action);
         }
         for target in &context.nearby {

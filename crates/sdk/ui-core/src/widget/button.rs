@@ -1947,7 +1947,7 @@ impl crate::resources::PublishesResources for Button {
             let stale = std::mem::replace(&mut resource.label, name.clone());
             for action in &mut resource.actions {
                 if action.label.trim().is_empty() || action.label == stale {
-                    action.label.clone_from(name);
+                    action.type_mut().label.clone_from(name);
                 }
             }
         }

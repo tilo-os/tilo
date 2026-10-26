@@ -4975,12 +4975,12 @@ impl ActionsProvider {
                         operation_kind: tilo_actions::OperationKind::Document,
                         provider_id: self.id().to_string(),
                         id: format!("{}#{}", resource.id.as_str(), action.id),
-                        title: action.label,
+                        title: action.label.clone(),
                         subtitle: Some(subtitle),
                         badge: None,
                         score,
                         params,
-                        contract: Some(action.contract),
+                        contract: Some(action.contract.clone()),
                         on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
                             let mut state = chrome.borrow_mut();
                             apply_ownership_action(&state, &action_id, arguments)?;
@@ -5028,12 +5028,12 @@ impl ActionsProvider {
                         operation_kind: tilo_actions::OperationKind::Document,
                         provider_id: self.id().to_string(),
                         id: format!("{}#{}", resource_id, action.id),
-                        title: action.label,
+                        title: action.label.clone(),
                         subtitle: Some(subtitle),
                         badge: None,
                         score,
                         params,
-                        contract: Some(action.contract),
+                        contract: Some(action.contract.clone()),
                         on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
                             let mut state = chrome.borrow_mut();
                             apply_governance_action(&state, &spec, arguments)?;

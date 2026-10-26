@@ -51,9 +51,9 @@ pub(crate) fn location_row(location: &SavedLocation) -> LiveRow {
         location: id.clone(),
     }
     .bound();
-    open.id = "open".into();
+    open.type_mut().id = "open".into();
     let mut refresh = WeatherEffect::RefreshLocation { location: id }.bound();
-    refresh.id = "refresh".into();
+    refresh.type_mut().id = "refresh".into();
     LiveRow::new(
         location_resource_id(location.id),
         "weather.location",

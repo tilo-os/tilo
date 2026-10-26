@@ -9562,7 +9562,7 @@ impl FileExplorerWidget {
             "status",
             t("files-nearby-status"),
         );
-        inspect.description = Some(t("files-nearby-status-detail"));
+        inspect.type_mut().description = Some(t("files-nearby-status-detail"));
         resource.actions.push(inspect);
         self.append_nearby_decision_actions(&mut resource, transfer);
         if transfer.phase == NearbyTransferPhase::Failed {
@@ -9706,7 +9706,7 @@ impl FileExplorerWidget {
                     crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
                     "Open",
                 );
-                open.contract.availability = availability;
+                open.type_mut().contract.availability = availability;
                 resource.actions.push(open);
                 resource.actions.push(crate::effects::row_action(
                     &crate::effects::FilesEffect::AccountDetails {

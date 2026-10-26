@@ -28,7 +28,7 @@ fn spec(tree: &SemanticTree) -> ActionSpec {
     tree.action_resources()
         .into_iter()
         .flat_map(|resource| resource.actions)
-        .find(|action| matches!(action.input, ActionInput::Prompted { .. }))
+        .find(|action| matches!(action.input(), ActionInput::Prompted { .. }))
         .expect("actual generated SetValue declaration")
 }
 
@@ -41,7 +41,7 @@ fn semantic_set_value_continuation_preserves_both_dynamic_encoder_lanes() {
     let (tree, id) = projected();
     let spec = spec(&tree);
     assert!(spec.fixed_invocation_encoding().is_none());
-    assert!(matches!(spec.input, ActionInput::Prompted { .. }));
+    assert!(matches!(spec.input(), ActionInput::Prompted { .. }));
     assert!(matches!(
         draft(&tree),
         Some(ContinuationEvidence::Draft { .. })

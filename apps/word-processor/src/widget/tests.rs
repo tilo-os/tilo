@@ -2126,7 +2126,7 @@ fn compact_styles_publishes_only_foreground_ui_and_retains_document_actions() {
                         resource
                             .actions
                             .into_iter()
-                            .map(|action| action.id)
+                            .map(|action| action.id.clone())
                             .collect::<Vec<_>>(),
                     )
                 })
@@ -6337,7 +6337,7 @@ fn hosted_lookup_offers_caret_edits_not_a_second_document() {
     let effects: Vec<String> =
         <crate::effects::WordProcessorEffect as ui::tilo_resource::Effect>::specs()
             .into_iter()
-            .map(|spec| spec.id)
+            .map(|spec| spec.id.clone())
             .collect();
     for (id, what) in [
         (

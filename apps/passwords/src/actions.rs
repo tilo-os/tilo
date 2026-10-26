@@ -174,9 +174,9 @@ pub fn item_row(item: &SecretItem) -> LiveRow {
         ),
     };
     let mut copy_spec = PasswordsEffect::Copy { item: id.clone() }.bound();
-    copy.clone_into(&mut copy_spec.label);
+    copy.clone_into(&mut copy_spec.type_mut().label);
     let mut reveal_spec = PasswordsEffect::Reveal { item: id.clone() }.bound();
-    reveal.clone_into(&mut reveal_spec.label);
+    reveal.clone_into(&mut reveal_spec.type_mut().label);
     LiveRow::new(item_resource_id(&id), kind, name)
         .operation(PasswordsEffect::Open { item: id.clone() }.bound())
         .operation(PasswordsEffect::Edit { item: id.clone() }.bound())

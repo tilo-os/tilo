@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tilo_actions::{
-    ActionArgs, ActionError, ActionNeed, ActionParam, ActionRegistry, ActionSpec, EncodedAction,
-    ExecutionLocus, OperationKind, ParamType,
+    ActionArgs, ActionError, ActionNeed, ActionParam, ActionRegistry, ActionSpec, ActionType,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, Target,
 };
 
 use crate::action::ActionKind;
@@ -848,7 +848,7 @@ fn field_edit_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     .unwrap_or_else(|| Arc::new(edit_schema(vocabulary)));
     rooted_edit_spec(
         vocabulary,
-        (Vec::new(), (vocabulary.shape)()),
+        (vocabulary.shape)(),
         schema,
         format!("Edit a {} field", vocabulary.label),
         "The path of the field from the record's root, and the operation",
@@ -915,12 +915,30 @@ pub(crate) fn field_edit_spec_at_of(
     if shape.fields().is_empty() || readonly {
         return None;
     }
-    // The same for every item: built once per type and path.
-    let schema = per_type_at(vocabulary, TypeSchema::Edit, &dotted, &|| {
+    // The same for every item: kept once per type and path, bound to the
+    // item's.
+    thread_local! {
+        static KEPT: std::cell::RefCell<
+            crate::kept::KeptTypes<(std::any::TypeId, String), Option<Arc<ActionType>>>,
+        > = std::cell::RefCell::default();
+    }
+    let key = ((vocabulary.type_id)(), dotted.clone());
+    crate::kept::kept_type(&KEPT, key, || item_edit_type(vocabulary, shape, &dotted))
+        .map(|ty| ty.bind(Target::new(prefix)))
+}
+
+/// The type of the field edit of the items at the dotted path `dotted`, of
+/// shape `shape`, or `None` when nothing there is editable.
+fn item_edit_type(
+    vocabulary: &'static Vocabulary,
+    shape: crate::Shape,
+    dotted: &str,
+) -> Option<Arc<ActionType>> {
+    let schema = per_type_at(vocabulary, TypeSchema::Edit, dotted, &|| {
         let ops: Vec<(String, serde_json::Value)> = (vocabulary.op_schemas)()
             .into_iter()
             .filter_map(|(path, schema)| {
-                path.strip_prefix(&dotted)
+                path.strip_prefix(dotted)
                     .map(|rest| (rest.to_owned(), schema))
             })
             .collect();
@@ -928,31 +946,35 @@ pub(crate) fn field_edit_spec_at_of(
         edit_paths(shape, &[], "", &ops, &mut alternatives);
         (!alternatives.is_empty()).then(|| described_edit(&alternatives, &ops))
     })?;
-    Some(rooted_edit_spec(
+    let spec = rooted_edit_spec(
         vocabulary,
-        (prefix, Some(shape)),
+        Some(shape),
         schema,
         "Edit a field of this item".to_owned(),
         "The path of the field from the item, and the operation",
-    ))
+    );
+    Some(Arc::clone(spec.action_type()))
 }
 
-/// The field edit at paths under `prefix`, described by `schema`.
+/// The field edit at paths under the prefix its target holds (a
+/// `Vec<Segment>` [`Target`], the record's root without one), whose root is
+/// of shape `root`, described by `schema`.
 fn rooted_edit_spec(
     vocabulary: &'static Vocabulary,
-    (prefix, root): (Vec<crate::Segment>, Option<crate::Shape>),
+    root: Option<crate::Shape>,
     schema: Arc<serde_json::Value>,
     label: String,
     description: &'static str,
 ) -> ActionSpec {
-    let mut spec = edit_spec(vocabulary, prefix, schema, label, description);
+    let mut spec = edit_spec(vocabulary, schema, label, description);
     // Any door reads the edit without this record's code: it is a field
     // edit, and these collections' removals ask nothing.
-    spec.contract
+    let contract = &mut spec.type_mut().contract;
+    contract
         .tags
         .push(tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned());
     if let Some(root) = root {
-        spec.contract.tags.extend(
+        contract.tags.extend(
             root.quiet_removals()
                 .into_iter()
                 .map(|path| format!("{}{path}", tilo_action_policy::edits::QUIET_REMOVAL_TAG)),
@@ -961,17 +983,20 @@ fn rooted_edit_spec(
     spec
 }
 
-/// The field edit at paths under `prefix`, described by `schema`.
+/// The field edit at paths under the prefix its target holds, described by
+/// `schema`. See [`rooted_edit_spec`].
 fn edit_spec(
     vocabulary: &'static Vocabulary,
-    prefix: Vec<crate::Segment>,
     schema: Arc<serde_json::Value>,
     label: String,
     description: &'static str,
 ) -> ActionSpec {
-    let read = move |value: &serde_json::Map<String, serde_json::Value>| {
+    let read = move |target: &Target, value: &serde_json::Map<String, serde_json::Value>| {
         let edit = Edit::<()>::from_json(serde_json::Value::Object(value.clone()))?;
-        let mut path = prefix.clone();
+        let mut path = target
+            .get::<Vec<crate::Segment>>()
+            .cloned()
+            .unwrap_or_default();
         path.extend(edit.path().iter().cloned());
         match (vocabulary.edit)(Edit::new(path, edit.op().clone())) {
             Some(action) => Ok(action),
@@ -980,7 +1005,7 @@ fn edit_spec(
     };
     let read = std::sync::Arc::new(read);
     let risk_read = std::sync::Arc::clone(&read);
-    ActionSpec::typed(
+    ActionSpec::typed_on(
         FIELD_EDIT,
         label,
         "Field edit as JSON",
@@ -989,11 +1014,11 @@ fn edit_spec(
             ActionParam::required_owned(EDIT_PARAM, ParamType::Object, description)
                 .with_shared_schema(schema),
         ],
-        move |args| {
+        move |target, args| {
             let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
                 return refused("missing edit");
             };
-            match read(value) {
+            match read(target, value) {
                 Ok(mut action) => {
                     action.stamp(origin_now_ms());
                     encoded(&action)
@@ -1013,11 +1038,11 @@ fn edit_spec(
     // History records the edit itself, not `field-edit`.
     .carrying()
     // Removing a collection item asks, as a delete verb does.
-    .with_risk(move |args| {
+    .with_risk_on(move |target, args| {
         let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
             return tilo_actions::RiskLevel::Low;
         };
-        match risk_read(value) {
+        match risk_read(target, value) {
             Ok(action) => action.risk(),
             Err(_) => tilo_actions::RiskLevel::Low,
         }
@@ -1886,26 +1911,38 @@ pub fn declaration_spec<D: AsRef<Declaration> + ?Sized>(decl: &D) -> ActionSpec 
 /// [`declaration_spec`] of a declaration of whichever resource.
 fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
     let build = Arc::clone(&decl.build);
-    let encoded = move |args: &tilo_actions::ActionArgs| encode_built(build(args, origin_now_ms()));
+    spec_of_declaration_on(decl, move |_, args, now_ms| build(args, now_ms))
+}
+
+/// The spec of `decl` as a type whose target `build` reads: what every item
+/// offering the declared action shares ([`Target`]).
+pub(crate) fn spec_of_declaration_on(
+    decl: &Declaration,
+    build: impl Fn(&Target, &ActionArgs, i64) -> Result<Built, String> + Send + Sync + 'static,
+) -> ActionSpec {
+    let build = Arc::new(build);
+    let encoded = move |target: &Target, args: &tilo_actions::ActionArgs| {
+        encode_built(build(target, args, origin_now_ms()))
+    };
     let spec = if let Some(prompt) = &decl.content {
         let param = ActionParam::required_owned(
             tilo_actions::PROMPTED_PARAM,
             ParamType::Text,
             prompt.clone(),
         );
-        ActionSpec::prompted_content(
+        ActionSpec::prompted_content_on(
             decl.id,
             decl.label.clone(),
             prompt.clone(),
             "content hash",
             ExecutionLocus::ClientLocal,
-            move |hash| {
+            move |target, hash| {
                 let supplied = [(
                     tilo_actions::PROMPTED_PARAM.to_owned(),
                     tilo_actions::ArgValue::Text(hash.to_owned()),
                 )];
                 match ActionArgs::bind(std::slice::from_ref(&param), supplied) {
-                    Ok(args) => encoded(&args),
+                    Ok(args) => encoded(target, &args),
                     Err(error) => refused(&error.to_string()),
                 }
             },
@@ -1916,12 +1953,12 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
         // same kind of record.
         let domain = format!("{}#{}", decl.resource, decl.id);
         let action_type = decl.action_type;
-        ActionSpec::deferred(
+        ActionSpec::deferred_on(
             decl.id,
             decl.label.clone(),
             ExecutionLocus::ClientLocal,
             action_type,
-            move || encoded(&tilo_actions::ActionArgs::none()),
+            move |target| encoded(target, &tilo_actions::ActionArgs::none()),
         )
         .with_continuation_identity(move |query| match query {
             tilo_actions::ContinuationQuery::Draft => {
@@ -1939,7 +1976,7 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
             tilo_actions::ContinuationQuery::Exact(_) => None,
         })
     } else {
-        ActionSpec::typed(
+        ActionSpec::typed_on(
             decl.id,
             decl.label.clone(),
             decl.label.clone(),
@@ -1963,12 +2000,13 @@ fn spec_of_declaration(decl: &Declaration) -> ActionSpec {
     if decl.destructive {
         spec = spec.destructive();
     }
+    let contract = &mut spec.type_mut().contract;
     if let Some(result) = &decl.result {
-        spec.contract.result = result.clone();
+        contract.result = result.clone();
     }
     for tag in &decl.tags {
-        if !spec.contract.tags.contains(tag) {
-            spec.contract.tags.push(tag.clone());
+        if !contract.tags.contains(tag) {
+            contract.tags.push(tag.clone());
         }
     }
     spec
@@ -2494,7 +2532,7 @@ fn publish_own(
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
         let mut spec = spec_of_declaration(decl);
         if let Some(availability) = own.availability {
-            spec.contract.availability = availability(decl.id);
+            spec.type_mut().contract.availability = availability(decl.id);
         }
         // Offered on the items it acts on, with some of its arguments bound
         // ([`items::bound`](crate::items::bound)), it stays published here

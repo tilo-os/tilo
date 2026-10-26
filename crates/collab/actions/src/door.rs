@@ -134,18 +134,17 @@ impl ActionDescriptor {
 }
 
 impl InputSpec {
-    fn of(input: &ActionInput) -> Self {
+    fn of(input: ActionInput<'_>) -> Self {
         match input {
             ActionInput::Immediate(_) | ActionInput::Deferred { .. } => InputSpec::None,
             ActionInput::Prompted {
                 prompt,
                 placeholder,
                 collects,
-                ..
             } => InputSpec::Text {
-                prompt: prompt.clone(),
-                placeholder: placeholder.clone(),
-                collects: *collects,
+                prompt: prompt.to_owned(),
+                placeholder: placeholder.to_owned(),
+                collects,
             },
         }
     }
@@ -389,7 +388,7 @@ fn survey_into(resource: &Resource, out: &mut Vec<ActionDescriptor>) {
             locus: action.locus,
             kind: action.kind,
             contract: action.contract.clone(),
-            input: InputSpec::of(&action.input),
+            input: InputSpec::of(action.input()),
             params: action.params().to_vec(),
             view,
         });
@@ -474,9 +473,11 @@ pub fn encode(
     ensure_available(spec)?;
     spec.validate_deferred_shape()
         .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
-    match (&spec.input, argument) {
-        (ActionInput::Deferred { type_id, build }, None) => {
-            let encoded = build();
+    match (spec.input(), argument) {
+        (ActionInput::Deferred { type_id }, None) => {
+            let Some(encoded) = spec.build_deferred() else {
+                return Err(DoorError::Unknown(address.clone()));
+            };
             if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
                 return Err(DoorError::InvalidArguments(
                     String::from_utf8_lossy(&encoded.payload).into_owned(),
@@ -493,10 +494,15 @@ pub fn encode(
         (ActionInput::Deferred { .. }, Some(_)) => {
             Err(DoorError::UnexpectedArgument(address.clone()))
         }
-        (ActionInput::Immediate(encoded), None) => Ok(encoded.as_ref().clone()),
+        (ActionInput::Immediate(_), None) => spec
+            .encode_immediate()
+            .map(std::sync::Arc::unwrap_or_clone)
+            .ok_or_else(|| DoorError::Unknown(address.clone())),
         (ActionInput::Immediate(_), Some(_)) => Err(DoorError::UnexpectedArgument(address.clone())),
-        (ActionInput::Prompted { build, .. }, Some(text)) => {
-            let encoded = build(text);
+        (ActionInput::Prompted { .. }, Some(text)) => {
+            let Some(encoded) = spec.build_text(text) else {
+                return Err(DoorError::Unknown(address.clone()));
+            };
             if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
                 return Err(DoorError::InvalidArguments(
                     String::from_utf8_lossy(&encoded.payload).into_owned(),
@@ -761,7 +767,7 @@ fn ensure_deferred_local_owner(
 ) -> Result<(), DoorError> {
     let spec = resolve(resources, address).ok_or_else(|| DoorError::Unknown(address.clone()))?;
     if spec.deferred_invocation_type().is_some()
-        || matches!(spec.input, ActionInput::Deferred { .. })
+        || matches!(spec.input(), ActionInput::Deferred { .. })
     {
         spec.validate_deferred_shape()
             .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;

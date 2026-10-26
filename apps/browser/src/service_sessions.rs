@@ -32,17 +32,17 @@ impl Selection {
             session_id: self.id.clone(),
         }
         .bound();
-        forget.label = CATALOG.t("browser-service-forget");
+        forget.type_mut().label = CATALOG.t("browser-service-forget");
         let mut retry = crate::effects::BrowserEffect::RetryForgetServiceSession {
             session_id: self.id.clone(),
         }
         .bound();
-        retry.label = CATALOG.t("browser-service-forget-retry");
+        retry.type_mut().label = CATALOG.t("browser-service-forget-retry");
         let mut open = crate::effects::BrowserEffect::OpenServiceSession {
             session_id: self.id.clone(),
         }
         .bound();
-        open.label = format!("Open {}", self.label());
+        open.type_mut().label = format!("Open {}", self.label());
         tilo_actions::Resource::new(
             format!("browser.service.{}", self.id),
             "browser.service",

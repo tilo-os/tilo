@@ -41,6 +41,10 @@
 //!     --example framework-scaling -- 5000,50000 open
 //! ```
 //!
+//! A second argument `publication` measures only one full publication of
+//! the resource tree: how many resources it holds, its time, and the heap
+//! the published tree holds per task.
+//!
 //! A second argument `scroll` measures only scrolling: the live window's
 //! list scrolled down 120 frames of 40 px (and of 40.5 px, part of a device
 //! pixel), the pointer resting over it, each frame presented on an
@@ -299,20 +303,38 @@ fn checklist_in<A: ResourceApp<Resource = Checklist>>(
 
 /// p50 of one full publication of `tasks` tasks, and how many resources it
 /// publishes.
-fn publication(tasks: u32) -> Result<(f64, usize), Box<dyn std::error::Error>> {
+fn publication(tasks: u32) -> Result<Publication, Box<dyn std::error::Error>> {
     let mut app = checklist(tasks)?;
     let doc = app.read_document(Clone::clone);
-    let mut published = 0;
+    let mut resources = 0;
+    let mut held = 0;
     let samples = (0..10)
         .map(|_| {
+            let before = HELD.load(Ordering::Relaxed);
             let start = Instant::now();
-            let resources =
+            let published =
                 tilo_app::resources::resources_for(app.harness().root_widget(), None, &doc);
-            published = count(&resources);
-            millis(start)
+            let elapsed = millis(start);
+            held = HELD.load(Ordering::Relaxed).saturating_sub(before);
+            resources = count(&published);
+            elapsed
         })
         .collect();
-    Ok((median(samples), published))
+    Ok(Publication {
+        ms: median(samples),
+        resources,
+        held,
+    })
+}
+
+/// One full publication of the resource tree.
+struct Publication {
+    /// p50, in ms.
+    ms: f64,
+    /// How many resources it holds.
+    resources: usize,
+    /// The heap the published tree holds.
+    held: usize,
 }
 
 /// The sync pass and the whole frame, p50 in ms, while typing into the
@@ -1161,6 +1183,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if mode.as_deref() == Some("focus") {
         return focus_mode(&sizes);
     }
+    if mode.as_deref() == Some("publication") {
+        println!("tasks  resources  publication p50  heap held  heap per task");
+        for &tasks in &sizes {
+            let Publication {
+                ms,
+                resources,
+                held,
+            } = publication(tasks)?;
+            let per_task = held
+                .checked_div(usize::try_from(tasks)?)
+                .unwrap_or_default();
+            println!("{tasks:>5}  {resources:>9}  {ms:>12.3} ms  {held:>9}  {per_task:>11} B");
+        }
+        return Ok(());
+    }
     if std::env::var_os("TILO_SCALING_KEYSTROKES").is_some() {
         println!(
             "tasks  keystroke→frame p50  p99  release→frame p50  \
@@ -1195,7 +1232,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             opens.push((tasks, open(tasks)?));
             continue;
         }
-        let (publish_ms, published) = publication(tasks)?;
+        let Publication {
+            ms: publish_ms,
+            resources: published,
+            ..
+        } = publication(tasks)?;
         let [(typing_sync, typing), (scrolling_sync, scrolling)] = per_frame(tasks)?;
         TASKS.store(tasks, Ordering::Relaxed);
         let (move_ms, publications) = drive_live_window::<Scaling, _>(pointer_moves)?;

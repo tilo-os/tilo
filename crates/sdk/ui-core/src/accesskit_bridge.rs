@@ -794,7 +794,7 @@ fn append_resource_nodes(
             let mut action_node = AkNode::new(AkRole::Button);
             action_node.set_label(action.label.clone());
             let operation = action.kind.as_str();
-            match &action.input {
+            match action.input() {
                 tilo_actions::ActionInput::Immediate(_)
                 | tilo_actions::ActionInput::Deferred { .. } => {
                     action_node.add_action(AkAction::Click);

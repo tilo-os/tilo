@@ -4403,7 +4403,8 @@ mod tests {
                 .into_iter()
                 .find(|spec| spec.id == effect.id())
                 .ok_or("the invoked action must be published")?
-                .contract;
+                .contract
+                .clone();
             if contract.result != ui::tilo_actions::ResultSpec::Job {
                 return Err("the network action must declare a unit job".into());
             }

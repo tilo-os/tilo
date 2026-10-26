@@ -1406,10 +1406,10 @@ impl EffectStatus {
     /// Show `spec` as this status says it is right now.
     pub(crate) fn overlay(&self, spec: &mut ActionSpec) {
         if let Some(availability) = &self.availability {
-            spec.contract.availability = availability.clone();
+            spec.type_mut().contract.availability = availability.clone();
         }
         if let Some(label) = &self.label {
-            spec.label.clone_from(label);
+            spec.type_mut().label.clone_from(label);
         }
     }
 }

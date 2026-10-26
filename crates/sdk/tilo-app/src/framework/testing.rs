@@ -2196,11 +2196,16 @@ fn published_ids<A: ResourceApp>(harness: &mut FrameHarness) -> PublishedIds {
     harness
         .with_widget_mut(|root: &mut ResourceRoot| {
             let typed = root.typed::<A::Resource>()?;
-            let effects = typed.effects.specs().into_iter().map(|spec| spec.id);
+            let effects = typed
+                .effects
+                .specs()
+                .iter()
+                .map(|spec| spec.id.clone())
+                .collect();
             let views = <A::Resource as Resource>::views(&typed.live.get())
                 .into_iter()
                 .map(|view| view.id);
-            Some((effects.collect(), views.collect()))
+            Some((effects, views.collect()))
         })
         .flatten()
         .unwrap_or_default()

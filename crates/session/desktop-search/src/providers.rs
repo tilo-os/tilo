@@ -561,7 +561,7 @@ mod tests {
     #[test]
     fn unavailable_and_programmatic_actions_are_not_offered() {
         let mut resource = resource_with_action("r", "Doc", "print", "Print");
-        resource.actions[0].contract.availability = Availability::Unavailable {
+        resource.actions[0].type_mut().contract.availability = Availability::Unavailable {
             code: "offline".into(),
             reason: "Offline".into(),
         };

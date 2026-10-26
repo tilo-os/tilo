@@ -6,14 +6,12 @@ fn encoded(value: usize) -> EncodedAction {
 }
 
 #[test]
-fn effective_primitive_fixed_witness_is_actual_private_builder_not_public_input() {
+fn effective_primitive_fixed_witness_is_what_every_lane_fires() {
     let original = encoded(1);
-    let mut spec =
+    let spec =
         ActionSpec::immediate_encoded("run", "Run", ExecutionLocus::ClientLocal, original.clone());
     assert_eq!(spec.fixed_invocation_encoding(), Some(&original));
-    let changed = encoded(2);
-    spec.input = ActionInput::Immediate(Arc::new(changed.clone()));
-    assert_eq!(spec.fixed_invocation_encoding(), Some(&original));
+    assert_eq!(spec.encode_immediate().as_deref(), Some(&original));
     assert_eq!(spec.build_json(&serde_json::Map::new()).unwrap(), original);
     let resource = Resource::new("probe", "probe", "Probe").with_action(spec);
     assert_eq!(
@@ -23,43 +21,32 @@ fn effective_primitive_fixed_witness_is_actual_private_builder_not_public_input(
             None
         )
         .unwrap(),
-        changed
+        original
     );
 }
 
 #[test]
-fn effective_primitive_eager_publication_shares_bytes_and_preserves_private_execution() {
+fn effective_primitive_eager_publication_shares_bytes_and_type() {
     let original = EncodedAction::encode_operation("test.eager", &"雪".repeat(24_000)).unwrap();
     let spec =
         ActionSpec::immediate_encoded("run", "Run", ExecutionLocus::ClientLocal, original.clone());
-    let ActionInput::Immediate(public) = &spec.input else {
-        panic!("an eager action remains eager");
-    };
+    let public = spec
+        .encode_immediate()
+        .expect("an eager action remains eager");
     let InvocationBuilder::Fixed(private) = &spec.build else {
         panic!("an eager action retains its private fixed witness");
     };
-    assert!(Arc::ptr_eq(public, private), "one immutable allocation");
-    let mut cloned = spec.clone();
-    let ActionInput::Immediate(input) = &mut cloned.input else {
-        panic!("cloning does not defer an eager action");
-    };
+    assert!(Arc::ptr_eq(&public, private), "one immutable allocation");
+    let cloned = spec.clone();
     assert!(
-        Arc::ptr_eq(public, input),
+        Arc::ptr_eq(spec.action_type(), cloned.action_type()),
+        "publication clones share the type"
+    );
+    assert!(
+        Arc::ptr_eq(&public, &cloned.encode_immediate().unwrap()),
         "publication clones share payload bytes"
     );
-    let changed = EncodedAction::encode_operation("test.eager", &"changed").unwrap();
-    *Arc::make_mut(input) = changed.clone();
-    assert!(
-        !Arc::ptr_eq(public, input),
-        "public mutation separates its allocation"
-    );
-    assert_eq!(spec.fixed_invocation_encoding(), Some(&original));
     assert_eq!(cloned.fixed_invocation_encoding(), Some(&original));
-    assert_eq!(spec.build_json(&serde_json::Map::new()).unwrap(), original);
-    assert_eq!(
-        cloned.build_json(&serde_json::Map::new()).unwrap(),
-        original
-    );
     let resource = Resource::new("probe", "probe", "Probe").with_action(cloned);
     assert_eq!(
         crate::door::encode(
@@ -68,7 +55,7 @@ fn effective_primitive_eager_publication_shares_bytes_and_preserves_private_exec
             None
         )
         .unwrap(),
-        changed
+        original
     );
 }
 

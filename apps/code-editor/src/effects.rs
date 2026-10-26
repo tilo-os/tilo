@@ -220,7 +220,7 @@ mod tests {
     fn every_command_is_one_published_effect_and_back() {
         let published: Vec<String> = CodeEditorEffect::specs()
             .into_iter()
-            .map(|spec| spec.id)
+            .map(|spec| spec.id.clone())
             .collect();
         for command in Command::ALL {
             let effect = command.effect();

@@ -474,10 +474,10 @@ impl CommandEntry {
             prompt,
             placeholder,
             ..
-        } = &fa.action.input
+        } = fa.action.input()
         {
             let primary = fa.action.prompt_param().unwrap_or(PROMPTED_PARAM);
-            entry = entry.with_argument(prompt.clone(), placeholder.clone());
+            entry = entry.with_argument(prompt.to_owned(), placeholder.to_owned());
             entry.action_argument = Some(primary.to_string());
         }
         entry.action_address = Some(ActionAddress::new(&fa.resource_id.0, &fa.action.id));

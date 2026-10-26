@@ -449,7 +449,7 @@ pub fn row_action(
     label: impl Into<String>,
 ) -> ui::tilo_actions::ActionSpec {
     let mut spec = effect.bound();
-    spec.id = id.into();
-    spec.label = label.into();
+    spec.type_mut().id = id.into();
+    spec.type_mut().label = label.into();
     spec
 }

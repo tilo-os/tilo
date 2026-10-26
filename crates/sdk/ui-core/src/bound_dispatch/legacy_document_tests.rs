@@ -591,14 +591,15 @@ fn legacy_route_fresh_decoder_contract_rollback_and_pending_refusals() {
     *f.probe.spec.borrow_mut() = spec(2, false, true);
     refused(&mut f, &registry, &mut transport);
     *f.probe.spec.borrow_mut() = spec(2, false, false);
-    f.probe.spec.borrow_mut().locus = ExecutionLocus::ServerPreferred;
+    f.probe.spec.borrow_mut().type_mut().locus = ExecutionLocus::ServerPreferred;
     refused(&mut f, &registry, &mut transport);
     *f.probe.spec.borrow_mut() = spec(2, false, false);
-    f.probe.spec.borrow_mut().contract.execution =
+    f.probe.spec.borrow_mut().type_mut().contract.execution =
         tilo_actions::ExecutionMode::Background { cancellable: true };
     refused(&mut f, &registry, &mut transport);
     *f.probe.spec.borrow_mut() = spec(2, false, false);
-    f.probe.spec.borrow_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+    f.probe.spec.borrow_mut().type_mut().contract.confirmation =
+        tilo_actions::ConfirmationPolicy::Confirm;
     refused(&mut f, &registry, &mut transport);
     *f.probe.spec.borrow_mut() = spec(2, false, false);
     f.store
@@ -697,10 +698,10 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
         );
     }
     // A weak operation permission never weakens the mandatory Document write.
-    f.probe.spec.borrow_mut().contract.kind = tilo_actions::ActionKind::Read;
+    f.probe.spec.borrow_mut().type_mut().contract.kind = tilo_actions::ActionKind::Read;
     assert!(invoke(&mut f.tile, &f.target, &registry, &mut transport, &denied).is_err());
     *f.probe.spec.borrow_mut() = spec(2, false, false);
-    f.probe.spec.borrow_mut().contract.kind = ActionKind::Outside;
+    f.probe.spec.borrow_mut().type_mut().contract.kind = ActionKind::Outside;
     assert!(
         invoke(
             &mut f.tile,
@@ -712,10 +713,11 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
         .is_err()
     );
     *f.probe.spec.borrow_mut() = spec(2, false, false);
-    f.probe.spec.borrow_mut().contract.availability = tilo_actions::Availability::Unavailable {
-        code: "later".into(),
-        reason: "controlled current refusal".into(),
-    };
+    f.probe.spec.borrow_mut().type_mut().contract.availability =
+        tilo_actions::Availability::Unavailable {
+            code: "later".into(),
+            reason: "controlled current refusal".into(),
+        };
     assert!(
         invoke(
             &mut f.tile,
@@ -727,7 +729,7 @@ fn legacy_route_fresh_authority_availability_result_arguments_and_transport_refu
         .is_err()
     );
     *f.probe.spec.borrow_mut() = spec(2, false, false);
-    f.probe.spec.borrow_mut().contract.result = tilo_actions::ResultSpec::Json {
+    f.probe.spec.borrow_mut().type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type":"boolean"}),
     };
     assert!(

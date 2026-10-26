@@ -235,7 +235,7 @@ fn edit(
     )
     .reversible()
     .with_description(description);
-    spec.contract.result = ResultSpec::Json {
+    spec.type_mut().contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
     };
     spec
@@ -266,7 +266,7 @@ fn view(
     )
     .of_kind(ActionKind::Read)
     .with_description(description);
-    spec.contract.result = ResultSpec::Json {
+    spec.type_mut().contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
     };
     spec
@@ -382,7 +382,7 @@ fn part_edit(
     )
     .reversible()
     .with_description(description);
-    spec.contract.result = ResultSpec::Json {
+    spec.type_mut().contract.result = ResultSpec::Json {
         schema: json!({"type": "object"}),
     };
     spec

@@ -157,7 +157,7 @@ pub fn profile_row(profile: &ProfileHere<'_>) -> LiveRow {
     );
     for (effect, availability) in effects {
         let mut spec = effect.bound();
-        spec.contract.availability = availability;
+        spec.type_mut().contract.availability = availability;
         row = row.operation(spec);
     }
     row

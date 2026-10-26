@@ -215,7 +215,7 @@ fn activate_spec() -> tilo_actions::ActionSpec {
     .with_description(ui_core::I18nManager::lookup_plain(
         "app-activate-window-description",
     ));
-    spec.contract.result = tilo_actions::ResultSpec::Json {
+    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
     };
     spec
@@ -257,7 +257,7 @@ fn render_spec() -> tilo_actions::ActionSpec {
     .with_description(
         "See the app's window as a picture: answers with the image and the revision of the document it shows.",
     );
-    spec.contract.result = tilo_actions::ResultSpec::Json {
+    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
     };
     spec

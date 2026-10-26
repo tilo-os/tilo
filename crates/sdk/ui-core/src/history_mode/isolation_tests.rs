@@ -83,7 +83,7 @@ fn prompted_resource_for(
             move |value| tilo_actions::EncodedAction::encode_operation(&operation, &value).unwrap()
         },
     );
-    spec.contract.confirmation = confirmation;
+    spec.type_mut().contract.confirmation = confirmation;
     let target = id.to_owned();
     let handler = operation.to_owned();
     let spec = spec
@@ -172,7 +172,8 @@ fn mutable_identity_resources(
         })
     });
     if identity.housekeeping.get() {
-        spec.contract
+        spec.type_mut()
+            .contract
             .tags
             .push(tilo_actions::HOUSEKEEPING_TAG.to_owned());
     }
@@ -319,7 +320,7 @@ impl crate::resources::PublishesResources for LiveOwner {
             prompted_resource_for(self.resource_id, self.type_id, self.confirmation.clone())
         } else {
             let mut resource = resource_for(self.resource_id, self.type_id);
-            resource.actions[0].contract.confirmation = self.confirmation.clone();
+            resource.actions[0].type_mut().contract.confirmation = self.confirmation.clone();
             resource
         }]
     }

@@ -42,7 +42,7 @@ fn resources() -> Vec<Resource> {
             payload: b"configure".to_vec(),
         },
     );
-    configure.contract.kind = tilo_actions::ActionKind::Outside;
+    configure.type_mut().contract.kind = tilo_actions::ActionKind::Outside;
     let mut inspect = ActionSpec::typed_operation(
         "inspect",
         crate::shell::i18n::t("session-diagnostics-inspect"),
@@ -90,11 +90,11 @@ fn resources() -> Vec<Resource> {
             payload: b"profile-stop".to_vec(),
         },
     );
-    configure.contract.result = result.clone();
-    profile_start.contract.result = result.clone();
-    profile_stop.contract.result = result.clone();
-    inspect.contract.result = result;
-    inspect.contract.kind = tilo_actions::ActionKind::Read;
+    configure.type_mut().contract.result = result.clone();
+    profile_start.type_mut().contract.result = result.clone();
+    profile_stop.type_mut().contract.result = result.clone();
+    inspect.type_mut().contract.result = result;
+    inspect.type_mut().contract.kind = tilo_actions::ActionKind::Read;
     vec![
         Resource::new(
             PROVIDER,

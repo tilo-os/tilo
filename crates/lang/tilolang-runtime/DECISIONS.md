@@ -259,8 +259,8 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   `set_waker(waker)` gives them the window's redraw request to call when it ends, and the next
   `update` takes the result in. `is_reading()` / `is_building()` say whether that is under way;
   `settle(&host, ..)` waits for it, for a host without frames and for tests. An action without
-  parameters is published deferred (`ActionSpec::deferred`): planned when it runs, so publishing
-  plans nothing. A record's label (its first text, fields in id order, items in order) is read
+  parameters is published deferred (`ActionSpec::deferred_on`): planned when it runs, so
+  publishing plans nothing. A record's label (its first text, fields in id order, items in order) is read
   again only when a change is at or before what names it. These replace re-indexing and
   re-publishing every record per frame (`search::refresh` and `published()` in the window), which
   cost 322 ms and 393 ms at 10k items.
@@ -314,18 +314,27 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   0.23 ms, idle 0 wakeups; ready (search and publication done) 689 ms. chat: open 50 ms,
   keystroke 0.51, peer 0.34, scroll p50 0.29. todo: open 497 ms, keystroke 0.52, peer 0.37,
   scroll p50 0.17. board (notes, todo and chat of 10k each): open 1265 ms, keystroke 0.92, peer
-  0.70. Memory at 1k: notes 19 MiB, chat 20, todo 17, board 51. counter: open 0.28 ms, press
+  0.70. Memory at 1k: notes 12 MiB, chat 13, todo 13, board 35. counter: open 0.28 ms, press
   0.12, peer 0.07. The first change of a window costs 5 to 7 ms: automerge renumbers its
   columns for the new actor (about 2 ms per document at 400k ops), inherent to its sorted actor
   table.
 - **Not met yet.** Open at 10k for todo (497 ms) and the board (1265 ms); where their time goes
   is not measured yet. The board's lists sit inside cards, which the host draws whole. Memory at
-  10k: notes' process holds 175 MiB, todo's 147, chat's 168, the board's 487. Per item, measured
-  on a notes list: the published tree 4.2 KB, nearly all `ActionSpec`s (about 1.7 KB each, 700
-  bytes of it inline, its contract 360; an item carries `open` and its type's actions), the
-  view 1.9 KB per row even unrendered, the room and the mirror 1.5 KB, search 0.4 KB; the rest
-  is what the allocator keeps after the first read. The spec's size is `tilo-actions`'s and
-  native apps pay it too: sharing the per-type parts of a spec among the resources that carry
-  it is the fix. In the host, a change outside the list column's rows reconciles the column by
-  key from `tree()` and lays the window out again; applying such patches to single widgets
-  needs the toolkit's containers to take a child in place.
+  10k: notes' process holds 113 MiB, todo's 114, chat's 105, the board's 327. In the host, a
+  change outside the list column's rows reconciles the column by key from `tree()` and lays the
+  window out again; applying such patches to single widgets needs the toolkit's containers to
+  take a child in place.
+- **An action is a type bound to a target.** `tilo-actions` splits what an action is
+  (`ActionType`: id, label, description, params, contract, kind, operation type, builder,
+  classifiers) from what it acts on (`Target`). An `ActionSpec` is an `Arc<ActionType>` and a
+  target, 24 bytes; the builder and classifiers read the target when the action runs. A package
+  keeps one `ActionTypes` (its record types' edits and actions, described once), and every item
+  binds those types to its id; it is described again when the module or the planner changes.
+  Native apps keep their bound, rename, edit and share types per thread, by declaration. Before,
+  every item carried owned specs (about 1.7 KB each; an item carries `open`, its edits and its
+  type's actions). Memory, before and after (release, aarch64, `memory_anon`): notes 19.9 to
+  12.1 MiB at 1k and 175.6 to 112.8 MiB at 10k; todo 16.7 to 12.9 and 147.5 to 114.5; chat
+  19.3 to 12.7 and 167.2 to 105.1; the board 49.9 to 34.9 and 486.6 to 327.2. What is left per
+  item is the view (1.9 KB per row even unrendered), the room and the mirror (1.5 KB), search
+  (0.4 KB), the published resources themselves (a 24-byte spec per action) and what the
+  allocator keeps after the first read.

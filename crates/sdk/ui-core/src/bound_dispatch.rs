@@ -2034,7 +2034,7 @@ impl OrdinaryConfirmation {
         // A deferred spec retains a creation draft when its provider offers
         // one; without one (a verb with no parameters) it is built like any
         // other action, so a destructive one can still be confirmed.
-        let retains_draft = matches!(spec.input, tilo_actions::ActionInput::Deferred { .. })
+        let retains_draft = matches!(spec.input(), tilo_actions::ActionInput::Deferred { .. })
             && spec
                 .continuation_identity(tilo_actions::ContinuationQuery::Draft)
                 .is_some();
@@ -2129,20 +2129,19 @@ impl OrdinaryConfirmation {
 }
 
 fn control_input_surface(spec: &tilo_actions::ActionSpec) -> ControlInputSurface {
-    match &spec.input {
+    match spec.input() {
         tilo_actions::ActionInput::Immediate(_) => ControlInputSurface::Immediate,
-        tilo_actions::ActionInput::Deferred { type_id, .. } => ControlInputSurface::Deferred {
-            type_id: type_id.clone(),
+        tilo_actions::ActionInput::Deferred { type_id } => ControlInputSurface::Deferred {
+            type_id: type_id.to_owned(),
         },
         tilo_actions::ActionInput::Prompted {
             prompt,
             placeholder,
             collects,
-            ..
         } => ControlInputSurface::Prompted {
-            prompt: prompt.clone(),
-            placeholder: placeholder.clone(),
-            collects: *collects,
+            prompt: prompt.to_owned(),
+            placeholder: placeholder.to_owned(),
+            collects,
         },
     }
 }
@@ -2266,25 +2265,27 @@ pub(crate) fn control_witness_with_arguments(
         ControlContinuationArguments::Text(value) => (Some(value.as_str()), None),
         ControlContinuationArguments::Json(arguments) => (None, Some(arguments)),
     };
-    let (intent, continuation) = if matches!(spec.input, tilo_actions::ActionInput::Deferred { .. })
-    {
-        validate_deferred_arguments(spec, arguments, argument)?;
-        let intent = DeferredIntent::capture(spec)?;
-        let continuation = intent.draft().clone();
-        (PreparedActionIntent::Deferred(intent), continuation)
-    } else {
-        let encoded = encode_resource_action(&resources, &invocation.address, arguments, argument)?;
-        let continuation = spec
-            .continuation_identity(tilo_actions::ContinuationQuery::Exact(
-                original_arguments.query(),
-            ))
-            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
-                code: "unsupported_continuation_identity".into(),
-                reason: "The action provider cannot prove the original target and handler identity"
-                    .into(),
-            })?;
-        (PreparedActionIntent::Encoded(encoded), continuation)
-    };
+    let (intent, continuation) =
+        if matches!(spec.input(), tilo_actions::ActionInput::Deferred { .. }) {
+            validate_deferred_arguments(spec, arguments, argument)?;
+            let intent = DeferredIntent::capture(spec)?;
+            let continuation = intent.draft().clone();
+            (PreparedActionIntent::Deferred(intent), continuation)
+        } else {
+            let encoded =
+                encode_resource_action(&resources, &invocation.address, arguments, argument)?;
+            let continuation = spec
+                .continuation_identity(tilo_actions::ContinuationQuery::Exact(
+                    original_arguments.query(),
+                ))
+                .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                    code: "unsupported_continuation_identity".into(),
+                    reason:
+                        "The action provider cannot prove the original target and handler identity"
+                            .into(),
+                })?;
+            (PreparedActionIntent::Encoded(encoded), continuation)
+        };
     Ok(ControlWitness {
         identity: control_identity_from_spec(resource, spec, continuation),
         intent,
