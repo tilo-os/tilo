@@ -1,29 +1,27 @@
 #!/usr/bin/env bash
 # The OS image and its dev image as devices get them, as root in a micro-VM step with a
-# /dev/kvm of its own. Nothing here holds a secret or publishes.
+# /dev/kvm of its own. Nothing here holds a secret or publishes. The stable channel's gate;
+# main's dev images need only os-dev-gate-ARCH, which installed the disk these tracks boot.
 #
-#   os-acceptance.sh ARCH IMAGE DEV OUT   IMAGE: os-image-ARCH's layout, DEV: os-dev-image-ARCH's;
-#                                         reports and logs into OUT
+#   os-acceptance.sh ARCH IMAGE GATE OUT   IMAGE: os-image-ARCH's layout, GATE: os-dev-gate-ARCH's
+#                                          output (its disk); reports and logs into OUT
 #
-# The dev image is installed onto a disk (os/dev/build-image.sh with TILO_SKIP_BUILD=1; it carries sshd
-# and tilo-control, which the gates drive the guests with), kept in OUT/disk for
-# publish-os-dev-ARCH, and three tracks run side by side, each booting throwaway overlays of that
-# disk or the OS image's own UKI:
+# Three tracks run side by side, each booting throwaway overlays of the gate's disk or the OS
+# image's own UKI:
 #
 #   devices  a joined device signs in (os/dev/test-joined-device-startup.sh); nearby pairing,
 #            a third device through one without the identity key, sibling unlock and, on
 #            x86_64, wake (os/dev/test-nearby-pairing.sh); device-admin reach through a relay
 #            (os/dev/test-device-admin-reach.sh)
-#   desktop  the installed desktop from the sign-in screen on, ending with a live update of a
-#            newer image (os/dev/test-installed-desktop.sh)
+#   desktop  the installed desktop from the sign-in screen on (os/dev/test-installed-desktop.sh)
 #   splash   the boot splash on a panel larger than the firmware's mode (os/dev/check-boot-splash.py)
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
 
-arch=${1:?usage: os-acceptance.sh ARCH IMAGE DEV OUT}
+arch=${1:?usage: os-acceptance.sh ARCH IMAGE GATE OUT}
 image=${2:?}
-dev=${3:?}
+disk=${3:?}/disk/disk.qcow2
 out=${4:?}
 [[ $(uname -m) == "$arch" ]] || die "the $arch image is checked natively, not on $(uname -m)"
 case $arch in
@@ -31,9 +29,8 @@ case $arch in
   aarch64) qemu=(edk2-aarch64 qemu-system-aarch64-core qemu-device-display-virtio-gpu qemu-device-display-virtio-gpu-pci) ;;
   *) die "unknown architecture $arch" ;;
 esac
-for layout in "$image" "$dev"; do
-  [[ -f $layout/oci/index.json ]] || die "$layout holds no image layout (oci/)"
-done
+[[ -f $image/oci/index.json ]] || die "$image holds no image layout (oci/)"
+[[ -s $disk ]] || die "no installed disk at $disk"
 [[ -c /dev/kvm ]] || die 'no /dev/kvm: the check needs requires = ["/dev/kvm"]'
 
 missing=()
@@ -50,40 +47,7 @@ rm -rf "$out"
 mkdir -p "$out"
 status=0
 
-# The disk publish-os-dev-ARCH publishes once every gate passed: never booted itself (the gates
-# boot overlays of it), uncompressed so they read it fast (publication compresses it), following
-# the dev image it is published beside.
-revision=$(git rev-parse --verify HEAD) || die 'the disk names its commit: git = true'
-id=$(podman pull -q "oci:$dev/oci")
-[[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$dev/digest")" ]] || die "$dev/oci is not the image $dev/digest names"
-podman tag "$id" localhost/tilo-vm:ci
-export TILO_DISTROBOX= TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo
-mkdir -p "$out/disk"
-if [[ $arch == aarch64 ]]; then export TILO_DEV_DIRECT_BUNDLE_DIR=$out/disk/direct-boot; fi
-TILO_IMAGE=localhost/tilo-vm:ci TILO_SKIP_BUILD=1 TILO_OUTPUT=$scratch/dev-disk TILO_RUN=$scratch/dev-disk-run \
-  TILO_DISK_SIZE=64G TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:main-${revision:0:7}-ci" \
-  bash os/dev/build-image.sh > "$out/install.log" 2>&1 \
-  || { tail -n 80 "$out/install.log"; die 'the dev image does not install onto a disk'; }
-unset TILO_DEV_DIRECT_BUNDLE_DIR
-# The update the live-update gate stages: the dev image with one file added, served by the
-# registry the install left running, which the guests reach as the host (10.0.2.2).
-probe=/usr/share/tilo/live-update-probe
-probe_text="live update of ${revision:0:12}"
-mkdir -p "$scratch/live-update"
-printf '%s\n' "$probe_text" > "$scratch/live-update/probe"
-printf 'FROM localhost/tilo-vm:ci\nCOPY probe %s\n' "$probe" > "$scratch/live-update/Containerfile"
-podman build -q -t localhost/tilo-vm:live-update-check "$scratch/live-update" >/dev/null
-registry_port=$(podman port tilo-disk-registry 5000/tcp | head -n 1)
-registry_port=${registry_port##*:}
-[[ $registry_port =~ ^[0-9]+$ ]] || die 'the install left no local registry for the live-update gate'
-skopeo copy -q --dest-tls-verify=false containers-storage:localhost/tilo-vm:live-update-check \
-  "docker://localhost:$registry_port/tilo-vm:live-update-check"
-live_update=(--live-update "10.0.2.2:$registry_port/tilo-vm" registry.tilo.so/tilo/tilo-vm:live-update-check "$probe" "$probe_text")
-podman rmi -f localhost/tilo-vm:ci localhost/tilo-vm:live-update-check >/dev/null
-disk=$out/disk/disk.qcow2
-mv "$scratch/dev-disk/qcow2/disk.qcow2" "$disk"
-printf '%s\n' "$revision" > "$out/disk/revision"
-cp "$dev/digest" "$out/disk/image-digest"
+export TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo
 
 # A host without a usable render node boots the guests on the 2D virtio display; the
 # compositor paints on the CPU there, and every gate must pass either way.
@@ -102,8 +66,7 @@ devices() {
   return "$rc"
 }
 desktop() {
-  bash os/dev/test-installed-desktop.sh "$disk" --out "$out/installed-desktop" --base-digest "$(cat "$image/digest")" \
-    "${live_update[@]}"
+  bash os/dev/test-installed-desktop.sh "$disk" --out "$out/installed-desktop" --base-digest "$(cat "$image/digest")"
 }
 splash() {
   python3 os/dev/check-boot-splash.py --arch "$arch" --out "$out/boot-splash" "oci:$image/oci:tilo"

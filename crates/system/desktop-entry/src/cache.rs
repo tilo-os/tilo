@@ -73,9 +73,15 @@ fn watch_programs(scan: &Scan, slot: &Mutex<ProgramWatches>) {
                 break;
             }
             let leads_to = child.to_path_buf();
-            if let Ok(watch) =
+            let leaf = child == program.as_path();
+            // The program itself is read again when it is written; the directories on the
+            // way to it only matter when an entry on that way appears, goes or is renamed.
+            let watch = if leaf {
                 tilo_files::native::watch_changes(parent, move |path| path == leads_to, refresh)
-            {
+            } else {
+                tilo_files::native::watch_presence(parent, move |path| path == leads_to, refresh)
+            };
+            if let Ok(watch) = watch {
                 watches.push(watch);
             }
             if parent.parent().is_none() || Some(parent) == tilo_paths::home().as_deref() {
