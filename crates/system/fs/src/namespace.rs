@@ -933,13 +933,6 @@ impl Namespace {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Calls of [`crate::conflict::detect`] on this namespace.
-    #[cfg(test)]
-    pub(crate) fn conflict_scans(&self) -> u64 {
-        self.conflict_scans
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
     /// The sync state an exchange with the device `peer` begins at: where
     /// the last exchange completed with it ([`Self::finish_sync_with`])
     /// left off, so an idle exchange summarises only the changes since

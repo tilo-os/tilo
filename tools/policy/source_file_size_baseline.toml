@@ -171,7 +171,5 @@
 "crates/system/fs/src/fs.rs" = 7500
 "crates/system/fs/src/fs/tests.rs" = 4000
 "crates/system/fs/src/main.rs" = 5000
-"crates/system/fs/src/namespace.rs" = 4500
-"crates/system/fs/src/sync.rs" = 3500
-"crates/system/fs/src/sync/tests.rs" = 5000
+"crates/system/fs/src/namespace.rs" = 4000
 "crates/system/settings-store/src/hardware.rs" = 4000

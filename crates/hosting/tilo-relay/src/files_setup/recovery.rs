@@ -31,7 +31,6 @@ pub(crate) struct JoinOptions {
 struct JoinedNamespace {
     registration: tilo_relay::transport::ContentPeerRegistration,
     authority: WorkspaceAuthorityEnvelope,
-    namespace: Vec<u8>,
 }
 
 fn validate_binding(
@@ -83,20 +82,6 @@ async fn fetch_joined_namespace(
     .await?
     .context("peer has no signed Files authority; establish its existing policy before recovery")?;
     validate_authority(person, workspace, &authority)?;
-    let policy = Some(fs::AclHandle::new(fs::WorkspaceAcl::from_capabilities(
-        person,
-        &authority.capabilities,
-        &[],
-        None,
-    )));
-    let namespace = fs::sync::fetch_remote_doc(
-        endpoint,
-        registration.endpoint.clone(),
-        identity,
-        workspace,
-        &policy,
-    )
-    .await?;
     let current = fs::sync::submit_workspace_authority(
         endpoint,
         registration.endpoint.clone(),
@@ -112,7 +97,6 @@ async fn fetch_joined_namespace(
     Ok(JoinedNamespace {
         registration,
         authority,
-        namespace,
     })
 }
 
@@ -148,9 +132,10 @@ fn prepare_join(
 ) -> Result<()> {
     validate_binding(expected, &joined.registration)?;
     validate_authority(person, expected, &joined.authority)?;
-    // Load the peer's actual Automerge history; never initialize a replacement.
-    let mut namespace = fs::Namespace::from_bytes("recovered-device", &joined.namespace)?;
-    let bytes = namespace.save();
+    // The signed record log is the only durable history. The first record
+    // pull rebuilds this empty local projection; never initialize a second
+    // whole-tree snapshot as authority.
+    let bytes = fs::Namespace::new("recovered-device")?.save();
     let peers = [fs::workspace_authority::PersistedContentPeer {
         endpoint: joined.registration.endpoint,
         ticket: Some(joined.registration.ticket.clone()),

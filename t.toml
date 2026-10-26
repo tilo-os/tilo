@@ -2380,7 +2380,8 @@ cargo test --locked -p fs-protocol share_control --lib -- --nocapture
 cargo test --locked -p tilo-user-identity projection --lib -- --nocapture
 cargo test --locked -p shell root_signed_governance_projects_identity_and_additive_revocation --lib -- --nocapture
 cargo test --locked -p tilo-fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture
-cargo test --locked -p tilo-fs sync::tests::namespace_documents_reach_only_entitled_peers_and_readers_cannot_author --lib -- --nocapture
+cargo test --locked -p tilo-fs the_retired_namespace_alpn_refuses_old_peers_by_version --lib -- --nocapture
+cargo test --locked -p tilo-fs protocol_three_namespace_requests_are_refused_by_version --lib -- --nocapture
 cargo test --locked -p tilo-fs --lib -- --exact fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions
 cargo test --locked -p tilo-fs --test corruption_matrix -- --nocapture --test-threads=1
 cargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture
