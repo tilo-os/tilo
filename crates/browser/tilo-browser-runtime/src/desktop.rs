@@ -864,6 +864,8 @@ struct RoomActionQueue {
     next: u32,
     outbox: Vec<RoomActionRequest>,
     waiting: HashMap<u32, Box<dyn FnOnce(tilo_app::linked_accounts::ActionAnswer)>>,
+    /// Addresses to go to, leaving the page (a service's consent page).
+    opens: Vec<String>,
 }
 
 /// The desktop's door to the room's records, run by the room's host: the
@@ -881,6 +883,11 @@ impl PageRoomActions {
     /// The requests the page has to send, once.
     pub fn take_requests(&self) -> Vec<RoomActionRequest> {
         std::mem::take(&mut self.queue.borrow_mut().outbox)
+    }
+
+    /// The addresses the page is to go to, once.
+    pub fn take_opens(&self) -> Vec<String> {
+        std::mem::take(&mut self.queue.borrow_mut().opens)
     }
 
     pub fn answer(&self, id: u32, answer: tilo_app::linked_accounts::ActionAnswer) {
@@ -945,6 +952,13 @@ impl tilo_app::linked_accounts::RoomRecordActions for PageRoomActions {
             action: action.to_owned(),
             arguments,
         });
+    }
+
+    fn open(&self, url: &str) {
+        // Only a web address: the page leaves for it.
+        if url.starts_with("https://") || url.starts_with("http://") {
+            self.queue.borrow_mut().opens.push(url.to_owned());
+        }
     }
 }
 

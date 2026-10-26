@@ -7,17 +7,25 @@
 //!
 //! With `--control`, a script acts as Discord's people over plain HTTP, the
 //! way the crate's tests do through [`fake_discord::FakeDiscord`]:
-//! - `POST /post?channel=&user=&name=&content=` posts as that user; a
-//!   non-empty body is a file, named by `file=` and typed by `type=`;
-//!   answers `{"id": ...}`.
+//! - `POST /post?channel=&user=&name=&content=&avatar=` posts as that
+//!   user (`avatar` an avatar hash, optional); a non-empty body is a file,
+//!   named by `file=` and typed by `type=`; answers `{"id": ...}`.
 //! - `POST /edit?message=&content=` and `POST /delete?message=` change or
 //!   remove a message, as its author would.
 //! - `GET /messages?channel=` answers the channel's messages, oldest first.
-//! - `POST /slash?user=&name=&command=&code=` runs a slash command as that
-//!   user in #general (`command=link&code=ABC123`, `command=unlink`), as
-//!   Discord delivers it: an interaction on the gateway; answers `{"id": ...}`.
+//! - `POST /slash?user=&name=&command=&avatar=` runs a slash command as
+//!   that user in #general (`command=link`, `command=unlink`), as Discord
+//!   delivers it: an interaction on the gateway; answers `{"id": ...}`.
 //! - `GET /replies` answers the bot's replies to interactions, oldest first,
-//!   each `{"interaction": id, "reply": body}`.
+//!   each `{"interaction": id, "reply": body}`; `GET /edits` the bot's
+//!   later edits of them, each `{"interaction": id, "edit": body}`.
+//!
+//! Signing in with Discord (the REST address serves the consent page at
+//! `/oauth2/authorize`, the token endpoint and `/users/@me`):
+//! - `POST /signin?user=&name=&avatar=` signs that user in to Discord: the
+//!   consent page authorizes their account (default `4242`, `qwolff`).
+//! - `POST /cdn?path=avatars/<user>/<hash>.png&type=image/png` with the
+//!   bytes as body serves them on the CDN (an avatar a user carries).
 //!
 //! Reactions and the server's own emoji (`--emojis name:id,...` gives the
 //! guild custom emoji from the start, as its `GUILD_CREATE` lists them):
@@ -156,7 +164,7 @@ async fn control(
         .unwrap_or_default();
     let (status, answer): (u16, Value) = match (method.as_str(), path.as_str()) {
         ("POST", "/post") => {
-            let user = fake_discord::User::new(&arg("user"), &arg("name"));
+            let user = person(&arg);
             let id = if body.is_empty() {
                 fake.post(&arg("channel"), &user, &arg("content"))
             } else {
@@ -179,16 +187,19 @@ async fn control(
         }
         ("GET", "/messages") => (200, json!(fake.messages_in(&arg("channel")))),
         ("POST", "/slash") => {
-            let user = fake_discord::User::new(&arg("user"), &arg("name"));
-            let code = arg("code");
-            let id = fake.slash(
-                &user,
-                &arg("command"),
-                Some(code.as_str()).filter(|c| !c.is_empty()),
-            );
+            let id = fake.slash(&person(&arg), &arg("command"));
             (200, json!({ "id": id }))
         }
         ("GET", "/replies") => (200, json!(fake.interaction_replies())),
+        ("GET", "/edits") => (200, json!(fake.interaction_edits())),
+        ("POST", "/signin") => {
+            fake.sign_in(person(&arg));
+            (200, json!({}))
+        }
+        ("POST", "/cdn") => {
+            let url = fake.put_cdn(&arg("path"), &arg("type"), &body);
+            (200, json!({ "url": url }))
+        }
         ("POST", "/react" | "/unreact") | (_, "/reactions" | "/emojis") => {
             (200, reactions(fake, &method, &path, &arg))
         }
@@ -321,4 +332,14 @@ fn decode(text: &str) -> String {
     percent_encoding::percent_decode_str(&text.replace('+', " "))
         .decode_utf8_lossy()
         .into_owned()
+}
+
+/// The Discord user a control request names (`user=&name=`, with
+/// `avatar=` an avatar hash when they have one).
+fn person(arg: &impl Fn(&str) -> String) -> fake_discord::User {
+    let user = fake_discord::User::new(&arg("user"), &arg("name"));
+    match arg("avatar") {
+        hash if hash.is_empty() => user,
+        hash => user.with_avatar(&hash),
+    }
 }

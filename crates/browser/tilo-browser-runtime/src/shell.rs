@@ -94,6 +94,9 @@ pub(crate) enum HostRequest {
     /// their profile, which each of their devices reads
     /// (`desktop_set_own_status`): set here, it shows there too.
     Status { status: String, sharing: String },
+    /// Go to this address, leaving the page: a service's consent page,
+    /// which comes back to the room's host and from there to this entry.
+    Open(String),
 }
 
 /// How a person shares what they are doing, as their profile keeps it.
@@ -158,6 +161,9 @@ pub(crate) struct HostOffers {
     pub about: tilo_desktop::about::AboutLinks,
     /// The build this page runs (its commit), which a report names.
     pub build: Option<String>,
+    /// A linked-account offer's token the page arrived with: the profile
+    /// card opens on it, asking the person to confirm.
+    pub link_offer: Option<String>,
 }
 
 /// Who this desktop's person is when they make something in the room,
@@ -1158,23 +1164,7 @@ impl BrowserShell {
             }
             ChromeIntent::AnswerAvatarAsk => self.handle.answer_personal_ask(),
             ChromeIntent::PutOffAvatarAsk => self.handle.put_off_personal_ask(),
-            ChromeIntent::ToggleProfile => {
-                self.close_bar_popovers_except(BarPopover::Profile);
-                if !self.profile.is_open() {
-                    // Where the person stands with each connected service
-                    // is asked of the room's host; the card shows it once
-                    // answered.
-                    self.chrome.shared.linked.refresh();
-                }
-                if self.profile_of.take().is_some() {
-                    // Someone else's card gives way to the person's own.
-                    self.profile.close();
-                    let _ = self.profile.take_choice();
-                }
-                let model = self.profile_model();
-                self.profile
-                    .toggle(&model, self.bar.own_avatar_rect(), self.rect);
-            }
+            ChromeIntent::ToggleProfile => self.toggle_profile(),
             ChromeIntent::ToggleOverview => self.toggle_overview(),
             ChromeIntent::RenameWorkspace { name } => self.rename_workspace(name),
             ChromeIntent::ToggleTiloMenu => {
@@ -1505,6 +1495,8 @@ impl BrowserShell {
             ProfileChoice::Action(id) => HostRequest::Action(id),
             ProfileChoice::Link(app) => return self.link_account(&app, true),
             ProfileChoice::Unlink(app) => return self.link_account(&app, false),
+            ProfileChoice::Accept(app) => return self.chrome.shared.linked.accept(&app),
+            ProfileChoice::Decline(app) => return self.chrome.shared.linked.decline(&app),
             ProfileChoice::Sharing(mode) => {
                 self.chrome.here.borrow_mut().set_sharing(mode);
                 self.keep_own_status();
@@ -1556,10 +1548,57 @@ impl BrowserShell {
         }
     }
 
+    /// Open or close the profile card from the bar's own avatar.
+    fn toggle_profile(&mut self) {
+        self.close_bar_popovers_except(BarPopover::Profile);
+        if !self.profile.is_open() {
+            // Where the person stands with each connected service is asked
+            // of the room's host; the card shows it once answered.
+            self.chrome.shared.linked.refresh();
+        }
+        if self.profile_of.take().is_some() {
+            // Someone else's card gives way to the person's own.
+            self.profile.close();
+            let _ = self.profile.take_choice();
+        }
+        let model = self.profile_model();
+        self.profile
+            .toggle(&model, self.bar.own_avatar_rect(), self.rect);
+    }
+
+    /// The page arrived with an account to link (`#?link=`): once the bar
+    /// is drawn, the profile card opens on it and asks the person to
+    /// confirm. Whether it opened.
+    fn take_link_offer(&mut self) -> bool {
+        // The card opens under the own avatar, which the bar knows once it
+        // drew it, and asks in the person's name, once the room knows it.
+        if self.rect.is_zero_area()
+            || self.bar.own_avatar_rect().is_zero_area()
+            || self.chrome.here.borrow().own_label().is_none()
+        {
+            return false;
+        }
+        let Some(token) = self.offers.link_offer.take() else {
+            return false;
+        };
+        self.chrome.shared.linked.offer(&token);
+        if !self.profile.is_open() {
+            self.toggle_profile();
+        }
+        true
+    }
+
     /// Hand the room actions the chrome asked for to the page, which has the
     /// room's host run them, and show the linked accounts again when an
     /// answer changed them. Whether anything changed.
     fn follow_room_actions(&mut self) -> bool {
+        // A waiting offer draws again until the bar is there to open it.
+        let mut offered = self.take_link_offer() || self.offers.link_offer.is_some();
+        if self.profile_of.is_none() {
+            offered |= self
+                .profile
+                .follow_anchor(self.bar.own_avatar_rect(), self.rect);
+        }
         // Before the requests are taken, so the asks it makes go out now.
         self.linking.follow(
             &self.chrome.shared.linked,
@@ -1567,10 +1606,14 @@ impl BrowserShell {
             ui::time::now(),
         );
         let asked = self.chrome.shared.room_actions.take_requests();
-        let changed = !asked.is_empty();
+        let opens = self.chrome.shared.room_actions.take_opens();
+        let changed = offered || !asked.is_empty() || !opens.is_empty();
         self.requests
             .borrow_mut()
             .extend(asked.into_iter().map(HostRequest::RoomAction));
+        self.requests
+            .borrow_mut()
+            .extend(opens.into_iter().map(HostRequest::Open));
         let linked = &self.chrome.shared.linked;
         let revision = linked.revision();
         if self.linked_seen.replace(revision) != revision {

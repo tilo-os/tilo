@@ -246,6 +246,10 @@ struct Config {
     /// The build the page runs (the site's `version.json` revision).
     #[serde(default)]
     build: Option<String>,
+    /// A Discord account to link, by the one-time token its link carried
+    /// (`#?link=`); the profile card asks the person to confirm it.
+    #[serde(default)]
+    link_offer: Option<String>,
 }
 
 impl Config {
@@ -1392,6 +1396,7 @@ fn present_desktop(
             host: config.host.clone(),
             about: config.about.clone(),
             build: config.build.clone(),
+            link_offer: config.link_offer.clone(),
         },
         Rc::clone(&requests),
         crate::shell::ChromeSources {

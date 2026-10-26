@@ -50,6 +50,7 @@ pub enum DiscordOp {
     Unban(MemberOp),
     SetOverwrite(OverwriteOp),
     FetchAsset(FetchAssetOp),
+    AnswerInteraction(AnswerInteractionOp),
 }
 
 impl<'de> Deserialize<'de> for DiscordOp {
@@ -84,6 +85,7 @@ impl<'de> Deserialize<'de> for DiscordOp {
             "unban" => Self::Unban(op(fields)?),
             "set-overwrite" => Self::SetOverwrite(op(fields)?),
             "fetch-asset" => Self::FetchAsset(op(fields)?),
+            "answer-interaction" => Self::AnswerInteraction(op(fields)?),
             other => {
                 return Err(D::Error::unknown_variant(
                     other,
@@ -105,6 +107,7 @@ impl<'de> Deserialize<'de> for DiscordOp {
                         "unban",
                         "set-overwrite",
                         "fetch-asset",
+                        "answer-interaction",
                     ],
                 ));
             }
@@ -139,7 +142,8 @@ impl DiscordOp {
             | Self::Kick(_)
             | Self::Ban(_)
             | Self::Unban(_)
-            | Self::FetchAsset(_) => None,
+            | Self::FetchAsset(_)
+            | Self::AnswerInteraction(_) => None,
         }
     }
 
@@ -364,6 +368,16 @@ pub struct OverwriteOp {
     pub target_kind: OverwriteKind,
     pub allow: String,
     pub deny: String,
+}
+
+/// Edit the reply to a slash command to what came of it. The worker keeps
+/// the interaction's token (good for fifteen minutes) and never hands it
+/// out, so the op names only the interaction.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "resource", derive(JsonSchema))]
+pub struct AnswerInteractionOp {
+    pub interaction: String,
+    pub content: String,
 }
 
 /// Copy a file from Discord's CDN into the room's content store.

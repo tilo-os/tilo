@@ -226,6 +226,8 @@ pub(crate) struct Shared {
     wait_list: bool,
     /// Where someone on the wait list asks to be taken off it.
     contact: Option<String>,
+    /// Signing in with Discord to link an account, when it is set up.
+    sign_in: Option<Arc<crate::discord_sign_in::SignIn>>,
 }
 
 impl Shared {
@@ -254,6 +256,12 @@ impl Shared {
         shared.invite_only = persistent.admission == crate::config::Admission::Invite;
         shared.wait_list = shared.invite_only && persistent.wait_list_max > 0;
         shared.contact.clone_from(&persistent.contact);
+        if let Some(sign_in) = &persistent.discord_sign_in {
+            shared.sign_in = Some(Arc::new(
+                crate::discord_sign_in::SignIn::new(sign_in.clone())
+                    .context("signing in with Discord")?,
+            ));
+        }
         if let (true, Some(mail), Some(door)) =
             (shared.wait_list, &persistent.mail, &persistent.web_entry)
         {
@@ -309,6 +317,7 @@ impl Shared {
             wait_list: false,
             contact: None,
             mail: None,
+            sign_in: None,
         })
     }
 
@@ -538,6 +547,26 @@ fn attachment_limits(command: &mut Command, persistent: &PersistentConfig) {
 }
 
 /// The child's command line.
+/// The room's bots, and what the Discord bridge among them needs.
+fn bots(command: &mut Command, persistent: &crate::config::PersistentConfig) {
+    if persistent.bots.is_empty() {
+        return;
+    }
+    for bot in &persistent.bots {
+        command.arg("--bot").arg(bot);
+    }
+    // The token only matters to the bridge bot; without bots the mounted
+    // file is left alone.
+    if let Some(token) = &persistent.discord_token_file {
+        command.arg("--discord-token-file").arg(token);
+    }
+    // What the room offers signing in with Discord through; the secret
+    // stays with this service.
+    if let Some(sign_in) = &persistent.discord_sign_in {
+        command.args(sign_in.relay_args());
+    }
+}
+
 fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     let persistent = config
         .persistent
@@ -634,16 +663,7 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
         .arg(persistent.inactive_after_days.to_string());
     attachment_limits(&mut command, persistent);
     size_sessions(&mut command, config, persistent);
-    if !persistent.bots.is_empty() {
-        for bot in &persistent.bots {
-            command.arg("--bot").arg(bot);
-        }
-        // The token only matters to the bridge bot; without bots the
-        // mounted file is left alone.
-        if let Some(token) = &persistent.discord_token_file {
-            command.arg("--discord-token-file").arg(token);
-        }
-    }
+    bots(&mut command, persistent);
     // The moderation agent runs only with a key; the model is the
     // relay's default unless the operator names one.
     if let Some(key) = &persistent.moderation_key_file {
@@ -1093,6 +1113,40 @@ impl Persistent {
             waiters.remove(&key);
         }
         Err(JoinRefusal::Unavailable)
+    }
+
+    /// `GET /discord/callback`: trade what Discord's consent page came back
+    /// with for the account, hand it to the room, and say where the browser
+    /// goes on to: the web entry with the link token. `None` while signing
+    /// in with Discord is not set up.
+    pub async fn discord_callback(
+        &self,
+        query: &str,
+        web_entry: &str,
+    ) -> Option<std::result::Result<String, crate::discord_sign_in::Failed>> {
+        let sign_in = self.shared.sign_in.clone()?;
+        let authorized = match sign_in.callback(query).await {
+            Ok(authorized) => authorized,
+            Err(failed) => return Some(Err(failed)),
+        };
+        let told = {
+            let mut child = self.child.lock().await;
+            match child.as_mut() {
+                Some(child) => child
+                    .stdin
+                    .write_all(authorized.command.to_line().as_bytes())
+                    .await
+                    .is_ok(),
+                None => false,
+            }
+        };
+        if !told {
+            return Some(Err(crate::discord_sign_in::Failed::Discord));
+        }
+        Some(Ok(crate::discord_sign_in::back_to_tilo(
+            web_entry,
+            Some(&authorized.token),
+        )))
     }
 
     /// Whether a relay child is running and has announced itself.

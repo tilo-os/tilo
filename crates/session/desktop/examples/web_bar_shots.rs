@@ -288,7 +288,28 @@ fn discord(state: LinkState) -> Vec<LinkedAccount> {
         app: "so.tilo.discord".into(),
         service: "Discord".into(),
         state,
+        problem: None,
     }]
+}
+
+/// Discord's side: connect here, or /link from the server.
+fn unlinked() -> LinkState {
+    LinkState::Unlinked {
+        connect: true,
+        elsewhere: Some("In the Discord server, type /link to link from there.".into()),
+    }
+}
+
+/// A Discord account a `/link` button offers.
+fn offered() -> LinkState {
+    LinkState::Offered(tilo_app::linked_accounts::OfferReading {
+        service: "Discord".into(),
+        account: tilo_app::linked_accounts::AccountName {
+            user_name: "quinn.davis".into(),
+            display_name: Some("Quinn".into()),
+        },
+        started_here: false,
+    })
 }
 
 fn profile_model(linked: Vec<LinkedAccount>) -> ProfileModel {
@@ -618,19 +639,13 @@ fn main() {
         let (anchor, area) = (stage.bar.own_avatar_rect(), stage.rect);
         stage
             .profile
-            .toggle(&profile_model(discord(LinkState::Unlinked)), anchor, area);
+            .toggle(&profile_model(discord(unlinked())), anchor, area);
         shoot(&mut harness, "profile.png");
 
         harness
             .root_mut::<Stage>()
             .profile
-            .set_linked(discord(LinkState::Linking(
-                tilo_app::linked_accounts::LinkCode {
-                    code: "K7QMW2XRB4TD".into(),
-                    instruction: "In Discord, type /link with this code. It works for 10 minutes."
-                        .into(),
-                },
-            )));
+            .set_linked(discord(offered()));
         shoot(&mut harness, "profile-linking.png");
 
         harness

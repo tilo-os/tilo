@@ -4,7 +4,7 @@
 //! output and plans nothing, and so does anything by a blocked persona.
 
 use discord_wire::event::{
-    Author, Command, MemberChanged, MessageCreated, MessageDeleted, MessageUpdated,
+    Author, Authorized, Command, MemberChanged, MessageCreated, MessageDeleted, MessageUpdated,
     ReactionChanged, UserName,
 };
 use discord_wire::op::{FetchAssetOp, InAttachment, MemberRolesOp};
@@ -92,15 +92,18 @@ pub struct ReactItem {
     pub appearance: Appearance,
 }
 
-/// `complete-link`.
+/// `offer-link` or `offer-sign-in`: a Discord account Discord vouched for,
+/// offered to whoever holds the token whose check this is. Empty fields
+/// are none; `interaction` is `/link`'s, `state_sha256` a sign-in's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct CompleteLinkItem {
+pub struct OfferItem {
+    pub check: String,
     pub discord_user: String,
-    pub person: String,
-    pub code_sha256: String,
     pub user_name: String,
-    /// Empty when the account shows its username.
     pub display_name: String,
+    pub avatar: String,
+    pub interaction: String,
+    pub state_sha256: String,
 }
 
 /// `rename-link`: a linked account seen under newer names.
@@ -146,7 +149,12 @@ pub struct InboundPlan {
     pub blocks: Vec<String>,
     /// `set-member-roles`.
     pub member_roles: Vec<MemberRolesOp>,
-    pub complete_links: Vec<CompleteLinkItem>,
+    /// `offer-link`: accounts that ran `/link`.
+    pub offers: Vec<OfferItem>,
+    /// `offer-sign-in`: accounts signed in with from Tilo.
+    pub sign_in_offers: Vec<OfferItem>,
+    /// `answer-interaction`.
+    pub answers: Vec<AnswerItem>,
     /// `unlink`.
     pub unlinks: Vec<String>,
     /// `rename-link`.
@@ -178,16 +186,20 @@ fn appearance(
     chat: &serde_json::Value,
     author: &Author,
 ) -> Result<Appearance, Box<AvatarFetch>> {
-    if let Some((link, person)) = guild
+    let linked = guild
         .links
         .iter()
         .find(|link| link.discord_user == author.id)
         .and_then(|link| Some((link, tilo::person(chat, &link.person)?)))
-        .filter(|(_, person)| !person.name.trim().is_empty())
+        .filter(|(_, person)| !person.name.trim().is_empty());
+    // A linked person with no picture of their own in Tilo shows their
+    // Discord one, so they look the same on both sides.
+    if let Some((link, person)) = &linked
+        && person.avatar.is_some()
     {
         return Ok(Appearance {
-            name: person.name,
-            avatar: person.avatar,
+            name: person.name.clone(),
+            avatar: person.avatar.clone(),
             persona: Persona {
                 linked: Some(link.person.clone()),
                 ..persona(&author.id)
@@ -210,10 +222,20 @@ fn appearance(
         },
         _ => None,
     };
-    Ok(Appearance {
-        name: author.name.clone(),
-        avatar,
-        persona: persona(&author.id),
+    Ok(match linked {
+        Some((link, person)) => Appearance {
+            name: person.name,
+            avatar,
+            persona: Persona {
+                linked: Some(link.person.clone()),
+                ..persona(&author.id)
+            },
+        },
+        None => Appearance {
+            name: author.name.clone(),
+            avatar,
+            persona: persona(&author.id),
+        },
     })
 }
 
@@ -510,26 +532,36 @@ pub fn plan_member(guild: &Guild, event: &MemberChanged, room: &serde_json::Valu
     plan
 }
 
-/// `command`: `/link` and `/unlink`. A `/link` always reaches
-/// `complete-link`, which counts a wrong code as a failure.
+/// What a reply to a slash command is edited to: the outcome, in words.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AnswerItem {
+    pub interaction: String,
+    pub content: String,
+}
+
+/// The reply to `/link` once the account is linked to `name`.
 #[must_use]
-pub fn plan_command(guild: &Guild, event: &Command) -> InboundPlan {
+pub fn linked_reply(name: &str) -> String {
+    format!("Linked to {name} ✓ What you write here now shows as you in Tilo.")
+}
+
+/// The reply to `/link` once its button ran out unused.
+pub const EXPIRED_REPLY: &str = "That link expired. Run /link again to get a new one.";
+
+/// `command`: `/link` offers the account to whoever holds the token in its
+/// reply's button; `/unlink` unlinks it, and its reply says what came of
+/// it. `chat` names the Tilo person.
+#[must_use]
+pub fn plan_command(guild: &Guild, chat: &serde_json::Value, event: &Command) -> InboundPlan {
     let mut plan = InboundPlan::default();
     match event.name.as_str() {
         "link" => {
-            let Some(hash) = &event.code_sha256 else {
+            let Some(check) = &event.link_check else {
                 return plan;
             };
-            let person = guild
-                .pending_links
-                .iter()
-                .find(|p| p.code_sha256 == *hash)
-                .map(|p| p.person.clone())
-                .unwrap_or_default();
-            plan.complete_links.push(CompleteLinkItem {
+            plan.offers.push(OfferItem {
+                check: check.clone(),
                 discord_user: event.user_id.clone(),
-                person,
-                code_sha256: hash.clone(),
                 user_name: event
                     .user
                     .as_ref()
@@ -540,12 +572,82 @@ pub fn plan_command(guild: &Guild, event: &Command) -> InboundPlan {
                     .as_ref()
                     .and_then(|user| user.display_name.clone())
                     .unwrap_or_default(),
+                avatar: event.avatar.clone().unwrap_or_default(),
+                interaction: event.interaction.clone(),
+                state_sha256: String::new(),
             });
         }
-        "unlink" if guild.links.iter().any(|l| l.discord_user == event.user_id) => {
-            plan.unlinks.push(event.user_id.clone());
+        "unlink" => {
+            let link = guild.links.iter().find(|l| l.discord_user == event.user_id);
+            let content = match link {
+                Some(link) => {
+                    plan.unlinks.push(event.user_id.clone());
+                    let name = tilo::person(chat, &link.person)
+                        .map(|person| person.name)
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or_else(|| "your Tilo account".to_owned());
+                    format!("Unlinked from {name}. What you write here shows under your Discord name again.")
+                }
+                None => "This Discord account isn't linked to a Tilo account, so there was nothing to unlink.".to_owned(),
+            };
+            if !event.interaction.is_empty() {
+                plan.answers.push(AnswerItem {
+                    interaction: event.interaction.clone(),
+                    content,
+                });
+            }
         }
         _ => {}
+    }
+    plan
+}
+
+/// `authorized`: someone signed in with Discord on the room's host; the
+/// account is offered to the person who started it, and to them alone.
+#[must_use]
+pub fn plan_authorized(event: &Authorized) -> InboundPlan {
+    InboundPlan {
+        sign_in_offers: vec![OfferItem {
+            check: event.link_check.clone(),
+            discord_user: event.user_id.clone(),
+            user_name: event
+                .user
+                .as_ref()
+                .map(|user| user.user_name.clone())
+                .unwrap_or_default(),
+            display_name: event
+                .user
+                .as_ref()
+                .and_then(|user| user.display_name.clone())
+                .unwrap_or_default(),
+            avatar: event.avatar.clone().unwrap_or_default(),
+            interaction: String::new(),
+            state_sha256: event.state_sha256.clone(),
+        }],
+        ..InboundPlan::default()
+    }
+}
+
+/// A person took a link offer (`complete-link`): the `/link` it answered
+/// says so, and the account's Discord picture is brought in while they
+/// have none of their own in Tilo.
+#[must_use]
+pub fn plan_linked(guild: &Guild, chat: &serde_json::Value, person: &str) -> InboundPlan {
+    let mut plan = InboundPlan::default();
+    let Some(link) = guild.links.iter().find(|link| link.person == person) else {
+        return plan;
+    };
+    let tilo = tilo::person(chat, person);
+    if let Some(interaction) = &link.interaction {
+        let name = tilo
+            .as_ref()
+            .map(|person| person.name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "your Tilo account".to_owned());
+        plan.answers.push(AnswerItem {
+            interaction: interaction.clone(),
+            content: linked_reply(&name),
+        });
     }
     plan
 }
