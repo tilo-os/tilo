@@ -433,8 +433,9 @@ impl ProtocolHandler for FabricReader {
     }
 }
 
-/// Two actors on topic `ws`, the first dialling the second, once each
-/// has seen the other join.
+/// Two of a person's devices on their personal topic `ws`, which travels
+/// directly between them over gossip, the first dialling the second, once
+/// each has seen the other join.
 async fn linked_pair(
     ws: WorkspaceId,
     a: (Endpoint, MemoryLookup),
@@ -452,7 +453,7 @@ async fn linked_pair(
         (cmd, rx, task, events)
     });
     for (cmd, _, _, events) in &pair {
-        cmd.send(NetCmd::JoinWorkspace {
+        cmd.send(NetCmd::JoinPersonalTopic {
             ws,
             on_event: events.clone(),
         })
@@ -571,10 +572,11 @@ async fn a_linked_pair_keeps_one_connection_for_gossip_and_personal_fabric() {
     }
 }
 
-/// Join `ws` on the actor `cmd` drives, and hear its events.
+/// Join the personal topic `ws` on the actor `cmd` drives, and hear its
+/// events.
 async fn joined(cmd: &mpsc::Sender<NetCmd>, ws: WorkspaceId) -> mpsc::Receiver<NetEvent> {
     let (on_event, events) = mpsc::channel(64);
-    cmd.send(NetCmd::JoinWorkspace { ws, on_event })
+    cmd.send(NetCmd::JoinPersonalTopic { ws, on_event })
         .await
         .unwrap();
     events
