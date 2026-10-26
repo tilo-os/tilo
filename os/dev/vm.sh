@@ -392,7 +392,7 @@ cmd_shot() {
   fi
   sleep 0.4
   inenv "test -f '$out.ppm'" || { warn "no framebuffer produced"; return 1; }
-  inenv "magick '$out.ppm' '$out.png' 2>/dev/null || convert '$out.ppm' '$out.png'; rm -f '$out.ppm'"
+  python3 "$TILO_OS_DIR/dev/greeter-acceptance.py" --convert "$out.ppm" --png "$out.png"
   echo "$out.png"
 }
 
