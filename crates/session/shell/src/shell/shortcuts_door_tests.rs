@@ -517,7 +517,7 @@ impl Door {
             &crate::firstboot::collaboration_identity_paths(),
         )
         .expect("the host's own identity");
-        let hosted = HostedRoom::start(&dir.path().join("system"), &dir.path().join("session"));
+        let mut hosted = HostedRoom::start(&dir.path().join("system"), &dir.path().join("session"));
         let room = hosted.room;
         // The person this device acts as in the room is the identity it
         // was set up with.
@@ -545,6 +545,7 @@ impl Door {
             "the broker's device is the one the network holds"
         );
         hosted.open_first(FIXTURE);
+        hosted.device.serve_through_broker();
         let socket = dir.path().join("collab.sock");
         let broker = crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
             socket.clone(),
