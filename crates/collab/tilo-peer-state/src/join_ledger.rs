@@ -552,6 +552,52 @@ impl JoinLedger {
         invitations
     }
 
+    /// The invitations to `room` still redeemable at `now`, each with the
+    /// exact signed bearer the governor issued: the list a resend or a
+    /// cancel acts on, so an invitation is never silently forgotten.
+    #[must_use]
+    pub fn pending_issued(&self, now: u64) -> Vec<(PendingInvitation, Vec<u8>)> {
+        let mut invitations = self
+            .invitations
+            .iter()
+            .filter(|record| {
+                record.cancellation.is_none()
+                    && record.grant.expires_at_ns > now
+                    && !self.redeemed(record.issued.invite_id)
+            })
+            .map(|record| {
+                (
+                    PendingInvitation {
+                        invite_id: record.issued.invite_id,
+                        role: record.grant.role,
+                        recipient_user_public_key: record.grant.recipient_user_public_key,
+                        invitee_name: record.grant.invitee_name.clone(),
+                        expires_at_ns: record.grant.expires_at_ns,
+                    },
+                    record.issued.signed_invitation.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        invitations.sort_by_key(|(invitation, _)| invitation.invite_id);
+        invitations
+    }
+
+    /// The exact signed bearer this room issued under `invite_id`, while it
+    /// is still redeemable. `None` for an unknown, cancelled, expired or
+    /// already redeemed invitation.
+    #[must_use]
+    pub fn issued_invitation(&self, invite_id: [u8; 32], now: u64) -> Option<Vec<u8>> {
+        self.invitations
+            .iter()
+            .find(|record| {
+                record.issued.invite_id == invite_id
+                    && record.cancellation.is_none()
+                    && record.grant.expires_at_ns > now
+                    && !self.redeemed(invite_id)
+            })
+            .map(|record| record.issued.signed_invitation.clone())
+    }
+
     /// The invitation `signed_invitation`, verified against what this room
     /// issued and has not cancelled.
     ///
