@@ -99,6 +99,13 @@ impl PeerPublisher {
             .as_ref()
             .is_some_and(|owner| owner.requires_room(room))
     }
+    /// Whether `room`'s effect receipts are the installed owner's to
+    /// commit ([`tilo_owner_commit::OwnerCommitService::records_effects`]).
+    pub fn records_effects_for(&self, room: &str) -> bool {
+        self.owner_commit
+            .as_ref()
+            .is_some_and(|owner| owner.records_effects(room))
+    }
     /// Health of the installed durable owner commit.
     pub fn owner_commit_health(&self) -> Result<(), String> {
         self.owner_commit

@@ -294,6 +294,12 @@ pub trait OwnerCommitService: Send + Sync {
     fn requires_room(&self, _room: &str) -> bool {
         true
     }
+    /// Whether `room`'s effect receipts cross this owner's durable boundary.
+    /// They are the room's governance, recorded by its governor whichever
+    /// model its records follow: here, or at the host that governs it.
+    fn records_effects(&self, room: &str) -> bool {
+        self.requires_room(room)
+    }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
     /// Commit a certified member's own terminal audit at the actual governor.
     /// The authenticated caller is retained by the broker, never decoded from

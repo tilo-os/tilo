@@ -1220,6 +1220,12 @@ impl WorkspaceTree {
         self.stewarded_rooms.contains(&room)
     }
 
+    /// Whether `room`'s replica is projected here, its records committed
+    /// documents or sealed channels: a held room, with its governance.
+    pub(crate) fn projects_room(&self, room: RoomId) -> bool {
+        self.commits_native_documents(room) || self.seals_records(room)
+    }
+
     /// Why no app opens a document in `room` on this device yet, as a
     /// catalogue id: it is still joining or being placed on its host and
     /// holds no records yet. Every room of a workspace here is held, joining

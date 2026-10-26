@@ -165,10 +165,11 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
     );
     admit(&restarted);
     crate::shell::persist::wait_for_saves();
-    assert_eq!(
-        std::fs::read(&path).unwrap(),
-        before,
-        "startup creates no enrollment, grant or document write"
+    let after = std::fs::read(&path).unwrap();
+    assert!(
+        after == before,
+        "startup creates no enrollment, grant or document write; changed: {:?}",
+        changed_fields(&before, &after)
     );
     restored.native_owner().unwrap().fence_all();
     assert!(
@@ -176,6 +177,23 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
         "uncertain owner custody cannot borrow a cached admission"
     );
     assert!(Delivery::new(restored, destination(), &author).is_err());
+}
+/// The top-level fields of two state files that differ, to name what a
+/// write changed.
+fn changed_fields(before: &[u8], after: &[u8]) -> Vec<String> {
+    let parse = |bytes: &[u8]| {
+        serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(bytes)
+            .unwrap_or_default()
+    };
+    let (before, after) = (parse(before), parse(after));
+    before
+        .keys()
+        .chain(after.keys())
+        .filter(|key| before.get(*key) != after.get(*key))
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 /// An admission stands only while the room's sandbox is the one it was
 /// given under, as well as the reporter's standing.
