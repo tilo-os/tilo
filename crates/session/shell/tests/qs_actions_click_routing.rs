@@ -694,7 +694,7 @@ fn only_the_invite_button_opens_the_signed_composer() {
         let tree = minimal_tree();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let hosted = shell::shell::test_support::host_active_room(&chrome.borrow().tree_handle());
-        chrome.borrow_mut().act_as(hosted.person.clone());
+        chrome.borrow_mut().act_as(hosted.person);
         host.set_peer_sync_enabled(true);
         {
             let mut st = chrome.borrow_mut();
