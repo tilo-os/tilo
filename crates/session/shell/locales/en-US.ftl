@@ -1170,6 +1170,7 @@ shell-workspace-renamed = Workspace renamed
 shell-tab-menu-close = Close tab
 shell-tab-menu-split-right = Split right
 shell-tab-menu-new-group = Move to new group
+shell-window-menu-reveal = Go to this window
 shell-window-menu-full-screen = Full screen
 shell-window-menu-exit-full-screen = Exit full screen
 shell-window-menu-maximize = Maximize

@@ -89,6 +89,21 @@ impl ShellOverlayHost {
             facts.full_screen = st.fullscreen_group() == Some(target.group);
             let tree = st.tree();
             facts.renamable = crate::shell::tab_binding::may_rename_tab(&tree, target.tab);
+            let surface = tree
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|strip| strip.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .find(|tab| tab.id == target.tab)
+                .and_then(|tab| match &tab.tile {
+                    crate::shell::state::TileContent::Foreign { surface_id, .. } => {
+                        Some(*surface_id)
+                    }
+                    _ => None,
+                });
+            facts.attention = crate::shell::attention::is_asking(target.tab, surface);
             let home = tree
                 .desktop
                 .workspaces
@@ -353,6 +368,12 @@ impl ShellOverlayHost {
         action: WindowMenuAction,
     ) -> bool {
         match action {
+            WindowMenuAction::Reveal => {
+                let Some(chrome) = self.chrome.clone() else {
+                    return false;
+                };
+                chrome.borrow_mut().show_tab(target.tab)
+            }
             // The `✕` and the keyboard chord's own durable lifecycle: tree
             // and document first, then the widget's close animation.
             WindowMenuAction::CloseTab => self.close_tab_in_group(target.group, Some(target.tab)),

@@ -241,6 +241,10 @@ pub struct TabDescriptor {
     /// The application's own artwork, painted in place of the `app_kind`
     /// glyph — how an app Tilo did not package is recognisable in its tab.
     pub icon: Option<icons::AppImage>,
+    /// The window is waiting for the person: a refusal, a background open, a
+    /// dialog somewhere they are not looking. Painted as one dot at the
+    /// pill's trailing edge and cleared when the tab takes focus.
+    pub attention: bool,
 }
 
 impl TabDescriptor {
@@ -250,6 +254,7 @@ impl TabDescriptor {
             title: title.into(),
             app_kind: None,
             icon: None,
+            attention: false,
         }
     }
 }
@@ -1390,6 +1395,22 @@ impl TabBar {
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         self.draw_pill_body(&mut ctx, &pill);
         self.draw_pill_faces(&mut ctx, presence, &pill);
+        if t.attention {
+            // One dot at the trailing edge, in the same badge the rest of the
+            // chrome marks "new" with: a window asked for this person and did
+            // not get their focus. Cleared when it does, and handed back to
+            // the close chip once the pointer is on the pill.
+            let side = f64::from(theme.tokens.spacing.s2);
+            let centre = Point::new(r.x1 - side / 2.0, r.center().y);
+            let PaintCtx {
+                scene,
+                transform,
+                text,
+                theme,
+            } = ctx.reborrow();
+            crate::widget::BadgeFace::dot(Rect::from_center_size(centre, (side, side)))
+                .paint(scene, transform, text, theme);
+        }
         self.draw_pill_close_chip(&mut ctx, &pill);
         self.draw_pill_action_chips(&mut ctx, &pill);
     }
@@ -5990,6 +6011,7 @@ mod tests {
                     title: "A".into(),
                     app_kind: Some(AppKind::Terminal),
                     icon: None,
+                    attention: false,
                 }],
                 1,
             );
@@ -6041,6 +6063,7 @@ mod tests {
                     title: "Documentation".into(),
                     app_kind: Some(AppKind::Editor),
                     icon: None,
+                    attention: false,
                 }],
                 1,
             );

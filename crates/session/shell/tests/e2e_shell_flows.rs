@@ -756,6 +756,7 @@ fn tab_stub(id: u64, title: &str, kind: AppKind, label: &str) -> (TabDescriptor,
             title: title.into(),
             app_kind: Some(kind),
             icon: None,
+            attention: false,
         },
         TileContent::Stub {
             kind,
@@ -783,24 +784,28 @@ fn probe_tab_centers() -> [Point; 4] {
             title: "Notes".into(),
             app_kind: Some(AppKind::Editor),
             icon: None,
+            attention: false,
         },
         TabDescriptor {
             id: 2,
             title: "Files".into(),
             app_kind: Some(AppKind::Files),
             icon: None,
+            attention: false,
         },
         TabDescriptor {
             id: 3,
             title: "Terminal".into(),
             app_kind: Some(AppKind::Terminal),
             icon: None,
+            attention: false,
         },
         TabDescriptor {
             id: 4,
             title: "Browser".into(),
             app_kind: Some(AppKind::Browser),
             icon: None,
+            attention: false,
         },
     ];
     let theme = Theme::dark();
