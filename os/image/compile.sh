@@ -11,7 +11,8 @@
 #   TILO_RUST_LTO      thin (published images) or off (integration and development)
 #   TILO_WITH_BROWSER  1 to build the browser's engine host, 0 not to
 #   TILO_CHROMIUM_ENGINE  what `--chromium` left: the engine taken from there
-#                      instead of built again
+#                      instead of built again; `apart` leaves it out of OUT, for an
+#                      image build given it beside the tree (os/dev/build-image.sh)
 #   TILO_GITHUB_ASSET_CACHE  the checksum-pinned external assets (default
 #                      os/external-assets/cache), for the CEF distribution
 #
@@ -406,7 +407,7 @@ case "$TILO_RUST_LTO" in \
          && cp "${LIBSTD}" "$out"/; \
        fi \
     && build_phase chromium-engine \
-    && if [ "${TILO_WITH_BROWSER}" = 0 ]; then \
+    && if [ "${TILO_WITH_BROWSER}" = 0 ] || [ "${TILO_CHROMIUM_ENGINE:-}" = apart ]; then \
          :; \
        elif [ -n "${TILO_CHROMIUM_ENGINE:-}" ]; then \
          cp -a "$TILO_CHROMIUM_ENGINE"/chromium-engine "$out"/ \

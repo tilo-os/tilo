@@ -245,7 +245,8 @@ def flavour_checks(plan, arch, req, tools, flavour, layer):
         needs = [f"os-base-{arch}", "os-assets", "signing-tools", f"image-rpms-{arch}"] + below
         for g in l.get("given", []):
             if g == "compiled":
-                needs.append(f"{compiled}-{arch}")
+                # With the browser's engine, which the development compile leaves out.
+                needs += [f"{compiled}-{arch}", f"os-chromium-{arch}"]
                 continue
             what = g.split(":", 1)[0]
             if any(i["name"] == what for i in plan.get("image", [])):
@@ -372,18 +373,23 @@ def block():
             ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "10800"),
             ("default", "false")]))
         # The development image's compile: no LTO and no line tables. A build to ship, not a
-        # lint gate: warnings stay warnings, as in every image build. A release's: thin LTO,
-        # whose links of the large binaries take up to 8 GiB each, so 8 at a time.
+        # lint gate: warnings stay warnings, as in every image build. It needs the verified
+        # fixtures, and not the browser's engine, which the image layer takes from
+        # os-chromium-<arch> itself: it starts once the OS builder is there, not after the
+        # engine's own build. A release's: thin LTO, whose links of the large binaries take up
+        # to 8 GiB each, so 8 at a time, with the engine in its tree.
         for suffix, lto, debuginfo, memory, jobs in (("", "off", "0", "32GiB", ""),
                                                      ("-release", "thin", "line-tables-only", "64GiB", "8")):
+            release = bool(suffix)
             out.append(check([
                 ("name", f'"os-compile{suffix}-{arch}"'),
                 ("image", BUILDER_IMAGE.format(arch=arch)),
                 ("run", f'"bash os/image/compile.sh /target/os/{arch}/compiled{suffix}"'),
                 ("inputs", arr(sorted(set(builder_sources + ["os/image/compile.sh"])))),
-                ("needs", arr(["os-assets", "test-assets", f"os-chromium-{arch}"])),
+                ("needs", arr(["test-assets"] + ([f"os-chromium-{arch}"] if release else []))),
                 ("env", f'{{ TILO_RUST_LTO = "{lto}", TILO_RUST_DEBUGINFO = "{debuginfo}", TILO_WITH_BROWSER = "1", '
-                        f'TILO_CHROMIUM_ENGINE = "/target/os/{arch}/chromium", '
+                        + (f'TILO_CHROMIUM_ENGINE = "/target/os/{arch}/chromium", ' if release
+                           else 'TILO_CHROMIUM_ENGINE = "apart", ')
                         + (f'TILO_CARGO_BUILD_JOBS = "{jobs}", ' if jobs else "")
                         + f'TILO_TEST_ASSET_SEED = "{TEST_ASSET_SEED}", '
                         'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", '
