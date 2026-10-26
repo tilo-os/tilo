@@ -21,6 +21,8 @@ use crate::diffview;
 use crate::history;
 use crate::i18n::{t, t_args};
 
+use crate::diffview::DiffHit;
+
 use super::{GitClientApp, Hit, ScrollRegion, Scroller, Target};
 
 /// What the band above a conflicted file says: what each choice costs, in
@@ -317,6 +319,24 @@ impl GitClientApp {
         }
     }
 
+    /// Whatever a diff view drew is reachable where it was drawn: a control
+    /// painted here and recorded nowhere is one that ignores a press and that
+    /// a reader never hears.
+    fn record_drawn(&mut self, targets: &[(Rect, DiffHit)]) {
+        for &(rect, hit) in targets {
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                self.targets.push(Target {
+                    rect,
+                    hit: Hit::Diff(hit),
+                });
+                self.semantic.push(Target {
+                    rect,
+                    hit: Hit::Diff(hit),
+                });
+            }
+        }
+    }
+
     /// One file's changes in a commit: the same diff view the working tree
     /// uses, with the commit and file as its heading and no stage or discard
     /// actions (a commit is history; it is read, not edited).
@@ -414,21 +434,7 @@ impl GitClientApp {
                 pointer: self.pointer,
             },
         );
-        // Whatever the view drew is reachable where it was drawn: a control
-        // painted here and recorded nowhere is one that ignores a press and
-        // that a reader never hears.
-        for (rect, hit) in out.targets {
-            if rect.width() > 0.0 && rect.height() > 0.0 {
-                self.targets.push(Target {
-                    rect,
-                    hit: Hit::Diff(hit),
-                });
-                self.semantic.push(Target {
-                    rect,
-                    hit: Hit::Diff(hit),
-                });
-            }
-        }
+        self.record_drawn(&out.targets);
         let max_y = out.content_height - out.viewport.height();
         self.diff_scroll = self.diff_scroll.clamp(0.0, max_y.max(0.0));
         self.diff_hscroll = self.diff_hscroll.clamp(0.0, out.max_hscroll);

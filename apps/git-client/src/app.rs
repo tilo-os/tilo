@@ -1841,8 +1841,10 @@ impl GitClientApp {
                 self.diff_hscroll = 0.0;
             }
             Hit::ResolveConflict(side) => self.resolve_conflict(side),
-            // The note is read, never pressed.
-            Hit::ConflictNote | Hit::ConfirmQuestion => {}
+            // Read or asked, never pressed: the conflict's own sentence, the
+            // question a sheet puts, and the repository chooser, which is
+            // dispatched as its effect.
+            Hit::ConflictNote | Hit::ConfirmQuestion | Hit::ChooseRepository => {}
             // The sheet's answers, reached by a press or by assistive
             // technology activating the button it names.
             Hit::ConfirmAnswer(index) => self.answer_confirm(index),
@@ -1851,7 +1853,6 @@ impl GitClientApp {
             Hit::OpenRepository => self.open_repo_from_input(),
             // Dispatched as its effect (`effect_for_hit`); a direct press
             // without the published action does nothing.
-            Hit::ChooseRepository => {}
         }
     }
 
@@ -2744,8 +2745,7 @@ impl Widget for GitClientApp {
             ),
             hit: Hit::ConfirmQuestion,
         }];
-        for index in 0..layout.actions.len() {
-            let rect = layout.actions[index];
+        for (index, rect) in layout.actions.iter().copied().enumerate() {
             if rect.area() > 0.0 {
                 reached.push(Target {
                     rect,

@@ -104,12 +104,23 @@ pub struct PanelsDraw {
 struct SectionRows<'a> {
     title: String,
     rows: Vec<RowSpec<'a>>,
-    form: bool,
+    /// The form standing under the rows, if one does.
+    form: SectionForm,
     /// Rows the keyboard can choose (the local branches).
     selectable: bool,
     /// Stands in the leading column of a two-column page.
     leading: bool,
-    worktree_form: bool,
+}
+
+/// What a section asks for under its rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SectionForm {
+    /// Nothing: the section is its rows.
+    None,
+    /// The new-branch name, so a branch can be made where branches are read.
+    NewBranch,
+    /// The linked worktree's path, branch and start point.
+    Worktree,
 }
 
 /// One row: what it shows and what can be done to it.
@@ -213,9 +224,72 @@ fn branch_rows(model: &RepoModel, remote: bool) -> Vec<RowSpec<'_>> {
         .collect()
 }
 
+/// Every section the page shows, in reading order: the branches and
+/// worktrees first, then the tags, stashes and remotes they are compared
+/// against.
 fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
+    let mut listed = branch_sections(model, can_create);
+    listed.extend(reference_sections(model));
+    listed
+}
+
+/// The two branch lists and the worktrees: the branches a person switches
+/// between, and the copies of the repository already on disk.
+fn branch_sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
     let local = branch_rows(model, false);
     let remote = branch_rows(model, true);
+    vec![
+        SectionRows {
+            title: t("git-section-branches"),
+            rows: local,
+            form: if can_create {
+                SectionForm::NewBranch
+            } else {
+                SectionForm::None
+            },
+            selectable: true,
+            leading: true,
+        },
+        SectionRows {
+            title: t("git-section-remote-branches"),
+            rows: remote,
+            form: SectionForm::None,
+            selectable: false,
+            leading: true,
+        },
+        SectionRows {
+            title: t("git-section-worktrees"),
+            rows: model
+                .worktrees
+                .iter()
+                .map(|worktree| RowSpec {
+                    title: &worktree.head,
+                    secondary: Some(worktree.path.clone()),
+                    meta: None,
+                    current: worktree.current,
+                    actions: Vec::new(),
+                })
+                .chain(model.worktree_error.iter().map(|error| RowSpec {
+                    title: error,
+                    secondary: Some(t("git-worktree-read-failed")),
+                    meta: None,
+                    current: false,
+                    actions: Vec::new(),
+                }))
+                .collect(),
+            form: if can_create {
+                SectionForm::Worktree
+            } else {
+                SectionForm::None
+            },
+            selectable: false,
+            leading: false,
+        },
+    ]
+}
+
+/// The tags, stashes and remotes the branch lists are read against.
+fn reference_sections(model: &RepoModel) -> Vec<SectionRows<'_>> {
     let tags = model
         .tags
         .iter()
@@ -251,69 +325,25 @@ fn sections(model: &RepoModel, can_create: bool) -> Vec<SectionRows<'_>> {
         .collect();
     vec![
         SectionRows {
-            title: t("git-section-branches"),
-            rows: local,
-            form: can_create,
-            selectable: true,
-            leading: true,
-            worktree_form: false,
-        },
-        SectionRows {
-            title: t("git-section-remote-branches"),
-            rows: remote,
-            form: false,
-            selectable: false,
-            leading: true,
-            worktree_form: false,
-        },
-        SectionRows {
-            title: t("git-section-worktrees"),
-            rows: model
-                .worktrees
-                .iter()
-                .map(|worktree| RowSpec {
-                    title: &worktree.head,
-                    secondary: Some(worktree.path.clone()),
-                    meta: None,
-                    current: worktree.current,
-                    actions: Vec::new(),
-                })
-                .chain(model.worktree_error.iter().map(|error| RowSpec {
-                    title: error,
-                    secondary: Some(t("git-worktree-read-failed")),
-                    meta: None,
-                    current: false,
-                    actions: Vec::new(),
-                }))
-                .collect(),
-            form: can_create,
-            selectable: false,
-            leading: false,
-            worktree_form: true,
-        },
-        SectionRows {
             title: t("git-section-tags"),
             rows: tags,
-            form: false,
+            form: SectionForm::None,
             selectable: false,
             leading: false,
-            worktree_form: false,
         },
         SectionRows {
             title: t("git-section-stashes"),
             rows: stashes,
-            form: false,
+            form: SectionForm::None,
             selectable: false,
             leading: false,
-            worktree_form: false,
         },
         SectionRows {
             title: t("git-section-remotes"),
             rows: remotes,
-            form: false,
+            form: SectionForm::None,
             selectable: false,
             leading: false,
-            worktree_form: false,
         },
     ]
 }
@@ -349,7 +379,7 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &PanelsInput<'_>) -> Pan
         let w = (lane.width() - column_gap) / 2.0;
         let (left, right): (Vec<_>, Vec<_>) = all
             .iter()
-            .filter(|section| !section.rows.is_empty() || section.form)
+            .filter(|section| !section.rows.is_empty() || section.form != SectionForm::None)
             .partition(|section| section.leading);
         vec![
             (Rect::new(lane.x0, top, lane.x0 + w, area.y1), left),
@@ -359,7 +389,7 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &PanelsInput<'_>) -> Pan
         vec![(
             Rect::new(lane.x0, top, lane.x1, area.y1),
             all.iter()
-                .filter(|section| !section.rows.is_empty() || section.form)
+                .filter(|section| !section.rows.is_empty() || section.form != SectionForm::None)
                 .collect(),
         )]
     };
@@ -436,13 +466,11 @@ fn paint_section(
     let theme = ctx.theme;
     let s = &theme.tokens.spacing;
 
-    if section.form {
-        y = if section.worktree_form {
-            paint_worktree_form(ctx, column, input, y, out)
-        } else {
-            paint_branch_form(ctx, column, input, y, out)
-        } + f64::from(s.s2);
-    }
+    y = match section.form {
+        SectionForm::NewBranch => paint_branch_form(ctx, column, input, y, out) + f64::from(s.s2),
+        SectionForm::Worktree => paint_worktree_form(ctx, column, input, y, out) + f64::from(s.s2),
+        SectionForm::None => y,
+    };
 
     // Rows bleed past the content edge, so their text stands on it with
     // the section heading.
@@ -500,7 +528,7 @@ fn paint_section(
         face.interaction(interaction)
             .hovered_action(hovered_action)
             .paint(ctx, rect);
-        if section.worktree_form {
+        if section.form == SectionForm::Worktree {
             out.semantic.push((
                 rect.intersect(clip),
                 if i < input.model.worktrees.len() {
