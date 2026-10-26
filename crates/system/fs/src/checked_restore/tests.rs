@@ -1253,7 +1253,8 @@ async fn checked_restore_remote_transactions_and_fault_startup_clear_exact_fence
                 std::fs::write(target, bytes).unwrap();
             }
         }
-        // The history store is a snapshot plus its append-only log.
+        // History is derived from the copied signed repository. Legacy files
+        // are copied read-only for the import path, never as authority.
         for name in ["history.json", "history.json.log"] {
             let source = fixture.directory.path().join(name);
             if source.exists() {

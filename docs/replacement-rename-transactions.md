@@ -9,17 +9,20 @@ only one of those effects as a committed operation.
 
 The signed filesystem now provides this guarantee for a locally initiated
 replacement rename and for a complete transaction already present in the
-record repository. `QuickFS` still has three independently durable authorities:
+record repository. `QuickFS` has two durable authorities:
 
-1. record envelopes, persisted in one file per record by `RecordRepository`;
-2. immutable history, persisted in `FileHistoryStore`; and
-3. the Automerge move tree, persisted separately and broadcast as a delta.
+1. the signed record operation log, persisted by `RecordRepository`, which is
+   also the only durable file history; and
+2. the Automerge move tree, persisted separately and broadcast as a delta.
 
-Publishing an ordinary rename version for the source and an ordinary delete
-version for the destination is therefore unsafe. A crash between the two
-record files creates an authenticated half-operation, while a crash between
-record publication and the move-tree write creates signed history which claims
-a rename the namespace never performed. Returning an error cannot roll back
+`FileHistoryStore` is a derived, rebuildable query index over the signed
+`AppendVersion`, `AppendConflict` and `ResolveConflict` operations. Its
+checkpoint is a cache keyed by the record log digest, never a second durable
+history authority. Publishing an ordinary rename version for the source and an
+ordinary delete version for the destination would therefore be unsafe: a crash
+between participant records creates an authenticated half-operation, while a
+crash between record publication and the move-tree write leaves signed history
+for a rename the namespace never performed. Returning an error cannot roll back
 those immutable envelopes.
 
 Signed mounts without a persistent transaction journal reject an occupied
@@ -32,23 +35,24 @@ not create transactions.
 
 The version-1 wire manifest, detached signature, participant projection hashes,
 prepare/commit envelopes, participant-completeness index, durable journal,
-atomic history batch, namespace projection, restart recovery, and local FUSE
-entry point are implemented. Ordinary record snapshots expose no transaction
-projection until both exact participants have matching prepares and commits.
-The record materializer applies only complete repository transactions.
+atomic completed-transaction record commit, derived history fold, namespace
+projection, restart recovery, and local FUSE entry point are implemented.
+Ordinary record snapshots expose no transaction projection until both exact
+participants have matching prepares and commits. The record materializer
+applies only complete repository transactions.
 
 The implementation has unit coverage for signature and projection binding,
 commit-before-prepare refusal, incomplete visibility, durable staging across
-restart, repository failure after the first participant file, atomic history,
-namespace replay, broadcast-failure recovery, and the production signed-mount
+restart, repository failure after the first participant file, atomic derived
+history, namespace replay, broadcast-failure recovery, and the production signed-mount
 rename path. These tests are necessary evidence, but they do not satisfy the
 release requirements below by themselves.
 
 The same journal/coordinator now carries signed V2 binary Keep Both. It creates
 a deterministic bounded sibling name and stable record, resolves the exact open
 source conflict, and publishes both namespace projections atomically. Dedicated
-tests inject failure after history append but before resolution and after
-namespace-delta staging but before publication, reopen at each boundary, and
+tests inject failure after the derived-history fold but before resolution and
+after namespace-delta staging but before publication, reopen at each boundary, and
 prove exact idempotent recovery, no half publication, one resolution and an
 empty journal. Independently delivered participants are tested in both orders.
 Later conflicts may reference a committed transaction-projected revision while
@@ -105,8 +109,7 @@ batches, and one of these monotonic phases:
 
 ```text
 Prepared
-  -> ParticipantRecordsCommitted
-  -> HistoryCommitted
+  -> ParticipantRecordsCommitted   (also the history commit: it is derived)
   -> NamespaceCommitted
   -> BroadcastCommitted
   -> removed
@@ -114,9 +117,12 @@ Prepared
 
 Each phase transition is an atomic file replacement followed by directory
 sync. Recovery always resumes the current phase; it never constructs new
-version IDs, signatures, or sequence numbers. Exact envelope/history replay is
-success. A different envelope at a reserved sequence, a reused transaction ID,
-or a mismatching record projection is corruption and fails the mount closed.
+version IDs, signatures, or sequence numbers. Exact envelope replay and an
+idempotent derived-history fold are success. A different envelope at a reserved
+sequence, a reused transaction ID, or a mismatching record projection is
+corruption and fails the mount closed. A journal written by an earlier release
+with `history_committed` reopens as `ParticipantRecordsCommitted`, whose next
+durable step is the namespace commit.
 
 `RecordRepository::apply_transaction` must validate all candidate replicas
 before changing disk. It then writes the journal intent and may replace the two
@@ -125,10 +131,11 @@ recoverable, while replicas and materializers keep prepared transactions
 invisible until every commit exists. It publishes all candidate replicas to
 memory only after both record files are durable.
 
-`FileHistoryStore::append_batch` is the history commit primitive. It validates
-both versions against one cloned state and persists the complete state through
-one atomic replacement. It must never expose one participant without the
-other.
+`FileHistoryStore` folds both versions against one cloned derived state and
+publishes them together. It must never expose one participant without the
+other. The durable commit is the single signed-record-log write above; a crash
+before it leaves neither participant, and a crash after it leaves both for the
+next rebuild.
 
 ## Namespace commit and concurrency
 
@@ -144,7 +151,8 @@ perform the normal POSIX checks before journal creation:
 - `RENAME_NOREPLACE` and other supported flags retain their kernel semantics;
 - source and destination are in the caller's writable ACL view.
 
-After records and history commit, the coordinator rechecks the stable bindings
+After the signed participant records (the durable history) commit, the
+coordinator rechecks the stable bindings
 and expected versions. It applies the two move-tree changes in one Automerge
 transaction, installs the already verified source revision, synchronously
 persists the namespace (not the current periodic best-effort snapshot), and
@@ -172,8 +180,9 @@ projection that leaks it.
 3. **Implemented:** `RecordRepository::apply_transaction`, a durable journal,
    partial participant-file recovery, and failure injection at repository
    checkpoints.
-4. **Implemented:** atomic `FileHistoryStore::append_batch` for both immutable
-   versions.
+4. **Implemented:** atomic derived-history fold for both immutable versions;
+   the signed record log is the durable history and its query index is rebuilt
+   from it.
 5. **Partial:** the replacement coordinator synchronously persists namespace
    state and uses the publisher lock, but all mutation sources do not yet use a
    general reservation service and remote conflicts are not first-class.
@@ -207,7 +216,7 @@ projection that leaks it.
   descendant moves, and `RENAME_NOREPLACE` return the correct errno without a
   journal or signed side effect.
 - Failure injection after every journal write, participant record replace,
-  history replace, namespace persist, and broadcast recovers to the exact
+  derived-history fold, namespace persist, and broadcast recovers to the exact
   post-state after restart. No checkpoint exposes a half-operation.
 - Replaying recovery is idempotent and does not advance actor sequences or add
   history nodes.

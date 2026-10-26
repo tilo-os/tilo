@@ -1200,11 +1200,10 @@ impl ObservedExternalReplacement {
                         .collect::<Vec<_>>(),
                 )
                 .map_err(io::Error::other)?;
-            journal
-                .advance(id, RecordTransactionPhase::HistoryCommitted, None)
-                .map_err(io::Error::other)?;
         }
-        if journal.get(id).ok_or_else(refused)?.phase == RecordTransactionPhase::HistoryCommitted {
+        if journal.get(id).ok_or_else(refused)?.phase
+            == RecordTransactionPhase::ParticipantRecordsCommitted
+        {
             let mut namespace = runtime.namespace.lock().map_err(|_| refused())?;
             let mut candidate = namespace.clone();
             let batch = ExternalProjectionBatch::from_observed(self, &self.entry)

@@ -150,7 +150,7 @@ where
     }
     if journal
         .get(id)
-        .is_some_and(|value| value.phase <= RecordTransactionPhase::HistoryCommitted)
+        .is_some_and(|value| value.phase <= RecordTransactionPhase::ParticipantRecordsCommitted)
     {
         let mut namespace = namespace
             .lock()
@@ -161,13 +161,10 @@ where
             workspace_id: entry.transaction.manifest.workspace_id,
             record_id: participant.record_id,
         })?;
+        // The repository already holds this exact signed version, so folding
+        // it refreshes the derived query index without a separate durable
+        // history phase.
         history.append_batch(std::slice::from_ref(&participant.proposed_version))?;
-        if journal
-            .get(id)
-            .is_some_and(|value| value.phase == RecordTransactionPhase::ParticipantRecordsCommitted)
-        {
-            journal.advance(id, RecordTransactionPhase::HistoryCommitted, None)?;
-        }
         let mut candidate = namespace.clone();
         let _ = candidate.save_incremental();
         let staged = journal
@@ -319,7 +316,7 @@ where
             history.resolve(
                 source_record,
                 conflict_id,
-                fs_protocol::ConflictResolution {
+                &fs_protocol::ConflictResolution {
                     strategy,
                     result: source.proposed_version.id,
                     actor: entry.transaction.manifest.actor,
@@ -327,12 +324,11 @@ where
                 },
             )?;
         }
-        journal.advance(id, RecordTransactionPhase::HistoryCommitted, None)?;
     }
 
     if journal
         .get(id)
-        .is_some_and(|value| value.phase == RecordTransactionPhase::HistoryCommitted)
+        .is_some_and(|value| value.phase == RecordTransactionPhase::ParticipantRecordsCommitted)
     {
         let staged = if let Some(delta) = journal
             .get(id)

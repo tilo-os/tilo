@@ -186,10 +186,6 @@ impl RecordMaterializer {
         keys: &[crate::record_repository::RecordRepositoryKey],
         scope: ReconcileScope,
     ) -> Result<RecordReconciliationReport, RecordMaterializerError> {
-        let deferral = self
-            .history
-            .as_ref()
-            .map(|history| history.defer_durability());
         self.namespace
             .lock()
             .map_err(|_| RecordMaterializerError::NamespaceUnavailable)?
@@ -226,11 +222,6 @@ impl RecordMaterializer {
         // A pull may complete a multi-record transaction.
         if everything {
             self.reconcile_transactions(repository, &mut report)?;
-        }
-        if let Some(deferral) = deferral {
-            deferral
-                .finish()
-                .map_err(|_| RecordMaterializerError::HistoryUnavailable)?;
         }
         // A full pass only heals what an earlier change already signalled.
         if !keys.is_empty() {
@@ -576,6 +567,20 @@ impl RecordMaterializer {
         &self,
         repository: &RecordRepository,
     ) -> Result<RecordReconciliationReport, RecordMaterializerError> {
+        // The signed repository is the durable history. Replace an empty or
+        // legacy-only derived index with its complete projection before any
+        // record-level replay; later passes are no-ops because subsequent
+        // accepted operations fold into the index as they arrive.
+        if let Some(history) = &self.history {
+            history
+                .rebuild_from_repository(repository, self.workspace_id)
+                .map_err(|error| match error {
+                    HistoryError::Io(_) | HistoryError::Repository(_) => {
+                        RecordMaterializerError::HistoryUnavailable
+                    }
+                    _ => RecordMaterializerError::HistoryRejected,
+                })?;
+        }
         let mut report = RecordReconciliationReport::default();
         let keys = repository.reconciliation_keys(self.workspace_id);
         self.reconcile_keys(repository, &keys, &mut report)?;
@@ -769,7 +774,7 @@ impl RecordMaterializer {
                         .resolve(
                             source_record,
                             conflict_id,
-                            fs_protocol::ConflictResolution {
+                            &fs_protocol::ConflictResolution {
                                 strategy: fs_protocol::ConflictStrategy::Merge,
                                 result: source.proposed_version.id,
                                 actor: transaction.manifest.actor,
@@ -1071,7 +1076,7 @@ impl RecordMaterializer {
                             history_lease
                                 .as_mut()
                                 .ok_or(RecordMaterializerError::HistoryUnavailable)?
-                                .resolve(record_id, conflict_id, resolution.clone())
+                                .resolve(record_id, conflict_id, resolution)
                                 .map_err(history_projection_error)?;
                             return Ok(());
                         }
@@ -1110,7 +1115,7 @@ impl RecordMaterializer {
                     }
                     if let Some(resolution) = conflict.resolution {
                         history
-                            .resolve(record_id, conflict_id, resolution)
+                            .resolve(record_id, conflict_id, &resolution)
                             .map_err(history_projection_error)?;
                     }
                 } else {
