@@ -394,7 +394,12 @@ impl DesktopChromeSource for NativeChrome {
             .into_iter()
             .map(|item| AppTrayItem {
                 key: item.key,
-                id: item.id,
+                id: item.id.clone(),
+                title: if item.title.trim().is_empty() {
+                    item.id
+                } else {
+                    item.title
+                },
                 status: match item.status {
                     tilo_tray_host::ItemStatus::Passive => AppTrayStatus::Passive,
                     tilo_tray_host::ItemStatus::Active => AppTrayStatus::Active,

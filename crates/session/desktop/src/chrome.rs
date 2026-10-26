@@ -368,6 +368,9 @@ pub struct AppTrayItem {
     /// Stable key the host addresses the item by.
     pub key: String,
     pub id: String,
+    /// What to call the item: the application's own title for it, else its
+    /// id. Named to the person and to assistive technology, never empty.
+    pub title: String,
     pub status: AppTrayStatus,
     pub icon: AppTrayIcon,
     /// The item has no primary action; activating it opens its menu.

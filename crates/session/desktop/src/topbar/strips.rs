@@ -574,11 +574,10 @@ mod tests {
         assert_eq!(frame.ws_pill_rect, pill, "the name is back as it was");
         assert!(frame.strips.field_rect.is_zero_area());
 
-        // The current name is selected: typing replaces it.
+        // The current name is selected: typing replaces it, with no press
+        // needed to reach the field.
         frame.begin_workspace_rename();
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
-        let field = frame.strips.field_rect.center();
-        Framed::harness_mut(&mut frame).click_at(field.x, field.y);
         Framed::harness_mut(&mut frame).type_text("Lounge");
         Framed::harness_mut(&mut frame).key("Enter");
         Framed::harness_mut(&mut frame).poll_frame().unwrap();
@@ -587,6 +586,29 @@ mod tests {
             Some(&ChromeIntent::RenameWorkspace {
                 name: "Lounge".into()
             })
+        );
+
+        // A press in the field is the field's, not the bar's: it puts one
+        // caret where the person pointed, so the selected name is no longer
+        // selected and typing there edits in place.
+        frame.begin_workspace_rename();
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        let field = frame.strips.field_rect.center();
+        Framed::harness_mut(&mut frame).click_at(field.x, field.y);
+        let naming = frame.strips.naming.as_ref().expect("still naming");
+        assert_eq!(
+            (naming.selection.anchor, naming.selection.cursor),
+            (4, 4),
+            "the press left one caret where the person pointed, past the short name"
+        );
+        Framed::harness_mut(&mut frame).key("Enter");
+        Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        assert_eq!(
+            chrome.intents.borrow().last(),
+            Some(&ChromeIntent::RenameWorkspace {
+                name: "Room".into()
+            }),
+            "an unchanged name commits as it was"
         );
     }
 
