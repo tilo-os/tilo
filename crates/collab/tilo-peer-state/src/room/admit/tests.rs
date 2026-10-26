@@ -99,7 +99,7 @@ fn admit(
             source,
             authority,
             contents,
-            caps_now: NOW,
+            now_ns: crate::room::saved_shortcut::ns_at(NOW),
         },
         changes,
     )
@@ -592,6 +592,33 @@ fn saving(before: &AutoCommit, shortcut: tilo_automation::Shortcut) -> Vec<Vec<u
     changes_after(before, |doc| {
         tilo_desktop_model::projection::project_workspace_shortcuts(doc, &[shortcut]).unwrap();
     })
+}
+
+/// A shortcut saved from a device whose certificate was issued earlier in
+/// the second it arrives in is proven: admission judges at the instant, not
+/// at the start of its second.
+#[test]
+fn a_shortcut_saved_with_a_certificate_issued_this_second_is_proven() {
+    use crate::room::saved_shortcut::tests::{NOW_NS, device, shortcut};
+    let before = governed();
+    let authority = key(0xA0);
+    let writer = key(0x02);
+    let mut editor = device(0x22, 0x02);
+    editor.cert.issued_at_ns = NOW_NS + 400_000_000;
+    tilo_user_identity::sign_device_cert(&mut editor.cert, &editor.root).unwrap();
+    let batch = saving(&before, editor.saves(ROOM, shortcut("water")));
+    admit_room_changes(
+        RoomAdmission {
+            before: Some(&before),
+            room: ROOM,
+            source: member(&writer, EDITOR),
+            authority: AuthorityPin::Device(&authority),
+            contents: ContentOwnership::Salted { local_salt: 0x0001 },
+            now_ns: NOW_NS + 700_000_000,
+        },
+        &batch,
+    )
+    .expect("the certificate is valid at the instant the save arrives");
 }
 
 #[test]

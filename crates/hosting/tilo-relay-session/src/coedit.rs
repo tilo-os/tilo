@@ -636,6 +636,18 @@ impl RelayCoeditSession {
                     }
                 }
                 Envelope::NotAuthorised { .. } => return None,
+                Envelope::RemoteActionUndeliverable {
+                    workspace_id,
+                    to_device_public_key,
+                    reason,
+                } if workspace_id == self.workspace_id => {
+                    tracing::warn!(
+                        workspace_id,
+                        to = %hex::encode(to_device_public_key),
+                        %reason,
+                        "the host could not deliver a remote action sent on this session"
+                    );
+                }
                 // Keep-alives and federation chatter carry no co-edit
                 // payload — keep waiting.
                 _ => {}
