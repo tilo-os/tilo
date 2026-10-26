@@ -5538,6 +5538,9 @@ impl Widget for TextInput {
                 width: Dimension::percent(1.0),
                 height,
             },
+            // A single-line field is its band tall, never squashed to
+            // nothing when what is above or below it outgrows a column.
+            flex_shrink: if self.multiline { 1.0 } else { 0.0 },
             ..Default::default()
         };
         self.refresh_reveal_control();
