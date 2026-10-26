@@ -308,6 +308,7 @@ class Run:
         self.baseline: dict = {}
         self.items: dict[str, dict] = {}
         self.avcs: dict[str, list[str]] = {}
+        self.boot_denials: dict[str, dict] = {}
         self.facts: dict = {"variant": variant, "cycle": self.cycle.name}
         self.shell: Shell | None = None
 
@@ -677,6 +678,8 @@ cryptsetup close e2e-target
         "failed": "systemctl --failed --no-pager --plain --no-legend; "
                   "systemctl status --no-pager tilo-authd.socket tilo-authd.service greetd | tail -n 60",
         "sessions": "loginctl list-sessions --no-pager",
+        "tpm2-setup": "systemctl show -P ActiveState -P Result systemd-tpm2-setup.service "
+                      "| paste -sd ' '",
         "initrd": "journalctl -b --no-pager -o short-monotonic | grep -E "
                   "'tilo-root-discover|tilo-boot-signin|tilo-auth|systemd-cryptsetup|plymouth' "
                   "| head -n 300",
@@ -694,6 +697,14 @@ cryptsetup close e2e-target
             self.save(f"signin-{label}-{name}.txt", text)
             if name == "avc":
                 self.avcs[label] = parse_avcs(text)
+                denials = [line for line in text.splitlines() if "denied" in line]
+                read = not text.startswith("not collected")
+                self.boot_denials.setdefault(label, {}).update({
+                    "chcon_mac_admin": any("mac_admin" in d and 'comm="chcon"' in d
+                                           for d in denials) if read else None,
+                    "tpm2_measure_log": any("tpm2-measure.log" in d for d in denials) if read else None})
+            if name == "tpm2-setup":
+                self.boot_denials.setdefault(label, {})["systemd_tpm2_setup"] = text.strip()
         try:
             state = console.state(self.cycle.console, 10)
         except Exception as reason:  # no greeter or installer answers once a session runs
@@ -1374,6 +1385,15 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
     new = sorted({d for found in avcs.values() for d in found if not known_avc(d)})
     lines += ["", "AVC denials during boot and sign-in, beyond those already filed:",
               *([f"- {d}" for d in new] or ["- none"])]
+    boots = {f"{r.variant}/{label}": facts for r in runs for label, facts in r.boot_denials.items()}
+    document["boot_denials"] = boots
+    seen = {True: "present", False: "absent", None: "not read"}
+    boot_lines = [f"- {where}: chcon mac_admin denial {seen[f.get('chcon_mac_admin')]}, "
+                  f"tpm2-measure.log denial {seen[f.get('tpm2_measure_log')]}, "
+                  f"systemd-tpm2-setup.service {f.get('systemd_tpm2_setup') or 'not read'}"
+                  for where, f in sorted(boots.items())]
+    lines += ["", "Boot denials and TPM setup, per boot:",
+              *(boot_lines or ["- no boot reached the test shell"])]
     lines += ["", "Screenshots:", *[f"- {p}" for p in document["screenshots"]]]
     if withheld:
         lines += ["", "Withheld (held a secret, emptied):", *[f"- {p}" for p in document["withheld"]]]
