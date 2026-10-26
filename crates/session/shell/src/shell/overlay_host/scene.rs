@@ -894,6 +894,27 @@ impl ShellOverlayHost {
 /// the next part starts now.
 fn scene_phase(name: &'static str, since: std::time::Instant) -> std::time::Instant {
     let now = std::time::Instant::now();
-    crate::compositor::metrics::profile::record_phase(name, now.duration_since(since), None);
+    let took = now.duration_since(since);
+    crate::compositor::metrics::profile::record_phase(name, took, None);
+    SECTION_SPANS.with(|spans| {
+        let mut spans = spans.borrow_mut();
+        // Bounded: a paint whose scene is not reported never drains them.
+        if spans.len() < 32 {
+            spans.push((name, took));
+        }
+    });
     now
+}
+
+std::thread_local! {
+    /// The sections of the scene being drawn on this thread and what each
+    /// took, for the frame producer's `SLOW-SCENE` line.
+    static SECTION_SPANS: std::cell::RefCell<Vec<(&'static str, std::time::Duration)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What each section of the scenes drawn on this thread since the last call
+/// took, and forget them.
+pub(crate) fn take_section_spans() -> Vec<(&'static str, std::time::Duration)> {
+    SECTION_SPANS.with(|spans| std::mem::take(&mut *spans.borrow_mut()))
 }
