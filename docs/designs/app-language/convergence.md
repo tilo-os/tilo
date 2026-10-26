@@ -375,6 +375,34 @@ writes:  { item7f3.done = true }                 # its effect; text, counter and
 - **Structured rich text** (blocks, marks, moves) in the event-graph style is real work. It is
   where Automerge is more mature today.
 
+## 9.2 Scale: many people, much data, many hosts
+
+The model scales because a home is per resource, not per workspace. Three things make it so:
+
+1. **Partial replication.** A device holds what it opened, pinned or searched, plus the index,
+   and pages in the rest. Checkpoints are per subtree (a notebook, a channel), so a new device
+   loads what it needs.
+2. **Ordering partitioned by resource.** The order only has to be total among entries that touch
+   the same data. A host partitions validation by subtree, as FoundationDB partitions resolvers
+   by key range. Most actions touch one resource and stay on one partition. Hot spots are
+   only where they are inherent: a hot counter commutes, and the last seat is serial by nature.
+3. **Partitioned and replicated homes.** A large workspace's subtrees are spread across hosts,
+   each the home for some of them. Shards are cut along containment, so a type's invariants
+   stay within one home; anything spanning homes is a flow. Each partition's log is replicated
+   to standby hosts, and consensus picks who continues when one fails. Apps never see it.
+
+**Fan-out.** With thousands of people, the host fans each change out once, rather than every
+device sending it to every other device. Each device receives what it subscribed to. Presence is
+ephemeral and sampled.
+
+**Limits:**
+- **Search over data a device doesn't hold.** In unencrypted rooms the host keeps the index. In
+  end-to-end encrypted rooms it can't, and search covers what the device holds.
+- **What must never be built:**
+  - one host ordering a whole large workspace;
+  - every device holding everything;
+  - invariants spanning a workspace.
+
 ## 9.1 Consequences for Tilo
 
 - **Today the Automerge change is the truth.** It is signed with claims (which action, which
