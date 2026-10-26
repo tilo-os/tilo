@@ -393,6 +393,11 @@ pub fn pin_source_action(hash: &str, len: u64, name: &str) -> Invoke<PdfMarkup> 
     PdfMarkup::PIN_SOURCE.with((hash.to_owned(), len, name.to_owned()))
 }
 
+/// Record the reader's place as the resume hint of the open document.
+pub fn record_reading_position_action(page: &str, fraction: f64, zoom: f64) -> Invoke<PdfMarkup> {
+    PdfMarkup::RECORD_READING_POSITION.with((page.to_owned(), fraction, zoom))
+}
+
 pub fn delete_annotation_action(id: &str) -> Invoke<PdfMarkup> {
     PdfMarkup::DELETE_ANNOTATION.with(Id::from_raw(id))
 }
