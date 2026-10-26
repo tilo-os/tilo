@@ -1,118 +1,93 @@
 # Native review of the tilolang apps
 
-Every shot comes from the framework's offscreen `--shots` path: no window was opened.
+Every shot comes from the framework's offscreen `--shots` path, rendered on lavapipe (software
+Vulkan). No window was opened and the GPU was not used: the Vulkan loader was given only the
+lavapipe ICD, and every shot's loader log names `lvp_icd` as the only driver it found.
 
-    TILO_PACKAGE_ID=<app> ./target/debug/tilolang --shots OUT --scenario "<scenario>" --viewport WxH --text-scale S
-    ./target/debug/{notes,snippets,contacts,totp} --shots OUT --viewport WxH --text-scale S
+    export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.aarch64.json
+    export WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=llvmpipe
+
+The tilolang apps run through the installed-package path, the way the launcher starts them:
+
+    tilolang build apps/tl/<app> --out OUT --identity ID
+    TILO_APPS_DATA_DIR=STORE tilo-install install --force --allow-self-signed --ignore-missing-runtime OUT/<app>.tapp
+    TILO_PACKAGE_ID=so.tilo.lang.<app> TILO_APP_MODULE=<payload-root> tilolang-app --shots PNG [--scenario S] --viewport WxH --text-scale T
+
+    ./target/debug/{notes,contacts,snippets,totp,chat} --shots PNG --viewport WxH --text-scale T
 
 Viewports are 420x860, 1280x800 and 2560x1440, each at text scale 1 and 1.5. `tl-<app>-*` is a
-tilolang app; `native-<app>-*` is the native app it is compared with; `tl-<app>-empty-*` is the
-app with no scenario.
+tilolang app with its first scenario, `tl-<app>-empty-*` the same app with no scenario, and
+`native-<app>-*` a native app.
 
 | tilolang app | scenario | compared with |
 |---|---|---|
 | notes | a week of notes | native-notes, native-snippets |
 | todo | a saturday list | native-snippets, native-totp |
 | letters | a desk of letters | native-notes, native-contacts |
-| chat | a busy workspace | native-contacts |
+| chat | a busy workspace | native-chat, native-contacts |
 | counter | a busy morning | native-totp |
-| board | a morning board | native-notes (canvas page) |
+| board | a morning board | (no native dashboard) |
 
-## Checklist
-
-- Header row: one row, title, count badge, controls, icon actions, More, primary last, history.
-- Sidebar: platform width, toggle in the header, collapses before the content is cramped.
-- Rows: native ListRow heights, separators, selection lift, one menu with every action.
-- One content edge: the page column, nothing app-drawn around it.
-- Empty state: one sentence, at most one action.
-- No app-drawn title, no hand-made chrome.
-
-## Shots and findings
+## Findings per app
 
 ### notes
-- `tl-notes-420x860-x1.png`, `tl-notes-420x860-x1.5.png`: the scenario's note opens pushed, with
-  Back, the pin and delete icons and history in the header. The title is edited in place as a
-  large title and wraps; the header shows no second title. Pass.
-- `tl-notes-1280x800-x1.png`, `tl-notes-1280x800-x1.5.png`: filter sidebar (All notes, Pinned with
-  counts), list with sort, search and New note last, detail column. At 1.5 the filter sidebar
-  collapses behind its toggle; native Notes keeps its tree. Pass, see differences.
-- `tl-notes-2560x1440-x1.png`, `tl-notes-2560x1440-x1.5.png`: three columns, the document on the
-  centred page column as in native Notes. Pass.
-- `tl-notes-empty-1280x800-x1.png`: "No notes yet" with one New note action; detail reads "No note
-  selected". Pass.
+- 1280 and 2560: filter sidebar with icons (All notes, Pinned) and counts, the list, and the note.
+  The pin is a toggled icon action, filled on a pinned note; its label reads Unpin. The body is the
+  block editor native Notes uses. Its text starts under the title and wraps at the column.
+- 420: the note is pushed, with Back, pin, delete and history in the header. Title and body wrap.
+- 1280x1.5: the filter sidebar collapses behind its toggle. NavShell does that for three columns,
+  and native Contacts does the same at this size. Native Notes keeps its tree only because it has
+  two columns.
+- Empty: "No notes yet" with New note; the detail column shows the app icon and "No note
+  selected", as native Contacts and Mail do.
 
 ### todo
-- `tl-todo-420x860-x1.png`, `tl-todo-420x860-x1.5.png`: the returned todo pushed; the long title
-  wraps; Done is a switch; mark-done is an icon action in the header. Pass.
-- `tl-todo-1280x800-x1.png`, `tl-todo-1280x800-x1.5.png`, `tl-todo-2560x1440-x1.png`,
-  `tl-todo-2560x1440-x1.5.png`: list and detail columns, rows a separator apart, the selected row
-  lifted. Pass.
-- `tl-todo-empty-1280x800-x1.png`: one sentence, one action. Pass.
+- Rows show the due date briefly as meta (Oct 24, Nov 2). The filter cases have icons (All, Open,
+  Done). Check is a stateful icon action.
+- The detail shows the title in place, Done as a switch, and Due as the date field: the calendar
+  icon and the date, which opens a month calendar in a popover, with Clear date when the date may
+  be empty. The notes field is the block editor.
+- 420 and 1.5: the title wraps and the fields stack.
 
 ### letters
-- `tl-letters-420x860-x1.png`, `tl-letters-420x860-x1.5.png`: the boiler letter pushed; recipient,
-  title in place, body, Send in the content (so not repeated in the header); delete and history in
-  the header. Pass.
-- `tl-letters-1280x800-x1.png`, `tl-letters-1280x800-x1.5.png`, `tl-letters-2560x1440-x1.png`,
-  `tl-letters-2560x1440-x1.5.png`: Drafts/Sent sidebar with counts, two-line rows (subject,
-  recipient), New letter last. At 1280x1.5 the sidebar collapses and the list shows its scrollbar.
-  Pass.
-- `tl-letters-empty-1280x800-x1.png`: one sentence, one action. Pass.
+- Unchanged from the last round: Drafts/Sent sidebar with counts, two-line rows, recipient,
+  title, body and Send in the content.
 
 ### chat
-- `tl-chat-420x860-x1.png`, `tl-chat-420x860-x1.5.png`: the conversation pushed with its title in
-  the header (the title is not edited in place, so the header carries it), messages with avatar and
-  author, the composer as an input and Send. Pass.
-- `tl-chat-1280x800-x1.png`, `tl-chat-1280x800-x1.5.png`, `tl-chat-2560x1440-x1.png`,
-  `tl-chat-2560x1440-x1.5.png`: conversation list with message counts as trailing detail. Every
-  message reads "You" and the other conversations read "0 messages": the scenario can only post as
-  its invoker and fills one conversation. Pass for the host; scenario limit noted below.
-- `tl-chat-empty-1280x800-x1.png`: one sentence, one action. Pass.
+- Rows show the conversation, the last message as the secondary line, its time as meta, and its
+  author's avatar. The scenario fills twelve conversations from Mia, Leo, Ada and you. A
+  conversation with no messages yet reads "No messages yet" and has no avatar.
+- The conversation is a transcript across the content column, opened at its end: avatar, author
+  in the label role, the time, then the message. The composer is pinned to the bottom of the
+  column, with an icon-only Send.
+- Times read as 10:42 AM, the capture's pinned clock, because `now` reads the toolkit's clock.
+- 420: the conversation is pushed, with the composer at the bottom.
 
 ### counter
-- `tl-counter-420x860-x1.png`, `tl-counter-420x860-x1.5.png`, `tl-counter-1280x800-x1.png`,
-  `tl-counter-1280x800-x1.5.png`, `tl-counter-2560x1440-x1.png`, `tl-counter-2560x1440-x1.5.png`:
-  title-only header with search and history, the page column holding the count and Decrement /
-  Increment (primary) buttons with icons. Pass.
+- Title-only header with search and history; the count, then Decrement and Increment (primary)
+  with icons. Matches Totp's page column.
 
 ### board
-- `tl-board-420x860-x1.png`, `tl-board-420x860-x1.5.png`, `tl-board-1280x800-x1.png`,
-  `tl-board-1280x800-x1.5.png`, `tl-board-2560x1440-x1.png`, `tl-board-2560x1440-x1.5.png`: a
-  canvas page: the Morning cleanup flow above three cards (Saturday todos with checkboxes, Notes,
-  Chats as chips) that stack at 420. Pass; Morning cleanup has no icon (see differences).
-
-### native comparisons
-- `native-notes-{420x860,1280x800,2560x1440}-x{1,1.5}.png`
-- `native-snippets-{420x860,1280x800,2560x1440}-x{1,1.5}.png`
-- `native-contacts-{420x860,1280x800,2560x1440}-x{1,1.5}.png`
-- `native-totp-{420x860,1280x800,2560x1440}-x{1,1.5}.png`
-
-Header height, sidebar width, toggle, row heights, selection lift, separators, the count badge and
-the history button match these. Contacts and Totp place the primary last; the tilolang header now
-does the same.
-
-## Fixed during the review (in the host or the vocabulary, never in an app)
-
-- Rows lost separators and selection: a context menu per row hid the list; now one menu sits over
-  the list and asks for the row under the pointer (`ContextMenuArea::over_content`,
-  `VirtualList::key_at_point`).
-- A 12px strip at the bottom: absent children of a stack kept their gap (`arranged.rs`).
-- Header order, a More menu for icon-less actions, primary last.
-- An action shown as a content button is not repeated in the header.
-- Page parts a section apart, one content edge.
-- The board scenario was blank: scenarios now reach the roots of the packages they use.
-- Detail shots showed nothing selected: a scenario returns the resource the window opens.
-- A document's title and body are edited in place (large title, plain chrome) and the header title
-  stays blank; a long title wraps at 420.
+- `tl-board-*` (with the scenario) is empty, and so is `tl-board-empty-*`. Both show the app icon
+  and "Nothing here yet" instead of a blank canvas. With the scenario it is empty because of a
+  platform gap: in installed mode the runtime holds only the schemas of the packages the board
+  uses, so the scenario's `root todo.TodoList` traps ("type is not declared by any loaded
+  package"). A board cannot reach another app's records either. In the test host, which loads
+  every package, the board shows three hugging cards: open todos, pinned notes and conversations.
+  Each card holds rows with the resource's icon and title that open the resource, under a section
+  header with a count pill. `crates/lang/tilolang-runtime/tests/e2e_apps.rs` covers it.
 
 ## Remaining differences
 
-- Filter sidebar items carry no icons (Snippets and Contacts have them): enum variants declare no
-  icon.
-- The narrow page gutter is 12px; native pages use 24 to 46px at 420.
-- The body is a plain multi-line input, not the block editor native Notes uses.
-- "Toggle pin" is a static label; native apps flip Pin / Unpin with the state.
-- At 1280x1.5 a list frame collapses its sidebar where native Notes keeps its tree.
-- After closing a detail the column reads "No note selected" rather than staying blank.
-- Flows take no options, so Morning cleanup has no icon.
-- Chat scenarios post only as the invoker.
+- Board in installed mode: see above. It needs a platform answer for reading and opening
+  another package's resources.
+- Native Chat's composer is one framed field with the send icon inside it; ours is an input
+  beside an icon button. At 2560 the composer stretches across the whole column, as native Chat's
+  does, but the transcript's short lines leave it looking very wide.
+- Avatars and row icons stay at their 1x size at text scale 1.5; native Chat's avatars do too.
+- Native Chat has a channels sidebar as its third column; our chat has two columns.
+- The block editor keeps its own end inset, so at 420 a body wraps about 24px before the
+  column's edge (native Notes does the same).
+- The toggled pin draws a filled lift behind the icon; native Notes has no pin action to compare
+  with.
+- Letters and counter are unchanged since the last review.
