@@ -961,6 +961,7 @@ pub fn load_device_tree_from(path: &Path, salt: u16) -> std::io::Result<Workspac
     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let mut tree: WorkspaceTree = serde_json::from_str::<WorkspaceTree>(&s)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    keep_only_unwritten_fields_retired(&mut tree);
     // Refuse before anything else touches it: mutators here write the
     // whole tree back, so "load it and see" is "overwrite it and see".
     if tree.desktop.schema_version != NATIVE_STATE_SCHEMA_VERSION {
@@ -1018,6 +1019,22 @@ pub fn load_device_tree_from(path: &Path, salt: u16) -> std::io::Result<Workspac
     // allocation collides with a persisted id.
     tree.seed_next_id_from_self();
     Ok(tree)
+}
+
+/// A field the desktop writes but never reads back (its presence cache)
+/// is not one an older file held: it is written again with the tree, so it
+/// is never kept beside it as retired, which would write it twice and
+/// change the file on every load.
+fn keep_only_unwritten_fields_retired(tree: &mut WorkspaceTree) {
+    if tree.retired_fields.is_empty() {
+        return;
+    }
+    if let Ok(serde_json::Value::Object(written)) =
+        serde_json::to_value(crate::shell::state::DesktopTree::default())
+    {
+        tree.retired_fields
+            .retain(|field, _| !written.contains_key(field));
+    }
 }
 
 /// Each workspace is its room and each room held here has its workspace
