@@ -164,13 +164,11 @@ app mail "Mail" · types: Mailbox Thread Message Draft Label · start: look mail
 - **`describe` works on anything:** an app, a type, an action, a field, or a ref, which
   describes that resource's type with this resource's values.
 - **Permission is shown before acting,** per action, for this task.
-- **`describe … json`** gives the same as structured data:
-  - fields with types, roles, docs and optionality;
-  - filters;
-  - actions with parameters, defaults, return type, this task's permission and undoability;
-  - views;
-  - **an example value taken from the app's own scenarios,** so the example is realistic and
-    never invented.
+- **One format.** Declarations are printed as tilolang, with permission and undoability as
+  part of the declaration (`action mail.send(draft: Draft) asks`). Values are printed as literals
+  and results as rows of literals with refs. There is no JSON view. Every
+  `describe` includes an example value taken from the app's own scenarios, so it is realistic and
+  never invented.
 - **`types ~"ideas"`** lists every installed type whose doc comment matches, one line each. That
   is how an agent finds where something can go without knowing the apps.
 - **Doc comments are the documentation.** The compiler requires one on every public type and
@@ -197,6 +195,31 @@ done: 41 threads archived · undo: undo task
   is recorded, and printed as part of the result.
 - **Asks** park the action. The person sees the pending action with its confirmation view. The
   agent sees `pending: asks bob (send)` and can wait or continue.
+
+## 7.1 Permission is not the agent's problem
+
+- **What the agent sees, it may read.** Reads are already limited to the task.
+- **Every action it is shown, it may call.** The result is one of three:
+  - `done`: undoable;
+  - `preview`: bulk or destructive; `do!` runs it;
+  - `asks`: a request the person approves in Tilo. The agent continues and is told the outcome.
+- **Actions the task can't use are not shown.** Calling one by name returns a teaching error
+  with the person's own path.
+- **Anything that leaves the workspace is `asks`,** unless the person granted a standing
+  permission. `look` shows that permission on its task line.
+
+## 7.2 Blocks across apps
+
+A request may be a block. It runs as one task step, with one undo, one history entry and one
+preview when it is large:
+
+```
+do {
+    let b = board.new_board("Launch video ideas")
+    for i in ideas { board.add_card(b.columns[0], i.title, body: i.logline, links: i.from) }
+    todo.add(here, "Pick a launch video direction", links: [b])
+}
+```
 
 ## 8. Errors that teach
 
@@ -256,6 +279,31 @@ Things are only quick when replies are short and fast:
   `search.md` §4);
 - the door never makes an agent poll: pending actions answer when they settle, as `tilo_do`
   does today.
+
+## 11.1 The primer
+
+The system message every agent gets is the whole manual. Everything else is discovered with
+`look` and `describe`:
+
+```
+You are working in a Tilo workspace for <person>. Speak tilolang to the `tilo` tool.
+
+look                      where you are, what the person sees (this, selection, here), your task's limits
+find <query>              resources: text, `field:value`, identifiers as URIs with * (`*@acme.com`),
+                          paths through links (`from.contact.org:"Acme"`), `none`/`any`, -7d, sort:-field
+read <ref> [anchor]       content with anchors (¶2.1, p.4, @0:42) you can quote
+describe <app|type|ref>   declarations as tilolang: types, actions (with permission), views
+types ~"<words>"          which installed types fit a purpose
+do <action or block>      act; the result says done / preview (confirm with do!) / asks the person
+answer { … }              what the person sees: compose views; quote(…) your sources; suggest actions
+history task, undo task   your trail
+
+Refs (t91, m3) are stable; every output line starts with one. Errors list what is valid.
+You never need to ask permission: what you are shown, you may do or request.
+```
+
+**The primer is tested.** The acceptance transcripts in §12 start from this text and `look`
+only.
 
 ## 12. What changes
 
