@@ -1493,15 +1493,23 @@ pub(super) async fn install(
         return Ok(false);
     }
     let mut ready = inbound.state.document_reads.pending(&key)?;
+    // What the first read waits for before it Opens again, when it could
+    // not be read yet: its turn in the broker's queue, or room here.
+    let mut waiting = None;
     let (initial, revision) = match first {
         Reply::Chunk { .. } | Reply::Created { .. } => match read_capture(channel, first).await {
             Ok((read, revision)) => (Some(read), Some(revision)),
-            // The read loop waits for room and Opens again.
-            Err(CaptureFailure::Capacity(_)) => (None, None),
+            Err(CaptureFailure::Capacity(bytes)) => {
+                waiting = Some(Waiting::Room(bytes));
+                (None, None)
+            }
             Err(error) => return Err(error.to_string()),
         },
-        // Queued behind other reads: the read loop waits its turn.
-        Reply::Unavailable | Reply::Busy => (None, None),
+        Reply::Unavailable => (None, None),
+        Reply::Busy => {
+            waiting = Some(Waiting::Turn);
+            (None, None)
+        }
         _ => return Err("invalid initial committed read mode".into()),
     };
     let mut channel = channel.clone();
@@ -1517,6 +1525,16 @@ pub(super) async fn install(
         let mut current = initial;
         let mut revision = revision;
         let mut last_open;
+        // Whether the broker may hold this channel's place in its byte
+        // budget's queue: after `Busy`, or an Open whose answer never came.
+        let mut queued = matches!(waiting, Some(Waiting::Turn));
+        match waiting {
+            Some(Waiting::Turn) => {
+                until_stale(&channel, None, &inbound, &key, &ready).await;
+            }
+            Some(Waiting::Room(bytes)) => capture_budget().until_room(bytes, CAPTURE_LIMIT).await,
+            None => {}
+        }
         'read: loop {
             if !inbound.state.is_healthy() || !inbound.state.document_reads.current(&key, &ready) {
                 break;
@@ -1585,6 +1603,7 @@ pub(super) async fn install(
             let result =
                 tokio::time::timeout(Duration::from_secs(2), channel.committed_document(&request))
                     .await;
+            queued = matches!(result, Ok(Ok(Reply::Busy)) | Err(_));
             let renew = match result {
                 Ok(Ok(Reply::Unchanged { revision: checked })) if Some(checked) == revision => {
                     set_read_ready(&inbound, &ready, true);
@@ -1681,6 +1700,9 @@ pub(super) async fn install(
                     break;
                 };
                 ready = next_ready;
+                if std::mem::take(&mut queued) {
+                    leave_queue(&channel);
+                }
                 let mut turn = Some(turn);
                 loop {
                     match join.renew(&spec, &inbound.state.document_reads).await {
@@ -1730,8 +1752,32 @@ pub(super) async fn install(
         if inbound.state.document_reads.current(&key, &ready) {
             inbound.state.document_reads.discard_stage(&key);
         }
+        if queued {
+            leave_queue(&channel);
+        }
     });
     Ok(true)
+}
+
+/// What a reader waits for before it Opens again, when its read could not
+/// be taken yet. Neither is a refusal.
+enum Waiting {
+    /// The broker answered `Busy`: its turn in the byte budget's queue,
+    /// which the channel's `Await` announces.
+    Turn,
+    /// This process had no room for a capture of this many bytes.
+    Room(usize),
+}
+
+/// Give up `channel`'s place in the broker's byte budget queue: this reader
+/// reads no more on it (it renewed onto another channel, or stopped), and
+/// reads behind it must not wait for a turn it would never take. The
+/// channel itself lives on with its route.
+fn leave_queue(channel: &runtime_collab::ChannelHandle) {
+    let channel = channel.clone();
+    tokio::task::spawn_local(async move {
+        let _ = channel.committed_document(&Request::Leave).await;
+    });
 }
 
 /// The variant of `reply`, for a log line that must not carry its bytes.
