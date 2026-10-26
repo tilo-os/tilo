@@ -38,6 +38,10 @@ pub(super) struct State {
     /// The open [`ShellNetwork::opened_native_owner`] runs off the frame loop.
     background: Arc<Mutex<Background>>,
     pub(super) attempts: Mutex<std::collections::HashMap<u64, enrollment_driver::Attempt>>,
+    /// The identity selection is the session's as given, read-only
+    /// ([`ShellNetwork::hold_identity_selection_as_given`]): an enrollment
+    /// installs under it and records nothing in it.
+    selection_as_given: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -496,16 +500,26 @@ impl ShellNetwork {
         let room = RoomId::parse(&enrollment.bootstrap().room).ok_or("invalid enrolled room")?;
         // Preserve the explicitly selected identity when the target slot acquires
         // its new room. This is existing custody storage, not semantic authority.
-        if identity.identity_paths.is_some() {
+        // A session given its identity selection read-only keeps it as given:
+        // the room is installed under the identity it selects already
+        // (checked below), and nothing outside the session's own state is
+        // written.
+        let selection_as_given = self
+            .native_enrollment
+            .selection_as_given
+            .load(std::sync::atomic::Ordering::Acquire);
+        if identity.identity_paths.is_some() && !selection_as_given {
             let registry = crate::identity_registry::IdentityRegistryStore::from_env()
                 .map_err(|e| e.to_string())?;
             let profile = hex::encode(certificate.user_public_key);
             registry
                 .bind_workspace(&room.to_string(), &profile)
                 .map_err(|e| e.to_string())?;
-            if identity.current_native_material(room_topic_id(room))?.0 != certificate {
-                return Err("native room custody did not retain selected certificate".into());
-            }
+        }
+        if identity.identity_paths.is_some()
+            && identity.current_native_material(room_topic_id(room))?.0 != certificate
+        {
+            return Err("native room custody did not retain selected certificate".into());
         }
         owner.install(enrollment, SystemTime::now())?;
         self.check_native_custody(owner, room)?;
@@ -514,6 +528,18 @@ impl ShellNetwork {
         }
         self.connect_native_room(owner.clone(), room)?;
         Ok(room)
+    }
+
+    /// Take this device's identity selection as the session was given it:
+    /// read-only, as under native admission, where the identity and its
+    /// registry are a projection the session may not write. Enrollments,
+    /// a workspace placed on this device's own host among them, then
+    /// install under the identity the registry selects for the room and
+    /// pin nothing in it.
+    pub(crate) fn hold_identity_selection_as_given(&self) {
+        self.native_enrollment
+            .selection_as_given
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     /// Finish the pending enrollment `id` once its remote exchange completed.

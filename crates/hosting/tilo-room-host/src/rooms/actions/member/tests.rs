@@ -63,6 +63,12 @@ async fn invoke(
 /// `person`'s own terminal receipt of `invocation`, redacted as the broker
 /// redacts it.
 fn terminal_audit(person: &[u8; 32], invocation: uuid::Uuid) -> String {
+    audit_by(&hex::encode(person), invocation)
+}
+
+/// The terminal receipt of `invocation` by `actor`, redacted as the broker
+/// redacts it.
+fn audit_by(actor: &str, invocation: uuid::Uuid) -> String {
     let mut context =
         tilo_actions::ActionContext::for_resource("workspace", "workspace", "Private fixture");
     context.facets = vec![
@@ -72,7 +78,7 @@ fn terminal_audit(person: &[u8; 32], invocation: uuid::Uuid) -> String {
     format!(
         "{{\"invocation\":{},\"actor\":{},\"context\":{},\"status\":{},\"completed_at\":1}}",
         serde_json::to_string(&invocation).unwrap(),
-        serde_json::to_string(&hex::encode(person)).unwrap(),
+        serde_json::to_string(actor).unwrap(),
         serde_json::to_string(&context).unwrap(),
         serde_json::to_string(&tilo_actions::EffectReceiptStatus::Succeeded).unwrap(),
     )
@@ -141,6 +147,26 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
     );
     assert!(matches!(
         invoke(&host, workspace, &ada, impersonating).await,
+        Err(ActionHostError::Refused { .. })
+    ));
+    // An agent's receipt: the host's own device, the governor's, records
+    // what acts on it; a member records only what its own person did.
+    let by_agent = |invocation: uuid::Uuid| {
+        member_request(
+            &room,
+            RECORD_EFFECT_RECEIPT,
+            json!({
+                "invocation": invocation.to_string(),
+                "redacted": audit_by("agent:writer", invocation),
+            }),
+        )
+    };
+    let recorded = invoke(&host, workspace, &owner, by_agent(uuid::Uuid::new_v4()))
+        .await
+        .unwrap();
+    assert!(recorded["generation"].as_u64().is_some(), "{recorded}");
+    assert!(matches!(
+        invoke(&host, workspace, &ada, by_agent(uuid::Uuid::new_v4())).await,
         Err(ActionHostError::Refused { .. })
     ));
 
