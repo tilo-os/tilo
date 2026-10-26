@@ -296,7 +296,7 @@ fn collect_accessibility(widget: &dyn Widget, nodes: &mut Vec<ui::a11y::AccessNo
 #[test]
 fn a_hosted_provider_without_a_key_here_asks_for_one() {
     let mut pane = model_over(mock(snapshot(None)));
-    pane.change_providers(AgentModelsEffect::AddProvider {
+    pane.change_providers(ProviderEffect::AddProvider {
         preset: "anthropic".into(),
     })
     .unwrap();
@@ -313,7 +313,7 @@ fn a_hosted_provider_without_a_key_here_asks_for_one() {
     pane.keys
         .insert(profile.id.clone(), Ok(CredentialStatus::Configured));
     assert!(!pane.needs_key(&profile));
-    let save = SettingsEffect::from(AgentModelsEffect::SaveProviderKey {
+    let save = SettingsEffect::from(ProviderEffect::SaveProviderKey {
         provider: profile.id,
         key: None,
     })
@@ -324,7 +324,7 @@ fn a_hosted_provider_without_a_key_here_asks_for_one() {
 #[test]
 fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
     let mut pane = model_over(mock(snapshot(None)));
-    pane.change_providers(AgentModelsEffect::AddProvider {
+    pane.change_providers(ProviderEffect::AddProvider {
         preset: "anthropic".into(),
     })
     .unwrap();
@@ -342,7 +342,7 @@ fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
         text.iter().any(|line| line == "Remove unbound legacy key"),
         "{text:#?}"
     );
-    let migration = SettingsEffect::from(AgentModelsEffect::MigrateProviderKey {
+    let migration = SettingsEffect::from(ProviderEffect::MigrateProviderKey {
         provider: profile.id,
         original_endpoint: String::new(),
     })
@@ -379,14 +379,14 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
 
     pane.vertex = Some(VertexSetup::adding());
     let id = pane.vertex.as_ref().unwrap().profile_id.clone();
-    let add = |project: &str| AgentModelsEffect::SetVertexProvider {
+    let add = |project: &str| VertexChange::Vertex {
         provider: None,
         project: project.into(),
         location: None,
         model: None,
     };
     assert_eq!(
-        pane.change_providers(add("tilo-509618")),
+        pane.change_vertex(&add("tilo-509618")),
         Err(t("agent-vertex-sign-in-first")),
         "nothing is saved before the sign-in"
     );
@@ -406,12 +406,12 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
         "{text:#?}"
     );
     assert_eq!(
-        pane.change_providers(add("Not A Project")),
+        pane.change_vertex(&add("Not A Project")),
         Err(t("agent-vertex-project-invalid"))
     );
     assert!(pane.providers.get().config.profiles.is_empty());
 
-    pane.change_providers(add("tilo-509618")).unwrap();
+    pane.change_vertex(&add("tilo-509618")).unwrap();
     assert!(pane.vertex.is_none(), "the setup ends once saved");
     let stored = pane.cx.settings::<AgentProviders>().get().config;
     let profile = &stored.profiles[0];
@@ -454,7 +454,7 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
         "{text:#?}"
     );
 
-    pane.change_providers(AgentModelsEffect::SetVertexProvider {
+    pane.change_vertex(&VertexChange::Vertex {
         provider: Some(id.clone()),
         project: "other-project".into(),
         location: Some("europe-west4".into()),
@@ -475,7 +475,7 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
         Some("other-project")
     );
 
-    pane.change_providers(AgentModelsEffect::RemoveProvider {
+    pane.change_vertex(&VertexChange::Remove {
         provider: id.clone(),
     })
     .unwrap();
@@ -793,19 +793,19 @@ fn model_request_limits_use_the_published_settings_effects() {
 #[test]
 fn providers_are_the_persons_settings() {
     let mut pane = model_over(mock(snapshot(None)));
-    pane.change_providers(AgentModelsEffect::AddProvider {
+    pane.change_providers(ProviderEffect::AddProvider {
         preset: "anthropic".into(),
     })
     .unwrap();
     let id = pane.providers.get().config.profiles[0].id.clone();
-    pane.change_providers(AgentModelsEffect::SetProviderDetails {
+    pane.change_providers(ProviderEffect::SetProviderDetails {
         provider: id.clone(),
         label: "Work".into(),
         endpoint: "https://api.example.test".into(),
         model: Some("big-model".into()),
     })
     .unwrap();
-    pane.change_providers(AgentModelsEffect::SetDefaultProvider {
+    pane.change_providers(ProviderEffect::SetDefaultProvider {
         provider: id.clone(),
     })
     .unwrap();
@@ -813,7 +813,7 @@ fn providers_are_the_persons_settings() {
     assert_eq!(stored.default_profile.as_deref(), Some(id.as_str()));
     assert_eq!(stored.profiles[0].label, "Work");
     assert!(
-        pane.change_providers(AgentModelsEffect::SetProviderEnabled {
+        pane.change_providers(ProviderEffect::SetProviderEnabled {
             provider: "gone".into(),
             on: true,
         })
@@ -1015,4 +1015,138 @@ fn a_model_shows_what_its_read_asked() {
         )),
         "the person is told the manager is down"
     );
+}
+
+/// Settings publishes the provider panel's effects as the panel declares
+/// them: the same ids, labels, parameters (a key stays a secret), kinds,
+/// risks and confirmation, read through Settings' own union. A second,
+/// area-local copy would drift from the controls the panel binds.
+#[test]
+fn the_provider_effects_are_published_as_the_panel_declares_them() {
+    use ui::tilo_actions::{ActionKind, ParamType, RiskLevel};
+
+    let published = |id: &str| {
+        SettingsEffect::declarations()
+            .into_iter()
+            .find(|decl| decl.id == id)
+            .unwrap_or_else(|| panic!("`{id}` is published by Settings"))
+    };
+    let shared = ProviderEffect::declarations();
+    assert_eq!(shared.len(), 16, "the provider panel's whole vocabulary");
+    for declaration in &shared {
+        let union = published(declaration.id);
+        assert_eq!(union.label, declaration.label, "{}", declaration.id);
+        assert_eq!(
+            union.description, declaration.description,
+            "{}",
+            declaration.id
+        );
+        assert_eq!(union.kind, declaration.kind, "{}", declaration.id);
+        assert_eq!(union.row, declaration.row, "{}", declaration.id);
+        assert_eq!(union.risk, declaration.risk, "{}", declaration.id);
+        assert_eq!(
+            union.action_kind, declaration.action_kind,
+            "{}",
+            declaration.id
+        );
+        assert_eq!(
+            union.idempotent, declaration.idempotent,
+            "{}",
+            declaration.id
+        );
+        assert_eq!(union.params, declaration.params, "{}", declaration.id);
+    }
+    let save = published("save-provider-key");
+    assert_eq!(save.params[0].name, "provider");
+    assert_eq!(save.params[1].ty, ParamType::Secret, "a key is a secret");
+    assert_eq!(published("remove-provider").risk, RiskLevel::Destructive);
+    assert_eq!(
+        published("inspect-model-request-limits").action_kind,
+        ActionKind::Read
+    );
+    assert_eq!(published("refresh-providers").label, "Refresh providers");
+}
+
+/// The provider panel's effects, with every argument a caller would give:
+/// each round-trips through Settings' union by its published id.
+fn every_provider_effect() -> Vec<ProviderEffect> {
+    vec![
+        ProviderEffect::RefreshProviders,
+        ProviderEffect::AddProvider {
+            preset: "openai".into(),
+        },
+        ProviderEffect::ListProviderModels {
+            provider: "p".into(),
+        },
+        ProviderEffect::SetProviderModel {
+            provider: "p".into(),
+            model: "m".into(),
+        },
+        ProviderEffect::SetProviderProtocol {
+            provider: "p".into(),
+            protocol: "anthropic".into(),
+        },
+        ProviderEffect::SetProviderEnabled {
+            provider: "p".into(),
+            on: false,
+        },
+        ProviderEffect::SetProviderDetails {
+            provider: "p".into(),
+            label: "Provider".into(),
+            endpoint: "https://models.example.test/v1".into(),
+            model: None,
+        },
+        ProviderEffect::SetModelRequestLimits {
+            provider: "p".into(),
+            model: "m".into(),
+            max_output_tokens: None,
+            runtime_context_tokens: None,
+            plan_timeout_ms: None,
+        },
+        ProviderEffect::InspectModelRequestLimits {
+            provider: "p".into(),
+            model: "m".into(),
+        },
+        ProviderEffect::SetDefaultProvider {
+            provider: "p".into(),
+        },
+        ProviderEffect::SetAgentModel {
+            agent: "a".into(),
+            provider: None,
+            model: None,
+        },
+        ProviderEffect::RemoveProvider {
+            provider: "p".into(),
+        },
+        ProviderEffect::SaveProviderKey {
+            provider: "p".into(),
+            key: None,
+        },
+        ProviderEffect::MigrateProviderKey {
+            provider: "p".into(),
+            original_endpoint: "https://models.example.test/v1".into(),
+        },
+        ProviderEffect::RemoveLegacyProviderKey {
+            provider: "p".into(),
+        },
+        ProviderEffect::RemoveProviderKey {
+            provider: "p".into(),
+        },
+    ]
+}
+
+/// Each provider effect decodes back out of Settings' union by the id and
+/// arguments an invoker gives it, as the palette and agents invoke it.
+#[test]
+fn every_provider_effect_round_trips_through_settings_effects() {
+    use ui::tilo_resource::Effect as _;
+
+    let effects = every_provider_effect();
+    assert_eq!(effects.len(), ProviderEffect::declarations().len());
+    for effect in effects {
+        let decoded = SettingsEffect::decode(effect.id(), &effect.arguments())
+            .unwrap_or_else(|error| panic!("{}: {error}", effect.id()));
+        assert_eq!(decoded.id(), effect.id());
+        assert_eq!(decoded.arguments(), effect.arguments());
+    }
 }

@@ -9,6 +9,7 @@ use crate::{SettingsShell, effects::NavigationEffect};
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
 use agent_provider_config::{ProviderConfig, ProviderProfile};
+use provider_settings_ui::ProviderEffect;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use ui::lock::MutexRecover as _;
@@ -29,7 +30,7 @@ fn mount(backend: Arc<FakeAdminBackend>) -> TestApp<SettingsShell> {
     app
 }
 
-fn row_for(effect: &AgentModelsEffect) -> String {
+fn row_for<E: Effect>(effect: &E) -> String {
     /// The provider an effect acts on, when it names one.
     #[derive(serde::Deserialize)]
     struct OnProvider {
@@ -44,10 +45,11 @@ fn row_for(effect: &AgentModelsEffect) -> String {
         )
 }
 
-fn invoke(
-    app: &mut TestApp<SettingsShell>,
-    effect: AgentModelsEffect,
-) -> Result<(), ui::tilo_actions::DoorError> {
+fn invoke<E>(app: &mut TestApp<SettingsShell>, effect: E) -> Result<(), ui::tilo_actions::DoorError>
+where
+    E: Effect,
+    SettingsEffect: From<E>,
+{
     let row = row_for(&effect);
     let effect = SettingsEffect::from(effect);
     let mut arguments = effect.arguments();
@@ -67,12 +69,15 @@ fn invoke(
     .map(|_| ())
 }
 
-fn run(app: &mut TestApp<SettingsShell>, effect: AgentModelsEffect) {
+fn run<E>(app: &mut TestApp<SettingsShell>, effect: E)
+where
+    E: Effect,
+    SettingsEffect: From<E>,
+{
+    // The removals the host asks about before carrying them out.
     if matches!(
-        effect,
-        AgentModelsEffect::RemoveProvider { .. }
-            | AgentModelsEffect::RemoveProviderKey { .. }
-            | AgentModelsEffect::RemoveLegacyProviderKey { .. }
+        effect.id(),
+        "remove-provider" | "remove-provider-key" | "remove-legacy-provider-key"
     ) {
         let row = row_for(&effect);
         let effect = SettingsEffect::from(effect);
@@ -84,7 +89,7 @@ fn run(app: &mut TestApp<SettingsShell>, effect: AgentModelsEffect) {
     }
 }
 
-fn start(app: &mut TestApp<SettingsShell>, effect: &AgentModelsEffect) {
+fn start<E: Effect>(app: &mut TestApp<SettingsShell>, effect: &E) {
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: app.harness().component_instance_id().unwrap(),
         address: effect.address_on(row_for(effect)),
@@ -128,7 +133,7 @@ fn mounted_without_administration_edits_only_honestly_labelled_offline_metadata(
     .unwrap();
     run(
         &mut app,
-        AgentModelsEffect::AddProvider {
+        ProviderEffect::AddProvider {
             preset: "anthropic".into(),
         },
     );
@@ -153,7 +158,7 @@ fn mounted_without_administration_edits_only_honestly_labelled_offline_metadata(
     assert!(
         invoke(
             &mut app,
-            AgentModelsEffect::SaveProviderKey {
+            ProviderEffect::SaveProviderKey {
                 provider: id,
                 key: None
             }
@@ -250,7 +255,7 @@ fn mounted_vertex_save_serializes_and_reloads_after_failure_and_conflict() {
         assert!(
             invoke(
                 &mut app,
-                AgentModelsEffect::SetProviderEnabled {
+                ProviderEffect::SetProviderEnabled {
                     provider: id.clone(),
                     on: false
                 }
@@ -291,16 +296,93 @@ fn mounted_vertex_save_serializes_and_reloads_after_failure_and_conflict() {
 
 mod shared_contract {
     use super::{
-        AgentModelsEffect, CredentialStatus, FakeAdminBackend, Ordering, ProviderProfile,
-        SettingsEffect, assert_private, config, invoke, key_buffer, mount, run, with_panel,
+        CredentialStatus, FakeAdminBackend, Ordering, ProviderProfile, SettingsEffect,
+        assert_private, config, invoke, key_buffer, mount, run, with_panel,
     };
+    // The provider panel's own typed vocabulary, answered by this area.
+    use provider_settings_ui::ProviderEffect;
     use provider_settings_ui::widgets;
     use std::sync::Arc;
     use ui::lock::MutexRecover as _;
-    // The native public effect adapter retains all existing ids and parameter shapes.
-    type ProviderEffect = AgentModelsEffect;
     fn host_effect(effect: ProviderEffect) -> SettingsEffect {
         effect.into()
     }
     include!("../../../../../crates/sdk/provider-settings-ui/src/mounted_tests.rs");
+}
+
+/// A provider effect invoked through Settings' public union — by its
+/// published id and arguments, as the palette, an agent or a script does —
+/// reaches the area that hosts the provider panel.
+#[test]
+fn a_published_provider_effect_reaches_the_provider_area() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let mut app = mount(backend.clone());
+    let effect = SettingsEffect::decode(
+        "add-provider",
+        &serde_json::Map::from_iter([("preset".to_owned(), serde_json::json!("anthropic"))]),
+    )
+    .expect("the provider vocabulary is part of Settings");
+    assert_eq!(effect.id(), "add-provider");
+    app.effect(&effect).expect("the hosted area answers it");
+    app.settle();
+    assert_eq!(config(&mut app).profiles.len(), 1);
+    assert_eq!(
+        backend.state.lock_recover().config.profiles[0].label,
+        "Anthropic",
+        "the host's administration capability carried the change"
+    );
+}
+
+/// The operations that need the host's credential custody are refused
+/// offline with the reason the pane gives, never simulated here.
+#[test]
+fn key_custody_effects_are_denied_offline_and_say_why() {
+    use crate::i18n::t;
+    let mut app = TestApp::<SettingsShell>::for_person("provider-administrator").unwrap();
+    app.effect(&SettingsEffect::from(NavigationEffect::OpenPane {
+        pane: "agent_models".into(),
+    }))
+    .unwrap();
+    for effect in [
+        ProviderEffect::RefreshProviders,
+        ProviderEffect::ListProviderModels {
+            provider: "gone".into(),
+        },
+        ProviderEffect::SaveProviderKey {
+            provider: "gone".into(),
+            key: None,
+        },
+        ProviderEffect::RemoveProviderKey {
+            provider: "gone".into(),
+        },
+        ProviderEffect::RemoveLegacyProviderKey {
+            provider: "gone".into(),
+        },
+        ProviderEffect::MigrateProviderKey {
+            provider: "gone".into(),
+            original_endpoint: String::new(),
+        },
+    ] {
+        let effect = SettingsEffect::from(effect);
+        assert!(
+            app.effect(&effect).is_err(),
+            "{} needs the host's custody",
+            effect.id()
+        );
+        let offline = t("agent-provider-offline");
+        app.with_widget::<SettingsApp, _>(|app| {
+            assert_eq!(
+                crate::panes::agent_models::area(app)
+                    .unwrap()
+                    .model()
+                    .borrow()
+                    .notice
+                    .as_deref(),
+                Some(offline.as_str()),
+                "{} says why it was refused",
+                effect.id()
+            );
+        })
+        .unwrap();
+    }
 }

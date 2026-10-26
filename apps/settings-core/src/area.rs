@@ -38,6 +38,18 @@ pub trait PaneArea: Any {
         false
     }
 
+    /// Answer one effect of the shared provider vocabulary
+    /// ([`crate::effects::answer_provider`]), when this is the area that
+    /// offers the provider panel. Its declarations, ids and arguments are the
+    /// portable panel's own; only its answer belongs to a host.
+    fn answer_provider(
+        &self,
+        _effect: &provider_settings_ui::ProviderEffect,
+        _cx: &mut ui::framework::EffectCx<crate::resource::Settings, SettingsApp>,
+    ) -> Option<ui::framework::EffectAnswer> {
+        None
+    }
+
     /// The effects of the area that differ from their declaration on this
     /// device now.
     fn statuses(&self) -> Vec<ui::framework::EffectStatus> {

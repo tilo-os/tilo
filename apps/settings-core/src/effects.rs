@@ -241,6 +241,32 @@ pub fn answer(
 
 effect_family!(NavigationEffect => answer_navigation);
 
+// The provider panel's effect schema is declared beside the panel, so the
+// standalone provider host and Settings publish one set of operations. The
+// area that shows the panel answers them: `answer_provider` hands each
+// typed effect to it.
+effect_family!(provider_settings_ui::ProviderEffect => answer_provider);
+
+/// Answer one effect of the shared provider vocabulary in the area whose
+/// pane offers the provider panel.
+#[allow(
+    clippy::needless_pass_by_ref_mut,
+    clippy::needless_pass_by_value,
+    reason = "a family's answer signature is `AnswerEffect`'s: the effect arrives owned and the window is lent mutably"
+)]
+fn answer_provider(
+    app: &mut SettingsApp,
+    effect: provider_settings_ui::ProviderEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    for area in app.areas().iter() {
+        if let Some(answer) = area.answer_provider(&effect, cx) {
+            return answer;
+        }
+    }
+    Err("this window shows no provider settings".to_owned())
+}
+
 /// Settings' own part: moving between the panes.
 pub const PART: crate::area::Part = crate::area::Part {
     areas: &[],

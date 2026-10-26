@@ -67,6 +67,15 @@ crate::area::pane_area! {
     fn busy(&self) -> bool {
         self.admin_busy()
     }
+    // The provider panel's vocabulary is shared with the portable provider
+    // host; this area answers it here.
+    fn answer_provider(
+        &self,
+        effect: &ProviderEffect,
+        cx: &mut EffectCx<Settings, SettingsApp>,
+    ) -> Option<ui::framework::EffectAnswer> {
+        Some(AgentModelsArea::answer_provider(self, effect, cx))
+    }
 }
 
 /// The window's [`AgentModelsArea`].
@@ -208,126 +217,6 @@ pub enum AgentModelsEffect {
     /// Stop a Hugging Face sign-in.
     #[effect(view)]
     CancelHuggingFaceSignIn,
-    /// Reload the authoritative profiles and credential status.
-    #[effect(job, label = "Refresh providers")]
-    RefreshProviders,
-    /// Add a provider from a known one, which fills its name, endpoint and
-    /// protocol; its model is chosen afterwards.
-    #[effect(job, label = "Add provider")]
-    AddProvider {
-        #[param(
-            "`openai`, `anthropic`, `gemini`, `mistral`, `openrouter`, `groq`, `xai`, `deepseek`, `together`, `fireworks`, `huggingface`, `ollama`, `lm-studio`, or `openai-compatible` for any other"
-        )]
-        preset: String,
-    },
-    /// Ask the provider which models it offers, with its stored key or
-    /// sign-in: shows whether the connection works, and the models to
-    /// choose from.
-    #[effect(job, row, label = "Test connection")]
-    ListProviderModels {
-        #[param("The provider's id")]
-        provider: String,
-    },
-    /// Make one model the one agents use from this provider: one it listed,
-    /// or any other id.
-    #[effect(job, row, idempotent, label = "Use model")]
-    SetProviderModel {
-        #[param("The provider's id")]
-        provider: String,
-        #[param("The model's id")]
-        model: String,
-    },
-    /// Speak another protocol to a provider.
-    #[effect(job, row, idempotent)]
-    SetProviderProtocol {
-        #[param("The provider's id")]
-        provider: String,
-        #[param("`anthropic` or `openai-compatible`")]
-        protocol: String,
-    },
-    /// Offer a provider to agents, or stop offering it.
-    #[effect(job, row, idempotent)]
-    SetProviderEnabled {
-        #[param("The provider's id")]
-        provider: String,
-        on: bool,
-    },
-    /// Name a provider, where it is, and the model agents use from it.
-    #[effect(job, row)]
-    SetProviderDetails {
-        #[param("The provider's id")]
-        provider: String,
-        #[param("Its name")]
-        label: String,
-        #[param("Its endpoint URL")]
-        endpoint: String,
-        #[param("The model agents use")]
-        model: Option<String>,
-    },
-    /// Set this model's request allowance; omit both values to restore defaults.
-    #[effect(job, row, idempotent)]
-    SetModelRequestLimits {
-        provider: String,
-        model: String,
-        max_output_tokens: Option<u32>,
-        runtime_context_tokens: Option<u32>,
-        plan_timeout_ms: Option<u32>,
-    },
-    /// Read source context and this model's configured deployment limits.
-    #[effect(row, returns, kind = "read")]
-    InspectModelRequestLimits { provider: String, model: String },
-    /// Make a provider the one agents use unless told otherwise.
-    #[effect(job, row, idempotent, label = "Use by default")]
-    SetDefaultProvider {
-        #[param("The provider's id")]
-        provider: String,
-    },
-    /// Choose the model one agent plans with; omit both to let it use the
-    /// default again.
-    #[effect(job, idempotent)]
-    SetAgentModel {
-        #[param("The agent's id")]
-        agent: String,
-        #[param("The provider's id")]
-        provider: Option<String>,
-        #[param("The model's id, one the provider offers")]
-        model: Option<String>,
-    },
-    /// Remove a provider and its stored API key.
-    #[effect(job, row, destructive, label = "Remove provider")]
-    RemoveProvider {
-        #[param("The provider's id")]
-        provider: String,
-    },
-    /// Store a provider's API key in this device's vault: a hosted
-    /// provider that roamed here from another device needs its own.
-    #[effect(job, row, label = "Save API key")]
-    SaveProviderKey {
-        #[param("The provider's id")]
-        provider: String,
-        #[param(secret, "The API key; what the key field holds when omitted")]
-        key: Option<String>,
-    },
-    /// Bind a legacy key only after independently confirming its original endpoint.
-    #[effect(job, row, label = "Confirm original endpoint and migrate key")]
-    MigrateProviderKey {
-        #[param("The provider's id")]
-        provider: String,
-        #[param("Original endpoint used with this key, not a newly edited endpoint")]
-        original_endpoint: String,
-    },
-    /// Remove a legacy key that is not bound to a provider origin.
-    #[effect(job, row, destructive, label = "Remove unbound legacy key")]
-    RemoveLegacyProviderKey {
-        #[param("The provider's id")]
-        provider: String,
-    },
-    /// Remove a provider's stored API key.
-    #[effect(job, row, destructive, label = "Remove API key")]
-    RemoveProviderKey {
-        #[param("The provider's id")]
-        provider: String,
-    },
     /// Start adding Google Vertex AI, which signs in with Google instead of
     /// taking an API key. Shows its setup; signs in to nothing yet.
     #[effect(view, label = "Add Google Vertex AI")]
@@ -430,10 +319,6 @@ pub(crate) fn answer(
     let mut model = shared.borrow_mut();
     model.changed = true;
     match effect {
-        AgentModelsEffect::InspectModelRequestLimits {
-            provider,
-            model: id,
-        } => model.inspect_limits(&provider, &id).map(Effected::value),
         AgentModelsEffect::ReviewModelDownload { show } => {
             model.reviewing.set(show);
             Ok(Effected::done())
@@ -550,40 +435,110 @@ pub(crate) fn answer(
                 .choose_project(&project);
             Ok(Effected::done())
         }
-        provider => {
-            let vertex_change = matches!(
+        AgentModelsEffect::SetVertexProvider {
+            provider,
+            project,
+            location,
+            model: chosen,
+        } => model.answer_vertex_change(
+            &VertexChange::Vertex {
                 provider,
-                AgentModelsEffect::SetVertexProvider { .. }
-                    | AgentModelsEffect::SetGeminiProvider { .. }
-            ) || matches!(&provider, AgentModelsEffect::RemoveProvider { provider }
-                    if model.panel.provider_config().profiles.iter().any(|profile| profile.id == *provider && profile.sign_in.is_some()));
-            if vertex_change && model.cx.provider_admin.is_available() {
-                model.submit_vertex_change(provider, cx.reply())?;
-                Ok(Effected::Pending)
-            } else if model.cx.provider_admin.is_available() {
-                let provider = ProviderEffect::decode(provider.id(), &provider.arguments())?;
-                model.submit_provider(provider, cx.reply())?;
-                Ok(Effected::Pending)
-            } else {
-                if matches!(
-                    provider,
-                    AgentModelsEffect::SaveProviderKey { .. }
-                        | AgentModelsEffect::RemoveProviderKey { .. }
-                        | AgentModelsEffect::RemoveLegacyProviderKey { .. }
-                        | AgentModelsEffect::MigrateProviderKey { .. }
-                        | AgentModelsEffect::ListProviderModels { .. }
-                        | AgentModelsEffect::RefreshProviders
-                ) {
-                    let error = t("agent-provider-offline");
-                    model.notice = Some(error.clone());
-                    return Err(error);
-                }
-                let result = model.change_providers(provider);
-                model.provider_notice(result.as_ref().map(|()| t("agent-provider-offline-saved")));
-                result.map(|()| Effected::done())
-            }
+                project,
+                location,
+                model: chosen,
+            },
+            cx.reply(),
+        ),
+        AgentModelsEffect::SetGeminiProvider { provider, project } => {
+            model.answer_vertex_change(&VertexChange::Gemini { provider, project }, cx.reply())
         }
     }
+}
+
+/// A Google provider this area saves itself, because the shared provider
+/// panel cannot sign in to Google: the Vertex AI and Gemini providers it sets
+/// up, and the signed-in provider it forgets.
+enum VertexChange {
+    /// Add the Vertex AI provider being set up (`provider` `None`), or change
+    /// an existing one.
+    Vertex {
+        provider: Option<String>,
+        project: String,
+        location: Option<String>,
+        model: Option<String>,
+    },
+    /// Add the Gemini provider being set up (`provider` `None`), or bill
+    /// another Cloud project with an existing one.
+    Gemini {
+        provider: Option<String>,
+        project: String,
+    },
+    /// Forget a signed-in provider and the grant kept for it here.
+    Remove { provider: String },
+}
+
+impl AgentModelsArea {
+    /// Answer one of the shared provider panel's effects, in the pane that
+    /// shows the panel: through the host's borrowed administration
+    /// capability when it lends one, else in this person's offline metadata.
+    fn answer_provider(
+        &self,
+        effect: &ProviderEffect,
+        cx: &mut EffectCx<Settings, SettingsApp>,
+    ) -> EffectAnswer {
+        let mut model = self.model().borrow_mut();
+        model.changed = true;
+        if let ProviderEffect::InspectModelRequestLimits {
+            provider,
+            model: id,
+        } = effect
+        {
+            return model.inspect_limits(provider, id).map(Effected::value);
+        }
+        // Removing a signed-in provider forgets its grant here, which only
+        // this area can do; the panel's other removals carry no grant.
+        if let ProviderEffect::RemoveProvider { provider } = effect
+            && model.cx.provider_admin.is_available()
+            && model
+                .provider_config()
+                .profiles
+                .iter()
+                .any(|profile| profile.id == *provider && profile.sign_in.is_some())
+        {
+            let change = VertexChange::Remove {
+                provider: provider.clone(),
+            };
+            model.submit_vertex_change(&change, cx.reply())?;
+            return Ok(Effected::Pending);
+        }
+        if model.cx.provider_admin.is_available() {
+            model.submit_provider(effect.clone(), cx.reply())?;
+            return Ok(Effected::Pending);
+        }
+        // Offline metadata remains usable, but API-key custody is never simulated.
+        if needs_credential_custody(effect) {
+            let error = t("agent-provider-offline");
+            model.notice = Some(error.clone());
+            return Err(error);
+        }
+        let result = model.change_providers(effect.clone());
+        model.provider_notice(result.as_ref().map(|()| t("agent-provider-offline-saved")));
+        result.map(|()| Effected::done())
+    }
+}
+
+/// Whether `effect` hands a provider's key to the host's custody, which
+/// offline metadata never stands in for.
+fn needs_credential_custody(effect: &ProviderEffect) -> bool {
+    matches!(
+        effect,
+        ProviderEffect::SaveProviderKey { .. }
+            | ProviderEffect::RemoveProviderKey { .. }
+            | ProviderEffect::RemoveLegacyProviderKey { .. }
+            | ProviderEffect::MigrateProviderKey { .. }
+            | ProviderEffect::ListProviderModels { .. }
+            | ProviderEffect::RefreshProviders
+    )
 }
 
 /// What the model manager reported, or why it could not.
@@ -1419,7 +1374,7 @@ impl AgentModelsModel {
     /// Keep native OAuth setup on the same borrowed administration capability as the panel.
     fn submit_vertex_change(
         &mut self,
-        effect: AgentModelsEffect,
+        change: &VertexChange,
         reply: ui::framework::EffectReply,
     ) -> Result<(), String> {
         if self.panel.admin_pending.is_some() {
@@ -1431,27 +1386,27 @@ impl AgentModelsModel {
             .as_ref()
             .ok_or_else(|| t("agent-provider-refresh-required"))?;
         let mut config = snapshot.config.clone();
-        let id = match effect {
-            AgentModelsEffect::SetVertexProvider {
+        let id = match change {
+            VertexChange::Vertex {
                 provider,
                 project,
                 location,
                 model,
             } => self.set_vertex_provider(
                 &mut config,
-                provider,
-                (&project, location.as_deref(), model.as_deref()),
+                provider.clone(),
+                (project, location.as_deref(), model.as_deref()),
             )?,
-            AgentModelsEffect::SetGeminiProvider { provider, project } => {
-                self.set_gemini_provider(&mut config, provider, &project)?
+            VertexChange::Gemini { provider, project } => {
+                self.set_gemini_provider(&mut config, provider.clone(), project)?
             }
-            AgentModelsEffect::RemoveProvider { provider } => {
+            // The host keeps the grant of a signed-in provider it removes.
+            VertexChange::Remove { provider } => {
                 config
-                    .remove(&provider)
+                    .remove(provider)
                     .ok_or_else(|| t("agent-provider-gone"))?;
-                provider
+                provider.clone()
             }
-            _ => return Err("not a sign-in provider change".into()),
         };
         let config = config.sanitised();
         let expected = config
@@ -1465,32 +1420,57 @@ impl AgentModelsModel {
         Ok(())
     }
 
-    fn change_providers(&mut self, effect: AgentModelsEffect) -> Result<(), String> {
-        // Offline metadata remains usable, but API-key custody is never simulated.
+    /// Save a Google provider: through the host's borrowed administration
+    /// capability when it lends one, else in this person's offline metadata.
+    fn answer_vertex_change(
+        &mut self,
+        change: &VertexChange,
+        reply: ui::framework::EffectReply,
+    ) -> EffectAnswer {
+        if self.cx.provider_admin.is_available() {
+            self.submit_vertex_change(change, reply)?;
+            return Ok(Effected::Pending);
+        }
+        let result = self.change_vertex(change);
+        self.provider_notice(result.as_ref().map(|()| t("agent-provider-offline-saved")));
+        result.map(|()| Effected::done())
+    }
+
+    /// Save a Google provider in this person's offline metadata, where the
+    /// grant kept for it here is this device's to forget.
+    fn change_vertex(&mut self, change: &VertexChange) -> Result<(), String> {
         self.panel.offline_config = self.providers.get().config.clone();
-        let mut vertex_saved = None;
-        let mut limits_ack = None;
-        let config = match effect {
-            AgentModelsEffect::SetVertexProvider {
+        let mut config = self.providers.get().config.clone();
+        let saved = match change {
+            VertexChange::Vertex {
                 provider,
                 project,
                 location,
                 model,
-            } => {
-                let mut config = self.providers.get().config.clone();
-                vertex_saved = Some(self.set_vertex_provider(
-                    &mut config,
-                    provider,
-                    (&project, location.as_deref(), model.as_deref()),
-                )?);
-                config.sanitised()
+            } => self.set_vertex_provider(
+                &mut config,
+                provider.clone(),
+                (project, location.as_deref(), model.as_deref()),
+            )?,
+            VertexChange::Gemini { provider, project } => {
+                self.set_gemini_provider(&mut config, provider.clone(), project)?
             }
-            AgentModelsEffect::SetGeminiProvider { provider, project } => {
-                let mut config = self.providers.get().config.clone();
-                vertex_saved = Some(self.set_gemini_provider(&mut config, provider, &project)?);
-                config.sanitised()
+            VertexChange::Remove { provider } => {
+                self.remove_vertex_provider(&mut config, provider)?;
+                provider.clone()
             }
-            AgentModelsEffect::RemoveProvider { provider }
+        };
+        self.store_providers(config.sanitised())?;
+        self.vertex_saved(&saved);
+        Ok(())
+    }
+
+    fn change_providers(&mut self, effect: ProviderEffect) -> Result<(), String> {
+        // Offline metadata remains usable, but API-key custody is never simulated.
+        self.panel.offline_config = self.providers.get().config.clone();
+        let limits_ack = self.remember_limits(&effect);
+        let config = match effect {
+            ProviderEffect::RemoveProvider { provider }
                 if self
                     .providers
                     .get()
@@ -1503,24 +1483,23 @@ impl AgentModelsModel {
                 self.remove_vertex_provider(&mut config, &provider)?;
                 config.sanitised()
             }
-            effect => {
-                let effect = ProviderEffect::decode(effect.id(), &effect.arguments())?;
-                limits_ack = self.remember_limits(&effect);
-                self.proposed_config(effect)?
-            }
+            effect => self.proposed_config(effect)?,
         };
+        self.store_providers(config)?;
+        if let Some(acknowledgement) = limits_ack {
+            self.acknowledge_limits(&acknowledgement);
+        }
+        Ok(())
+    }
+
+    /// Keep `config` as this person's providers, and show what was stored.
+    fn store_providers(&mut self, config: ProviderConfig) -> Result<(), String> {
         self.providers
             .settings()
             .update(|providers| providers.config = config)
             .map_err(|error| error.to_string())?;
         self.providers.refresh();
         self.panel.offline_config = self.providers.get().config.clone();
-        if let Some(id) = vertex_saved {
-            self.vertex_saved(&id);
-        }
-        if let Some(acknowledgement) = limits_ack {
-            self.acknowledge_limits(&acknowledgement);
-        }
         self.changed = true;
         Ok(())
     }
@@ -1940,7 +1919,7 @@ impl AgentModelsModel {
                     t("agent-use-default")
                 },
             ),
-            AgentModelsEffect::SetDefaultProvider {
+            ProviderEffect::SetDefaultProvider {
                 provider: profile.id.clone(),
             },
         ))))
