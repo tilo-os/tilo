@@ -1,20 +1,20 @@
-//! The Unicode emoji the shared emoji picker offers, and the person's
-//! recently used emoji.
+//! The Unicode emoji the toolkit offers: the shared picker's and reaction
+//! strip's catalogue, the names and keywords a text field resolves
+//! `:shortcode:` with, and the person's recently used emoji.
 //!
-//! The catalogue itself (every emoji with its names and keywords in every
-//! language Tilo speaks, about half a megabyte) is not part of the toolkit:
-//! most programs never pick an emoji, and the browser desktop keeps it out
-//! of the module it starts with. A program that offers the picker hands a
-//! catalogue over ([`CATALOGUE`]): an app that links the `emoji` crate
-//! installs it before its first frame, a program that fetches code on first
-//! use registers the fetch ([`crate::deferred::Deferred::defer`]) and
-//! installs it once it arrived. Until then the picker offers the
-//! workspace's emoji and the recents, and says the rest is on its way.
+//! The catalogue is the toolkit's own dependency: every program that uses
+//! `ui` has it, so an app never names a catalogue crate simply to have
+//! emoji, and every text field can resolve `:name:` without knowing that a
+//! catalogue exists. A workspace's own emoji are *added* to it
+//! ([`crate::workspace_emoji`]), never a replacement for it; a program may
+//! still hand over a catalogue of its own before first use ([`CATALOGUE`]),
+//! which then wins over the built-in one.
 //!
 //! Recents are the person's own and stay on the device ([`EmojiRecents`]):
 //! a workspace emoji (`:name:`) is remembered like any other.
 
 use std::cell::RefCell;
+use std::sync::Mutex;
 
 use crate::deferred::Deferred;
 
@@ -61,17 +61,185 @@ pub trait EmojiCatalogue: Sync {
 /// The catalogue in a language (a BCP 47 tag), as a program hands it over.
 pub type CatalogueFor = fn(&str) -> &'static dyn EmojiCatalogue;
 
-/// The catalogue, once a program handed it over.
+/// A catalogue a program handed over before first use, where it has one;
+/// otherwise the toolkit's own is read.
 pub static CATALOGUE: Deferred<CatalogueFor> = Deferred::new();
 
-/// The catalogue in the language the interface speaks now, fetching it the
-/// first time where the program registered a fetch. `None` while it is on
-/// its way, or where the program offers none.
+/// One `:shortcode:` the catalogue offers for what was typed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shortcode {
+    /// The name as a shortcode, without colons (`thumbs_up`).
+    pub name: String,
+    /// What accepting it puts in the text: the emoji character, or a
+    /// workspace emoji written `:name:`.
+    pub emoji: String,
+}
+
+/// The toolkit's catalogue in one language: the `emoji` crate's names and
+/// keywords, wrapped as the picker's [`EmojiCatalogue`].
+struct Builtin(&'static emoji::Catalogue);
+
+impl EmojiCatalogue for Builtin {
+    fn groups(&self) -> Vec<CatalogueGroup> {
+        self.0
+            .groups()
+            .iter()
+            .map(|group| CatalogueGroup {
+                id: group.id(),
+                label: group.label(),
+                icon: group.icon(),
+            })
+            .collect()
+    }
+
+    fn group_emoji(&self, index: usize) -> Vec<&'static str> {
+        self.0.groups().get(index).map_or_else(Vec::new, |group| {
+            self.0
+                .group_emoji(group)
+                .iter()
+                .map(emoji::Emoji::text)
+                .collect()
+        })
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Vec<&'static str> {
+        self.0
+            .search(query, limit)
+            .into_iter()
+            .map(emoji::Emoji::text)
+            .collect()
+    }
+
+    fn info(&self, emoji: &str) -> Option<EmojiInfo> {
+        let found = self.0.lookup(emoji)?;
+        Some(EmojiInfo {
+            name: found.emoji.name(),
+            tone: found
+                .tone
+                .and_then(|tone| emoji::SkinTone::ALL.iter().position(|t| *t == tone))
+                .and_then(|at| u8::try_from(at).ok()),
+            takes_tone: found.emoji.takes_skin_tone(),
+        })
+    }
+
+    fn tones(&self, emoji: &str) -> Vec<&'static str> {
+        let Some(found) = self.0.lookup(emoji) else {
+            return Vec::new();
+        };
+        if !found.emoji.takes_skin_tone() {
+            return Vec::new();
+        }
+        std::iter::once(None)
+            .chain(emoji::SkinTone::ALL.into_iter().map(Some))
+            .filter_map(|tone| self.0.with_skin_tone(found.emoji.text(), tone))
+            .collect()
+    }
+}
+
+/// The toolkit's catalogue in a language, one wrapper per locale ever asked
+/// for (a handful), kept for the process like the catalogues themselves.
+fn builtin(tag: &str) -> &'static dyn EmojiCatalogue {
+    static SHARED: Mutex<Vec<&'static Builtin>> = Mutex::new(Vec::new());
+    let catalogue = emoji::Catalogue::for_locale(tag);
+    let mut shared = SHARED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(found) = shared.iter().find(|s| std::ptr::eq(s.0, catalogue)) {
+        return *found;
+    }
+    let made: &'static Builtin = Box::leak(Box::new(Builtin(catalogue)));
+    shared.push(made);
+    made
+}
+
+/// The catalogue in the language the interface speaks now: the one a program
+/// handed over, or the toolkit's own. Always present, so a text field's
+/// `:name:` completion and the picker never wait for a catalogue.
 #[must_use]
 pub fn catalogue() -> Option<&'static dyn EmojiCatalogue> {
-    CATALOGUE
-        .get()
-        .map(|for_locale| for_locale(&crate::i18n::I18nManager::current_locale()))
+    let tag = crate::i18n::I18nManager::current_locale();
+    Some(match CATALOGUE.get() {
+        Some(for_locale) => for_locale(&tag),
+        None => builtin(&tag),
+    })
+}
+
+/// `name` as a shortcode writes it: lowercase, runs of anything that is not
+/// a letter or digit folded to one `_`.
+fn shortcode(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for character in name.chars() {
+        if character.is_alphanumeric() {
+            out.extend(character.to_lowercase());
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    out.trim_matches('_').to_owned()
+}
+
+/// The emoji `name` (written between colons, with `_`, `-` or spaces)
+/// resolves to: a workspace emoji first, then the catalogue's own name.
+/// `None` for a name neither has.
+#[must_use]
+pub fn shortcode_emoji(name: &str) -> Option<String> {
+    let name = shortcode(name);
+    if name.is_empty() {
+        return None;
+    }
+    let workspace = crate::workspace_emoji::emoji();
+    if let Some(custom) = workspace
+        .get(&name)
+        .or_else(|| workspace.search(&name).into_iter().next())
+        .filter(|custom| shortcode(&custom.name) == name)
+    {
+        return Some(format!(":{}:", custom.name));
+    }
+    let catalogue = catalogue()?;
+    catalogue
+        .search(name.replace('_', " ").as_str(), 256)
+        .into_iter()
+        .find(|emoji| {
+            catalogue
+                .info(emoji)
+                .is_some_and(|info| shortcode(info.name) == name)
+        })
+        .map(str::to_owned)
+}
+
+/// Up to `limit` emoji whose name matches what was typed after the `:`, best
+/// first. A workspace's own emoji come first, as they do in the picker's
+/// search; the catalogue's follow in its own ranking.
+#[must_use]
+pub fn shortcode_matches(query: &str, limit: usize) -> Vec<Shortcode> {
+    let typed = shortcode(query);
+    let mut found: Vec<Shortcode> = crate::workspace_emoji::emoji()
+        .search(&typed)
+        .into_iter()
+        .map(|custom| Shortcode {
+            name: shortcode(&custom.name),
+            emoji: format!(":{}:", custom.name),
+        })
+        .collect();
+    if let Some(catalogue) = catalogue() {
+        for emoji in catalogue.search(&typed.replace('_', " "), limit.saturating_add(found.len())) {
+            if found.len() >= limit {
+                break;
+            }
+            let Some(info) = catalogue.info(emoji) else {
+                continue;
+            };
+            if found.iter().any(|known| known.emoji == emoji) {
+                continue;
+            }
+            found.push(Shortcode {
+                name: shortcode(info.name),
+                emoji: emoji.to_owned(),
+            });
+        }
+    }
+    found.truncate(limit);
+    found
 }
 
 /// The name of `emoji` in the interface's language: a workspace emoji's
@@ -217,6 +385,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_shortcode_names_an_emoji_and_an_unknown_name_does_not() {
+        assert_eq!(shortcode_emoji("pizza"), Some("🍕".to_owned()));
+        assert_eq!(shortcode_emoji(":pizza:"), Some("🍕".to_owned()));
+        assert_eq!(shortcode_emoji("definitely_not_an_emoji"), None);
+        assert_eq!(shortcode_emoji(""), None);
+    }
+
+    #[test]
+    fn what_was_typed_finds_the_emoji_whose_name_starts_with_it() {
+        let found = shortcode_matches("piz", 8);
+        assert!(found.iter().any(|shortcode| shortcode.emoji == "🍕"));
+        assert!(found.iter().all(|shortcode| !shortcode.name.is_empty()));
+        assert!(shortcode_matches("zzzzzz", 8).is_empty());
+    }
+
+    #[test]
     fn recents_dedup_spellings_keep_custom_emoji_and_cap() {
         let mut recents = EmojiRecents::default();
         recents.record("👍");
@@ -255,8 +439,5 @@ mod tests {
     #[test]
     fn a_name_without_a_catalogue_is_the_emoji_itself() {
         assert_eq!(emoji_name(":party_parrot:"), ":party_parrot:");
-        if CATALOGUE.get().is_none() {
-            assert_eq!(emoji_name("👍"), "👍");
-        }
     }
 }
