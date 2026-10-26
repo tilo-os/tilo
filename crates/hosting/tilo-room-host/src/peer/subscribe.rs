@@ -207,6 +207,10 @@ pub(super) async fn handle_subscribe(
     if let Some((governor, wake)) = &ws.lock().await.governor_dial
         && *governor == peer.device_public_key
     {
+        tracing::info!(
+            workspace_id,
+            "the governor of a room served here is back; dialling it now"
+        );
         wake.notify_one();
     }
     *replay = Some((workspace_id, ticket, handle, catchup));

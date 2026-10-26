@@ -297,6 +297,7 @@ impl Rooms {
             .filter(|device| *device != self.inner.host.cert.device_public_key)
             .collect();
         for device in devices {
+            tracing::info!(room = %governed.room(), host = %hex::encode(device), "reaching a host of the room as this host opens it");
             if !governed.answered.contains_key(&device) {
                 self.open_host_session(governed, device, None);
             }

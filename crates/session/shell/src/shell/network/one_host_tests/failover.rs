@@ -58,6 +58,12 @@ struct Ada {
 }
 
 fn ada(seed: u8) -> Ada {
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            "tilo_room_host::federation=debug,tilo_room_host::rooms=info,tilo_room_host::hosted=info,tilo_room_host::peer=info,tilo_room_host::persistence=info",
+        ))
+        .try_init();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = scratch();
     let wakes = Arc::new(Wakes::default());
