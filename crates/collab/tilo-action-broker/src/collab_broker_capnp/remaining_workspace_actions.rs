@@ -365,6 +365,14 @@ impl CapnpBrokerState {
         })?;
         let result = match plan {
             crate::automation::LibraryPlan::Answer(output) => Ok(output),
+            crate::automation::LibraryPlan::Stop(stop) => {
+                let stopped = self.ended_runs.running.running.stop(
+                    &room,
+                    &stop,
+                    "asked for from the shortcuts library",
+                );
+                Ok(crate::automation::stopped_output(&stopped))
+            }
             crate::automation::LibraryPlan::Change { change, output } => library
                 .store(&crate::services::ShortcutLibraryRequest {
                     room: &room,

@@ -23,6 +23,7 @@ use chat::resource::ChatShell;
 use discord::resource::Discord;
 use discord::{APP_ID, Guild, KIND};
 use serde_json::{Value, json};
+use tilo_automation::grant::{EDIT_PARAM, FIELD_EDIT};
 use tilo_automation::{
     ActorFilter, Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec,
 };
@@ -108,6 +109,29 @@ fn message(id: &str, action: &str, args: &[(&str, Binding)], shown: bool) -> Ste
         args,
         shown.then(|| item("appearance")),
     )
+}
+
+/// The framework's `op` field edit (`react` or `unreact`) of the reactions
+/// of the loop item's message, with its emoji, as the Discord member it
+/// shows. The path is spelled out so every check decides the step where the
+/// room does, at the message's reactions.
+fn reaction(id: &str, op: &str) -> Step {
+    let step = |kind: &str, binding: Binding| {
+        Binding::Object(BTreeMap::from([(kind.to_owned(), binding)]))
+    };
+    let edit = Binding::Object(BTreeMap::from([
+        (
+            "path".to_owned(),
+            Binding::List(vec![
+                step("field", text("messages")),
+                step("item", item("message")),
+                step("field", text("reactions")),
+            ]),
+        ),
+        ("op".to_owned(), text(op)),
+        ("emoji".to_owned(), item("emoji")),
+    ]));
+    message(id, FIELD_EDIT, &[(EDIT_PARAM, edit)], true)
 }
 
 /// The id of the item step `step` created, as text.
@@ -201,6 +225,7 @@ fn pass() -> Vec<Step> {
                     ("bot_user", item("bot_user")),
                     ("channels", item("channels")),
                     ("roles", item("roles")),
+                    ("emojis", item("emojis")),
                 ],
             )],
         ),
@@ -388,24 +413,8 @@ fn pass() -> Vec<Step> {
                 ),
             ],
         ),
-        each(
-            "chat_reacts",
-            vec![message(
-                "chat-react",
-                "react",
-                &[("message", item("message")), ("emoji", item("emoji"))],
-                true,
-            )],
-        ),
-        each(
-            "chat_unreacts",
-            vec![message(
-                "chat-unreact",
-                "unreact",
-                &[("message", item("message")), ("emoji", item("emoji"))],
-                true,
-            )],
-        ),
+        each("chat_reacts", vec![reaction("chat-react", "react")]),
+        each("chat_unreacts", vec![reaction("chat-unreact", "unreact")]),
         each(
             "blocks",
             vec![guild(
@@ -634,6 +643,7 @@ fn program() -> Shortcut {
                 },
             ),
         ],
+        step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
         triggers: triggers(),
@@ -708,6 +718,41 @@ fn the_bridge_program_checks_against_chat_and_discord_and_is_current() {
         stored == bytes,
         "bridge/program.json is stale; run this test with BLESS=1, or write the line\nPROGRAM {}",
         String::from_utf8_lossy(&bytes)
+    );
+}
+
+/// The bridge reacts for Discord people through the field edit of Chat's
+/// messages, and no other record of Chat's: the messages' other fields are
+/// read-only, so a reaction is all that field edit reaches.
+#[test]
+fn the_bridge_field_edits_only_chats_messages() {
+    let shortcut = program();
+    let grant = tilo_automation::grant::derived_rules(&shortcut, &catalog());
+    let field_edits: Vec<String> = grant
+        .iter()
+        .map(|rule| rule.node.to_string())
+        .filter(|node| node.contains("app:so.tilo.chat") && node.ends_with(FIELD_EDIT))
+        .collect();
+    assert_eq!(
+        field_edits,
+        ["room:*/app:so.tilo.chat/kind:chat.messages/resource:*/**/action:field-edit"]
+    );
+    // Where the bot's own door offers and admits the field edit (the
+    // resource), and where the room decides a reaction (its field).
+    let messages = ui::permissions::TreePath::room("room")
+        .app(CHAT_APP)
+        .kind(MESSAGES_KIND)
+        .resource("part-0");
+    let decided = |node: &ui::permissions::TreePath| {
+        tilo_automation::grant_answer(&grant, node, ui::permissions::ActionKind::Undoable).answer
+    };
+    assert_eq!(
+        decided(&messages.clone().action(FIELD_EDIT)),
+        ui::permissions::Answer::Allow
+    );
+    assert_eq!(
+        decided(&messages.item("m1").field("reactions").action(FIELD_EDIT)),
+        ui::permissions::Answer::Allow
     );
 }
 

@@ -36,6 +36,7 @@ mod launcher;
 mod motion_gallery;
 mod motion_review;
 mod one_place;
+mod window_bar_reactions;
 mod window_search;
 
 /// One tab of a window seeded for the window-bar shots.
@@ -322,7 +323,7 @@ pub enum Action {
         surface_id: u64,
     },
     /// Activate an app whose window has not mapped yet: the production
-    /// launch holds its place with the opening card from this frame.
+    /// launch holds its place from this frame, where its window arrives.
     HoldLaunchPlace {
         app_id: &'static str,
         label: &'static str,
@@ -2093,6 +2094,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         WsTab::Agents => "agents",
         WsTab::Permissions => "permissions",
         WsTab::Apps => "apps",
+        WsTab::Emoji => "emoji",
     };
     let palette_visible = host.palette_visible();
     let palette_query = host.palette_query();
@@ -2546,6 +2548,7 @@ fn build_scenarios() -> Vec<Scenario> {
         window_bar_files_scenario(),
         window_bar_terminal_scenario(),
         window_bar_writer_scenario(),
+        window_bar_reactions::window_bar_reactions(),
         window_bar_overflow_scenario(),
         window_bar_suggestions_scenario(),
         desk_widgets_scenario(),
@@ -3125,11 +3128,11 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
-            name: "opening_card",
-            description: "An app asked for holds its place with the moving opening card from the \
-                          first frame, says so when the start runs long, and says what it is \
-                          doing while its app is still being fetched from the registry, with \
-                          how much has arrived once the download reports it.",
+            name: "pending_window",
+            description: "An app asked for holds its place from the first frame: the ground \
+                          alone, then the skeleton once its window misses the grace period; an \
+                          app still being fetched from the registry says how much of it has \
+                          arrived once the download reports it.",
             actions: vec![
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),
@@ -3139,31 +3142,23 @@ fn build_scenarios() -> Vec<Scenario> {
                 },
                 Action::Wait(1),
                 Action::Relayout,
-                Action::Snapshot("opening-first-frame"),
-                Action::WaitWall(5_500),
+                Action::Snapshot("pending-first-frame"),
+                Action::WaitWall(400),
                 Action::Relayout,
-                Action::Snapshot("opening-slow"),
+                Action::Snapshot("pending-skeleton"),
                 Action::SelectGroup(None),
                 Action::HoldInstallPlace {
                     app_id: "so.tilo.slides",
                     label: "Slides",
                 },
-                Action::Wait(20),
-                Action::Relayout,
-                Action::Snapshot("opening-installing"),
-                Action::WaitWall(5_500),
-                Action::Relayout,
-                Action::Snapshot("opening-installing-slow"),
                 Action::InstallBytes {
                     app_id: "so.tilo.slides",
                     received: 4_200_000,
                     total: 18_000_000,
                 },
-                // Past the dots-to-bar crossfade, so the shot shows where
-                // it settles rather than a frame of the fade.
                 Action::WaitWall(400),
                 Action::Relayout,
-                Action::Snapshot("opening-installing-progress"),
+                Action::Snapshot("pending-installing-progress"),
             ],
         },
         Scenario {

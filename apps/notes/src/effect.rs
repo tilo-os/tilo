@@ -104,6 +104,15 @@ pub enum NotesEffect {
         #[param("The address, http(s) or mailto")]
         url: String,
     },
+    /// Open resource
+    ///
+    /// Open something another app keeps — a file, an event, a message — by
+    /// the address a link in a note gives it, and show it where it lives.
+    #[effect(view)]
+    OpenResource {
+        #[param("The resource's link address, as tilo://open#…")]
+        href: String,
+    },
     /// Open note
     ///
     /// Show a note, and the block in it when one is named.

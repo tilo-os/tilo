@@ -52,6 +52,7 @@ class StepsTests(unittest.TestCase):
             ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\ninputs = ["x"]\nwhen = 1\n', "unknown fields"),
             ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\ninputs = ["x"]\n' * 2, "two steps"),
             ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\ninputs = ["x"]\ncovered_by = "b"\n', "covered by"),
+            ('[[step]]\nname = "a"\nlabel = "A"\nrun = "true"\ninputs = ["x"]\nhistory = true\n', "only the suite's tests"),
         ):
             with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)

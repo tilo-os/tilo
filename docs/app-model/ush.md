@@ -279,19 +279,26 @@ answers `"runs":true`, and the rc file ends by writing three marks into the
 pty stream:
 
 ```text
-ESC ] 133 ; A ; k=<key> BEL                           the prompt is shown
-ESC ] 133 ; C ; k=<key> ; cmd=<b64> ; cwd=<b64> BEL   a command line starts
-ESC ] 133 ; D ; <status> ; k=<key> BEL                it ended with <status>
+ESC ] 133 ; A ; k=<key> BEL                                     the prompt is shown
+ESC ] 133 ; C ; k=<key> ; cmd=<b64> ; cwd=<b64> ; t=<n> BEL     a command line starts
+ESC ] 133 ; D ; <status> ; k=<key> ; t=<n> BEL                  it ended with <status>
 ```
 
 `cmd` and `cwd` are base64 of the command line as the shell's history holds
-it and of the working directory. The key is a shell variable the rc file
-takes out of the environment before anything runs, so no program the session
-runs sees it, and output that imitates a mark (a `cat` of a file holding one)
-is not taken for one: Terminal acts only on marks carrying its key, and takes
-every mark out of what the screen shows. Another shell writes no marks; a
-`command` session and an environment on a relay answer `"runs":false`. Their
-output is live only.
+it and of the working directory, and `t` is that command's place in the
+shell's history, read from the history entry the shell is about to run. A
+line that runs nothing (an empty one, `exit`) takes no place there, so it
+marks no run, and the number makes the run tell itself apart from the one
+before it: a person typing a request's command by hand, before the shell
+reaches the request's own line, cannot take the id the request's run is
+recorded under. Which lines belong to which request is still decided by the
+lines themselves, in the order the shell reached them. The key is a shell
+variable the rc file takes out of the environment before anything runs, so no
+program the session runs sees it, and output that imitates a mark (a `cat` of
+a file holding one) is not taken for one: Terminal acts only on marks
+carrying its key, and takes every mark out of what the screen shows. Another
+shell writes no marks; a `command` session and an environment on a relay
+answer `"runs":false`. Their output is live only.
 
 ### A run
 
@@ -306,9 +313,17 @@ when it ends, by the Terminal that runs the session:
 | `started_ms`, `ended_ms`, `exit` | start, end and exit status; the duration is their difference |
 | `output` | the raw bytes it printed, escape sequences included, as one content-addressed `Bytes` blob (at most 4 MiB; `truncated` when it printed more) |
 | `tool`, `items` | which parser read it, and what it found |
+| `undoable` | whether what it changed is something Tilo can put back |
 
 No run writes a CRDT operation per character: the output is one blob, the
 rest a handful of fields.
+
+`undoable` is read once, from the command when it ended: a command that only
+looks (`ls`, `git status`, `cargo test`) is not undoable however much it
+printed, one whose change Tilo can put back (`rm`, `mv`, `cp`, `sed -i`) is,
+and one Tilo does not know is not offered. The past does not say: a `git
+commit` leaves what it replaced in the repository, so undo would have to ask
+git for it, and a command nobody listed is not guessed at.
 
 ### Parsers
 
@@ -414,6 +429,38 @@ Tilo ships no signature database, and this runtime does not provide one.
   `/var/lib/ush/quarantine` with its executable bits cleared, so the original
   path stops resolving. No file is moved there automatically.
 
+## `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`, `truncate` — actions, not syscalls
+
+These are the guest's own verbs, under the names the person already types.
+Each invocation is parsed into one typed action, planned against the tree as
+it is, checked against the environment's grants **as a whole** — so a command
+with forty operands is allowed or refused in one piece, never half done — and
+then carried out by the supervisor, which is the only side that can read the
+record. It is recorded in the audit log and in the environment's recoverable
+history, and `undo file-action ID` takes it back:
+
+```
+$ rm ~/src/notes.md
+done (1 operation); `undo file-action 1793051200-000` puts it back
+$ undo file-action 1793051200-000
+undid 1793051200-000 (1 operation)
+```
+
+Nothing is unlinked. `rm` renames the path into `/var/lib/tilo-recoverable`
+under the environment's own `/var`, an overwrite moves the previous contents
+aside the same way, and `rmdir` only ever removes an empty directory, so undo
+recreates it. `rm -f` is the one action that really removes — callers name it
+to the person before it runs, and undoing it has nothing to put back.
+
+`ush history` lists what was removed or replaced, newest first. A flag this
+runtime does not implement (`-i`, `-a`, `-L`, `--preserve`) is refused by name
+rather than quietly ignored, so a script that relied on it fails loudly
+instead of losing data quietly.
+
+Outside a guest the same verbs run in the host's own shell, where there is no
+environment record to check: the person's permissions are the only bound, and
+the history lives in `~/.local/share/ush/recoverable`.
+
 ## Commands
 
 ```
@@ -426,6 +473,8 @@ perm list            perm revoke ID
 scan PATH            guard status
 quarantine list | add PATH | restore PATH
 restart
+cp …  mv …  rm …  mkdir …  rmdir …  ln …  truncate …   one action each
+history [--json]     undo file-action ID
 tilo …  app …  store …  system …      brokered to the host session
 ```
 

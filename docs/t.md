@@ -115,6 +115,14 @@ still runs it when it has room, and tells you if your commit broke it. Results n
 could have affected come back at
 once from the cache.
 
+The extensive checks (the OS images and their layers, the macOS checks, the VM suites) hold
+scarce machines for hours: the one Mac, the KVM and large-disk nodes. Run one when you change
+what it tests: an image layer's files, the runtime or an app on macOS, a VM scenario. Don't run
+them for a small unrelated change: `main` runs them anyway (on its heads, when it has room, or
+nightly) and bisects a failure to the commit that caused it, and `stable` runs them all on each
+release candidate. `t test` runs only what you name, and `t test $(t scope --names)` only the
+default checks your change touches.
+
 Exit codes: `0` passed; `1` something failed that may be yours; `3` everything that failed also
 fails on `main`; `2` t couldn't do what was asked. Each failure comes with its relevant output and
 the command that reruns it.

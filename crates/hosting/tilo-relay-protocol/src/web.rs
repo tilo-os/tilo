@@ -29,6 +29,7 @@
 //! | `/join` | [`JoinStep`](crate::rooms::JoinStep) | [`JoinReply`](crate::rooms::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
 //! | `/channel-keys` ([`CHANNEL_KEYS_PATH`]) | [`ChannelKeysRequest`] | [`ChannelKeys`]; `403` when not admitted |
+//! | `/private` ([`PRIVATE_PATH`](crate::rooms::private::PRIVATE_PATH)) | [`PrivateCall`](crate::rooms::private::PrivateCall) | [`PrivateReply`](crate::rooms::private::PrivateReply) (a watch long-polls) |
 //! | `/workspace-join` ([`WORKSPACE_JOIN_PATH`]) | `tilo_workspace_join::JoinTransportRequest` | `JoinTransportResponse` |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
@@ -582,6 +583,10 @@ pub struct HerePerson {
     pub generated: bool,
     /// When the line last changed, Unix milliseconds.
     pub updated_ms: u64,
+    /// When the person last changed the profile this host keeps for them
+    /// (their name and picture), Unix milliseconds; 0 when it keeps none.
+    /// A page fetches the profile again when it changes.
+    pub profile_ms: u64,
 }
 
 #[cfg(test)]

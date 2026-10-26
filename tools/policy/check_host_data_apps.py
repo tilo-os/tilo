@@ -79,14 +79,16 @@ def check(root: Path) -> list[str]:
         declared = declares(directory)
         if reads_machine(manifest) and app not in EXCEPTIONS and not declared:
             findings.append(
-                f"apps/{app}: its manifest grants it the machine's state; declare what it "
+                f"apps/{app}/tilo-app.toml: its manifest grants it the machine's state; declare what it "
                 "shows with `const READS_HOST: &'static [ui::launch::HostSource]` on its "
                 "ResourceApp (or list it in EXCEPTIONS with the reason it shows none)"
             )
         if declared:
             findings.extend(plan_findings(root, app))
     stale = sorted(app for app in EXCEPTIONS if not (root / "apps" / app).is_dir())
-    findings.extend(f"EXCEPTIONS: {app} is no app any more" for app in stale)
+    findings.extend(
+        f"tools/policy/check_host_data_apps.py: EXCEPTIONS: {app} is no app any more" for app in stale
+    )
     return findings
 
 
@@ -96,10 +98,10 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     findings = check(args.root)
     for finding in findings:
-        print(finding, file=sys.stderr)
+        print(finding)
     if findings:
         return 1
-    print("host-data apps OK: each declares what it shows and is captured from scenarios")
+    print("host-data apps OK: each declares what it shows and is captured from scenarios", file=sys.stderr)
     return 0
 
 

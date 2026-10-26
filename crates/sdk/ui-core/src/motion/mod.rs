@@ -24,6 +24,7 @@
 //! | [`Feedback`] | press and hover tints |
 //! | [`ControlChange`] / [`Thumb`] / [`Mark`] | a switch's knob and tint, a checkbox's mark, a slider's thumb, a badge's count |
 //! | [`Attention`] | a refusal's shake, a single pulse |
+//! | [`Beckon`] | a control hint arriving, showing its gesture, and acknowledged |
 //!
 //! Every motion runs on [`MotionValue`]: a spring solved in closed form, so it
 //! is exact at any frame rate, retargets from where it is drawn *and how fast
@@ -46,6 +47,7 @@
 //! rejects easing math, ad-hoc springs and lerp-over-time anywhere else.
 
 mod appearing;
+mod beckon;
 mod clock;
 mod disclosure;
 mod kept;
@@ -63,6 +65,7 @@ mod value;
 mod tests;
 
 pub use appearing::Appearing;
+pub use beckon::{Arrival, Beckon, Completion};
 pub(crate) use clock::pin_frame;
 pub use clock::{
     frame_drawn, frame_now, frames_until, frames_wanted, frames_wanted_by, testing,

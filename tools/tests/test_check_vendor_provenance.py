@@ -89,7 +89,7 @@ class VendorProvenanceTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     checker.check(root),
-                    ["vendor/alpha/PROVENANCE.md does not name version 0.1.0 from its Cargo.toml"],
+                    ["vendor/alpha/PROVENANCE.md: does not name version 0.1.0 from its Cargo.toml"],
                     stale,
                 )
 

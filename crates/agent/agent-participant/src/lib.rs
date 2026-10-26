@@ -73,9 +73,10 @@ pub use model::{
 pub use participant::actions::{RECORD_PROVIDER, record_provider};
 pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped};
 pub use planner::{
-    DirectPlanner, NoReads, PlanContext, Planner, Reads, Step, StepAction, TurnRetries,
+    DirectPlanner, NoReads, Obligations, PlanContext, PlanRole, Planner, Reads, Role, Step,
+    StepAction, TurnRetries,
 };
-pub use room_actions::{HostActions, RoomActions, RoomRecordsLink};
+pub use room_actions::{FeedbackReviewer, HostActions, RoomActions, RoomRecordsLink};
 pub use worker::ConfinedReplica;
 
 // Unit tests admit peer bytes through the Automerge isolate, whose workers

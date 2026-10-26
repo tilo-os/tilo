@@ -95,9 +95,9 @@ pub struct BrokerChannels {
     /// `before_seq` bound and when the request left. Answers are accepted
     /// only while a request is outstanding.
     pub peer_history_requests: HashMap<ArtifactId, (u64, std::time::Instant)>,
-    /// The room each artifact's ops were validated in, by route. A history
-    /// page is only ever answered to that room.
-    pub rooms: HashMap<ArtifactId, String>,
+    /// The route (app, room, record) each artifact's ops were validated on
+    /// this session. A history page is only ever answered to that room.
+    pub routes: HashMap<ArtifactId, crate::route::CrdtRoute>,
 }
 
 /// How long a peer history request stays open for answers.
@@ -172,16 +172,23 @@ impl BrokerChannels {
                 .is_none_or(|gate| gate.accepts_history(encryption, channel))
     }
 
-    /// Append an op validated on a route in `cluster_id` to durable history
-    /// when it belongs there, bound to that room. Failure is logged, never
-    /// fatal: the op is still delivered live.
-    pub fn record_history(&mut self, cluster_id: &str, op: &SignedOp) {
-        self.rooms.insert(op.artifact, cluster_id.to_owned());
+    /// Append an op validated on `route` to durable history when it belongs
+    /// there, bound to its record and room. Failure is logged, never fatal:
+    /// the op is still delivered live.
+    pub fn record_history(&mut self, route: &crate::route::CrdtRoute, op: &SignedOp) {
+        if self.routes.get(&op.artifact) != Some(route) {
+            self.routes.insert(op.artifact, route.clone());
+        }
         if super::collab_history::CollabHistoryStore::retains(op)
             && let Some(history) = self.history.as_mut()
-            && let Err(error) = history.bind_room(op.artifact, cluster_id)
+            && let Err(error) = history.bind_record(
+                op.artifact,
+                &route.cluster_id,
+                &route.app_id,
+                &route.record_id,
+            )
         {
-            tracing::warn!(%error, artifact = ?op.artifact, "collab history: room binding failed");
+            tracing::warn!(%error, artifact = ?op.artifact, "collab history: record binding failed");
         }
         if let Some(history) = self.history.as_mut()
             && let Err(error) = history.record(op)
@@ -237,15 +244,57 @@ impl BrokerChannels {
         )
     }
 
+    /// The records of trees ([`ui::record::RecordId::tree`]: a chain's
+    /// parts, a container's children) of the app `subscriber` names in its
+    /// room that this device holds: ops of them were admitted here this
+    /// session ([`Self::record_history`]), or their history is kept on disk
+    /// from an earlier one. An app window that subscribes is told them, so
+    /// it holds what its room held before it ran, such as a chat's messages
+    /// a joining device was replayed before any Chat window was open. Empty
+    /// for a route that is not an app's in a room.
+    pub fn tree_records_held(&mut self, subscriber: &crate::route::CrdtRoute) -> Vec<String> {
+        if subscriber.app_id.is_empty()
+            || !subscriber.record_id.is_empty()
+            || !crate::route::CrdtRoute::is_addressable(&subscriber.cluster_id)
+        {
+            return Vec::new();
+        }
+        let (app_id, room) = (&subscriber.app_id, &subscriber.cluster_id);
+        let admitted = self
+            .routes
+            .values()
+            .filter(|route| route.app_id == *app_id && route.cluster_id == *room)
+            .map(|route| route.record_id.clone());
+        let kept = self
+            .history
+            .as_mut()
+            .map(|history| history.records_in(app_id, room))
+            .unwrap_or_default();
+        let mut held: Vec<String> = admitted
+            .chain(kept)
+            .filter(|record| {
+                ui::record::RecordId::parse(record)
+                    .and_then(|id| id.tree())
+                    .is_some()
+            })
+            .collect();
+        held.sort();
+        held.dedup();
+        held
+    }
+
     /// The room `artifact`'s ops were validated in, this session or, for
     /// durable history, an earlier one. An artifact never bound has no room
     /// whose members may page through it.
     pub fn room_of(&self, artifact: ArtifactId) -> Option<String> {
-        self.rooms.get(&artifact).cloned().or_else(|| {
-            self.history
-                .as_ref()
-                .and_then(|history| history.room_of(artifact))
-        })
+        self.routes
+            .get(&artifact)
+            .map(|route| route.cluster_id.clone())
+            .or_else(|| {
+                self.history
+                    .as_ref()
+                    .and_then(|history| history.room_of(artifact))
+            })
     }
 
     /// Whether to ask peers for history of `artifact` below `before_seq`:
@@ -279,7 +328,10 @@ impl BrokerChannels {
             self.peer_history_requests.remove(&artifact);
             return 0;
         }
-        let room = self.rooms.get(&artifact).cloned();
+        let room = self
+            .routes
+            .get(&artifact)
+            .map(|route| route.cluster_id.clone());
         let Some(history) = self.history.as_mut() else {
             return 0;
         };

@@ -338,6 +338,9 @@ struct Setup {
     /// Messages Bo wrote before the bridge first ran: channel, text, when
     /// (Unix ms).
     history: &'static [(&'static str, &'static str, u64)],
+    /// Messages an earlier bridge of this bot posted through its webhook,
+    /// before this one first ran: channel, shown name, text, when.
+    bridged_before: &'static [(&'static str, &'static str, &'static str, u64)],
 }
 
 /// A Discord server laid out before its bridge: a category "Channels" with #general and a
@@ -397,6 +400,10 @@ impl Bridge {
         let bo = User::new("3001", "Bo");
         for (channel, text, at_ms) in setup.history {
             fake.post_written(channel, &bo, text, *at_ms);
+        }
+        for (channel, name, text, at_ms) in setup.bridged_before {
+            let (webhook, _) = fake.create_webhook(channel);
+            fake.post_written_through(&webhook, channel, name, text, *at_ms);
         }
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
@@ -583,6 +590,44 @@ impl Bridge {
         self.room.part_as(&self.ada, invoke.into()).await;
     }
 
+    /// Ada reacts to `message` with `emoji` (`added`), or takes it back: the
+    /// framework's field edit of the message's reactions, as her page makes
+    /// it.
+    async fn ada_reacts(&self, message: &str, emoji: &str, added: bool) {
+        let reactions = chat::parts::ChatPart::paths()
+            .messages
+            .item(&Id::from_raw(message))
+            .reactions;
+        let edit = if added {
+            reactions.react(emoji)
+        } else {
+            reactions.unreact(emoji)
+        };
+        self.as_ada_on_messages(edit).await;
+    }
+
+    /// The reactions on Chat message `id`: emoji, persona and name.
+    async fn reactions_on(&self, id: &str) -> Vec<(String, Option<String>, Option<String>)> {
+        chat::messages::read_part(&self.room.part().await)
+            .messages
+            .iter()
+            .find(|(message, _)| message.as_str() == id)
+            .map(|(_, message)| {
+                message
+                    .reactions
+                    .iter()
+                    .map(|r| {
+                        (
+                            r.emoji.0.clone(),
+                            r.persona.as_ref().map(|p| p.0.clone()),
+                            r.name.as_ref().map(|n| n.0.clone()),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Ada posts `text` in #general; the new message's id.
     async fn ada_says(&self, text: &str) -> String {
         self.room
@@ -696,14 +741,7 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     .await;
 
     // A reaction is the bot's reaction on it.
-    bridge
-        .as_ada_on_messages(
-            chat::parts::ChatPart::REACT.with(chat::messages::chat_part::React {
-                message: Id::from_raw(&first),
-                emoji: "👍".into(),
-            }),
-        )
-        .await;
+    bridge.ada_reacts(&first, "👍", true).await;
     settle(&mut runner, "reaction", || async {
         bridge
             .fake
@@ -795,7 +833,7 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
         edited
             .reactions
             .iter()
-            .any(|reacted| reacted.emoji == "🎉")
+            .any(|reacted| reacted.emoji.0 == "🎉")
             .then_some(())
     })
     .await;
@@ -860,6 +898,93 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
             .iter()
             .any(|(id, _)| id.as_str() == message))
         .then_some(())
+    })
+    .await;
+}
+
+/// Reactions cross both ways, each Discord member their own reaction in
+/// Tilo, the server's custom emoji standing for the workspace's emoji of
+/// the same name, and nothing mirrored in going back out.
+#[tokio::test(flavor = "multi_thread")]
+async fn reactions_cross_both_ways_and_custom_emoji_by_name() {
+    let (bridge, mut runner) = Bridge::start().await;
+    // The server has an emoji `tilo_hello`; the bridge learns it.
+    bridge.fake.set_emojis(&[("tilo_hello", "55", false)]);
+    settle(&mut runner, "emoji observed", || async {
+        (bridge.room.guild().await.emoji("tilo_hello") == Some("55")).then_some(())
+    })
+    .await;
+    let first = bridge.ada_says("react to me").await;
+    let sent = settle(&mut runner, "post", || async {
+        bridge.discord_of(MappedKind::Message, &first).await
+    })
+    .await;
+
+    // Tilo to Discord: a Unicode emoji as itself, a workspace emoji as the
+    // server's emoji of its name.
+    bridge.ada_reacts(&first, "👍", true).await;
+    bridge.ada_reacts(&first, ":tilo_hello:", true).await;
+    settle(&mut runner, "Tilo reactions in Discord", || async {
+        (bridge.fake.bot_reactions_on(&sent) == ["👍", "tilo_hello:55"]).then_some(())
+    })
+    .await;
+    // A workspace emoji the server has none of stays in Tilo.
+    bridge.ada_reacts(&first, ":pizza:", true).await;
+    let calls = quiet(&mut runner, &bridge, "after pizza").await;
+    assert!(
+        !calls.iter().any(|call| call.contains("/reactions/")),
+        "{calls:?}"
+    );
+    assert_eq!(bridge.fake.bot_reactions_on(&sent), ["👍", "tilo_hello:55"]);
+
+    // Discord to Tilo: each member's own reaction, under their name; a
+    // custom emoji as its `:name:`.
+    let bo = User::new("3001", "Bo");
+    let cy = User::new("3002", "Cy");
+    bridge.fake.react(CHANNEL_GENERAL, &sent, &bo, "🎉");
+    bridge.fake.react(CHANNEL_GENERAL, &sent, &cy, "🎉");
+    bridge.fake.react(CHANNEL_GENERAL, &sent, &bo, ":party:");
+    let bridged = |reactions: &[(String, Option<String>, Option<String>)]| {
+        let mut theirs: Vec<(String, String, String)> = reactions
+            .iter()
+            .filter_map(|(emoji, persona, name)| {
+                Some((emoji.clone(), persona.clone()?, name.clone()?))
+            })
+            .collect();
+        theirs.sort();
+        theirs
+    };
+    settle(&mut runner, "Discord reactions in Tilo", || async {
+        let theirs = bridged(&bridge.reactions_on(&first).await);
+        (theirs
+            == [
+                (":party:".into(), "discord/3001".into(), "Bo".into()),
+                ("🎉".into(), "discord/3001".into(), "Bo".into()),
+                ("🎉".into(), "discord/3002".into(), "Cy".into()),
+            ])
+        .then_some(())
+    })
+    .await;
+    // What came in from Discord does not go back out as the bot's.
+    quiet(&mut runner, &bridge, "after Bo and Cy").await;
+    assert_eq!(bridge.fake.bot_reactions_on(&sent), ["👍", "tilo_hello:55"]);
+
+    // Taking reactions back follows on both sides.
+    bridge.fake.unreact(CHANNEL_GENERAL, &sent, &bo, "🎉");
+    settle(&mut runner, "Bo's reaction gone", || async {
+        let theirs = bridged(&bridge.reactions_on(&first).await);
+        (theirs
+            == [
+                (":party:".into(), "discord/3001".into(), "Bo".into()),
+                ("🎉".into(), "discord/3002".into(), "Cy".into()),
+            ])
+        .then_some(())
+    })
+    .await;
+    bridge.ada_reacts(&first, "👍", false).await;
+    bridge.ada_reacts(&first, ":tilo_hello:", false).await;
+    settle(&mut runner, "Ada's reactions gone from Discord", || async {
+        bridge.fake.bot_reactions_on(&sent).is_empty().then_some(())
     })
     .await;
 }
@@ -1061,6 +1186,28 @@ async fn a_new_room_takes_on_its_servers_layout_and_history() {
     let categories: Vec<&str> = chat.categories.values().map(|c| c.name.as_str()).collect();
     assert_eq!(categories, ["chat"]);
     assert!(bridge.room.guild().await.tilo_only.is_empty());
+}
+
+/// A room meeting a server that a bridge of the same bot posted in before
+/// reads its history before it adopts that bridge's webhook: what the
+/// bridge posted there is never taken in as written in Discord.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_room_leaves_out_what_its_bot_posted_before() {
+    let (bridge, mut runner) = Bridge::start_with(Setup {
+        room_seeded: true,
+        bridged_before: &[(CHANNEL_GENERAL, "Ada", "from the Lounge", WRITTEN_MS)],
+        history: &[(CHANNEL_GENERAL, "Hi?", WRITTEN_MS + 60_000)],
+        ..Setup::default()
+    })
+    .await;
+    settle(&mut runner, "Bo's history is in Chat", || async {
+        bridge.chat_message("Hi?").await
+    })
+    .await;
+    assert!(
+        bridge.chat_message("from the Lounge").await.is_none(),
+        "the bridge's own post came back in as Discord's"
+    );
 }
 
 /// Opted in, the bridge adds roles of its own and permissions for them, and

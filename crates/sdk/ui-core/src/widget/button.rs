@@ -24,6 +24,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 pub struct Button {
     id: String,
     label: String,
+    /// A labelled button that opens a menu shows a trailing chevron, so it
+    /// reads as a choice rather than an action.
+    pub(crate) opens_menu: bool,
     /// Accessible name for an icon-only button (empty visible label);
     /// left unset when the label itself serves as the accessible name.
     accessible_name: Option<String>,
@@ -177,6 +180,7 @@ impl Button {
             fill_width: false,
             role: ButtonRole::Secondary,
             toggled: None,
+            opens_menu: false,
             shortcut: None,
             measured_width: None,
             control_size: ControlSize::Regular,
@@ -938,6 +942,7 @@ impl FaceSizer {
             hint: None,
             flush: false,
             filled_icon: false,
+            menu: false,
         }
         .intrinsic_width(&self.metrics, text, self.metrics.height)
     }
@@ -965,6 +970,8 @@ struct FaceContent<'a> {
     flush: bool,
     /// Draw the icon filled (a toggle that is on, with a closed glyph).
     filled_icon: bool,
+    /// A trailing chevron after a label: the face opens a menu.
+    menu: bool,
 }
 
 impl FaceContent<'_> {
@@ -986,6 +993,9 @@ impl FaceContent<'_> {
         if let Some(hint) = &self.hint {
             width += metrics.hint_gap
                 + f64::from(text.measure_style(hint, None, &metrics.label_style).0);
+        }
+        if self.menu && !self.label.is_empty() {
+            width += metrics.icon_gap + metrics.icon;
         }
         if self.flush {
             width.ceil()
@@ -1073,7 +1083,12 @@ impl FaceContent<'_> {
             0.0
         };
         let pad = if self.flush { 0.0 } else { metrics.pad_x };
-        let room = (rect.width() - 2.0 * pad - lead).max(1.0);
+        let trail = if self.menu {
+            metrics.icon_gap + icon_px
+        } else {
+            0.0
+        };
+        let room = (rect.width() - 2.0 * pad - lead - trail).max(1.0);
         let hint = self.hint.as_ref().and_then(|hint| {
             let label_w = f64::from(ctx.text.measure_style(self.label, None, style).0);
             let hint_w = f64::from(ctx.text.measure_style(hint, None, style).0);
@@ -1087,7 +1102,7 @@ impl FaceContent<'_> {
                 .elide_to_width_style(self.label, f32_of_f64(label_room.max(1.0) + 0.5), style);
         let (label_w, label_h) = ctx.text.measure_style(&label, None, style);
         let hint_w = hint.map_or(0.0, |(_, w)| metrics.hint_gap + w);
-        let cluster = lead + f64::from(label_w) + hint_w;
+        let cluster = lead + f64::from(label_w) + hint_w + trail;
         let start_x = rect.center().x - cluster / 2.0;
         if let Some(icon) = self.icon {
             let iy = rect.center().y - icon_px / 2.0;
@@ -1104,6 +1119,18 @@ impl FaceContent<'_> {
         if let Some((hint, _)) = hint {
             let hint_x = label_x + f64::from(label_w) + metrics.hint_gap;
             ctx.text(hint, style, hint_ink, Point::new(hint_x, text_y), None);
+        }
+        if self.menu {
+            let ix = label_x + f64::from(label_w) + hint_w + metrics.icon_gap;
+            let iy = rect.center().y - icon_px / 2.0;
+            crate::icons::draw_icon(
+                ctx.scene,
+                ctx.transform,
+                Rect::new(ix, iy, ix + icon_px, iy + icon_px),
+                crate::icons::Icon::ChevronDown,
+                ink,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
         }
     }
 }
@@ -1380,6 +1407,7 @@ impl<'a> ButtonFace<'a> {
             hint: self.shortcut.as_ref().map(shortcut_text),
             flush: false,
             filled_icon: false,
+            menu: false,
         }
         .intrinsic_width(&metrics, text, metrics.height)
     }
@@ -1475,6 +1503,7 @@ impl Button {
                 // A painted face fills the rect its host gave it.
                 flush: false,
                 filled_icon: face.on && face.icon.is_some_and(fills_when_on),
+                menu: false,
             },
             metrics: &metrics,
         }
@@ -1523,6 +1552,7 @@ impl Button {
                 label: &label,
                 hint,
                 filled_icon: false,
+                menu: self.opens_menu,
             }
             .intrinsic_width(&self.metrics, text, self.face_height()),
         )
@@ -1794,6 +1824,7 @@ impl Widget for Button {
                 label: &label,
                 hint,
                 filled_icon: on && self.icon.is_some_and(fills_when_on),
+                menu: self.opens_menu,
             },
             metrics: &metrics,
         }
@@ -2003,10 +2034,18 @@ impl Widget for Button {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let label = localized_label(&self.label);
+        // The key the name was resolved from: the app's own copy when its
+        // catalogue holds it.
+        let mut key = self.label.as_str();
         let name = if label.is_empty() {
             // Icon-only: prefer the explicit accessible name, else fall
             // back to the tooltip text so the glyph is never silent when
             // a tooltip is set.
+            key = self
+                .accessible_name
+                .as_deref()
+                .or(self.tooltip.as_deref())
+                .unwrap_or_default();
             self.accessible_name
                 .as_ref()
                 .map(|n| i18n!(n))
@@ -2015,6 +2054,7 @@ impl Widget for Button {
         } else {
             Some(label)
         };
+        let interface = name.is_some() && crate::i18n::I18nManager::has_message(key);
         let role = if self.toggled.is_some() {
             Role::ToggleButton
         } else {
@@ -2024,6 +2064,7 @@ impl Widget for Button {
             .with_semantic_key(&self.id)
             .with_bounds(self.rect)
             .with_optional_name(name)
+            .with_interface_name(interface)
             .with_state(AccessState {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
@@ -2151,6 +2192,40 @@ impl Button {
 mod tests {
     use super::*;
     use crate::tokens::TextRole;
+
+    /// A button that opens a menu makes room for its chevron after the
+    /// label, so the label is never elided to fit it; an icon-only one
+    /// stays square.
+    #[test]
+    fn a_menu_button_makes_room_for_its_chevron() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let metrics = FaceMetrics::of_role(ControlSize::Small, ButtonRole::Secondary, &theme);
+        let width = |label: &str, menu: bool, text: &mut TextRenderer| {
+            FaceContent {
+                icon: None,
+                image: None,
+                badge: None,
+                label,
+                hint: None,
+                flush: false,
+                filled_icon: false,
+                menu,
+            }
+            .intrinsic_width(&metrics, text, metrics.height)
+        };
+        let label = "Administrator";
+        let plain = width(label, false, &mut text);
+        let menu = width(label, true, &mut text);
+        assert!(
+            (menu - plain - (metrics.icon_gap + metrics.icon)).abs() <= 1.0,
+            "{plain} then {menu}"
+        );
+        assert!((width("", true, &mut text) - metrics.height).abs() < 1e-9);
+        let button = Button::new("role", label).with_menu(Vec::new());
+        assert!(button.button().opens_menu);
+        assert!(!Button::new("save", "Save").opens_menu);
+    }
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

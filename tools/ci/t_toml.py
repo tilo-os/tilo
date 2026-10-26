@@ -45,9 +45,12 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
+import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import macos_apps  # noqa: E402
 import package_sets  # noqa: E402
 import products  # noqa: E402
 import t_matrix  # noqa: E402
@@ -168,7 +171,6 @@ def policy_checks(root: Path = ROOT) -> str:
     """One `policy/<name>` check per step of tools/policy/steps.toml, keyed by what the step reads
     and its own scripts. A step another check of t.toml runs (`covered_by`) gets none; that check
     has to run the same command."""
-    import tomllib
     declared = {check["name"]: check for check in tomllib.loads(T_TOML.read_text(encoding="utf-8")).get("check", [])}
     blocks = []
     for step in policy_steps.load(root):
@@ -189,9 +191,11 @@ def policy_checks(root: Path = ROOT) -> str:
             # Policy steps read the tree and build nothing (their tests stub cargo): no build
             # snapshot to lease and no target/ to prepare, which cost each step over a minute.
             "hints = { builds = false }",
-            # The tests make repositories and scratch files beside the sources, and some read
-            # release contracts at HEAD: t's own .git and a private writable view of the tree.
-            *(["git = true", "writable_sources = true"] if step.tests else []),
+            # The tests make repositories and scratch files beside the sources: a private
+            # writable view of the tree. Those that read the commit's history (release contracts
+            # at HEAD) get t's own .git too, which keys their result per commit.
+            *(["git = true"] if step.history else []),
+            *(["writable_sources = true"] if step.tests else []),
             f"inputs = {array(inputs)}",
         ]) + "\n")
     return "\n".join(blocks)
@@ -363,6 +367,13 @@ def apps_of(packages: dict[str, dict], root: Path, parent: str) -> set[str]:
 # dev-dependencies count (`dev`, by default: they do when it runs their tests or
 # examples), those whose tests or examples it runs (`tested`, by default all of
 # them where `dev`), and the other files it reads.
+#
+# t derives a package's reach from the manifests alone, so it counts every optional
+# dependency and every platform's. A check that builds its packages in one cargo
+# invocation with their default features for one `target` is keyed instead by the
+# directories cargo resolves for exactly that (`cargo tree --target`), the root
+# manifest and the whole lockfile: tilo-runtime on macOS doesn't build tilo-relay's
+# agents, which link every app, nor the Linux-only crates.
 CARGO_CHECKS: dict[str, dict] = {
     # Clippy of the apps with an Android host example, for both Android targets.
     "android": {
@@ -473,14 +484,66 @@ CARGO_CHECKS: dict[str, dict] = {
         "packages": lambda packages, root: {"tilo-relay"},
         "inputs": [],
     },
+    # The imager's tests, archived for the micro-VM check that runs them on an ext4 of its own
+    # (imager-tests). Built beside workspace-unify, as the test family builds them, which
+    # decides only the features they are built with: its manifest counts, not the sources of
+    # every crate it names.
+    "imager-tests-build": {
+        "packages": lambda packages, root: {"imager"},
+        "inputs": ["crates/dev/workspace-unify/Cargo.toml"],
+    },
     # The compiled helpers the micro-VM checks' scripts run, built for them.
     "vm-test-binaries": {
         "packages": lambda packages, root: {"tilo-image-policy-check", "tilo-crypto", "tilo-esp-write",
                                             "tilo-board-successor", "tilo-install-helpers"},
         "dev": False,
+        "target": "x86_64-unknown-linux-gnu",
         "inputs": [],
     },
+    # The per-user runtime checked on t's Mac, all targets: its dev-dependencies are compiled,
+    # its tests don't run.
+    "runtime-macos": {
+        "packages": lambda packages, root: {"tilo-runtime"},
+        "target": "aarch64-apple-darwin",
+        "tested": set(),
+        "inputs": [],
+    },
+    # Every app that runs on macOS, built and tested on t's Mac. tools/ci/macos_apps.py picks
+    # them from the apps' manifests.
+    "apps-macos": {
+        "packages": lambda packages, root: set(macos_apps.macos_apps(root)),
+        "target": "aarch64-apple-darwin",
+        "inputs": ["tools/ci/macos_apps.py", "apps/*/tilo-app.toml", "apps/*/Cargo.toml", "tools/font-catalog.py",
+                   ".config/nextest.toml"],
+    },
 }
+
+
+def resolved_dirs(names: set[str], target: str, dev: bool, root: Path = ROOT) -> set[str]:
+    """The directories of the local packages cargo builds for `names` on `target` with their
+    default features, and with `dev` their own dev-dependencies: what `cargo tree` resolves, so
+    optional dependencies nothing turns on and other platforms' are left out."""
+    command = ["cargo", "tree", "--locked", "--target", target, "--edges", "normal,build" + (",dev" if dev else ""),
+               "--prefix", "none", "--format", "{p}"]
+    for name in sorted(names):
+        command += ["--package", name]
+    output = subprocess.check_output(command, cwd=root, text=True)
+    top = root.resolve()
+    dirs = {Path(match[1]).resolve().relative_to(top).as_posix()
+            for match in re.finditer(r"\((/[^)]*)\)", output)}
+    # cargo tree takes build-dependencies for the host it runs on, which isn't the target's host
+    # and differs between t's nodes: no local crate may be one only on some host.
+    workspace = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8")).get("workspace", {})
+    shared = workspace.get("dependencies", {})
+    for directory in sorted(dirs):
+        manifest = tomllib.loads((root / directory / "Cargo.toml").read_text(encoding="utf-8"))
+        for platform, table in manifest.get("target", {}).items():
+            for key, spec in table.get("build-dependencies", {}).items():
+                spec = shared.get(key, {}) if isinstance(spec, dict) and spec.get("workspace") else spec
+                if isinstance(spec, dict) and "path" in spec:
+                    raise ValueError(f"{directory}/Cargo.toml: build-dependency {key} only for {platform} is a local "
+                                     "crate, which cargo tree resolves for its own host only")
+    return dirs
 
 
 # The size checks (tools/apps/t-release.sh thin-runtime, app-size and runtime-size). Each compiles
@@ -490,6 +553,8 @@ CARGO_CHECKS: dict[str, dict] = {
 # `runtime-size-<arch>` need it, so their keys hold its key, and compile only their apps on it.
 # They read:
 SIZE_ARCHES = [("x86_64", "arch=x86_64"), ("aarch64", "arch=arm64")]
+# The architecture whose app sizes the push gate checks (tools/ci/pre_push.py SIZE_ARCH).
+PUSH_GATE_SIZE_ARCH = "aarch64"
 # to compile: t-release.sh and what it sources, the app plan (app_release.py, which reads every
 # app's manifests and the collections), the architecture guard, package-apps.sh up to its
 # compile, build-thin-apps.sh and the rustc wrappers it puts in front of the compiler;
@@ -539,7 +604,6 @@ def resolution_manifests(packages: dict[str, dict], names: set[str]) -> list[str
     patched in) and the whole lockfile."""
     tops = {Path(packages[name]["manifest_path"]).resolve().relative_to(ROOT).parts[0]
             for name in local_closure(packages, names, False)}
-    import tomllib
     root = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
     for table in root.get("patch", {}).values():
         tops |= {Path(spec["path"]).parts[0] for spec in table.values() if isinstance(spec, dict) and "path" in spec}
@@ -555,7 +619,6 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
     apps = module.resolve_collection("default", catalog, module.config(ROOT / "dist/apps/app-collections.toml"))
     engines = module.runtime_engines(ROOT)
     runtime = {"runtime-dylib", *engines}
-    import tomllib
     without_media = tomllib.loads(RUNTIME_SIZE_BUDGET.read_text(encoding="utf-8"))["apps_without_media"]
     by_binary = {catalog[app]["binary"]: app for app in apps}
     missing = sorted(set(without_media) - by_binary.keys())
@@ -588,11 +651,14 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
             lines += [f'requirement = {{ cores = 8, memory = "{memory}" }}', f"needs = [{json.dumps(shared)}]"]
         lines += ["timeout_secs = 5400", 'cost = "heavy"', "default = false"]
         if shared is None:
-            # Built for every main push that changes it (`main`), so the push gate's size check of
-            # an app a commit changes (tools/ci/pre_push.py, aarch64) finds the runtime of the main
-            # it lands on built and compiles only that app; `idle` would wait for t to have room,
-            # which a busy t rarely has. A push that leaves the runtime's inputs alone reuses it.
-            lines.append('on = ["main", "idle"]')
+            # The push gate's architecture's is built for every main push that changes it
+            # (`main`), so the gate's size check of an app a commit changes (tools/ci/pre_push.py)
+            # finds the runtime of the main it lands on built and compiles only that app; `idle`
+            # would wait for t to have room, which a busy t rarely has. A push that leaves the
+            # runtime's inputs alone reuses it. The other architecture's only the size checks
+            # named for it use, so it waits for room.
+            on = ["main", "idle"] if name.endswith(f"-{PUSH_GATE_SIZE_ARCH}") else ["idle"]
+            lines.append(f"on = {json.dumps(on)}")
         return "\n".join(lines) + "\n" + cargo_check(name, spec, manifest, packages, ROOT)
 
     shared = [check(f"thin-runtime-{arch}", f"bash tools/apps/t-release.sh thin-runtime {arch}",
@@ -620,7 +686,6 @@ def size_matrices(per_arch: list[list[str]], app_size: dict[str, list[str]], app
     lists, and once for each set of apps whose checks differ otherwise (what their packages read
     beyond their directory). Verified to expand into exactly the checks written out one by one, so
     their keys are those."""
-    import tomllib
     concrete = {app: [tomllib.loads(block)["check"][0] for block in blocks] for app, blocks in app_size.items()}
     arches = [{"arch": arch, "node": node} for arch, node in SIZE_ARCHES]
 
@@ -654,8 +719,12 @@ def size_matrices(per_arch: list[list[str]], app_size: dict[str, list[str]], app
     listed = tree("apps/*/tilo-app.toml")
     blocks = []
     for checks in per_arch:
-        shape = template(tomllib.loads(checks[0])["check"][0], arches[0])
-        blocks.append(products.check(shape, None, {"arch": arches}))
+        each = [template(tomllib.loads(block)["check"][0], values) for block, values in zip(checks, arches)]
+        shape = each[0]
+        # Fields one architecture's check says otherwise, as the matrix's `set` for it.
+        sets = [{"when": {"arch": values["arch"]}, **{k: v for k, v in fields.items() if shape.get(k) != v}}
+                for fields, values in zip(each[1:], arches[1:]) if fields != shape]
+        blocks.append(products.check(shape, None, {"arch": arches, **({"set": sets} if sets else {})}))
     for i, (shape, members) in enumerate(groups):
         if i == 0:
             axis = {"from": "apps/*/tilo-app.toml"}
@@ -740,11 +809,23 @@ def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict
         raise ValueError(f"{name}: no workspace package is called {', '.join(missing)}")
     dev = spec.get("dev", True)
     tested = spec.get("tested", names if dev else set())
-    reach = local_closure(packages, names, dev)
+    target = spec.get("target")
+    if target:
+        dirs = resolved_dirs(names, target, dev, root)
+        by_dir = {Path(p["manifest_path"]).resolve().parent.relative_to(root.resolve()).as_posix(): name
+                  for name, p in packages.items()}
+        reach = {by_dir[directory] for directory in dirs if directory in by_dir}
+    else:
+        reach = local_closure(packages, names, dev)
     reads: set[str] = set()
     for reader in manifest.cargo:
         if reader.package in reach:
             reads |= {glob(path) for path in reader.inputs} if reader.package in tested else compiled_reads(reader)
+    if target:
+        reads = {path for path in reads if not any(path.startswith(directory + "/") for directory in dirs)}
+        inputs = [*spec["inputs"], "Cargo.toml", "Cargo.lock", *sorted(f"{directory}/**" for directory in dirs)]
+        inputs = list(dict.fromkeys([*inputs, *sorted(reads - set(inputs))]))
+        return f"inputs = {array(inputs)}\n"
     if spec.get("drop_covered"):
         dirs = {Path(p["manifest_path"]).resolve().parent: name for name, p in packages.items()}
         reads = {path for path in reads if not covered(path, packages, reach, root, dirs)}
@@ -767,9 +848,29 @@ def untested(packages: dict[str, dict]) -> list[str]:
                   if not any(target.get("test") for target in package["targets"]))
 
 
+def micro_vm_tested() -> list[str]:
+    """The packages .config/nextest-filters.toml's `micro_vm` filter names: their tests run in a
+    micro-VM check of their own (imager-tests), not in the test family."""
+    import tomllib
+    filters = tomllib.loads((ROOT / ".config" / "nextest-filters.toml").read_text(encoding="utf-8"))
+    return re.findall(r"package\(([\w-]+)\)", filters["micro_vm"])
+
+
+# Packages whose tests and lints cost main a lot for what they catch: no breaking commit in a
+# week of main while running on most pushes. Their checks run as `test-idle/<package>` and
+# `clippy-idle/<package>`, on main's newest head when t has room (which bisects a failure to
+# its commit), on release candidates and by name.
+IDLE_TESTS = ["canvas", "music", "pdf-viewer", "tilo-ui"]
+IDLE_LINTS = ["music", "tilo-messaging-protocol"]
+
+
 def test_families(packages: dict[str, dict]) -> dict[str, str]:
-    return {"test-exclude": f"exclude = {array(sorted({*X86_64_ONLY_TESTS, *untested(packages)}))}\n",
-            "test-x86_64-packages": f"packages = {array(X86_64_ONLY_TESTS)}\n"}
+    excluded = {*X86_64_ONLY_TESTS, *IDLE_TESTS, *untested(packages), *micro_vm_tested()}
+    return {"test-exclude": f"exclude = {array(sorted(excluded))}\n",
+            "test-x86_64-packages": f"packages = {array(X86_64_ONLY_TESTS)}\n",
+            "test-idle-packages": f"packages = {array(IDLE_TESTS)}\n",
+            "clippy-exclude": f"exclude = {array(['workspace-unify', *IDLE_LINTS])}\n",
+            "clippy-idle-packages": f"packages = {array(IDLE_LINTS)}\n"}
 
 
 def cargo_checks(manifest: suites.Manifest, metadata: dict | None = None) -> dict[str, str]:
@@ -803,8 +904,8 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
     metadata = workspace_graph.cargo_metadata(ROOT)
     manifest = with_dependency_inputs(manifest, {p["name"]: p for p in metadata["packages"]}, ROOT)
     inputs = package_inputs(manifest)
-    return {"test-package-inputs": inputs, "test-x86_64-package-inputs": inputs, "clippy-package-inputs": inputs,
-            "check-package-inputs": inputs, "suites": suite_checks(manifest),
+    return {"test-package-inputs": inputs, "test-x86_64-package-inputs": inputs, "test-idle-package-inputs": inputs,
+            "clippy-package-inputs": inputs, "clippy-idle-package-inputs": inputs, "check-package-inputs": inputs, "suites": suite_checks(manifest),
             "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "security-reads": security_reads(), "policy-steps": policy_checks(),

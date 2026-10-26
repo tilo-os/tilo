@@ -156,7 +156,7 @@ impl ShellOverlayHost {
     /// Shared by the draw pass and the click router, so the rect that
     /// paints the button is the rect that can be clicked.
     pub(super) fn ws_settings_invite_rect(&self) -> Rect {
-        WorkspaceSettingsOverlay::invite_rect_for(self.ws_settings_rect())
+        self.workspace_settings_overlay.invite_rect()
     }
 
     /// Signed-invite button geometry for integration tests.

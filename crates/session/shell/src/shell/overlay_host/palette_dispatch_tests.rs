@@ -1953,8 +1953,8 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
     }
 
     /// A pending launch must outlive the fork (nothing on screen yet) but
-    /// settle the moment the window's own place says which app is coming,
-    /// so the app can be opened again.
+    /// settle the moment the window stands, its place reserved, so the app
+    /// can be opened again.
     fn a_pending_launch_stands_until_the_window_place_speaks_for_itself() {
         const SURFACE: u64 = 918_273;
         let (h, chrome) = host_with_launch_polling();
@@ -1968,8 +1968,8 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
             "so.tilo.retirefixture"
         ));
 
-        // Adoption isn't the end of the wait — for the first moments the
-        // tab holds nothing visible.
+        // Adoption isn't the end of the wait — for its first frame budget
+        // the window holds nothing visible.
         let store = crate::compositor::foreign::store();
         store.forget(SURFACE);
         {
@@ -1992,11 +1992,11 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
 
         store.backdate_first_seen(
             SURFACE,
-            crate::compositor::foreign::OPENING_DELAY + std::time::Duration::from_millis(50),
+            ui::arriving::frame_budget() + std::time::Duration::from_millis(50),
         );
         assert!(
             h.settle_launches_of_opened_windows(),
-            "the window's own place is naming the app; the launch is settled"
+            "the window's place is reserved on screen; the launch is settled"
         );
         assert!(!crate::shell::catalogue::pending_launch(
             "so.tilo.retirefixture"
@@ -2005,8 +2005,8 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
     }
 
     /// The other way the hand-over can happen: an app fast enough to paint
-    /// before the card was ever due still settles the open.
-    fn a_window_that_paints_before_the_card_is_due_settles_the_open_too() {
+    /// inside its frame budget still settles the open.
+    fn a_window_that_paints_inside_its_budget_settles_the_open_too() {
         const SURFACE: u64 = 918_274;
         let (h, chrome) = host_with_launch_polling();
         crate::shell::catalogue::note_pending_launch("so.tilo.retirefixture");
@@ -2066,7 +2066,7 @@ fn loading_card_offers_its_gestures_and_settles_when_the_window_paints() {
 
     each_face_of_the_card_offers_its_own_gesture_as_a_button();
     a_pending_launch_stands_until_the_window_place_speaks_for_itself();
-    a_window_that_paints_before_the_card_is_due_settles_the_open_too();
+    a_window_that_paints_inside_its_budget_settles_the_open_too();
     escape_still_dismisses_the_card();
 }
 

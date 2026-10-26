@@ -594,8 +594,10 @@ fn history_messages(app: &str, resource: &Value) -> Vec<String> {
 
 /// What `tilo-app check` reports about the app's surface: unbound controls,
 /// drift from the committed file, incompatible storage changes without a
-/// version bump, and missing history messages. A missing committed file is
-/// `missing`'s level.
+/// version bump, and history messages the catalogue lacks. A missing
+/// committed file is `missing`'s level; a missing history message is an
+/// error whenever the catalogue was read, because the app's history then
+/// reads in the framework's generic words instead of its own.
 #[must_use]
 pub fn findings(
     app: &str,
@@ -698,7 +700,7 @@ pub fn findings(
             let _ = write!(message, "{}", missing.join(", "));
             out.findings.push(ContractFinding {
                 path: PathBuf::from("locales/en-US.ftl"),
-                ..finding(Level::Warning, "history-message", message)
+                ..finding(Level::Error, "history-message", message)
             });
         }
     }
@@ -1025,8 +1027,12 @@ mod tests {
             [
                 ("storage", Level::Error),
                 ("surface", Level::Error),
-                ("history-message", Level::Warning)
+                ("history-message", Level::Error)
             ]
+        );
+        assert!(
+            !found.passed(),
+            "an app whose history messages the catalogue lacks is not checked"
         );
         assert!(found.findings[1].message.contains("verb `retitle`"));
         assert!(found.findings[2].message.contains("notes-retitle"));

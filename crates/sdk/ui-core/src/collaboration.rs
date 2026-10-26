@@ -751,6 +751,17 @@ impl CollaborationState {
     pub fn is_ready(&self) -> bool {
         matches!(self, Self::Ready)
     }
+
+    /// Why requests do not currently reach peers: the transport's own reason
+    /// when it is offline, and what is still outstanding otherwise. A host
+    /// reporting a refusal can name the cause instead of leaving it unknown.
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Ready => "connected",
+            Self::Connecting => "still connecting",
+            Self::Offline(reason) => reason,
+        }
+    }
 }
 
 /// Reason reported by a manager that never had a service to reach.

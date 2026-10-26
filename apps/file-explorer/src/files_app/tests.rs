@@ -2132,14 +2132,24 @@ mod command_path_tests {
             FileCommand::Up,
             "trying again can't fix a permission; going up can"
         );
-        assert_eq!(w.folder_recovery_label(), t("files-open-enclosing"));
+        assert_eq!(recovery_label(&w), t("files-open-enclosing"));
 
         let odd = std::io::Error::from_raw_os_error(5).to_string();
         w.error = Some(t_args("files-directory-read-failed", &[arg("error", odd)]));
         let (_, detail, _) = w.state_surface_copy().expect("error state copy");
         assert!(!detail.contains("os error"), "{detail}");
         assert_eq!(w.folder_recovery_command(), FileCommand::Refresh);
-        assert_eq!(w.folder_recovery_label(), t("files-try-again"));
+        assert_eq!(recovery_label(&w), t("files-try-again"));
+    }
+
+    /// What the failed listing's button says, as the pane shows it.
+    fn recovery_label(w: &FileExplorerWidget) -> String {
+        let pane = w.build_content_pane(&ui::theme::Theme::dark());
+        let state = pane.accessibility().expect("the failure is a state");
+        let [action] = state.children.as_slice() else {
+            panic!("a failure offers one way on: {state:?}");
+        };
+        action.name.clone().unwrap_or_default()
     }
 
     fn retry_refresh_recovers_from_error_once_the_dir_exists() {
@@ -4184,7 +4194,7 @@ mod command_path_tests {
         else {
             panic!("Files hands the selected version to Workspace Activity");
         };
-        assert_eq!(entry.author.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(entry.author.name, "Scribe · Software, for Ada Lovelace");
         assert_eq!(entry.author.relation, ui::widget::AuthorRelation::Software);
         let attribution = entry.author.attribution.expect("who acted for whom");
         assert_eq!(attribution.actor, "agent:scribe");
@@ -5120,6 +5130,19 @@ mod responsive_body_tests {
             find(&self.w, name)
         }
 
+        /// The pane's empty state, as assistive technology reads it, and
+        /// where its action stands.
+        fn empty_state(&self) -> Option<(ui::a11y::AccessNode, vello::kurbo::Rect)> {
+            fn find(w: &dyn Widget) -> Option<(ui::a11y::AccessNode, vello::kurbo::Rect)> {
+                if w.name() == "EmptyState" {
+                    let action = w.synthetic_accessibility_rect(&[0]).unwrap_or_default();
+                    return w.accessibility().map(|node| (node, action));
+                }
+                w.children().into_iter().find_map(find)
+            }
+            find(&self.w)
+        }
+
         /// Run a real draw pass so immediate-mode children (the file view)
         /// publish their per-frame geometry — e.g. the in-place rename field's
         /// rect.
@@ -5527,7 +5550,9 @@ mod responsive_body_tests {
         h.lay_out(390.0, 780.0);
         h.draw();
 
-        let retry = h.w.state_retry.get_rect();
+        let (_, retry) = h
+            .empty_state()
+            .expect("the failure is the pane's empty state");
         assert!(
             retry.width() >= 120.0 && retry.y0 > 0.0,
             "retry is a usable target: {retry:?}"
@@ -6210,9 +6235,14 @@ mod accessibility_tests {
         let loading = Widget::accessibility(&widget).unwrap();
         assert!(loading.state.busy);
         assert!(loading.value.as_deref().unwrap().starts_with("Loading "));
-        assert_eq!(loading.children.len(), 1);
-        assert_eq!(loading.children[0].name.as_deref(), Some("Opening folder"));
-        assert_eq!(loading.children[0].live, Some(Politeness::Polite));
+        let theme = ui::theme::Theme::dark();
+        let pane = widget.build_content_pane(&theme);
+        let state = pane
+            .accessibility()
+            .expect("the pane says the folder is opening");
+        assert_eq!(state.name.as_deref(), Some("Opening folder"));
+        assert_eq!(state.live, Some(Politeness::Polite));
+        assert!(state.state.busy);
 
         widget.is_loading = false;
         widget.error = Some("permission denied".into());
@@ -6225,7 +6255,8 @@ mod accessibility_tests {
                 .unwrap()
                 .contains("permission denied")
         );
-        let state = error.children.first().expect("error state semantic group");
+        let pane = widget.build_content_pane(&theme);
+        let state = pane.accessibility().expect("error state semantic group");
         let name = widget
             .current_path()
             .file_name()
@@ -6238,7 +6269,7 @@ mod accessibility_tests {
         assert_eq!(state.live, Some(Politeness::Assertive));
         let retry = state.children.first().expect("retry semantic action");
         assert_eq!(retry.role, Role::Button);
-        assert_eq!(retry.action_target.as_deref(), Some("files-retry-folder"));
+        assert_eq!(retry.action_target.as_deref(), Some(RETRY_ROW));
     }
 
     fn deterministic_shot_seams_cover_loading_and_actionable_error_states() {

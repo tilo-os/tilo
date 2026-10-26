@@ -349,6 +349,13 @@ pub trait Resource: Sized + 'static {
     /// shows when it checks work done on the resource.
     const HAS_FACTS: bool = false;
 
+    /// The record's own table, for a resource that is a record: what
+    /// generic code reads a field's value through without the record's type
+    /// (the framework, a window's [`Reactions`](crate::Reactions) with
+    /// [`record_reactions`](crate::reactions::record_reactions)).
+    /// `#[resource]` names the record's; none otherwise.
+    const RECORD_TABLE: Option<&'static crate::table::ModelTable> = None;
+
     /// What the resource holds as a compact summary of plain values, meant
     /// for checking it against a request: names, times, counts and text as
     /// a person would state them (a cut's shots with their source, in and
@@ -919,7 +926,10 @@ use field_edit::rooted_edit_spec;
 
 /// The published spec of [`FIELD_EDIT`], where `now` holds the values of
 /// the fields that weaken one way ([`weakening_now`]).
-fn field_edit_spec(vocabulary: &'static Vocabulary, now: Vec<(String, String)>) -> ActionSpec {
+pub(crate) fn field_edit_spec(
+    vocabulary: &'static Vocabulary,
+    now: Vec<(String, String)>,
+) -> ActionSpec {
     // Built once per type: it describes every editable path, which only
     // the type decides.
     let schema = per_type(vocabulary, TypeSchema::Edit, &|| {
@@ -2284,7 +2294,7 @@ fn object_arg(
     }
 }
 
-fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
+pub(crate) fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("resource.apply_spec");
     let read = move |args: &tilo_actions::ActionArgs| match object_arg(args, APPLY_PARAM) {
@@ -2407,7 +2417,7 @@ pub(crate) fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> Encode
     EncodedAction::written(crate::group::group_type_of(vocabulary.action_type), payload)
 }
 
-fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
+pub(crate) fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("resource.group_spec");
     let build = move |args: &tilo_actions::ActionArgs, now_ms: i64| {
@@ -2563,6 +2573,21 @@ pub(crate) fn publish_parts<R: Resource>(
         crate::items::offered_bound(&children, decl)
     })
     .with_children(children)
+}
+
+/// The resource tree published for one open document ([`publish`]) whose
+/// state its holder could not read: its declared actions, [`APPLY`],
+/// [`GROUP`](crate::GROUP) and the field edit, each unavailable for
+/// `reason`, so a caller learns why they do not apply instead of finding a
+/// hole in the surface. What a state would offer — its children, its views,
+/// which actions can be taken now — is not published: there is no state to
+/// read it from.
+pub fn unreadable_parts<R: Resource>(
+    id: &str,
+    label: &str,
+    reason: &str,
+) -> tilo_actions::Resource {
+    crate::unreadable::parts::<R>(id, label, reason)
 }
 
 /// What a resource's own publication reads of its state.

@@ -159,6 +159,13 @@ impl App {
         &self.collaboration.manager
     }
 
+    /// The window's collaboration, for a test of what it does once the
+    /// transport fails.
+    #[cfg(test)]
+    pub(crate) fn collaboration_manager_mut(&mut self) -> &mut CollaborationManager {
+        &mut self.collaboration.manager
+    }
+
     pub fn record_tick(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
         let native = self.collaboration.manager.has_native_committed_primary();

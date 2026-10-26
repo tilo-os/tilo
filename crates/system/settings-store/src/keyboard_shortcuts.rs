@@ -61,7 +61,7 @@ impl ShortcutCategory {
 
 impl ShortcutAction {
     /// Every rebindable desktop action, in the order it is listed.
-    pub const ALL: [Self; 63] = [
+    pub const ALL: [Self; 64] = [
         Self::Search,
         Self::WorkspaceOverview,
         Self::Lock,
@@ -122,6 +122,7 @@ impl ShortcutAction {
         Self::EmojiPicker,
         Self::AskAgent,
         Self::SaySomething,
+        Self::ReportProblem,
         Self::DictationToggle,
         Self::DictationFinish,
         Self::DictationCancel,
@@ -191,6 +192,7 @@ impl ShortcutAction {
             Self::EmojiPicker => "emoji-picker",
             Self::AskAgent => "ask-agent",
             Self::SaySomething => "say-something",
+            Self::ReportProblem => "report-problem",
             Self::DictationToggle => "dictation-toggle",
             Self::DictationFinish => "dictation-finish",
             Self::DictationCancel => "dictation-cancel",
@@ -223,7 +225,8 @@ impl ShortcutAction {
             | Self::NextInputSource
             | Self::EmojiPicker
             | Self::AskAgent
-            | Self::SaySomething => ShortcutCategory::System,
+            | Self::SaySomething
+            | Self::ReportProblem => ShortcutCategory::System,
             Self::FocusPreviousWindow
             | Self::FocusNextWindow
             | Self::PreviousTab

@@ -44,6 +44,14 @@
 ; fails with EPERM, status 203/EXEC.
 (allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))
 
+; tilo-firstboot-user.service (initrc_t) runs with NoNewPrivileges=yes and
+; creates the first account with useradd (useradd_t) and sets its password
+; with chpasswd and chage (passwd_t). Under no_new_privs those are bounded
+; transitions that need their own permission; denied, the tools run on in
+; initrc_t instead of the domains that confine them and label what they write.
+(allow initrc_t useradd_t (process2 (nnp_transition nosuid_transition)))
+(allow initrc_t passwd_t (process2 (nnp_transition nosuid_transition)))
+
 ; --- what fs does, grouped by subsystem -------------------------------------
 ; Types the domain attribute already grants (proc, sysfs, /dev/null and
 ; urandom, shared libraries, locale, its own process signals, unix stream

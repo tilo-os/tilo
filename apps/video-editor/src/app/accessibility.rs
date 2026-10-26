@@ -1191,6 +1191,17 @@ impl VideoEditorApp {
                     .with_key(ui::a11y::hash_key(&"export.failure-details"))
                     .with_live(ui::a11y::Politeness::Assertive),
             );
+        } else if let Some(reason) = self.export_blocker() {
+            // Why Export is withdrawn, where the painted dialog says it too:
+            // the button is disabled, and a disabled button that names no
+            // reason is a wall.
+            kids.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name("Why export cannot run")
+                    .with_value(reason)
+                    .with_key(ui::a11y::hash_key(&"export.blocked"))
+                    .with_live(ui::a11y::Politeness::Polite),
+            );
         }
         AccessNode::new(Role::Dialog)
             .with_name("Export video")

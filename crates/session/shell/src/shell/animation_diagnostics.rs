@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-pub(crate) const HOST_SOURCE_NAMES: [&str; 28] = [
+pub(crate) const HOST_SOURCE_NAMES: [&str; 30] = [
     "root-transition",
     "quick-settings",
     "workspace-settings",
@@ -37,6 +37,8 @@ pub(crate) const HOST_SOURCE_NAMES: [&str; 28] = [
     "dictation",
     "emoji-picker",
     "display-confirm",
+    "feedback-picker",
+    "control-hints",
 ];
 
 #[allow(
@@ -77,6 +79,9 @@ pub(crate) struct HostDemandInputs {
     pub dictation: bool,
     pub emoji_picker: bool,
     pub display_confirm: bool,
+    /// Pointing at what is wrong, to report it.
+    pub feedback_picker: bool,
+    pub control_hints: bool,
 }
 
 /// The bit of [`host_bits`] that says the workspace content animates.
@@ -114,6 +119,8 @@ pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
         | (u32::from(inputs.dictation) << 25)
         | (u32::from(inputs.emoji_picker) << 26)
         | (u32::from(inputs.display_confirm) << 27)
+        | (u32::from(inputs.feedback_picker) << 28)
+        | (u32::from(inputs.control_hints) << 29)
 }
 
 pub(crate) fn host_labels(bits: u32) -> impl Iterator<Item = &'static str> {
@@ -238,6 +245,8 @@ mod tests {
             dictation: false,
             emoji_picker: false,
             display_confirm: false,
+            feedback_picker: false,
+            control_hints: false,
         };
         assert_eq!(host_bits(&inputs(false, false)), 0);
         assert_eq!(host_bits(&inputs(true, false)), 1);

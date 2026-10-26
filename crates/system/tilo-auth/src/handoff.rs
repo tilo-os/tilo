@@ -5,8 +5,9 @@
 //! It never touches disk; `tilo-authd` reads and unlinks it when it starts.
 
 use crate::keyring::{
-    KEY_POS_READ, KEY_POS_VIEW, KEY_SPEC_USER_KEYRING, KEY_USR_READ, KEY_USR_VIEW,
-    KEYCTL_SET_TIMEOUT, KEYCTL_SETPERM, check, keyctl, ours, read_payload, unlink,
+    KEY_POS_READ, KEY_POS_VIEW, KEY_SPEC_PROCESS_KEYRING, KEY_SPEC_USER_KEYRING, KEY_USR_READ,
+    KEY_USR_VIEW, KEYCTL_LINK, KEYCTL_SET_TIMEOUT, KEYCTL_SETPERM, check, keyctl, ours,
+    read_payload, unlink, unlink_from,
 };
 use crate::userkey::{KEY_LEN, UserKey};
 use std::ffi::{CString, c_long};
@@ -44,6 +45,12 @@ impl Handoff {
 
 /// Leave `handoff` for the session. Any earlier handoff goes first, so the
 /// session never finds a stale one beside it.
+///
+/// The key is made in this process's keyring, where it is possessed: a
+/// service's session keyring does not link the user keyring, and a new key
+/// grants setting its timeout and permissions to its possessor only. Once
+/// set up it is linked into the user keyring and the process keyring lets
+/// go of it.
 pub fn add(handoff: &Handoff, description: &str) -> io::Result<()> {
     for stale in ours(description)? {
         unlink(stale);
@@ -60,19 +67,24 @@ pub fn add(handoff: &Handoff, description: &str) -> io::Result<()> {
             desc.as_ptr(),
             payload.as_ptr(),
             payload.len(),
-            c_long::from(KEY_SPEC_USER_KEYRING),
+            c_long::from(KEY_SPEC_PROCESS_KEYRING),
         )
     })?;
-    let set_up = keyctl(KEYCTL_SET_TIMEOUT, serial, c_long::from(TIMEOUT_S), 0).and_then(|_| {
-        keyctl(
-            KEYCTL_SETPERM,
-            serial,
-            c_long::from(KEY_POS_VIEW | KEY_POS_READ | KEY_USR_VIEW | KEY_USR_READ),
-            0,
-        )
-    });
+    let set_up = keyctl(KEYCTL_SET_TIMEOUT, serial, c_long::from(TIMEOUT_S), 0)
+        .and_then(|_| keyctl(KEYCTL_LINK, serial, c_long::from(KEY_SPEC_USER_KEYRING), 0))
+        // Last: the permissions it ends with no longer let anyone link it.
+        .and_then(|_| {
+            keyctl(
+                KEYCTL_SETPERM,
+                serial,
+                c_long::from(KEY_POS_VIEW | KEY_POS_READ | KEY_USR_VIEW | KEY_USR_READ),
+                0,
+            )
+        });
+    let serial = i32::try_from(serial).unwrap_or(0);
+    unlink_from(serial, KEY_SPEC_PROCESS_KEYRING);
     if let Err(e) = set_up {
-        unlink(i32::try_from(serial).unwrap_or(0));
+        unlink(serial);
         return Err(e);
     }
     Ok(())

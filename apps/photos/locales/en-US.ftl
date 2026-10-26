@@ -1,4 +1,5 @@
 photos-open = Open
+photos-open-another = Open another photo
 photos-open-photo = Open photo
 photos-library = Library
 photos-timeline = Timeline

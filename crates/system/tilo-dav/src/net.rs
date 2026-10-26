@@ -25,6 +25,10 @@ use crate::multistatus::{self, Limits, Multistatus, XmlError};
 use crate::request::XML_CONTENT_TYPE;
 pub use crate::request::{Credentials, Depth, Options, Precondition, Redirects};
 
+/// A request's answer on its way, boxed so the async code awaiting it
+/// across crates polls it here rather than compiling it again.
+pub type DavFuture<'a, T> = std::pin::Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 /// Transport and bounded-read failures. HTTP statuses are not errors.
 #[derive(Debug)]
 pub enum Error {
@@ -249,17 +253,19 @@ impl DavResponse {
     ///
     /// # Errors
     /// [`Error::TooLarge`] past the limit, [`Error::Transport`] on failure.
-    pub async fn read_bounded(self, limit: usize) -> Result<Vec<u8>, Error> {
-        Ok(self.inner.bytes_limited(limit).await?.to_vec())
+    pub fn read_bounded(self, limit: usize) -> DavFuture<'static, Result<Vec<u8>, Error>> {
+        Box::pin(async move { Ok(self.inner.bytes_limited(limit).await?.to_vec()) })
     }
 
     /// Read and parse a multistatus body under `limits`.
     ///
     /// # Errors
     /// As [`Self::read_bounded`] with `limits.max_bytes`, then [`Error::Xml`].
-    pub async fn multistatus(self, limits: &Limits) -> Result<Multistatus, Error> {
-        let bytes = self.read_bounded(limits.max_bytes).await?;
-        multistatus::parse_bytes(&bytes, limits).map_err(Error::Xml)
+    pub fn multistatus(self, limits: &Limits) -> DavFuture<'_, Result<Multistatus, Error>> {
+        Box::pin(async move {
+            let bytes = self.read_bounded(limits.max_bytes).await?;
+            multistatus::parse_bytes(&bytes, limits).map_err(Error::Xml)
+        })
     }
 }
 

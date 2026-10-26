@@ -134,6 +134,8 @@ suites = [
   "os/tests/setup_handoff_transport.sh",
   "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
+  "os/tests/rollback_luks_device.sh",
+  "os/tests/firstboot_user_selinux.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/esp_generator.sh",
   "os/tests/deployment_dual_esp.sh",
@@ -503,6 +505,7 @@ suites = [
   "dist/rpm/test-rename-contract.sh",
   "dist/rpm/test-rpmbuild-route.sh",
   "dist/rpm/test-rpmlint-config.py",
+  "dist/rpm/test-ostree-package-conflicts.sh",
 ]
 
 [[group]]
@@ -537,6 +540,7 @@ suites = [
   "scripts/vm-acceptance/test_layer_artifacts.py",
   "scripts/vm-acceptance/test_provenance.py",
   "scripts/vm-acceptance/test_records.py",
+  "scripts/vm-acceptance/test_secrets.py",
   "scripts/vm-acceptance/test_resources.py",
   "scripts/vm-acceptance/test_management.py",
   "scripts/vm-acceptance/test_terminal_cohort.py",
@@ -576,6 +580,9 @@ inputs = [
   "crates/session/shell/examples/redraw_bench.rs",
   # scripts/perf/browser_qualification.mjs drives Chrome through tools/web/chrome.mjs.
   "tools/web/chrome.mjs",
+  # ... and the native stream qualification's Safari run drives Safari through
+  # tools/web/webdriver.mjs.
+  "tools/web/webdriver.mjs",
   # scripts/perf/native_stream_qualification.mjs reads the frame numbers its
   # session example draws.
   "crates/hosting/tilo-relay/examples/legacy_stream_source.rs",
@@ -586,9 +593,11 @@ inputs = [
 suites = [
   "scripts/perf/browser_qualification.test.mjs",
   "scripts/perf/native_stream_qualification.test.mjs",
+  "tools/web/webdriver.test.mjs",
   "scripts/perf/code_editor_effects_test.py",
   "scripts/perf/desktop_chrome_bench_test.py",
   "scripts/perf/device_latency_bench_test.py",
+  "scripts/perf/drm_hardware_checks_test.py",
   "scripts/perf/device_notes_latency_test.py",
   "scripts/perf/device_notes_trace_test.py",
   "scripts/perf/collect_code_editor_native_test.py",
@@ -721,9 +730,11 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/json-text.test.mjs",
   "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/profile-photos.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-status.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-core-keys.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/host-core-screen.test.mjs",
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
   "crates/browser/tilo-browser-runtime/web/machine-setup.test.mjs",
   "crates/browser/tilo-browser-runtime/web/node-apps.test.mjs",
@@ -739,10 +750,12 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs",
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/reconnect.test.mjs",
   "crates/browser/tilo-browser-runtime/web/router.test.mjs",
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/door-wait-list.test.mjs",
   "crates/browser/tilo-browser-runtime/web/arrival.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs",
@@ -1457,6 +1470,8 @@ inputs = [
   "apps/browser/tilo-app.toml",
   "apps/imager/packaging/linux/tilo-imager.svg",
   "apps/file-explorer/tilo-app.toml",
+  # The session names Settings' own surface as it holds the app's records.
+  "apps/settings/surface.toml",
   "tools/protocols/airdrop_sender.py",
   "tools/test-assets.py",
   "crates/sdk/ui-core/assets/fonts/",
@@ -1490,6 +1505,7 @@ readers = [
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
   "crates/session/shell/src/compositor/chooser_service.rs",
+  "crates/session/shell/src/shell/settings_records.rs",
 ]
 
 
@@ -1851,6 +1867,10 @@ reason = "needs a FEX runtime container"
 [[unrequired]]
 suite = "os/tests/projection-boot-check.sh"
 reason = "runs inside a booted guest; t's os-acceptance-<arch> runs it"
+
+[[unrequired]]
+suite = "os/tests/h264-boot-check.py"
+reason = "runs inside a booted guest: it decodes with the image's own GStreamer and reads the decoder the kernel and the pipeline actually chose (os/dev/test-installed-desktop.sh)"
 
 [[unrequired]]
 suite = "os/tests/prove_kernel_failure_cache.py"

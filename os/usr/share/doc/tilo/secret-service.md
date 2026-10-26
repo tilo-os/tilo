@@ -7,13 +7,22 @@
 ## Opening
 
 The vault, `~/.local/share/tilo/secrets/vault.tseal`, is a `tilo-seal`
-envelope. Its key is `HKDF(device identity key, the person's random salt,
-account)`. The device identity is readable by the session however the person
-signed in (password, fingerprint, automatic login), so the store opens with
-no prompt of its own. Until the identity exists, or if the vault belongs to
-another device identity or is damaged, the store is locked: operations answer
-`IsLocked`, `Unlock` reports nothing unlocked and offers no prompt, and the
-file is never replaced.
+envelope. Its key is derived from the person's own key — the private half of
+the identity pair in their session's identity tree — their random salt and
+their public identity. It is therefore *their* vault, not this machine's: the
+same person's key on another device derives the same key, and no device key
+opens it. Sign-in is what releases it, so the store opens with no prompt of
+its own and nothing before sign-in can read it. Until that key is available,
+or if the vault belongs to another person or is damaged, the store is locked:
+operations answer `IsLocked`, `Unlock` reports nothing unlocked and offers no
+prompt, and the file is never replaced.
+
+A vault an earlier build sealed under the device identity is copied once,
+whole, under the person's key the first time both are available; the copy is
+written beside it, read back and verified, and only then renamed over the
+old file, so a failure at any point leaves the old vault the store. Item and
+collection ids are carried over unchanged. A machine that cannot yet release
+either key relays the ciphertext untouched.
 
 ## Who is asking
 

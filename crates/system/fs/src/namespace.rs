@@ -2993,9 +2993,17 @@ impl Namespace {
             .ok()
     }
 
-    /// Replace a document's content by importing `bytes` (whole-file write).
-    /// Resets the embedded CRDT; use the in-place edits below to preserve merge history.
-    /// The binary content the file embeds is kept in `content`; the document only references it.
+    /// Bring a document's content to what `bytes` says (whole-file write), by
+    /// reconciling it into the CRDT the document already is.
+    ///
+    /// The file states what the document should read, not what its CRDT should
+    /// hold: blocks the file leaves unchanged keep their ids, a peer's
+    /// concurrent edit merges as any other edit does, and a save adds only its
+    /// own difference to the history. The binary content the file embeds is kept
+    /// in `content`; the document only references it.
+    ///
+    /// Returns whether the write happened: a malformed file leaves the document
+    /// as it was.
     pub fn import_document(
         &mut self,
         ino: u64,
@@ -3015,7 +3023,11 @@ impl Namespace {
         let Some(provider) = tilo_doc_codecs::provider_for_ext(&codec) else {
             return false;
         };
-        // Parse into a throwaway document first — a malformed input must never destroy existing content.
+        let Some(root) = self.document_root(&id) else {
+            return false;
+        };
+        // Parse into a throwaway document first — a malformed input must never
+        // touch the stored one.
         let mut probe = tilo_doc::Document::new();
         let mut inputs = tilo_content::ContentInputs::new();
         if provider
@@ -3024,26 +3036,18 @@ impl Namespace {
         {
             return false;
         }
+        let wanted = probe.as_ref().materialize();
         // Keep the file's binary content before any document refers to it.
         if content.put_inputs(&inputs).is_err() {
             return false;
         }
-        let _ = self.doc.delete(&node, "doc");
-        let Ok(root) = self.doc.put_object(&node, "doc", ObjType::Map) else {
-            return false;
-        };
-        tilo_doc::model::init(&mut self.doc, &root);
-        let Ok(containers) = tilo_doc::model::open(&self.doc, &root) else {
-            return false;
-        };
-        let mut ids = tilo_doc::model::seeded_id_gen(&self.doc, &containers);
+        // The write is one transaction: either it lands as the file says, or it
+        // is rolled back and the document reads as it did.
+        if tilo_doc::reconcile_under(&mut self.doc, &root, &wanted).is_err()
+            || !tilo_doc::reads_as(&self.doc, &root, &wanted)
         {
-            let mut dmut = tilo_doc::DocMut {
-                doc: &mut self.doc,
-                c: &containers,
-                ids: &mut ids,
-            };
-            let _ = provider.import(bytes, &mut dmut, &mut tilo_content::ContentInputs::new());
+            self.doc.rollback();
+            return false;
         }
         self.set_field(&id, "mtime", mtime);
         true
@@ -4804,6 +4808,74 @@ mod tests {
                 "B's edit must survive (text-level merge): {text}"
             );
         }
+    }
+
+    #[test]
+    fn saving_a_document_keeps_its_block_ids() {
+        let mut ns = Namespace::new("a").unwrap();
+        let ino = ns.create_document(ROOT_INO, "note.md", "md", 1).unwrap();
+        assert!(ns.import_document(
+            ino,
+            b"# Title\n\nHello world\n",
+            2,
+            &tilo_content::ContentStore::memory()
+        ));
+        let ids = |ns: &Namespace| -> Vec<String> {
+            ns.document_snapshot(ino)
+                .map(|snap| snap.blocks.iter().map(|block| block.id.clone()).collect())
+                .unwrap_or_default()
+        };
+        let before = ids(&ns);
+        assert!(!before.is_empty(), "the save must have written blocks");
+
+        // A second save of the same file: nothing changed, so nothing may be
+        // rewritten — every block keeps the id it had.
+        assert!(ns.import_document(
+            ino,
+            b"# Title\n\nHello world\n",
+            3,
+            &tilo_content::ContentStore::memory()
+        ));
+        let after = ids(&ns);
+        assert_eq!(before, after, "a save must not re-mint block ids");
+    }
+
+    #[test]
+    fn saving_a_document_keeps_a_peer_concurrent_edit() {
+        let mut a = Namespace::new("a").unwrap();
+        let ino = a.create_document(ROOT_INO, "doc.md", "md", 1).unwrap();
+        assert!(a.import_document(
+            ino,
+            b"first\n\nsecond\n",
+            2,
+            &tilo_content::ContentStore::memory()
+        ));
+        let second = a
+            .document_snapshot(ino)
+            .and_then(|snap| snap.blocks.get(1).map(|block| block.id.clone()))
+            .unwrap_or_default();
+        assert!(!second.is_empty(), "the file must have written two blocks");
+
+        let snap = a.save();
+        let mut b = Namespace::from_bytes("b", &snap).unwrap();
+        let bino = b.lookup(ROOT_INO, "doc.md").unwrap().ino.0;
+        // B edits the second paragraph in place while A is away.
+        b.document_splice(bino, &second, 6, 0, " paragraph");
+
+        // A saves the file again, from its own stale copy: the whole-document
+        // write must merge into B's edit rather than replace the document.
+        assert!(a.import_document(
+            ino,
+            b"first\n\nsecond\n",
+            3,
+            &tilo_content::ContentStore::memory()
+        ));
+        a.merge_doc(&mut b).unwrap();
+        let text = a.document_block_text(ino, &second).unwrap_or_default();
+        assert!(
+            text.contains("paragraph"),
+            "a save must not lose a peer's concurrent edit: {text}"
+        );
     }
 
     #[test]

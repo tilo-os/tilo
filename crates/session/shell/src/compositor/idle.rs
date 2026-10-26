@@ -454,13 +454,19 @@ impl SessionManager {
         vec![SessionTransition::Blanked]
     }
 
-    /// Enter the secure pre-sleep state. This is deliberately separate from
-    /// ordinary activity: suspend always leaves the session locked, even when
-    /// automatic idle locking is disabled.
-    pub fn prepare_for_sleep(&mut self, now: Instant) -> Vec<SessionTransition> {
+    /// Enter the pre-sleep state. This is separate from ordinary activity:
+    /// unless the person turned off the password after sleep
+    /// ([`tilo_power_mgmt::PowerPolicy::lock_on_sleep`]), sleep leaves the
+    /// session locked even when automatic idle locking is disabled. Either
+    /// way a session that is already locked stays locked.
+    pub fn prepare_for_sleep(
+        &mut self,
+        now: Instant,
+        lock_on_sleep: bool,
+    ) -> Vec<SessionTransition> {
         self.last_activity = now;
         self.suspended = true;
-        if self.locked {
+        if self.locked || !lock_on_sleep {
             Vec::new()
         } else {
             self.locked = true;
@@ -1118,8 +1124,31 @@ mod tests {
         {
             let t0 = Instant::now();
             let mut s = SessionManager::new(cfg(None, None), t0);
-            assert_eq!(s.prepare_for_sleep(t0), vec![SessionTransition::Locked]);
-            assert!(s.prepare_for_sleep(t0).is_empty());
+            assert_eq!(
+                s.prepare_for_sleep(t0, true),
+                vec![SessionTransition::Locked]
+            );
+            assert!(s.prepare_for_sleep(t0, true).is_empty());
+            assert!(s.resume_from_sleep(t0 + Duration::from_secs(1)).is_empty());
+            assert!(s.is_locked());
+        }
+        // Phase `sleep_leaves_an_unlocked_session_unlocked_when_the_person_asked`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(None, None), t0);
+            assert!(s.prepare_for_sleep(t0, false).is_empty());
+            assert!(!s.is_locked());
+            assert!(s.is_suspend_pending());
+            assert!(s.resume_from_sleep(t0 + Duration::from_secs(1)).is_empty());
+            assert!(!s.is_locked(), "waking shows the work left on screen");
+        }
+        // Phase `sleep_keeps_a_lock_that_was_already_there`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(None, None), t0);
+            assert_eq!(s.request_lock(t0), vec![SessionTransition::Locked]);
+            assert!(s.prepare_for_sleep(t0, false).is_empty());
+            assert!(s.is_locked());
             assert!(s.resume_from_sleep(t0 + Duration::from_secs(1)).is_empty());
             assert!(s.is_locked());
         }
@@ -1246,7 +1275,7 @@ mod tests {
                 vec![SessionTransition::Blanked, SessionTransition::Suspend]
             );
             assert_eq!(
-                s.prepare_for_sleep(t0 + Duration::from_secs(121)),
+                s.prepare_for_sleep(t0 + Duration::from_secs(121), true),
                 vec![SessionTransition::Locked]
             );
             assert!(s.is_locked() && s.is_blanked() && s.is_suspend_pending());

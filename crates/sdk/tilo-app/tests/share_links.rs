@@ -183,6 +183,7 @@ fn expected(app: &TestApp<NotebookApp>, page: &str, mode: Mode, view: Option<&st
                 span,
             }),
             view: view.map(str::to_owned),
+            discuss: None,
         },
         secrets: LinkSecrets::default(),
     }

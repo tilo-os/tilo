@@ -12,6 +12,7 @@ use tilo_browser_peer::DocumentRoute;
 
 use super::NOTHING_LEFT;
 use super::obligations::{Checklist, OBLIGATIONS_LEFT};
+use super::repairs::Repairs;
 use super::waits::{Arrival, Waiting, Waits, Woken};
 use crate::planner::{
     MOST_OBSERVED, MOST_WAITS, Step, StepAction, Wait, observation, rendered_picture,
@@ -33,10 +34,13 @@ pub(super) enum FollowUp {
     /// The obligations still open when the task would finish
     /// ([`Checklist::remind`]).
     Obligations,
+    /// The rest of the task after a step failed ([`Repairs`]): taken once
+    /// per repair.
+    Repairing,
 }
 
-/// The follow-up turns a task took, each at most once, and the one being
-/// planned.
+/// The follow-up turns a task took, each at most once but a repair, and the
+/// one being planned.
 #[derive(Default)]
 pub(super) struct FollowUps {
     pub(super) taken: Vec<FollowUp>,
@@ -61,11 +65,10 @@ pub(super) struct Running {
     /// What the task's steps answered, oldest first, at most
     /// [`MOST_OBSERVED`]: what the task is planned again with.
     pub(super) observed: VecDeque<Observed>,
-    /// Whether a failed step was already planned around once: a task gets
-    /// one repair, so a model's slip (an argument out of range, a stale
-    /// target) is fixed rather than ending it, and a step that cannot work
-    /// still fails the task.
-    pub(super) repaired: bool,
+    /// The failed steps it was planned around: a model's slip (an argument
+    /// out of range, a stale target) is fixed rather than ending the task,
+    /// a few times, and a step that cannot work still fails it.
+    pub(super) repairs: Repairs,
     /// How many times it planned again for news ([`MOST_NEWS_REPLANS`]).
     pub(super) news_replans: u32,
     /// The steps a re-plan for news replaced, until that re-plan is made:
@@ -267,6 +270,7 @@ impl Running {
         self.performed = self.performed.saturating_add(1);
         let invoked = matches!(step.action, StepAction::Invoke { .. });
         let edited = edited && invoked;
+        self.repairs.ran(step);
         if invoked {
             self.acted = self.acted.saturating_add(1);
             self.invoked.push(step.clone());
@@ -545,9 +549,10 @@ impl Running {
     /// Put `steps`, a plan of the rest, before what is left. The export
     /// turn runs exports only: a model asked for the missing export that
     /// rewrote the note as well lost what the first plan had written right.
-    /// A check or a reminder of obligations runs no operation again as it
-    /// ran: one that adds (a slide, an event) would add it twice. What such
-    /// a step was planned to fulfil, it fulfilled when it ran.
+    /// A check, a reminder of obligations or a repair runs no operation
+    /// again as it ran: one that adds (a slide, an event) would add it
+    /// twice. What such a step was planned to fulfil, it fulfilled when it
+    /// ran.
     pub(super) fn queue_rest(&mut self, steps: Vec<Step>) {
         self.waits.replan = false;
         let turn = self.follow_ups.turn.take();
@@ -556,7 +561,9 @@ impl Running {
                 Some(FollowUp::Exporting) => {
                     matches!(step.action, StepAction::Invoke { .. }) && !is_export(&step)
                 }
-                Some(FollowUp::Checking | FollowUp::Obligations) => self.ran_already(&step),
+                Some(FollowUp::Checking | FollowUp::Obligations | FollowUp::Repairing) => {
+                    self.ran_already(&step)
+                }
                 _ => false,
             };
             if dropped {
@@ -599,7 +606,7 @@ impl Running {
             produced: Vec::new(),
             produced_by: Vec::new(),
             observed: VecDeque::new(),
-            repaired: false,
+            repairs: Repairs::default(),
             news_replans: 0,
             news_resume: None,
             waits: Waits::default(),

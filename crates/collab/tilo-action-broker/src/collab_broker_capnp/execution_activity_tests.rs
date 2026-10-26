@@ -1012,6 +1012,7 @@ fn export_shortcut() -> tilo_automation::Shortcut {
                 appearance: None,
             },
         )],
+        step_timeout_secs: None,
         output: None,
         grant: vec![policy::Rule::new(
             policy::TreePath::root()
@@ -1041,6 +1042,8 @@ async fn shortcut_step_observes_once_per_change() {
     let hooks = NoPolling(crate::automation::DoorHooks::new(
         None,
         tokio::runtime::Handle::current(),
+        crate::automation::RunningRuns::default(),
+        tilo_automation::RunId::new(),
     ));
     let running = tokio::spawn({
         let state = Arc::clone(&state);

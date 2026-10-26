@@ -1344,7 +1344,7 @@ fn with_obligations(items: &[&str]) -> Running {
     running.checklist.adopt(
         crate::planner::Obligations {
             items: items.iter().map(|item| (*item).to_owned()).collect(),
-            set_aside: Vec::new(),
+            ..crate::planner::Obligations::default()
         },
         false,
     );
@@ -1447,6 +1447,7 @@ fn an_obligation_set_aside_lets_the_task_finish() {
     let declared = crate::planner::Obligations {
         items: vec!["something else".into()],
         set_aside: vec![(2, "not possible: no such channel".into())],
+        ..crate::planner::Obligations::default()
     };
     running.checklist.adopt(declared.clone(), false);
     assert!(
@@ -1563,4 +1564,122 @@ fn a_video_the_task_names_is_stated_by_what_its_container_says() {
     );
     assert_eq!(facts, vec![expected]);
     assert_eq!(super::context::video_facts(b"not a video"), None);
+}
+
+fn set_cells(start: &str, value: &str) -> Step {
+    invoke_with(
+        "so.tilo.sheets",
+        "sheets.workbook",
+        "set-cells",
+        serde_json::json!({"start": start, "rows": [[value]]}),
+    )
+}
+
+/// Different slips are each planned around, up to the task's budget; one
+/// failing again exactly as before is not.
+#[test]
+fn a_task_repairs_different_failures_up_to_its_budget() {
+    use super::repairs::{MOST_REPAIRS, Repairs, Unrepaired};
+    let mut repairs = Repairs::default();
+    let post = post_serving("A", 1);
+    assert_eq!(
+        repairs.admit(&set_cells("A1", "x"), "no column Session"),
+        Ok(1)
+    );
+    assert_eq!(repairs.admit(&post, "no channel #login"), Ok(2));
+    assert_eq!(
+        repairs.admit(&post, "no channel #login"),
+        Err(Unrepaired::Repeated),
+        "the same step, arguments and error"
+    );
+    assert_eq!(
+        repairs.admit(&set_cells("B1", "y"), "V1 is taken"),
+        Ok(MOST_REPAIRS)
+    );
+    assert_eq!(
+        repairs.admit(&set_cells("C1", "z"), "an id, not a name"),
+        Err(Unrepaired::Spent)
+    );
+    assert_eq!(
+        repairs.logged(),
+        serde_json::json!({"count": MOST_REPAIRS, "unrepaired": "Spent"})
+    );
+}
+
+/// One step failing over and over is planned around at most twice in a
+/// row; a success of it between starts the count again.
+#[test]
+fn one_step_is_repaired_at_most_twice_in_a_row() {
+    use super::repairs::{Repairs, Unrepaired};
+    let mut repairs = Repairs::default();
+    assert_eq!(
+        repairs.admit(&set_cells("A1", "{{Z99}}"), "Z99 is empty"),
+        Ok(1)
+    );
+    assert_eq!(
+        repairs.admit(&set_cells("A1", "{{Z98}}"), "Z98 is empty"),
+        Ok(2)
+    );
+    assert_eq!(
+        repairs.admit(&set_cells("A1", "{{Z97}}"), "Z97 is empty"),
+        Err(Unrepaired::InARow)
+    );
+
+    let mut repairs = Repairs::default();
+    assert_eq!(
+        repairs.admit(&set_cells("A1", "{{Z99}}"), "Z99 is empty"),
+        Ok(1)
+    );
+    assert_eq!(
+        repairs.admit(&set_cells("A1", "{{Z98}}"), "Z98 is empty"),
+        Ok(2)
+    );
+    repairs.ran(&set_cells("C1", "note"));
+    assert_eq!(
+        repairs.admit(&set_cells("A1", "{{Z97}}"), "Z97 is empty"),
+        Ok(3)
+    );
+    let latest = repairs.logged_latest().unwrap();
+    assert_eq!(latest["count"], 3);
+    assert_eq!(latest["reason"], "Z97 is empty");
+}
+
+/// A refusal no plan changes ends the task at once: the person declined or
+/// nobody could confirm, the agent may not act there, or it was stopped.
+#[test]
+fn a_refusal_no_plan_changes_is_not_repaired() {
+    use super::repairs::{Repairs, Unrepaired, is_final};
+    for refusal in [
+        "action_confirmation_required: nobody is there to confirm it",
+        "not_permitted: the record is not shared with the agent",
+        "the agent is not delegated so.tilo.mail",
+        "the agent is paused or stopped",
+    ] {
+        assert!(is_final(refusal), "{refusal}");
+        assert_eq!(
+            Repairs::default().admit(&set_cells("A1", "x"), refusal),
+            Err(Unrepaired::Final)
+        );
+    }
+    assert!(!is_final(
+        "action_failed: V1 is taken from 3.00 s to 6.00 s"
+    ));
+    assert!(!is_final("invalid_arguments: no column `Session`"));
+}
+
+/// A repair's plan runs no operation again as it ran, and what such a
+/// step was planned to fulfil counts as done.
+#[test]
+fn a_repair_does_not_run_again_a_step_that_ran() {
+    let mut running = with_obligations(&["post A", "post B"]);
+    running.ran_step(&post_serving("A", 1), None, Vec::new(), true);
+    running.follow_ups.take(FollowUp::Repairing);
+    running.queue_rest(vec![post_serving("A", 1), post_serving("B", 2)]);
+    assert_eq!(running.steps.len(), 1, "A ran: {:?}", running.steps);
+    assert!(running.follow_ups.turn.is_none(), "the turn is answered");
+    assert_eq!(
+        running.checklist.outcome(),
+        " Left undone: 2. post B.",
+        "a failed task names what it left undone"
+    );
 }

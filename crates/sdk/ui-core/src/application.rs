@@ -110,6 +110,9 @@ pub struct HostContext {
     /// Where the app keeps the person's own records on this device, when
     /// the host keeps them ([`Self::provide_person_records`]).
     person: Option<crate::record::person::PersonRecords>,
+    /// Where the app opens the records every app of the room opens, when
+    /// the host keeps them ([`Self::provide_workspace_records`]).
+    workspace: Option<crate::record::workspace::WorkspaceRecords>,
     /// The file areas the host gave it ([`Self::provide_files`]); the
     /// person's own otherwise.
     files: Option<crate::storage::AppFiles>,
@@ -353,6 +356,7 @@ pub struct Reopener {
     content: Option<tilo_content::ContentStore>,
     settings: crate::storage::SettingsDocument,
     person: Option<crate::record::person::PersonRecords>,
+    workspace: Option<crate::record::workspace::WorkspaceRecords>,
     files: Option<crate::storage::AppFiles>,
     private: bool,
     replacement: Rc<RefCell<Option<PendingReplacement>>>,
@@ -403,6 +407,7 @@ impl Reopener {
         context.content.clone_from(&self.content);
         context.settings = self.settings.clone();
         context.person.clone_from(&self.person);
+        context.workspace.clone_from(&self.workspace);
         context.files.clone_from(&self.files);
         context.private = self.private;
         Ok((context, target))
@@ -460,6 +465,7 @@ impl HostContext {
             content: self.content.clone(),
             settings: self.settings.clone(),
             person: self.person.clone(),
+            workspace: self.workspace.clone(),
             files: self.files.clone(),
             private: self.private,
             replacement: Rc::clone(&self.replacement),
@@ -625,6 +631,7 @@ impl HostContext {
             capture: None,
             settings: crate::storage::SettingsDocument::Session,
             person: None,
+            workspace: None,
             files: None,
             replacement: Rc::default(),
             launch_arguments: Vec::new(),
@@ -873,6 +880,18 @@ impl HostContext {
     /// ([`crate::record::person`]), kept beside the record it shows.
     pub fn provide_person_records(&mut self, records: crate::record::person::PersonRecords) {
         self.person = Some(records);
+    }
+    /// Give the component the records every app of its room opens
+    /// ([`crate::record::workspace`]), kept beside the record it shows.
+    pub fn provide_workspace_records(
+        &mut self,
+        records: crate::record::workspace::WorkspaceRecords,
+    ) {
+        self.workspace = Some(records);
+    }
+    /// The records every app of the room opens, when the host keeps them.
+    pub fn workspace_records(&self) -> Option<&crate::record::workspace::WorkspaceRecords> {
+        self.workspace.as_ref()
     }
     /// This device, as the host names it: stable across launches of the app
     /// on it, distinct on each of the person's devices.

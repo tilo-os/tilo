@@ -36,9 +36,10 @@ class TTomlTests(unittest.TestCase):
                 self.assertTrue(set(step.inputs) <= set(check["inputs"]))
                 self.assertTrue(set(t_toml.policy_steps.own_files(step, ROOT)) <= set(check["inputs"]))
                 self.assertNotIn("default", check)
-                # The tests write fixtures beside the sources and read HEAD; the checks of the
-                # tree read the files as they are, through an index of them where they use Git.
-                self.assertEqual(check.get("git", False), step.tests)
+                # The tests write fixtures beside the sources, and those that read the commit's
+                # history get t's .git; the checks of the tree read the files as they are,
+                # through an index of them where they use Git.
+                self.assertEqual(check.get("git", False), step.history)
                 self.assertEqual(check.get("writable_sources", False), step.tests)
                 self.assertEqual(step.check.startswith("policy/tests/"), step.tests)
 
@@ -175,8 +176,11 @@ class TTomlTests(unittest.TestCase):
             self.assertFalse(whole["default"])
             # On the board for main's newest head, bisected when it fails.
             self.assertEqual(whole["on"], ["stable", "dispatch", "idle"])
-            # Kept built there, so the push gate's size check of an app compiles only the app.
-            self.assertEqual(shared["on"], ["main", "idle"])
+            # The push gate's is kept built there, so its size check of an app compiles only the
+            # app; the other waits for room.
+            self.assertEqual(shared["on"], ["main", "idle"] if arch == t_toml.PUSH_GATE_SIZE_ARCH else ["idle"])
+        import pre_push
+        self.assertEqual(t_toml.PUSH_GATE_SIZE_ARCH, pre_push.SIZE_ARCH)
 
     def test_a_read_inside_a_reached_package_is_already_counted(self):
         root = Path("/w")
@@ -296,6 +300,30 @@ class PlanTests(unittest.TestCase):
                                      for glob in self.checks["suite-os"]["inputs"]))
         self.assertIn("suite-dist", self.planned_on_main(["dist/rpm/host-update.sh"]))
         self.assertIn("suite-mount-source-cache-keys", self.planned_on_main(["os/Containerfile"]))
+
+    def keys(self, name: str, path: str) -> bool:
+        return any(matches(path, glob) for glob in self.checks[name]["inputs"])
+
+    def test_the_mac_checks_are_keyed_by_what_cargo_builds_on_macos(self):
+        # tilo-relay's agents (which link every app) are a feature tilo-runtime doesn't turn on,
+        # and ush is a Linux-only dependency: t's own derivation would count both.
+        for path in ("crates/runtime/tilo-runtime/src/lib.rs", "crates/sdk/ui-core/src/lib.rs",
+                     "crates/hosting/tilo-relay/src/lib.rs", "Cargo.lock", "Cargo.toml"):
+            with self.subTest(path=path):
+                self.assertTrue(self.keys("runtime-macos", path))
+        for path in ("apps/notes/src/lib.rs", "crates/agent/agent-participant/src/lib.rs",
+                     "crates/runtime/ush/src/lib.rs", "docs/t.md"):
+            with self.subTest(path=path):
+                self.assertFalse(self.keys("runtime-macos", path))
+        self.assertNotIn("cargo_packages", self.checks["runtime-macos"])
+        for path in ("apps/notes/src/lib.rs", "apps/notes/tilo-app.toml", "crates/sdk/ui-core/src/lib.rs"):
+            with self.subTest(path=path):
+                self.assertTrue(self.keys("apps-macos", path))
+        for path in ("crates/runtime/ush/src/lib.rs", "crates/session/shell/src/lib.rs"):
+            with self.subTest(path=path):
+                self.assertFalse(self.keys("apps-macos", path))
+        # Its template build commits the tree itself: keyed by its files, not per commit.
+        self.assertFalse(self.checks["sdk-macos"].get("git", False))
 
     def vm(self, name: str) -> bool:
         check = self.checks.get(name, {})

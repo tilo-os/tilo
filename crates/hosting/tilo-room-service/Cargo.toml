@@ -32,8 +32,9 @@ subtle = "2.6"
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # The HTTPS identity loader and server config the relay's listener uses too.
 tilo-moq = { path = "../tilo-moq", features = ["tls"] }
-# The TLS client to a room's host trusts only its pinned certificate.
-tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
+# The TLS client to a room's host trusts only its pinned certificate; the
+# HTTPS client sends the door's mail.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http", "json"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-rustls.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }

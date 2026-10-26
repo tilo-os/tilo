@@ -347,12 +347,23 @@ fn route(state: &mut State, request: &Recorded) -> Answer {
             if !state.messages.iter().any(|m| m["id"] == *message) {
                 return Answer::error(404, 10008, "Unknown Message");
             }
+            // A custom emoji is named `name:id`, and must be one the bot can
+            // use: here, one of the guild's.
+            if let Some((name, id)) = emoji.split_once(':')
+                && !state
+                    .emojis
+                    .iter()
+                    .any(|e| e["name"] == name && e["id"] == id)
+            {
+                return Answer::error(400, 10014, "Unknown Emoji");
+            }
             let entry = ((*message).to_owned(), (*emoji).to_owned());
             if !state.bot_reactions.contains(&entry) {
                 state.bot_reactions.push(entry);
+                let emoji = state.emoji_json(emoji);
                 state.dispatch(
                     "MESSAGE_REACTION_ADD",
-                    json!({"user_id": BOT_USER, "channel_id": channel, "message_id": message, "guild_id": GUILD, "emoji": {"id": null, "name": emoji}}),
+                    json!({"user_id": BOT_USER, "channel_id": channel, "message_id": message, "guild_id": GUILD, "emoji": emoji}),
                 );
             }
             Answer::json(204, &Value::Null)
@@ -372,9 +383,10 @@ fn route(state: &mut State, request: &Recorded) -> Answer {
             let entry = ((*message).to_owned(), (*emoji).to_owned());
             if state.bot_reactions.contains(&entry) {
                 state.bot_reactions.retain(|r| *r != entry);
+                let emoji = state.emoji_json(emoji);
                 state.dispatch(
                     "MESSAGE_REACTION_REMOVE",
-                    json!({"user_id": BOT_USER, "channel_id": channel, "message_id": message, "guild_id": GUILD, "emoji": {"id": null, "name": emoji}}),
+                    json!({"user_id": BOT_USER, "channel_id": channel, "message_id": message, "guild_id": GUILD, "emoji": emoji}),
                 );
             }
             Answer::json(204, &Value::Null)

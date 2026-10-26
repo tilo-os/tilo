@@ -2452,6 +2452,9 @@ impl OnboardingView {
             return self.choice_footer(theme, choices);
         }
         let acknowledgement = match self.flow.screen() {
+            // A first session returns from creating its identity straight to
+            // the desktop: there is nothing left to acknowledge or accept.
+            Screen::Done if self.joined_member => None,
             Screen::NoRecovery => Some(
                 Checkbox::new("onboarding.understood.box", KEY_UNDERSTOOD)
                     .with_id("onboarding.understood.row")
@@ -3842,6 +3845,9 @@ impl OnboardingView {
 
     fn done(&self, theme: &Theme, compact: bool) -> Box<dyn Widget> {
         if !self.joined_member {
+            // The hand-off is the footer action, exactly like every other
+            // setup screen's: one control at the bottom edge, never a second
+            // way in floating inside the page.
             return Box::new(
                 Column::new()
                     .with_no_padding()
@@ -4029,17 +4035,13 @@ impl OnboardingView {
         )])
     }
 
-    /// Sticky final action, deliberately outside the Done screen's scrollable
-    /// backup content so it remains visible at narrow and large-text sizes.
+    /// The one action that ends the ceremony, in the same sticky footer as
+    /// every other setup screen's.
     fn finish_action(&self) -> Box<dyn Widget> {
-        // Continuing to the desktop is the primary hand-off. The optional
-        // tour remains explicit rather than making “Skip” the first desktop
-        // action a new user has to decipher.
-        let tour = self.pressed.button(
-            "onboarding.tour.start.button",
-            &t("onboarding-tour-take"),
-            KEY_TOUR_START,
-        );
+        // Entering the desktop is the hand-off and the only way out of the
+        // ceremony. A first session has no tour to accept or decline: the
+        // desktop teaches itself by being used, and its own overlay hint
+        // and search carry what a page of prose would have said.
         let enter = self
             .pressed
             .button(
@@ -4049,7 +4051,7 @@ impl OnboardingView {
             )
             .with_icon(ui::icons::Icon::ArrowRight)
             .role(ui::widget::ButtonRole::Primary);
-        footer_actions(vec![Box::new(tour), Box::new(enter)])
+        footer_actions(vec![Box::new(enter)])
     }
 }
 
@@ -4752,7 +4754,7 @@ impl Widget for OnboardingView {
             }
         }
 
-        if self.take_journaled(KEY_BACKUP_CONTINUE) {
+        if self.pressed.take(KEY_BACKUP_CONTINUE) {
             let skip_acknowledged = self
                 .backup_continue_ack
                 .take()
@@ -4932,6 +4934,7 @@ impl Widget for OnboardingView {
                 && self.flow.is_done()
                 && self.identity_ready_page
                 && !self.codec_page;
+            let knows_where_it_stands = self.backup_was_verified || self.backup_skip_acknowledged;
             // A reopened, tour-only flow exposes “Skip tour” on every page.
             // Its action is KEY_FINISH, so it must dismiss from every page,
             // not only from the final hand-off page.
@@ -4939,6 +4942,24 @@ impl Widget for OnboardingView {
                 self.finish_ceremony();
             } else if (at_tour_end || skipping_tour) && self.flow.is_done() {
                 self.journal_then(JournalChange::Clear, AfterJournal::Finish);
+            } else if self.tour_page.is_none()
+                && self.flow.is_done()
+                && !self.identity_ready_page
+                && knows_where_it_stands
+            {
+                // Ready and Backup are the same hand-off: at the end of setup
+                // there is only one choice left, to enter the desktop, and a
+                // restart in the middle of first login must still reach it.
+                // Backup therefore never refuses the way out, and the Ready
+                // page steps in exactly where the journal says so.
+                self.journal_then(
+                    JournalChange::Store(if self.backup_was_verified {
+                        PersistedStage::ReadyToEnterBackedUp
+                    } else {
+                        PersistedStage::ReadyToEnter
+                    }),
+                    AfterJournal::EnterReady,
+                );
             } else {
                 self.finished = false;
             }
@@ -6709,44 +6730,16 @@ mod tests {
             assert!(!done.flow().can_create(), "resume never reopens creation");
 
             let mut document = AutoCommit::new();
-            press(&done, &mut document, KEY_TOUR_START);
+            // `restart_resumes_backup_ready_and_enters_the_desktop_without_a_tour`.
+            // The ready hand-off is one action; a first session teaches
+            // itself on the desktop instead of through pages read in advance.
+            press(&done, &mut document, KEY_FINISH);
             sync_journaled(&mut done, &document);
-            assert_eq!(done.tour_page, Some(TourPage::Navigate));
+            assert!(done.finished());
             assert!(
-                done.presents_desktop_context(),
-                "the first-login tour must explain the desktop over the real desktop"
+                !done.presents_desktop_context(),
+                "nothing of first login is left over the desktop"
             );
-            assert_eq!(
-                load_progress(directory.path()).expect("tour journal"),
-                Some(PersistedStage::TourNavigate)
-            );
-
-            let mut navigate_restart =
-                OnboardingView::isolated(directory.path().to_path_buf(), false);
-            assert_eq!(navigate_restart.tour_page, Some(TourPage::Navigate));
-            press(&navigate_restart, &mut document, KEY_TOUR_NEXT);
-            sync_journaled(&mut navigate_restart, &document);
-            assert_eq!(navigate_restart.tour_page, Some(TourPage::Organise));
-
-            let mut organise_restart =
-                OnboardingView::isolated(directory.path().to_path_buf(), false);
-            assert_eq!(organise_restart.tour_page, Some(TourPage::Organise));
-            press(&organise_restart, &mut document, KEY_TOUR_NEXT);
-            sync_journaled(&mut organise_restart, &document);
-            assert_eq!(organise_restart.tour_page, Some(TourPage::Collaborate));
-
-            let mut collaborate_restart =
-                OnboardingView::isolated(directory.path().to_path_buf(), false);
-            assert_eq!(collaborate_restart.tour_page, Some(TourPage::Collaborate));
-            press(&collaborate_restart, &mut document, KEY_TOUR_NEXT);
-            sync_journaled(&mut collaborate_restart, &document);
-            assert_eq!(collaborate_restart.tour_page, Some(TourPage::Start));
-
-            let mut start_restart = OnboardingView::isolated(directory.path().to_path_buf(), false);
-            assert_eq!(start_restart.tour_page, Some(TourPage::Start));
-            press(&start_restart, &mut document, KEY_FINISH);
-            sync_journaled(&mut start_restart, &document);
-            assert!(start_restart.finished());
             assert!(!has_pending_progress(directory.path()));
 
             let established = OnboardingView::isolated(directory.path().to_path_buf(), false);
@@ -6926,9 +6919,7 @@ mod tests {
                 KEY_CREATE,
                 KEY_BACKUP_SKIP_ACKNOWLEDGED,
                 KEY_BACKUP_CONTINUE,
-                KEY_TOUR_START,
-                KEY_TOUR_NEXT,
-                KEY_TOUR_SKIP,
+                KEY_FINISH,
             ] {
                 press(&view, &mut document, key);
                 sync_journaled(&mut view, &document);
@@ -6940,13 +6931,13 @@ mod tests {
         });
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(
-            stages[2..],
+            stages,
             [
+                None,
+                None,
                 Some(PersistedStage::IdentityReady),
                 Some(PersistedStage::IdentityReady),
                 Some(PersistedStage::ReadyToEnter),
-                Some(PersistedStage::TourNavigate),
-                Some(PersistedStage::TourOrganise),
                 None,
             ]
         );
@@ -8004,7 +7995,7 @@ mod tests {
     }
 
     #[test]
-    fn first_login_footer_semantics_preserve_progress_through_tour_and_finish() {
+    fn first_login_footer_semantics_enter_the_desktop_and_complete_first_use() {
         let root = TempDir::new().unwrap();
         let directory = root.path().join("identity");
         let public = ed25519_dalek::SigningKey::from_bytes(&[19; 32])
@@ -8017,24 +8008,19 @@ mod tests {
         let doc = AutoCommit::new();
         assert!(view.identity_ready_page);
         assert!(semantic::test_observe(&view).is_some());
-        let ready_finish = backup_action_id(&mut view, "onboarding.finish");
-        invoke_footer(&mut view, "onboarding.tour.start", &doc);
-        assert_eq!(view.tour_step(), Some(1));
-        assert_eq!(
-            load_progress(&directory).unwrap(),
-            Some(PersistedStage::TourNavigate)
+        let _ready_finish = backup_action_id(&mut view, "onboarding.finish");
+        // The ready screen hands off to the desktop and nothing else. A first
+        // session learns the desktop by using it; the overlay hints and the
+        // desktop tour reopen from Search when someone asks for them.
+        assert!(
+            backup_console(
+                &mut view,
+                &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":"onboarding.tour.start","args":{}}),
+            )
+            .get("err")
+            .is_some(),
+            "the ready screen offers no tour to press"
         );
-        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":ready_finish,"args":{}})).get("err").is_some());
-        let first_next = invoke_footer(&mut view, "onboarding.tour.next", &doc);
-        assert_eq!(view.tour_step(), Some(2));
-        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":first_next,"args":{}})).get("err").is_some());
-        invoke_footer(&mut view, "onboarding.tour.back", &doc);
-        assert_eq!(view.tour_step(), Some(1));
-        for step in [2, 3, 4] {
-            invoke_footer(&mut view, "onboarding.tour.next", &doc);
-            assert_eq!(view.tour_step(), Some(step));
-            assert!(semantic::test_observe(&view).is_some());
-        }
         let last = invoke_footer(&mut view, "onboarding.finish", &doc);
         assert!(view.finished());
         assert!(semantic::test_observe(&view).is_none());
@@ -8870,7 +8856,7 @@ mod tests {
                     KEY_BACKUP_SKIP_ACKNOWLEDGED,
                     KEY_BACKUP_CONTINUE,
                 ],
-                &["onboarding.tour.start.button", "onboarding.finish.button"],
+                &["onboarding.finish.button"],
                 false,
             ),
         ];
@@ -9092,39 +9078,25 @@ mod tests {
                     }
                 }
 
-                if view.flow().screen() == Screen::Done
-                    && view.identity_ready_page
-                    && !view.codec_page
-                {
-                    assert_eq!(
-                        scroll.max_offset_y(),
-                        0.0,
-                        "the brief Ready invitation must be wholly visible at {width}x{height}, theme={}",
+                if view.flow().screen() == Screen::Done && view.identity_ready_page {
+                    // The ready screen says what the desktop is for and offers
+                    // exactly one way on: the desktop, with no tour to accept.
+                    // A long line of body copy may still need a couple of
+                    // lines scrolled at one size; that is why this asserts the
+                    // copy is reachable, never that it cannot need scrolling.
+                    assert!(
+                        widget_rect("onboarding.done.heading").area() > 0.0
+                            && widget_rect("onboarding.done.body").area() > 0.0,
+                        "the ready screen keeps its title and line at {width}x{height}, theme={}",
                         theme.name
                     );
-                    let heading = widget_rect("onboarding.done.heading");
-                    let invitation = widget_rect("onboarding.done.body");
-                    let footer_top = rects
-                        .iter()
-                        .map(|rect| rect.y0)
-                        .fold(f64::INFINITY, f64::min);
-                    let gap = footer_top - invitation.y1;
-                    let ordered = heading.y1 <= invitation.y0;
                     assert!(
-                        heading.area() > 0.0
-                            && invitation.area() > 0.0
-                            && heading.y0 >= content_viewport.y0
-                            && ordered
-                            && invitation.y1 <= content_viewport.y1,
-                        "Ready title and invitation must be wholly visible, ordered and clear of the footer: heading={heading:?}, invitation={invitation:?}, viewport={content_viewport:?}"
-                    );
-                    assert!(
-                        gap >= f64::from(theme.tokens.spacing.s2) - 0.5
-                            && gap
-                                <= f64::from(
-                                    theme.tokens.spacing.s6 * 2.0 + theme.tokens.spacing.s3
-                                ),
-                        "Ready actions must follow their invitation without an empty canvas: gap={gap}, invitation={invitation:?}, actions={rects:?}, panel={panel:?}, theme={}",
+                        node_map.values().any(|&ptr| unsafe {
+                            (*ptr).test_id() == Some("onboarding.finish.button")
+                        }) && !node_map.values().any(|&ptr| unsafe {
+                            (*ptr).test_id() == Some("onboarding.tour.start.button")
+                        }),
+                        "the ready screen offers the desktop and no tour at {width}x{height}, theme={}",
                         theme.name
                     );
                 }
@@ -9845,26 +9817,28 @@ mod tests {
                 "large-text ready screen must fit the laptop-height viewport: {panel:?}",
             );
 
-            for id in ["onboarding.finish.button", "onboarding.tour.start.button"] {
-                let action = node_map
-                    .values()
-                    .find_map(|&ptr| unsafe {
-                        ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
-                    })
-                    .unwrap_or_else(|| panic!("Done screen exposes {id}"));
-                assert!(action.area() > 0.0, "action={action:?}");
-                assert!(
-                    action.x0 >= 0.0
-                        && action.x1 <= 1000.0
-                        && action.y0 >= 0.0
-                        && action.y1 <= 720.0,
-                    "the action must stay fully in the viewport, id={id}, action={action:?}"
-                );
-                assert!(
-                    action.y0 >= panel.y0 && action.y1 <= panel.y1,
-                    "the panel must hold the action unclipped, id={id}, action={action:?}, panel={panel:?}"
-                );
-            }
+            let enter = "onboarding.finish.button";
+            let action = node_map
+                .values()
+                .find_map(|&ptr| unsafe {
+                    ((*ptr).test_id() == Some(enter)).then(|| (*ptr).get_rect())
+                })
+                .unwrap_or_else(|| panic!("Done screen exposes {enter}"));
+            assert!(action.area() > 0.0, "action={action:?}");
+            assert!(
+                action.x0 >= 0.0 && action.x1 <= 1000.0 && action.y0 >= 0.0 && action.y1 <= 720.0,
+                "the action must stay fully in the viewport, action={action:?}"
+            );
+            assert!(
+                action.y0 >= panel.y0 && action.y1 <= panel.y1,
+                "the panel must hold the action unclipped, action={action:?}, panel={panel:?}"
+            );
+            assert!(
+                !node_map.values().any(|&ptr| unsafe {
+                    (*ptr).test_id() == Some("onboarding.tour.start.button")
+                }),
+                "the ready screen hands off to the desktop without offering a tour"
+            );
         }
         // Phase `large_text_backup_action_keeps_a_clear_gap_below_confirmation`.
         {

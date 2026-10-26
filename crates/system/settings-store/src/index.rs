@@ -400,6 +400,8 @@ pub const SETTINGS: &[Setting] = &[
     ),
     s("power.blank", "power", "power.blank"),
     s("power.lock_after", "power", "power.lock"),
+    s("power.lock_on_sleep", "power", "power.lock_on_sleep")
+        .switch("settings.power", "lock_on_sleep"),
     s("power.lid", "power", "power.lid"),
     s("power.power_key", "power", "power.power_key"),
     s("power.critical", "power", "power.critical"),

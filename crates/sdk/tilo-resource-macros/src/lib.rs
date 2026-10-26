@@ -399,6 +399,18 @@ fn container_options(attrs: &[Attribute]) -> syn::Result<ContainerOptions> {
             "`check_reads` and `check_items` say what a `check = path` reads",
         ));
     }
+    // A field named twice is not the label twice: the second mention would
+    // silently name no field, and the label would read as if it had.
+    let mut named: Vec<&str> = Vec::new();
+    for part in &options.label {
+        if named.contains(&part.as_str()) {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                format!("`label = \"..\"` names `{part}` twice"),
+            ));
+        }
+        named.push(part);
+    }
     Ok(options)
 }
 

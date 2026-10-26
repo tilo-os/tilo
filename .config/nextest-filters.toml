@@ -22,3 +22,14 @@ push_only = """
 (package(tilo-fs) and binary(collab_release_matrix)) or
 (package(tilo-rollback) and binary(mechanism))
 """
+
+# Packages whose tests run in a micro-VM check of their own instead of the
+# test family, because they need what a node's job cannot give them. The
+# imager's need ext4, XFS or Btrfs under their caches and TMPDIR, which a
+# node's build directory and TMPDIR may not be (ZFS, an overlay, tmpfs):
+# `imager-tests` runs them on the step's own ext4 scratch disk. tools/ci/t_toml.py
+# leaves these packages out of the test family, and the whole-workspace runs
+# leave them out by this filter.
+micro_vm = """
+package(imager)
+"""

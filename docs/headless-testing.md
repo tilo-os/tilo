@@ -297,11 +297,25 @@ Error:
   {"err":{"code":"unknown_target","message":"no addressable widget named ..."}}
 
 Error codes:
-  parse_error      — malformed JSON or unknown command
-  unknown_target   — click_named / drag with a name not in the registry
-  invalid_path     — snapshot path is empty
-  not_implemented  — command parsed but execution deferred to a later phase
+  parse_error            — malformed JSON or unknown command
+  unknown_target         — click_named / drag with a name not in the registry
+  target_not_laid_out    — the named widget has no area yet
+  target_unpresented     — the named widget, or one it sits in, still shows a
+                           stand-in for content that has not drawn
+  no_frame_since         — no frame has been drawn since the one the press
+                           counts from
+  target_moved           — the target is no longer where it was read
+  desktop_in_transition  — the desktop is between two arrangements
+  invalid_path           — snapshot path is empty
+  not_implemented        — command parsed but execution deferred to a later phase
 ```
+
+A press is proven ready for the target it names and the widgets that target sits
+in, never for the desktop at large: a widget elsewhere asking for frames for its
+own reasons does not hold an unrelated target back. The desktop as a whole must
+still be settled — setup closed, no workspace, strip or window-group switch
+underway — because a rectangle read then is one the caller never saw.
+(`crates/session/shell/src/shell/pointer_readiness.rs`)
 
 ### Widget registry — how `click_named` finds things
 

@@ -161,6 +161,8 @@ export interface DesktopMount {
   setHostActions(actions: HostAction[]): void;
   /** Show a banner offering `action` until the person chooses or dismisses it. */
   offerHostAction(offer: {action: HostAction; title: string; body?: string}): void;
+  /** Wear the picture `user` (root key, hex) chose, a `data:` URL, on their avatars now; `null` takes it away. */
+  setPersonPhoto(user: string, url: string | null): Promise<void>;
   /**
    * The actions the mounted application publishes now, with its permissions
    * applied. `resource` narrows to one resource and its children, including

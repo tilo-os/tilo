@@ -331,12 +331,13 @@ pub fn open_hosted_app(
 }
 
 /// Hold the place a launch will open in from the moment it is asked for: a
-/// tab at `placement` showing the opening card, which the app's window then
-/// binds into ([`Placement::IntoTab`]). A cold start takes seconds, so
-/// without it nothing on screen answers the activation until the window
-/// maps. A failed launch or a missed deadline turns the card into the
-/// retry card (`peer_windows::settle_local_restore`), and the card is never
-/// saved as opening (`persist::clear_transient_launch_notes`).
+/// tab at `placement` where the app's window arrives
+/// (`pending_window::PendingWindow`), which the window then binds into
+/// ([`Placement::IntoTab`]). A cold start takes seconds, so without it
+/// nothing on screen answers the activation until the window maps. A failed
+/// launch or a missed deadline turns the place into the retry card
+/// (`peer_windows::settle_local_restore`), and the place is never saved as
+/// opening (`persist::clear_transient_launch_notes`).
 pub fn hold_place_for_launch(
     tree: &mut WorkspaceTree,
     package_id: &str,
@@ -1356,7 +1357,7 @@ fn remove_tab_choosing(tree: &mut WorkspaceTree, tab_id: TabId, back_to_previous
     // ordering explicit, this guarantees that a revision/peer merge between
     // the two representations cannot treat the stale document entry as an
     // insertion and resurrect it. A newly adopted `Foreign` surface and a
-    // tab placed since the document last took the cache (an opening card
+    // tab placed since the document last took the cache (a pending place
     // whose launch was refused in the same frame) may never have entered the replicated
     // document; absence there is therefore already the desired durable
     // state, not a failed close.

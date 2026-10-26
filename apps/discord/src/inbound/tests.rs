@@ -171,7 +171,10 @@ fn blocked_persona_is_skipped_for_every_event() {
         emoji: "💩".into(),
         ..ReactionChanged::default()
     };
-    assert_eq!(plan_reaction(&g, &reaction, true), InboundPlan::default());
+    assert_eq!(
+        plan_reaction(&g, &reaction, &json!({}), true),
+        InboundPlan::default()
+    );
     assert_eq!(
         plan_block(&g, "u7").deletes,
         ["m1"],
@@ -410,16 +413,91 @@ fn a_tilo_message_deleted_in_discord_is_resent_unless_a_linked_moderator_did_it(
 fn reactions_carry_the_persona() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    // A Discord custom emoji is the workspace emoji of its name in Tilo.
     let event = ReactionChanged {
         message_id: "dm1".into(),
         user_id: "u8".into(),
         user_name: "bo".into(),
         emoji: ":tilo_hello:".into(),
+        emoji_id: Some("55".into()),
+        animated: true,
         ..ReactionChanged::default()
     };
-    let plan = plan_reaction(&g, &event, false);
+    let plan = plan_reaction(&g, &event, &json!({}), false);
+    assert_eq!(plan.unreacts[0].message, "m1");
     assert_eq!(plan.unreacts[0].emoji, ":tilo_hello:");
+    assert_eq!(plan.unreacts[0].appearance.name, "bo");
+    assert_eq!(plan.unreacts[0].appearance.persona.service, "discord");
     assert_eq!(plan.unreacts[0].appearance.persona.account, "u8");
+    assert!(plan.reacts.is_empty());
+}
+
+#[test]
+fn a_unicode_reaction_takes_the_spelling_the_message_already_has() {
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    let chat = json!({"messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "x",
+        "reactions": [{"emoji": "❤", "by": "u_ada", "at": 1}]}}]});
+    let event = ReactionChanged {
+        message_id: "dm1".into(),
+        user_id: "u8".into(),
+        emoji: "❤️".into(),
+        ..ReactionChanged::default()
+    };
+    assert_eq!(plan_reaction(&g, &event, &chat, true).reacts[0].emoji, "❤");
+    let toned = ReactionChanged {
+        emoji: "👍🏽".into(),
+        ..event
+    };
+    assert_eq!(
+        plan_reaction(&g, &toned, &chat, true).reacts[0].emoji,
+        "👍🏽",
+        "a skin tone crosses as it is"
+    );
+}
+
+#[test]
+fn a_reaction_taken_off_by_id_alone_keeps_the_name_it_was_given() {
+    let mut g = guild();
+    g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    let chat = json!({"messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "x",
+        "reactions": [{"emoji": "🎉", "by": "bot", "persona": "discord/u8", "name": "Bo", "at": 1}]}}]});
+    // Discord's removal names the member by id, without their name.
+    let removed = ReactionChanged {
+        message_id: "dm1".into(),
+        user_id: "u8".into(),
+        emoji: "🎉".into(),
+        ..ReactionChanged::default()
+    };
+    let plan = plan_reaction(&g, &removed, &chat, false);
+    assert_eq!(plan.unreacts[0].appearance.name, "Bo");
+    let unknown = ReactionChanged {
+        user_id: "u9".into(),
+        ..removed
+    };
+    assert_eq!(
+        plan_reaction(&g, &unknown, &chat, false).unreacts[0]
+            .appearance
+            .name,
+        "u9"
+    );
+}
+
+#[test]
+fn the_bots_own_reactions_are_echoes() {
+    let mut g = guild();
+    g.bot_user = "b0".into();
+    g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
+    let echo = ReactionChanged {
+        message_id: "dm1".into(),
+        user_id: "b0".into(),
+        emoji: "👍".into(),
+        ..ReactionChanged::default()
+    };
+    assert_eq!(
+        plan_reaction(&g, &echo, &json!({}), true),
+        InboundPlan::default()
+    );
 }
 
 #[test]

@@ -18,11 +18,11 @@ use super::*;
 use runtime_portal::tools::{AppEntry, AppKind, AppRemoval, ToolIntent};
 use std::sync::Mutex;
 
-/// How often the list is asked for again while the place is shown. The shell
-/// answers from memory; this bounds how long an app installed elsewhere
-/// takes to appear.
-const POLL: Duration = Duration::from_secs(5);
-/// How soon to ask again while the shell's list is still being read.
+/// How soon to ask again while the shell's list is still being read. The
+/// place is open in the window, so a list still filling in is waited for.
+/// Once an answer holds the person's apps, the shell says when that changes
+/// instead ([`CollabEvent::ApplicationsChanged`](ui::collaboration::CollabEvent::ApplicationsChanged));
+/// asking on a timer woke the frame loop with nothing to show.
 const SETTLING_POLL: Duration = Duration::from_secs(1);
 
 pub(super) type AppLister = fn() -> Result<Vec<AppEntry>, String>;
@@ -46,6 +46,9 @@ pub(super) struct Applications {
     /// The place is shown, so its list is kept current.
     wanted: bool,
     next_poll: Option<Instant>,
+    /// The shell said the person's apps changed since they were last asked
+    /// for. A change during an unanswered ask becomes one more ask.
+    stale: bool,
     /// `None` for a window whose apps are given (scenarios, tests).
     lister: Option<AppLister>,
     request: AppRequest,
@@ -61,6 +64,7 @@ impl Default for Applications {
             listing: false,
             wanted: false,
             next_poll: None,
+            stale: false,
             // Unit tests never reach a shell; they inject what they need.
             lister: (!cfg!(test)).then_some(runtime_portal::tools::list_applications as AppLister),
             request: runtime_portal::tools::open_tool,
@@ -71,15 +75,33 @@ impl Default for Applications {
 impl Applications {
     /// When the window should look again.
     pub(super) fn next_wake(&self) -> Option<Instant> {
-        let answered = self.listed.lock().is_ok_and(|slot| slot.is_some())
-            || self.refused.lock().is_ok_and(|slot| slot.is_some());
-        if answered {
+        // An answer that arrived has to be taken in.
+        if self.listed.lock().is_ok_and(|slot| slot.is_some()) {
             return Some(Instant::now());
         }
-        if !self.wanted || self.listing || self.lister.is_none() {
+        // A refusal stands until the shell says something changed.
+        if self.refused.lock().is_ok_and(|slot| slot.is_some()) {
+            return self.stale.then(Instant::now);
+        }
+        if !self.wanted || self.lister.is_none() {
+            return None;
+        }
+        // A read already under way answers the change too.
+        if self.listing {
+            return None;
+        }
+        if !self.stale && self.next_poll.is_none() {
             return None;
         }
         Some(self.next_poll.unwrap_or_else(Instant::now))
+    }
+
+    /// Take in `event`: a change the shell announced is asked about on the
+    /// next pump.
+    pub(super) fn event(&mut self, event: &ui::collaboration::CollabEvent) {
+        if matches!(event, ui::collaboration::CollabEvent::ApplicationsChanged) {
+            self.stale = true;
+        }
     }
 }
 
@@ -100,8 +122,10 @@ impl FileExplorerWidget {
         };
         let wanted = crate::applications::is_location(&path);
         if wanted && !self.applications.wanted {
-            // Coming to the place asks at once.
+            // Coming to the place asks at once, for what changed while the
+            // shell had no one to tell.
             self.applications.next_poll = None;
+            self.applications.stale = true;
         }
         self.applications.wanted = wanted;
         path
@@ -130,7 +154,7 @@ impl FileExplorerWidget {
         {
             self.applications.listing = false;
             let settling = listed.apps.is_empty();
-            self.applications.next_poll = Some(now + if settling { SETTLING_POLL } else { POLL });
+            self.applications.next_poll = settling.then(|| now + SETTLING_POLL);
             if listed.apps != self.applications.shown
                 || listed.folder_files != self.applications.folder_files
             {
@@ -163,8 +187,9 @@ impl FileExplorerWidget {
         {
             return changed;
         }
+        self.applications.stale = false;
+        self.applications.next_poll = None;
         self.applications.listing = true;
-        self.applications.next_poll = Some(now + POLL);
         let folder = self.home_path.as_deref().map(crate::applications::folder);
         let slot = Arc::clone(&self.applications.listed);
         let spawned = std::thread::Builder::new()
@@ -327,6 +352,19 @@ impl FileExplorerWidget {
     #[cfg(test)]
     pub(super) fn set_app_request(&mut self, request: AppRequest) {
         self.applications.request = request;
+    }
+
+    /// Ask `lister`, off the UI thread, for the person's apps: the test seam
+    /// for a window that keeps its list current.
+    #[cfg(test)]
+    pub(super) fn set_app_lister(&mut self, lister: AppLister) {
+        self.applications.lister = Some(lister);
+    }
+
+    /// Take in a collaboration event the way the app does.
+    #[cfg(test)]
+    pub(super) fn take_apps_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        self.applications.event(event);
     }
 
     /// The `applications` screenshot scenario: one app of each kind, made

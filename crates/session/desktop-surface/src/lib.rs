@@ -31,6 +31,6 @@ pub mod surface;
 pub use surface::{
     ActivityModel, ActivityPaneCode, AppInbox, AppNotifier, DesktopHandle, DesktopNotifications,
     DesktopSurface, HistorySource, HostAction, HostActionSource, NotificationOutcome, OpenActivity,
-    PersonalAsk, TileSource, is_host_offer, open_activity, published_selection, seed_tree,
-    tile_app_kind,
+    PersonalAsk, TileSource, is_host_offer, open_activity, published_selection, search_chord_keys,
+    seed_tree, tile_app_kind,
 };

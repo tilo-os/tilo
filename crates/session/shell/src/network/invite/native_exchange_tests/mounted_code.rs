@@ -746,8 +746,10 @@ async fn drive(
                         admitted |= govern_member_delta(authority, source, author, &data);
                     }
                     if admitted {
-                        authority.lock().unwrap().as_mut().unwrap().refresh_checkpoint().unwrap();
-                        publish(authority, context.publisher);
+                        let mut state = authority.lock().unwrap();
+                        let state = state.as_mut().unwrap();
+                        state.commit_changes().unwrap();
+                        super::refresh::publish_changes(state, context.publisher);
                     }
                 }
                 () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}

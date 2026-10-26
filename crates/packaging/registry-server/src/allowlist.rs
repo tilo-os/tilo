@@ -94,6 +94,14 @@ impl PublisherAllowlist {
             .find(|p| p.pubkey_bytes().is_ok_and(|b| &b == pubkey))
     }
 
+    /// Look up a publisher by its hex pubkey, as `add-publisher --grant` names
+    /// the row it extends.
+    pub fn row(&self, pubkey_hex: &str) -> Option<&PublisherRow> {
+        self.publishers
+            .iter()
+            .find(|p| p.pubkey_hex.eq_ignore_ascii_case(pubkey_hex))
+    }
+
     /// Rows that own no namespace and so can submit nothing but deletes.
     /// Rows written before namespaces existed land here until the operator
     /// names one with `add-publisher --namespace`.

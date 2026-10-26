@@ -57,6 +57,11 @@ fn connected_with(mirror_channels: Option<bool>, map_roles: Option<bool>) -> Rep
                 ..RoleInfo::default()
             },
         ],
+        emojis: vec![discord_wire::event::EmojiInfo {
+            id: "e55".into(),
+            name: "tilo_hello".into(),
+            animated: false,
+        }],
     }))
     .unwrap();
     bot
@@ -109,6 +114,8 @@ fn observe_layout_replaces_the_snapshot() {
         Some("d_chat")
     );
     assert_eq!(state.roles.len(), 2);
+    assert_eq!(state.emoji("tilo_hello"), Some("e55"));
+    assert_eq!(state.emoji("wave"), None);
 }
 
 #[test]
@@ -119,7 +126,8 @@ fn a_person_cannot_observe_the_layout_or_write_the_map() {
         ada.apply(Guild::OBSERVE_LAYOUT.with(guild::ObserveLayout {
             bot_user: "evil".into(),
             channels: vec![],
-            roles: vec![]
+            roles: vec![],
+            emojis: vec![]
         }))
         .is_err()
     );
@@ -568,6 +576,7 @@ fn a_bridge_of_one_channel_queues_nothing_elsewhere() {
         bot_user: "b0".into(),
         channels: vec![text("2"), text("3")],
         roles: Vec::new(),
+        emojis: Vec::new(),
     }))
     .unwrap();
     bot.apply(map(MappedKind::Webhook, "c1", "wh1")).unwrap();

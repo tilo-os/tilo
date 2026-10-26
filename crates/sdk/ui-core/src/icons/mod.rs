@@ -13,8 +13,10 @@
 
 mod app_glyph;
 mod app_image;
+mod service_mark;
 
 pub use app_glyph::app_glyph;
+pub use service_mark::{ServiceMark, service_mark};
 
 pub use app_image::{AppImage, AppImageSource, MAX_DEVICE_PX, device_px, draw_app_image};
 
