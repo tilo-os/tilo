@@ -204,15 +204,17 @@ use_cosign() {
   PATH=$tools/tilo-cosign-tools:$PATH
 }
 
-# The manifest digest of the single image an OCI index.json (on stdin, from $1) names.
+# The manifest digest of the single image an OCI index.json (on stdin, from $1) names. Read
+# with grep, not a JSON parser: the publishing checks run in the skopeo image, which has neither
+# python3 nor jq. An index's only "digest" members are its manifests' (descriptors' annotations
+# and platforms have none), and whitespace never matters to them, so compact (podman's) and
+# spaced (Python's json.dump, as tools/ci/os/oci_layers.py writes layouts) read alike.
 index_digest() {
-  python3 -c '
-import json, sys
-manifests = json.load(sys.stdin).get("manifests", [])
-if len(manifests) != 1:
-    sys.exit(f"publish: {sys.argv[1]} names {len(manifests)} images, not one")
-print(manifests[0]["digest"], end="")
-' "$1"
+  local digests count
+  digests=$(tr -d '[:space:]' | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | cut -d'"' -f4) || true
+  count=$(printf '%s' "$digests" | grep -c .) || true
+  [[ $count == 1 ]] || die "$1 names $count images, not one"
+  printf '%s' "$digests"
 }
 
 # The manifest digest of the single image in an OCI archive, from its index.json.
