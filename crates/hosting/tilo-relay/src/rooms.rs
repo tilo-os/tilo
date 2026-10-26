@@ -1753,11 +1753,34 @@ impl Rooms {
         let host_person = hex::encode(host.cert.user_public_key);
         let host_salt =
             tilo_desktop_model::ids::namespace_of_device(&hex::encode(host.cert.device_public_key));
-        let applied = candidate
-            .governance_mut()
-            .author_room_document(&host.key, now, |doc| {
-                crate::rooms::layout_scope::apply_requests(doc, &room_id, host_salt, &host_person)
-            })?;
+        let mut applied =
+            candidate
+                .governance_mut()
+                .author_room_document(&host.key, now, |doc| {
+                    crate::rooms::layout_scope::apply_requests(
+                        doc,
+                        &room_id,
+                        host_salt,
+                        &host_person,
+                    )
+                })?;
+        // A room written before operator strips moved to the host's own
+        // namespace still holds them in the room's namespace. The host owns
+        // those too, as its governor, so a retained command addressed there
+        // is applied the same way.
+        let legacy_strips = tilo_desktop_model::ids::room_strips_salt(&room_id);
+        if legacy_strips != host_salt {
+            applied |= candidate
+                .governance_mut()
+                .author_room_document(&host.key, now, |doc| {
+                    crate::rooms::layout_scope::apply_requests(
+                        doc,
+                        &room_id,
+                        legacy_strips,
+                        &host_person,
+                    )
+                })?;
+        }
         if !outcome.changed && !applied {
             return Ok(());
         }

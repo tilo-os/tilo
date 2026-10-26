@@ -382,6 +382,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_host_applies_a_request_addressed_to_the_rooms_own_legacy_namespace() {
+        use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
+        use tilo_desktop_model::layout::Strip;
+        use tilo_desktop_model::projection::LayoutRequest;
+        use tilo_desktop_model::{
+            DesktopTree, RoomId, StripId, Workspace, WorkspaceId, compose_id, room_layout,
+        };
+
+        let room = "07848ffe-1898-4f72-8419-0b54c93e6dad";
+        let room_id = RoomId::parse(room).unwrap();
+        let salt = tilo_desktop_model::ids::room_strips_salt(room);
+        let workspace = Workspace::in_room(WorkspaceId::of_room(room_id), room_id, "Lounge");
+        let strip = compose_id(salt, 1);
+        let mut layout = tilo_desktop_model::ownership::SharedDesktop {
+            tree: DesktopTree {
+                active: workspace.id,
+                workspaces: vec![workspace],
+                ..DesktopTree::default()
+            },
+            ..Default::default()
+        };
+        layout.tree.workspaces[0]
+            .strips
+            .push(Strip::new(StripId(strip), "Lobby"));
+        let mut doc = automerge::AutoCommit::new();
+        room_layout::write(&mut doc, &layout, salt, Some("host")).unwrap();
+        doc.commit();
+
+        let command = serde_json::to_vec(&BoundCommand {
+            source: CommandSource {
+                room: room.into(),
+                heads: Vec::new(),
+            },
+            command: DesktopCommand::RenameStrip {
+                strip,
+                name: "Reception".into(),
+            },
+        })
+        .unwrap();
+        let request = LayoutRequest {
+            id: LayoutRequest::id("asks", salt, 1, &command),
+            from: "asks".into(),
+            to_salt: salt,
+            at: 1,
+            command,
+        };
+        room_layout::request(&mut doc, &request).unwrap();
+        doc.commit();
+
+        assert!(apply_requests(&mut doc, room, salt, "host").unwrap());
+        let read = room_layout::read(&doc, None).expect("a layout");
+        assert_eq!(read.tree.workspaces[0].strips[0].name, "Reception");
+        assert!(room_layout::applied(&doc, salt).contains(&request.id));
+    }
+
+    #[test]
     fn a_door_knows_a_room_document_write_from_any_other() {
         let room = "07848ffe-1898-4f72-8419-0b54c93e6dad";
         let topology = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
