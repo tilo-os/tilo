@@ -133,6 +133,16 @@ flow cleanup(list: todo.TodoList) -> Text {
 }
 ```
 
+**Parameter defaults.** An action parameter may have a default written in terms of the
+parameters before it. An invocation that leaves the argument out gets it, computed when it is
+invoked on what the invoker sees, and records it as the argument; an explicit argument wins:
+
+```
+action check(item: Todo, done: Bool = not item.done) (label: if done { "Check" } else { "Uncheck" }, on: item.done) {
+    item.done = done
+}
+```
+
 **Views.** A view body is UI statements: primitive and view calls (with child blocks), `for`,
 `if`/`else if`/`else`, `match` (each arm one UI call or a block) and `let`. Options of UI
 primitives are the primitives' own enums, written as dot literals; lengths keep their units and

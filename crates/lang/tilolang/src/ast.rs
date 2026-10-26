@@ -157,6 +157,9 @@ pub struct Param {
     pub node: NodeId,
     pub name: Ident,
     pub ty: TypeExpr,
+    /// `done: Bool = not item.done`: an action parameter's default, evaluated when the action is
+    /// invoked without it, over the parameters before it, and recorded as the argument.
+    pub default: Option<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

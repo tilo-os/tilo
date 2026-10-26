@@ -856,7 +856,17 @@ impl<'a> Parser<'a> {
             let name = self.ident("a parameter name")?;
             self.expect(&Tok::Colon)?;
             let ty = self.type_expr()?;
-            out.push(Param { node, name, ty });
+            let default = if self.eat(&Tok::Assign) {
+                Some(self.expr()?)
+            } else {
+                None
+            };
+            out.push(Param {
+                node,
+                name,
+                ty,
+                default,
+            });
             if !self.eat(&Tok::Comma) {
                 break;
             }

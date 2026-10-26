@@ -226,6 +226,73 @@ impl Core {
 
     // ----- actions -----------------------------------------------------------------------
 
+    /// See [`crate::Runtime::complete_args`].
+    pub(crate) fn complete_args(
+        &self,
+        action: &str,
+        given: Vec<Option<Value>>,
+    ) -> Result<Vec<Value>, RuntimeError> {
+        let Some(pkg) = self.registry.borrow().action_package(action) else {
+            // A flow takes no defaults: its arguments are all given.
+            return given
+                .into_iter()
+                .map(|v| v.ok_or_else(|| RuntimeError::BadArgs("an argument is missing".into())))
+                .collect();
+        };
+        let meta = pkg
+            .action(action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {action}")))?
+            .clone();
+        if given.len() > meta.params.len() {
+            return Err(RuntimeError::BadArgs(format!(
+                "expected {} arguments, got {}",
+                meta.params.len(),
+                given.len()
+            )));
+        }
+        let mut args: Vec<Value> = Vec::with_capacity(meta.params.len());
+        let mut given = given.into_iter();
+        for (i, param) in meta.params.iter().enumerate() {
+            if let Some(v) = given.next().flatten() {
+                args.push(v);
+                continue;
+            }
+            let Some(default) = &param.default else {
+                return Err(RuntimeError::BadArgs(format!(
+                    "argument `{}` is missing, and it has no default",
+                    param.name
+                )));
+            };
+            let before = meta.params.get(..i).unwrap_or_default();
+            self.frames
+                .borrow_mut()
+                .push(pkg.hash.clone(), FrameKind::Pure);
+            let value = self.call_in_frame(&pkg, &default.export, before, &args, Some(&param.ty));
+            self.frames.borrow_mut().pop();
+            args.push(value?);
+        }
+        Ok(args)
+    }
+
+    /// `aref` with the arguments it leaves out given their defaults, now.
+    fn completed(&self, aref: &ActionRef) -> Result<ActionRef, RuntimeError> {
+        let wanted = self
+            .registry
+            .borrow()
+            .action_package(&aref.action)
+            .and_then(|pkg| pkg.action(&aref.action).map(|a| a.params.len()));
+        match wanted {
+            Some(n) if n > aref.args.len() => {
+                let given = aref.args.iter().cloned().map(Some).collect();
+                Ok(ActionRef {
+                    args: self.complete_args(&aref.action, given)?,
+                    ..aref.clone()
+                })
+            }
+            _ => Ok(aref.clone()),
+        }
+    }
+
     fn note(ctx: &ExecCtx, pkg: &Package, aref: &ActionRef) -> ChangeNote {
         ChangeNote {
             action: aref.action.clone(),
@@ -262,6 +329,7 @@ impl Core {
             .action(&aref.action)
             .ok_or_else(|| RuntimeError::NotFound(format!("action {}", aref.action)))?
             .clone();
+        let aref = &self.completed(aref)?;
         let txn = self.store.borrow_mut().begin()?;
         let primary = aref.args.iter().find_map(|v| match v {
             Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
@@ -320,6 +388,8 @@ impl Core {
         invoker: &Principal,
         aref: &ActionRef,
     ) -> Result<InvokeOutcome, RuntimeError> {
+        // What the invoker left out is computed now, on what they see, and recorded.
+        let aref = &self.completed(aref)?;
         let mut chain = Vec::new();
         push_chain(&mut chain, aref.author.as_ref());
         let ctx = ExecCtx {
@@ -612,6 +682,9 @@ impl Core {
             Step::Replay(v) => return self.ret_h(boxed(v)),
             Step::Live(ctx) => ctx,
         };
+        let aref = self
+            .completed(&aref)
+            .map_err(|e| HostFail::Trap(e.to_string()))?;
         let decision = self
             .decide(&ctx, &aref)
             .map_err(|e| HostFail::Trap(e.to_string()))?;
@@ -783,19 +856,29 @@ impl Core {
         let Value::List(args) = self.val(args_h)? else {
             return trap("act_ref expects the arguments as a list");
         };
+        // How many arguments it takes, and how many of the last of them have defaults, which
+        // an application may leave out: they are computed when it is invoked.
         let arity = {
             let reg = self.registry.borrow();
-            let as_action = reg
-                .action_package(&action)
-                .and_then(|p| p.action(&action).map(|a| a.params.len()));
+            let as_action = reg.action_package(&action).and_then(|p| {
+                p.action(&action).map(|a| {
+                    let defaulted = a
+                        .params
+                        .iter()
+                        .rev()
+                        .take_while(|p| p.default.is_some())
+                        .count();
+                    (a.params.len(), defaulted)
+                })
+            });
             as_action.or_else(|| {
                 reg.flow_package(&action)
-                    .and_then(|p| p.flow(&action).map(|f| f.params.len()))
+                    .and_then(|p| p.flow(&action).map(|f| (f.params.len(), 0)))
             })
         };
         match arity {
             None => return trap(format!("unknown action `{action}`")),
-            Some(n) if n != args.len() => {
+            Some((n, defaulted)) if args.len() > n || args.len() < n.saturating_sub(defaulted) => {
                 return trap(format!(
                     "action `{action}` takes {n} arguments, got {}",
                     args.len()
