@@ -4058,6 +4058,7 @@ requirement = { cores = 4, memory = "12GiB" }
 privileged = true
 git = true
 run = "bash tools/ci/boot-assessment.sh"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/boot-assessment.txt"] }
 needs = ["os-dev-image-x86_64"]
 inputs = ["**"]
 outputs = ["/target/boot-assessment/**"]
@@ -4207,6 +4208,7 @@ on = ["stable", "dispatch"]
 name = "os-vm-x86_64"
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 run = "bash tools/ci/os-vm.sh x86_64 /target/publish/os-dev-disk/x86_64/disk"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/os-vm.txt", "tools/ci/packages/qemu-x86_64.txt"] }
 inputs = ["tools/ci/os-vm.sh", "tools/ci/publish/lib.sh", "os/dev/vm.sh", "os/dev/_common.sh"]
 needs = ["os-dev-disk-x86_64"]
 git = true
@@ -4232,7 +4234,8 @@ lifetime = "3600"
 [[check]]
 name = "signin-e2e-x86_64"
 run = "bash tools/ci/signin-e2e.sh /target/publish/dev-installer-medium/x86_64/disk.qcow2 /target/signin-e2e"
-inputs = ["tools/ci/signin-e2e.sh", "tools/ci/signin_e2e.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/probe-kvm.py"]
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/signin-e2e.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/signin-e2e.txt"] }
+inputs = ["tools/ci/signin-e2e.sh", "tools/ci/install-packages.sh", "tools/ci/packages/signin-e2e.txt", "tools/ci/signin_e2e.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/probe-kvm.py"]
 needs = ["dev-installer-medium-x86_64"]
 outputs = ["/target/signin-e2e/**"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
@@ -7027,6 +7030,7 @@ arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 name = "os-dev-disk-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/os-vm.txt", "tools/ci/packages/qemu-{arch}.txt"] }
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-disk.sh", "os/dev/**"]
 needs = ["os-dev-image-{arch}", "signing-tools"]
 outputs = ["/target/publish/os-dev-disk/{arch}/**"]
@@ -7051,6 +7055,7 @@ arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 name = "os-dev-gate-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-gate.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-gate/{arch}"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/os-vm.txt", "tools/ci/packages/qemu-{arch}.txt"] }
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-gate.sh", "tools/ci/os/oci_layers.py", "os/dev/**", "os/tests/live-update-check.sh"]
 needs = ["os-dev-image-{arch}"]
 outputs = ["/target/publish/os-dev-gate/{arch}/**"]
@@ -7078,6 +7083,7 @@ arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "a
 name = "os-acceptance-{arch}"
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev-disk/{arch} /target/publish/os-acceptance/{arch}"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/os-vm.txt", "tools/ci/packages/qemu-{arch}.txt"] }
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-acceptance.sh", "os/dev/**", "os/tests/**", "tools/atspi_external_client.py", "crates/session/shell/tests/native_atspi_smoke.sh", "apps/file-explorer/tests/atspi_smoke.sh", "scripts/vm-acceptance/**", "tools/perf/record.py"]
 needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-disk-{arch}", "signing-tools"]
 outputs = ["/target/publish/os-acceptance/{arch}/**"]

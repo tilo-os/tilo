@@ -1328,6 +1328,7 @@ itself: what os-acceptance-{arch} boots throwaway overlays of, and what publish-
 publishes once they passed."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/os-vm.txt", "tools/ci/packages/qemu-{arch}.txt"] }
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-disk.sh", "os/dev/**"]
 needs = ["os-dev-image-{arch}"]
 outputs = ["/target/publish/os-dev-disk/{arch}/**"]
@@ -1350,6 +1351,7 @@ by itself from an image that fails to boot, so this is all a dev device needs be
 an image: that it takes it, boots it, and takes the next update."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-gate.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-gate/{arch}"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/os-vm.txt", "tools/ci/packages/qemu-{arch}.txt"] }
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-gate.sh", "tools/ci/os/oci_layers.py", "os/dev/**", "os/tests/live-update-check.sh"]
 needs = ["os-dev-image-{arch}"]
 outputs = ["/target/publish/os-dev-gate/{arch}/**"]
@@ -1375,6 +1377,7 @@ broke it, and publishes nothing. `t outputs os-acceptance-x86_64` gives every ga
 report and the guests' logs."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev-disk/{arch} /target/publish/os-acceptance/{arch}"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/os-vm.txt", "tools/ci/packages/qemu-{arch}.txt"] }
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-acceptance.sh", "os/dev/**", "os/tests/**", "tools/atspi_external_client.py", "crates/session/shell/tests/native_atspi_smoke.sh", "apps/file-explorer/tests/atspi_smoke.sh", "scripts/vm-acceptance/**", "tools/perf/record.py"]
 needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-disk-{arch}"]
 outputs = ["/target/publish/os-acceptance/{arch}/**"]
