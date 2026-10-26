@@ -1626,3 +1626,49 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
         }
     }
 }
+
+#[test]
+fn a_held_streams_start_survives_its_frames_being_superseded() {
+    let frame = |ts, encoded_h264| NeighbourMsg::SurfaceFrame {
+        surface: 31,
+        source_peer: 1,
+        encoded_h264,
+        ts,
+        seq: ts,
+    };
+    let start = NeighbourMsg::SurfaceStreamStart {
+        surface: 31,
+        source_peer: 1,
+        width: 64,
+        height: 64,
+        codec: "h264".into(),
+        ts: 0,
+        sender_monotonic_ns_at_send: 0,
+        colorimetry: None,
+        hdr_static_metadata: None,
+        bit_depth: 0,
+        app_id: String::new(),
+        tab: 0,
+    };
+    let mut backlog = SurfaceFrameBacklog::default();
+    backlog.lose_references();
+    assert!(
+        backlog.admit(&start),
+        "a stream's start waits for no keyframe"
+    );
+    backlog.push(start);
+    backlog.push(frame(1, vec![0, 0, 1, 0x65]));
+    backlog.push(frame(2, vec![0, 0, 1, 0x41]));
+    // A newer keyframe supersedes the older chain, not the start.
+    backlog.push(frame(3, vec![0, 0, 1, 0x65]));
+    assert!(matches!(
+        backlog.pop(),
+        Some(NeighbourMsg::SurfaceStreamStart { .. })
+    ));
+    assert!(matches!(
+        backlog.pop(),
+        Some(NeighbourMsg::SurfaceFrame { ts: 3, .. })
+    ));
+    assert!(backlog.pop().is_none());
+    assert_eq!(backlog.bytes, 0);
+}

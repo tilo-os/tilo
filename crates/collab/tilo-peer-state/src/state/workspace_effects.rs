@@ -136,9 +136,19 @@ impl PeerWorkspace<'_> {
         }
     }
 }
+/// How an effect receipt names an agent as its actor (`agent:<id>`), as
+/// against a person, named by the hex of their key.
+const AGENT_ACTOR_PREFIX: &str = "agent:";
+
 impl PeerWorkspaceMut<'_> {
     /// Record a currently admitted person's own terminal audit at its governor.
     /// Transport authentication must independently bind the caller's device key.
+    ///
+    /// A member records what its own person did. The governor's own device,
+    /// a device hosting the rooms it governs, also records what its agents
+    /// did (an actor `agent:<id>`), as its governor custody writes any
+    /// receipt ([`Self::apply_workspace_effect_receipt`]). No device records
+    /// what another person did.
     ///
     /// # Errors
     /// Refuses stale certificates, revoked or unreadable rooms, impersonation,
@@ -166,7 +176,10 @@ impl PeerWorkspaceMut<'_> {
         }
         let receipt =
             PeerWorkspace::validate_workspace_effect_receipt_encoding(invocation, redacted)?;
-        if receipt.actor != hex::encode(caller.user_public_key) {
+        let own_person = receipt.actor == hex::encode(caller.user_public_key);
+        let governors_agent = key.verifying_key().to_bytes() == caller.device_public_key
+            && receipt.actor.starts_with(AGENT_ACTOR_PREFIX);
+        if !own_person && !governors_agent {
             return Err("effect actor is not the authenticated person's own identity".into());
         }
         let existing = tilo_desktop_model::projection::workspace_effect_receipts_of(
