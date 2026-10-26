@@ -47,7 +47,7 @@ use tilolang_tilo::{HostEffect, OpenEffect};
 use ui::framework::{ResourceSurface, RunMode};
 use ui::icons::Icon;
 use ui::tilo_actions::{ActionAddress, ControlInvocation, InvocationId};
-use ui::tokens::{Rhythm, TextRole};
+use ui::tokens::{MotionSource, Rhythm, TextRole};
 use ui::widget::arrange::{Fit, Row, Slot, Stack};
 use ui::widget::controls::ControlResult;
 use ui::widget::toast::ToastKind;
@@ -231,6 +231,12 @@ fn key_path(tree: &UiNode, key: &str) -> Option<Vec<String>> {
 /// Render every row of the lists of `view` but those of `skip` (the list column's and a
 /// transcript's, which render the rows they show): a list inside a page is drawn whole, one in a card as its preview (the rows
 /// the runtime built for it).
+/// What moves a column the person's last input brings to the front: a click or a tap slides it
+/// in; a key, an agent's action through the door, or nothing the person just did lands it.
+fn by_input() -> MotionSource {
+    ui::motion::recent_input(ui::time::now()).unwrap_or(MotionSource::Action)
+}
+
 fn show_content_rows(view: &mut ViewInstance, skip: &[Option<&str>]) {
     fn lists(node: &UiNode, skip: &[Option<&str>], out: &mut Vec<String>) {
         if node.kind == "list" {
@@ -1019,8 +1025,15 @@ impl Window {
         }
     }
 
-    /// Show `target` in the window after the root's: what `open(r)` asked for, or a row.
-    fn open_detail(&mut self, target: &ResourceRef, with: Option<&str>, front: bool) {
+    /// Show `target` in the window after the root's: what `open(r)` asked for, or a row. With
+    /// `front`, a narrow window brings it to the front, moving as what asked for it moves
+    /// ([`NavShell::show_from`]).
+    fn open_detail(
+        &mut self,
+        target: &ResourceRef,
+        with: Option<&str>,
+        front: Option<MotionSource>,
+    ) {
         let Some(host) = self.current_host() else {
             return;
         };
@@ -1029,8 +1042,8 @@ impl Window {
             .as_ref()
             .is_some_and(|detail| detail.target == *target && with.is_none())
         {
-            if front {
-                self.show_content();
+            if let Some(source) = front {
+                self.show_content(source);
             }
             return;
         }
@@ -1039,8 +1052,8 @@ impl Window {
                 self.detail = Some(self.lane(target.clone(), view, false));
                 self.compose();
                 self.commit_planned();
-                if front {
-                    self.show_content();
+                if let Some(source) = front {
+                    self.show_content(source);
                 }
             }
             Err(error) => {
@@ -1050,9 +1063,9 @@ impl Window {
         }
     }
 
-    fn show_content(&mut self) {
+    fn show_content(&mut self, source: MotionSource) {
         if let Some(shell) = self.shell() {
-            shell.show(NavPane::Content);
+            shell.show_from(NavPane::Content, source);
         }
         self.structure_dirty = true;
     }
@@ -1089,13 +1102,10 @@ impl Window {
         let shown = self.run_scenario(host, &self.app.clone(), &name, &scenario.action);
         self.commit_planned();
         // A scenario that returns a resource shows it, as a primary action shows what it made.
-        // The scene is staged at rest: nobody pushed it, so a narrow window shows the resource
-        // in front rather than sliding in, however soon after staging the frame is taken.
+        // A script opened it, so a narrow window shows it in front at once rather than sliding
+        // it in, however soon after staging the frame is taken.
         if let Some(shown) = shown {
-            self.open_detail(&shown, None, true);
-            if let Some(shell) = self.shell() {
-                shell.snap();
-            }
+            self.open_detail(&shown, None, Some(MotionSource::Action));
         }
     }
 
@@ -1974,7 +1984,7 @@ impl Window {
         for event in opens {
             match event {
                 ViewEvent::Open { target, view } => {
-                    self.open_detail(&target, view.as_deref(), true);
+                    self.open_detail(&target, view.as_deref(), Some(by_input()));
                 }
             }
         }
@@ -2029,7 +2039,8 @@ impl Window {
                     if let Some(target) = plan.target
                         && (!target.path.is_empty() || plan.app != self.app)
                     {
-                        self.open_detail(&target, None, true);
+                        // A search hit or an agent's `open`: no hand moved it, it lands at once.
+                        self.open_detail(&target, None, Some(MotionSource::Action));
                     }
                     self.commit_planned();
                 }
@@ -2094,7 +2105,7 @@ impl Window {
         let requests = std::mem::take(&mut *self.requests.borrow_mut());
         let changed = !requests.is_empty();
         for request in requests {
-            let front = matches!(request, Request::Activate(_));
+            let front = matches!(request, Request::Activate(_)).then(by_input);
             match request {
                 Request::Fire { key, event } => {
                     if let Some(lane) = &self.root {
@@ -2219,7 +2230,7 @@ impl Window {
             },
             UiEvent::Open(target) => {
                 let target = target.clone();
-                self.open_detail(&target, None, true);
+                self.open_detail(&target, None, Some(by_input()));
                 Ok(())
             }
         };

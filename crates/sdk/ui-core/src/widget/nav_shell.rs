@@ -2586,7 +2586,22 @@ impl NavShell {
     /// Bring `pane` to the front of a narrow window's push stack. In a wide
     /// window every pane is already showing; this records which one a later
     /// collapse keeps in front.
+    ///
+    /// The push follows the input that asked for it (HIG §9.7): a click or a
+    /// tap the person just made slides the screen in; a key, or a show nobody
+    /// visibly caused (an agent, a script, a sync, a restore), lands at once.
+    /// A host that knows where the open came from says so with
+    /// [`Self::show_from`].
     pub fn show(&mut self, pane: NavPane) {
+        let source = crate::motion::recent_input(crate::time::now())
+            .unwrap_or(crate::tokens::MotionSource::Action);
+        self.show_from(pane, source);
+    }
+
+    /// [`Self::show`] for an open whose origin the caller knows: `source` is
+    /// what asked for it ([`crate::tokens::MotionSource::Action`] for an
+    /// agent's action, a search hit or an `open` request).
+    pub fn show_from(&mut self, pane: NavPane, source: crate::tokens::MotionSource) {
         let pane = match pane {
             NavPane::Sidebar if !self.has_sidebar() => NavPane::Content,
             NavPane::Overview if !self.has_overview() => NavPane::Content,
@@ -2619,7 +2634,7 @@ impl NavShell {
                 let timing = crate::motion::Drill::SPEC.timing(
                     direction,
                     self.layout_theme.motion(),
-                    crate::tokens::MotionSource::Pointer,
+                    source,
                 );
                 inputs.push.set(to, timing, now);
                 inputs.push_pos = inputs.push.is_moving(now).then(|| inputs.push.get(now));

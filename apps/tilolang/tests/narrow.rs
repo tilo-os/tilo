@@ -139,18 +139,92 @@ fn a_push_in_a_narrow_window_settles_within_its_motion_and_then_asks_for_no_fram
         .click_named("nav-shell-back")
         .expect("Back is shown");
     assert_settles(&mut app, motion, "back at the list");
-    // A person opens another note: a second click on its row.
+    // A person opens another note: one click on its row pushes it in, as selecting an entry of
+    // an overview does at this width.
     let row = control_named(app.harness(), "Groceries");
-    app.harness().click_named(&row).expect("the row is shown");
     app.harness().click_named(&row).expect("the row is shown");
     assert!(
         app.harness().frame_schedule().needs_animation_frame,
-        "opening the row pushes the note in: {}",
+        "one click on the row slides the note in: {}",
         asking(app.harness())
     );
     assert_settles(&mut app, motion, "the pushed note");
     assert!(
         app.harness().targets().contains_key("nav-shell-back"),
         "the opened note is in front"
+    );
+}
+
+/// Notes back at its list, settled, with the scenario's note open behind it.
+fn at_the_list() -> TestApp<TlApp> {
+    let mut app = staged();
+    let motion = push_motion(app.harness());
+    assert_settles(&mut app, motion, "the staged note");
+    app.harness().key("Escape");
+    assert_settles(&mut app, motion, "back at the list");
+    assert!(
+        !app.harness().targets().contains_key("nav-shell-back"),
+        "the list is in front"
+    );
+    app
+}
+
+/// The accessibility node of the list row whose name contains `name`.
+fn row_node(harness: &FrameHarness, name: &str) -> ui::accesskit::NodeId {
+    harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::ListItem
+                && node.label().is_some_and(|label| label.contains(name))
+        })
+        .map_or_else(|| panic!("no row named {name}"), |(id, _)| id)
+}
+
+#[test]
+fn moving_through_the_list_with_the_keyboard_selects_and_enter_opens_at_once() {
+    let mut app = at_the_list();
+    let groceries = row_node(app.harness(), "Groceries");
+    app.harness()
+        .perform_a11y_action(groceries, &ui::a11y::Action::Focus)
+        .expect("the row takes focus");
+    app.harness().key("ArrowDown");
+    app.frame();
+    assert!(
+        !app.harness().targets().contains_key("nav-shell-back"),
+        "moving through the list keeps it in front"
+    );
+    app.harness().key("Enter");
+    app.frame();
+    assert!(
+        app.harness().targets().contains_key("nav-shell-back"),
+        "Enter opens the note in front"
+    );
+    assert!(
+        !app.harness().frame_schedule().needs_animation_frame,
+        "a key lands the push at once: {}",
+        asking(app.harness())
+    );
+}
+
+#[test]
+fn an_open_from_search_or_an_agent_lands_in_front_at_once() {
+    let mut app = at_the_list();
+    let anchor = tilolang_app::resource::search_entries()
+        .into_iter()
+        .find(|entry| entry.title.contains("Groceries"))
+        .and_then(|entry| entry.anchor)
+        .expect("search finds the note");
+    app.call("open", serde_json::json!({ "anchor": anchor }))
+        .expect("the window opens the hit");
+    app.frame();
+    assert!(
+        app.harness().targets().contains_key("nav-shell-back"),
+        "the hit's note is in front"
+    );
+    assert!(
+        !app.harness().frame_schedule().needs_animation_frame,
+        "nobody's hand moved it, so it lands at once: {}",
+        asking(app.harness())
     );
 }
