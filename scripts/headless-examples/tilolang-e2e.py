@@ -16,6 +16,7 @@ app gets on a real system:
              but lavapipe
   actions    each app publishes its actions; a "New ..." action changes the
              app's record (its history gains the change)
+  unsynced   a PNG per app as first opened, before its room synced (unsynced-*.png)
   snapshot   a PNG of the nested session per app, in OUT
   native     native Notes (so.tilo.notes), installed beside them, launches and
              presents a frame (native-notes.png)
@@ -399,13 +400,13 @@ def check_read(session: Session) -> dict:
     }
 
 
-def snapshots(session: Session, windows: dict, out: Path) -> dict:
+def snapshots(session: Session, windows: dict, out: Path, prefix: str = "") -> dict:
     shots = {}
     for name in APPS:
         w = windows[app_id(name)]
         session.invoke("desktop-windows", f"tab.focus:{w['group']}:{w['tab']}")
         time.sleep(0.5)
-        path = out / f"{name}.png"
+        path = out / f"{prefix}{name}.png"
         session.control_cmd("snapshot", str(path))
         shots[app_id(name)] = str(path)
     return shots
@@ -557,6 +558,9 @@ def main() -> int:
             ("registry", lambda: check_registry(session)),
             ("launch", lambda: launch_all(session)),
             ("processes", lambda: check_processes(session, pid)),
+            # Before anything is in them: the room has not synced with the workspace's host,
+            # so each app says it is connecting, as native Notes does, not that it is empty.
+            ("unsynced", lambda: snapshots(session, summary["checks"]["launch"], out, "unsynced-")),
             ("actions", lambda: check_actions(session)),
             ("snapshots", lambda: snapshots(session, summary["checks"]["launch"], out)),
             ("native", lambda: check_native(session, out)),
