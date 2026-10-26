@@ -1420,3 +1420,101 @@ fn a_changed_value_on_a_page_sets_its_widget_and_keeps_every_other() {
     assert_eq!(removed, before);
     assert_eq!(pane.take_structure_change(), StructureChange::Described);
 }
+
+// ----- later builds ------------------------------------------------------------------------
+
+/// Notes compiled again with `edit` applied to its source, against its ids lock: a later build
+/// of the package, as `tilolang dev` makes one.
+fn later_notes(edit: impl Fn(&str) -> String) -> tilolang_tilo::bundle::Bundle {
+    let package = crate::packages::EMBEDDED
+        .iter()
+        .find(|package| package.dir == "notes")
+        .expect("notes is built in");
+    let lock = tilolang_tilo::tilolang::IdsLock::parse(package.ids).unwrap();
+    let imports: Vec<_> = crate::app::builtin::compiled()
+        .iter()
+        .take_while(|built| built.dir != "notes")
+        .map(|built| built.compiled.meta.clone())
+        .collect();
+    let compiled = tilolang_tilo::tilolang::compile_package(&edit(package.source), &lock, &imports)
+        .unwrap_or_else(|diagnostics| panic!("the edit compiles: {diagnostics:?}"));
+    tilolang_tilo::bundle::Bundle::new(&compiled, imports)
+}
+
+/// Whether `text` is shown anywhere under `node`.
+fn shows_text(node: &UiNode, text: &str) -> bool {
+    node.props
+        .values()
+        .any(|value| matches!(value, Value::Text(shown) if shown == text))
+        || node.children.iter().any(|child| shows_text(child, text))
+}
+
+#[test]
+fn a_later_build_takes_over_in_place_keeping_window_state_selection_and_detail() {
+    let mut room = Room::seeded("notes");
+    let list = room
+        .window
+        .root
+        .as_ref()
+        .and_then(|lane| lane.list.clone())
+        .unwrap();
+    room.ask(Request::Fire {
+        key: list,
+        event: "filter.pinned".to_owned(),
+    });
+    let pinned = room.rows().len();
+    let (key, _) = room.rows().remove(1);
+    room.ask(Request::Activate(key.clone()));
+    let shown = room
+        .window
+        .detail_target()
+        .cloned()
+        .expect("a note is shown");
+    let detail = room.window.detail_tree().unwrap();
+    assert!(shows_text(&detail, "Write something"), "{detail:#?}");
+
+    crate::updates::hand_over(later_notes(|source| {
+        source.replace("\"Write something\"", "\"Write anything\"")
+    }));
+    room.settle();
+
+    let detail = room.window.detail_tree().expect("the note is still shown");
+    assert!(
+        shows_text(&detail, "Write anything"),
+        "the new build renders it: {detail:#?}"
+    );
+    assert_eq!(room.window.detail_target(), Some(&shown), "the same note");
+    assert_eq!(room.rows().len(), pinned, "the window's filter is kept");
+    assert_eq!(
+        room.list().selected.as_deref(),
+        Some(key.as_str()),
+        "the row stays selected"
+    );
+}
+
+#[test]
+fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
+    let mut room = Room::seeded("notes");
+    let notes = room.rows().len();
+    assert!(room.window.detail_target().is_some());
+
+    crate::updates::hand_over(later_notes(|source| {
+        source.replace("tags: Set<Text>", "tags: Set<Int>").replace(
+            "action tag(n: Note, t: Text)",
+            "action tag(n: Note, t: Int)",
+        )
+    }));
+    room.settle();
+
+    let host = room.window.current_host().unwrap();
+    let note = host
+        .package("so.tilo.lang.notes")
+        .and_then(|package| package.meta.types.into_iter().find(|ty| ty.name == "Note"))
+        .unwrap();
+    assert!(
+        note.fields.iter().any(|field| field.ty == "Set<Int>"),
+        "the new build runs: {note:?}"
+    );
+    assert_eq!(room.rows().len(), notes, "every note is still there");
+    assert_eq!(room.window.detail_target(), None, "the window started over");
+}

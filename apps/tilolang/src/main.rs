@@ -15,6 +15,10 @@ fn main() -> std::process::ExitCode {
         eprintln!("tilolang: {error}");
         return std::process::ExitCode::from(2);
     }
+    // In a development session, later builds of the package take over while it runs.
+    if let Some(bundle) = tilolang_app::installed_bundle() {
+        tilolang_app::updates::start(&bundle.meta.app);
+    }
     ui::launch::run_or_exit(&tilolang_app::launch_spec());
     std::process::ExitCode::SUCCESS
 }
