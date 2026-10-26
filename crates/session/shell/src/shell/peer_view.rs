@@ -904,6 +904,12 @@ fn aspect_fit_rect(viewport: Rect, width: u32, height: u32) -> Rect {
 }
 
 impl AppWidget for PeerView {
+    /// A peer's surface is shown, not edited: it owns no document here and
+    /// takes no record from the tab it appears in.
+    fn uses_host_record(&self) -> bool {
+        false
+    }
+
     fn app_kind(&self) -> AppKind {
         // No dedicated `Peer` variant yet; `Settings` is the catch-all.
         AppKind::Settings

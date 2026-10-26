@@ -1011,7 +1011,7 @@ mod tests {
                     st.records()
                         .read(&ui::RecordId::for_tab(id), |_| ())
                         .is_some(),
-                    "the creating action must establish its new record before presentation"
+                    "the creating action must establish tab {id}'s record before presentation"
                 );
             }
             assert_ne!(first, second);

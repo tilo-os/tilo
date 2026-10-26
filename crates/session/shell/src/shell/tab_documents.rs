@@ -524,10 +524,12 @@ mod tests {
         // The held disk never blocks: what the loop opens while it is held
         // is recorded below instead.
         disk.hold();
+        // A tab the compositor shows itself keeps its own scratch document;
+        // a mounted app's record is made by its component instead.
         let tab = crate::shell::window_actions::open_hosted(
             &mut chrome.borrow_mut(),
-            AppKind::Other("Notes".into()),
-            "New note",
+            AppKind::Other("Scratch".into()),
+            "New scratch tab",
             crate::shell::window_actions::Destination::Here,
         );
         host.update(&shell_doc, &automerge::ROOT);

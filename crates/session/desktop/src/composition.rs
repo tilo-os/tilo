@@ -143,16 +143,16 @@ pub fn build_group(
     failures: &mut Vec<ui::launch::LaunchError>,
     wake: &std::sync::Arc<dyn Fn() + Send + Sync>,
 ) -> UiGroup {
+    let _ = records;
     let tabs = group
         .tabs
         .iter()
         .map(|tab| {
             let resolution = resolver.resolve(TileRequest { room, tab });
-            let checked = resolution.holds_its_own_record();
-            let mut host = resolution.mount(failures, wake.clone());
-            if !checked {
-                host.bind_record(records.clone(), crate::records::scratch_tab_record(tab.id));
-            }
+            // A mounted component holds the record it was prepared on. Content
+            // that shows no document has none to bind, and is never offered
+            // the shell's own.
+            let host = resolution.mount(failures, wake.clone());
             (
                 TabDescriptor {
                     id: tab.id,
@@ -704,7 +704,7 @@ impl DesktopSurface {
     pub fn reconcile(
         &mut self,
         tree: &DesktopTree,
-        records: &RecordStore,
+        _records: &RecordStore,
         resolver: &mut dyn TileResolver,
     ) -> ReconcileOutcome {
         let Some(workspace) = tree.active_workspace() else {
@@ -966,10 +966,6 @@ impl DesktopSurface {
                                 crate::resolver::TileResolution::Content(content) => {
                                     if let Some(host) = live.host_for_tab_mut(tab.id) {
                                         host.replace_content(content);
-                                        host.bind_record(
-                                            records.clone(),
-                                            crate::records::scratch_tab_record(tab.id),
-                                        );
                                         if let Some(reason) = refusal {
                                             host.refuse_record_binding(reason);
                                         }
@@ -985,18 +981,11 @@ impl DesktopSurface {
                                         ));
                                         old
                                     });
-                                    let checked = other.holds_its_own_record();
                                     let mut host = other.mount(&mut failures, wake_sink.clone());
                                     // The app whose record opened goes on with
                                     // the arrival its window showed meanwhile.
                                     if let Some(old) = old.as_ref().filter(|_| arriving) {
                                         host.continue_arrival(old);
-                                    }
-                                    if !checked {
-                                        host.bind_record(
-                                            records.clone(),
-                                            crate::records::scratch_tab_record(tab.id),
-                                        );
                                     }
                                     if let Some(reason) = resolver.creation_refusal(tab) {
                                         host.refuse_record_binding(reason);
@@ -1010,15 +999,9 @@ impl DesktopSurface {
                         }
                         if let Some(host) = live.host_for_tab_mut(tab.id)
                             && !arriving
+                            && let Some(reason) = refusal
                         {
-                            if let Some(reason) = refusal {
-                                host.refuse_record_binding(reason);
-                            } else if host.callback_binding().is_none() {
-                                host.bind_record(
-                                    records.clone(),
-                                    crate::records::scratch_tab_record(tab.id),
-                                );
-                            }
+                            host.refuse_record_binding(reason);
                         }
                         continue;
                     }
@@ -1041,15 +1024,7 @@ impl DesktopSurface {
                             room: workspace.room(),
                             tab,
                         });
-                        let checked = resolution.holds_its_own_record();
-                        let mut host = resolution.mount(&mut failures, wake_sink.clone());
-                        if !checked {
-                            host.bind_record(
-                                records.clone(),
-                                crate::records::scratch_tab_record(tab.id),
-                            );
-                        }
-                        host
+                        resolution.mount(&mut failures, wake_sink.clone())
                     };
                     if let Some(reason) = resolver.creation_refusal(tab) {
                         host.refuse_record_binding(reason);

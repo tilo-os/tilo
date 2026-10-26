@@ -404,8 +404,8 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             .with(&parent_record.id, |_| {
                 crate::shell::window_actions::open_hosted(
                     &mut chrome.borrow_mut(),
-                    AppKind::Other("Notes".into()),
-                    "Nested note",
+                    AppKind::Other("Scratch".into()),
+                    "Nested scratch tab",
                     crate::shell::window_actions::Destination::Here,
                 )
             })
@@ -487,7 +487,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
         }
     }
 
-    fn history_nested_creation_collision_stays_unavailable_without_touching_saved_content() {
+    fn history_nested_existing_writer_record_is_adopted_without_touching_saved_content() {
         let (tree, strip, _) = one_group_seed();
         let store = ui::record::RecordStore::in_memory();
         let parent = crate::shell::tab_documents::scratch_tab_record(1);
@@ -504,13 +504,17 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                 )
             })
             .unwrap();
-        let collision = crate::shell::tab_documents::scratch_tab_record(new_id);
+        // The app's own record kind, as a window it saved earlier has: a
+        // freshly opened Writer tab must find that document, not adopt a
+        // scratch tab document of another kind.
+        let collision = ui::record::RecordCheckout::new(
+            ui::record::RecordId::for_tab(new_id),
+            word_processor::definition().record_kind.clone(),
+        );
         store.create_record(&collision).unwrap();
         let before = store
             .with(&collision.id, |doc| {
-                use automerge::transaction::Transactable;
-                doc.put(automerge::ROOT, "body", "existing private content")
-                    .unwrap();
+                word_processor::initialize_empty_document(doc).unwrap();
                 doc.get_heads()
             })
             .unwrap();
@@ -524,19 +528,15 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             }
             host.update(&AutoCommit::new(), &automerge::ROOT);
             let group = host.group_at_for_tests(strip, 0).unwrap();
-            group.bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
             let tile = group.host_for_tab_mut(new_id).unwrap();
             assert!(
-                tile.history_owner().is_none(),
-                "failed creation cannot attach the colliding saved record"
-            );
-            assert!(
-                matches!(tile.content(), ui::widget::TileContent::Notice { .. }),
-                "failed creation must not display an app over collided content"
+                matches!(tile.content(), ui::widget::TileContent::App(_)),
+                "the tab mounts Writer on the document it saved"
             );
             assert_eq!(
                 store.with(&collision.id, AutoCommit::get_heads).unwrap(),
-                before
+                before,
+                "mounting reads the saved document without replacing it"
             );
         }
         let (mut reopened, _) = crate::shell::build_tilo_overlay_host_with_records(
@@ -546,14 +546,16 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
         );
         reopened.update(&AutoCommit::new(), &automerge::ROOT);
         assert!(
-            reopened
-                .group_at_for_tests(strip, 0)
-                .unwrap()
-                .host_for_tab_mut(new_id)
-                .unwrap()
-                .history_owner()
-                .is_some(),
-            "a separately reopened existing resource is not globally blacklisted"
+            matches!(
+                reopened
+                    .group_at_for_tests(strip, 0)
+                    .unwrap()
+                    .host_for_tab_mut(new_id)
+                    .unwrap()
+                    .content(),
+                ui::widget::TileContent::App(_)
+            ),
+            "a separately reopened Writer tab mounts the same saved document"
         );
     }
 
@@ -572,7 +574,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                 .with(&parent.id, |_| {
                     let id = crate::shell::window_actions::open_hosted_after_setup(
                         &mut chrome.borrow_mut(),
-                        AppKind::Other("Notes".into()),
+                        AppKind::Other("Scratch".into()),
                         "Nested",
                         crate::shell::window_actions::Destination::Here,
                         |state, tab| {
@@ -627,7 +629,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
                     {
                         if tab.id == new_id {
                             tab.tile = TileContent::AppPlaceholder {
-                                kind: AppKind::Other("Editor".into()),
+                                kind: AppKind::Other("Changed".into()),
                                 label: "Different app".into(),
                             };
                         }
@@ -662,7 +664,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
             .with(&parent.id, |_| {
                 let id = crate::shell::window_actions::open_hosted(
                     &mut chrome.borrow_mut(),
-                    AppKind::Other("Word".into()),
+                    AppKind::Other("Scratch".into()),
                     "Nested",
                     crate::shell::window_actions::Destination::Here,
                 );
@@ -695,7 +697,7 @@ fn history_nested_openings_retry_retain_and_cancel_exactly() {
 
     history_nested_open_retries_exact_new_record_after_the_parent_loan();
     history_nested_busy_burst_retains_overflow_and_cancels_closed_or_changed_tabs();
-    history_nested_creation_collision_stays_unavailable_without_touching_saved_content();
+    history_nested_existing_writer_record_is_adopted_without_touching_saved_content();
     history_nested_creation_pins_final_setup_and_cancels_changed_tickets();
     history_nested_owner_replacement_retires_an_already_mounted_pending_binding();
 }
