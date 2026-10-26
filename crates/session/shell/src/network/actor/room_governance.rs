@@ -125,29 +125,53 @@ pub(crate) mod trace {
     /// the hosts say of their work.
     #[cfg(test)]
     pub(crate) fn capture_warnings() {
+        use tracing_subscriber::layer::SubscriberExt as _;
         static INSTALLED: std::sync::Once = std::sync::Once::new();
-        struct Lines;
-        impl std::io::Write for Lines {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                let line = String::from_utf8_lossy(bytes).trim_end().to_owned();
-                note(|| line);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
         INSTALLED.call_once(|| {
-            let subscriber = tracing_subscriber::fmt()
-                .with_env_filter(tracing_subscriber::EnvFilter::new(
-                    "warn,tilo_room_host=info",
-                ))
-                .with_writer(|| Lines)
-                .with_ansi(false)
-                .without_time()
-                .finish();
+            let subscriber = tracing_subscriber::registry()
+                .with(
+                    tracing_subscriber::filter::Targets::new()
+                        .with_default(tracing::Level::WARN)
+                        .with_target("tilo_room_host", tracing::Level::INFO),
+                )
+                .with(Noting);
             let _ = tracing::subscriber::set_global_default(subscriber);
         });
+    }
+
+    /// Notes each event it sees, a line each. It keeps nothing per thread,
+    /// so an event logged while a thread's locals are destroyed (a store
+    /// dropped with its thread) is noted too, never a panic.
+    #[cfg(test)]
+    struct Noting;
+
+    #[cfg(test)]
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Noting {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Fields(String);
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    use std::fmt::Write as _;
+                    let _ = if field.name() == "message" {
+                        write!(self.0, " {value:?}")
+                    } else {
+                        write!(self.0, " {}={value:?}", field.name())
+                    };
+                }
+            }
+            let metadata = event.metadata();
+            let mut fields = Fields(format!("{} {}:", metadata.level(), metadata.target()));
+            event.record(&mut fields);
+            note(|| fields.0);
+        }
     }
 
     /// Everything noted so far, a line each.
