@@ -1268,7 +1268,7 @@ mod tests {
                     },
                     authority: AuthorityPin::Device(&host_key),
                     contents: ContentOwnership::Registry,
-                    caps_now: 1_000,
+                    now_ns: 1_000_000_000_000,
                 },
                 changes,
             )
