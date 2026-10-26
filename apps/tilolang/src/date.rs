@@ -5,7 +5,7 @@
 //! [`DateField`] over the bound value, which it reports as ISO text (empty for no date) through
 //! the same edit every bound input reports.
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use tilolang_tilo::runtime::{UiNode, Value};
 use ui::LocalState;
 use ui::widget::{DateField, Decorator, Widget};
@@ -16,24 +16,43 @@ use crate::reconcile::{EventSink, UiEvent, display};
 /// its date), anything else as [`display`] shows it.
 #[must_use]
 pub fn shown(node: &UiNode, name: &str) -> Option<String> {
-    formatted(node, name, ui::format::timestamp)
+    formatted(node, name, ui::format::date, ui::format::timestamp)
 }
 
-/// The prop `name` of `node` as a list row reads it: a time as briefly as it is still clear
-/// today (`16:02`, `Yesterday`, `Jun 30`), as native lists show when a message came.
+/// The prop `name` of `node` as a list row reads it: as briefly as it is still clear today. A
+/// time is `16:02`, `Yesterday` or `Jun 30`, as native lists show when a message came; a day is
+/// `Tomorrow`, `Oct 24`, or with its year when it is not this year's.
 #[must_use]
 pub fn shown_brief(node: &UiNode, name: &str) -> Option<String> {
-    formatted(node, name, ui::format::list_date)
+    formatted(node, name, brief_day, ui::format::list_date)
 }
 
-fn formatted(node: &UiNode, name: &str, time: impl Fn(&DateTime<Utc>) -> String) -> Option<String> {
+/// A day as briefly as it is clear from today.
+fn brief_day(day: NaiveDate) -> String {
+    let today = ui::clock::today();
+    if let Some(near) = ui::format::near_day(day.signed_duration_since(today).num_days()) {
+        return near;
+    }
+    if day.year() == today.year() {
+        ui::format::month_day(day)
+    } else {
+        ui::format::month_day_year(day)
+    }
+}
+
+fn formatted(
+    node: &UiNode,
+    name: &str,
+    date: impl Fn(NaiveDate) -> String,
+    time: impl Fn(&DateTime<Utc>) -> String,
+) -> Option<String> {
     let value = node.props.get(name)?;
     let text = display(value);
     let Some(Value::Text(kind)) = node.props.get(&format!("{name}:as")) else {
         return Some(text);
     };
     Some(match kind.as_str() {
-        "date" => day_of(&text).map_or(text, ui::format::date),
+        "date" => day_of(&text).map_or(text, date),
         "time" => moment_of(&text).map_or(text, |at| time(&at)),
         _ => text,
     })
