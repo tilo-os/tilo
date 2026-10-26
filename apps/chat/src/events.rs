@@ -196,6 +196,18 @@ impl ChatApp {
                     EventDispatch::new(event, scale, modifiers, doc, handled),
                 );
             }
+            // Shift grows the message bar into its quick actions, and turns
+            // a menu row that asks first into one that goes ahead at once.
+            WindowEvent::ModifiersChanged(_) => {
+                if self.message_bar.lifted.is_some() || self.menu.is_some() {
+                    *handled = true;
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if self.hovered_message.take().is_some() {
+                    *handled = true;
+                }
+            }
             WindowEvent::Ime(_) => {
                 *handled |= self.handle_text_input_event(event, scale, modifiers, doc);
             }
@@ -358,6 +370,12 @@ impl ChatApp {
         };
         if hover_changed {
             self.call_hovered = hovered;
+            *handled = true;
+        }
+        // The message under the pointer shows its bar.
+        let over = self.message_under(self.last_mouse);
+        if over != self.hovered_message {
+            self.hovered_message = over;
             *handled = true;
         }
         // Keep every shared input's hover/drag state current so clicks place
@@ -678,26 +696,10 @@ impl ChatApp {
                 self.open_participant_menu(id);
                 return;
             }
-            // One of your own messages — offer the message actions (Edit).
-            Hit::MessageMenu { msg } => {
-                let mine = self.message(&msg).is_some_and(|m| self.is_me(&m.author));
-                let author = self.message(&msg).map(|m| m.author.clone());
-                let items = if mine {
-                    let mut items = MenuAction::for_message().to_vec();
-                    if self.message(&msg).is_some_and(|m| self.is_my_live_share(m)) {
-                        items.insert(0, MenuAction::StopSharing);
-                    }
-                    items
-                } else {
-                    let mut items = MenuAction::for_others_message().to_vec();
-                    if !self.perms.can_moderate() {
-                        items.retain(|action| *action != MenuAction::DeleteMessage);
-                    } else if author.is_some_and(|author| crate::moderation::bannable(&author)) {
-                        items.push(MenuAction::BanAuthor);
-                    }
-                    items
-                };
-                Some(self.context_menu(MenuTarget::Message(msg), self.last_mouse, items))
+            // A message, or its bar: the message's whole menu.
+            Hit::MessageMenu { msg } | Hit::MessageBar { msg, .. } | Hit::MessageMore { msg } => {
+                self.open_message_menu(msg, self.last_mouse);
+                return;
             }
             _ if self.keeps_layout() => Some(self.context_menu(
                 MenuTarget::Room,
@@ -765,6 +767,30 @@ impl ChatApp {
             Hit::FocusEdit => self.set_composer_focus(),
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
             Hit::AddReaction { msg, anchor } => self.open_emoji_picker(Some(msg), anchor),
+            Hit::MessageBar { msg, action } => {
+                let anchor = self
+                    .hits
+                    .iter()
+                    .find(|(_, hit)| {
+                        matches!(hit, Hit::MessageBar { msg: m, action: a } if *m == msg && *a == action)
+                    })
+                    .map(|(rect, _)| *rect);
+                if action == MenuAction::AddReaction {
+                    let anchor = anchor
+                        .unwrap_or_else(|| Rect::from_origin_size(self.last_mouse, (1.0, 1.0)));
+                    self.open_emoji_picker(Some(msg), anchor);
+                } else if self.can_participate() {
+                    self.apply_menu_action(MenuTarget::Message(msg), action, doc);
+                }
+            }
+            Hit::MessageMore { msg } => {
+                let anchor = self
+                    .hits
+                    .iter()
+                    .find(|(_, hit)| matches!(hit, Hit::MessageMore { msg: m } if *m == msg))
+                    .map_or(self.last_mouse, |(rect, _)| Point::new(rect.x0, rect.y1));
+                self.open_message_menu(msg, anchor);
+            }
             Hit::OpenThread(id) => self.on_hit_open_thread(id),
             Hit::EditHistory { msg, anchor } => {
                 self.history_open = Some(msg);
@@ -1282,19 +1308,25 @@ impl ChatApp {
                 }
                 MenuAction::BanAuthor => self.ban_author(&id),
                 MenuAction::StopSharing => self.stop_share(doc, &id),
+                // Asked first, unless Shift is held: Undo takes either back.
                 MenuAction::DeleteMessage => {
                     let mine = self.message(&id).is_some_and(|m| self.is_me(&m.author));
                     if mine {
-                        // Your own message comes back with Undo, so
-                        // nothing is asked; removing someone else's, as a
-                        // moderator, is asked first.
                         self.delete_own_message(doc, &id);
                     } else {
-                        self.apply_part(
+                        // A refusal changes nothing; the dispatcher reports it.
+                        let _ = self.try_apply_part_confirming(
                             doc,
                             ChatPart::REMOVE_MESSAGE
                                 .with(chat_part::RemoveMessage { message: item(&id) }),
                         );
+                    }
+                }
+                MenuAction::CopyText => {
+                    if let Some(text) = self.message(&id).map(|m| m.text.clone()) {
+                        // A clipboard that refuses says so where it can;
+                        // nothing in the chat changes either way.
+                        let _ = ui::try_clipboard_copy(&text);
                     }
                 }
                 // The menu files a report with a plain reason; Ctrl+K's
@@ -1354,15 +1386,12 @@ impl ChatApp {
                     self.open_channel_sheet(sheet);
                 }
             }
-            MenuAction::Delete => {
-                self.apply_now(
-                    doc,
-                    Chat::DELETE_CHANNEL.with(chat::DeleteChannel { channel: item(id) }),
-                );
-                if self.active_channel == id {
-                    self.active_channel.clear(); // reload picks a new one
-                }
-            }
+            // Asked first, unless Shift is held; reload picks another
+            // channel to show once it is gone.
+            MenuAction::Delete => self.apply_confirming(
+                doc,
+                Chat::DELETE_CHANNEL.with(chat::DeleteChannel { channel: item(id) }),
+            ),
             MenuAction::Archive => {
                 let archived = self.channel(id).is_some_and(|c| c.archived);
                 self.apply_now(
@@ -1398,7 +1427,7 @@ impl ChatApp {
     ) {
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Category(id.to_string())),
-            MenuAction::Delete => self.apply_now(
+            MenuAction::Delete => self.apply_confirming(
                 doc,
                 Chat::DELETE_CATEGORY.with(chat::DeleteCategory { category: item(id) }),
             ),

@@ -839,6 +839,8 @@ impl ChatApp {
         // Only what stands in view is painted; a row keeps its scene for
         // the frames it stays there ([`crate::timeline`]).
         self.begin_timeline_paint(theme, tf, column);
+        self.message_rows.clear();
+        self.message_bar.lifted = self.bar_message();
         for item in &items {
             let height = Self::item_height(item, theme);
             if y >= area.y1 || y + height <= area.y0 {
@@ -869,6 +871,7 @@ impl ChatApp {
             let clipped = rect.intersect(area);
             (clipped.width() > 0.0 && clipped.height() > 0.0).then_some((clipped, hit))
         }));
+        self.draw_message_bar(PaintCtx::new(scene, tf, tr, theme), area, hits);
         if !self.timeline_at_end {
             self.draw_jump_to_latest(scene, tf, tr, theme, area, hits);
         }
@@ -1103,14 +1106,15 @@ impl ChatApp {
             return parts;
         };
         let revealed = self.revealed_message.as_deref() == Some(m.id.as_str());
-        let targeted = self.menu_targets(&MenuTarget::Message(m.id.clone()));
-        if revealed || targeted {
-            let s2 = f64::from(theme.tokens.spacing.s2);
+        let lifted = self.row_lifted(&m.id);
+        let s2 = f64::from(theme.tokens.spacing.s2);
+        let row = Rect::new(area.x0 + s2, *y, area.x1 - s2, *y + rm.height());
+        if revealed || lifted {
             chrome::paint_row_selection(
                 scene,
                 tf,
-                Rect::new(area.x0 + s2, *y, area.x1 - s2, *y + rm.height()),
-                SelectionState::new(revealed, targeted, false),
+                row,
+                SelectionState::new(revealed, lifted, false),
                 theme.tokens.colors.surfaces.content,
                 theme,
             );

@@ -200,6 +200,8 @@ fn a_row_the_pointer_comes_over_is_painted_again_and_the_others_are_kept() {
 fn a_kept_row_paints_what_painting_it_afresh_does() {
     // The demo's lines over and over: pictures, reactions, threads.
     let (mut app, mut doc) = long_channel(40);
+    // The hovered row's bar at rest: its fade is not what is compared.
+    app.message_bar.settle_for_visual_review();
     let mut frames = Frames::new();
     settle(&mut app, &mut frames);
     let area = app.messages_rect();

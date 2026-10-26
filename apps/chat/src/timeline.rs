@@ -384,8 +384,7 @@ impl ChatApp {
         rm.show_header.hash(&mut hasher);
         rm.height().to_bits().hash(&mut hasher);
         (self.revealed_message.as_deref() == Some(m.id.as_str())).hash(&mut hasher);
-        self.menu_targets(&crate::app::MenuTarget::Message(m.id.clone()))
-            .hash(&mut hasher);
+        self.row_lifted(&m.id).hash(&mut hasher);
         (self.thread_open.as_deref() == Some(m.id.as_str())).hash(&mut hasher);
         self.expanded_reasoning.contains(&m.id).hash(&mut hasher);
         if let Some(range) = &self.revealed_range
@@ -504,6 +503,19 @@ impl ChatApp {
             return;
         };
         self.timeline.get_mut().shown.push(m.id.clone());
+        // Where the row stands whole, kept or drawn: what the pointer is
+        // over when it is over this message ([`Self::message_under`]).
+        let inset = f64::from(theme.tokens.spacing.s2);
+        let row = Rect::new(
+            column.area.x0 + inset,
+            *y,
+            column.area.x1 - inset,
+            *y + height,
+        )
+        .intersect(column.area);
+        if !rm.editing && row.height() > 0.0 {
+            self.message_rows.push((row, m.id.clone()));
+        }
         if m.reference.is_some() && m.share.is_none() && rm.resource_h > 0.0 {
             self.resource_navigation.shown(&m.id);
         }
