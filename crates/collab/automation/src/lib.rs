@@ -26,6 +26,13 @@
 //! AI steps are not a second execution path: an [`Ai`](StepKind::Ai) step is
 //! an invocation of the agent's transform actions ([`AGENT_APP_ID`],
 //! [`AGENT_TRANSFORM_KIND`]), granted, confirmed and recorded like any other.
+//!
+//! - [`scenario`] — a test as the same kind of program: a [`Scenario`] holds
+//!   the Shortcut's own action [`Invocation`]s, the surface presses only a
+//!   window can answer, and assertions on the model ([`Assert::Resource`]),
+//!   written as versioned canonical text a golden file holds. A saved
+//!   Shortcut runs as a scenario, and a scenario's action steps are the
+//!   Shortcut's steps.
 
 pub mod catalog;
 pub mod check;
@@ -35,6 +42,7 @@ pub mod path;
 pub mod program;
 pub mod requirements;
 pub mod run;
+pub mod scenario;
 pub mod shortcut;
 mod template;
 mod types;
@@ -55,6 +63,10 @@ pub use run::{
     AskRequest, ConfirmationRequest, DEFAULT_STEP_TIMEOUT, RunHooks, RunId, RunMode, RunOutcome,
     RunReport, RunRequest, RunTrigger, STEP_FACET, StepFailure, StepRecord, StepStatus, StopWatch,
     invocation_id, run,
+};
+pub use scenario::{
+    Assert, DOOR_CODES, FormatError, Holds, Input, Invocation, SCENARIO_FORMAT_VERSION, Scenario,
+    ScenarioStep, SemanticAction, StateQuery, UnrunnableStep, is_door_code,
 };
 pub use shortcut::{
     ActorFilter, AiTransform, Binding, CatchUp, Condition, EVENT_INPUT, FOCUS_DO_NOT_DISTURB,
