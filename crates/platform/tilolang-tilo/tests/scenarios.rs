@@ -2,7 +2,7 @@
 //! tests and benchmarks start from.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{Principal, UiNode};
+use tilolang_runtime::Principal;
 
 use crate::fixtures::Replica;
 
@@ -28,19 +28,6 @@ fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
             vec![app!("notes"), app!("todo"), app!("chat"), app!("board")],
         ),
     ]
-}
-
-fn nodes<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) {
-    out.push(node);
-    for child in &node.children {
-        nodes(child, out);
-    }
-}
-
-fn count(node: &UiNode, kind: &str) -> usize {
-    let mut all = Vec::new();
-    nodes(node, &mut all);
-    all.iter().filter(|n| n.kind == kind).count()
 }
 
 #[test]
@@ -73,8 +60,9 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
                 .unwrap_or_else(|e| panic!("{app} {:?}: {e}", scenario.name));
             replica.commit();
             let view = replica.view(app);
-            let rows = count(view.tree(), "list_row");
             if i == 0 && view.tree().kind == "list" {
+                // Its rows, which render as the list shows them.
+                let rows = view.list_len(&view.tree().key).unwrap_or(0);
                 assert!(
                     rows >= 12,
                     "{app}'s first scenario has enough rows to scroll: {rows}"

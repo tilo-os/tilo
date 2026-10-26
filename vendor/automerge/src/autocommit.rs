@@ -781,8 +781,14 @@ impl AutoCommit {
     /// doc.commit_with(CommitOptions::default().with_message("Create todos list").with_time(now));
     /// ```
     pub fn commit_with(&mut self, options: CommitOptions) -> Option<ChangeHash> {
-        // ensure that even no changes triggers a change
-        self.ensure_transaction_open();
+        // TILO(empty-commit): with no transaction open there is nothing to
+        // commit. Opening one only to commit it empty would add this
+        // document's actor (renumbering every op's actor) and remove it again
+        // when the actor has not written yet: two passes over the document
+        // for a commit that returns `None` either way.
+        if self.transaction.is_none() {
+            return None;
+        }
         let (patch_log, tx) = self.transaction.take().unwrap();
         self.patch_log.merge(patch_log);
         let hash = tx.commit(&mut self.doc, options.message, options.time);

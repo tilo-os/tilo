@@ -198,6 +198,10 @@ pub struct ViewMeta {
     /// never offered or listed as a view of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presents: Option<String>,
+    /// The id of the declared view this view is a loop body of: a row the host renders per
+    /// item, never offered or listed as a view of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_of: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -243,9 +247,11 @@ impl PackageMeta {
     }
 
     /// The views a person or an agent can open or apply: every view but the hidden ones that
-    /// present an action's state.
+    /// present an action's state or are the rows of a loop.
     pub fn offered_views(&self) -> impl Iterator<Item = &ViewMeta> {
-        self.views.iter().filter(|v| v.presents.is_none())
+        self.views
+            .iter()
+            .filter(|v| v.presents.is_none() && v.row_of.is_none())
     }
 
     /// The JSON bytes embedded in the `tilolang.meta` section.

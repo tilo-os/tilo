@@ -105,10 +105,16 @@ mod cases {
             self.rt.invoke_action(&me(), (id.as_str(), args)).unwrap()
         }
 
+        /// The view `name` with every row of its lists rendered: these checks read the whole
+        /// tree, as a host that draws every row does.
         fn view(&self, app: &App, name: &str, args: Vec<Value>) -> ViewInstance {
-            self.rt
+            let mut view = self
+                .rt
                 .open_view(&me(), &app.view(name), args)
-                .unwrap_or_else(|e| panic!("{name}: {e}"))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            view.set_lazy_rows(false)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            view
         }
 
         fn create(&self, ty: &str) -> ResourceRef {
@@ -938,13 +944,17 @@ mod cases {
         }
         let (ada, bo) = (Principal::new("person:ada"), Principal::new("person:bo"));
         let open = |who: &Principal| {
-            w.rt.open_window(
-                who,
-                "window-1",
-                &apps.notes.view("notebook"),
-                vec![res(&nb)],
-            )
-            .unwrap()
+            let mut view =
+                w.rt.open_window(
+                    who,
+                    "window-1",
+                    &apps.notes.view("notebook"),
+                    vec![res(&nb)],
+                )
+                .unwrap();
+            // The rows are read here as a host that draws every row does.
+            view.set_lazy_rows(false).unwrap();
+            view
         };
         let (mut va, mut vb) = (open(&ada), open(&bo));
         assert_eq!(row_titles(va.tree()), ["b", "a"]);
@@ -962,7 +972,7 @@ mod cases {
         assert_eq!(row_titles(vb.tree()), ["a", "b"]);
 
         // Another window over the same notebook has state of its own.
-        let elsewhere =
+        let mut elsewhere =
             w.rt.open_window(
                 &ada,
                 "window-2",
@@ -970,6 +980,7 @@ mod cases {
                 vec![res(&nb)],
             )
             .unwrap();
+        elsewhere.set_lazy_rows(false).unwrap();
         assert_eq!(row_titles(elsewhere.tree()), ["b", "a"]);
     }
 

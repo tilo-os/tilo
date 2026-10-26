@@ -286,14 +286,18 @@ impl Checker<'_> {
         n
     }
 
-    /// One `item` node per resource, keyed `<list key>/<ref id>`, with the item block's nodes
-    /// (keyed like a `for` loop's) or the row view as its children.
+    /// One `item` node per resource, with the item block's nodes or the row view as its
+    /// children: in a view, each the row of a loop node, which the host renders when it shows
+    /// the row ([`Self::list_rows`]); elsewhere keyed `<list key>/<ref id>` in place.
     fn list_items(&mut self, n: LocalId, list_key: LocalId, list: Ex, c: &UiCall) {
         let span = c.call.span;
         let elem = list.ty.element().cloned().unwrap_or(Ty::Error);
         let row_view = match (&c.block, &elem) {
             (None, Ty::Record(key)) => self.env.row_view(key).cloned(),
             _ => None,
+        };
+        let Some(list) = self.list_rows(n, list, c, row_view.clone()) else {
+            return;
         };
         let mut fl = self.new_for(list, &elem);
         let item = Ex::local(fl.item_local, elem.clone());

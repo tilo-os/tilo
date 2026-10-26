@@ -32,6 +32,8 @@ action move_first(l: TodoList, i: Item) { l.items.move(i, 0) }
 
 action tag(l: TodoList, t: Text) { l.tags.add(t) }
 
+action finish(i: Item) { i.done = true }
+
 root TodoList
 
 default view main for TodoList

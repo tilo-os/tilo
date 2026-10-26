@@ -214,33 +214,38 @@ view notebook(nb: Notebook) {\n    window order: NoteOrder = .created\n    windo
 fn a_list_is_a_list_node_with_an_item_per_resource_holding_its_row() {
     let (m, ids) = lower(NOTES);
     let calls = ui_calls(func(&m, "notebook"));
-    let at = |want: &str| {
+    let at = |calls: &[String], want: &str| {
         calls
             .iter()
-            .position(|c| c == want)
+            .position(|c| c == want || c.starts_with(&format!("{want}:")))
             .unwrap_or_else(|| panic!("no {want} in {calls:#?}"))
     };
-    assert!(at("node list") < at("prop item_type"));
-    assert!(at("node item") < at("prop item") && at("prop item") < at("node list_row"));
-    for want in [
-        "prop empty",
-        "prop title",
-        "prop secondary",
-        "prop mark",
-        "bind",
-    ] {
-        assert!(has(&calls, want), "{want} in {calls:#?}");
+    // The list holds one loop node: each row a view of its own on one item, rendered when the
+    // host shows it.
+    assert!(at(&calls, "node list") < at(&calls, "prop item_type"));
+    assert!(at(&calls, "node list") < at(&calls, "node for"));
+    assert!(has(&calls, "prop items") && has(&calls, "prop each"));
+    assert!(!has(&calls, "node item"), "no row is built with the list");
+    let row = ui_calls(func(&m, "notebook for n"));
+    assert!(
+        at(&row, "node item") < at(&row, "prop item")
+            && at(&row, "prop item") < at(&row, "node list_row"),
+        "{row:#?}"
+    );
+    for want in ["prop title", "prop secondary", "prop mark", "bind"] {
+        assert!(has(&row, want), "{want} in {row:#?}");
     }
+    assert!(has(&calls, "prop empty"));
     let s = strings(func(&m, "notebook"));
     assert!(
         s.contains(&ids.get("Note").expect("id").to_string()),
         "the item type's id"
     );
+    assert!(s.contains(&"No notes yet".to_string()));
     assert!(
-        s.contains(&"pin".to_string()),
+        strings(func(&m, "notebook for n")).contains(&"pin".to_string()),
         "the mark's icon in kebab case"
     );
-    assert!(s.contains(&"No notes yet".to_string()));
 }
 
 #[test]
@@ -293,12 +298,18 @@ fn a_type_with_a_row_view_lists_without_an_item_block() {
         "type Note {\n    title: Text\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nrow view note_row for Note\nview note_row(n: Note) {\n    row(n.title, badge: \"new\", value: 3)\n}\nview notebook(nb: Notebook) {\n    list(nb.notes)\n}",
     );
     let calls = ui_calls(func(&m, "notebook"));
-    let item = calls.iter().position(|c| c == "node item").expect("item");
-    let wrapper = calls
+    assert!(
+        calls.iter().any(|c| c.starts_with("node for:")),
+        "{calls:#?}"
+    );
+    // Each row is an item holding a call of the row view, its own boundary.
+    let rows = ui_calls(func(&m, "notebook for $item"));
+    let item = rows.iter().position(|c| c == "node item").expect("item");
+    let call = rows
         .iter()
-        .position(|c| c == "node fragment")
+        .position(|c| c.starts_with("node view:"))
         .expect("row");
-    assert!(item < wrapper, "{calls:#?}");
+    assert!(item < call, "{rows:#?}");
     let row = ui_calls(func(&m, "note_row"));
     assert_eq!(
         row,

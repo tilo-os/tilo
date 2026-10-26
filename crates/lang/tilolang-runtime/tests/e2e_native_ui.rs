@@ -267,11 +267,13 @@ action add(l: Tasks, title: Text) {
         let app = App::compile(BOARD, &[]);
         let rt = runtime(&app);
         let l = rt.create("Tasks").unwrap();
+        // The rows are read as a host that draws every row does.
         let open = |view: &str| {
-            rt.open_view(&me(), &app.view(view), vec![Value::resource(&l)])
-                .unwrap()
-                .tree()
-                .clone()
+            let mut opened = rt
+                .open_view(&me(), &app.view(view), vec![Value::resource(&l)])
+                .unwrap();
+            opened.set_lazy_rows(false).unwrap();
+            opened.tree().clone()
         };
         let row = open("tasks_row");
         assert_eq!(row.kind, "list_row", "{}", dump(&row));

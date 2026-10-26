@@ -255,7 +255,10 @@ impl OpSet {
             self.undo_succ(&op.undo);
         }
         self.cols.remove_ops(op.pos, &[op]);
-        self.id_index.clear(); // TILO(op-id-index)
+        // TILO(op-id-index): the op `Columns::remove_ops` took out, if any.
+        if op.bld.action != Action::Delete {
+            self.id_index.removed(op.id());
+        }
         if op.obj_info().is_some() {
             self.obj_info.remove(op.id());
         }
@@ -872,6 +875,21 @@ impl OpSet {
         let len = self.len();
         let slabs = self.cols.id_ctr.slab_count();
         if !self.id_index.wants_counters(len, slabs) {
+            return;
+        }
+        let mut index = std::mem::take(&mut self.id_index);
+        if index.decide(len, slabs, self.cols.id_ctr.iter()) {
+            index.build(len, self.id_iter_range(&(0..len)));
+        }
+        self.id_index = index;
+    }
+
+    /// TILO(op-id-index-load): index a document just loaded, if its
+    /// counters are scattered enough that searches would be slow.
+    pub(crate) fn index_op_ids_at_load(&mut self) {
+        let len = self.len();
+        let slabs = self.cols.id_ctr.slab_count();
+        if !self.id_index.wants_counters_at_load(slabs) {
             return;
         }
         let mut index = std::mem::take(&mut self.id_index);
@@ -1545,7 +1563,7 @@ impl OpSet {
     }
 
     pub(crate) fn rewrite_with_new_actor(&mut self, idx: usize) {
-        self.id_index.clear(); // TILO(op-id-index)
+        self.id_index.actor_inserted(idx); // TILO(op-id-index-actors)
         self.cols.rewrite_with_new_actor(idx);
         self.cols.index.mark.rewrite_with_new_actor(idx);
         self.obj_info = ObjIndex(
@@ -1559,7 +1577,7 @@ impl OpSet {
 
     pub(crate) fn remove_actor(&mut self, idx: usize) {
         self.actors.remove(idx);
-        self.id_index.clear(); // TILO(op-id-index)
+        self.id_index.actor_removed(idx); // TILO(op-id-index-actors)
         self.cols.rewrite_without_actor(idx);
         self.obj_info = ObjIndex(
             self.obj_info

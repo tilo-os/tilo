@@ -12,29 +12,18 @@ use crate::authority::{ActionInfo, Decision};
 use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
-use crate::handles::Retained;
 use crate::host_res::to_scalar;
 use crate::host_ui::{OPEN_ACTION, SET_ACTION};
 use crate::ids::{DocId, Principal};
+use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
 use crate::meta::{Ty, parse_ty};
-use crate::render::{Rendered, ViewTarget};
+use crate::render::ViewTarget;
 use crate::space::Space;
-use crate::store::{ChangeNote, Mutation, SubId};
+use crate::store::{ChangeNote, ChangeSummary, Mutation, SubId};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
-use crate::view::{BindTarget, Patch, UiNode, diff};
+use crate::view::{BindTarget, Patch, UiNode};
 use crate::view_state::StateKey;
-
-/// What a view read, and whether any of it changed since the last render.
-#[derive(Default)]
-struct Watch {
-    reads: HashSet<(String, String)>,
-    /// `space` fields read, with the values they had.
-    space_reads: Vec<(String, f64)>,
-    /// View state slots read, with their generations then.
-    state_reads: Vec<(StateKey, u64)>,
-    dirty: bool,
-}
 
 /// Something a view asks of the host that the runtime does not do itself.
 #[derive(Clone, Debug, PartialEq)]
@@ -58,20 +47,16 @@ pub enum EditOutcome {
 
 pub struct ViewInstance {
     core: Rc<Core>,
-    viewer: Principal,
-    window: String,
-    target: ViewTarget,
-    args: Vec<Value>,
-    space: Space,
-    boundaries: HashMap<String, Space>,
-    tree: UiNode,
-    retained: Vec<Retained>,
-    watch: Rc<RefCell<Watch>>,
+    live: Live,
+    /// The space set per boundary key, for the host's layout pass.
+    spaces: HashMap<String, Space>,
+    /// What the store told since the last poll.
+    changes: Rc<RefCell<Vec<ChangeSummary>>>,
     subs: Vec<SubId>,
     subscribed: HashSet<DocId>,
-    /// The value each view state slot had at the last render, defaults included.
-    state_seen: Vec<(StateKey, Value)>,
     events: RefCell<Vec<ViewEvent>>,
+    /// Run every boundary again at the next poll.
+    refresh_all: std::cell::Cell<bool>,
 }
 
 /// The window a view over `args` runs in when the host names none: the window of its first
@@ -92,36 +77,29 @@ impl ViewInstance {
         target: ViewTarget,
         args: Vec<Value>,
     ) -> Result<Self, RuntimeError> {
-        let space = Space::default();
-        let rendered = core.render(&target, &args, space, (&viewer, &window))?;
+        let live = Live::open(&core, (viewer, window), target, args)?;
         let mut me = Self {
             core,
-            viewer,
-            window,
-            target,
-            args,
-            space,
-            boundaries: HashMap::new(),
-            tree: rendered.root.clone(),
-            retained: Vec::new(),
-            watch: Rc::new(RefCell::new(Watch::default())),
+            live,
+            spaces: HashMap::new(),
+            changes: Rc::default(),
             subs: Vec::new(),
             subscribed: HashSet::new(),
-            state_seen: Vec::new(),
             events: RefCell::new(Vec::new()),
+            refresh_all: std::cell::Cell::new(false),
         };
-        me.adopt(rendered);
+        me.subscribe_new();
         Ok(me)
     }
 
     /// The window this view runs in.
     pub fn window(&self) -> &str {
-        &self.window
+        &self.live.window
     }
 
     /// The person looking.
     pub fn viewer(&self) -> &Principal {
-        &self.viewer
+        &self.live.viewer
     }
 
     /// What the view asked of the host since the last call: windows to open.
@@ -129,125 +107,153 @@ impl ViewInstance {
         std::mem::take(&mut *self.events.borrow_mut())
     }
 
-    /// Whether a view state slot the view read changed since it read it.
-    fn state_changed(&self) -> bool {
-        let states = self.core.view_states.borrow();
-        self.watch
-            .borrow()
-            .state_reads
-            .iter()
-            .any(|(key, seen)| states.generation(key) != *seen)
+    /// Listen to every document some boundary read and nobody listens to yet.
+    fn subscribe_new(&mut self) {
+        let docs: Vec<DocId> = self
+            .live
+            .docs()
+            .filter(|d| !self.subscribed.contains(*d))
+            .cloned()
+            .collect();
+        for doc in docs {
+            let queue = Rc::clone(&self.changes);
+            let id = self.core.store.borrow_mut().subscribe(
+                &doc,
+                Box::new(move |summary| queue.borrow_mut().push(summary.clone())),
+            );
+            self.subs.push(id);
+            self.subscribed.insert(doc);
+        }
     }
 
-    /// Take a render's reads and retained handles as the current state.
-    fn adopt(&mut self, rendered: Rendered) {
-        let reads: HashSet<(String, String)> = rendered.reads.into_iter().collect();
-        for (doc, _) in &reads {
-            if self.subscribed.insert(doc.clone()) {
-                let watch = Rc::clone(&self.watch);
-                let id = self.core.store.borrow_mut().subscribe(
-                    doc,
-                    Box::new(move |s| {
-                        let mut w = watch.borrow_mut();
-                        let hit = if s.fields.is_empty() {
-                            w.reads.iter().any(|(d, _)| *d == s.doc)
-                        } else {
-                            s.fields
-                                .iter()
-                                .any(|f| w.reads.contains(&(s.doc.clone(), f.clone())))
-                        };
-                        if hit {
-                            w.dirty = true;
-                        }
-                    }),
-                );
-                self.subs.push(id);
-            }
+    /// Mark what the changes heard since the last call reach.
+    fn absorb(&mut self) {
+        let heard = std::mem::take(&mut *self.changes.borrow_mut());
+        for change in &heard {
+            self.live.absorb(change);
         }
-        {
-            let mut w = self.watch.borrow_mut();
-            w.reads = reads;
-            w.space_reads = rendered.space_reads;
-            w.state_reads = rendered.state_reads;
+        self.live.check_states(&self.core);
+        if self.refresh_all.take() {
+            self.live.mark_all();
         }
-        self.state_seen = rendered.state_seen;
-        self.retained = rendered.retained;
-        self.tree = rendered.root;
     }
 
-    /// The current tree.
+    /// The current tree. Rows of a `list` that were not shown are empty `fragment`s.
     pub fn tree(&self) -> &UiNode {
-        &self.tree
+        &self.live.tree
     }
 
     /// Set the space offered at a boundary: the root (key `""` or the root node's key), or a
-    /// nested view call by its node key. In v1 nested view calls are inlined by the compiler
-    /// and inherit the root's space, so only the root's value is consulted; other keys are
-    /// kept for the host's layout pass. Returns whether the view now needs to re-run: it read
-    /// a `space` value that differs from the one it saw. Crossing no class boundary it read
-    /// leaves the view untouched.
+    /// nested view call by its node key. Every boundary is offered the root's space; other keys
+    /// are kept for the host's layout pass. Returns whether the view now needs to re-run: a
+    /// boundary read a `space` value that differs from the one it saw. Crossing no class
+    /// boundary it read leaves the view untouched.
     pub fn set_space(&mut self, boundary: &str, space: Space) -> bool {
-        self.boundaries.insert(boundary.to_owned(), space);
-        if !boundary.is_empty() && boundary != self.tree.key {
+        self.spaces.insert(boundary.to_owned(), space);
+        if !boundary.is_empty() && boundary != self.live.tree.key {
             return false;
         }
-        self.space = space;
-        let mut w = self.watch.borrow_mut();
-        if w.space_reads
-            .iter()
-            .any(|(name, seen)| space.field(name) != Some(*seen))
-        {
-            w.dirty = true;
-        }
-        w.dirty
+        self.live.check_space(space);
+        self.is_stale()
     }
 
     /// The space last set for a boundary.
     pub fn space(&self, boundary: &str) -> Option<Space> {
-        self.boundaries.get(boundary).copied()
+        self.spaces.get(boundary).copied()
     }
 
     /// Run the view again at the next poll although nothing it read changed: what it shows
     /// without reading it (the names of principals) has changed.
     pub fn refresh(&self) {
-        self.watch.borrow_mut().dirty = true;
+        self.refresh_all.set(true);
     }
 
-    /// Whether a field or view state the view read has changed since the last render.
+    /// Whether a field or view state some boundary read has changed since it last ran.
     pub fn is_stale(&self) -> bool {
-        self.watch.borrow().dirty || self.state_changed()
+        self.refresh_all.get()
+            || self.live.is_dirty()
+            || self.changes.borrow().iter().any(|c| self.live.reaches(c))
+            || self.live.states_moved(&self.core)
     }
 
-    /// Re-run the view if a field it read changed and return the patches from the old tree
-    /// to the new one. Empty when nothing it read changed.
+    /// Re-run the boundaries whose reads changed, and only those, and return the patches from
+    /// the old tree to the new one, in the order they apply. Empty when nothing changed.
     ///
     /// # Errors
     ///
     /// As rendering: a trap or a malformed tree.
     pub fn poll_patches(&mut self) -> Result<Vec<Patch>, RuntimeError> {
-        if !self.is_stale() {
+        self.absorb();
+        if !self.live.is_dirty() {
             return Ok(Vec::new());
         }
-        self.watch.borrow_mut().dirty = false;
-        let rendered = self.core.render(
-            &self.target,
-            &self.args,
-            self.space,
-            (&self.viewer, &self.window),
-        )?;
-        let core = Rc::clone(&self.core);
-        let same = move |a: Retained, b: Retained| {
-            let frames = core.frames.borrow();
-            frames.retained(a) == frames.retained(b)
-        };
-        let patches = diff(&self.tree, &rendered.root, &same);
-        let old = std::mem::take(&mut self.retained);
-        self.adopt(rendered);
-        let mut frames = self.core.frames.borrow_mut();
-        for r in old {
-            frames.release(r);
+        let patches = self.live.poll(&self.core);
+        self.subscribe_new();
+        patches
+    }
+
+    /// What the view did so far: how many boundaries ran, how many there are.
+    pub fn stats(&self) -> LiveStats {
+        self.live.stats()
+    }
+
+    /// Whether rows of lists render only once shown (the default), or with the list. A host
+    /// that draws the whole tree, rather than asking for rows, turns this off before the
+    /// first poll; rows already left unrendered render at once, into the tree (no patches:
+    /// such a host reads [`Self::tree`] after this).
+    ///
+    /// # Errors
+    ///
+    /// As rendering.
+    pub fn set_lazy_rows(&mut self, lazy: bool) -> Result<(), RuntimeError> {
+        self.live.lazy_rows = lazy;
+        if lazy {
+            return Ok(());
         }
-        Ok(patches)
+        let mut lists = Vec::new();
+        collect_lists(&self.live.tree, &mut lists);
+        for list in lists {
+            for i in 0..self.live.list_len(&list).unwrap_or(0) {
+                self.live.show_row(&self.core, &list, i)?;
+            }
+        }
+        self.subscribe_new();
+        Ok(())
+    }
+
+    /// How many rows the `list` with key `list` has.
+    pub fn list_len(&self, list: &str) -> Option<usize> {
+        self.live.list_len(list)
+    }
+
+    /// The key of row `index` of `list`.
+    pub fn row_key(&self, list: &str, index: usize) -> Option<String> {
+        self.live.row_key(list, index)
+    }
+
+    /// Row `index` of `list`, rendered now if it was not shown before: what a virtual list
+    /// asks for each visible row (plus overscan). Later changes to what the row read come as
+    /// patches until the row is hidden again.
+    ///
+    /// # Errors
+    ///
+    /// As rendering.
+    pub fn row(&mut self, list: &str, index: usize) -> Result<Option<&UiNode>, RuntimeError> {
+        let key = self.live.show_row(&self.core, list, index)?;
+        self.subscribe_new();
+        Ok(key.and_then(|key| self.live.find(&key)))
+    }
+
+    /// Forget the rows of `list` outside `keep`, which scrolled out of view: they no longer
+    /// run when what they read changes, and render again when shown. Returns the patches that
+    /// empty them.
+    pub fn hide_rows(&mut self, list: &str, keep: std::ops::Range<usize>) -> Vec<Patch> {
+        self.live.hide_rows(&self.core, list, keep)
+    }
+
+    /// The node with `key`.
+    pub fn find(&self, key: &str) -> Option<&UiNode> {
+        self.live.find(key)
     }
 
     /// Fire the event `event` of the node with `key`.
@@ -257,7 +263,7 @@ impl ViewInstance {
     /// `NotFound` when the node or its event does not exist; otherwise as an invocation.
     pub fn fire(&self, key: &str, event: &str) -> Result<InvokeOutcome, RuntimeError> {
         let node = self
-            .tree
+            .live
             .find(key)
             .ok_or_else(|| RuntimeError::NotFound(format!("a unique node `{key}`")))?;
         let retained = node
@@ -271,7 +277,7 @@ impl ViewInstance {
         match aref.action.as_str() {
             SET_ACTION => self.platform_set(&aref),
             OPEN_ACTION => self.platform_open(&aref),
-            _ => self.core.invoke_direct(&self.viewer, &aref),
+            _ => self.core.invoke_direct(&self.live.viewer, &aref),
         }
     }
 
@@ -312,7 +318,7 @@ impl ViewInstance {
     /// What the control `key` is bound to holds now: the field's value, or the view state's
     /// (its default while it was never set).
     pub fn bound_value(&self, key: &str) -> Option<Value> {
-        let binding = self.tree.find(key)?.binding.clone()?;
+        let binding = self.live.find(key)?.binding.clone()?;
         match &binding.target {
             BindTarget::Field { target, field } => {
                 let (_, info) = self.core.registry.borrow().type_info(&target.ty)?;
@@ -321,13 +327,7 @@ impl ViewInstance {
             }
             BindTarget::State { key, .. } => {
                 let stored = self.core.view_states.borrow().get(key).cloned();
-                let value = stored.or_else(|| {
-                    self.state_seen
-                        .iter()
-                        .rev()
-                        .find(|(k, _)| k == key)
-                        .map(|(_, v)| v.clone())
-                })?;
+                let value = stored.or_else(|| self.live.state_seen(key))?;
                 Some(crate::host_res::unboxed(value))
             }
         }
@@ -391,7 +391,7 @@ impl ViewInstance {
     /// `NotFound` for a missing node or binding; `BadArgs` for a value the field cannot take.
     pub fn edit(&self, key: &str, value: &Value) -> Result<EditOutcome, RuntimeError> {
         let node = self
-            .tree
+            .live
             .find(key)
             .ok_or_else(|| RuntimeError::NotFound(format!("a unique node `{key}`")))?;
         let binding = node
@@ -413,7 +413,7 @@ impl ViewInstance {
             .ok_or_else(|| RuntimeError::NotFound(format!("field {field_id}")))?;
         drop(reg);
         let ctx = ExecCtx {
-            invoker: self.viewer.clone(),
+            invoker: self.live.viewer.clone(),
             chain: vec![view_module.clone()],
             approved_by: None,
             origin: None,
@@ -453,7 +453,7 @@ impl ViewInstance {
         let change = ChangeNote {
             action: "$edit".into(),
             args: serde_json::json!([field.id, to_json(value).map_err(RuntimeError::BadArgs)?]),
-            invoker: self.viewer.0.clone(),
+            invoker: self.live.viewer.0.clone(),
             chain: vec![view_module.0.clone()],
             module: view_module.0,
             approved_by: None,
@@ -475,9 +475,16 @@ impl Drop for ViewInstance {
         for s in self.subs.drain(..) {
             store.unsubscribe(s);
         }
-        let mut frames = self.core.frames.borrow_mut();
-        for r in self.retained.drain(..) {
-            frames.release(r);
-        }
+        drop(store);
+        self.live.release_all(&self.core);
+    }
+}
+
+fn collect_lists(node: &UiNode, out: &mut Vec<String>) {
+    if node.kind == "list" {
+        out.push(node.key.clone());
+    }
+    for child in &node.children {
+        collect_lists(child, out);
     }
 }

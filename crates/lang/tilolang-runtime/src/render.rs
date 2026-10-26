@@ -2,6 +2,7 @@
 //! foreign view nodes (`view:<app>:<view id>`) into nested boundaries.
 
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use crate::core::Core;
 use crate::error::RuntimeError;
@@ -24,6 +25,18 @@ const FOREIGN_VIEW: &str = "view:";
 pub(crate) const EMBED: &str = "embed";
 /// The prefix of the properties of such a node that carry the view's arguments.
 const ARG_PREFIX: &str = "arg.";
+/// The prefix of the kind of the node a UI loop lowers to (`for:<app>:<row view id>`): one row
+/// per item of its `items`, each the row view called with the item and the node's `arg.<name>`
+/// properties, and a boundary of its own.
+const FOR_EACH: &str = "for:";
+/// The property of a loop's node that holds its items.
+const ITEMS: &str = "items";
+/// The property of a loop's node that names the parameter of its row view the item goes to.
+const EACH: &str = "each";
+/// The property of a loop's node that holds the key suffix of the rows around it.
+const SUFFIX: &str = "suffix";
+/// The parameter of a row view that takes the row's key suffix (`<suffix>/<item key>`).
+const ROW_KEY: &str = "$key";
 
 /// A view export of a loaded module.
 #[derive(Clone, Debug)]
@@ -77,9 +90,44 @@ pub(crate) struct Build<'a> {
     pub offer: Offer<'a>,
 }
 
+/// Where the walk over a view's nodes is.
+#[derive(Clone, Copy)]
+pub(crate) struct Walk<'a> {
+    pub level: usize,
+    /// The key the nodes here go under, `None` at the root of a view.
+    pub prefix: Option<&'a str>,
+    /// Whether the nodes here are the rows of a `list`.
+    pub in_list: bool,
+}
+
+/// A view call met while building a tree: the boundary the host renders.
+pub(crate) struct Stub<'a> {
+    /// The key the call's node has in the tree.
+    pub key: &'a str,
+    /// Shared: every row of a loop calls the one view.
+    pub target: Rc<ViewTarget>,
+    pub args: Vec<Value>,
+    /// A row of a `list`: rendered when the host shows it, not now.
+    pub lazy: bool,
+    pub depth: usize,
+}
+
+/// Renders the view calls of a tree as boundaries of their own.
+pub(crate) trait Boundaries {
+    /// The children of the `fragment` that stands for the call: the callee's tree, or nothing
+    /// for a row that is not shown yet, or for a boundary whose tree the caller keeps.
+    fn boundary(&mut self, stub: Stub<'_>) -> Result<Vec<UiNode>, RuntimeError>;
+}
+
+/// How a boundary is rendered: under which key, and who renders its view calls.
+pub(crate) struct Scoped<'p, 'b> {
+    pub prefix: Option<&'p str>,
+    pub boundaries: Option<&'b mut dyn Boundaries>,
+}
+
 /// Prefix every key of a nested tree with the key of the node that holds it. A view called
-/// per row, or a block embedded in two messages, would otherwise repeat its keys, and a key must name one node in the
-/// tree for a press or an edit to find it.
+/// per row, or a block embedded in two messages, would otherwise repeat its keys, and a key
+/// must name one node in the tree for a press or an edit to find it.
 pub(crate) fn scope(prefix: &str, mut tree: UiNode) -> UiNode {
     // An anchored node keeps its key: the anchor is the address people and agents use.
     if tree.anchor.is_none() {
@@ -127,35 +175,30 @@ impl Core {
         })
     }
 
-    /// Run a view in `window` for `viewer` and build its tree.
-    ///
-    /// # Errors
-    ///
-    /// Arguments that do not fit, a trap, or a malformed tree.
-    pub(crate) fn render(
-        &self,
-        target: &ViewTarget,
-        args: &[Value],
-        space: Space,
-        (viewer, window): (&Principal, &str),
-    ) -> Result<Rendered, RuntimeError> {
-        let offer = Offer {
-            space,
-            viewer,
-            window,
-            depth: 0,
-        };
-        self.render_at(target, args, offer, None)
-    }
-
     /// Render a view as its own boundary. `author` replaces the module as the author of what
     /// the view creates: an embedded block is written by its principal, not by its module.
+    /// View calls inside are resolved in place, their reads joining this view's.
     pub(crate) fn render_at(
         &self,
         target: &ViewTarget,
         args: &[Value],
         offer: Offer<'_>,
         author: Option<&ModuleHash>,
+    ) -> Result<Rendered, RuntimeError> {
+        self.render_boundary(target, args, offer, author, None)
+    }
+
+    /// Render a view as its own boundary, its keys under `scope` (the key of the node that
+    /// holds it, `None` at the root). With `boundaries`, a view call inside is not resolved
+    /// here but handed to it: the node becomes a `fragment` holding what it answers, and the
+    /// callee's reads are its own, not this view's.
+    pub(crate) fn render_boundary(
+        &self,
+        target: &ViewTarget,
+        args: &[Value],
+        offer: Offer<'_>,
+        author: Option<&ModuleHash>,
+        scoped: Option<Scoped<'_, '_>>,
     ) -> Result<Rendered, RuntimeError> {
         let (space, depth) = (offer.space, offer.depth);
         if depth > MAX_VIEW_DEPTH {
@@ -196,7 +239,16 @@ impl Core {
             nodes: &state.nodes,
             offer,
         };
-        let tree = self.build_node(&cx, root, 0, &mut acc)?;
+        let (prefix, hook) = match scoped {
+            Some(Scoped { prefix, boundaries }) => (prefix, boundaries),
+            None => (None, None),
+        };
+        let walk = Walk {
+            level: 0,
+            prefix,
+            in_list: false,
+        };
+        let tree = self.build_node(&cx, root, walk, &mut acc, hook)?;
         Ok(Rendered {
             root: tree,
             reads: acc.reads,
@@ -207,33 +259,27 @@ impl Core {
         })
     }
 
-    fn build_node(
+    fn build_node<'h>(
         &self,
         cx: &Build<'_>,
         at: usize,
-        level: usize,
+        walk: Walk<'_>,
         acc: &mut Acc,
+        mut hook: Option<&mut (dyn Boundaries + 'h)>,
     ) -> Result<UiNode, RuntimeError> {
-        if level > cx.nodes.len() {
+        if walk.level > cx.nodes.len() {
             return Err(RuntimeError::Package("the ui tree contains a cycle".into()));
         }
         let n = cx
             .nodes
             .get(at)
             .ok_or_else(|| RuntimeError::Package("unknown ui node".into()))?;
-        let mut keys = HashSet::new();
-        let mut children = Vec::new();
-        for c in &n.children {
-            let child = self.build_node(cx, *c, level.saturating_add(1), acc)?;
-            if !keys.insert(child.key.clone()) {
-                return Err(RuntimeError::Package(format!(
-                    "duplicate key `{}` among the children of `{}`",
-                    child.key, n.key
-                )));
-            }
-            children.push(child);
-        }
-        let events = n
+        // An anchored node keeps its key: the anchor is the address people and agents use.
+        let key = match (walk.prefix, &n.anchor) {
+            (Some(prefix), None) => format!("{prefix}~{}", n.key),
+            _ => n.key.clone(),
+        };
+        let events: std::collections::BTreeMap<String, Retained> = n
             .events
             .iter()
             .map(|(name, v)| {
@@ -242,9 +288,62 @@ impl Core {
                 (name.clone(), r)
             })
             .collect();
+        if let (Some(target), Some(boundaries)) =
+            (n.kind.strip_prefix(FOREIGN_VIEW), hook.as_deref_mut())
+        {
+            let (vt, args) = self.call_of(target, &n.props)?;
+            let mut props = n.props.clone();
+            props.retain(|name, _| !name.starts_with(ARG_PREFIX));
+            let children = boundaries.boundary(Stub {
+                key: &key,
+                target: Rc::new(vt),
+                args,
+                lazy: walk.in_list,
+                depth: cx.offer.depth.saturating_add(1),
+            })?;
+            return Ok(UiNode {
+                kind: "fragment".to_owned(),
+                key,
+                props,
+                binding: n.binding.clone(),
+                events,
+                anchor: n.anchor.clone(),
+                children,
+            });
+        }
+        // A view call's keys are the same at every call site, so they go under the call's key.
+        let calls = n.kind == "fragment" || n.kind.starts_with(FOREIGN_VIEW);
+        let below = Walk {
+            level: walk.level.saturating_add(1),
+            prefix: if calls {
+                Some(key.as_str())
+            } else {
+                walk.prefix
+            },
+            in_list: n.kind == "list",
+        };
+        let mut keys = HashSet::new();
+        let mut children = Vec::with_capacity(n.children.len());
+        for c in &n.children {
+            let rows = match cx.nodes.get(*c) {
+                Some(loop_node) if loop_node.kind.starts_with(FOR_EACH) => {
+                    self.build_rows(cx, loop_node, below, acc, hook.as_deref_mut())?
+                }
+                _ => vec![self.build_node(cx, *c, below, acc, hook.as_deref_mut())?],
+            };
+            for child in rows {
+                if !keys.insert(child.key.clone()) {
+                    return Err(RuntimeError::Package(format!(
+                        "duplicate key `{}` among the children of `{}`",
+                        child.key, n.key
+                    )));
+                }
+                children.push(child);
+            }
+        }
         let mut node = UiNode {
             kind: n.kind.clone(),
-            key: n.key.clone(),
+            key,
             props: n.props.clone(),
             binding: n.binding.clone(),
             events,
@@ -256,28 +355,142 @@ impl Core {
         } else if n.kind == EMBED {
             self.resolve_embed(cx, &mut node, acc);
         }
-        if node.kind == "fragment" {
-            // A view call: the callee's keys are the same at every call site.
-            let prefix = node.key.clone();
-            node.children = node
-                .children
-                .into_iter()
-                .map(|c| scope(&prefix, c))
-                .collect();
-        }
         Ok(node)
     }
 
-    /// Replace a node applying another package's view with a `fragment` holding that view's
-    /// tree, rendered as its own boundary. The nested view's code is its own package's, so
-    /// its action references are authored by that package.
-    fn resolve_foreign(
+    /// The rows of a loop's node, in its place among its parent's children: per item, a
+    /// `fragment` keyed by the item that stands for the row view called on it. With
+    /// `boundaries` each row is a boundary of its own (rendered when shown, for a row of a
+    /// `list`); without, each is rendered here and its reads join this view's.
+    fn build_rows<'h>(
         &self,
         cx: &Build<'_>,
-        target: &str,
-        node: &mut UiNode,
+        n: &NodeBuild,
+        walk: Walk<'_>,
         acc: &mut Acc,
-    ) -> Result<(), RuntimeError> {
+        mut hook: Option<&mut (dyn Boundaries + 'h)>,
+    ) -> Result<Vec<UiNode>, RuntimeError> {
+        let target = n.kind.strip_prefix(FOR_EACH).unwrap_or_default();
+        let key = match walk.prefix {
+            Some(prefix) => format!("{prefix}~{}", n.key),
+            None => n.key.clone(),
+        };
+        let Some(Value::List(items)) = n.props.get(ITEMS) else {
+            return Err(RuntimeError::Package(format!(
+                "the loop `{}` has no list of items",
+                n.key
+            )));
+        };
+        let suffix = match n.props.get(SUFFIX) {
+            Some(Value::Text(suffix)) => suffix.as_str(),
+            _ => "",
+        };
+        let (vt, args_of) = self.rows_call(target, &n.props)?;
+        let vt = Rc::new(vt);
+        // The sizing and placement the compiler took out of a one-node body: each row's.
+        let layout: std::collections::BTreeMap<String, Value> = n
+            .props
+            .iter()
+            .filter(|(name, _)| {
+                ![ITEMS, SUFFIX, EACH].contains(&name.as_str()) && !name.starts_with(ARG_PREFIX)
+            })
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        let mut rows = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let item_key = item_key(item, i);
+            let row_key = format!("{key}/{item_key}");
+            let args: Vec<Value> = args_of
+                .iter()
+                .map(|arg| match arg {
+                    RowArg::Item => item.clone(),
+                    RowArg::Key => Value::Text(format!("{suffix}/{item_key}")),
+                    RowArg::Value(value) => value.clone(),
+                })
+                .collect();
+            let children = if let Some(boundaries) = hook.as_deref_mut() {
+                boundaries.boundary(Stub {
+                    key: &row_key,
+                    target: Rc::clone(&vt),
+                    args,
+                    lazy: walk.in_list,
+                    depth: cx.offer.depth.saturating_add(1),
+                })?
+            } else {
+                let nested = self.render_at(&vt, &args, cx.offer.deeper(), None)?;
+                vec![scope(&row_key, acc.absorb(nested))]
+            };
+            rows.push(UiNode {
+                kind: "fragment".to_owned(),
+                key: row_key,
+                props: layout.clone(),
+                binding: None,
+                events: std::collections::BTreeMap::new(),
+                anchor: None,
+                children,
+            });
+        }
+        Ok(rows)
+    }
+
+    /// The view a loop's node calls per row and what it passes each parameter: the item to
+    /// the one the node's `each` names, the row's key suffix to `$key`, and the node's
+    /// `arg.<name>` properties to the rest.
+    fn rows_call(
+        &self,
+        target: &str,
+        props: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<(ViewTarget, Vec<RowArg>), RuntimeError> {
+        let (app, view) = target
+            .split_once(':')
+            .ok_or_else(|| RuntimeError::Package(format!("malformed loop node `{target}`")))?;
+        let vt = self.view_target(view)?;
+        let own = self
+            .registry
+            .borrow()
+            .package(&vt.module)
+            .is_some_and(|pkg| pkg.meta.app == app);
+        if !own {
+            return Err(RuntimeError::Package(format!(
+                "the row view {view} does not belong to app `{app}`"
+            )));
+        }
+        let each = match props.get(EACH) {
+            Some(Value::Text(each)) => each.as_str(),
+            _ => vt.params.first().map_or("", |p| p.name.as_str()),
+        };
+        let around = vt
+            .params
+            .iter()
+            .map(|p| {
+                if p.name == each {
+                    return Ok(RowArg::Item);
+                }
+                if p.name == ROW_KEY {
+                    return Ok(RowArg::Key);
+                }
+                props
+                    .get(&format!("{ARG_PREFIX}{}", p.name))
+                    .cloned()
+                    .map(RowArg::Value)
+                    .ok_or_else(|| {
+                        RuntimeError::Package(format!(
+                            "the loop node for `{view}` is missing the value `{}`",
+                            p.name
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((vt, around))
+    }
+
+    /// The view a `view:<app>:<view id>` node applies and its arguments, from the node's
+    /// `arg.<name>` properties.
+    pub(crate) fn call_of(
+        &self,
+        target: &str,
+        props: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<(ViewTarget, Vec<Value>), RuntimeError> {
         let (app, view) = target
             .split_once(':')
             .ok_or_else(|| RuntimeError::Package(format!("malformed view node `{target}`")))?;
@@ -297,7 +510,7 @@ impl Core {
             .params
             .iter()
             .map(|p| {
-                node.props
+                props
                     .get(&format!("{ARG_PREFIX}{}", p.name))
                     .cloned()
                     .ok_or_else(|| {
@@ -308,11 +521,25 @@ impl Core {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
+        Ok((vt, args))
+    }
+
+    /// Replace a node applying a view with a `fragment` holding that view's tree, rendered in
+    /// place: its reads join the outer view's. The nested view's code is its own package's,
+    /// so its action references are authored by that package.
+    fn resolve_foreign(
+        &self,
+        cx: &Build<'_>,
+        target: &str,
+        node: &mut UiNode,
+        acc: &mut Acc,
+    ) -> Result<(), RuntimeError> {
+        let (vt, args) = self.call_of(target, &node.props)?;
         let nested = self.render_at(&vt, &args, cx.offer.deeper(), None)?;
         let root = acc.absorb(nested);
         "fragment".clone_into(&mut node.kind);
         node.props.retain(|name, _| !name.starts_with(ARG_PREFIX));
-        node.children = vec![root];
+        node.children = vec![scope(&node.key, root)];
         Ok(())
     }
 
@@ -354,4 +581,21 @@ impl Core {
         self.frames.borrow_mut().pop();
         out
     }
+}
+
+/// What keys the row of `item`, the `index`th of its loop: a resource by its id, any other
+/// value by its place.
+fn item_key(item: &Value, index: usize) -> String {
+    match item {
+        Value::Ref(r) => r.target.id_string(),
+        _ => index.to_string(),
+    }
+}
+
+/// What a row view's parameter takes.
+enum RowArg {
+    Item,
+    /// The row's key suffix.
+    Key,
+    Value(Value),
 }

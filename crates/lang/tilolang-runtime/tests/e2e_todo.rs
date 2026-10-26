@@ -118,7 +118,14 @@ mod cases {
         t.add("b");
         let c = t.add("c");
         let mut view = t.view();
-        let before: Vec<String> = rows(view.tree()).iter().map(|r| r.key.clone()).collect();
+        // Each row is a boundary of its own: the column's children after the heading.
+        let before: Vec<String> = view
+            .tree()
+            .children
+            .iter()
+            .filter(|c| c.kind == "fragment")
+            .map(|r| r.key.clone())
+            .collect();
 
         t.call(
             "move_to",

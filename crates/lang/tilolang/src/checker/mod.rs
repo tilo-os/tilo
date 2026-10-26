@@ -2,6 +2,7 @@
 //! (3.4), lambdas (3.6) and error reporting (3.7). It lowers well-typed code to the IR in the
 //! same walk, so a program that passes is already in the form the backend consumes.
 
+mod boundary;
 mod call;
 mod enums;
 mod expr;
@@ -67,6 +68,12 @@ struct FnState {
     /// Whether a list row `row(title, ...)` may stand here: directly in a list's item block or
     /// as a row view's body.
     list_row_ok: bool,
+    /// For a view made of a loop body, the declared view it was written in (for anchors).
+    owner_view: Option<String>,
+    /// UI loops of this view lowered to loop nodes so far.
+    fors: usize,
+    /// Views made of this view's loop bodies so far.
+    row_views: usize,
 }
 
 /// A `window` or `lens` declaration in scope, for `bind:` and `set(...)`.
@@ -82,6 +89,10 @@ pub(crate) struct Checker<'a> {
     env: &'a Env,
     diags: &'a mut Vec<Diagnostic>,
     st: FnState,
+    /// Views made of UI loop bodies, in the order made; their functions follow the declared
+    /// ones, from `synth_base` on.
+    synth: Vec<(ir::Func, ir::SynthView)>,
+    synth_base: usize,
 }
 
 /// What a checked agent block evaluates to.
@@ -92,10 +103,20 @@ pub struct BlockResult {
 
 /// Checks every body of the module and lowers it. Errors go to `diags`.
 pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>) -> ir::Module {
+    let declared = env
+        .callables
+        .iter()
+        .filter(|x| x.own)
+        .filter_map(|x| x.func)
+        .map(|f| f.saturating_add(1))
+        .max()
+        .unwrap_or(0);
     let mut c = Checker {
         env,
         diags,
         st: FnState::default(),
+        synth: Vec::new(),
+        synth_base: declared,
     };
     let mut funcs = Vec::new();
     for item in &module.items {
@@ -134,7 +155,20 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         funcs.push(c.run_present(&view, &a.opts, &params));
     }
     c.check_proposals(module);
-    ir::Module { funcs }
+    let mut views = Vec::new();
+    if funcs.len() == c.synth_base {
+        for (f, v) in std::mem::take(&mut c.synth) {
+            funcs.push(f);
+            views.push(v);
+        }
+    } else if c.diags.is_empty() {
+        c.err(
+            "E000",
+            Span::default(),
+            "internal: the declared functions and their indexes disagree",
+        );
+    }
+    ir::Module { funcs, views }
 }
 
 /// Checks a block that is one expression.
@@ -143,6 +177,8 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         env,
         diags,
         st: FnState::default(),
+        synth: Vec::new(),
+        synth_base: 0,
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
     let ex = c.expr(e, None);
@@ -154,7 +190,10 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
     c.emit(Stmt::Return(Some(ex)));
     let f = c.end(FuncKind::Block, "b_main", "b_main");
     BlockResult {
-        module: ir::Module { funcs: vec![f] },
+        module: ir::Module {
+            funcs: vec![f],
+            views: Vec::new(),
+        },
         ty,
     }
 }
@@ -165,12 +204,17 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         env,
         diags,
         st: FnState::default(),
+        synth: Vec::new(),
+        synth_base: 0,
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);
     let f = c.end(FuncKind::Block, "b_main", "b_main");
     BlockResult {
-        module: ir::Module { funcs: vec![f] },
+        module: ir::Module {
+            funcs: vec![f],
+            views: Vec::new(),
+        },
         ty: Ty::View,
     }
 }

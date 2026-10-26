@@ -249,6 +249,7 @@ pub fn check_package(
 fn emit_package(a: Analysis) -> Compiled {
     let fx = effects::analyze(&a.ir, &a.env.app);
     let mut meta = build_meta(&a.module, &a.env, &fx);
+    meta.views.extend(row_views(&a.ir, &a.env.app, &fx));
     let bare = codegen::emit(&a.ir, None);
     meta.module_hash = sha256_hex(&bare);
     let wasm = codegen::emit(&a.ir, Some(&meta.to_json_bytes()));
@@ -314,6 +315,24 @@ fn field_meta(f: &crate::resolve::FieldInfo, app: &str) -> FieldMeta {
         default: f.default.clone(),
         role: f.role.clone(),
     }
+}
+
+/// The views the checker made of UI loop bodies: the host calls them like declared views.
+fn row_views(ir: &crate::ir::Module, app: &str, fx: &Effects) -> Vec<ViewMeta> {
+    ir.views
+        .iter()
+        .map(|v| ViewMeta {
+            id: v.id.clone(),
+            name: v.name.clone(),
+            doc: String::new(),
+            params: params_meta(&v.params, app),
+            anchors: Vec::new(),
+            reaches: fx.reaches.get(v.func).cloned().unwrap_or_default(),
+            state: Vec::new(),
+            presents: None,
+            row_of: Some(v.owner.clone()),
+        })
+        .collect()
 }
 
 fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
@@ -458,6 +477,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                             .unwrap_or_default(),
                         state: Vec::new(),
                         presents: Some(c.id.clone()),
+                        row_of: None,
                     });
                 }
             }
@@ -512,6 +532,7 @@ fn build_meta(module: &ast::Module, env: &Env, fx: &Effects) -> PackageMeta {
                         })
                         .collect(),
                     presents: None,
+                    row_of: None,
                 });
             }
             Item::Fn(f) => {

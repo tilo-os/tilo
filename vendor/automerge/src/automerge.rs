@@ -1015,6 +1015,8 @@ impl Automerge {
         if let StringMigration::ConvertToText = options.string_migration {
             am.convert_scalar_strings_to_text()?;
         }
+        // TILO(op-id-index-load)
+        am.ops_mut().index_op_ids_at_load();
         if let Some(patch_log) = options.patch_log {
             if patch_log.is_active() {
                 am.log_current_state(ObjMeta::root(), patch_log, true);

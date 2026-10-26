@@ -139,6 +139,22 @@ pub struct Func {
 #[derive(Clone, Debug, Default)]
 pub struct Module {
     pub funcs: Vec<Func>,
+    /// The views the checker made of UI loop bodies, after the declared functions in `funcs`.
+    pub views: Vec<SynthView>,
+}
+
+/// A view the checker made of the body of a UI `for`: one boundary per item, keyed by it, which
+/// the host renders when it shows the row (implementation design, "every row a boundary").
+#[derive(Clone, Debug)]
+pub struct SynthView {
+    /// Index of its function in [`Module::funcs`].
+    pub func: usize,
+    pub id: String,
+    pub name: String,
+    /// The id of the declared view the loop was written in.
+    pub owner: String,
+    /// The loop's item first, then each value the body uses from around the loop.
+    pub params: Vec<crate::resolve::ParamInfo>,
 }
 
 impl Expr {

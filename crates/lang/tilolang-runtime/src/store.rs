@@ -149,11 +149,44 @@ pub struct ChangeNote {
     pub approved_by: Option<String>,
 }
 
-/// Which fields of which document changed. An empty field list means "unknown: assume all".
+/// One field of one resource: the resource as [`ResourceRef::id_string`] writes it (its
+/// document, then a step per nested item), and the field id, or [`ANY_FIELD`] for every field
+/// of that resource. Views record what they read as these, and stores report changes as them.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FieldKey {
+    pub resource: String,
+    pub field: FieldId,
+}
+
+/// The field of a [`FieldKey`] that stands for every field of its resource: the resource was
+/// created, replaced or removed as a whole.
+pub const ANY_FIELD: &str = "*";
+
+impl FieldKey {
+    pub fn new(at: &ResourceRef, field: impl Into<FieldId>) -> Self {
+        Self {
+            resource: at.id_string(),
+            field: field.into(),
+        }
+    }
+
+    /// The document the resource lives in.
+    pub fn doc(&self) -> &str {
+        doc_of(&self.resource)
+    }
+}
+
+/// The document of a resource written as [`ResourceRef::id_string`].
+pub fn doc_of(resource: &str) -> &str {
+    resource.split_once('/').map_or(resource, |(doc, _)| doc)
+}
+
+/// Which fields of which document changed. An empty field list means "unknown: every field of
+/// every resource of the document may have changed".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangeSummary {
     pub doc: DocId,
-    pub fields: Vec<FieldId>,
+    pub fields: Vec<FieldKey>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
