@@ -27,6 +27,12 @@
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
 #   --headless         run without a window on the offscreen backend, for
 #                      scripted runs driven only through tilo-control
+#   --software         render with Mesa's software Vulkan driver (lavapipe)
+#                      only, and never open this machine's GPU: the shell
+#                      and every app it launches load lavapipe alone, and
+#                      the shell advertises no render node, so it neither
+#                      probes the GPU's drivers nor exchanges a buffer with
+#                      it. For agents and tests beside a live desktop.
 #   --community SITE   the community site this session is in (a site's
 #                      address, as /etc/tilo/community.toml names one): it
 #                      joins the site's home workspace through the site's door
@@ -58,6 +64,7 @@ prepare_only=0
 reset_identity=0
 fresh_desktop=0
 headless=0
+software=0
 community=
 install_tapps=()
 ready_out=
@@ -77,6 +84,7 @@ while (($#)); do
         --reset-identity) reset_identity=1; shift ;;
         --fresh-desktop) fresh_desktop=1; shift ;;
         --headless) headless=1; shift ;;
+        --software) software=1; shift ;;
         --community) community=${2:?--community needs a site}; shift 2 ;;
         -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
         --) shift; shell_args=("$@"); break ;;
@@ -252,6 +260,23 @@ if [[ -f $tilolang_bin ]]; then
 fi
 
 # --- 5. Session environment ----------------------------------------------------
+if ((software)); then
+    # Lavapipe's loader manifest, where the Vulkan loader looks for drivers.
+    lavapipe=
+    for dir in /etc/vulkan/icd.d /usr/share/vulkan/icd.d /usr/local/share/vulkan/icd.d; do
+        for icd in "$dir/lvp_icd.$(uname -m).json" "$dir/lvp_icd.json"; do
+            [[ -z $lavapipe && -f $icd ]] && lavapipe=$icd
+        done
+    done
+    [[ -n $lavapipe ]] || die "--software needs Mesa's lavapipe (no lvp_icd.json under */vulkan/icd.d)"
+    # The loader of the shell, and of every app it launches (they follow a
+    # compositor pinned to lavapipe), loads this driver alone; wgpu takes its
+    # adapter. An empty TILO_DMABUF_DEVICE advertises no render node, so the
+    # shell never opens /dev/dri to probe one.
+    export VK_DRIVER_FILES=$lavapipe VK_ICD_FILENAMES=$lavapipe WGPU_ADAPTER_NAME=llvmpipe
+    export TILO_DMABUF_DEVICE=
+fi
+
 for dir in home config data state cache identity; do mkdir -p "$state/$dir"; done
 mkdir -p -m 700 "$state/secrets"
 export HOME=$state/home

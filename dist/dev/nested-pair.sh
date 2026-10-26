@@ -29,6 +29,7 @@
 #   --install-tapp FILE  also install this signed package in each (repeatable;
 #                   see nested-session.sh --install-tapp)
 #   --headless      both sessions without windows, driven through tilo-control
+#   --software      render with lavapipe only (see nested-session.sh --software)
 #   --no-build      use the last build (see nested-session.sh --no-build)
 #   --fresh         new throwaway identities for both: two new people
 #   --fresh-site    a new Lounge: forget the site's room and its documents
@@ -53,6 +54,7 @@ apps_given=0
 peers=2
 install_tapps=()
 headless=0
+software=0
 build=1
 fresh=0
 fresh_site=0
@@ -69,6 +71,7 @@ while (($#)); do
         --peers) peers=${2:?--peers needs a number}; shift 2 ;;
         --install-tapp) install_tapps+=(--install-tapp "$(realpath -m "${2:?--install-tapp needs a file}")"); shift 2 ;;
         --headless) headless=1; shift ;;
+        --software) software=1; shift ;;
         --no-build) build=0; shift ;;
         --fresh) fresh=1; shift ;;
         --fresh-site) fresh_site=1; shift ;;
@@ -103,6 +106,7 @@ bin=$repo_root/target/nested-session/bin
 
 common=()
 ((headless)) && common+=(--headless)
+((software)) && common+=(--software)
 ((apps_given)) && common+=(--apps "$apps")
 common+=("${install_tapps[@]}")
 reset=()
