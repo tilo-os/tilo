@@ -75,7 +75,7 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
             continue;
         };
         entries.push(entry(
-            format!("Bookmark — {title}"),
+            format!("Bookmark: {title}"),
             format!(
                 "bookmark outline contents {title} page {page} level {} open",
                 usize::from(*level) + 1

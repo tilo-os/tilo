@@ -169,6 +169,32 @@ fn upgrade_markup(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelEr
     migrate = upgrade_markup
 )]
 impl PdfMarkup {
+    /// Record where the reader left off.
+    ///
+    /// A resume hint for the next window that opens this document: the page
+    /// occurrence, how far down it the reader was (0 to 1), and the zoom.
+    #[action]
+    pub fn record_reading_position(
+        &mut self,
+        #[param("The page occurrence the reader was on")] page: String,
+        #[param("How far down the page, from 0 to 1")] fraction: f64,
+        #[param("The zoom factor")] zoom: f64,
+    ) -> Result<(), Refusal> {
+        if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
+            return Err(Refusal::new("a reading fraction is between 0 and 1"));
+        }
+        if !zoom.is_finite() || zoom <= 0.0 {
+            return Err(Refusal::new("a reading zoom is a positive factor"));
+        }
+        if !page.is_empty() && !self.pages.contains(&Id::from_raw(page.clone())) {
+            return Err(Refusal::new("the reading page is not in the plan"));
+        }
+        self.reading_page = page;
+        self.reading_fraction = fraction;
+        self.reading_zoom = zoom.clamp(crate::app::ZOOM_MIN, crate::app::ZOOM_MAX);
+        Ok(())
+    }
+
     /// Make the page plan.
     ///
     /// The pages of the opened file, in their order, the first time a
@@ -741,7 +767,7 @@ impl PdfMarkup {
                 .collect();
             entries.push(
                 SearchEntry::new(
-                    format!("Comment — {}", comment.author),
+                    format!("Comment: {}", comment.author),
                     std::iter::once(comment.body.as_str())
                         .chain(replies)
                         .collect::<Vec<_>>()

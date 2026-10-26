@@ -71,12 +71,12 @@ use tilo_rich_text::{Draft, FieldOutcome, RichTextSurface, RichTextView, SubmitK
 /// with zoom, exactly like the page it separates, because the whole stack is a
 /// single [`ViewportState`] content rect.
 const PAGE_GAP: f64 = 22.0; // page points between pages, not UI spacing
-const ZOOM_MIN: f64 = 0.25;
+pub(crate) const ZOOM_MIN: f64 = 0.25;
 /// The most pages one text read answers with.
 pub(crate) const MOST_READ_PAGES: usize = 50;
 /// Zoomed pages are drawn from bounded tiles ([`crate::tiles`]), so the
 /// ceiling is about usefulness, not bitmap size.
-const ZOOM_MAX: f64 = 16.0;
+pub(crate) const ZOOM_MAX: f64 = 16.0;
 /// Rasterise pages at this multiple of their on-screen size so they stay
 /// crisp when the compositor scales the surface (and when zooming in a notch).
 const RASTER_SS: f64 = tilo_page_raster::SUPERSAMPLE;
@@ -488,6 +488,15 @@ pub struct PdfApp {
     /// inter-page gaps (see [`Self::content_stack_h`]).
     viewport: ViewportState,
     current_page: usize,
+    /// The resume hint read from the record when this document was opened,
+    /// taken up once the canvas has a size.
+    pending_reading: Option<(String, f64, f64)>,
+    /// Whether this window has already taken up the record's reading
+    /// position. A peer moving later does not pull this window away.
+    position_restored: bool,
+    /// What this window last recorded, so a still page does not write on
+    /// every frame.
+    last_reading: Option<(String, f64, f64)>,
     /// Durable CRDT page-plan identities, refreshed from the markup record.
     resource_page_ids: Vec<String>,
     /// Immutable source page backing each durable plan occurrence.
@@ -1045,6 +1054,9 @@ impl PdfApp {
                 .with_padding(DEFAULT_PADDING)
                 .with_alignment(SmallContentAlign::Center, SmallContentAlign::Start),
             current_page: 1,
+            pending_reading: None,
+            position_restored: false,
+            last_reading: None,
             resource_page_ids: (1..=page_count)
                 .map(|page| format!("source-{page}"))
                 .collect(),
@@ -1217,6 +1229,11 @@ impl PdfApp {
             self.record_source = source;
             // Another document is looked for afresh.
             self.source_wait = None;
+            // Its recorded place is taken up once the canvas has a size;
+            // this window has not restored a position for it yet.
+            self.pending_reading = state.reading_position();
+            self.position_restored = false;
+            self.last_reading = None;
         }
         self.dirty = true;
     }
@@ -1930,6 +1947,87 @@ impl PdfApp {
         self.viewport.set_scroll(self.viewport.scroll_x(), target_y);
         self.current_page = page;
         self.dirty = true;
+    }
+
+    /// Where the reader is now: the page occurrence under the canvas's top
+    /// edge, how far down that page, and the zoom.
+    fn current_reading(&self) -> Option<(String, f64, f64)> {
+        if !self.has_document || self.canvas_rect.width() <= 0.0 || self.ph() <= 0.0 {
+            return None;
+        }
+        let page_id = self.page_id_of(self.current_page)?;
+        let unit = self.stack_unit();
+        if unit <= 0.0 {
+            return None;
+        }
+        let top = self
+            .viewport
+            .screen_to_content(Point::new(self.canvas_rect.x0, self.canvas_rect.y0))
+            .y;
+        let within =
+            (top - (self.current_page.saturating_sub(1) as f64) * unit).clamp(0.0, self.ph());
+        Some((page_id, (within / self.ph()).clamp(0.0, 1.0), self.zoom()))
+    }
+
+    /// Take up the record's recorded place, once the canvas has a size and
+    /// the page plan is known. A page that is no longer in the plan leaves
+    /// the reader at the top rather than guessing.
+    fn restore_reading(&mut self) {
+        if self.position_restored || !self.has_document || self.canvas_rect.width() <= 0.0 {
+            return;
+        }
+        self.position_restored = true;
+        let Some((page_id, fraction, zoom)) = self.pending_reading.take() else {
+            return;
+        };
+        let Some(index) = self.resource_page_ids.iter().position(|id| id == &page_id) else {
+            return;
+        };
+        let page = index + 1;
+        self.fit = FitMode::Custom(zoom.clamp(ZOOM_MIN, ZOOM_MAX));
+        self.recompute_zoom();
+        let unit = self.stack_unit();
+        let target = (page.saturating_sub(1) as f64) * unit + fraction.clamp(0.0, 1.0) * self.ph();
+        // Scroll is measured from the padded edge, so move by the difference
+        // between where the canvas top now shows and the recorded place.
+        let now_top = self
+            .viewport
+            .screen_to_content(Point::new(self.canvas_rect.x0, self.canvas_rect.y0))
+            .y;
+        let target_y = self.viewport.scroll_y() + (target - now_top) * self.viewport.zoom();
+        self.viewport.set_scroll(self.viewport.scroll_x(), target_y);
+        self.current_page = self.nearest_page();
+        self.last_reading = Some((page_id, fraction, self.zoom()));
+        self.dirty = true;
+    }
+
+    /// Keep the record's resume hint current: written when the page or the
+    /// place within it settles, never for every pixel of a glide or a drag.
+    fn record_reading(&mut self) {
+        if self.read_only
+            || !self.has_document
+            || self.glide.is_active()
+            || self.pan.is_some()
+            || self.canvas_rect.width() <= 0.0
+        {
+            return;
+        }
+        let Some(position) = self.current_reading() else {
+            return;
+        };
+        let settled = self.last_reading.as_ref().is_none_or(|last| {
+            last.0 != position.0
+                || (last.1 - position.1).abs() > 0.005
+                || (last.2 - position.2).abs() > 0.001
+        });
+        if settled {
+            self.submit(crate::actions::record_reading_position_action(
+                &position.0,
+                position.1,
+                position.2,
+            ));
+            self.last_reading = Some(position);
+        }
     }
 
     /// Carry a glide on to `now`: the page moves by what the glide covered
@@ -3620,7 +3718,7 @@ impl PdfApp {
     /// Place a new free text box with its top-left corner at `pt` (card
     /// space) and start typing into it.
     fn create_free_text(&mut self, state: &mut ui::widget::Edits<'_>, page: usize, pt: (f64, f64)) {
-        const WIDTH: f64 = 180.0; // PDF points on the page, not UI spacing
+        const WIDTH: f64 = 180.0; // PDF points on the page, not UI spacing; allow-breakpoint: a PDF page width, not a layout breakpoint
         let size = model::FREE_TEXT_SIZE;
         let height = size * 1.2 * 2.0 + 4.0;
         let a = Annotation {
@@ -4162,6 +4260,9 @@ impl PdfApp {
                     self.fit = FitMode::Width;
                     self.viewport.set_scroll(0.0, 0.0);
                     self.current_page = 1;
+                    self.pending_reading = None;
+                    self.position_restored = false;
+                    self.last_reading = None;
                     self.resource_page_ids = (1..=self.doc.page_count())
                         .map(|page| format!("source-{page}"))
                         .collect();
@@ -4740,6 +4841,8 @@ impl Widget for PdfApp {
         }
         self.reload(state);
         self.sync_reader_markup(state);
+        self.restore_reading();
+        self.record_reading();
         self.refresh_search_entries(state);
     }
 
@@ -9177,7 +9280,7 @@ mod tests {
                 "visible tiles cover the viewport exactly: {covered} of {target}"
             );
             assert!(tiles.tiles.iter().all(|(r, image)| {
-                image.width == r.width && image.height == r.height && r.width <= 512
+                image.width == r.width && image.height == r.height && r.width <= 512 // allow-breakpoint: a tile raster cap, not a layout breakpoint
             }));
             assert_eq!(tile_levels(&app), vec![tiles.placement.level]);
         }
@@ -9730,5 +9833,30 @@ mod tests {
                 body.y1
             );
         }
+    }
+    /// A document reopens at the page occurrence, fraction and zoom the
+    /// record last kept, and the reader's own place is written back as the
+    /// page settles.
+    #[test]
+    fn a_recorded_reading_position_is_taken_up_once_and_written_back() {
+        let mut app = PdfApp::sample();
+        app.canvas_rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        app.sync_viewport_frame();
+        let page_id = app.page_id_of(3).expect("the sample has a third page");
+        app.pending_reading = Some((page_id.clone(), 0.5, 1.5));
+        app.position_restored = false;
+        app.restore_reading();
+        assert_eq!(app.current_page, 3);
+        assert!((app.zoom() - 1.5).abs() < 1e-6, "the zoom is restored");
+        let (recorded_page, fraction, zoom) = app
+            .current_reading()
+            .expect("the restored place is readable");
+        assert_eq!(recorded_page, page_id);
+        assert!((fraction - 0.5).abs() < 0.02, "half way down the page");
+        assert!((zoom - 1.5).abs() < 1e-6);
+        assert!(
+            app.pending_reading.is_none() && app.position_restored,
+            "one window takes the hint once"
+        );
     }
 }
