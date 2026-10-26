@@ -1486,6 +1486,27 @@ mod tests {
             chrome.borrow_mut().pump_dbus_notifications();
             assert_eq!(chrome.borrow().notification_badge_for("org.mail"), 12);
             assert_eq!(chrome.borrow().notification_badge_total(), 12);
+
+            // Turning app badges off hides that app's count everywhere it
+            // is drawn (its icon, the bell's total) while keeping the number
+            // itself, so turning them back on shows the real one.
+            let mut policy = settings_store::notification_policy::NotificationPolicy::default();
+            policy.per_app.insert(
+                "org.mail".into(),
+                settings_store::notification_policy::AppNotificationRule {
+                    badges: Some(false),
+                    ..Default::default()
+                },
+            );
+            chrome
+                .borrow_mut()
+                .set_notification_policy_for_tests(policy);
+            assert_eq!(
+                chrome.borrow().notification_badge_for("org.mail"),
+                0,
+                "the app's own count follows its badge setting"
+            );
+            assert_eq!(chrome.borrow().notification_badge_total(), 0);
         }
 
         fn verified_foreign_identity_obeys_its_settings_rule() {

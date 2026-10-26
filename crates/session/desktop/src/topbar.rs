@@ -277,6 +277,8 @@ struct FaceLook {
 struct AppTraySlot {
     key: String,
     id: String,
+    /// The application proven to own the item, when one was.
+    owner_app: Option<String>,
     /// What the item is called: the application's own title for it, else
     /// its id.
     title: String,
@@ -781,6 +783,25 @@ fn paint_bar_selector(
     }
 }
 
+/// An unread count on an application's icon, in the same badge a sidebar's
+/// unread count uses: filled in the person's colour, clamped at 99.
+fn paint_unread_badge(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    text: &mut TextRenderer,
+    icon: Rect,
+    count: u32,
+) {
+    let label = count.to_string();
+    let height = ui::widget::BadgeFace::height(theme);
+    let width = ui::widget::BadgeFace::intrinsic_width(&label, text, theme);
+    let centre = Point::new(icon.x1 + 2.0, icon.y0 + 2.0);
+    ui::widget::BadgeFace::new(Rect::from_center_size(centre, (width, height)), &label)
+        .style(ui::widget::ChipStyle::Live)
+        .paint(scene, transform, text, theme);
+}
+
 /// Whether `key` moves keyboard focus through the bar: the keys whose use
 /// shows the focus ring (design-system: focus-visible follows keyboard
 /// navigation, never a pointer press or a key that moves nothing).
@@ -1109,6 +1130,14 @@ impl TopBarChrome {
         self.control_targets()
             .into_iter()
             .find(|target| self.control_rect(target).contains(point))
+    }
+
+    /// How many unread notifications the application with this verified id
+    /// owns: what the bar shows on its own icon.
+    fn app_badge(&self, app_id: &str) -> u32 {
+        self.chrome
+            .as_ref()
+            .map_or(0, |chrome| chrome.app_notification_badge(app_id))
     }
 
     fn app_tray_revision(&self) -> u64 {
@@ -3684,6 +3713,22 @@ impl TopBarChrome {
                 theme,
             );
             self.draw_app_tray_icon(scene, transform, theme, text_renderer, item, icon_rect);
+            // The application's own unread count: the bell's total says how
+            // many there are, this says whose.
+            let unread = item
+                .owner_app
+                .as_deref()
+                .map_or(0, |app| self.app_badge(app));
+            if unread > 0 {
+                paint_unread_badge(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    icon_rect,
+                    unread.min(99),
+                );
+            }
             if item.status == AppTrayStatus::NeedsAttention {
                 scene.fill(
                     Fill::NonZero,
@@ -3696,6 +3741,7 @@ impl TopBarChrome {
             self.app_tray.push(AppTraySlot {
                 key: item.key.clone(),
                 id: item.id.clone(),
+                owner_app: item.owner_app.clone(),
                 title: item.title.clone(),
                 item_is_menu: item.item_is_menu,
                 rect: hit,
@@ -4663,6 +4709,22 @@ impl Widget for TopBarChrome {
                     node = node
                         .with_description(bell.clone())
                         .with_children(vec![AccessNode::new(Role::Image).with_name(bell)]);
+                }
+                // An icon carrying unread notifications says how many: the
+                // bell's total alone never said whose they were.
+                if let Some(key) = TopBarChrome::tray_target_key(&target)
+                    && let Some(unread) = self
+                        .app_tray
+                        .iter()
+                        .find(|slot| slot.key == key)
+                        .and_then(|slot| slot.owner_app.as_deref())
+                        .map(|app| self.app_badge(app))
+                        .filter(|unread| *unread > 0)
+                {
+                    node = node.with_description(t_args(
+                        "topbar-app-tray-unread",
+                        &[("count", unread.min(99).into())],
+                    ));
                 }
                 // Each face in the people control is someone here: say who.
                 if target == Self::CONTROL_COLLABORATORS {
@@ -5860,9 +5922,14 @@ mod tests {
 
         let key = "org.keepassxc.KeePassXC/StatusNotifierItem";
         let rect = Rect::new(1100.0, 4.0, 1132.0, 36.0);
+        chrome
+            .borrow_mut()
+            .app_badges
+            .insert("org.keepassxc.KeePassXC".into(), 3);
         bar.app_tray.push(AppTraySlot {
             key: key.to_string(),
             id: "keepassxc".into(),
+            owner_app: Some("org.keepassxc.KeePassXC".into()),
             title: "KeePassXC".into(),
             item_is_menu: false,
             rect,
@@ -5882,6 +5949,11 @@ mod tests {
             .find(|child| child.action_target.as_deref() == Some(target.as_str()))
             .expect("a reader finds the icon among the bar's buttons");
         assert_eq!(tray.name.as_deref(), Some("KeePassXC"));
+        assert_eq!(
+            tray.description.as_deref(),
+            Some("3 unread"),
+            "the icon says whose the bell's total is, not just how many there are"
+        );
         assert!(tray.state.focusable);
 
         // Keyboard: the bar's last stop is the icon, and Enter activates it.
@@ -7401,6 +7473,9 @@ mod fixture {
         pub notification_badge: u32,
         pub notifications_only: bool,
         pub arrived: Option<ArrivalNotice>,
+        /// Unread counts per verified application id, as an application's
+        /// own icon shows them.
+        pub app_badges: HashMap<String, u32>,
     }
     impl State {
         pub fn publish_activity_glance(
@@ -7441,6 +7516,7 @@ mod fixture {
                 notification_badge: 0,
                 notifications_only: false,
                 arrived: None,
+                app_badges: HashMap::default(),
             })))
         }
         pub fn borrow(&self) -> Ref<'_, State> {
@@ -7475,6 +7551,9 @@ mod fixture {
                 arrived: state.arrived.clone(),
                 ..Default::default()
             }
+        }
+        fn app_notification_badge(&self, app_id: &str) -> u32 {
+            self.0.borrow().app_badges.get(app_id).copied().unwrap_or(0)
         }
         fn intent(&self, intent: ChromeIntent) -> bool {
             let mut state = self.0.borrow_mut();

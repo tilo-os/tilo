@@ -388,6 +388,10 @@ impl DesktopChromeSource for NativeChrome {
         crate::tray::global().revision()
     }
 
+    fn app_notification_badge(&self, app_id: &str) -> u32 {
+        self.chrome.borrow().notification_badge_for(app_id)
+    }
+
     fn app_tray(&self) -> Vec<AppTrayItem> {
         crate::tray::global()
             .snapshot()
@@ -395,6 +399,7 @@ impl DesktopChromeSource for NativeChrome {
             .map(|item| AppTrayItem {
                 key: item.key,
                 id: item.id.clone(),
+                owner_app: item.address.owner_app.clone(),
                 title: if item.title.trim().is_empty() {
                     item.id
                 } else {
