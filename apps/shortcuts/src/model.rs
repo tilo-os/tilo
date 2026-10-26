@@ -478,6 +478,30 @@ impl Workbench {
         self.drafts.push(id, draft);
     }
 
+    /// Copy a draft, its steps, inputs and triggers, into a new unsaved
+    /// draft named after it. A variant starts from the whole automation
+    /// instead of being rebuilt step by step.
+    #[action]
+    pub fn duplicate_draft(&mut self, cx: &mut ActionCx, draft: &Id) -> Result<(), Refusal> {
+        let original = self
+            .drafts
+            .get(draft)
+            .cloned()
+            .ok_or_else(|| Refusal::from("there is no such draft"))?;
+        let program = original.program();
+        let name = if original.name.trim().is_empty() {
+            String::from("Copy")
+        } else {
+            format!("{} copy", original.name.trim())
+        };
+        let name = unused_name(self, &name);
+        let id = cx.id();
+        let shortcut_id = format!("s{}", id.as_str().get(..16).unwrap_or(id.as_str()));
+        let copy = Draft::new(name, shortcut_id, &program, false, &mut || cx.id());
+        self.drafts.push(id, copy);
+        Ok(())
+    }
+
     /// Import a shortcut as an unsaved draft for review. Never arms a trigger.
     #[action]
     pub fn draft_shortcut(
@@ -521,6 +545,36 @@ impl Workbench {
         };
         let draft = Draft::new(shortcut.name, shortcut.id, &program, true, &mut || cx.id());
         self.drafts.push(id, draft);
+        Ok(())
+    }
+
+    /// Copy a saved shortcut into a new unsaved draft for review. Its
+    /// triggers are carried, so a duplicate that runs on its own is reviewed
+    /// in the save sheet before it is armed.
+    #[action]
+    pub fn duplicate_shortcut(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The saved shortcut, as JSON")] shortcut: serde_json::Value,
+    ) -> Result<(), Refusal> {
+        let shortcut: Shortcut = serde_json::from_value(shortcut)
+            .map_err(|error| Refusal::new(format!("not a shortcut: {error}")))?;
+        let program = Program {
+            inputs: shortcut.inputs,
+            steps: shortcut.steps,
+            output: shortcut.output,
+            triggers: shortcut.triggers,
+        };
+        let name = if shortcut.name.trim().is_empty() {
+            String::from("Copy")
+        } else {
+            format!("{} copy", shortcut.name.trim())
+        };
+        let name = unused_name(self, &name);
+        let id = cx.id();
+        let shortcut_id = format!("s{}", id.as_str().get(..16).unwrap_or(id.as_str()));
+        let copy = Draft::new(name, shortcut_id, &program, false, &mut || cx.id());
+        self.drafts.push(id, copy);
         Ok(())
     }
 
