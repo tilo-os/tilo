@@ -121,7 +121,12 @@ impl ChatApp {
             if area.width() > 0.0 && area.height() >= self.chrome.body_line {
                 push_clip(scene, tf, area);
                 if self.direct_person.is_some() {
-                    self.draw_person_messages(PaintCtx::new(scene, tf, tr, theme), presence, area);
+                    self.draw_person_messages(
+                        PaintCtx::new(scene, tf, tr, theme),
+                        presence,
+                        area,
+                        hits,
+                    );
                 } else {
                     self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
                 }
@@ -392,6 +397,37 @@ impl ChatApp {
         (end, line_h, line)
     }
 
+    /// A person's avatar and name, through both, open their card; a bot's
+    /// or an agent's message has none.
+    fn push_author_hit(
+        &self,
+        m: &Message,
+        parts: &crate::app::PaintedMessage,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        if m.author.starts_with("bot:")
+            || self.agent_authors.contains_key(&m.author)
+            || self.is_provider_output(m)
+        {
+            return;
+        }
+        let name = parts.author.as_ref().map(|(rect, _)| *rect);
+        let face = match (parts.avatar, name) {
+            (Some(avatar), Some(name)) => Some(avatar.union(name)),
+            (avatar, name) => avatar.or(name),
+        };
+        if let Some(face) = face {
+            ChatApp::push_hit(
+                hits,
+                face,
+                Hit::ShowPerson {
+                    person: m.author.clone(),
+                    place: m.id.clone(),
+                },
+            );
+        }
+    }
+
     pub(crate) fn message_author<'a>(
         &'a self,
         m: &'a Message,
@@ -549,6 +585,7 @@ impl ChatApp {
         mut paint: PaintCtx<'_>,
         presence: &PresenceCtx,
         area: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
     ) {
         let gap = f64::from(paint.theme.tokens.spacing.s3);
         let width = (area.width() - 2.0 * self.chrome.gutter).max(1.0);
@@ -613,9 +650,20 @@ impl ChatApp {
                 y + heading_h,
             );
             let color = paint.theme.text_dim;
-            line_in(
+            let shown = line_in(
                 &mut paint, &author, &style, color, heading.x0, heading, width,
             );
+            // Each line's author opens their card, as in a channel.
+            if heading.y1 > area.y0 && heading.y0 < area.y1 {
+                ChatApp::push_hit(
+                    hits,
+                    Rect::new(heading.x0, heading.y0, heading.x0 + shown, heading.y1),
+                    Hit::ShowPerson {
+                        person: message.author.clone(),
+                        place: message.id.clone(),
+                    },
+                );
+            }
             if let Some((_, editor)) = self.person_body_views.get_mut(&message.id) {
                 let body = Rect::new(heading.x0, heading.y1, heading.x1, y + height - gap);
                 editor.layout(body, paint.theme, paint.text);
@@ -1129,6 +1177,7 @@ impl ChatApp {
                 Hit::MessageMenu { msg: m.id.clone() },
             );
         }
+        self.push_author_hit(&m, &parts, hits);
         if shown {
             self.note_painted(&m.id, parts, !rm.editing, area);
         }
@@ -2680,7 +2729,22 @@ impl ChatApp {
                 }
                 let row_h = face.height(ctx.text, theme);
                 let row = Rect::new(body.x0 + inset, y, body.x1 - inset, y + row_h);
-                face.paint(&mut ctx, row);
+                face.interaction(ui::widget::Interaction {
+                    hovered: !person.is_agent && self.hovered(row),
+                    ..ui::widget::Interaction::default()
+                })
+                .paint(&mut ctx, row);
+                // A person's row opens their card; an agent has none.
+                if !person.is_agent {
+                    ChatApp::push_hit(
+                        hits,
+                        row,
+                        Hit::ShowPerson {
+                            person: person.id.clone(),
+                            place: format!("member:{}", person.id),
+                        },
+                    );
+                }
                 y += row_h;
             }
         }

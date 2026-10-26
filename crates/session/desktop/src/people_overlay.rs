@@ -199,6 +199,9 @@ pub enum PeopleHit {
     Moved(DockEdge),
     /// Say this in your own words as what you are doing; empty clears it.
     SetStatus(String),
+    /// Open the card of the person with this roster id, beside their row
+    /// (`anchor`): a click on a row, or Enter on it.
+    ShowPerson { id: String, anchor: Rect },
 }
 
 /// One painted row.
@@ -1278,10 +1281,18 @@ impl PeopleOverlay {
                 return Some(PeopleHit::ToggleFollow(person.to_owned()));
             }
             if let Some(person) = id.strip_prefix("row:") {
-                // A click opens the peek at once: a touch has no hover.
+                // A click opens their card, which a touch reaches too (it has
+                // no hover to peek with); the peek gives way to it.
+                let anchor = self
+                    .rows
+                    .iter()
+                    .find(|row| row.id == person)
+                    .map_or(self.panel, |row| row.rect);
                 let person = person.to_owned();
-                self.open_peek(&person);
-                continue;
+                if self.peek.person().is_some() {
+                    self.close_peek();
+                }
+                return Some(PeopleHit::ShowPerson { id: person, anchor });
             }
             if let Some(person) = id.strip_prefix("send:")
                 && let Some(text) = self.composer.text_to_send()

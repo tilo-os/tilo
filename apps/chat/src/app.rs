@@ -437,6 +437,13 @@ pub(crate) enum Hit {
     TogglePins,
     /// Show a message where it was written (a pinned message's row).
     RevealMessage(Id),
+    /// Open the card of a message's author (their avatar and name), or a
+    /// member's in the list: who they are, Message and Follow. `place`
+    /// tells the targets of one person apart.
+    ShowPerson {
+        person: String,
+        place: String,
+    },
     Dismiss, // click on a scrim closes the top-most popover
 }
 
@@ -451,6 +458,7 @@ impl Hit {
             Self::AddCategory => "chat.add-category".into(),
             Self::TogglePins => "chat.pins".into(),
             Self::RevealMessage(id) => format!("chat.reveal-message:{id}"),
+            Self::ShowPerson { place, .. } => format!("chat.person-card:{place}"),
             Self::FocusMain => "chat.composer".into(),
             Self::FocusThread => "chat.thread-composer".into(),
             Self::FocusEdit => "chat.message-edit".into(),
@@ -3981,6 +3989,14 @@ impl ChatApp {
                             || copy("chat-pinned-message"),
                             |m| content(format!("{}: {}", self.user_name(&m.author), m.text)),
                         ),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::ShowPerson { person, .. } => (
+                        content(crate::i18n::t_args(
+                            "chat-person-card",
+                            &[("name", self.user_name(person).into())],
+                        )),
                         Role::Button,
                         false,
                     ),

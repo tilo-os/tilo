@@ -198,23 +198,57 @@ export async function mountDesktop(target,options={}) {
   function active(){return !closed&&!crashed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
   // The pictures people chose for their profiles, worn by their avatars here.
   async function showPhoto(user,url){const pixels=url?await photoPixels(url):null;if(active()&&runtime.desktop_set_person_photo)runtime.desktop_set_person_photo(id,user,pixels?.width??0,pixels?.height??0,pixels?.rgba??new Uint8Array());}
-  // Chat's direct conversation with `user` (root key, hex), opened through
-  // Chat's own action on the person, as following a link to it does.
-  async function messagePerson(user){
+  // Chat's window to run its actions in: one already open (left where it
+  // is), else Chat opened, as invoking an action shows its view.
+  async function chatWindow(){
     const nav=navigation?.controller;if(!nav)throw Error('This desktop cannot open Chat');
     const snapshot=nav.getSnapshot();
-    if(focusedApp(snapshot)!==CHAT_APP)await nav.dispatch({kind:'open',app:CHAT_APP,generation:snapshot.generation});
+    if(focusedApp(snapshot)===CHAT_APP)return snapshot.active.tab;
+    const open=snapshot.entries?.find(entry=>entry.app===CHAT_APP);
+    if(open)return open.route.tab;
+    await nav.dispatch({kind:'open',app:CHAT_APP,generation:snapshot.generation});
     const shown=await untilSnapshot(nav,next=>focusedApp(next)===CHAT_APP,{frames:()=>lastState?.frames??Infinity});
-    const window=shown.active.tab;
-    // Chat lists the person once the room's list of people has them.
+    return shown.active.tab;
+  }
+  // Run what the person asked of Chat on its conversation with `ask.to`
+  // (root key, hex), as their own act: Chat offers it once the room's list
+  // of people has them.
+  async function runOwnAsk(ask){
+    const window=await chatWindow();
     for(let waited=0;;waited+=100){
-      const offered=active()&&JSON.parse(runtime.component_actions(id,undefined,window)).find(action=>action.address?.action==='open-direct-conversation'&&String(action.address.resource??'').endsWith(`chat.person:${user}`));
-      if(offered){runtime.invoke_component_action(id,offered.address.resource,'open-direct-conversation','{}',false,window);return;}
+      const offered=active()&&JSON.parse(runtime.component_actions(id,undefined,window)).find(entry=>entry.address?.action===ask.action&&String(entry.address.resource??'').endsWith(`chat.person:${ask.to}`));
+      if(offered)return runtime.desktop_run_own_ask(id,ask.id,offered.address.resource,window);
       if(waited>=10_000)throw Error('Chat has no conversation with this person');
       await new Promise(done=>setTimeout(done,100));
     }
   }
-  const photos=followPhotos({profileOf:user=>fetchPersonProfile(options.peer.origin,user),show:showPhoto,onError:error=>report({photoError:String(error)})});
+  // Chat's direct conversation with someone, opened as following a link to it does.
+  async function messagePerson(ask){
+    const nav=navigation?.controller;if(!nav)throw Error('This desktop cannot open Chat');
+    const snapshot=nav.getSnapshot();
+    if(focusedApp(snapshot)!==CHAT_APP){
+      await nav.dispatch({kind:'open',app:CHAT_APP,generation:snapshot.generation});
+      await untilSnapshot(nav,next=>focusedApp(next)===CHAT_APP,{frames:()=>lastState?.frames??Infinity});
+    }
+    await runOwnAsk(ask);
+  }
+  // A message written to `to` in the people overlay, sent by Chat's own
+  // `send-direct-message`, the one way a direct message goes; the overlay
+  // hears whether Chat took it.
+  async function sendToPerson(ask){
+    let refusal=null;
+    try{await runOwnAsk(ask);}catch(error){refusal=String(error?.message??error);}
+    if(active()&&runtime.desktop_message_answer)runtime.desktop_message_answer(id,ask.id,refusal??undefined);
+  }
+  // What the person says they are doing and how they share it, as their
+  // profile keeps it: set on another of their devices, it shows here too.
+  function ownStatus(profile){
+    const status=typeof profile.status==='string'?profile.status:'';
+    const sharing=typeof profile.sharing==='string'?profile.sharing:'';
+    options.onHostAction?.('set-status',{status,sharing,keep:false});
+    if(active()&&runtime.desktop_set_own_status)runtime.desktop_set_own_status(id,status,sharing);
+  }
+  const photos=followPhotos({profileOf:user=>fetchPersonProfile(options.peer.origin,user),show:showPhoto,own:()=>options.peer?.userPublicKey,onOwn:ownStatus,onError:error=>report({photoError:String(error)})});
   const nativeCatalogue = createNativeCatalogueBridge({current:active,
     actions:()=>options.peer?.actions,
     membership:()=>options.peer?.membership,
@@ -227,7 +261,7 @@ export async function mountDesktop(target,options={}) {
     if(closed||crashed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(typeof request?.message==='string')void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.['room-action']){const asked=request['room-action'];void runRoomAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_room_action_answer(id,asked.id,JSON.stringify(answer));});}}
+    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.message)void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.send)void sendToPerson(request.send);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(request?.['room-action']){const asked=request['room-action'];void runRoomAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_room_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});liveCursors?.wake();}
     // This person's latest wave, which the one it is for shows once.
