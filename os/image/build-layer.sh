@@ -41,7 +41,7 @@
 # code.tilo.so/tilo/tilo:<board>-<commit>) and the generation of its series
 # (os/dev/board-generation.sh).
 set -euo pipefail
-. "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/lib.sh"
+. "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/build-lib.sh"
 cd "$repo_root"
 
 # The RFC 8032 test-vector key: public and non-production, accepted only for development and

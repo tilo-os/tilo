@@ -508,7 +508,7 @@ comment = "The unsigned package: standalone EXE, zip and Inno Setup installer, e
 name = "sign/windows-{arch}"
 run = "bash tools/ci/windows/sign.sh {arch} /target/windows/{arch}/build /target/windows/{arch}/package /target/windows/{arch}/signed"
 needs = ["build/windows-{arch}", "package/windows-{arch}"]
-inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/windows/**", "docs/installer-walkthrough.md", "tools/ci/windows/**", "tools/ci/publish/lib.sh"]
+inputs = ["apps/imager/packaging/package-windows.sh", "apps/imager/packaging/windows/**", "docs/installer-walkthrough.md", "tools/ci/windows/**", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh"]
 outputs = ["/target/windows/{arch}/signed/*"]
 secrets = ["TILO_AUTHENTICODE_CERT_CHAIN", "TILO_WINDOWS_PUBLISHER"]
 id_token = ["sts.amazonaws.com"]
@@ -609,7 +609,7 @@ nothing), upload the tapps, collections and runtime objects with the package tok
 `reads_pointers = ["stable:app-collection"]`) and submit
 the publisher-signed registry entries (submit-apps). Main publishes no apps."""
 each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
-fields = { inputs = ["os/publication.env", "apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"] }
+fields = { inputs = ["os/publication.env", "apps/**", "crates/**", "vendor/**", "examples/apps/**", "dist/apps/**", "os/scripts/build-thin-apps.sh", "os/scripts/bake-runtime-bundle.sh", "os/scripts/collect-runtime-dependencies.py", "os/scripts/verify-runtime-bundle-closure.sh", "os/scripts/stamp-runtime.sh", "os/scripts/verify-elf-hardening.sh", "os/dev/assert-native-arch.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "tools/apps/**", "tools/perf/**", "tools/font-catalog.py", "tools/ci/__init__.py", "tools/ci/python.py", "tools/ci/workspace_graph.py", "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/**", "tools/ci/runtime-dylib-lazy-link.py", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/upload_immutable_packages.sh", "tools/reuse_prior_app_collection.sh", "Cargo.toml", "Cargo.lock"] }
 
 [[matrix.check]]
 name = "apps-build-{arch}"
@@ -710,7 +710,7 @@ and app publisher identities (sign-engine-*, which compile nothing), upload the 
 the package token (upload-engine) and submit their publisher-signed registry entries
 (submit-engine). A runtime the registry already offers is left alone. Main publishes no engine."""
 each = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
-fields = { inputs = ["tools/apps/t-engine-release.sh", "tools/apps/release-lib.sh", "tools/apps/browser_runtime_release.py", "tools/apps/pack-runtime-package.sh", "tools/apps/publish-runtime-package.sh", "tools/upload_immutable_packages.sh", "tools/ci/python.py", "tools/ci/publish/lib.sh", "tools/ci/ensure-browser-dependencies.sh", "scripts/browser/**", "apps/browser/chromium/**", "apps/browser/tilo-app.toml", "crates/sdk/ui-core/src/webview/chromium/runtime.rs", "os/Containerfile", "os/dev/assert-native-arch.sh", "os/scripts/verify-elf-hardening.sh"], cargo_packages = ["tilo-app-package-cli", "runtime-bundle"], cargo_dev_dependencies = false }
+fields = { inputs = ["tools/apps/t-engine-release.sh", "tools/apps/release-lib.sh", "tools/apps/browser_runtime_release.py", "tools/apps/pack-runtime-package.sh", "tools/apps/publish-runtime-package.sh", "tools/upload_immutable_packages.sh", "tools/ci/python.py", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/ensure-browser-dependencies.sh", "scripts/browser/**", "apps/browser/chromium/**", "apps/browser/tilo-app.toml", "crates/sdk/ui-core/src/webview/chromium/runtime.rs", "os/Containerfile", "os/dev/assert-native-arch.sh", "os/scripts/verify-elf-hardening.sh"], cargo_packages = ["tilo-app-package-cli", "runtime-bundle"], cargo_dev_dependencies = false }
 
 [[matrix.check]]
 name = "engine-build-{arch}"
@@ -845,7 +845,7 @@ report and source.json, each tested RPM's size and SHA-256."""
 name = "publish-desktop-payload"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 run = "bash dist/ci/publish-desktop-payload.sh /target/publish/desktop/payload.json"
-inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh"]
+inputs = ["dist/ci/publish-desktop-payload.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh"]
 # Only packages that logged in on stock Fedora become the payload an OS build installs.
 needs = ["desktop-package-amd64", "desktop-package-arm64", "host-session-e2e"]
 outputs = ["/target/publish/desktop/payload.json"]
@@ -939,7 +939,7 @@ fields = { default = false }
 [[matrix.check]]
 name = "env-tools-binaries-{arch}"
 run = "bash tools/ci/publish/env-tools.sh binaries /target/publish/env-tools/{arch}/bin /target/publish/env-tools/plan"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/env-tools.sh", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
 optional_needs = ["env-tools-plan"]
 outputs = ["/target/publish/env-tools/{arch}/bin/*"]
 requires = ["arch={arch}"]
@@ -948,7 +948,7 @@ cost = "heavy"
 [[matrix.check]]
 name = "env-tools-{arch}"
 run = "bash tools/ci/publish/env-tools.sh build /target/publish/env-tools/{arch}/bin /target/publish/env-tools/{arch}/catalog /target/publish/env-tools/plan"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools.sh", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "os/dev/build-env-tools.sh", "os/dev/preview-env-runtime.sh", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "crates/packaging/registry-types/src/lib.rs", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/env-tools.sh", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "os/dev/build-env-tools.sh", "os/dev/preview-env-runtime.sh", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "crates/packaging/registry-types/src/lib.rs", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["env-tools-binaries-{arch}"]
 optional_needs = ["env-tools-plan"]
 outputs = ["/target/publish/env-tools/{arch}/catalog/**"]
@@ -965,7 +965,7 @@ holding no credential would apply to a working tree's builds too); it reads the 
 anonymously, as devices do, and runs nothing a build made. What it finds depends on the
 registry, so it is never cached, and the builds after it are keyed by what it found."""
 run = "bash tools/ci/publish/env-tools-release.sh plan /target/publish/env-tools/plan"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "crates/runtime/env-tools/src/key.rs", "crates/runtime/env-tools/src/seal.rs", "crates/runtime/env-tools/src/sandbox.rs", "crates/runtime/env-tools/src/builder.rs", "crates/runtime/env-tools/src/image.rs", "crates/runtime/env-tools/src/resolve.rs", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "crates/packaging/registry-types/src/lib.rs", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/env-tools-release.sh", "os/env-tools-catalog.txt", "os/Containerfile.env-tools", "crates/runtime/env-tools/src/key.rs", "crates/runtime/env-tools/src/seal.rs", "crates/runtime/env-tools/src/sandbox.rs", "crates/runtime/env-tools/src/builder.rs", "crates/runtime/env-tools/src/image.rs", "crates/runtime/env-tools/src/resolve.rs", "os/dev/fetch-env-runtime.sh", "os/dev/resolve-env-runtime.sh", "crates/packaging/registry-types/src/lib.rs", "os/dev/registry-manifest.py", "os/Containerfile.env-runtime", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 optional_needs = ["release-env-runtime"]
 outputs = ["/target/publish/env-tools/plan/**"]
 id_token = ["registry.tilo.so"]
@@ -978,7 +978,7 @@ on = ["stable"]
 [[matrix.check]]
 name = "seal-env-tools"
 run = "bash tools/ci/publish/env-tools-release.sh seal /target/publish/env-tools/plan /target/publish/env-tools /target/publish/env-tools/x86_64/bin /target/publish/env-tools/sealed"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/env-tools-release.sh"]
 needs = ["env-tools-plan", "env-tools-x86_64", "env-tools-aarch64", "env-tools-binaries-x86_64"]
 outputs = ["/target/publish/env-tools/sealed/**"]
 secrets = ["TAPP_PUBLISHER_IDENTITY"]
@@ -991,7 +991,7 @@ on = ["stable"]
 name = "image-env-tools"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/env-tools-release.sh image /target/publish/env-tools/sealed /target/publish/env-tools/image /target/publish/env-tools/plan"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/Containerfile.env-tools"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/env-tools-release.sh", "os/Containerfile.env-tools"]
 needs = ["env-tools-plan", "seal-env-tools"]
 outputs = ["/target/publish/env-tools/image/image.oci.tar", "/target/publish/env-tools/image/digest"]
 isolation = "vm"
@@ -1002,7 +1002,7 @@ cost = "minutes"
 name = "image-env-tools-preview"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/env-tools-release.sh preview /target/publish/env-tools /target/publish/env-tools/preview-image"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/Containerfile.env-tools"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/env-tools-release.sh", "os/Containerfile.env-tools"]
 needs = ["env-tools-x86_64", "env-tools-aarch64"]
 isolation = "vm"
 requirement = { cores = 2, memory = "8GiB" }
@@ -1012,7 +1012,7 @@ cost = "minutes"
 name = "sign-env-tools"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/env-tools-release.sh sign /target/publish/env-tools/plan /target/publish/env-tools/image"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/env-tools-release.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["env-tools-plan", "image-env-tools"]
 outputs = ["/target/publish/env-tools/image/payload.json", "/target/publish/env-tools/image/signature", "/target/publish/env-tools/image/bundle.json"]
 id_token = ["sts.amazonaws.com"]
@@ -1024,7 +1024,7 @@ on = ["stable"]
 name = "publish-env-tools"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/env-tools-release.sh release /target/publish/env-tools/plan /target/publish/env-tools/image"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/env-tools-release.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/env-tools-release.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["env-tools-plan", "image-env-tools", "sign-env-tools"]
 outputs = ["/target/publish/env-tools/image/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -1050,7 +1050,7 @@ each = [{ arch = "x86_64", host = "x86_64" }, { arch = "aarch64", host = "aarch6
 name = "image-kernel-cache-{arch}"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 run = "bash tools/ci/publish/kernel.sh compile-cache {arch} /target/publish/kernel-cache/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/cc-wrapper.sh", "os/kernel-buildroot-snapshot.env", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/cc-wrapper.sh", "os/kernel-buildroot-snapshot.env", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
 needs = ["os-assets"]
 outputs = ["/target/publish/kernel-cache/{arch}/compiler-cache.tar"]
 requires = ["arch={host}", "disk-100g"]
@@ -1071,7 +1071,7 @@ each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 [[matrix.check]]
 name = "kernel-acceptance-{arch}"
 run = "bash tools/ci/publish/kernel-acceptance.sh {arch} /target/publish/kernel/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/kernel-acceptance.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
 cargo_packages = ["tilo-crypto"]
 needs = ["image-kernel-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
@@ -1203,14 +1203,14 @@ run = """
 bash tools/ci/publish/wine.sh source /target/windows-compat/wine-source
 for test in os/tests/test_fetch_wine_source.py os/tests/test_wine_rpm_contract.py os/tests/test_wine_rpm_merge.py os/tests/test_wine_mock_producer.py; do python3 "$test"; done
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", "os/tests/test_fetch_wine_source.py", "os/tests/test_wine_rpm_contract.py", "os/tests/test_wine_rpm_merge.py", "os/tests/test_wine_mock_producer.py"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/wine.sh", "os/dev/fetch-wine-source.py", "os/dev/wine_rpm_contract.py", "os/dev/wine-source.json", "os/dev/wine-mock-producer.py", "os/dev/merge-wine-rpms.py", "os/tests/test_fetch_wine_source.py", "os/tests/test_wine_rpm_contract.py", "os/tests/test_wine_rpm_merge.py", "os/tests/test_wine_mock_producer.py"]
 outputs = ["/target/windows-compat/wine-source/**"]
 cost = "minutes"
 
 [[matrix.check]]
 name = "wine-resolve-{target}"
 run = "bash tools/ci/publish/wine.sh resolve {target} /target/windows-compat/wine-resolve-{target}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/wine.sh"]
 needs = ["wine-source"]
 outputs = ["/target/windows-compat/wine-resolve-{target}/bundle.tar"]
 cost = "heavy"
@@ -1220,7 +1220,7 @@ timeout_secs = 3600
 [[matrix.check]]
 name = "wine-build-{target}"
 run = "bash tools/ci/publish/wine.sh build {target} /target/windows-compat/wine-build-{target}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/wine.sh"]
 needs = ["wine-resolve-{target}"]
 outputs = ["/target/windows-compat/wine-build-{target}/**"]
 requires = ["arch=x86_64", "disk-100g"]
@@ -1231,7 +1231,7 @@ timeout_secs = 14400
 [[matrix.check]]
 name = "image-wine-paired"
 run = "bash tools/ci/publish/wine.sh pair /target/windows-compat/wine-paired"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/wine.sh"]
 needs = ["wine-build-x86_64", "wine-build-i686"]
 outputs = ["/target/windows-compat/wine-paired/**"]
 cost = "minutes"
@@ -1241,7 +1241,7 @@ timeout_secs = 3600
 [[matrix.check]]
 name = "image-windows-guest"
 run = "bash tools/ci/publish/windows-guest.sh /target/windows-compat/windows-guest"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/windows-guest.sh", "os/Containerfile.windows-guest-tools", "os/Containerfile.windows-guest-rpms", "os/Containerfile.windows-guest", "os/dev/run-development-windows-guest.py", "os/dev/development-wine-repository.py", "os/dev/windows-guest-packages.txt", "os/dev/windows_guest_contract.py", "os/dev/resolve-windows-guest-rpms.sh", "os/dev/build-windows-guest.sh", "os/dev/validate-windows-guest.py", "os/dev/install-windows-guest-dxvk.py", "os/dev/fetch-windows-guest-assets.py", "os/dev/wine-source.json", "os/external-assets/github-assets.tsv", ".containerignore"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/windows-guest.sh", "os/Containerfile.windows-guest-tools", "os/Containerfile.windows-guest-rpms", "os/Containerfile.windows-guest", "os/dev/run-development-windows-guest.py", "os/dev/development-wine-repository.py", "os/dev/windows-guest-packages.txt", "os/dev/windows_guest_contract.py", "os/dev/resolve-windows-guest-rpms.sh", "os/dev/build-windows-guest.sh", "os/dev/validate-windows-guest.py", "os/dev/install-windows-guest-dxvk.py", "os/dev/fetch-windows-guest-assets.py", "os/dev/wine-source.json", "os/external-assets/github-assets.tsv", ".containerignore"]
 needs = ["image-wine-paired"]
 outputs = ["/target/windows-compat/windows-guest/**"]
 requires = ["arch=x86_64", "disk-100g"]
@@ -1268,7 +1268,7 @@ bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-development-
 bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-development-windows-guest $w/windows-guest/guest 'candidate-{commit}'
 sed -n 's/.*"image":"\\([^"]*\\)".*/\\1/p' $w/windows-guest/guest/receipt.json > $w/windows-guest/guest/reference
 """
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
 needs = ["publish-wine-tools", "wine-build-x86_64", "wine-build-i686", "image-wine-paired", "image-windows-guest"]
 outputs = ["/target/windows-compat/wine-build-*/*/receipt.json", "/target/windows-compat/wine-paired/receipt.json", "/target/windows-compat/windows-guest/*/receipt.json", "/target/windows-compat/windows-guest/guest/reference"]
 pointers = { windows-guest-candidate = "/target/windows-compat/windows-guest/guest/reference" }
@@ -1314,7 +1314,7 @@ finished medium. It is unsigned and never published, and needs no capture qualif
 assets or signing identity. `t outputs dev-installer-medium-{arch}` gives disk.qcow2, its
 SHA-256 and source.json; boot it in a throwaway VM with `tilo-vm scenario install --medium`."""
 run = "bash tools/ci/publish/dev-installer-medium.sh {arch} /target/os/{arch}/image /target/publish/dev-installer-medium/{arch}"
-inputs = ["tools/ci/publish/dev-installer-medium.sh", "tools/ci/publish/lib.sh", "os/dev/build-custom-installer.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/_common.sh", "os/dev/check-disk-sectors.py", "os/dev/check-composefs-verity.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/installer-offline-target.py", "os/dev/hardware_profile.py", "os/Containerfile.installer", "os/Containerfile.bootc-alongside-helper", "os/external-assets/bootc/**", "os/external-assets/bootc-install-reseal/**", "os/etc/greetd/**", "os/usr/**", "apps/imager/packaging/media-provenance.py"]
+inputs = ["tools/ci/publish/dev-installer-medium.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "os/dev/build-custom-installer.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/_common.sh", "os/dev/check-disk-sectors.py", "os/dev/check-composefs-verity.py", "os/dev/hold-loop-partition-nodes.py", "os/dev/installer-offline-target.py", "os/dev/hardware_profile.py", "os/Containerfile.installer", "os/Containerfile.bootc-alongside-helper", "os/external-assets/bootc/**", "os/external-assets/bootc-install-reseal/**", "os/etc/greetd/**", "os/usr/**", "apps/imager/packaging/media-provenance.py"]
 needs = ["os-image-{arch}"]
 outputs = ["/target/publish/dev-installer-medium/{arch}/disk.qcow2", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.sha256", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.hardware.json", "/target/publish/dev-installer-medium/{arch}/source.json"]
 git = true
@@ -1334,7 +1334,7 @@ publishes once they passed."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-disk.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
 setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/os-vm.txt", "tools/ci/packages/qemu-{arch}.txt"] }
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-disk.sh", "os/dev/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-dev-disk.sh", "os/dev/**"]
 needs = ["os-dev-image-{arch}"]
 outputs = ["/target/publish/os-dev-disk/{arch}/**"]
 git = true
@@ -1357,7 +1357,7 @@ an image: that it takes it, boots it, and takes the next update."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-gate.sh {arch} /target/publish/os-dev/{arch} /target/publish/os-dev-gate/{arch}"
 setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/os-vm.txt", "tools/ci/packages/qemu-{arch}.txt"] }
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-gate.sh", "tools/ci/os/oci_layers.py", "os/dev/**", "os/tests/live-update-check.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-dev-gate.sh", "tools/ci/os/oci_layers.py", "os/dev/**", "os/tests/live-update-check.sh"]
 needs = ["os-dev-image-{arch}"]
 outputs = ["/target/publish/os-dev-gate/{arch}/**"]
 git = true
@@ -1383,7 +1383,7 @@ report and the guests' logs."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-acceptance.sh {arch} /target/os/{arch}/image /target/publish/os-dev-disk/{arch} /target/publish/os-acceptance/{arch}"
 setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-{arch}.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/os-vm.txt", "tools/ci/packages/qemu-{arch}.txt"] }
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-acceptance.sh", "os/dev/**", "os/tests/**", "tools/atspi_external_client.py", "crates/session/shell/tests/native_atspi_smoke.sh", "apps/file-explorer/tests/atspi_smoke.sh", "scripts/vm-acceptance/**", "tools/perf/record.py"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-acceptance.sh", "os/dev/**", "os/tests/**", "tools/atspi_external_client.py", "crates/session/shell/tests/native_atspi_smoke.sh", "apps/file-explorer/tests/atspi_smoke.sh", "scripts/vm-acceptance/**", "tools/perf/record.py"]
 needs = ["os-image-{arch}", "os-image-size-{arch}", "os-dev-disk-{arch}"]
 outputs = ["/target/publish/os-acceptance/{arch}/**"]
 git = true
@@ -1404,7 +1404,7 @@ policy requires of an image (os/scripts/finalize-dev-image.py). No registry toke
 publish-os-dev-{arch} attaches it."""
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-vm /target/publish/os-dev/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-dev-image-{arch}", "signing-tools"]
 outputs = ["/target/publish/os-dev/{arch}/payload.json", "/target/publish/os-dev/{arch}/signature", "/target/publish/os-dev/{arch}/dry-run.pub"]
 id_token = ["tilo-dev-signing"]
@@ -1419,7 +1419,7 @@ registry.tilo.so/tilo/tilo-vm-ref (tools/ci/publish/os-ref.sh), in t's trusted r
 for publish-os-ref-{arch} to attach. No registry token."""
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-ref.sh sign {arch} /target/publish/os-dev/{arch} /target/publish/os-ref/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-dev-image-{arch}", "signing-tools"]
 outputs = ["/target/publish/os-ref/{arch}/**"]
 id_token = ["tilo-dev-signing"]
@@ -1437,7 +1437,7 @@ branches' repository is not one devices follow channels from. No gate beyond the
 device falls back by itself from an image that does not boot."""
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-ref.sh publish {arch} /target/publish/os-dev/{arch} /target/publish/os-ref/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-dev-image-{arch}", "sign-ref-os-{arch}", "signing-tools"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
@@ -1455,7 +1455,7 @@ newest head whenever t has room (and when dispatched: `t dispatch publish-os-dev
 main`), so a dev device gets main's code as soon as it is built and gated, not a night later."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-publish.sh image {arch} /target/os/{arch}/image /target/publish/os-dev/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-publish.sh", "tools/ci/publish/oci-publish.sh", "os/dev/publish-dev-disk.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-dev-publish.sh", "tools/ci/publish/oci-publish.sh", "os/dev/publish-dev-disk.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-gate-{arch}", "sign-dev-os-{arch}", "signing-tools"]
 git = true
 id_token = ["registry.tilo.so"]
@@ -1475,7 +1475,7 @@ publish-os-dev-{arch} publishes it but for the channel tag; tilo-vm:latest moves
 index. It runs on main's newest head whenever t has room, and when dispatched."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-dev-publish.sh disk {arch} /target/os/{arch}/image /target/publish/os-dev/{arch} /target/publish/os-dev-disk/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-dev-publish.sh", "tools/ci/publish/oci-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-dev-publish.sh", "tools/ci/publish/oci-publish.sh", "os/dev/publish-dev-disk.sh", "tools/upload_immutable_packages.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-image-{arch}", "os-dev-image-{arch}", "os-dev-disk-{arch}", "os-acceptance-{arch}", "sign-dev-os-{arch}", "signing-tools"]
 git = true
 id_token = ["registry.tilo.so"]
@@ -1520,7 +1520,7 @@ no snapshot of it is published, so a package-set change is checked before stable
 its outputs."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-release.sh seal {arch} /target/os/{arch}/release-image /target/publish/os-release/{arch}/sealed"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/image_smoke.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/sign-target-prediction.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/image_smoke.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/sign-target-prediction.sh"]
 needs = ["os-release-image-{arch}", "os-release-image-size-{arch}"]
 outputs = ["/target/publish/os-release/{arch}/sealed/**"]
 git = true
@@ -1540,7 +1540,7 @@ KMS as the release signing role (tools/signing/boot-signer.sh), over what os-rel
 left: no code of the image runs here."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-release.sh sign-boot /target/publish/os-release/{arch}/sealed /target/publish/os-release/{arch}/boot-signed"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "tools/signing/boot-signer.sh", "keys/efi-signing.crt", "keys/tpm2-pcr-signing.public.pem", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "tools/signing/boot-signer.sh", "keys/efi-signing.crt", "keys/tpm2-pcr-signing.public.pem", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh"]
 needs = ["os-release-seal-{arch}", "os-assets"]
 outputs = ["/target/publish/os-release/{arch}/boot-signed/**"]
 id_token = ["sts.amazonaws.com"]
@@ -1559,7 +1559,7 @@ under /boot, installed once more to prove its seal still holds, with its SPDX SB
 provenance."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-release.sh apply {arch} /target/publish/os-release/{arch}/sealed /target/publish/os-release/{arch}/boot-signed /target/publish/os-release/{arch}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/install-cached-syft.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/dev/release-provenance.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/image-epoch.sh", "os/base-snapshot.env", "os/kernel-snapshot.env", "os/publication.env", "os/hardware/profiles/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/install-cached-syft.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/dev/release-provenance.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/image-epoch.sh", "os/base-snapshot.env", "os/kernel-snapshot.env", "os/publication.env", "os/hardware/profiles/**"]
 needs = ["os-release-seal-{arch}", "sign-os-boot-{arch}", "os-assets"]
 outputs = ["/target/publish/os-release/{arch}/image.oci.tar", "/target/publish/os-release/{arch}/digest", "/target/publish/os-release/{arch}/generation", "/target/publish/os-release/{arch}/sbom.spdx.json", "/target/publish/os-release/{arch}/provenance.json", "/target/publish/os-release/{arch}/install.log"]
 git = true
@@ -1632,7 +1632,7 @@ name = "os-release"
 comment = "The release index of both architectures' images, with its provenance."
 image = { check = "os-assembler-x86_64", path = "/target/os/x86_64/assembler/oci" }
 run = "bash tools/ci/publish/os-release.sh index /target/publish/os-release"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-index.py", "os/dev/release-provenance.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/image-epoch.sh", "os/base-snapshot.env", "os/kernel-snapshot.env"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-index.py", "os/dev/release-provenance.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/image-epoch.sh", "os/base-snapshot.env", "os/kernel-snapshot.env"]
 needs = ["os-release-x86_64", "os-release-aarch64"]
 outputs = ["/target/publish/os-release/index/**"]
 git = true
@@ -1649,7 +1649,7 @@ freshness statement valid for a day, each with a transparency log entry, once bo
 rebuilds gave the same bytes."""
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-release.sh sign /target/publish/os-release"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-sign.sh", "tools/ci/publish/oci-attest.sh", "os/dev/release-freshness.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-sign.sh", "tools/ci/publish/oci-attest.sh", "os/dev/release-freshness.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-release", "os-release-x86_64", "os-release-aarch64", "os-release-reproduce-x86_64", "os-release-reproduce-aarch64", "signing-tools"]
 outputs = ["/target/publish/os-release/*/payload.json", "/target/publish/os-release/*/signature", "/target/publish/os-release/*/bundle.json", "/target/publish/os-release/*/certified/**", "/target/publish/os-release/*/attestation.json", "/target/publish/os-release/*/attestation.bundle.json", "/target/publish/os-release/*/freshness.json", "/target/publish/os-release/*/freshness.attestation.json", "/target/publish/os-release/*/freshness.attestation.bundle.json"]
 id_token = ["sts.amazonaws.com"]
@@ -1665,7 +1665,7 @@ tag also <version>, and last latest, with their signatures, attestations and SBO
 already published is never moved."""
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-release.sh publish /target/publish/os-release"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-release", "os-release-x86_64", "os-release-aarch64", "sign-os-release", "signing-tools"]
 outputs = ["/target/publish/os-release/*/receipt.json"]
 id_token = ["registry.tilo.so"]
@@ -1700,7 +1700,7 @@ and update origin read back, the Lenovo's sound stack checked, and installed ont
 seals its UKI; its outputs are the sealed image and what its boot signing signs."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-release.sh seal {board} /target/os/{arch}/release-image-{board} /target/publish/os-release/{board}/sealed"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/image_smoke.py", "os/dev/_common.sh", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/sign-target-prediction.sh", "os/tests/board_audio_contract.sh", "os/image/layers.toml", "os/hardware/profiles/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/image_smoke.py", "os/dev/_common.sh", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/sign-target-prediction.sh", "os/tests/board_audio_contract.sh", "os/image/layers.toml", "os/hardware/profiles/**"]
 needs = ["os-release-image-{board}", "os-release-image-size-{board}"]
 outputs = ["/target/publish/os-release/{board}/sealed/**"]
 git = true
@@ -1716,7 +1716,7 @@ name = "sign-os-boot-{board}"
 comment = "The board's UKIs signed (EFI) and its PCR 11 prediction, as sign-os-boot-{arch} signs an architecture's."
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-release.sh sign-boot /target/publish/os-release/{board}/sealed /target/publish/os-release/{board}/boot-signed"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "tools/signing/boot-signer.sh", "keys/efi-signing.crt", "keys/tpm2-pcr-signing.public.pem", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "tools/signing/boot-signer.sh", "keys/efi-signing.crt", "keys/tpm2-pcr-signing.public.pem", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh"]
 needs = ["os-release-seal-{board}", "os-assets"]
 outputs = ["/target/publish/os-release/{board}/boot-signed/**"]
 id_token = ["sts.amazonaws.com"]
@@ -1734,7 +1734,7 @@ The board's release image: its boot signatures verified and added, installed onc
 SPDX SBOM and SLSA provenance binding the board, its hardware definition and its firmware."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-release.sh apply {board} /target/publish/os-release/{board}/sealed /target/publish/os-release/{board}/boot-signed /target/publish/os-release/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/install-cached-syft.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/dev/release-provenance.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/image-epoch.sh", "os/base-snapshot.env", "os/kernel-snapshot.env", "os/publication.env", "os/image/layers.toml", "os/hardware/profiles/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-release.sh", "os/dev/sign-target-prediction.sh", "os/dev/_common.sh", "os/dev/verify-authenticode-envelope.py", "os/dev/build-image.sh", "os/dev/disk-image.sh", "os/dev/reseal-image.sh", "os/dev/install-cached-syft.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/dev/release-provenance.sh", "os/dev/resolve-rpm-snapshot.sh", "os/dev/image-epoch.sh", "os/base-snapshot.env", "os/kernel-snapshot.env", "os/publication.env", "os/image/layers.toml", "os/hardware/profiles/**"]
 needs = ["os-release-seal-{board}", "sign-os-boot-{board}", "os-assets"]
 outputs = ["/target/publish/os-release/{board}/image.oci.tar", "/target/publish/os-release/{board}/digest", "/target/publish/os-release/{board}/generation", "/target/publish/os-release/{board}/sbom.spdx.json", "/target/publish/os-release/{board}/provenance.json", "/target/publish/os-release/{board}/install.log"]
 git = true
@@ -1792,7 +1792,7 @@ statement valid for a day, each with a transparency log entry, once its independ
 the same bytes."""
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-release.sh sign-board {board} /target/publish/os-release/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-sign.sh", "tools/ci/publish/oci-attest.sh", "os/dev/release-freshness.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/image/layers.toml", "os/hardware/profiles/**", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-sign.sh", "tools/ci/publish/oci-attest.sh", "os/dev/release-freshness.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/image/layers.toml", "os/hardware/profiles/**", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-release-{board}", "os-release-reproduce-{board}", "signing-tools"]
 outputs = ["/target/publish/os-release/{board}/payload.json", "/target/publish/os-release/{board}/signature", "/target/publish/os-release/{board}/bundle.json", "/target/publish/os-release/{board}/certified/**", "/target/publish/os-release/{board}/attestation.json", "/target/publish/os-release/{board}/attestation.bundle.json", "/target/publish/os-release/{board}/freshness.json", "/target/publish/os-release/{board}/freshness.attestation.json", "/target/publish/os-release/{board}/freshness.attestation.bundle.json"]
 id_token = ["sts.amazonaws.com"]
@@ -1809,7 +1809,7 @@ token from t: REGISTRY_TOKEN. An empty board series first gets its seed as <boar
 with its signature, attestations and SBOM, and <board>-latest moves to it."""
 image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
 run = "bash tools/ci/publish/os-release.sh publish-board {board} /target/publish/os-release/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-publish.sh", "os/dev/board-generation.sh", "os/dev/next-generation.sh", "os/dev/_common.sh", "os/publication.env", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/image/layers.toml", "os/hardware/profiles/**", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-release.sh", "tools/ci/publish/oci-publish.sh", "os/dev/board-generation.sh", "os/dev/next-generation.sh", "os/dev/_common.sh", "os/publication.env", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "os/image/layers.toml", "os/hardware/profiles/**", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-release-{board}", "sign-os-release-{board}", "signing-tools"]
 outputs = ["/target/publish/os-release/{board}/receipt.json"]
 secrets = ["REGISTRY_TOKEN"]
@@ -1875,7 +1875,7 @@ The development key in KMS (keys/cosign-dev.pub) signs os-board-{board}'s digest
 runs of main, as registry.tilo.so/tilo/tilo-vm, for publish-os-board-{board} to attach."""
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-vm /target/publish/os-board/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-board-{board}", "signing-tools"]
 outputs = ["/target/publish/os-board/{board}/payload.json", "/target/publish/os-board/{board}/signature", "/target/publish/os-board/{board}/dry-run.pub"]
 id_token = ["tilo-dev-signing"]
@@ -1890,7 +1890,7 @@ registry.tilo.so/tilo/tilo-vm-ref (tools/ci/publish/os-ref.sh), in t's trusted r
 for publish-os-ref-{board} to attach. No registry token."""
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-ref.sh sign {board} /target/publish/os-board/{board} /target/publish/os-ref/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-sign.sh", "os/dev/configure-cosign-kms.sh", "tools/signing/sign-blob-certified.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-board-{board}", "signing-tools"]
 outputs = ["/target/publish/os-ref/{board}/**"]
 id_token = ["tilo-dev-signing"]
@@ -1908,7 +1908,7 @@ branches' repository is not one devices follow channels from. No gate beyond the
 device falls back by itself from an image that does not boot."""
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-ref.sh publish {board} /target/publish/os-board/{board} /target/publish/os-ref/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/os-ref.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-board-{board}", "sign-ref-os-{board}", "signing-tools"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
@@ -1918,7 +1918,7 @@ on = ["dispatch"]
 name = "publish-os-board-{board}"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 run = "bash tools/ci/publish/os-board-publish.sh {board} /target/publish/os-board/{board}"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/publish/oci-publish.sh", "tools/ci/publish/os-board-publish.sh", "tools/upload_immutable_packages.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub", "keys/cosign-dev.pub", "keys/release/**", "keys/operational/**"]
 needs = ["os-board-{board}", "os-board-size-{board}", "os-dev-gate-aarch64", "sign-dev-os-board-{board}", "signing-tools"]
 outputs = ["/target/publish/os-board/{board}/receipt.json"]
 id_token = ["registry.tilo.so"]

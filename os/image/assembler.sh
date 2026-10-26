@@ -5,7 +5,7 @@
 #
 # usage: assembler.sh ARCH OUT
 set -euo pipefail
-. "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/lib.sh"
+. "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/build-lib.sh"
 cd "$repo_root"
 arch=${1:?usage: assembler.sh ARCH OUT}
 out=${2:?}

@@ -7,7 +7,7 @@
 #
 # OUT/epoch is the snapshot's clock: the newest signature among its packages (snapshot_epoch).
 set -euo pipefail
-. "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+. "$(dirname -- "${BASH_SOURCE[0]}")/build-lib.sh"
 arch=${1:?usage: rpms-build.sh ARCH OUT}
 out=${2:?}
 case $arch in
