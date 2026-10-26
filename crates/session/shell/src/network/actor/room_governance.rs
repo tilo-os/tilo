@@ -102,6 +102,8 @@ pub(crate) mod trace {
         #[cfg(test)]
         {
             let started = *STARTED.get_or_init(std::time::Instant::now);
+            // Formatted before the lock: `line` may take its time.
+            let line = format!("{:>8.3}s {}", started.elapsed().as_secs_f64(), line());
             let mut said = SAID
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -109,11 +111,7 @@ pub(crate) mod trace {
             if said.len() >= 400 {
                 said.remove(0);
             }
-            said.push(format!(
-                "{:>8.3}s {}",
-                started.elapsed().as_secs_f64(),
-                line()
-            ));
+            said.push(line);
         }
     }
 
