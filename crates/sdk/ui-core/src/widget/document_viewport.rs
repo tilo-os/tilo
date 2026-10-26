@@ -1740,6 +1740,43 @@ mod tests {
         assert_eq!(ViewportZoom::Fit.percent(), None);
     }
 
+    /// The window's own Zoom in / Zoom out / Actual size reach a canvas that
+    /// has a scale of its own, and the level the toolbar shows follows.
+    #[test]
+    fn the_windows_zoom_reaches_a_canvas_that_has_one_of_its_own() {
+        use crate::content_zoom::{ContentZoom, ZoomStep};
+        let (content, _, _) = canvas_with_button("Inspect", 0.0, 0.0);
+        let zoom = crate::LocalState::new(ViewportZoom::Fit);
+        let mut viewport = DocumentViewport::new(content).with_zoom(&zoom);
+        viewport.set_content_size(600.0, 600.0);
+        let mut text = TextRenderer::new();
+        crate::widget::layout::lay_out_detached(
+            &mut viewport,
+            Rect::new(0.0, 0.0, 800.0, 900.0),
+            &Theme::dark(),
+            &mut text,
+        )
+        .expect("the canvas lays out");
+        let fitted = viewport.state().zoom();
+        let factor = viewport
+            .zoom_content(ZoomStep::In)
+            .expect("a canvas with a scale of its own takes the window's zoom");
+        assert!(
+            f64::from(factor) > fitted,
+            "Zoom in draws the canvas larger: {factor} from {fitted}"
+        );
+        let shown = zoom.with(|shown| *shown);
+        assert!(
+            matches!(shown, ViewportZoom::Factor(level) if (level - f64::from(factor)).abs() < 1e-6),
+            "and the toolbar is told what the canvas shows: {shown:?} for {factor}"
+        );
+        let reset = viewport.zoom_content(ZoomStep::Reset).expect("actual size");
+        assert!(
+            (f64::from(reset) - fitted).abs() < 1e-6,
+            "actual size is the whole canvas fitted: {reset} vs {fitted}"
+        );
+    }
+
     #[test]
     fn viewport_transforms_round_trip_and_hit_test() {
         fn transform_and_inverse_round_trip() {
