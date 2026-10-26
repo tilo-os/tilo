@@ -312,7 +312,7 @@ def _launch_evidence(ctx, check_id: str, log_lines: int, card) -> str:
     still = core.target_map(ctx.vm.targets()).get("launchpad:notes")
     said = ctx.vm.exec(
         f'tail -n +{log_lines + 1} "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
-        '| grep -aiE "launchpad|notes|launch|refused|app tab request|placeholder|spawn" '
+        '| grep -aiE "launchpad|notes|launch|refused|app tab request|placeholder|spawn|touch contact routed" '
         '| tail -n 80 | cut -c1-400', check=False) or "the session log said nothing about it"
     ctx.write(f"{check_id}-launch-evidence.log", json.dumps(
         {"tiles": tiles, "overlays": chrome.get("overlays"), "notices": notices,
