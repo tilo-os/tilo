@@ -830,11 +830,15 @@ dispatch_inputs = { apps = "" }
 comment = """
 The desktop session's Fedora 44 RPMs (desktop-package-amd64) on stock Fedora 44 Cloud under KVM,
 as a person runs them: dnf install, the keyring unlocked, SDDM autologin into tilo.desktop, then
-apps opened through search; the compositor must survive each (dist/session/README.md, "VM
-test"). In the privileged VM's own Fedora, which takes QEMU from dnf. Stable publishes the
-desktop payload only after it passes. `t dispatch host-session-e2e --input apps=so.tilo.notes`
-opens only those apps (empty: all); `t outputs host-session-e2e` gives the report and
-source.json, each tested RPM's size and SHA-256."""
+apps opened through search; the compositor must survive each. Then the way back: the same packages
+upgraded in place with the person's files intact, signing out and signing in to the desktop the
+host had before Tilo, and removing the packages while the login session menu, the packages and the
+login user's files stay as they were (dist/session/README.md, "VM test"). The Cloud image carries
+no other login, so the return check is reported as failed rather than skipped when the VM has no
+previous desktop to sign back in to. In the privileged VM's own Fedora, which takes QEMU from dnf.
+Stable publishes the desktop payload only after it passes. `t dispatch host-session-e2e --input
+apps=so.tilo.notes` opens only those apps (empty: all); `t outputs host-session-e2e` gives the
+report and source.json, each tested RPM's size and SHA-256."""
 
 [[matrix.check]]
 name = "publish-desktop-payload"

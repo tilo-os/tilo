@@ -94,6 +94,22 @@ screenshots. Each app must start, and the compositor must stay the same
 process for the dwell after it, with no crash log, core dump, unexpected
 session exit or panic in the journal or `latest.log`.
 
+The run then takes the way back, which is why adding Tilo leaves the host as it
+was. Two files in the login user's home are written first and read back at
+every stage. The same RPMs are installed again over the running session: the
+package set and the session menu may change only for the packages that update
+owns (checks S01-S02). The test signs out and returns to the desktop the host
+had before Tilo, which it starts on a probe console and requires to show a
+frame (S03-S05; a host without a free console cannot prove it and the report
+says "not verified" rather than passing). Finally `dnf remove` of only the
+installed Tilo packages must leave no `tilo-*` package and no `tilo.desktop`
+entry, remove nothing else, keep the previous desktop and the person's files,
+and leave the display manager's own default session alone (S06-S09). The guest
+records the installed package set and the offered session entries before the
+update and after the uninstall (`guest.sh record`, `record-check`), and any
+change the step does not declare fails the run. `--no-journey` stops after the
+apps.
+
 It runs in CI only, as t's check `host-session-e2e` (tools/ci/products.toml) on a
 node with KVM, on the Fedora RPMs `desktop-package-amd64` built and install-tested
 from the same commit (`dist/ci/run-package-job.sh` with the fedora-44 target of
