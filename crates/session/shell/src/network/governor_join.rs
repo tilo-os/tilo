@@ -253,6 +253,7 @@ mod direct_join_tests {
     /// redeemable: the list, the resend and the cancel all read the room,
     /// never a second inventory.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines, reason = "one invitation read top to bottom")]
     async fn a_direct_invitation_is_listed_cancelled_and_no_longer_redeems() {
         let directory = tempfile::tempdir().unwrap();
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -387,7 +388,7 @@ mod direct_join_tests {
             .request(
                 addr,
                 JoinTransportRequest::Inspect {
-                    signed_invitation: invitation.into_bytes().into(),
+                    signed_invitation: invitation.into_bytes(),
                 },
             )
             .await
