@@ -46,6 +46,8 @@ fields = [
   { path = "links.*.display_name", type = "Option<String>" },
   { path = "links.*.avatar", type = "Option<String>" },
   { path = "links.*.interaction", type = "Option<String>" },
+  { path = "links.*.photo", type = "Option<String>" },
+  { path = "links.*.photo_avatar", type = "Option<String>" },
   { path = "link_offers", type = "Keyed<LinkOffer>", stored = "keyed" },
   { path = "link_offers.*.check", type = "String", readonly = true },
   { path = "link_offers.*.discord_user", type = "String" },
@@ -291,6 +293,15 @@ params = [
   { name = "user_name", required = true, schema = { type = "string" } },
   { name = "display_name", required = false, schema = { type = ["string", "null"] } },
   { name = "avatar", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "set-link-photo"
+kind = "undoable"
+params = [
+  { name = "discord_user", required = true, schema = { type = "string" } },
+  { name = "avatar", required = true, schema = { type = "string" } },
+  { name = "photo", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]

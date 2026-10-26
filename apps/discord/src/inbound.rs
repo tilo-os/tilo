@@ -106,27 +106,80 @@ pub struct OfferItem {
     pub state_sha256: String,
 }
 
-/// `rename-link`: a linked account seen under newer names.
+/// `rename-link`: a linked account seen under newer names or avatar.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RenameItem {
     pub discord_user: String,
     pub user_name: String,
     /// Empty when the account shows its username.
     pub display_name: String,
+    /// The avatar hash it was seen with, empty for none.
+    pub avatar: String,
 }
 
-/// A `rename-link` for `user` seen as `names`, when they are not what the
-/// link holds; nothing for an account nobody linked.
-fn rename(guild: &Guild, user: &str, names: Option<&UserName>) -> Option<RenameItem> {
+/// A `rename-link` for `user` seen as `names` with `avatar`, when they are
+/// not what the link holds; nothing for an account nobody linked.
+fn rename(
+    guild: &Guild,
+    user: &str,
+    names: Option<&UserName>,
+    avatar: Option<&str>,
+) -> Option<RenameItem> {
     let names = names?;
     let link = guild.links.iter().find(|link| link.discord_user == user)?;
-    (link.user_name != names.user_name || link.display_name != names.display_name).then(|| {
-        RenameItem {
+    (link.user_name != names.user_name
+        || link.display_name != names.display_name
+        || link.avatar.as_deref() != avatar)
+        .then(|| RenameItem {
             discord_user: user.to_owned(),
             user_name: names.user_name.clone(),
             display_name: names.display_name.clone().unwrap_or_default(),
-        }
-    })
+            avatar: avatar.unwrap_or_default().to_owned(),
+        })
+}
+
+/// The largest picture a linked account's avatar is kept as: base64 of it
+/// fits a profile's photo.
+pub const MAX_LINK_PHOTO_BYTES: u64 = 32 * 1024;
+
+/// Fetch a linked account's avatar small and inline, then `set-link-photo`
+/// with it: the person's Tilo picture until they upload their own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PhotoFetch {
+    pub discord_user: String,
+    pub avatar: String,
+    pub op: FetchAssetOp,
+}
+
+/// The fetch of `discord_user`'s avatar `hash` as their link's photo.
+#[must_use]
+pub fn link_photo(discord_user: &str, hash: &str) -> PhotoFetch {
+    PhotoFetch {
+        discord_user: discord_user.to_owned(),
+        avatar: hash.to_owned(),
+        op: FetchAssetOp {
+            // The still picture of an animated avatar too: a profile
+            // takes no GIF.
+            url: format!("avatars/{discord_user}/{hash}.png?size=64"),
+            max_bytes: MAX_LINK_PHOTO_BYTES,
+            attachment: None,
+            inline: true,
+        },
+    }
+}
+
+/// The photo fetches of the links whose photo is not of their avatar.
+#[must_use]
+pub fn plan_link_photos(guild: &Guild) -> Vec<PhotoFetch> {
+    guild
+        .links
+        .iter()
+        .filter_map(|link| {
+            let hash = link.avatar.as_deref()?;
+            (link.photo_avatar.as_deref() != Some(hash))
+                .then(|| link_photo(&link.discord_user, hash))
+        })
+        .collect()
 }
 
 /// Everything one Discord event does in Tilo, each list one verb.
@@ -157,6 +210,8 @@ pub struct InboundPlan {
     pub unlinks: Vec<String>,
     /// `rename-link`.
     pub renames: Vec<RenameItem>,
+    /// `fetch-asset`, then `set-link-photo`; after the renames.
+    pub photos: Vec<PhotoFetch>,
 }
 
 fn persona(user: &str) -> Persona {
@@ -213,6 +268,7 @@ fn appearance(
                         url: url.clone(),
                         max_bytes: MAX_AVATAR_BYTES,
                         attachment: None,
+                        inline: false,
                     },
                     hash: hash.clone(),
                 }));
@@ -363,6 +419,7 @@ pub fn plan_created(
                     height: file.height,
                     size: file.size,
                 }),
+                inline: false,
             },
             post: post(text.take().unwrap_or_default()),
         });
@@ -516,8 +573,22 @@ pub fn plan_member(guild: &Guild, event: &MemberChanged, room: &serde_json::Valu
             Some(&event.roles),
         ));
     }
-    plan.renames
-        .extend(rename(guild, &event.user_id, event.user.as_ref()));
+    if let Some(renamed) = rename(
+        guild,
+        &event.user_id,
+        event.user.as_ref(),
+        event.avatar.as_deref(),
+    ) {
+        if let Some(hash) = event.avatar.as_deref()
+            && guild
+                .links
+                .iter()
+                .any(|l| l.discord_user == event.user_id && l.photo_avatar.as_deref() != Some(hash))
+        {
+            plan.photos.push(link_photo(&event.user_id, hash));
+        }
+        plan.renames.push(renamed);
+    }
     plan
 }
 
@@ -637,6 +708,9 @@ pub fn plan_linked(guild: &Guild, chat: &serde_json::Value, person: &str) -> Inb
             interaction: interaction.clone(),
             content: linked_reply(&name),
         });
+    }
+    if let Some(hash) = &link.avatar {
+        plan.photos.push(link_photo(&link.discord_user, hash));
     }
     plan
 }
