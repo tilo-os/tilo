@@ -6,6 +6,7 @@ app="$repo_root/crates/session/greeter/src/greeter_app.rs"
 policy="$repo_root/os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules"
 container="$repo_root/os/Containerfile"
 lock_auth="$repo_root/crates/session/shell/src/compositor/lock_auth.rs"
+secret_prompt="$repo_root/crates/sdk/ui-core/src/widget/secret_prompt.rs"
 pam="$repo_root/os/etc/pam.d/greetd"
 
 ok() { printf 'ok - %s\n' "$1"; }
@@ -19,8 +20,10 @@ else
   bad 'session unlock credentials cross an unbounded or non-zeroized helper boundary'
 fi
 
-if grep -Fq 'with_external_buffer(Arc::clone(&self.password_buffer))' "$app" \
-   && grep -Fq 'TextInput::local()' "$app" \
+# The greeter asks with the shared SecretPrompt, whose fields are local inputs.
+if grep -Fq 'with_secret_buffer(Arc::clone(&self.password_buffer))' "$app" \
+   && grep -Fq 'TextInput::local()' "$secret_prompt" \
+   && ! grep -Fq 'with_on_change_path' "$secret_prompt" \
    && grep -Fq 'Zeroizing<String>' "$app" \
    && ! grep -Fq 'const PASSWORD_PATH' "$app" \
    && ! grep -Fq 'with_on_change_path(PASSWORD_PATH)' "$app"; then
