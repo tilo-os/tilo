@@ -923,6 +923,15 @@ impl Device {
     /// The note's text in `room` as the notes app here shows it.
     pub(crate) fn note(&self, room: RoomId) -> Option<String> {
         self.net.as_ref()?;
+        // A device started again holds its rooms' records neither way while
+        // its native owner opens: it has no note to read yet. Open, they are
+        // sealed.
+        if matches!(
+            self.net().native_owner_status(),
+            super::native_enrollment::NativeOwnerStatus::Opening
+        ) {
+            return None;
+        }
         self.assert_sealed(room);
         let keys = self.note_keys(room)?;
         self.read_notes(room, &keys);
