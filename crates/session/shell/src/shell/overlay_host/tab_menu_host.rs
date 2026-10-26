@@ -403,6 +403,45 @@ impl ShellOverlayHost {
             WindowMenuAction::MoveToWorkspace(workspace) => {
                 self.move_to_workspace_from_menu(target, workspace)
             }
+            WindowMenuAction::Width(width) => {
+                let changed = self.set_group_width(target.group, width);
+                self.bump_chrome();
+                changed
+            }
+            WindowMenuAction::EqualizeWidths => {
+                let groups = self
+                    .chrome
+                    .as_ref()
+                    .map(|chrome| {
+                        let st = chrome.borrow();
+                        let tree = st.tree();
+                        tree.desktop
+                            .workspaces
+                            .iter()
+                            .flat_map(|workspace| workspace.strips.iter())
+                            .find(|strip| strip.id == target.strip)
+                            .map(|strip| {
+                                strip
+                                    .window_groups
+                                    .iter()
+                                    .map(|group| group.id)
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                if groups.is_empty() {
+                    return false;
+                }
+                let share = 1000 / u32::try_from(groups.len()).unwrap_or(1).max(1);
+                let mut changed = false;
+                for group in groups {
+                    changed |= self
+                        .set_group_width(group, crate::shell::state::WindowWidth::Fraction(share));
+                }
+                self.bump_chrome();
+                changed
+            }
             WindowMenuAction::NewTab => self.new_tab_from_menu(target),
             WindowMenuAction::RenameTab => self.begin_tab_rename(target),
             WindowMenuAction::StopDesktopControl => self.stop_desktop_control(target.tab),
