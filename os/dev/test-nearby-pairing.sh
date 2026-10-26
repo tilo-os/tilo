@@ -158,6 +158,8 @@ collect() {
   # The compositor logs to the session's state directory, not the journal.
   "$each" ssh 'cat "$HOME"/.local/state/tilo/session-logs/*.log' \
     > "$out/$label-compositor-session.log" 2>&1 || true
+  "$each" ssh 'cat "$HOME"/.cache/tilo/crashes/*-freeze.log 2>/dev/null' \
+    > "$out/$label-compositor-freeze.log" 2>&1 || true
   "$each" ssh "cat $status_file" > "$out/$label-status.json" 2>/dev/null || true
   "$each" ssh 'ls -la /var/lib/tilo /var/lib/tilo/device; ip -br addr; ip route; ps -eo pid,user,args' \
     > "$out/$label-state.txt" 2>&1 || true
