@@ -274,6 +274,18 @@ impl<R: Resource> Live<R> {
         Rc::clone(self.inner.borrow().state())
     }
 
+    /// The current state, when the document reads as the resource: `None`
+    /// while it does not, so a caller publishing what the state says never
+    /// reports the last state that read as if it were what the document
+    /// holds.
+    pub fn get_checked(&self) -> Option<Rc<R::State>> {
+        let inner = self.inner.borrow();
+        inner
+            .unreadable()
+            .is_none()
+            .then(|| Rc::clone(inner.state()))
+    }
+
     /// Read the current state.
     pub fn with<T>(&self, read: impl FnOnce(&R::State) -> T) -> T {
         read(self.inner.borrow().state())
@@ -340,6 +352,19 @@ impl<R: Resource> Live<R> {
         let _profile = tilo_resource::profiling::Phase::start("framework.live_sync");
         let mut reader = self.inner.borrow_mut();
         let moved = reader.sync(doc)?;
+        if moved {
+            note_synced(&self.changes, reader.last_delta());
+        }
+        Ok(moved)
+    }
+
+    /// Read the state whole from `doc`, whatever the last sync said, so a
+    /// change this reader cannot apply whole is noticed and reported: for a
+    /// resource kept small enough to read that way, which nothing else
+    /// would find out about. Returns whether the state changed.
+    pub fn reread(&self, doc: &Doc) -> Result<bool, ModelError> {
+        let mut reader = self.inner.borrow_mut();
+        let moved = reader.reread_whole(doc)?;
         if moved {
             note_synced(&self.changes, reader.last_delta());
         }

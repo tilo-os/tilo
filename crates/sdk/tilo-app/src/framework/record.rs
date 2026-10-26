@@ -65,9 +65,9 @@ pub struct Held<P: Resource> {
     published: RefCell<Option<(Published, tilo_actions::Resource)>>,
 }
 
-/// The record's revision and loads ([`Live::loads`]), and the locale's
-/// revision.
-type Published = (u64, u64, u64);
+/// The record's revision and loads ([`Live::loads`]), the locale's
+/// revision, and why the record did not read.
+type Published = (u64, u64, u64, Option<String>);
 
 impl<P: Resource> Held<P> {
     pub(crate) fn new(
@@ -132,22 +132,32 @@ impl<P: Resource> Held<P> {
     /// role in the room; nothing to change where it is read only.
     pub(crate) fn publish(&self) -> tilo_actions::Resource {
         self.sync();
+        // Reading it again changes no revision — the state stays the last
+        // one that read — so whether it reads is part of what the
+        // publication is for.
         let revision = (
             self.live.revision(),
             self.live.loads(),
             ui_core::i18n::I18nManager::revision(),
+            self.live.unreadable().map(|why| why.reason),
         );
         if let Some((at, published)) = self.published.borrow().as_ref()
             && *at == revision
         {
             return published.clone();
         }
-        let state = self.live.get();
-        let published = route(
-            tilo_resource::publish::<P>(&self.id, &self.label, &state),
-            &self.id,
-            self.editable,
-        );
+        let published = if let Some(state) = self.live.get_checked() {
+            tilo_resource::publish::<P>(&self.id, &self.label, &state)
+        } else {
+            // Read here, never meant to change here: say why its actions do
+            // not apply rather than publish a record that reads as empty.
+            let why = self
+                .live
+                .unreadable()
+                .map_or_else(|| "the record does not read".to_owned(), |why| why.reason);
+            tilo_resource::resource::unreadable_parts::<P>(&self.id, &self.label, &why)
+        };
+        let published = route(published, &self.id, self.editable);
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
     }
