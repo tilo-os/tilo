@@ -3994,9 +3994,14 @@ relay_cpus = ""
 # os-dev-disk-x86_64 installed it to (the disk the dev channel publishes), booted from a
 # throwaway overlay in a libvirt guest by tilo-vm-binary-x86_64's tilo-vm
 # (tools/ci/vm-acceptance.sh).
-# `t dispatch vm-acceptance --input only=input --input swap=all` runs a selection;
-# `t test vm-acceptance` the checks a working tree's changes select; `t outputs
-# vm-acceptance` gives the report. vm-acceptance-perf runs every check on release candidates
+# The suite runs in shards (run.py SHARDS: session, apps, window, shell), each a check of its
+# own, `vm-acceptance/<shard>`, in a VM of its own, cached on its own and run again alone when
+# it fails; t runs them in parallel where there is room. The packages the job needs beside the
+# builder image are its setup (tools/ci/packages/vm-acceptance.txt), a cached layer over it.
+# `t dispatch vm-acceptance --input only=input --input swap=all` runs a selection in every
+# shard (a t that dispatches only one check at a time takes `t dispatch vm-acceptance/<shard>`);
+# `t test vm-acceptance` the checks a working tree's changes select, in every shard; `t
+# outputs vm-acceptance/<shard>` gives its report. vm-acceptance-perf runs every check on release candidates
 # and when dispatched, and publishes its performance records where the run holds
 # TILO_PACKAGES_TOKEN (`t dispatch vm-acceptance-perf --ref main`, or any reference the
 # server's secret config gives it to). The micro-VM holds the guest (6 vCPUs, 4.5 GiB) beside
@@ -4012,10 +4017,14 @@ isolation = "vm"
 git = true
 writable_sources = true
 run = "bash tools/ci/vm-acceptance.sh"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/vm-acceptance.txt"] }
+shards = ["session", "apps", "window", "shell"]
 needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64"]
 inputs = [
   "scripts/vm-acceptance/**",
   "tools/ci/vm-acceptance.sh",
+  "tools/ci/install-packages.sh",
+  "tools/ci/packages/vm-acceptance.txt",
   "os/account.env",
   "os/components.toml",
   "os/dev/assert-native-arch.sh",
@@ -4025,7 +4034,8 @@ inputs = [
   "tools/atspi_external_client.py",
   "crates/dev/tilo-vm-protocol/src/lib.rs",
 ]
-outputs = ["/target/vm-acceptance/report/**"]
+outputs = ["/target/vm-acceptance/{shard}/report/**"]
+evidence = ["/target/vm-acceptance/**"]
 timeout_secs = 10800
 cost = "heavy"
 default = false
@@ -4109,9 +4119,11 @@ isolation = "vm"
 git = true
 writable_sources = true
 run = "bash tools/ci/vm-acceptance.sh cohort"
+setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/vm-acceptance.txt"] }
 needs = ["os-dev-disk-x86_64", "tilo-vm-binary-x86_64", "vm-cohort-x86_64", "vm-cohort-verifier-x86_64"]
 inputs = ["**"]
 outputs = ["/target/vm-acceptance/report/**"]
+evidence = ["/target/vm-acceptance/report/**"]
 cache = false
 timeout_secs = 10800
 cost = "heavy"
@@ -4159,7 +4171,9 @@ name = "vm-acceptance-perf"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
 needs = ["vm-acceptance"]
 run = """
-records=/target/vm-acceptance/report/records.jsonl
+# Each shard of vm-acceptance writes the records of the checks it ran.
+records=$TMPDIR/records.jsonl
+cat /target/vm-acceptance/*/report/records.jsonl > "$records" 2>/dev/null || true
 [[ -s $records ]] || { echo "the acceptance run wrote no performance records" >&2; exit 1; }
 publish=false
 [[ -n ${T_REF:-} ]] && publish=true
