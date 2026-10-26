@@ -2131,9 +2131,13 @@ fn allowing_once_admits_that_call_and_the_next_asks_again() {
     assert_eq!(seen.cancel_label(), "Deny");
     served_until(&mut door, 1);
     assert_eq!(door.app.served[0].0, "draft");
-    assert!(
-        invoker_draft_grants(&door).is_empty(),
-        "a grant given once is gone once used"
+    // Spending the grant is a change of the room its host commits: gone
+    // once the room as this device holds it carries that, while the
+    // device's loop turns as the compositor's does.
+    until(
+        &[&door.hosted.device],
+        "a grant given once to be gone once used",
+        || invoker_draft_grants(&door).is_empty().then_some(()),
     );
     assert!(
         history_mentions(&door, "Allowed"),
@@ -2379,7 +2383,9 @@ fn always_allowing_records_a_grant_that_asks_no_more_until_revoked() {
         }
         Ok(_) => {}
     }
-    assert!(invoker_draft_grants(&door).is_empty(), "the grant is gone");
+    until(&[&door.hosted.device], "the grant to be gone", || {
+        invoker_draft_grants(&door).is_empty().then_some(())
+    });
 
     let (status, seen) = invoker.invoke_answering(
         &mut door,
