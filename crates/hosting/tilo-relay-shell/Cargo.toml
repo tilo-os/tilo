@@ -37,6 +37,9 @@ tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The desktop's peer-sync messages and the host-retention classifier.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
+# The reference-chain admission a received window's pictures are decoded
+# through, shared with the media profiles.
+encoded-frame = { path = "../../media/encoded-frame" }
 # Retained-store primitives and the seam the store drives selection through.
 tilo-relay-store = { path = "../tilo-relay-store" }
 # Retained frames: relay envelopes carrying co-edit payloads; the

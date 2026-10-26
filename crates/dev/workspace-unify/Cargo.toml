@@ -279,6 +279,7 @@ doc = false
 "elliptic-curve-0_14_1" = { package = "elliptic-curve", version = "^0.14.1", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ff", "getrandom", "group", "pem", "pkcs8", "sec1", "std"] }
 "email_address-0_2_9" = { package = "email_address", version = "^0.2.9", default-features = false, features = [] }
 "emoji" = { path = "../../../crates/text/emoji", default-features = false, features = [] }
+"encoded-frame" = { path = "../../../crates/media/encoded-frame", default-features = false, features = [] }
 "encoding_rs-0_8_35" = { package = "encoding_rs", version = "^0.8.35", default-features = false, features = ["alloc", "default"] }
 "endi-1_1_1" = { package = "endi", version = "^1.1.1", default-features = false, features = ["default", "std"] }
 "enum-ordinalize-4_4_1" = { package = "enum-ordinalize", version = "^4.4.1", default-features = false, features = ["default", "derive", "traits"] }
@@ -1097,7 +1098,7 @@ doc = false
 "tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", default-features = false, features = ["default", "iroh", "toolkit"] }
 "tilo-browser-runtime" = { path = "../../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../../crates/platform/tilo-browser-sessions", default-features = false, features = [] }
-"tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
+"tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder"] }
 "tilo-canvas" = { path = "../../../crates/sdk/canvas", default-features = false, features = [] }
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-capture" = { path = "../../../crates/platform/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }
@@ -3436,7 +3437,7 @@ doc = false
 "tilo-browser-peer" = { path = "../../../crates/browser/tilo-browser-peer", default-features = false, features = ["default", "iroh", "toolkit"] }
 "tilo-browser-runtime" = { path = "../../../crates/browser/tilo-browser-runtime", default-features = false, features = ["default"] }
 "tilo-browser-sessions" = { path = "../../../crates/platform/tilo-browser-sessions", default-features = false, features = [] }
-"tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
+"tilo-callstream" = { path = "../../../crates/collab/tilo-callstream", default-features = false, features = ["recording", "surface-decoder"] }
 "tilo-canvas" = { path = "../../../crates/sdk/canvas", default-features = false, features = [] }
 "tilo-caps" = { path = "../../../crates/sdk/tilo-caps", default-features = false, features = [] }
 "tilo-capture" = { path = "../../../crates/platform/tilo-capture", default-features = false, features = ["avfoundation", "camera", "default", "scanner", "test-support"] }

@@ -121,7 +121,7 @@ units older than one it already decoded. The owner forces at most one
 keyframe per 250 ms and none for a request a keyframe already answers, then
 encodes a frame at once so a still window recovers too. The shell's inbox
 keeps every frame in arrival order rather than replacing older ones. The same
-rule (`neighbour_wire::unit_chain`) gates the Remote app's workspace-control
+rule (`encoded_frame::UnitChain`) gates the Remote app's workspace-control
 decoder, which asks through the consented route, and the relay's browser
 bridge, which ends the members' group and asks the session itself.
 

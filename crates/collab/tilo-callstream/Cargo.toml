@@ -15,26 +15,26 @@ name = "tilo_callstream"
 path = "src/lib.rs"
 
 [features]
-# Decoder admission for sequenced units, shared by workspace-control and
-# peer surface viewers without exposing the neighbour protocol to apps.
-unit-chain = ["dep:neighbour-wire"]
 # `surface_decoder`: the shared-surface receive path (every wire codec, RGBA or
 # P010, the sender's announced colorimetry). The colorimetry types ride in the
 # neighbour protocol, so this pulls in its wire vocabulary; the chat call path
 # does not need it.
-surface-decoder = ["unit-chain"]
+surface-decoder = ["dep:neighbour-wire"]
 # `mp4_recording`: muxes encoded access units into MP4/MOV through `appsrc`.
 recording = ["dep:gstreamer-app"]
 
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# The encoded-picture contract shared with the MoQ video profile: codec ids,
+# frame metadata, bounds, validation and reference-chain admission.
+encoded-frame = { path = "../../media/encoded-frame" }
 # Encode and decode through the shared GStreamer media stack, which picks
 # hardware first, then royalty-free software, then Cisco's openh264 binary.
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
 thiserror.workspace = true
 tracing = "0.1"
 workspace-hack = { version = "0.1" }
-# Shared decoder admission and the wire colorimetry the surface decoder applies.
+# The wire colorimetry the surface decoder applies.
 neighbour-wire = { path = "../neighbour-wire", optional = true }
 # Recording muxes the encoder's access units through `appsrc`; the same pin
 # as `media`, so one copy resolves.

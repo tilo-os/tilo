@@ -915,8 +915,9 @@ async fn copy_picture_group(
     loop {
         match input.read_frame().await {
             Ok(Some(frame)) => {
-                let valid = crate::video::validate(&frame.payload)
-                    .is_ok_and(|header| header.layer == layer && (count > 0 || header.keyframe));
+                let valid = crate::video::validate(&frame.payload).is_ok_and(|header| {
+                    header.layer == layer && (count > 0 || header.meta.keyframe)
+                });
                 count = count.saturating_add(1);
                 if !valid
                     || count > crate::video::MAX_GROUP_OBJECTS

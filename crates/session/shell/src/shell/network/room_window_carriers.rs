@@ -97,7 +97,7 @@ fn stream_codec(codec: Codec) -> Option<StreamCodec> {
         Codec::H264 => Some(StreamCodec::H264),
         Codec::Vp9 => Some(StreamCodec::Vp9),
         Codec::Av1 => Some(StreamCodec::Av1),
-        Codec::Vp8 => None,
+        Codec::Vp8 | Codec::HevcMain10 => None,
     }
 }
 
