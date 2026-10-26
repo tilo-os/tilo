@@ -18,7 +18,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
-use crate::widget::{AppModel, Element, ModelPath, TaffyTreeExt, Widget};
+use crate::widget::{AppModel, Element, ModelPath, StructureChange, TaffyTreeExt, Widget};
 
 /// What a layout reads of the theme: the `rem` and the rhythm gaps, in logical pixels.
 #[derive(Clone, Copy, Debug)]
@@ -146,6 +146,10 @@ pub struct Arranged<L: Layout> {
     resolved: Resolved,
     rect: Rect,
     id: Option<String>,
+    /// How the slots changed since the host last read it: replaced wholesale
+    /// ([`Self::set_slots`]) is a rebuild; a child replaced, inserted, removed, moved or
+    /// resized by the slot operations is described.
+    structure: StructureChange,
 }
 
 impl<L: Layout> Arranged<L> {
@@ -157,6 +161,7 @@ impl<L: Layout> Arranged<L> {
             resolved: Resolved::fixed(16.0, 8.0),
             rect: Rect::ZERO,
             id: None,
+            structure: StructureChange::None,
         }
     }
 
@@ -211,23 +216,104 @@ impl<L: Layout> Arranged<L> {
         self.slots.is_empty()
     }
 
-    /// Replace the children, as a keyed reconciler does when the set changed.
+    /// Replace the children wholesale: the host rebuilds and repaints whole. A keyed
+    /// reconciler uses the slot operations below instead, which it can describe.
     pub fn set_slots(&mut self, slots: Vec<Slot>) {
         self.slots = slots;
+        self.structure = StructureChange::Rebuild;
     }
 
-    /// Take the children out, to put them back reordered.
+    /// Take the children out, to put them back with [`Self::set_slots`].
     pub fn take_slots(&mut self) -> Vec<Slot> {
+        self.structure = StructureChange::Rebuild;
         std::mem::take(&mut self.slots)
     }
 
+    /// The slot at `index`: its child and how it is sized.
+    #[must_use]
+    pub fn slot(&self, index: usize) -> Option<&Slot> {
+        self.slots.get(index)
+    }
+
+    /// The child at `index`, to change it in place: what it reports of the change is its own.
+    pub fn child_mut(&mut self, index: usize) -> Option<&mut Element> {
+        self.slots.get_mut(index).map(|slot| &mut slot.element)
+    }
+
+    /// Show `element` in slot `index` instead of its child, which it returns; the slot keeps
+    /// its sizing. A change the frame's damage describes: the new child draws itself whole,
+    /// and the host repaints where the boxes it moved were and are.
+    pub fn replace(&mut self, index: usize, element: Element) -> Option<Element> {
+        let slot = self.slots.get_mut(index)?;
+        self.structure = self.structure.join(StructureChange::Described);
+        Some(std::mem::replace(&mut slot.element, element))
+    }
+
+    /// Insert `slot` at `index` (at the end past it). Described, as [`Self::replace`] is.
+    pub fn insert(&mut self, index: usize, slot: Slot) {
+        let index = index.min(self.slots.len());
+        self.slots.insert(index, slot);
+        self.structure = self.structure.join(StructureChange::Described);
+    }
+
+    /// Take the slot at `index` out. Described, as [`Self::replace`] is.
+    pub fn remove(&mut self, index: usize) -> Option<Slot> {
+        if index >= self.slots.len() {
+            return None;
+        }
+        self.structure = self.structure.join(StructureChange::Described);
+        Some(self.slots.remove(index))
+    }
+
+    /// Move the slot at `from` to `to`, its child kept. Described, as [`Self::replace`] is.
+    pub fn move_slot(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.slots.len() {
+            return;
+        }
+        let slot = self.slots.remove(from);
+        self.slots.insert(to.min(self.slots.len()), slot);
+        self.structure = self.structure.join(StructureChange::Described);
+    }
+
+    /// Size slot `index` as `fit`, `span` and `at` say; a change of any is described, as
+    /// [`Self::replace`] is.
+    pub fn set_placement(&mut self, index: usize, fit: Fit, span: u16, at: Option<At>) {
+        let Some(slot) = self.slots.get_mut(index) else {
+            return;
+        };
+        if slot.fit == fit && slot.span == span && slot.at == at {
+            return;
+        }
+        slot.fit = fit;
+        slot.span = span;
+        slot.at = at;
+        self.structure = self.structure.join(StructureChange::Described);
+    }
+
+    /// Style the container and its slots again for what the layout settled on. Where the node
+    /// sits in its parent stays as the parent set it: a parent that places it (a virtual list
+    /// positions its rows) changed those after the layout styled it, and settling changes how
+    /// the container arranges its children, not where it is.
     fn restyle(&self, tree: &mut TaffyTree<()>) -> bool {
         let Some(node) = self.node else {
             return false;
         };
-        let mut changed = tree
-            .set_style(node, self.layout.container(&self.resolved))
-            .is_ok();
+        let mut style = self.layout.container(&self.resolved);
+        if let Ok(placed) = tree.style(node) {
+            style.position = placed.position;
+            style.inset = placed.inset;
+            style.margin = placed.margin;
+            style.align_self = placed.align_self;
+            style.justify_self = placed.justify_self;
+            style.grid_row = placed.grid_row.clone();
+            style.grid_column = placed.grid_column.clone();
+            if placed.position == taffy::Position::Absolute {
+                style.size = placed.size;
+                style.min_size = placed.min_size;
+                style.max_size = placed.max_size;
+            }
+        }
+        let mut changed = tree.set_style(node, style).is_ok();
         for (index, slot) in self.slots.iter().enumerate() {
             if let Some(wrapper) = slot.wrapper {
                 changed |= tree
@@ -392,11 +478,20 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty = false;
+        let mut dirty = std::mem::take(&mut self.structure).rebuilds();
         for slot in &mut self.slots {
             dirty |= slot.element.take_structure_dirty();
         }
         dirty
+    }
+
+    /// What the slot operations did, joined with what the children report.
+    fn take_structure_change(&mut self) -> StructureChange {
+        let mut change = std::mem::take(&mut self.structure);
+        for slot in &mut self.slots {
+            change = change.join(slot.element.take_structure_change());
+        }
+        change
     }
 
     fn name(&self) -> &str {
