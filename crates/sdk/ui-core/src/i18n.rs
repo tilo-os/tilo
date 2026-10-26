@@ -292,6 +292,13 @@ fn apply_pseudo_locale(value: String, args: Option<&FluentArgs>, pseudo_language
     if mode == PseudoLocale::Off && !pseudo_language {
         return value;
     }
+    // Nothing says nothing: a bound text with no words yet — a save status
+    // that has nothing to report — must not become a pair of markers, which
+    // is how a review finds copy that is too long rather than copy that is
+    // absent.
+    if value.is_empty() {
+        return value;
+    }
     let data: Vec<&str> = args
         .into_iter()
         .flat_map(FluentArgs::iter)
@@ -1611,6 +1618,17 @@ mod tests {
         // A string that merely starts and ends with the markers is left alone
         // rather than wrapped a second time.
         assert_eq!(pseudo_expand("⟦⟧"), "⟦⟧");
+    }
+
+    /// Nothing says nothing: an empty message is not two markers, which a
+    /// review would read as copy that is too long.
+    #[test]
+    fn an_empty_message_stays_empty_under_the_pseudo_locale() {
+        let _restore = RestoreLookupState::capture();
+        install_plain("en-US", "en-US", &[("en-US", EN)]);
+        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
+        assert_eq!(I18nManager::lookup("", None), "");
+        assert_eq!(I18nManager::format("", &[]), "");
     }
 
     #[test]
