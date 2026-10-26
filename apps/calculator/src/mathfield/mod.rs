@@ -359,6 +359,12 @@ impl MathField {
 
     /// The engine-ready linear form after an edit, recording it as the new
     /// source so a subsequent `set_source` with the same value is a no-op.
+    /// Whether the caret holds a text selection, so Ctrl+C copies the
+    /// selection rather than the calculator's displayed result.
+    pub fn has_selection(&self) -> bool {
+        self.editor.selected_linear().is_some()
+    }
+
     pub fn current_linear(&mut self) -> String {
         let s = engine_linear(&self.editor.to_linear());
         self.source.clone_from(&s);
