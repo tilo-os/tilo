@@ -203,9 +203,18 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
 - **Every view call is a boundary.** The compiler emits each view call as a `view:` stub; the
   runtime keeps one memo per call (its arguments, the fields and `space` values it read, its
   subtree). A change re-runs the boundaries that read it, and a boundary whose arguments and
-  reads are unchanged keeps its subtree without running. A `for` body that renders inline
-  (no view call) belongs to the enclosing boundary, so the whole loop re-runs: write rows as
-  view calls. `ViewInstance::stats()` counts renders, boundaries and unrendered rows.
+  reads are unchanged keeps its subtree without running. Every row of a UI `for` is a
+  boundary keyed by its item, whatever its body (below). `ViewInstance::stats()` counts renders, boundaries and unrendered rows.
+- **Loop rows.** The compiler lowers a UI `for` (and nothing else) to one node of kind
+  `for:<app>:<view>` with the props `items` (the list), `each` (the parameter the item goes to),
+  `suffix` (the key suffix of the rows around it, for anchored keys), `arg.<name>` (what the body
+  captures) and the sizing props of a one-node body (`fill`, `min`, `max`, `aspect`, `span`,
+  `at`, hoisted when they do not use the item). A body that is one call of the app's own view
+  with plain arguments calls it directly; any other body becomes a view of its own,
+  `<view>~row<n>`, taking the item, the captures and `$key`. The runtime puts one `fragment`
+  per item in the loop's place among its parent's children, keyed `<loop key>/<item key>`
+  (the item's resource id, else its index), each a boundary (lazy in a `list`) with the loop's
+  sizing props. Hosts see fragments, never the loop node.
 - **Patch stream.** `ViewInstance::poll_patches()` returns the patches that turn the last tree
   into the new one, in the order they apply, empty when nothing changed (an idle view costs
   nothing: no runtime timer, no polling of its own). Patches address nodes by path, the keys from
@@ -234,10 +243,17 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   `update(&host) -> SearchDelta { upserted, removed }` each frame, `hits()` for the index;
   `Publications::new(&host)` then `update(&host, &planner) -> Vec<DocId>` (the documents whose
   published tree changed) and `trees()`. Both consume a `Watch`, so a frame costs what changed.
-  They replace re-indexing and re-publishing every record per frame (`search::refresh` and
-  `published()` in the window), which cost 393 ms and 1356 ms per frame at 10k items. Build
-  them after the first frame is drawn: at 10k items the first `update` is 454 ms (search) and
-  1429 ms (publication), most of it planning every item's parameterless actions.
+  A record that appears (every record, on the first frame) is read whole off the frame: from a
+  `TiloStore::snapshot()` (one copy of the mirror, shared by every reader until the mirror
+  changes) on a thread of its own. Until it ends, `update` returns nothing and takes no changes;
+  `set_waker(waker)` gives them the window's redraw request to call when it ends, and the next
+  `update` takes the result in. `is_reading()` / `is_building()` say whether that is under way;
+  `settle(&host, ..)` waits for it, for a host without frames and for tests. An action without
+  parameters is published deferred (`ActionSpec::deferred`): planned when it runs, so publishing
+  plans nothing. A record's label (its first text, fields in id order, items in order) is read
+  again only when a change is at or before what names it. These replace re-indexing and
+  re-publishing every record per frame (`search::refresh` and `published()` in the window), which
+  cost 322 ms and 393 ms at 10k items.
 - **No needless commit.** The host commits the room record when the executor wrote something.
   An empty `commit()` on automerge used to add and remove the actor (6.6 ms at 10k items); the
   vendored patch makes it free, but the call is still not needed.
@@ -263,8 +279,39 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   touches is met with wasmi; wasmtime AOT would add a compiler and code cache to the platform
   for that. The time is in the host (store reads behind imports, search, publication), which is
   where the work goes. Revisit when a profile shows guest time as the larger share.
+- **Finding a node.** `ViewInstance::edit`/`press`/`fire` find a node in its boundary when its
+  key carries one; any other node (the root view's own, an anchored one) by walking the tree
+  once, after which where it was is kept and checked before use. Typing into an input of a view
+  that also shows 10k rows went from 0.4 ms of lookup per keystroke to none.
 - **Bench and budgets.** `tilolang bench <package> [--sizes] [--samples] [--idle SECONDS]
   [--translation lazy|eager] [--profile]` prints one JSON record per scenario and size: open,
   keystroke, peer edit, scroll (packages with a virtual list), idle wakeups and patches, and the
   cost of re-indexing and re-publishing everything for comparison, and how long compiling the
   package's source takes. Records are `tools/perf/record.py`'s JSON.
+  Seeding follows the package's root: its collection, or the roots of the packages it refers to
+  (a board); a root with neither has one size, of no items. `keystroke` types into an item's
+  title in the item's window, or, when items have no window, into the main window's first text
+  input; a package with no text input gets `press` (its first button). `peer_edit` retitles an
+  item, or bumps the root's counter. `memory_anon` is measured in a process of its own that loads
+  the saved room and opens it, as an app process does (the bench's own process keeps what
+  seeding allocated). `cargo test --release -p tilolang-tilo --test budgets` holds section 4.1 of
+  the design: notes_list at 10k (open p95 300 ms, keystroke and peer p95 2 ms, scroll p50 1 ms,
+  no idle wakeups), memory at 1k (60 MiB), and the counter.
+- **Where it stands** (release, aarch64, 10k items, 20 samples, p95). notes_list: open 51 ms,
+  keystroke 0.64 ms, peer edit 0.45 ms, scroll p50 0.23 ms, idle 0 wakeups; ready (search and
+  publication done) 498 ms. chat: open 293 ms, keystroke 0.62, peer 0.54. todo: open 574 ms,
+  keystroke 0.35, peer 0.47. notes: open 713 ms, keystroke 0.79, peer 0.79. board (notes, todo
+  and chat of 10k each): open 1835 ms, keystroke 1.12, peer 1.11. counter: open 0.28 ms, press
+  0.12, peer 0.07. The first change of a window costs 5 to 7 ms: automerge renumbers its
+  columns for the new actor (about 2 ms per document at 400k ops), inherent to its sorted actor
+  table.
+- **Not met yet.** Open at 10k for views that put rows in a `scroll` or `stack` rather than a
+  `list` (notes, todo, board; chat is at the limit): every row renders at open, 60k nodes for
+  notes. Section 3's frames make such lists `list`s. A host that draws the whole tree
+  (`set_lazy_rows(false)`, the window today) pays the same for a `list`. Memory at 10k:
+  notes_list's process holds 170 MiB (1k: 20 MiB; 10: 7 MiB). Per item: the published tree
+  4.2 KB, nearly all `ActionSpec`s (about 1.7 KB each, 700 bytes of it inline, its contract
+  360; an item carries `open` and its type's actions), the view 1.9 KB per row even unrendered,
+  the room and the mirror 1.5 KB, search 0.4 KB; the rest is what the allocator keeps after the
+  first read. The spec's size is `tilo-actions`'s and native apps pay it too: sharing the
+  per-type parts of a spec among the resources that carry it is the fix.
