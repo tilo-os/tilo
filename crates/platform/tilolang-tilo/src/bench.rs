@@ -24,6 +24,12 @@
 //! * `thread_open`, `thread_keystroke`, `thread_post`, `thread_scroll`: for a package whose
 //!   items hold a collection of their own (a conversation's messages), one item holding N of
 //!   them, in its own window ([`thread`]).
+//!
+//! Beside its times each scenario records the work it did ([`Work`]), in counts that do not
+//! depend on the machine; `tests/budgets.rs` holds those to how they grow with the room. The
+//! times are held to section 4.1's budgets here, on the machine they are for, with `--budgets`
+//! ([`over_budget`]): a recorded local check, not a test, since times depend on the machine
+//! and its load.
 
 mod thread;
 
@@ -67,6 +73,11 @@ pub struct BenchConfig {
     pub profile: bool,
     /// How to measure memory in a process of its own; not measured without.
     pub memory: Option<Isolation>,
+    /// Measure opening alone (`open`, `ready`, `load`, `thread_open`, and the memory when it is
+    /// measured), none of the other scenarios.
+    pub open_only: bool,
+    /// Check the records against section 4.1's budgets ([`over_budget`]).
+    pub budgets: bool,
     pub env: Env,
 }
 
@@ -409,6 +420,12 @@ struct Phases {
     imports: Vec<f64>,
     /// Time compiling wasm modules.
     compile: Vec<f64>,
+    /// Opening, by step: the host over the record, loading the modules, running the root view,
+    /// showing the first rows.
+    open_host: Vec<f64>,
+    open_load: Vec<f64>,
+    open_view: Vec<f64>,
+    open_rows: Vec<f64>,
 }
 
 impl Phases {
@@ -450,20 +467,28 @@ impl Phases {
             "wasm_p50_ms": p50(&mut self.wasm),
             "imports_p50_ms": p50(&mut self.imports),
             "compile_p50_ms": p50(&mut self.compile),
+            "open_host_p50_ms": p50(&mut self.open_host),
+            "open_load_p50_ms": p50(&mut self.open_load),
+            "open_view_p50_ms": p50(&mut self.open_view),
+            "open_rows_p50_ms": p50(&mut self.open_rows),
         })
     }
 }
 
 impl Room {
     fn open(doc: Doc, packages: &[Compiled], app: &str, profile: bool) -> Result<Self, String> {
+        let start = Instant::now();
         let host = Host::new(&doc, Principal::new("bench"), |_, _| Decision::Allow)
             .map_err(|e| e.to_string())?;
         host.runtime().engine().profile(profile);
+        let hosted = Instant::now();
         // As a launcher does: from the modules built with Tilo, compiling no source.
         for compiled in packages {
             host.load_wasm(&compiled.wasm).map_err(|e| e.to_string())?;
         }
+        let loaded = Instant::now();
         let mut list = host.open_main(app).map_err(|e| e.to_string())?;
+        let viewed = Instant::now();
         // The window's list frame is a virtual list: it shows what fits, as the host does
         // before its first frame. A list inside content (a card's) is drawn whole.
         if let Some(key) = frame_list(list.tree()) {
@@ -480,13 +505,17 @@ impl Room {
         }
         // The first frame starts search and publication; they read the room off the frame.
         let indexing = Instant::now();
+        let mut phases = Phases::default();
+        phases.open_host.push(ms(hosted.duration_since(start)));
+        phases.open_load.push(ms(loaded.duration_since(hosted)));
+        phases.open_view.push(ms(viewed.duration_since(loaded)));
+        phases.open_rows.push(ms(indexing.duration_since(viewed)));
         let mut search = SearchIndex::new(&host);
         search.update(&host);
         let publishing = Instant::now();
         let planner: std::sync::Arc<dyn Planner> = std::sync::Arc::new(host.handle());
         let mut published = Publications::new(&host);
         published.update(&host, &planner);
-        let mut phases = Phases::default();
         phases.search.push(ms(publishing.duration_since(indexing)));
         phases.publish.push(ms(publishing.elapsed()));
         let profiled = host.runtime().engine().profiled();
@@ -535,6 +564,288 @@ impl Room {
         let after = self.host.runtime().engine().profiled();
         self.phases.engine(profiled, after);
         Ok(patches)
+    }
+}
+
+/// The work a scenario did, in counts that do not depend on the machine or its load: what
+/// tests hold to how it grows with the room, where times only say how long it took here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Work {
+    /// Boundaries rendered (a view call run).
+    pub renders: u64,
+    /// References to collection items built (one per item a view read as a value).
+    pub items: u64,
+    /// Resources the store found by walking the record.
+    pub located: u64,
+    /// Field values the store read one by one.
+    pub fields: u64,
+    /// Collections the store listed by walking their entries.
+    pub listings: u64,
+    /// Collection entries those listings read: the room's items, read once when opened.
+    pub entries: u64,
+    /// Scalar fields of items read with those listings.
+    pub scanned: u64,
+    /// Items a filter was evaluated on.
+    pub evaluated: u64,
+    /// Patches the views sent the window: what a frame changed on screen.
+    pub patches: u64,
+    /// Allocations on the thread that ran it, when the program counts them
+    /// ([`CountingAlloc`]).
+    pub allocations: u64,
+}
+
+impl Work {
+    fn of(room: &Room, others: &[&ViewInstance]) -> Self {
+        let reads = room.host.store().read_stats();
+        let renders = others
+            .iter()
+            .map(|view| view.stats().renders)
+            .fold(room.list.stats().renders, u64::saturating_add);
+        Self {
+            renders,
+            items: room.host.runtime().items_built(),
+            located: reads.located,
+            fields: reads.fields,
+            listings: reads.listings,
+            entries: reads.entries,
+            scanned: reads.scanned,
+            evaluated: reads.evaluated,
+            patches: 0,
+            allocations: allocations(),
+        }
+    }
+
+    /// What was done between `before` and this.
+    fn since(self, before: Self) -> Self {
+        Self {
+            renders: self.renders.saturating_sub(before.renders),
+            items: self.items.saturating_sub(before.items),
+            located: self.located.saturating_sub(before.located),
+            fields: self.fields.saturating_sub(before.fields),
+            listings: self.listings.saturating_sub(before.listings),
+            entries: self.entries.saturating_sub(before.entries),
+            scanned: self.scanned.saturating_sub(before.scanned),
+            evaluated: self.evaluated.saturating_sub(before.evaluated),
+            patches: self.patches.saturating_sub(before.patches),
+            allocations: self.allocations.saturating_sub(before.allocations),
+        }
+    }
+
+    /// The most of each count, of this and `other`.
+    fn max(self, other: Self) -> Self {
+        Self {
+            renders: self.renders.max(other.renders),
+            items: self.items.max(other.items),
+            located: self.located.max(other.located),
+            fields: self.fields.max(other.fields),
+            listings: self.listings.max(other.listings),
+            entries: self.entries.max(other.entries),
+            scanned: self.scanned.max(other.scanned),
+            evaluated: self.evaluated.max(other.evaluated),
+            patches: self.patches.max(other.patches),
+            allocations: self.allocations.max(other.allocations),
+        }
+    }
+
+    fn json(self) -> Json {
+        json!({
+            "renders": self.renders,
+            "items": self.items,
+            "located": self.located,
+            "fields": self.fields,
+            "listings": self.listings,
+            "entries": self.entries,
+            "scanned": self.scanned,
+            "evaluated": self.evaluated,
+            "patches": self.patches,
+            "allocations": self.allocations,
+        })
+    }
+
+    /// The work of a record, as [`Self::json`] wrote it in its `work` field.
+    #[must_use]
+    pub fn of_record(record: &Record) -> Option<Self> {
+        Self::from_json(record.meta.get("work")?)
+    }
+
+    /// The work of the first change of a record that changes the room, apart from its steady
+    /// changes (see [`Changes`]).
+    #[must_use]
+    pub fn first_of_record(record: &Record) -> Option<Self> {
+        Self::from_json(record.meta.get("first_work")?)
+    }
+
+    fn from_json(work: &Json) -> Option<Self> {
+        let count = |name: &str| work.get(name).and_then(Json::as_u64);
+        Some(Self {
+            renders: count("renders")?,
+            items: count("items")?,
+            located: count("located")?,
+            fields: count("fields")?,
+            listings: count("listings")?,
+            entries: count("entries")?,
+            scanned: count("scanned")?,
+            evaluated: count("evaluated")?,
+            patches: count("patches")?,
+            allocations: count("allocations")?,
+        })
+    }
+}
+
+/// Section 4.1's budgets for the runtime's share of a frame: per scenario, the percentile held
+/// and its limit, at the size the budget is for.
+const BUDGETS: &[(&str, usize, f64)] = &[
+    ("open", 95, 300.0),
+    ("thread_open", 95, 300.0),
+    ("keystroke", 95, 2.0),
+    ("thread_keystroke", 95, 2.0),
+    ("press", 95, 2.0),
+    // A peer's change, and a peer's message: one row more, whatever the length.
+    ("peer_edit", 95, 2.0),
+    ("thread_post", 95, 2.0),
+    ("scroll", 50, 1.0),
+    ("thread_scroll", 50, 1.0),
+    ("idle_wakeups", 100, 0.0),
+    // An app's memory as the platform measures it, in MiB.
+    ("memory_anon", 100, 60.0),
+];
+
+/// The records over their budget in [`BUDGETS`], one line each; `report` gets a line for each
+/// record a budget holds. Frame budgets are for a room of 10k items (or a room with no items,
+/// a counter's); memory for 1k.
+pub fn over_budget(records: &[Record], report: &mut dyn FnMut(String)) -> Vec<String> {
+    let mut over = Vec::new();
+    for record in records {
+        let mut parts = record.kpi.split('.').skip(1);
+        let (Some(scenario), Some(_app), Some(size)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let Some(&(_, percentile, limit)) = BUDGETS.iter().find(|(name, ..)| *name == scenario)
+        else {
+            continue;
+        };
+        let at = if scenario == "memory_anon" {
+            "1k"
+        } else {
+            "10k"
+        };
+        if size != at && size != "0" {
+            continue;
+        }
+        let value = record.percentile(percentile);
+        let unit = record.unit;
+        report(format!(
+            "{}: p{percentile} {value:.2} {unit} (budget {limit})",
+            record.kpi
+        ));
+        if value > limit {
+            over.push(format!(
+                "{}: p{percentile} {value:.2} > {limit} {unit}",
+                record.kpi
+            ));
+        }
+    }
+    over
+}
+
+/// What the samples of a scenario that changes the room took and did. The first change apart:
+/// it is the first a writer the room did not hold yet makes (the executor's here, a peer's),
+/// and Automerge numbers a new actor anew through the whole record, work that grows with the
+/// room once per writer. The rest are the steady changes the budgets are for.
+#[derive(Default)]
+struct Changes {
+    samples: Vec<f64>,
+    work: Work,
+    first: Option<(f64, Work)>,
+}
+
+impl Changes {
+    fn push(&mut self, took: f64, work: Work) {
+        if self.first.is_none() {
+            self.first = Some((took, work));
+        } else {
+            self.samples.push(took);
+            self.work = self.work.max(work);
+        }
+    }
+
+    /// The steady samples, and `extra` with their work and the first change's.
+    fn into_record(self, extra: Json) -> (Vec<f64>, Json) {
+        let Self {
+            mut samples,
+            work,
+            first,
+        } = self;
+        let (first_ms, first_work) = first.unwrap_or_default();
+        // One sample alone is the first: it stands for the steady ones too.
+        let work = if samples.is_empty() {
+            samples.push(first_ms);
+            first_work
+        } else {
+            work
+        };
+        let mut extra = with_work(extra, work);
+        if let Json::Object(m) = &mut extra {
+            m.insert("first_ms".into(), json!(first_ms));
+            m.insert("first_work".into(), first_work.json());
+        }
+        (samples, extra)
+    }
+}
+
+/// Put `work` in the record meta `extra`, as its `work` field.
+fn with_work(mut extra: Json, work: Work) -> Json {
+    if extra.is_null() {
+        extra = json!({});
+    }
+    if let Json::Object(m) = &mut extra {
+        m.insert("work".into(), work.json());
+    }
+    extra
+}
+
+thread_local! {
+    static ALLOCATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// An allocator that counts the allocations each thread makes, for [`Work::allocations`]: a
+/// program opts in by installing it as its `#[global_allocator]`; without it the count stays 0.
+pub struct CountingAlloc;
+
+fn counted() {
+    let _ = ALLOCATIONS.try_with(|n| n.set(n.get().saturating_add(1)));
+}
+
+/// The allocations this thread made so far, as [`CountingAlloc`] counted them.
+#[must_use]
+pub fn allocations() -> u64 {
+    ALLOCATIONS.try_with(std::cell::Cell::get).unwrap_or(0)
+}
+
+// SAFETY: every operation forwards the caller's contract unchanged to `System`.
+unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        counted();
+        // SAFETY: as the caller's.
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        counted();
+        // SAFETY: as the caller's.
+        unsafe { std::alloc::System.alloc_zeroed(layout) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: as the caller's.
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
+        counted();
+        // SAFETY: as the caller's.
+        unsafe { std::alloc::System.realloc(ptr, layout, size) }
     }
 }
 
@@ -713,6 +1024,9 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         for record in open(&sized)? {
             out.push(record);
         }
+        if config.open_only {
+            continue;
+        }
         let mut room = sized.open()?;
         room.settle();
         for record in index_everything(&sized, &room) {
@@ -841,16 +1155,26 @@ fn measure_memory(room: &Path, package: &Path) -> Result<f64, String> {
 }
 
 /// Opening the package's main view on a room of the size, through the first frame; and until
-/// search and publication, which read the room off the frame, have it all.
-fn open(sized: &Sized<'_>) -> Result<[Record; 2], String> {
+/// search and publication, which read the room off the frame, have it all. Beside them, loading
+/// the room's record from its saved bytes, which opening a room from disk adds first: the one
+/// part of opening that reads the whole record, and grows with it.
+fn open(sized: &Sized<'_>) -> Result<[Record; 3], String> {
     let mut samples = Vec::new();
     let mut nodes = 0;
     let mut phases = Phases::default();
     let mut ready = Vec::new();
+    let mut live = tilolang_runtime::LiveStats::default();
+    let mut work = None;
     for _ in 0..sized.config.samples {
+        // Each sample opens a room of its own, from a store that read nothing yet.
+        let allocated = allocations();
         let start = Instant::now();
         let mut room = sized.open()?;
         samples.push(ms(start.elapsed()));
+        live = room.list.stats();
+        let mut opened = Work::of(&room, &[]);
+        opened.allocations = opened.allocations.saturating_sub(allocated);
+        work.get_or_insert(opened);
         room.settle();
         ready.push(ms(start.elapsed()));
         nodes = room.list.tree().count();
@@ -859,14 +1183,27 @@ fn open(sized: &Sized<'_>) -> Result<[Record; 2], String> {
         phases.wasm.append(&mut room.phases.wasm);
         phases.imports.append(&mut room.phases.imports);
         phases.compile.append(&mut room.phases.compile);
+        phases.open_host.append(&mut room.phases.open_host);
+        phases.open_load.append(&mut room.phases.open_load);
+        phases.open_view.append(&mut room.phases.open_view);
+        phases.open_rows.append(&mut room.phases.open_rows);
     }
-    let mut extra = phases.take();
+    let mut extra = with_work(phases.take(), work.unwrap_or_default());
     if let Json::Object(m) = &mut extra {
         m.insert("nodes".into(), json!(nodes));
+        m.insert("boundaries".into(), json!(live.boundaries));
+    }
+    let saved = sized.base.clone().save();
+    let mut loads = Vec::new();
+    for _ in 0..sized.config.samples {
+        let start = Instant::now();
+        std::hint::black_box(Doc::load(&saved).map_err(|e| e.to_string())?);
+        loads.push(ms(start.elapsed()));
     }
     Ok([
         sized.record("open", "ms", samples, extra),
         sized.record("ready", "ms", ready, Json::Null),
+        sized.record("load", "ms", loads, json!({"bytes": saved.len()})),
     ])
 }
 
@@ -963,26 +1300,38 @@ fn typing(sized: &Sized<'_>, room: &Room) -> Result<(Typing, String), String> {
 /// in the item's own window, or else into the main window's first text input.
 fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
     let (mut typing, mut text) = typing(sized, room)?;
-    let mut samples = Vec::new();
+    let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         text.push('x');
         let value = Value::text(text.clone());
+        let editor_of = |typing: &Typing| match typing {
+            Typing::Item(editor, _) => Some(editor.stats().renders),
+            Typing::Main(_) => None,
+        };
+        let before = Work::of(room, &[]);
+        let editor_before = editor_of(&typing);
         let start = Instant::now();
-        match &mut typing {
+        let patches = match &mut typing {
             Typing::Item(editor, input) => {
                 editor.edit(input, &value).map_err(|e| e.to_string())?;
                 room.phases.edit.push(ms(start.elapsed()));
-                room.frame(&mut [editor.as_mut()])?;
+                room.frame(&mut [editor.as_mut()])?
             }
             Typing::Main(input) => {
                 room.list.edit(input, &value).map_err(|e| e.to_string())?;
                 room.phases.edit.push(ms(start.elapsed()));
-                room.frame(&mut [])?;
+                room.frame(&mut [])?
             }
+        };
+        let took = ms(start.elapsed());
+        let mut done = Work::of(room, &[]).since(before);
+        if let (Some(after), Some(before)) = (editor_of(&typing), editor_before) {
+            done.renders = done.renders.saturating_add(after.saturating_sub(before));
         }
-        samples.push(ms(start.elapsed()));
+        done.patches = patches as u64;
+        changes.push(took, done);
     }
-    let mut extra = room.phases.take();
+    let (samples, mut extra) = changes.into_record(room.phases.take());
     if let Json::Object(m) = &mut extra {
         let into = match typing {
             Typing::Item(..) => "item window",
@@ -996,17 +1345,23 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
 /// Pressing the main window's first button, one press a frame.
 fn press(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
     let button = first_of(room.list.tree(), "button").ok_or("the main window has no button")?;
-    let mut samples = Vec::new();
+    let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
+        let before = Work::of(room, &[]);
         let start = Instant::now();
         room.list.press(&button).map_err(|e| e.to_string())?;
         room.phases.edit.push(ms(start.elapsed()));
-        if room.frame(&mut [])? == 0 {
+        let patches = room.frame(&mut [])?;
+        if patches == 0 {
             return Err(format!("pressing {button} changed nothing on screen"));
         }
-        samples.push(ms(start.elapsed()));
+        let took = ms(start.elapsed());
+        let mut done = Work::of(room, &[]).since(before);
+        done.patches = patches as u64;
+        changes.push(took, done);
     }
-    Ok(sized.record("press", "ms", samples, room.phases.take()))
+    let (samples, extra) = changes.into_record(room.phases.take());
+    Ok(sized.record("press", "ms", samples, extra))
 }
 
 /// The key of the first node of `kind` in `node`.
@@ -1050,7 +1405,7 @@ fn peer_change<'a>(
 /// A peer changing what is on screen, its change merged into the room.
 fn peer_edit(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
     let mut peer = room.doc.fork();
-    let mut samples = Vec::new();
+    let mut changes = Changes::default();
     for sample in 0..sized.config.samples {
         let (subject, edit) = peer_change(sized, room, sample)?;
         let action = DynAction {
@@ -1065,15 +1420,20 @@ fn peer_edit(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
             }],
         };
         execute(&mut peer, &action, "peer")?;
+        let before = Work::of(room, &[]);
         let start = Instant::now();
         room.doc
             .merge_incoming(&mut peer)
             .map_err(|e| e.to_string())?;
         room.phases.edit.push(ms(start.elapsed()));
-        room.frame(&mut [])?;
-        samples.push(ms(start.elapsed()));
+        let patches = room.frame(&mut [])?;
+        let took = ms(start.elapsed());
+        let mut done = Work::of(room, &[]).since(before);
+        done.patches = patches as u64;
+        changes.push(took, done);
     }
-    Ok(sized.record("peer_edit", "ms", samples, room.phases.take()))
+    let (samples, extra) = changes.into_record(room.phases.take());
+    Ok(sized.record("peer_edit", "ms", samples, extra))
 }
 
 /// A virtual list scrolled a few rows a frame: it shows the rows that came into view and
@@ -1084,6 +1444,7 @@ fn scroll(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> 
     };
     let len = room.list.list_len(&list).unwrap_or(0);
     let mut samples = Vec::new();
+    let mut work = Work::default();
     let mut first = 0usize;
     for _ in 0..sized.config.samples {
         let mut next = first.saturating_add(SCROLL_STEP);
@@ -1091,25 +1452,28 @@ fn scroll(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> 
             next = 0;
         }
         let shown = next..next.saturating_add(PAGE).min(len);
+        let before = Work::of(room, &[]);
         let start = Instant::now();
         room.list.hide_rows(&list, shown.clone());
         for i in shown {
             room.list.row(&list, i).map_err(|e| e.to_string())?;
         }
         samples.push(ms(start.elapsed()));
+        work = work.max(Work::of(room, &[]).since(before));
         first = next;
     }
     let stats = room.list.stats();
+    let extra = json!({
+        "rows_per_frame": SCROLL_STEP,
+        "shown": PAGE,
+        "boundaries": stats.boundaries,
+        "unrendered": stats.unrendered,
+    });
     Ok(Some(sized.record(
         "scroll",
         "ms",
         samples,
-        json!({
-            "rows_per_frame": SCROLL_STEP,
-            "shown": PAGE,
-            "boundaries": stats.boundaries,
-            "unrendered": stats.unrendered,
-        }),
+        with_work(extra, work),
     )))
 }
 
@@ -1164,7 +1528,13 @@ pub fn main(args: &[String]) -> std::process::ExitCode {
     }
     match parse(args).and_then(|config| {
         let env = config.env.clone();
-        run(&config, &mut |record| println!("{}", record.to_json(&env)))?;
+        let records = run(&config, &mut |record| println!("{}", record.to_json(&env)))?;
+        if config.budgets {
+            let over = over_budget(&records, &mut |line| eprintln!("{line}"));
+            if !over.is_empty() {
+                return Err(format!("over budget:\n{}", over.join("\n")));
+            }
+        }
         Ok(())
     }) {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -1187,6 +1557,8 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
             program,
             args: Vec::new(),
         }),
+        open_only: false,
+        budgets: false,
         env: Env {
             commit: std::env::var("TILO_COMMIT").unwrap_or_else(|_| "unknown".into()),
             virtualization: "none".into(),
@@ -1220,6 +1592,8 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
                 };
             }
             "--profile" => config.profile = true,
+            "--open-only" => config.open_only = true,
+            "--budgets" => config.budgets = true,
             "--commit" => config.env.commit = value()?,
             "--runner" => config.env.runner = value()?,
             "--virtualization" => config.env.virtualization = value()?,
