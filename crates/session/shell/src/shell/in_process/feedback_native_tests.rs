@@ -366,7 +366,9 @@ fn certified_manager(
     reason = "one journey: the room, its chat, the cold publisher, its retry and a fresh reader"
 )]
 fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner() {
-    use crate::shell::network::one_host_tests::cold_reads::{CHAT, ChatAuthor, open_cold};
+    use crate::shell::network::one_host_tests::cold_reads::{
+        CHAT, SealedChat, open_cold, until_broker_took,
+    };
     use crate::shell::network::one_host_tests::{Device, Wakes, hosted_workspace, until};
     let directory = tempfile::tempdir().unwrap();
     // The broker binds only inside an owner-only directory.
@@ -407,16 +409,14 @@ fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner()
         .bind_workspace(&room.to_string(), &selected)
         .unwrap();
     device.open_app_first(room, CHAT);
-    let socket = directory.path().join("collab.sock");
-    let broker = device.start_broker(&socket);
     let network = Arc::clone(device.net());
     let (reporter, _) = network.feedback_custody(room).unwrap();
     let author = hex::encode(reporter.user_public_key);
 
     // The chat app makes the room's Chat, with its feedback channel, on its
     // own sealed channel; the room's host keeps it.
-    let mut chat_app = ChatAuthor::new(device.connect_app(&socket, CHAT, room));
-    chat_app.write(&author, |document, person| {
+    let mut chat_app = SealedChat::new();
+    chat_app.write(&device, room, &author, |document, person| {
         chat::demo::start(document, person, "Fixture", "F").unwrap();
         chat::demo::insert_category(document, "feedback-category", "Feedback").unwrap();
         chat::demo::insert_channel(
@@ -429,10 +429,11 @@ fn native_publisher_cold_reads_and_same_id_retry_use_the_original_broker_owner()
         .unwrap();
     });
     until(&[&device], "the Chat on the room's host", || {
-        chat_app.pump();
         (device.retained_writes(room, CHAT) >= 1).then_some(())
     });
-    drop(chat_app);
+    let socket = directory.path().join("collab.sock");
+    let broker = device.start_broker(&socket);
+    until_broker_took(&[&device], &device, CHAT);
     let made = device.retained_writes(room, CHAT);
 
     let destination = destination_in(room);

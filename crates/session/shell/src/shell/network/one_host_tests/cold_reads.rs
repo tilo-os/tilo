@@ -12,7 +12,7 @@ use std::sync::Arc;
 use ed25519_dalek::Signer as _;
 use tilo_user_identity::DeviceCapabilities;
 use ui::application::{ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget};
-use ui::collaboration::{CertifiedEndpointIdentity, CollabEvent, CollabRequest};
+use ui::collaboration::CertifiedEndpointIdentity;
 use ui::permissions::{PermissionContext, Role, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners};
 
@@ -107,62 +107,113 @@ impl Device {
     }
 }
 
-/// The chat app authoring the room's chat on its own sealed channel, as
-/// the chat app does through its device's broker.
-pub(crate) struct ChatAuthor {
-    manager: ui::collaboration::CollaborationManager,
-    doc: automerge::AutoCommit,
-    sent: bool,
-}
-
-impl ChatAuthor {
-    pub(crate) fn new(manager: ui::collaboration::CollaborationManager) -> Self {
-        Self {
-            manager,
-            doc: automerge::AutoCommit::new(),
-            sent: false,
+impl Device {
+    /// Write `changes` (Automerge change bytes) into `app`'s `record` in
+    /// `room`, as the app does on its sealed channel: sealed under the
+    /// record's channel keys, which this device asks the room's steward for,
+    /// signed by this device and published to the room's host. Before this
+    /// device serves through a broker, whose channel service then holds the
+    /// keys instead.
+    pub(crate) fn write_sealed(&self, room: RoomId, app: &str, record: &str, changes: Vec<u8>) {
+        let keys = until(&[self], "the record's channel keys", || {
+            let (channels, _) = self.channels.as_ref()?;
+            let route = collab_types::ChannelRoute::new(app, record);
+            match channels.access_record(room, &route).0 {
+                super::ChannelAccess::Ready(keys) => Some(keys),
+                super::ChannelAccess::Waiting => None,
+                other => panic!("{} cannot open {app}'s channel: {other:?}", self.label),
+            }
+        });
+        let key = self.key();
+        let room_id = room.to_string();
+        let artifact = collab_types::document_artifact_id(app, &room_id, record);
+        let frames = collab_types::DocumentMutation::Incremental(changes)
+            .encode_frames()
+            .unwrap();
+        for frame in frames {
+            let (metadata, sealed) = keys
+                .seal_content(
+                    artifact,
+                    collab_types::ContentRetention::of_frame(&frame),
+                    &frame,
+                )
+                .unwrap();
+            let now = std::time::SystemTime::now();
+            let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
+                sealed,
+                artifact,
+                collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+                collab_types::document_attestation_id(app, &room_id, record),
+                collab_types::OpKind::Change,
+                now,
+                collab_types::next_unordered_document_sequence(now),
+                metadata,
+            );
+            collab_types::sign_op(&mut op, &key).unwrap();
+            self.net()
+                .publish_document(app.into(), room_id.clone(), record, op);
         }
     }
+}
 
-    /// Change the chat with `change`, as `person`, and send it: the chat's
-    /// first state whole, every change after as itself.
-    pub(crate) fn write(
-        &mut self,
-        person: &str,
-        change: impl FnOnce(&mut automerge::AutoCommit, &str),
-    ) {
-        let heads = self.doc.get_heads();
-        if !self.sent {
+/// The chat app authoring the room's chat on its device's sealed channel,
+/// before the device serves through its broker.
+pub(crate) struct SealedChat {
+    doc: automerge::AutoCommit,
+}
+
+impl SealedChat {
+    pub(crate) fn new() -> Self {
+        let mut doc = automerge::AutoCommit::new();
+        {
             use tilo_resource::{Fields as _, Resource as _};
             chat::Chat::default()
-                .write_fields(&mut self.doc, &automerge::ROOT)
+                .write_fields(&mut doc, &automerge::ROOT)
                 .expect("the chat's fields");
-            tilo_resource::evolution::write_version(&mut self.doc, chat::Chat::VERSION)
+            tilo_resource::evolution::write_version(&mut doc, chat::Chat::VERSION)
                 .expect("the chat's version");
-            self.doc.commit_with(
+            doc.commit_with(
                 automerge::transaction::CommitOptions::default()
                     .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
             );
         }
-        change(&mut self.doc, person);
-        let request = if self.sent {
-            CollabRequest::document_incremental(self.doc.save_after(&heads))
-        } else {
-            CollabRequest::document_snapshot(self.doc.save())
-        };
-        self.sent = true;
-        self.manager.send(request);
+        Self { doc }
     }
 
-    /// Answer what the broker asked of the app since the last call.
-    pub(crate) fn pump(&mut self) {
-        for event in self.manager.poll() {
-            if let CollabEvent::DocumentSnapshotRequested { .. } = event {
-                self.manager
-                    .send(CollabRequest::document_snapshot(self.doc.save()));
-            }
-        }
+    /// Change the chat with `change` on `device` in `room`, as `person`,
+    /// and write it there: the chat's genesis with its first change.
+    pub(crate) fn write(
+        &mut self,
+        device: &Device,
+        room: RoomId,
+        person: &str,
+        change: impl FnOnce(&mut automerge::AutoCommit, &str),
+    ) {
+        let first = self.doc.get_changes(&[]).len() == 1;
+        let heads = if first {
+            Vec::new()
+        } else {
+            self.doc.get_heads()
+        };
+        change(&mut self.doc, person);
+        let changes = self.doc.save_after(&heads);
+        device.write_sealed(room, CHAT, "", changes);
     }
+}
+
+/// Wait until `device`'s broker took every sealed write of `app` that
+/// reached its network: the broker's drain empties the network's inbound
+/// documents as it admits them.
+pub(crate) fn until_broker_took(devices: &[&Device], device: &Device, app: &str) {
+    let inbound = device.net().inbound_documents_handle();
+    until(devices, "the broker to take the record's writes", || {
+        (!inbound
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|document| document.app_id == app))
+        .then_some(())
+    });
 }
 
 /// An app of `definition` opening the package's record in `room` cold, in
@@ -260,10 +311,16 @@ pub(crate) fn chat_channels(owners: &RecordOwners, room: RoomId) -> Option<Vec<S
 fn a_record_written_on_one_device_opens_in_full_on_another_device_of_the_person() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = scratch();
+    // The brokers bind only inside an owner-only directory.
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
     let wakes = Arc::new(Wakes::default());
     let ada = Person::new(81);
     home.env().set("TILO_USER_ID", ada.id());
-    let mut desktop = Device::start(
+    let desktop = Device::start(
         &ada,
         "Ada's desktop",
         &dir.path().join("desktop"),
@@ -290,24 +347,19 @@ fn a_record_written_on_one_device_opens_in_full_on_another_device_of_the_person(
     // The desktop's chat app makes the room's chat, in two writes, on its
     // sealed channel; the room's host, on the desktop, keeps both.
     desktop.open_app_first(room, CHAT);
-    let desktop_socket = dir.path().join("desktop-collab.sock");
-    let desktop_broker = desktop.start_broker(&desktop_socket);
-    let mut author = ChatAuthor::new(desktop.connect_app(&desktop_socket, CHAT, room));
     let person = hex::encode(ada.user());
-    author.write(&person, |document, person| {
+    let mut chat = SealedChat::new();
+    chat.write(&desktop, room, &person, |document, person| {
         chat::demo::start(document, person, "Ada", "A").unwrap();
         chat::demo::insert_category(document, "projects", "Projects").unwrap();
     });
     until(
         &[&desktop, &laptop],
         "the chat's first write on the host",
-        || {
-            author.pump();
-            (desktop.retained_writes(room, CHAT) >= 1).then_some(())
-        },
+        || (desktop.retained_writes(room, CHAT) >= 1).then_some(()),
     );
     let first = desktop.retained_writes(room, CHAT);
-    author.write(&person, |document, _| {
+    chat.write(&desktop, room, &person, |document, _| {
         chat::demo::insert_channel(
             document,
             "harbour",
@@ -320,16 +372,14 @@ fn a_record_written_on_one_device_opens_in_full_on_another_device_of_the_person(
     until(
         &[&desktop, &laptop],
         "the chat's second write on the host",
-        || {
-            author.pump();
-            (desktop.retained_writes(room, CHAT) > first).then_some(())
-        },
+        || (desktop.retained_writes(room, CHAT) > first).then_some(()),
     );
 
     // Only now does the chat app open on the laptop, in a fresh profile,
-    // through the laptop's own broker, which never held the record.
+    // through the laptop's own broker, which never had a window of it.
     let laptop_socket = dir.path().join("laptop-collab.sock");
     let laptop_broker = laptop.start_broker(&laptop_socket);
+    until_broker_took(&[&desktop, &laptop], &laptop, CHAT);
     let (mut app, owners) = open_cold(
         &dir.path().join("laptop-chat"),
         chat::definition(),
@@ -342,7 +392,6 @@ fn a_record_written_on_one_device_opens_in_full_on_another_device_of_the_person(
         "the chat in full in the laptop's cold app",
         || {
             app.pump_hosted_model();
-            author.pump();
             chat_channels(&owners, room)
                 .filter(|channels| channels.iter().any(|id| id == "harbour"))
         },
@@ -352,7 +401,6 @@ fn a_record_written_on_one_device_opens_in_full_on_another_device_of_the_person(
         "the laptop's cold app shows the channel the desktop wrote last, found {channels:?}"
     );
     drop(app);
-    drop(author);
-    drop((laptop_broker, desktop_broker));
+    drop(laptop_broker);
     drop((desktop, laptop));
 }
