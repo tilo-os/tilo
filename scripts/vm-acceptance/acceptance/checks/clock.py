@@ -75,8 +75,12 @@ def clock_behind_the_certificate(ctx, res):
         # fs waits: up, not restarting every few seconds.
         with_fs = _fs_serves_this_device(ctx)
         if not with_fs:
-            res.metrics["fs"] = (f"not started: no device certificate at {DEVICE_CERT}, whose absence "
-                                 "fs.service's condition skips it for; this slot's identity is its own")
+            # The desktop's half still applies and is judged; the fs half is not seen, and
+            # the detail says so on a pass as on a failure.
+            why = (f"fs part skipped: no device certificate at {DEVICE_CERT}, so fs.service's "
+                   "condition never starts it; this slot's identity is its own")
+            res.metrics["fs"] = why
+            res.detail = why
         first = _fs(ctx)
         if with_fs:
             ctx.settle(12)
