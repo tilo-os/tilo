@@ -12,6 +12,8 @@
 //!       `people-pills.png`, `bar-unread.png`, `bar-unread-2x.png`,
 //!       `bar-pictures.png` (two people wearing pictures they chose),
 //!       `profile-own-edit.png` (your card with your picture and id),
+//!       `profile-own-linked.png` (that card with Discord linked and the
+//!       control hints' switch),
 //!       `profile-other.png` (Ada's card, opened from her face),
 //!       `author-discord.png` (a bridged author's Discord mark and its tip)
 
@@ -438,6 +440,19 @@ fn own_edit_model() -> ProfileModel {
     model
 }
 
+/// Your card as a page builds it with your Discord account linked: your
+/// picture, id and what you share, the linked handle with Unlink, and the
+/// control hints' switch.
+fn own_linked_model() -> ProfileModel {
+    let mut model = own_edit_model();
+    model.linked = discord(LinkState::Linked(tilo_app::linked_accounts::AccountName {
+        user_name: "quinn.davis".into(),
+        display_name: Some("Quinn".into()),
+    }));
+    model.control_hints = Some(true);
+    model
+}
+
 /// Ada's card as you see it: what she is doing, written automatically, and
 /// writing to her or following her.
 fn other_model() -> ProfileModel {
@@ -603,6 +618,13 @@ fn main() {
     let (anchor, area) = (shown.bar.own_avatar_rect(), shown.rect);
     shown.profile.toggle(&own_edit_model(), anchor, area);
     shoot(&mut harness, "profile-own-edit.png");
+    // Your card as a page shows it once your Discord account is linked:
+    // its handle with Unlink, and the control hints' switch below.
+    let shown = harness.root_mut::<Stage>();
+    shown.profile.close();
+    let _ = shown.profile.take_choice();
+    shown.profile.toggle(&own_linked_model(), anchor, area);
+    shoot(&mut harness, "profile-own-linked.png");
     // A fresh stage: Ada's card opens from her face on the bar.
     let mut harness = FrameHarness::for_root(State::new(), stage(), (1440, 900), Theme::dark());
     harness.settle_for_capture(settle);

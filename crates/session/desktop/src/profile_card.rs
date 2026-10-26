@@ -1537,6 +1537,44 @@ mod tests {
         assert!(frame.is_open());
     }
 
+    /// A page's own card with a linked account keeps its status field its
+    /// height, and its rows follow one another: a linked row that outgrew
+    /// its first measure squashed the field above it to nothing.
+    #[test]
+    fn a_linked_card_keeps_its_status_field() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &ProfileModel {
+                linked: vec![discord(LinkState::Linked(ada_account()))],
+                sharing: Some(ui::StatusSharing::Automatic),
+                status: "Sketching".into(),
+                control_hints: Some(true),
+                ..model()
+            },
+            Rect::new(1200.0, 2.0, 1220.0, 22.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        let mut frame =
+            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
+        let harness = ui::headless::Framed::harness_mut(&mut frame);
+        harness.poll_frame().unwrap();
+        let targets = harness.targets();
+        let at = |name: &str| {
+            *targets
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} is laid out: {targets:?}"))
+        };
+        let status = at("profile-status");
+        let sharing = at("profile-sharing");
+        let unlink = at("profile-unlink-so.tilo.discord");
+        let hints = at("profile-control-hints-toggle");
+        assert!(status.height() > 0.0, "the status field has its height");
+        assert!(status.y1 <= sharing.y0, "{status:?} above {sharing:?}");
+        assert!(sharing.y1 <= unlink.y0, "{sharing:?} above {unlink:?}");
+        assert!(unlink.y1 <= hints.y0, "{unlink:?} above {hints:?}");
+    }
+
     #[test]
     fn a_linked_account_offers_unlink() {
         let mut frame = framed(vec![discord(LinkState::Linked(ada_account()))]);
@@ -1678,7 +1716,7 @@ mod tests {
         let harness = ui::headless::Framed::harness_mut(&mut frame);
         harness.poll_frame().unwrap();
         let before = harness.rebuilt_frames();
-        *next.borrow_mut() = Some(vec![discord(LinkState::Unlinked)]);
+        *next.borrow_mut() = Some(vec![discord(unlinked())]);
         harness.poll_frame().unwrap();
         assert_eq!(
             harness.rebuilt_frames(),
