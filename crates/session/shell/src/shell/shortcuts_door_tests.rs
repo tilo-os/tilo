@@ -491,8 +491,22 @@ struct Door {
     _host_identity: tilo_test_env::ScopedEnv,
 }
 
+impl Drop for Door {
+    /// A failing test says what became of its requests to the room's host,
+    /// which the network's threads noted where the test's output misses.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "what became of requests to rooms' hosts:{}",
+                crate::network::actor::room_governance::trace::said()
+            );
+        }
+    }
+}
+
 impl Door {
     fn open() -> Self {
+        crate::network::actor::room_governance::trace::capture_warnings();
         let dir = tempfile::tempdir().expect("socket directory");
         // The broker binds only inside an owner-only directory.
         std::fs::set_permissions(

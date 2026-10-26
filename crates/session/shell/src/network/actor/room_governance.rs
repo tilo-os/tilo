@@ -86,6 +86,79 @@ pub(super) enum Sessions {
     Closed,
 }
 
+/// What became of invocations to a room's host, kept in tests only, so a
+/// test that times out waiting on one says where it stopped: output from
+/// the network's threads is not captured with the test's.
+pub(crate) mod trace {
+    #[cfg(test)]
+    static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    /// Note `line`, in tests.
+    #[cfg_attr(
+        not(test),
+        expect(unused_variables, reason = "only tests keep what is noted")
+    )]
+    pub(crate) fn note(line: impl FnOnce() -> String) {
+        #[cfg(test)]
+        {
+            let started = *STARTED.get_or_init(std::time::Instant::now);
+            let mut said = SAID
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if said.len() < 400 {
+                said.push(format!(
+                    "{:>8.3}s {}",
+                    started.elapsed().as_secs_f64(),
+                    line()
+                ));
+            }
+        }
+    }
+
+    #[cfg(test)]
+    static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+    /// Keep every warning logged in this process from now on with what is
+    /// noted, from the network's threads and the hosts' as well.
+    #[cfg(test)]
+    pub(crate) fn capture_warnings() {
+        static INSTALLED: std::sync::Once = std::sync::Once::new();
+        struct Lines;
+        impl std::io::Write for Lines {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let line = String::from_utf8_lossy(bytes).trim_end().to_owned();
+                note(|| line);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        INSTALLED.call_once(|| {
+            let subscriber = tracing_subscriber::fmt()
+                .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
+                .with_writer(|| Lines)
+                .with_ansi(false)
+                .without_time()
+                .finish();
+            let _ = tracing::subscriber::set_global_default(subscriber);
+        });
+    }
+
+    /// Everything noted so far, a line each.
+    #[cfg(test)]
+    pub(crate) fn said() -> String {
+        SAID.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .fold(String::new(), |mut said, line| {
+                said.push_str("\n    ");
+                said.push_str(line);
+                said
+            })
+    }
+}
+
 /// Why an invocation sent on a workspace's sessions has no answer coming.
 const SESSIONS_CLOSED: &str = "the connection to the room's host was lost";
 
@@ -140,6 +213,7 @@ impl Waiting {
         self.entries.retain(|_, waiter| {
             let keep = sessions(waiter.ws) == Sessions::Open;
             if !keep {
+                trace::note(|| format!("sent invocation failed: ws {} has no session", waiter.ws));
                 let _ = waiter.reply.send(Err(SESSIONS_CLOSED.into()));
             }
             keep
@@ -158,6 +232,12 @@ impl Waiting {
                 Sessions::Open => ready.push(request),
                 Sessions::Connecting => self.connecting.push(request),
                 Sessions::Closed => {
+                    trace::note(|| {
+                        format!(
+                            "held {} failed: ws {} has no session",
+                            request.invoke.invocation, request.ws
+                        )
+                    });
                     let _ = request.reply.send(Err(SESSIONS_CLOSED.into()));
                 }
             }
@@ -190,8 +270,13 @@ impl Waiting {
 
     /// Drop what has waited too long: its caller stopped waiting.
     fn forget(&mut self, now: Instant) {
-        self.entries
-            .retain(|_, waiter| now.saturating_duration_since(waiter.since) < FORGET_AFTER);
+        self.entries.retain(|invocation, waiter| {
+            let keep = now.saturating_duration_since(waiter.since) < FORGET_AFTER;
+            if !keep {
+                trace::note(|| format!("forgot {invocation}"));
+            }
+            keep
+        });
         self.unsent
             .retain(|(since, _)| now.saturating_duration_since(*since) < FORGET_AFTER);
     }
@@ -259,6 +344,14 @@ impl Waiting {
             .entries
             .get(&receipt.invocation)
             .is_some_and(|waiter| waiter.ws == ws && waiter.host == author);
+        trace::note(|| {
+            format!(
+                "receipt for {} from {author} on ws {ws}: {}, {:?}",
+                receipt.invocation,
+                if ours { "ours" } else { "not ours" },
+                receipt.status
+            )
+        });
         if !ours {
             return false;
         }
