@@ -1753,6 +1753,57 @@ mod tests {
     use crate::ids::compose_id;
     use tilo_automerge::ApplyIncoming;
 
+    /// A grant given and revoked in a room is what the room document holds:
+    /// the grant is in it under its id while it stands, gone once revoked,
+    /// signed by whoever gave it, and with it a member's role preset.
+    #[test]
+    fn a_grant_and_its_revocation_are_what_the_room_document_carries() {
+        use tilo_action_policy::{Answer, Grant, KindSet, Level, Subject, TreePath};
+
+        let mut policy = tilo_action_policy::RoomPolicy::new("r", "owner");
+        let mut doc = AutoCommit::new();
+        project_room_policy(&mut doc, &policy).expect("projected");
+        let roles = room_policy_of(&doc, "r");
+        assert_eq!(roles.owner.as_deref(), Some("owner"));
+        assert!(
+            roles
+                .grants
+                .iter()
+                .any(|grant| grant.subject == Subject::role(tilo_action_policy::Role::Editor)),
+            "a room document carries its roles' presets"
+        );
+
+        let grant = Grant::new(
+            "bob-mail",
+            Subject::person("bob"),
+            TreePath::room("r")
+                .app("mail")
+                .any(Level::Resource)
+                .any(Level::Action),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            Subject::person("owner"),
+        );
+        policy.grants.push(grant.clone());
+        project_room_policy(&mut doc, &policy).expect("projected");
+        let held = room_policy_of(&doc, "r");
+        let recorded = held
+            .grants
+            .iter()
+            .find(|held| held.id == grant.id)
+            .expect("the room document carries the grant");
+        assert_eq!(recorded, &grant);
+        assert_eq!(recorded.granted_by, Subject::person("owner"));
+
+        policy.grants.retain(|held| held.id != grant.id);
+        project_room_policy(&mut doc, &policy).expect("projected");
+        let revoked = room_policy_of(&doc, "r");
+        assert!(
+            revoked.grants.iter().all(|held| held.id != grant.id),
+            "a revoked grant leaves the room document"
+        );
+    }
+
     #[test]
     fn a_bound_instance_survives_the_owner_re_sending_its_placeholder() {
         let placeholder = TileContent::AppPlaceholder {
