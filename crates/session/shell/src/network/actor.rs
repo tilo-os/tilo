@@ -2578,6 +2578,14 @@ impl ActorState {
     /// session of the workspace once that session is subscribed.
     fn send_room_governance(&mut self, request: room_governance::Request) {
         let (ws, to) = (request.ws, request.to);
+        room_governance::trace::note(|| {
+            format!(
+                "send {} {} on ws {ws} to {to:?}: sessions {:?}",
+                request.invoke.invocation,
+                request.invoke.target.address.action,
+                self.sessions_of(ws)
+            )
+        });
         match to {
             room_governance::Addressee::Device(host) => {
                 // Its answer comes on a session of its workspace: with none
@@ -2684,6 +2692,7 @@ impl ActorState {
                 .publish_remote_action(device, frame.to_vec())
                 .is_ok()
         });
+        room_governance::trace::note(|| format!("published to ws {ws} host {host}: sent {sent}"));
         if !sent {
             tracing::warn!(ws, %host, "no session with the room's host to send a request on");
         }
