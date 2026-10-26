@@ -6,7 +6,7 @@ use ui::window_toolbar::{ToolbarEvent, WindowToolbar};
 
 use super::super::bench::{Bench, WINDOW, deck_of};
 use super::super::{ElementKind, Layout, Mode, Slide, SlidesApp, SlidesEffect};
-use super::{EDITOR, INSERT, OVERVIEW, PRESENT, PROPERTIES, insert_id};
+use super::{EDITOR, INSERT, OVERVIEW, PRESENT, PROPERTIES, ZOOM, insert_id};
 
 fn action(id: &str) -> ToolbarEvent {
     ToolbarEvent::Action { id: id.into() }
@@ -61,7 +61,7 @@ fn the_editor_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
     assert_eq!(ids, [EDITOR, OVERVIEW]);
     assert_eq!(views.chosen, EDITOR);
     assert_eq!(toolbar.sidebar, Some(true), "the docked slide list is open");
-    assert_eq!(action_ids(&toolbar), [INSERT, PRESENT, PROPERTIES]);
+    assert_eq!(action_ids(&toolbar), [INSERT, PRESENT, PROPERTIES, ZOOM]);
     let insert = &toolbar.actions[0];
     let tools: Vec<&str> = insert.items.iter().map(|item| item.id.as_str()).collect();
     assert_eq!(

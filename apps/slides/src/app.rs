@@ -287,6 +287,55 @@ struct RoutedEvent<'a, 'doc> {
     taffy: &'a TaffyTree<()>,
 }
 
+/// How the editor's slide is scaled.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum SlideZoom {
+    /// As large as the pane allows: what the editor opens at.
+    #[default]
+    Fit,
+    /// A zoom the person chose, in screen px per slide unit (1.0 is the
+    /// slide at its design size).
+    Pinned(f64),
+}
+
+impl SlideZoom {
+    /// The steps a zoom in or out lands on, from the fit scale upward.
+    pub(crate) const STEPS: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0];
+
+    /// The zoom's own name: "Fit to window", or the percentage.
+    pub(crate) fn label(self) -> String {
+        match self {
+            Self::Fit => tr("slides-zoom-fit"),
+            Self::Pinned(scale) => format!("{:.0}%", scale * 100.0),
+        }
+    }
+
+    /// One step larger, or smaller, than `current`, within the steps.
+    pub(crate) fn step(self, current: f64, forward: bool) -> Self {
+        let steps = Self::STEPS;
+        let found = if forward {
+            steps
+                .iter()
+                .copied()
+                .find(|step| *step > current + 0.001)
+                .unwrap_or(steps[steps.len() - 1])
+        } else {
+            steps
+                .iter()
+                .rev()
+                .copied()
+                .find(|step| *step < current - 0.001)
+                .unwrap_or(steps[0])
+        };
+        Self::Pinned(found)
+    }
+
+    /// Whether the zoom is the fitted one: nothing was chosen.
+    pub(crate) fn is_fit(self) -> bool {
+        matches!(self, Self::Fit)
+    }
+}
+
 impl RoutedEvent<'_, '_> {
     /// The event context a routed child widget sees, reporting into `handled`.
     fn event_ctx<'b>(&'b mut self, handled: &'b mut bool) -> ui::widget::EventCtx<'b> {
@@ -425,6 +474,17 @@ pub struct SlidesApp {
     /// pointer hit testing and accessibility bounds, so large-text mode is a
     /// layout state rather than a draw-only override.
     text_scale: f32,
+    /// How the slide is scaled in the editor: fitted to the pane, as it opens,
+    /// or a zoom the person chose — a slide is 13 cm of design at 1.0, and
+    /// reading 9 pt body copy off a fitted 16:9 page in a 13-inch window is
+    /// not possible.
+    slide_zoom: SlideZoom,
+    /// How far the zoomed slide is moved from the pane's centre, in screen px
+    /// along each axis, clamped so the slide can always be reached whole.
+    slide_pan: (f64, f64),
+    /// The pane the slide is drawn in, as the last frame measured it: what a
+    /// zoom and the wheel clamp the pan against.
+    slide_pane: std::cell::Cell<(f64, f64)>,
     /// Width breakpoint between the docked and overlay rail layouts. A field
     /// (not a constant) so `--shots` can force a narrow layout deterministically.
 
@@ -563,6 +623,9 @@ impl SlidesApp {
             last_flap_tick: ui::time::now(),
             flap_uninitialised: true,
             text_scale: 1.0,
+            slide_zoom: SlideZoom::default(),
+            slide_pan: (0.0, 0.0),
+            slide_pane: std::cell::Cell::new((0.0, 0.0)),
             deck_rev: 0,
             images: ImageStore::new(content.clone()),
             content,
@@ -1026,6 +1089,79 @@ impl SlidesApp {
     /// `compute_chrome` uses), for pointer tests that need only the panel.
     fn inspector_rect(&self) -> Rect {
         self.inspector_drawer.sidebar_rect()
+    }
+
+    /// Whether the pointer is over the slide's canvas in the editor: not the
+    /// slide list, not the properties, and not the chrome around them.
+    fn in_editor_canvas(&self) -> bool {
+        if self.mode != Mode::Edit {
+            return false;
+        }
+        let chrome = self.compute_chrome();
+        let reach = self.chrome_metrics.s6;
+        chrome
+            .slide_dest
+            .inflate(reach, reach)
+            .contains(self.last_mouse)
+            && !self.rail_rect().contains(self.last_mouse)
+            && !(self.inspector_open() && self.inspector_rect().contains(self.last_mouse))
+    }
+
+    /// Zoom the slide one step in (`direction` above zero) or out, from the
+    /// size it shows at now. The fitted size is the floor, so Ctrl+0 and two
+    /// steps back always bring the whole slide into view.
+    pub(crate) fn zoom_slide(&mut self, direction: f64) {
+        if direction == 0.0 {
+            return;
+        }
+        let current = self.compute_chrome().scale;
+        self.slide_zoom = self.slide_zoom.step(current, direction > 0.0);
+        self.clamp_slide_pan();
+    }
+
+    /// Show the whole slide in the pane again.
+    pub(crate) fn zoom_slide_to_fit(&mut self) {
+        self.slide_zoom = SlideZoom::Fit;
+        self.slide_pan = (0.0, 0.0);
+    }
+
+    /// Zoom to `scale`, where `None` fits the slide to the pane.
+    pub(crate) fn zoom_slide_to(&mut self, scale: Option<f64>) {
+        match scale {
+            Some(scale) => self.slide_zoom = SlideZoom::Pinned(scale),
+            None => self.slide_zoom = SlideZoom::Fit,
+        }
+        self.clamp_slide_pan();
+    }
+
+    /// Move a zoomed slide by `(dx, dy)` screen px, as the wheel does,
+    /// stopping where its edge reaches the pane's. Returns whether it moved: a
+    /// fitted slide, or one already at its edge, has nowhere to go and leaves
+    /// the wheel to whoever is below.
+    pub(crate) fn pan_slide(&mut self, dx: f64, dy: f64) -> bool {
+        if self.slide_zoom.is_fit() {
+            return false;
+        }
+        let before = self.slide_pan;
+        self.slide_pan = (self.slide_pan.0 + dx, self.slide_pan.1 + dy);
+        self.clamp_slide_pan();
+        self.slide_pan != before
+    }
+
+    /// Keep the slide's pan inside what the pane does not show: a zoomed slide
+    /// can be moved as far as its own overflow, and no further.
+    fn clamp_slide_pan(&mut self) {
+        let (avail_w, avail_h) = self.slide_pane.get();
+        let SlideZoom::Pinned(scale) = self.slide_zoom else {
+            self.slide_pan = (0.0, 0.0);
+            return;
+        };
+        let reach_x = ((SLIDE_W * scale - avail_w) / 2.0).max(0.0);
+        let reach_y = ((SLIDE_H * scale - avail_h) / 2.0).max(0.0);
+        self.slide_pan = (
+            self.slide_pan.0.clamp(-reach_x, reach_x),
+            self.slide_pan.1.clamp(-reach_y, reach_y),
+        );
     }
 
     /// The rail's painted rect, resolved from the current width + flap reveal.
@@ -3240,7 +3376,7 @@ impl SlidesApp {
                 ElementState::Released => self.on_release(handled),
             },
             WindowEvent::MouseWheel { delta, .. } => {
-                self.on_wheel(*delta, scale_factor, handled);
+                self.on_wheel(*delta, scale_factor, modifiers.state(), handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -4127,7 +4263,13 @@ impl SlidesApp {
     /// Vertical mouse-wheel scrolling for the two scrollable surfaces: the
     /// edit-mode thumbnail rail (only while the pointer is over it) and the
     /// slide-sorter overview grid.
-    fn on_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64, handled: &mut bool) {
+    fn on_wheel(
+        &mut self,
+        delta: MouseScrollDelta,
+        scale_factor: f64,
+        modifiers: ui::winit::keyboard::ModifiersState,
+        handled: &mut bool,
+    ) {
         // Positive wheel deltas scroll the content up (toward the start), so we
         // subtract from the offset.
         let dy = match delta {
@@ -4145,6 +4287,17 @@ impl SlidesApp {
                     self.sync_page_rail();
                     if self.page_sidebar.on_wheel(-dy) {
                         self.rail_scroll = self.page_sidebar.scroll();
+                        *handled = true;
+                    }
+                } else if self.in_editor_canvas() {
+                    // Over the slide itself: the wheel moves a zoomed slide,
+                    // and with the command modifier it zooms toward the step
+                    // above or below where it is — a slide a person zoomed in
+                    // to read is one they can also move.
+                    if modifiers.control_key() || modifiers.super_key() {
+                        self.zoom_slide(if dy > 0.0 { 1.0 } else { -1.0 });
+                        *handled = true;
+                    } else if self.pan_slide(0.0, dy) {
                         *handled = true;
                     }
                 } else if self.inspector_open() && self.inspector_rect().contains(self.last_mouse) {
@@ -4409,6 +4562,21 @@ impl SlidesApp {
         if ctrl && lc == "d" {
             self.duplicate_element();
             *handled = true;
+            return;
+        }
+        // The zoom chords every app shares: the slide has a size of its own.
+        if ctrl && matches!(lc.as_str(), "=" | "+" | "-" | "0") {
+            match lc.as_str() {
+                "=" | "+" => self.zoom_slide(1.0),
+                "-" => self.zoom_slide(-1.0),
+                _ => self.zoom_slide_to_fit(),
+            }
+            *handled = true;
+            return;
+        }
+        // A chord the app does not use is the window's, not a plain letter:
+        // Ctrl+P is not "start presenting".
+        if ctrl {
             return;
         }
         match lc.as_str() {

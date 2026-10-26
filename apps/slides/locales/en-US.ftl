@@ -194,3 +194,8 @@ slides-delete-element = Deleted { $item }
 slides-bring-to-front = Brought { $item } to the front
 slides-send-to-back = Sent { $item } to the back
 slides-replace-deck = Replaced the deck with { $title }
+
+## Zoom: how large the slide is drawn in the editing pane
+
+slides-zoom-fit = Fit to window
+slides-zoom-at = Zoom: { $zoom }
