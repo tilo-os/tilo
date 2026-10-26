@@ -41,10 +41,12 @@ fn png(width: u32, height: u32, noisy: bool) -> Vec<u8> {
 fn images(app: &TestApp<NotesShell>, page: PageId) -> Vec<(String, Vec<u8>)> {
     let store = app.content();
     app.read_document(|doc| {
-        let assets =
-            notes::notebook::image_snapshot(&notes::read::notebook(doc).images, |digest| {
-                store.read(digest)
-            });
+        let assets = notes::notebook::image_snapshot(
+            &notes::read::notebook(doc)
+                .expect("the notebook reads")
+                .images,
+            |digest| store.read(digest),
+        );
         read::page_block_snapshots(doc, page)
             .into_iter()
             .filter_map(|(_, text)| {

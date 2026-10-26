@@ -748,6 +748,10 @@ pub struct PdfApp {
     form_fields: Vec<tilo_pdf::FormField>,
     /// Form values recorded in the document's record, by field name.
     form_values: std::collections::BTreeMap<String, model::FormEntry>,
+    /// The newest read of the markup record. A failed read keeps the caches
+    /// above (and the page plan below) as they last read whole, and is said
+    /// once; nothing derived from the record runs on it.
+    markup_read: ui::tilo_resource::DocumentRead,
     /// Content hash and length of the open document's bytes.
     source_blob: Option<(String, u64)>,
     /// The record's annotations as stored (user space), for export.
@@ -1156,6 +1160,7 @@ impl PdfApp {
             resource_page_rotations: Vec::new(),
             form_fields: Vec::new(),
             form_values: std::collections::BTreeMap::new(),
+            markup_read: ui::tilo_resource::DocumentRead::default(),
             source_blob: None,
             stored_annotations: Vec::new(),
             adopted: Vec::new(),
@@ -1489,7 +1494,12 @@ impl PdfApp {
         let Some((hash, len)) = self.source_blob.clone() else {
             return;
         };
-        match PdfMarkup::of(state).pinned_source() {
+        // A record that does not read may already pin other bytes: adding a
+        // pin from an empty projection would re-target its markup.
+        let Some(markup) = PdfMarkup::of(state) else {
+            return;
+        };
+        match markup.pinned_source() {
             None if !self.read_only => {
                 self.submit(crate::actions::pin_source_action(
                     &hash,
@@ -1511,17 +1521,18 @@ impl PdfApp {
         let Some((hash, _)) = self.source_blob.clone() else {
             return true;
         };
-        let Some(pinned) = PdfMarkup::of(state).pinned_source() else {
+        // Nothing is taken over from a document that does not read. Leave
+        // `seed_pending` set so a later frame tries once it reads again.
+        let Some(markup) = PdfMarkup::of(state) else {
+            return false;
+        };
+        let Some(pinned) = markup.pinned_source() else {
             // The source is pinned first; its markup is taken over after.
             return self.read_only;
         };
         if self.read_only
             || pinned.hash != hash
-            || PdfMarkup::of(state)
-                .imported_source()
-                .map(str::to_owned)
-                .as_deref()
-                == Some(hash.as_str())
+            || markup.imported_source().map(str::to_owned).as_deref() == Some(hash.as_str())
             || self.existing_request.as_deref() == Some(hash.as_str())
         {
             return true;
@@ -1546,11 +1557,12 @@ impl PdfApp {
         hash: &str,
         existing: &crate::adopt::Existing,
     ) {
-        if PdfMarkup::of(state)
-            .imported_source()
-            .map(str::to_owned)
-            .as_deref()
-            == Some(hash)
+        // Importing is a destructive change to the record: it only runs on a
+        // read that succeeded, never on a projection of nothing.
+        let Some(markup) = PdfMarkup::of(state) else {
+            return;
+        };
+        if markup.imported_source().map(str::to_owned).as_deref() == Some(hash)
             || self
                 .source_blob
                 .as_ref()
@@ -1558,12 +1570,12 @@ impl PdfApp {
         {
             return;
         }
-        let mut known: std::collections::HashSet<String> = PdfMarkup::of(state)
+        let mut known: std::collections::HashSet<String> = markup
             .annotations_with_hidden()
             .into_iter()
             .map(|a| a.id)
             .collect();
-        for comment in PdfMarkup::of(state).list_comments() {
+        for comment in markup.list_comments() {
             known.extend(comment.replies.into_iter().map(|r| r.id));
             known.insert(comment.id);
         }
@@ -1576,12 +1588,12 @@ impl PdfApp {
     /// Page images leave the document's own markup out exactly when the
     /// record has taken it over (the reader then draws it from the records).
     fn sync_reader_markup(&mut self, state: &AutoCommit) {
+        let Some(markup) = PdfMarkup::of(state) else {
+            // Leave the page images showing what the last good read said.
+            return;
+        };
         let hide = self.source_blob.as_ref().is_some_and(|(hash, _)| {
-            PdfMarkup::of(state)
-                .imported_source()
-                .map(str::to_owned)
-                .as_deref()
-                == Some(hash)
+            markup.imported_source().map(str::to_owned).as_deref() == Some(hash)
         });
         if hide == self.reader_markup_hidden {
             return;
@@ -1636,14 +1648,25 @@ impl PdfApp {
         if self.page_maps.len() != self.doc.page_count() {
             self.rebuild_page_maps();
         }
-        self.stored_annotations = PdfMarkup::of(state).list_annotations();
+        let read = <PdfMarkup as ui::tilo_resource::Resource>::read(state);
+        let Some(markup) = self.markup_read.adopt(read) else {
+            if let Some(reason) = self.markup_read.take_report() {
+                self.status_note.show(crate::t_args(
+                    "pdf-note-markup-unreadable",
+                    &[("reason", reason.into())],
+                ));
+                self.dirty = true;
+            }
+            return;
+        };
+        self.stored_annotations = markup.list_annotations();
         self.annotations = self
             .stored_annotations
             .iter()
             .map(|a| self.page_map(a.page).annotation_to_card(a))
             .collect();
-        self.adopted = PdfMarkup::of(state).adopted_entries();
-        self.comments = PdfMarkup::of(state).list_comments();
+        self.adopted = markup.adopted_entries();
+        self.comments = markup.list_comments();
         let shown: HashSet<String> = self
             .comments
             .iter()
@@ -1659,12 +1682,12 @@ impl PdfApp {
         self.comment_views
             .get_mut()
             .retain(|key, _| shown.contains(key));
-        self.signatures = PdfMarkup::of(state)
+        self.signatures = markup
             .list_signatures()
             .iter()
             .map(|s| self.page_map(s.page).signature_to_card(s))
             .collect();
-        self.form_values = PdfMarkup::of(state).form_values;
+        self.form_values = markup.form_values;
     }
 
     // ---- geometry ---------------------------------------------------
@@ -2013,7 +2036,13 @@ impl PdfApp {
             self.seed_pending = true;
             return;
         }
-        if !PdfMarkup::of(state).page_plan_seeded {
+        // Seeding writes a page plan and a source pin. Neither is derived
+        // from a document that did not read; the next frame tries again.
+        let Some(markup) = PdfMarkup::of(state) else {
+            self.seed_pending = true;
+            return;
+        };
+        if !markup.page_plan_seeded {
             self.submit(PdfMarkup::START_PAGE_PLAN.with(self.source_pages.len().max(1)));
         }
         self.pin_source(state);
@@ -2026,7 +2055,12 @@ impl PdfApp {
     /// the shared intent in its record; a renderer with the original source
     /// can immediately materialise duplicates, deletes and order changes.
     fn reconcile_shared_page_plan(&mut self, state: &AutoCommit) {
-        let plan = PdfMarkup::of(state).page_plan();
+        // A document that does not read is not a document with no pages:
+        // keep materialising the plan that last read whole.
+        let Some(markup) = PdfMarkup::of(state) else {
+            return;
+        };
+        let plan = markup.page_plan();
         if plan.is_empty() {
             return;
         }
@@ -3039,8 +3073,8 @@ impl PdfApp {
                     self.delete_target(&DeleteTarget::Annotation(id), state);
                     return;
                 }
-                if let Some(action) =
-                    crate::actions::set_free_text_action(&PdfMarkup::of(state), &id, text)
+                if let Some(action) = PdfMarkup::of(state)
+                    .and_then(|markup| crate::actions::set_free_text_action(&markup, &id, text))
                 {
                     self.perform_action(state, action);
                 }
@@ -3606,12 +3640,9 @@ impl PdfApp {
         };
         if let AnnoKind::FreeText { rect, size, .. } =
             self.page_map(a.page).annotation_to_user(&a).kind
-            && let Some(action) = crate::actions::set_free_text_box_user_action(
-                &PdfMarkup::of(state),
-                id,
-                &rect,
-                size,
-            )
+            && let Some(action) = PdfMarkup::of(state).and_then(|markup| {
+                crate::actions::set_free_text_box_user_action(&markup, id, &rect, size)
+            })
         {
             self.perform_action(state, action);
         }
@@ -6104,9 +6135,9 @@ mod tests {
         assert_eq!(title(&app), None);
         assert!(app.pending_open.is_some(), "the arrived document opens");
         drain_until(&mut app, |app| app.pending_open.is_none());
-        if matches!(
-            pdfium_gate(app.raster_active(), require_pdfium()),
-            PdfiumGate::Skip
+        if !pdfium_here(
+            app.raster_active(),
+            format_args!("the arrived shared document: {NO_PDFIUM}"),
         ) {
             return;
         }
@@ -6268,6 +6299,7 @@ mod tests {
             assert!(app.has_document);
             assert_eq!(
                 PdfMarkup::of(&st.doc)
+                    .expect("the PDF markup reads")
                     .pinned_source()
                     .map(|source| source.hash),
                 app.source_blob.as_ref().map(|(hash, _)| hash.clone()),
@@ -6455,6 +6487,71 @@ mod tests {
         (app, st)
     }
 
+    #[test]
+    fn an_unreadable_record_is_not_an_empty_markup() {
+        use automerge::transaction::Transactable as _;
+        let (mut app, mut st) = app_with_state();
+        let annotations: Vec<String> = app
+            .stored_annotations
+            .iter()
+            .map(|annotation| annotation.id.clone())
+            .collect();
+        let plan = app.resource_page_ids.clone();
+        assert!(
+            !annotations.is_empty() && !plan.is_empty(),
+            "the sample markup and page plan are populated"
+        );
+
+        st.doc
+            .put(automerge::ROOT, "annotations", "not a keyed collection")
+            .expect("the field is written");
+        st.doc.commit();
+        let corrupted = st.doc.get_heads();
+
+        app.reload(&st.doc);
+        assert!(app.markup_read.failed(), "the markup does not read");
+        assert_eq!(
+            app.stored_annotations
+                .iter()
+                .map(|annotation| annotation.id.clone())
+                .collect::<Vec<_>>(),
+            annotations,
+            "the markup that last read whole stays, not an empty record"
+        );
+        assert_eq!(
+            app.resource_page_ids, plan,
+            "the page plan that last read whole stays"
+        );
+        let said = app.status_note.as_deref().unwrap_or_default().to_owned();
+        assert!(
+            said.contains("can't be read") && said.contains("annotations"),
+            "the bar says the markup cannot be read and where: {said:?}"
+        );
+
+        // Reading it again only repeats the same failure: it is not said twice.
+        app.reload(&st.doc);
+        assert_eq!(app.status_note.as_deref().unwrap_or_default(), said);
+
+        // A change derived from the record is refused while it does not read:
+        // the reader does not seed a new page plan or pin a source from an
+        // empty projection.
+        app.seed_pending = true;
+        app.seed_record(&st.doc);
+        assert_eq!(
+            st.doc.get_heads(),
+            corrupted,
+            "an unreadable record is not written to"
+        );
+        assert!(app.seed_pending, "the seed waits for a read that succeeds");
+
+        let mut empty = ui::tilo_resource::Replica::<PdfMarkup>::new();
+        let empty_doc = std::mem::take(empty.doc_mut());
+        assert!(
+            PdfMarkup::of(&empty_doc).is_some(),
+            "an empty record that reads is valid markup, not a failure"
+        );
+    }
+
     /// Opening a document adds its page plan once; later frames leave the
     /// record alone.
     #[test]
@@ -6463,7 +6560,9 @@ mod tests {
         let mut st = crate::scenarios::record_state();
         sync_fixture(&mut app, &mut st);
         assert!(
-            PdfMarkup::of(&st.doc).page_plan_seeded,
+            PdfMarkup::of(&st.doc)
+                .expect("the PDF markup reads")
+                .page_plan_seeded,
             "opening adds the page plan"
         );
         let seeded = st.doc.get_heads();
@@ -6731,8 +6830,12 @@ mod tests {
                 move_page_plan_action("source-1", Some("copy-of-source-2")),
             );
             assert_eq!(
-                PdfMarkup::of(&state_a.doc).page_plan(),
-                PdfMarkup::of(&state_b.doc).page_plan(),
+                PdfMarkup::of(&state_a.doc)
+                    .expect("the PDF markup reads")
+                    .page_plan(),
+                PdfMarkup::of(&state_b.doc)
+                    .expect("the PDF markup reads")
+                    .page_plan(),
                 "the exact same action envelopes reproduce durable ids and order"
             );
 
@@ -6794,6 +6897,7 @@ mod tests {
             left.merge_incoming(&mut right)
                 .expect("merge concurrent page edits");
             let merged_ids: Vec<String> = PdfMarkup::of(&left)
+                .expect("the PDF markup reads")
                 .page_plan()
                 .into_iter()
                 .map(|entry| entry.id)
@@ -6885,6 +6989,7 @@ mod tests {
             );
             assert_eq!(
                 PdfMarkup::of(&state.doc)
+                    .expect("the PDF markup reads")
                     .page_plan()
                     .into_iter()
                     .find(|entry| entry.id == "imported-copy")
@@ -7622,6 +7727,7 @@ mod tests {
             seed_selection(&mut app, "Hello", 4);
             let hl = |st: &ui::State| {
                 PdfMarkup::of(&st.doc)
+                    .expect("the PDF markup reads")
                     .list_annotations()
                     .into_iter()
                     .filter(|a| matches!(a.kind, AnnoKind::Markup { .. }))
@@ -7651,6 +7757,7 @@ mod tests {
             seed_selection(&mut app, "AB", 1);
             let notes = |st: &ui::State| {
                 PdfMarkup::of(&st.doc)
+                    .expect("the PDF markup reads")
                     .list_annotations()
                     .into_iter()
                     .filter(|a| matches!(a.kind, AnnoKind::Note { .. }))
@@ -7947,7 +8054,10 @@ mod tests {
             assert_eq!(app.annotations.len(), a0 + 1);
             assert_eq!(app.comments.len(), c0 + 1);
             assert_eq!(
-                PdfMarkup::of(&st.doc).list_comments().len(),
+                PdfMarkup::of(&st.doc)
+                    .expect("the PDF markup reads")
+                    .list_comments()
+                    .len(),
                 c0 + 1,
                 "creating a note landed in the shared document"
             );
@@ -8149,6 +8259,7 @@ mod tests {
             }
             assert!(
                 PdfMarkup::of(&st.doc)
+                    .expect("the PDF markup reads")
                     .list_annotations()
                     .iter()
                     .any(|a| matches!(a.kind, AnnoKind::Ink { .. })),
@@ -8425,7 +8536,9 @@ mod tests {
                 "runtime date is not the hardcoded demo constant"
             );
             // And the real date is what durably lands in the shared CRDT.
-            let stored = PdfMarkup::of(&st.doc).list_signatures();
+            let stored = PdfMarkup::of(&st.doc)
+                .expect("the PDF markup reads")
+                .list_signatures();
             assert!(stored.iter().any(|x| x.id == s.id && x.date == today_ymd()));
         }
 
@@ -8449,7 +8562,9 @@ mod tests {
                 "a typed signature carries typed ink"
             );
             // And it durably reaches the shared CRDT as typed ink.
-            let stored = PdfMarkup::of(&st.doc).list_signatures();
+            let stored = PdfMarkup::of(&st.doc)
+                .expect("the PDF markup reads")
+                .list_signatures();
             assert!(
                 stored
                     .iter()
@@ -8496,7 +8611,9 @@ mod tests {
                 }
                 SignatureInk::Typed => panic!("expected drawn ink, got Typed"),
             }
-            let stored = PdfMarkup::of(&st.doc).list_signatures();
+            let stored = PdfMarkup::of(&st.doc)
+                .expect("the PDF markup reads")
+                .list_signatures();
             assert!(
                 stored.iter().any(
                     |x| matches!(&x.ink, SignatureInk::Drawn { strokes } if strokes.len() == 1)
@@ -8573,6 +8690,7 @@ mod tests {
             ));
             app.create_note(&mut Edits::lend(&mut st.doc), 2, (120.0, 200.0));
             let thread = PdfMarkup::of(&st.doc)
+                .expect("the PDF markup reads")
                 .list_comments()
                 .into_iter()
                 .find(|comment| comment.page == 2)
@@ -8619,8 +8737,12 @@ mod tests {
                 "the strokes are kept"
             );
             assert!(
-                PdfMarkup::of(&st.doc).list_signatures().is_empty()
+                PdfMarkup::of(&st.doc)
+                    .expect("the PDF markup reads")
+                    .list_signatures()
+                    .is_empty()
                     || PdfMarkup::of(&st.doc)
+                        .expect("the PDF markup reads")
                         .list_signatures()
                         .iter()
                         .all(|signature| signature.signer != "Ada Lovelace"),
@@ -8674,22 +8796,12 @@ mod tests {
         let path = path.as_ref();
         let mut app = PdfApp::open(path);
         drain_until(&mut app, |app| app.pending_open.is_none());
-        match pdfium_gate(app.raster_active(), require_pdfium()) {
-            PdfiumGate::Run => Some(app),
-            PdfiumGate::Fail => panic!(
-                "TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM} ({:?})",
-                app.load_error
-            ),
-            PdfiumGate::Skip => {
-                eprintln!(
-                    "SKIPPING a pdfium-backend test on {}: {NO_PDFIUM}. The \
-                     raster text layer, save-back and page-editing paths went \
-                     unverified.",
-                    path.display()
-                );
-                None
-            }
-        }
+        let reason = format_args!(
+            "a pdfium-backend test on {}: {NO_PDFIUM}. The raster text layer, save-back and page-editing paths went unverified ({:?})",
+            path.display(),
+            app.load_error
+        );
+        pdfium_here(app.raster_active(), reason).then_some(app)
     }
 
     /// The bundled sample, opened through the PDF worker (see [`open_settled`]).
@@ -8726,7 +8838,10 @@ mod tests {
         loop {
             app.sync_settled(&mut st.doc, &st.root);
             let adopted = app.source_blob.as_ref().is_some_and(|(hash, _)| {
-                PdfMarkup::of(&st.doc).imported_source() == Some(hash.as_str())
+                PdfMarkup::of(&st.doc)
+                    .expect("the PDF markup reads")
+                    .imported_source()
+                    == Some(hash.as_str())
             });
             if !app.seed_pending && adopted {
                 return;
@@ -8790,27 +8905,15 @@ mod tests {
             .is_some_and(|note| note.starts_with("Saved"))
     }
 
-    /// What a pdfium-backed test should do about the backend's absence.
-    #[derive(Debug, PartialEq, Eq)]
-    enum PdfiumGate {
-        /// The backend is here; run the test.
-        Run,
-        /// It is not, and nobody said it had to be: say so and stand down.
-        Skip,
-        /// It is not, and someone said it had to be. That is the bug.
-        Fail,
-    }
-
-    fn pdfium_gate(has_raster: bool, required: bool) -> PdfiumGate {
-        match (has_raster, required) {
-            (true, _) => PdfiumGate::Run,
-            (false, true) => PdfiumGate::Fail,
-            (false, false) => PdfiumGate::Skip,
+    /// Whether the raster backend is here. Its absence skips on a lane that
+    /// promises no PDFium and fails one that does (`TILO_REQUIRE_PDFIUM`), as
+    /// every shared capability does.
+    fn pdfium_here(has_raster: bool, reason: std::fmt::Arguments<'_>) -> bool {
+        if has_raster {
+            return true;
         }
-    }
-
-    fn require_pdfium() -> bool {
-        std::env::var_os("TILO_REQUIRE_PDFIUM").is_some()
+        tilo_test_env::capability_unavailable(tilo_test_env::Capability::Pdfium, reason);
+        false
     }
 
     #[serial(pdfium)]
@@ -8827,18 +8930,26 @@ mod tests {
         // a failure the moment somebody has.
         eprintln!("phase a_missing_pdfium_skips_unless_it_was_required");
         {
-            assert_eq!(pdfium_gate(true, false), PdfiumGate::Run);
-            assert_eq!(pdfium_gate(true, true), PdfiumGate::Run);
-            assert_eq!(
-                pdfium_gate(false, false),
-                PdfiumGate::Skip,
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("TILO_REQUIRE_PDFIUM");
+            assert!(
+                pdfium_here(true, format_args!("fixture backend")),
+                "a backend that is here runs whether or not one was promised"
+            );
+            assert!(
+                !pdfium_here(false, format_args!("fixture backend")),
                 "with no backend and no demand for one, say so and stand down"
             );
-            assert_eq!(
-                pdfium_gate(false, true),
-                PdfiumGate::Fail,
-                "TILO_REQUIRE_PDFIUM has to turn the absence back into a failure, \
-                 or the skip has no floor under it"
+            env.set("TILO_REQUIRE_PDFIUM", "1");
+            let failed =
+                std::panic::catch_unwind(|| pdfium_here(false, format_args!("fixture backend")))
+                    .expect_err("TILO_REQUIRE_PDFIUM has to turn the absence back into a failure");
+            let message = failed
+                .downcast_ref::<String>()
+                .expect("formatted panic message");
+            assert!(
+                message.starts_with("TILO_REQUIRE_PDFIUM is set but PDFium is unavailable"),
+                "{message}"
             );
         }
 
@@ -8853,13 +8964,11 @@ mod tests {
             let loaded =
                 crate::source::open(std::path::Path::new(SAMPLE_PDF), &ContentStore::memory());
             let open_ms = t.elapsed().as_secs_f64() * 1000.0;
-            match pdfium_gate(loaded.is_ok(), require_pdfium()) {
-                PdfiumGate::Run => {}
-                PdfiumGate::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
-                PdfiumGate::Skip => {
-                    eprintln!("SKIPPING the pdfium open/render measurement: {NO_PDFIUM}.");
-                    break 'phase;
-                }
+            if !pdfium_here(
+                loaded.is_ok(),
+                format_args!("the pdfium open/render measurement: {NO_PDFIUM}"),
+            ) {
+                break 'phase;
             }
             let mut raster = loaded.expect("the sample opens").raster;
             let pages = raster.page_count();
@@ -9232,8 +9341,13 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
             if !app.has_document {
-                assert!(!require_pdfium(), "fixture must open: {:?}", app.load_error);
-                eprintln!("SKIPPING the worker tiled-zoom test: {NO_PDFIUM}");
+                let _ = pdfium_here(
+                    false,
+                    format_args!(
+                        "the worker tiled-zoom test: {NO_PDFIUM} ({:?})",
+                        app.load_error
+                    ),
+                );
                 break 'phase;
             }
             // The page at 100 % arrives first; it is what shows under the tiles.
@@ -9291,13 +9405,11 @@ mod tests {
         'phase: {
             let loaded =
                 crate::source::open(std::path::Path::new(LATIN_PDF), &ContentStore::memory());
-            match pdfium_gate(loaded.is_ok(), require_pdfium()) {
-                PdfiumGate::Run => {}
-                PdfiumGate::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
-                PdfiumGate::Skip => {
-                    eprintln!("SKIPPING the tile-versus-page render check: {NO_PDFIUM}");
-                    break 'phase;
-                }
+            if !pdfium_here(
+                loaded.is_ok(),
+                format_args!("the tile-versus-page render check: {NO_PDFIUM}"),
+            ) {
+                break 'phase;
             }
             let mut rz = loaded.expect("the fixture opens").raster;
             let plan: Vec<_> = (1..=rz.page_count())
@@ -9530,6 +9642,7 @@ mod tests {
         app.commit_drag(&mut Edits::lend(&mut state.doc));
         let id = app.selected_anno.as_ref().expect("new highlight selected");
         let stored = PdfMarkup::of(&state.doc)
+            .expect("the PDF markup reads")
             .list_annotations()
             .into_iter()
             .find(|annotation| &annotation.id == id)

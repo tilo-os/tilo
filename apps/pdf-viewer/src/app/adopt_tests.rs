@@ -170,7 +170,9 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         let doc = &mut state.doc;
 
         // First open: every piece of markup became a record.
-        let annotations = PdfMarkup::of(doc).list_annotations();
+        let annotations = PdfMarkup::of(doc)
+            .expect("the PDF markup reads")
+            .list_annotations();
         assert_eq!(annotations.len(), 4, "{annotations:#?}");
         let kinds: Vec<&str> = annotations.iter().map(|a| a.kind.type_key()).collect();
         for kind in ["highlight", "note", "freetext", "ink"] {
@@ -195,7 +197,9 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             .find(|a| matches!(a.kind, AnnoKind::FreeText { .. }))
             .unwrap();
         assert!(matches!(&free.kind, AnnoKind::FreeText { text, .. } if text == "See chapter two"));
-        let comments = PdfMarkup::of(doc).list_comments();
+        let comments = PdfMarkup::of(doc)
+            .expect("the PDF markup reads")
+            .list_comments();
         let note_id = annotations
             .iter()
             .find(|a| matches!(a.kind, AnnoKind::Note { .. }))
@@ -222,7 +226,13 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         );
         app.existing_request = None;
         app.sync(doc, &state.root);
-        assert_eq!(PdfMarkup::of(doc).list_annotations().len(), 4);
+        assert_eq!(
+            PdfMarkup::of(doc)
+                .expect("the PDF markup reads")
+                .list_annotations()
+                .len(),
+            4
+        );
 
         // Edit: answer the note, rewrite its text, delete the free text; leave
         // the highlight and ink alone.
@@ -285,9 +295,13 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         let Some((_again, state2)) = open(&out) else {
             break 'phase;
         };
-        let imported = PdfMarkup::of(&state2.doc).list_annotations();
+        let imported = PdfMarkup::of(&state2.doc)
+            .expect("the PDF markup reads")
+            .list_annotations();
         assert_eq!(imported.len(), 3, "{imported:#?}");
-        let threads = PdfMarkup::of(&state2.doc).list_comments();
+        let threads = PdfMarkup::of(&state2.doc)
+            .expect("the PDF markup reads")
+            .list_comments();
         let note_thread = threads
             .iter()
             .find(|c| c.body == "Check this again")
@@ -305,7 +319,9 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             break 'phase;
         };
         let doc = &mut state.doc;
-        let values = PdfMarkup::of(doc).form_values;
+        let values = PdfMarkup::of(doc)
+            .expect("the PDF markup reads")
+            .form_values;
         assert_eq!(values.get("name"), Some(&FormEntry::Text("Ada".into())));
         assert_eq!(values.get("colour"), Some(&FormEntry::Choice("Red".into())));
         assert_eq!(
@@ -353,27 +369,41 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         PdfMarkup::apply_to(&mut right, import());
         left.merge_incoming(&mut right).unwrap();
         assert_eq!(
-            PdfMarkup::of(&left).list_annotations().len(),
+            PdfMarkup::of(&left)
+                .expect("the PDF markup reads")
+                .list_annotations()
+                .len(),
             1,
             "one record, not two"
         );
         assert_eq!(
             PdfMarkup::of(&left)
+                .expect("the PDF markup reads")
                 .imported_source()
                 .map(str::to_owned)
                 .as_deref(),
             Some(hash.as_str())
         );
         // Importing the same source again is a no-op, even after a deletion.
-        let id = PdfMarkup::of(&left).list_annotations()[0].id.clone();
+        let id = PdfMarkup::of(&left)
+            .expect("the PDF markup reads")
+            .list_annotations()[0]
+            .id
+            .clone();
         PdfMarkup::apply_to(&mut left, crate::actions::delete_annotation_action(&id));
         PdfMarkup::apply_to(&mut left, import());
         assert!(
-            PdfMarkup::of(&left).list_annotations().is_empty(),
+            PdfMarkup::of(&left)
+                .expect("the PDF markup reads")
+                .list_annotations()
+                .is_empty(),
             "a deletion sticks"
         );
         assert_eq!(
-            PdfMarkup::of(&left).adopted_entries().len(),
+            PdfMarkup::of(&left)
+                .expect("the PDF markup reads")
+                .adopted_entries()
+                .len(),
             0,
             "this plan adopted nothing"
         );
@@ -407,7 +437,9 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
             .unwrap()
             .set_text("Überprüfen — 検討してください");
         app.commit_edit(&mut Edits::lend(doc));
-        let stored = PdfMarkup::of(doc).list_annotations();
+        let stored = PdfMarkup::of(doc)
+            .expect("the PDF markup reads")
+            .list_annotations();
         let free = stored
             .iter()
             .find(|a| matches!(a.kind, AnnoKind::FreeText { .. }))

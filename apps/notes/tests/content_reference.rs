@@ -29,6 +29,7 @@ fn app() -> TestApp<NotesShell> {
 fn kept(app: &TestApp<NotesShell>) -> Vec<String> {
     app.read_document(|doc| {
         notes::read::notebook(doc)
+            .expect("the notebook reads")
             .images
             .iter()
             .map(|(digest, _)| digest.clone())

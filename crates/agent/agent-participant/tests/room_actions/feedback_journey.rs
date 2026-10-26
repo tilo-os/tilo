@@ -25,7 +25,10 @@ async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
     );
     let mut doc = source.read(Clone::clone).unwrap();
     assert!(
-        !chat::projection::read(&doc).channel_rows().is_empty(),
+        !chat::projection::read(&doc)
+            .expect("the chat record reads")
+            .channel_rows()
+            .is_empty(),
         "the production seed opens the room's channels"
     );
     chat::demo::insert_category(&mut doc, "feedback-category", "Feedback").unwrap();
@@ -501,9 +504,12 @@ async fn assert_one_report(
             assert_eq!(&report.submission, submission);
             assert_eq!(report.author, person);
             assert_eq!(
-                replica.read(|doc| chat::projection::read(doc)
-                    .message_rows(&chat::messages::Messages::default(), "feedback")
-                    .len()),
+                replica.read(|doc| {
+                    chat::projection::read(doc)
+                        .expect("the chat record reads")
+                        .message_rows(&chat::messages::Messages::default(), "feedback")
+                        .len()
+                }),
                 Some(1)
             );
             return;

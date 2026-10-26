@@ -40,6 +40,7 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
     )
     .unwrap();
     let category = chat::projection::read(&doc)
+        .expect("the chat record reads")
         .category_rows()
         .into_iter()
         .find(|category| category.name == "Resource view fixture")
@@ -508,7 +509,7 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
         }),
     )
     .unwrap();
-    let projection = chat::projection::read(&doc);
+    let projection = chat::projection::read(&doc).expect("the chat record reads");
     let channel = projection.channel_rows()[0].id.clone();
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
     let mut bot = Replica::open(
@@ -616,7 +617,11 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
         }),
     )
     .unwrap();
-    let channel = chat::projection::read(&doc).channel_rows()[0].id.clone();
+    let channel = chat::projection::read(&doc)
+        .expect("the chat record reads")
+        .channel_rows()[0]
+        .id
+        .clone();
     page.apply(&DocumentMutation::Snapshot(doc.save())).unwrap();
     // What a program that posts derives: posting on the chat's messages.
     let standing = {

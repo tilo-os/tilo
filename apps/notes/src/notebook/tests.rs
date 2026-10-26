@@ -624,7 +624,7 @@ fn exporting_imported_links_preserves_shared_start_mark_nesting() {
             }),
         )
         .unwrap();
-        let workspace = crate::read::workspace(notebook.doc());
+        let workspace = crate::read::workspace(notebook.doc()).expect("the notebook reads");
         let exported = crate::actions::page_markdown(&workspace, uuid(&id));
         assert_eq!(exported.trim_end(), markdown);
         assert_eq!(

@@ -331,10 +331,15 @@ pub struct PinnedSource {
 }
 
 impl PdfMarkup {
-    /// The markup `doc` holds; none when it holds none that reads.
+    /// The markup `doc` holds, or `None` when the document does not read.
+    ///
+    /// An empty record that reads is `Some(default)`: a document nothing was
+    /// written to is valid markup with nothing in it. Only a read that fails
+    /// is `None`, so a caller can keep the state that last read whole and
+    /// refuse changes derived from a document it could not read.
     #[must_use]
-    pub fn of(doc: &tilo_resource::Doc) -> Self {
-        <Self as tilo_resource::Resource>::read(doc).unwrap_or_default()
+    pub fn of(doc: &tilo_resource::Doc) -> Option<Self> {
+        <Self as tilo_resource::Resource>::read(doc).ok()
     }
 
     /// Apply `invoke` to `doc` through the door, as a replica of it does.

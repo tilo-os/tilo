@@ -148,7 +148,10 @@ fn markup_and_page_edits_persist_across_save_and_reopen() {
         let n = app.doc.page_count();
         let first = text_layer(&mut app, &mut st, 1).text.trim().to_string();
 
-        let entry = PdfMarkup::of(&st.doc).page_plan()[0].clone();
+        let entry = PdfMarkup::of(&st.doc)
+            .expect("the PDF markup reads")
+            .page_plan()[0]
+            .clone();
         edit_pages(
             &mut app,
             &mut st,

@@ -159,7 +159,9 @@ fn slash_warn_turns_the_paragraph_into_a_warning_callout_keeping_its_text() {
     assert_eq!(after[1].text, "Mind the gap");
     // Stored as a quote with its alert, it reads back as the callout and
     // exports as a GitHub alert.
-    let markdown = app.read_document(|doc| actions::page_markdown(&read::workspace(doc), page));
+    let markdown = app.read_document(|doc| {
+        actions::page_markdown(&read::workspace(doc).expect("the notebook reads"), page)
+    });
     assert!(
         markdown.contains("> [!WARNING]\n> Mind the gap"),
         "{markdown}"

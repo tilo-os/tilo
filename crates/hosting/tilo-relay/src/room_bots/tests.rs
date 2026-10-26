@@ -240,6 +240,7 @@ fn flood(
     chat::demo::introduce(doc, ada, "Ada", "AD")?;
     chat::demo::introduce(doc, mallory, "Mallory", "MA")?;
     let general = chat::projection::read(doc)
+        .expect("the chat record reads")
         .channel_rows()
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Text)
@@ -424,6 +425,7 @@ async fn an_installed_bot_answers_a_post_in_the_room_once() {
             .map_err(|error| error.to_string())?;
             chat::demo::introduce(doc, &ada, "Ada", "AD").map_err(|error| error.to_string())?;
             Ok(chat::projection::read(doc)
+                .expect("the chat record reads")
                 .channel_rows()
                 .into_iter()
                 .find(|channel| channel.kind == chat::model::ChannelKind::Text)
@@ -496,6 +498,7 @@ async fn chat_room(rooms: &Rooms, cert: &DeviceCert) -> (String, String) {
             .map_err(|error| error.to_string())?;
             chat::demo::introduce(doc, &ada, "Ada", "AD").map_err(|error| error.to_string())?;
             Ok(chat::projection::read(doc)
+                .expect("the chat record reads")
                 .channel_rows()
                 .into_iter()
                 .find(|channel| channel.kind == chat::model::ChannelKind::Text)

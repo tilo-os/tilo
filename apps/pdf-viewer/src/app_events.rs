@@ -864,12 +864,11 @@ impl PdfApp {
                     let (ux, uy) = self
                         .page_map(self.anno_page(&mdrag.id).unwrap_or(1))
                         .card_to_user((x, y));
-                    if let Some(action) = crate::actions::set_annotation_position_user_action(
-                        &crate::markup::PdfMarkup::of(state),
-                        &mdrag.id,
-                        ux,
-                        uy,
-                    ) {
+                    if let Some(action) = crate::markup::PdfMarkup::of(state).and_then(|markup| {
+                        crate::actions::set_annotation_position_user_action(
+                            &markup, &mdrag.id, ux, uy,
+                        )
+                    }) {
                         self.perform_action(state, action);
                     }
                     self.reload(state);

@@ -21,10 +21,15 @@ pub fn initialize(doc: &mut AutoCommit) {
     Notebook::initialize(doc).expect("a new notebook");
 }
 
-/// The notebook `doc` holds; an empty one when it holds none.
-#[must_use]
-pub fn notebook(doc: &AutoCommit) -> Notebook {
-    Notebook::read(doc).unwrap_or_default()
+/// The notebook `doc` holds, or why it does not read.
+///
+/// An initialized document holding no notes is a notebook with nothing in
+/// it. A document that does not read is an error, never an empty notebook.
+///
+/// # Errors
+/// Says why `doc` does not read as a notebook.
+pub fn notebook(doc: &AutoCommit) -> Result<Notebook, String> {
+    Notebook::read(doc).map_err(|error| error.to_string())
 }
 
 /// Whether `doc` reads as a notebook.
@@ -46,28 +51,37 @@ pub fn project(doc: &AutoCommit) -> Result<Workspace, String> {
     Ok(Workspace::of(&notebook, &Workspace::default()))
 }
 
-/// The notebook `doc` holds, as the window shows it.
-#[must_use]
-pub fn workspace(doc: &AutoCommit) -> Workspace {
-    Workspace::of(&notebook(doc), &Workspace::default())
+/// The notebook `doc` holds, as the window shows it, or why it does not read.
+///
+/// # Errors
+/// Says why `doc` does not read as a notebook.
+pub fn workspace(doc: &AutoCommit) -> Result<Workspace, String> {
+    notebook(doc).map(|notebook| Workspace::of(&notebook, &Workspace::default()))
+}
+
+/// The workspace of a document a tool already knows reads. Tests and exports
+/// that only look at a checked record use it; anything that acts on a live
+/// document calls [`project`] or [`workspace`] and handles the failure.
+fn workspace_or_empty(doc: &AutoCommit) -> Workspace {
+    workspace(doc).unwrap_or_default()
 }
 
 /// Every note's title and place, in notebook order.
 #[must_use]
 pub fn list_pages(doc: &AutoCommit) -> Vec<PageMeta> {
-    workspace(doc).data.pages
+    workspace_or_empty(doc).data.pages
 }
 
 /// Every tag, by name.
 #[must_use]
 pub fn list_tags(doc: &AutoCommit) -> Vec<TagMeta> {
-    workspace(doc).data.tags
+    workspace_or_empty(doc).data.tags
 }
 
 /// Every note↔tag edge.
 #[must_use]
 pub fn list_tag_assignments(doc: &AutoCommit) -> Vec<(PageId, TagId)> {
-    workspace(doc)
+    workspace_or_empty(doc)
         .data
         .tag_assignments
         .into_iter()
@@ -76,7 +90,7 @@ pub fn list_tag_assignments(doc: &AutoCommit) -> Vec<(PageId, TagId)> {
 }
 
 fn page(doc: &AutoCommit, id: PageId) -> Option<Page> {
-    notebook(doc).pages.get(&page_id(id)).cloned()
+    notebook(doc).ok()?.pages.get(&page_id(id)).cloned()
 }
 
 /// The object note `id`'s body is kept in, when the note exists.
@@ -122,5 +136,60 @@ pub fn page_stored_blocks(doc: &AutoCommit, id: PageId) -> Vec<StoredBlock> {
 #[must_use]
 pub fn images(doc: &AutoCommit) -> std::collections::HashMap<String, Vec<u8>> {
     let content = crate::notebook::content();
-    crate::notebook::image_snapshot(&notebook(doc).images, |digest| content.read(digest))
+    notebook(doc).map_or_else(
+        |_| std::collections::HashMap::new(),
+        |notebook| crate::notebook::image_snapshot(&notebook.images, |digest| content.read(digest)),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{list_pages, project, validate};
+    use automerge::transaction::Transactable as _;
+
+    /// `doc` with its notes no longer a collection, as a document a newer or
+    /// broken writer leaves behind.
+    fn corrupt(doc: &mut automerge::AutoCommit) {
+        doc.put(automerge::ROOT, "pages", "not a collection")
+            .expect("the field is written");
+    }
+
+    #[test]
+    fn a_document_that_does_not_read_is_not_an_empty_notebook() {
+        let mut empty = automerge::AutoCommit::new();
+        super::initialize(&mut empty);
+        assert!(
+            project(&empty)
+                .expect("an initialized document is a valid empty notebook")
+                .pages()
+                .is_empty()
+        );
+        assert!(validate(&empty).is_ok());
+        assert!(list_pages(&empty).is_empty());
+
+        let mut broken = automerge::AutoCommit::new();
+        super::initialize(&mut broken);
+        corrupt(&mut broken);
+        assert!(super::notebook(&empty).is_ok());
+        assert!(super::workspace(&empty).is_ok());
+        let failure = project(&broken).expect_err("the notebook does not read");
+        assert!(
+            failure.contains("pages"),
+            "the failure names the field: {failure:?}"
+        );
+        assert!(super::notebook(&broken).is_err());
+        assert!(super::workspace(&broken).is_err());
+        assert!(validate(&broken).is_err());
+        assert_eq!(
+            list_pages(&broken),
+            Vec::new(),
+            "the test helper still answers nothing; `project` is how a caller tells why"
+        );
+        let failure = crate::actions::find_text(&broken, "anything", None)
+            .expect_err("a search on a notebook that does not read fails");
+        assert!(
+            failure.contains("pages"),
+            "the effect says why it could not search: {failure:?}"
+        );
+    }
 }

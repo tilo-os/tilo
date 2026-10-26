@@ -132,6 +132,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     )
     .unwrap();
     let channel = chat::projection::read(&doc)
+        .expect("the chat record reads")
         .channel_rows()
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Text)

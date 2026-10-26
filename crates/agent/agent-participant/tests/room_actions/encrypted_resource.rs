@@ -69,6 +69,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     )
     .unwrap();
     let channel = chat::projection::read(&doc)
+        .expect("the chat record reads")
         .channel_rows()
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Text)

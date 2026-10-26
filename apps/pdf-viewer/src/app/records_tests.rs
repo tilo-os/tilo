@@ -55,6 +55,7 @@ fn merge_both(left: &mut AutoCommit, right: &mut AutoCommit) {
 
 fn ids(doc: &AutoCommit) -> Vec<(String, usize)> {
     PdfMarkup::of(doc)
+        .expect("the PDF markup reads")
         .list_annotations()
         .into_iter()
         .map(|a| (a.id, a.page))
@@ -74,6 +75,7 @@ fn concurrent_markup_edits_converge_across_replicas() {
     assert_eq!(merged, ids(&right), "both replicas converge on one list");
     // The stored geometry is user space with the text anchor preserved.
     let a = PdfMarkup::of(&left)
+        .expect("the PDF markup reads")
         .list_annotations()
         .into_iter()
         .find(|a| a.id == "left")
@@ -111,6 +113,7 @@ fn concurrent_markup_edits_converge_across_replicas() {
         merge_both(&mut left, &mut right);
         let all = |doc: &AutoCommit| -> Vec<String> {
             let mut ids: Vec<String> = PdfMarkup::of(doc)
+                .expect("the PDF markup reads")
                 .annotations_with_hidden()
                 .into_iter()
                 .map(|a| a.id)
@@ -120,10 +123,20 @@ fn concurrent_markup_edits_converge_across_replicas() {
         };
         assert_eq!(all(&left), vec!["left", "right"]);
         assert_eq!(all(&left), all(&right));
-        assert_eq!(PdfMarkup::of(&left).form_values.len(), 2);
         assert_eq!(
-            PdfMarkup::of(&left).form_values,
-            PdfMarkup::of(&right).form_values
+            PdfMarkup::of(&left)
+                .expect("the PDF markup reads")
+                .form_values
+                .len(),
+            2
+        );
+        assert_eq!(
+            PdfMarkup::of(&left)
+                .expect("the PDF markup reads")
+                .form_values,
+            PdfMarkup::of(&right)
+                .expect("the PDF markup reads")
+                .form_values
         );
     }
 
@@ -137,6 +150,7 @@ fn concurrent_markup_edits_converge_across_replicas() {
         apply(&mut right, highlight("on-first", "source-1", 120.0));
         merge_both(&mut left, &mut right);
         let order: Vec<String> = PdfMarkup::of(&left)
+            .expect("the PDF markup reads")
             .page_plan()
             .into_iter()
             .map(|p| p.id)
@@ -148,8 +162,17 @@ fn concurrent_markup_edits_converge_across_replicas() {
         apply(&mut a, move_page_plan_action("source-2", None));
         apply(&mut b, move_page_plan_action("source-2", Some("source-3")));
         merge_both(&mut a, &mut b);
-        assert_eq!(PdfMarkup::of(&a).page_plan().len(), 3);
-        assert_eq!(PdfMarkup::of(&a).page_plan(), PdfMarkup::of(&b).page_plan());
+        assert_eq!(
+            PdfMarkup::of(&a)
+                .expect("the PDF markup reads")
+                .page_plan()
+                .len(),
+            3
+        );
+        assert_eq!(
+            PdfMarkup::of(&a).expect("the PDF markup reads").page_plan(),
+            PdfMarkup::of(&b).expect("the PDF markup reads").page_plan()
+        );
     }
 
     {
@@ -171,6 +194,7 @@ fn concurrent_markup_edits_converge_across_replicas() {
         // the deleted page, and not shown anywhere else.
         assert!(ids(&doc).iter().all(|(id, _)| id != "late"));
         let hidden: Vec<_> = PdfMarkup::of(&doc)
+            .expect("the PDF markup reads")
             .annotations_with_hidden()
             .into_iter()
             .filter(|a| a.id == "late")
@@ -178,7 +202,10 @@ fn concurrent_markup_edits_converge_across_replicas() {
         assert_eq!(hidden.len(), 1);
         assert_eq!(hidden[0].page, 0);
         assert_eq!(
-            PdfMarkup::of(&doc).annotation_page_id("late").as_deref(),
+            PdfMarkup::of(&doc)
+                .expect("the PDF markup reads")
+                .annotation_page_id("late")
+                .as_deref(),
             Some("source-2")
         );
 
@@ -200,8 +227,15 @@ fn concurrent_markup_edits_converge_across_replicas() {
             move_page_plan_action("source-1", Some("source-2")),
         );
         merge_both(&mut left, &mut right);
-        let plan = PdfMarkup::of(&left).page_plan();
-        assert_eq!(plan, PdfMarkup::of(&right).page_plan());
+        let plan = PdfMarkup::of(&left)
+            .expect("the PDF markup reads")
+            .page_plan();
+        assert_eq!(
+            plan,
+            PdfMarkup::of(&right)
+                .expect("the PDF markup reads")
+                .page_plan()
+        );
         let moved = plan.iter().find(|p| p.id == "source-1").unwrap();
         assert_eq!(
             moved.rotation, 90,
@@ -212,8 +246,12 @@ fn concurrent_markup_edits_converge_across_replicas() {
         apply(&mut b, rotate_page_action("source-3", 180));
         merge_both(&mut a, &mut b);
         assert_eq!(
-            PdfMarkup::of(&a).page_rotation("source-3"),
-            PdfMarkup::of(&b).page_rotation("source-3")
+            PdfMarkup::of(&a)
+                .expect("the PDF markup reads")
+                .page_rotation("source-3"),
+            PdfMarkup::of(&b)
+                .expect("the PDF markup reads")
+                .page_rotation("source-3")
         );
     }
 }
@@ -241,8 +279,12 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         ),
     );
     merge_both(&mut left, &mut right);
-    let l = PdfMarkup::of(&left).form_values;
-    let r = PdfMarkup::of(&right).form_values;
+    let l = PdfMarkup::of(&left)
+        .expect("the PDF markup reads")
+        .form_values;
+    let r = PdfMarkup::of(&right)
+        .expect("the PDF markup reads")
+        .form_values;
     assert_eq!(l, r, "both replicas pick the same winner");
     let winner = l.get("name").cloned().unwrap();
     assert!(
@@ -268,7 +310,10 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
     );
     right.merge_incoming(&mut left).unwrap();
     assert_eq!(
-        PdfMarkup::of(&right).form_values.get("name"),
+        PdfMarkup::of(&right)
+            .expect("the PDF markup reads")
+            .form_values
+            .get("name"),
         Some(&FormEntry::Text("Lin".into()))
     );
 
@@ -322,7 +367,10 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         let mut app = crate::scenarios::sample_reader();
         let mut state = crate::scenarios::sample_state();
         app.sync_settled(&mut state.doc, &state.root);
-        let before = PdfMarkup::of(&state.doc).annotations_with_hidden().len();
+        let before = PdfMarkup::of(&state.doc)
+            .expect("the PDF markup reads")
+            .annotations_with_hidden()
+            .len();
 
         // The host says the participant may only view.
         let as_role = |role| {
@@ -352,12 +400,25 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
             set_form_value_action("name", &FormEntry::Text("x".into())),
         );
         assert_eq!(
-            PdfMarkup::of(&state.doc).annotations_with_hidden().len(),
+            PdfMarkup::of(&state.doc)
+                .expect("the PDF markup reads")
+                .annotations_with_hidden()
+                .len(),
             before,
             "a viewer's markup is refused"
         );
-        assert_eq!(PdfMarkup::of(&state.doc).page_rotation("source-1"), 0);
-        assert!(PdfMarkup::of(&state.doc).form_values.is_empty());
+        assert_eq!(
+            PdfMarkup::of(&state.doc)
+                .expect("the PDF markup reads")
+                .page_rotation("source-1"),
+            0
+        );
+        assert!(
+            PdfMarkup::of(&state.doc)
+                .expect("the PDF markup reads")
+                .form_values
+                .is_empty()
+        );
         assert!(
             app.status_note
                 .as_deref()
@@ -368,17 +429,26 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         // A commenter may reply to a thread but still not mark up the page.
         app.attach_framework(as_role(ui::permissions::Role::Commenter));
         let thread = PdfMarkup::of(&state.doc)
+            .expect("the PDF markup reads")
             .list_comments()
             .first()
             .map(|c| c.id.clone())
             .expect("the sample has a thread");
-        let replies_before = PdfMarkup::of(&state.doc).list_comments()[0].replies.len();
+        let replies_before = PdfMarkup::of(&state.doc)
+            .expect("the PDF markup reads")
+            .list_comments()[0]
+            .replies
+            .len();
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
             crate::actions::add_reply_action(&thread, "A reply"),
         );
         assert_eq!(
-            PdfMarkup::of(&state.doc).list_comments()[0].replies.len(),
+            PdfMarkup::of(&state.doc)
+                .expect("the PDF markup reads")
+                .list_comments()[0]
+                .replies
+                .len(),
             replies_before + 1,
             "a commenter's reply is added"
         );
@@ -457,6 +527,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
         app.sync_viewport_frame();
 
         let pinned = PdfMarkup::of(&state.doc)
+            .expect("the PDF markup reads")
             .pinned_source()
             .expect("source pinned");
         let (pinned, len) = (pinned.hash, pinned.len);
@@ -465,7 +536,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
         assert_eq!(len, bytes.len() as u64);
         assert!(
             matches!(
-                PdfMarkup::of(&state.doc).source,
+                PdfMarkup::of(&state.doc).expect("the PDF markup reads").source,
                 ui::tilo_resource::Bytes::Blob { len: stored, .. } if stored == len
             ),
             "the record references the bytes as a blob"
@@ -506,7 +577,10 @@ fn exports_are_deterministic_and_carry_page_operations() {
             .unwrap();
         app.activate_field(&mut Edits::lend(&mut state.doc), &colour);
         assert_eq!(
-            PdfMarkup::of(&state.doc).form_values.get("colour"),
+            PdfMarkup::of(&state.doc)
+                .expect("the PDF markup reads")
+                .form_values
+                .get("colour"),
             Some(&FormEntry::Choice("Green".into())),
             "a choice field steps to its next option"
         );
@@ -614,7 +688,9 @@ fn exports_are_deterministic_and_carry_page_operations() {
         tests::settle_until(&mut app, &mut state, |app| {
             app.pending_worker_plan.is_none()
         });
-        let stored = PdfMarkup::of(&state.doc).list_annotations();
+        let stored = PdfMarkup::of(&state.doc)
+            .expect("the PDF markup reads")
+            .list_annotations();
         assert_eq!(stored.len(), 1);
         assert_eq!(
             stored[0].page, 1,

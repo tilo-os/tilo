@@ -86,6 +86,7 @@ fn flooded_room() -> Replica {
     chat::demo::introduce(&mut doc, ADA, "Ada", "AD").unwrap();
     chat::demo::introduce(&mut doc, MALLORY, "Mallory", "MA").unwrap();
     let general = chat::projection::read(&doc)
+        .expect("the chat record reads")
         .channel_rows()
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Text)

@@ -4501,6 +4501,37 @@ mod tests {
         (app, state, tmp, welcome)
     }
 
+    #[test]
+    fn an_unreadable_notebook_keeps_the_notes_that_last_read_whole() {
+        let (mut app, mut state, _tmp, _page) = app_seeded_into_doc();
+        let shown: Vec<_> = app.workspace.pages().iter().map(|page| page.id).collect();
+        assert!(!shown.is_empty(), "the seeded notebook has a note");
+
+        // The canonical read is the path a window uses over a document no
+        // host projection has adopted. Keep it on that path here.
+        app.presented = false;
+        app.live = None;
+        state
+            .doc
+            .put(automerge::ROOT, "pages", "not a collection")
+            .expect("the field is written");
+        state.doc.commit();
+        let failure = app
+            .reconcile_canonical(&state.doc)
+            .expect_err("an unreadable notebook is not projected as empty");
+        assert!(failure.contains("pages"), "{failure:?}");
+
+        assert_eq!(
+            app.workspace
+                .pages()
+                .iter()
+                .map(|page| page.id)
+                .collect::<Vec<_>>(),
+            shown,
+            "the window keeps what last read whole"
+        );
+    }
+
     fn assert_search_snapshot_matches_canonical(app: &NotesApp, doc: &AutoCommit) {
         assert_eq!(app.search_blocks.len(), app.workspace.pages().len());
         for page in app.workspace.pages() {
