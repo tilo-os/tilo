@@ -42,6 +42,35 @@ impl PeerGovernance<'_> {
             })
             .collect())
     }
+    /// The standing of each of `devices` at the fresh instant `now`, when
+    /// they are governed members now: what a relay that does not hold the
+    /// room's governance decides their changes with, each held to its
+    /// foreign-device bound and, for an agent or a bot, to its delegation.
+    ///
+    /// A relay asks its governor for the standings of the devices whose
+    /// changes it decides, so only those are projected and a device the
+    /// governor no longer admits under the room's policy is left out.
+    ///
+    /// # Errors
+    ///
+    /// The room's governance does not read.
+    pub fn governed_standings_at(
+        self,
+        now: SystemTime,
+        devices: &[[u8; 32]],
+    ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
+        let access = self.peer.governance().governed_access(now)?;
+        Ok(devices
+            .iter()
+            .filter(|device| access.member_devices.contains(device))
+            .filter_map(|device| {
+                self.peer
+                    .permissions(*device, now)
+                    .ok()
+                    .map(|member| (*device, member.standing()))
+            })
+            .collect())
+    }
     /// Current governed access derived from the admitted room document.
     pub fn governed_access(self, now: SystemTime) -> Result<GovernedAccess, String> {
         let policy = self

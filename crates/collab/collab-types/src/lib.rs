@@ -134,7 +134,7 @@ pub use person_room::{
 };
 pub use receipt::{
     Receipt, ReceiptRefusal, ReceiptSurface, Record, SurfaceSource, Surfaces, check_appearances,
-    check_claims, claim_node, decide_op, decide_op_pinned, record_node,
+    check_claims, claim_node, cleartext_changes, decide_op, decide_op_pinned, record_node,
 };
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,

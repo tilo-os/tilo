@@ -41,6 +41,15 @@ impl Bound {
     pub fn party<'a>(&'a self, room_grants: &'a [Grant]) -> Party<'a> {
         Party::new(vec![self.subject.clone()], room_grants).with_grants(&self.grants)
     }
+
+    /// [`Self::party`] with the delegation's own grants that have run out by
+    /// `cx` left out, so a standing projected before the instant it is
+    /// decided at answers as one built at that instant does.
+    #[must_use]
+    pub fn party_at<'a>(&'a self, room_grants: &'a [Grant], cx: &Context<'_>) -> Party<'a> {
+        self.party(room_grants)
+            .with_grants(self.grants.iter().filter(|grant| grant.is_live(cx)))
+    }
 }
 
 /// `subject` as one token of a grant id.
@@ -114,19 +123,48 @@ impl Standing {
         self.policy.node().joined(relative)
     }
 
-    /// The authority this standing confers.
+    /// This standing as it answers when the person it is about invokes a
+    /// change *through* `subject`, a delegation of theirs: the person's
+    /// grants in the room, bounded by everything bounding them, and bounded
+    /// by that delegation's grants.
+    ///
+    /// A person editing a document is decided by this standing as it is
+    /// (their own role); an agent or a bot doing the same is decided by this
+    /// one. Ids naming nobody in the room simply bound it away.
+    #[must_use]
+    pub fn through(&self, subject: Subject) -> Self {
+        if self.is_bounded_by(&subject) {
+            return self.clone();
+        }
+        let grants: Vec<Grant> = self
+            .policy
+            .grants
+            .iter()
+            .filter(|grant| grant.subject == subject)
+            .cloned()
+            .collect();
+        self.clone().with_bound(Bound { subject, grants })
+    }
+
+    /// The authority this standing confers, every bound as it stands now.
     #[must_use]
     pub fn authority(&self) -> Authority<'_> {
+        self.authority_at(&Context::at(u64::MAX))
+    }
+
+    /// The authority this standing confers at `cx`.
+    #[must_use]
+    pub fn authority_at(&self, cx: &Context<'_>) -> Authority<'_> {
         let mut authority = Authority::person(self.policy.party(&self.person));
         for bound in &self.bounds {
-            authority = authority.bounded_by(bound.party(&self.policy.grants));
+            authority = authority.bounded_by(bound.party_at(&self.policy.grants, cx));
         }
         authority
     }
 
     #[must_use]
     pub fn verdict(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Verdict<'_> {
-        self.authority().decide(node, kind, cx)
+        self.authority_at(cx).decide(node, kind, cx)
     }
 
     #[must_use]

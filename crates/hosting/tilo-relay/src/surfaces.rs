@@ -129,8 +129,8 @@ fn tilo_app_registry_blobs(registry: &str) -> app_registry::http_blobs::HttpBlob
 /// own, a claim to an action or field the app's surface does not publish,
 /// one writing a unit outside its action's footprint, or, where the room's
 /// governor projected its members' standings (`standings`), an action the
-/// author is not granted. Ops whose surface has not arrived here yet are
-/// left to the room's devices, which hold them. `payloads` reads the
+/// change's invoker is not granted. Ops whose surface has not arrived here
+/// yet are left to the room's devices, which hold them. `payloads` reads the
 /// document frame.
 pub(crate) fn refusal(
     payloads: &dyn crate::payloads::ShellPayloads,
@@ -144,17 +144,29 @@ pub(crate) fn refusal(
         app: &route.app_id,
         record: &route.record_id,
     };
-    let author = standings.map(|standings| standings.get(envelope.author.as_bytes()));
-    let allows = |node: &tilo_action_policy::TreePath, kind| match author {
+    // A person editing a document is granted by their own standing; an agent
+    // or a bot doing so is bounded by its delegation, which the governor put
+    // in the projected standing. Who invoked a change is decided by the
+    // invoker the change records, not by whoever holds the device: one
+    // device runs a person's windows and their agents.
+    let invoker = invocation_invoker(&envelope);
+    let now = tilo_clock::unix_now();
+    // `Err` where the change claims somebody else's authority: it is decided
+    // by nobody's.
+    let author: Option<Result<tilo_action_policy::Standing, ()>> = standings.map(|standings| {
+        let standing = standings.get(envelope.author.as_bytes()).ok_or(())?;
+        match claimed_subject(invoker.as_ref(), &standing.person).ok_or(())? {
+            Claimed::Person => Ok(standing.clone()),
+            Claimed::Through(subject) => Ok(standing.through(subject)),
+        }
+    });
+    let allows = |node: &tilo_action_policy::TreePath, kind| match &author {
         // No projection: membership already decided who may write here.
         None => true,
-        Some(None) => false,
-        Some(Some(standing)) => {
-            standing.answer(
-                node,
-                kind,
-                &tilo_action_policy::Context::at(tilo_clock::unix_now()),
-            ) == tilo_action_policy::Answer::Allow
+        Some(Err(())) => false,
+        Some(Ok(standing)) => {
+            standing.answer(node, kind, &tilo_action_policy::Context::at(now))
+                == tilo_action_policy::Answer::Allow
         }
     };
     collab_types::decide_op(
@@ -168,3 +180,54 @@ pub(crate) fn refusal(
     .err()
     .map(|refusal| refusal.to_string())
 }
+
+/// Who invoked the change `op` carries, as the first of its changes records
+/// it in its history entry. A change the framework makes, or one whose
+/// entry does not decode, has none, and is decided as the author acting for
+/// themselves.
+fn invocation_invoker(op: &collab_types::SignedOp) -> Option<tilo_actions::ActionInvoker> {
+    let changes = collab_types::cleartext_changes(op).ok()??;
+    changes.iter().find_map(|change| {
+        change
+            .message()
+            .and_then(tilo_actions::ActionContext::from_change_message)
+            .and_then(|context| context.invoker)
+    })
+}
+
+/// Whose authority decides a change, as its invoker records it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Claimed {
+    /// The person themselves: the standing as it is.
+    Person,
+    /// The person acting through a delegation of theirs (an agent, a bot).
+    Through(tilo_action_policy::Subject),
+}
+
+/// The delegation `invoker` invokes a change through, when it invokes it
+/// through one: an agent or a bot acts for the person who delegated it, so
+/// the change is decided by that person's standing bounded by the
+/// delegation, not by the person's own role. [`Claimed::Person`] for a
+/// person, a Shortcut or an app, decided by the standing as it is.
+///
+/// `None` where the change claims a person other than `person`, whose
+/// authority nothing here may decide.
+fn claimed_subject(invoker: Option<&tilo_actions::ActionInvoker>, person: &str) -> Option<Claimed> {
+    use tilo_actions::ActorKind;
+    let Some(invoker) = invoker else {
+        return Some(Claimed::Person);
+    };
+    let subject = match invoker.kind {
+        ActorKind::Person | ActorKind::Shortcut | ActorKind::App => return Some(Claimed::Person),
+        ActorKind::Agent => tilo_action_policy::Subject::Agent(invoker.actor.clone()),
+        ActorKind::Bot => tilo_action_policy::Subject::Bot(invoker.actor.clone()),
+    };
+    match invoker.on_behalf_of.as_deref() {
+        None => Some(Claimed::Through(subject)),
+        Some(acted_for) if acted_for == person => Some(Claimed::Through(subject)),
+        Some(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests;

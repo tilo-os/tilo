@@ -670,10 +670,16 @@ fn claimed_kind(claims: &[ChangeClaim]) -> Option<&str> {
         })
 }
 
-/// The hashes of the changes a cleartext op carries; `None` for a sealed
-/// op or one segment of a larger mutation, whose changes are checked once
-/// readable.
-fn cleartext_changes(
+/// The changes a cleartext op carries; `None` for a sealed op or one
+/// segment of a larger mutation, whose changes are checked once readable.
+///
+/// A receiver reads them for what an op's claims do not say: who invoked the
+/// change, which the change itself records.
+///
+/// # Errors
+/// [`ReceiptRefusal::Unclaimed`] for an op whose cleartext changes do not
+/// parse.
+pub fn cleartext_changes(
     op: &crate::op::SignedOp,
 ) -> Result<Option<Vec<automerge::Change>>, ReceiptRefusal> {
     if op.encryption.is_some() {
