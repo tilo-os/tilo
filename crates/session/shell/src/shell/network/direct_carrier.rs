@@ -199,7 +199,7 @@ impl ShellNetwork {
         };
         match msg {
             NeighbourMsg::SyncReq { since, .. } => {
-                self.answer_direct_request(owner, room, since);
+                self.answer_direct_request(owner, room, &since);
             }
             msg @ (NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }) => {
                 if let NeighbourMsg::AppDocument {
@@ -229,9 +229,9 @@ impl ShellNetwork {
     /// Answer `since` for `room` with the changes the peer lacks, and the app
     /// documents still in this device's outgoing custody, so a device that
     /// just joined the direct room receives its records too.
-    fn answer_direct_request(&self, owner: NativeWorkspaceOwner, room: RoomId, since: Vec<u8>) {
+    fn answer_direct_request(&self, owner: NativeWorkspaceOwner, room: RoomId, since: &[u8]) {
         let wants_records = since.is_empty();
-        let since: Vec<automerge::ChangeHash> = serde_json::from_slice(&since).unwrap_or_default();
+        let since: Vec<automerge::ChangeHash> = serde_json::from_slice(since).unwrap_or_default();
         let changes = owner
             .with_current(room, |view| {
                 let mut doc = view
@@ -291,7 +291,9 @@ fn fresh_request_nonce() -> u64 {
     if getrandom::fill(&mut bytes).is_err() {
         return std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_nanos() as u64);
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+            });
     }
     u64::from_le_bytes(bytes)
 }

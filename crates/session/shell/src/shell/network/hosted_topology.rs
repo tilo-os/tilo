@@ -230,6 +230,10 @@ impl ShellNetwork {
     /// publishes the rearranged entries. A request this device already
     /// recorded is never applied twice, and a restart reads the record back
     /// from the room.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one read, claim and publish of the requests a room retained for this device"
+    )]
     fn apply_retained_layout_requests(
         &self,
         owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
@@ -264,10 +268,10 @@ impl ShellNetwork {
         }
         let wanted = pending(&admitted, salt);
         if wanted.is_empty() {
-            if let Ok(mut rooms) = self.hosted_topology.rooms.lock() {
-                if let Some(state) = rooms.get_mut(&room) {
-                    state.retained.clear();
-                }
+            if let Ok(mut rooms) = self.hosted_topology.rooms.lock()
+                && let Some(state) = rooms.get_mut(&room)
+            {
+                state.retained.clear();
             }
             return;
         }
@@ -302,8 +306,9 @@ impl ShellNetwork {
                 let Ok(bound) = serde_json::from_slice::<BoundCommand>(&request.command) else {
                     continue;
                 };
-                let owned = |id| tilo_desktop_model::peer_salt_of(id) == salt;
-                let Ok(command) = admit(workspace, &bound.source, &mut doc, &bound.command, owned)
+                let is_ours = |id| tilo_desktop_model::peer_salt_of(id) == salt;
+                let Ok(command) =
+                    admit(workspace, &bound.source, &mut doc, &bound.command, is_ours)
                 else {
                     // The window moved on since the request was made. Keep
                     // it retained, not silently dropped: a later look may
@@ -1045,6 +1050,10 @@ mod tests {
     /// in this device's own namespace, and never applied again: not on the
     /// next look, and not after a restart that reads the room back.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one retained request read top to bottom"
+    )]
     fn a_retained_layout_request_is_applied_and_claimed_exactly_once() {
         use crate::shell::state::{StripId, WorkspaceTree};
         use automerge::ReadDoc as _;

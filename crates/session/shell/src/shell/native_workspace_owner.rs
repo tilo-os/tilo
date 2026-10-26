@@ -300,6 +300,10 @@ pub(crate) fn create_governed_workspace(
 )]
 #[allow(
     clippy::significant_drop_tightening,
+    reason = "the seed reads the workspace and its record index under one read of the tree"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
     reason = "the writer's opening guard is held from the owner lookup through attachment, so two opens never both restore an owner"
 )]
 pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, String> {
