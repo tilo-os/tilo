@@ -883,6 +883,12 @@ impl WordProcessorWidget {
                 self.extend_or_clear(shift);
                 self.inner.move_end(state);
             }
+            // One page down is the same place on the next sheet: the one app
+            // that paginates moves by pages, as every reader does.
+            NamedKey::PageUp | NamedKey::PageDown => {
+                self.extend_or_clear(shift);
+                self.move_page(matches!(key, NamedKey::PageDown), shift);
+            }
             _ => return false,
         }
         true

@@ -2625,6 +2625,68 @@ fn list_markers_indent_number_and_grow_by_level() {
     }
 }
 
+#[test]
+fn the_page_keys_move_the_caret_one_sheet_and_the_band_says_which() {
+    let mut state = crate::initialized_state();
+    let mut wp = WordProcessorWidget::detached();
+    wp.sync(&state.doc, &state.root);
+    for i in 0..120 {
+        wp.model_mut().insert_str(
+            &mut edits(&mut state.doc),
+            &format!("Paragraph number {i} carries enough words to fill a line."),
+        );
+        wp.model_mut().enter(&mut edits(&mut state.doc));
+    }
+    let mut framed = mount(state, wp, 1000, 700);
+    let (wp, state) = Framed::split(&mut framed);
+
+    assert!(wp.pages > 1, "the document has {} page(s)", wp.pages);
+    // The caret is at the end of what was typed: the last sheet.
+    let last = wp.pages - 1;
+    assert_eq!(wp.caret_page(), last, "the caret starts on the last sheet");
+    assert_eq!(
+        wp.page_readout(),
+        format!("Page {} of {}", last + 1, wp.pages)
+    );
+
+    // PageUp is the same column on the sheet above; PageDown comes back.
+    let end_of_document = wp.inner.caret().clone();
+    wp.handle_key_press(
+        &mut edits(&mut state.doc),
+        &Key::Named(NamedKey::PageUp),
+        None,
+        false,
+        false,
+        &mut false,
+    );
+    assert_eq!(wp.caret_page(), last - 1, "one sheet back");
+    assert_eq!(wp.page_readout(), format!("Page {last} of {}", wp.pages));
+    assert_ne!(
+        wp.inner.caret(),
+        &end_of_document,
+        "the caret moved to the sheet above"
+    );
+    wp.handle_key_press(
+        &mut edits(&mut state.doc),
+        &Key::Named(NamedKey::PageDown),
+        None,
+        false,
+        false,
+        &mut false,
+    );
+    assert_eq!(wp.caret_page(), last, "one sheet on");
+    // The last sheet is the last: paging on stays there.
+    wp.handle_key_press(
+        &mut edits(&mut state.doc),
+        &Key::Named(NamedKey::PageDown),
+        None,
+        false,
+        false,
+        &mut false,
+    );
+    assert_eq!(wp.caret_page(), last, "there is no sheet below the last");
+}
+
 /// A long document paginates across discrete pages, a single paragraph splits at a line boundary across
 /// pages, and a manual page break starts its block on a fresh page.
 #[test]
