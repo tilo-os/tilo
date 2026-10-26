@@ -274,6 +274,28 @@ find(mail.Message, text: "83(b)", where: { from: "@ycombinator.com", received: 2
 
 ## 4. Index and performance
 
+**One index answers both search and lists.** Measured on `lang/native` (Board, 10k items):
+- open is 66 ms, nearly all of it reading each shown collection's entries and the filtered fields
+  from the document;
+- search keeps its own in-memory copy of about 104 MiB;
+- loading the document from its saved bytes takes 412 ms (6.7 s at 100k), before anything opens.
+
+These are the same problem. The index below is therefore the store's view of collections as well
+as search's:
+- **Lists come from the index.** A collection's order, its items' filter columns and the
+  fields a row shows are columns of the index. Opening a list reads one page of the index, not
+  the document.
+- **Derived, not trusted.** The index is stamped with the document heads it reflects. On open,
+  changes since those heads are applied to it incrementally. A missing or unreadable index is
+  rebuilt off the frame while the list shows the platform's loading state. The document stays
+  the source of truth.
+- **The document loads when it is needed:** for the first write, for a view that reads a
+  field the index lacks, or in the background after the first frame. Opening never waits for the
+  whole document.
+- **On disk, paged, and shared.** The index is not held whole in memory. The search host and the
+  app read the same files, so the app has no second copy.
+
+
 - **Per package, per workspace, persistent.**
   - The index is kept incrementally from the store's field changes, off the frame, as
     publication is today.
