@@ -261,6 +261,44 @@ impl Resource for Room {
         published()
     }
 
+    /// What the room's records hold is read as data, as every app's documents are: an agent
+    /// reads a note's text rather than a screenshot of it.
+    const READABLE: bool = true;
+
+    /// Every record and every item in one is part of the room's content (`tl:<app>:<id>`); the
+    /// package's own resource (`tl:<app>`) and the host's carry only actions.
+    fn document_child(_state: &RoomState, id: &str) -> bool {
+        id.strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .is_some_and(|(app, item)| !app.is_empty() && !item.is_empty())
+    }
+
+    /// Read by the runtime over `doc`: the live window's when it holds exactly that record, and
+    /// otherwise (a version of the past) one of its own over it, as History's preview builds.
+    fn read_content(
+        _state: &RoomState,
+        doc: &Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        if let Some(host) = live_host() {
+            host.sync_from(doc);
+            if host.is_at(doc) {
+                return host.read_content(item);
+            }
+        }
+        let host = Host::new(
+            doc,
+            tilolang_tilo::runtime::Principal::new("reader"),
+            |_: &tilolang_tilo::runtime::Principal, _: &tilolang_tilo::runtime::ActionInfo| {
+                // A read runs no action.
+                tilolang_tilo::runtime::Decision::Deny
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        crate::app::load(&host);
+        host.read_content(item)
+    }
+
     fn search(_state: &RoomState) -> Vec<SearchEntry> {
         search_entries()
     }

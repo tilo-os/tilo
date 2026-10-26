@@ -584,6 +584,13 @@ impl Host {
         self.inner.store.sync_from(record)
     }
 
+    /// Whether the runtime reads exactly what the room record `record` holds; see
+    /// [`TiloStore::is_at`].
+    #[must_use]
+    pub fn is_at(&self, record: &tilo_resource::Doc) -> bool {
+        self.inner.store.is_at(record)
+    }
+
     /// The actions the runtime committed under a ticket of `first` or later.
     #[must_use]
     pub fn take_committed_from(&self, first: u64) -> Vec<Committed> {
