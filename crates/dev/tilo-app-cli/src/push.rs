@@ -54,6 +54,9 @@ pub struct PushArgs {
 pub struct Push {
     pub action: &'static str,
     pub argument: Map<String, Value>,
+    /// The package file the room's host keeps for its members to fetch,
+    /// handed over before the action names it as `file`.
+    pub upload: Option<PathBuf>,
 }
 
 pub fn run_push(args: PushArgs) -> Result<Value> {
@@ -90,14 +93,24 @@ pub fn run_push(args: PushArgs) -> Result<Value> {
         .enable_all()
         .build()?;
     let started = std::time::Instant::now();
+    let upload = push
+        .upload
+        .as_ref()
+        .map(|path| std::fs::read(path).with_context(|| format!("read {}", path.display())))
+        .transpose()?;
     let answer = runtime.block_on(async {
         let client = govern::connect(&link, cert, key).await?;
+        let mut argument = push.argument.clone();
+        if let Some(bytes) = &upload {
+            let file = govern::upload(&client, link.workspace_id, &link.room, bytes).await?;
+            argument.insert("file".into(), Value::from(file));
+        }
         govern::invoke(
             &client,
             link.workspace_id,
             &link.room,
             push.action,
-            push.argument.clone(),
+            argument,
         )
         .await
     });
@@ -195,6 +208,7 @@ pub fn app_push(app_dir: &Path, package: &Path, dev: bool) -> Result<Push> {
     Ok(Push {
         action: "install-app",
         argument,
+        upload: Some(package.to_path_buf()),
     })
 }
 
@@ -217,6 +231,7 @@ pub fn bot_push(program: &Path, entry: &str, version: &str) -> Result<Push> {
     Ok(Push {
         action: "request-bot",
         argument,
+        upload: None,
     })
 }
 

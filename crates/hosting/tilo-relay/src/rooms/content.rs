@@ -184,10 +184,13 @@ impl Rooms {
         }
         let responder = peer_handle(&self.inner.host.cert.device_public_key);
         let Some(bytes) = self
-            .inner
-            .content
-            .get()
-            .and_then(|content| content.read(room, &app_id, &hash))
+            .app_file(room, &hash)
+            .or_else(|| {
+                self.inner
+                    .content
+                    .get()
+                    .and_then(|content| content.read(room, &app_id, &hash))
+            })
             .filter(|bytes| bytes.len() <= MAX_CONTENT_BYTES)
         else {
             return lacks_answer(&self.inner.host.cert.device_public_key, body)

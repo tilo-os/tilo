@@ -141,6 +141,11 @@ pub struct AppRelease {
     pub package: String,
     /// The publisher key that signed the package, hex.
     pub publisher: String,
+    /// The BLAKE3 hash of the `.tapp` file, hex, when the room's host keeps
+    /// it: members fetch it from the room by this hash and install it,
+    /// bound to `package` and `publisher`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
     /// A developer's own build, signed with their key and never reviewed by
     /// a registry; every window of the app says so.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -170,7 +175,10 @@ impl AppRelease {
             ("surface", &self.surface),
             ("package", &self.package),
             ("publisher", &self.publisher),
-        ] {
+        ]
+        .into_iter()
+        .chain(self.file.iter().map(|file| ("file", file)))
+        {
             if hash.len() != 64
                 || !hash
                     .bytes()
@@ -186,6 +194,35 @@ impl AppRelease {
     #[must_use]
     pub fn surface_hash(&self) -> Option<[u8; 32]> {
         hex::decode(&self.surface).ok()?.try_into().ok()
+    }
+
+    /// The package file a device that runs `installed` (the package root it
+    /// has of this app, hex, if any) fetches from the room to run this
+    /// release: `None` when it already runs it or the room's host keeps no
+    /// file of it.
+    #[must_use]
+    pub fn file_to_fetch(&self, installed: Option<&str>) -> Option<&str> {
+        if installed == Some(self.package.as_str()) {
+            return None;
+        }
+        self.file.as_deref()
+    }
+
+    /// Check `bytes` fetched from the room are this release's package file.
+    /// The install that follows binds them to `package` and `publisher`.
+    ///
+    /// # Errors
+    /// The release names no file, or the bytes hash to another.
+    pub fn check_file(&self, bytes: &[u8]) -> Result<(), String> {
+        let file = self
+            .file
+            .as_deref()
+            .ok_or("the room's host keeps no package file of this version")?;
+        if blake3::hash(bytes).to_hex().as_str() == file {
+            Ok(())
+        } else {
+            Err("the fetched package does not hash to the room's version".into())
+        }
     }
 }
 

@@ -678,6 +678,7 @@ fn a_change_made_with_another_version_than_the_room_runs_waits_for_its_author_to
         surface: hex::encode(NEWER),
         package: hex::encode([9; 32]),
         publisher: hex::encode([10; 32]),
+        file: None,
         dev: true,
     };
     let install = WorkspaceMembershipCommand::InstallApp(release.clone());

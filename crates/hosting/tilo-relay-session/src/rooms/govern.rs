@@ -145,12 +145,52 @@ pub async fn invoke(
     action: &str,
     argument: Map<String, Value>,
 ) -> Result<Value, String> {
+    subscribe(client, workspace_id).await?;
+    call(client, workspace_id, room, action, argument).await
+}
+
+/// The governance action that takes a piece of a package file.
+pub const UPLOAD_APP_FILE: &str = "upload-app-file";
+
+/// The bytes of a package file one `upload-app-file` piece carries.
+const UPLOAD_PIECE: usize = 256 * 1024;
+
+/// Hand `file`, a `.tapp`, to `room`'s host in pieces, for its members to
+/// fetch from the room: the file's BLAKE3 hash, hex, which `install-app`
+/// then names as the version's `file`.
+///
+/// # Errors
+/// As [`invoke`], for any piece.
+pub async fn upload(
+    client: &RelayClient,
+    workspace_id: u64,
+    room: &str,
+    file: &[u8],
+) -> Result<String, String> {
+    let hash = blake3::hash(file).to_hex().to_string();
+    subscribe(client, workspace_id).await?;
+    let total = file.len() as u64;
+    let mut offset = 0_usize;
+    for piece in file.chunks(UPLOAD_PIECE) {
+        let mut argument = Map::new();
+        argument.insert("file".into(), Value::from(hash.clone()));
+        argument.insert("offset".into(), Value::from(offset as u64));
+        argument.insert("total".into(), Value::from(total));
+        argument.insert("data".into(), Value::from(hex::encode(piece)));
+        call(client, workspace_id, room, UPLOAD_APP_FILE, argument).await?;
+        offset = offset.saturating_add(piece.len());
+    }
+    Ok(hash)
+}
+
+/// Subscribe `client` to the room carried by `workspace_id`.
+async fn subscribe(client: &RelayClient, workspace_id: u64) -> Result<(), String> {
     client
         .send(Envelope::Subscribe { workspace_id })
         .map_err(|_| "the session closed".to_owned())?;
     loop {
         match client.recv().await {
-            Some(Envelope::Ready { .. }) => break,
+            Some(Envelope::Ready { .. }) => return Ok(()),
             Some(Envelope::NotAuthorised { reason, .. }) => {
                 return Err(format!("the room does not admit this device: {reason}"));
             }
@@ -158,6 +198,16 @@ pub async fn invoke(
             Some(_) => {}
         }
     }
+}
+
+/// Invoke `action` on a session [`subscribe`] opened.
+async fn call(
+    client: &RelayClient,
+    workspace_id: u64,
+    room: &str,
+    action: &str,
+    argument: Map<String, Value>,
+) -> Result<Value, String> {
     let request = RemoteActionMessage::Invoke(InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget::room_governance(room, action),
