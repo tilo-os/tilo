@@ -908,6 +908,10 @@ impl ChatApp {
             }
             // A pin whose message is gone has nowhere to lead.
             Hit::RevealMessage(id) => drop(self.reveal_message(&id)),
+            // The desktop shows the one card it has for people.
+            Hit::ShowPerson { person, .. } => {
+                ui::person_card::show(&person, &self.user_name(&person));
+            }
             Hit::Dismiss => self.on_hit_dismiss(),
             // MessageMenu is a right-click affordance and drag handles are
             // handled at press time; permission-gated fallthroughs are no-ops.

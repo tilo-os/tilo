@@ -3,6 +3,8 @@
 chat-contacts-section = Contacts
 chat-channels-title = Channels
 chat-person-chat-private = Private conversation
+# A message's author or a member, opening their profile card.
+chat-person-card = { $name }, profile
 chat-person-chat-placeholder = Write a private message
 chat-person-chat-unavailable = Private conversation unavailable. Choose someone in this workspace.
 chat-person-chat-empty = Write a message before sending.

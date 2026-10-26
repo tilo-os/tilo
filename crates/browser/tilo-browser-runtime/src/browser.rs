@@ -3201,18 +3201,46 @@ pub fn invoke_component_action(
 ) -> Result<String, JsValue> {
     let arguments: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(arguments).map_err(error)?;
+    let by = if confirmed {
+        Invoker::Confirmed
+    } else {
+        Invoker::Door
+    };
+    invoke_as(id, resource, action, &arguments, window.as_deref(), by)
+}
+
+/// Who an action call from the page is.
+#[derive(Clone, Copy)]
+enum Invoker {
+    /// Whoever calls the bound door.
+    Door,
+    /// The door's caller, having confirmed this exact request.
+    Confirmed,
+    /// The person themself, by a control they pressed in the desktop's own
+    /// chrome.
+    Person,
+}
+
+fn invoke_as(
+    id: u64,
+    resource: &str,
+    action: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    window: Option<&str>,
+    by: Invoker,
+) -> Result<String, JsValue> {
     with_mount(id, |m| {
-        let instance = m.action_window(window.as_deref())?;
+        let instance = m.action_window(window)?;
         let address = ui::bound_dispatch::BoundActionAddress {
             instance_id: instance
                 .or_else(|| m.frame.component_instance_id())
                 .ok_or_else(|| error("the mount hosts no application"))?,
             address: tilo_actions::ActionAddress::new(resource, action),
         };
-        let started = if confirmed {
-            m.frame.invoke_bound_action_confirmed(&address, &arguments)
-        } else {
-            m.frame.invoke_bound_action(&address, &arguments)
+        let started = match by {
+            Invoker::Door => m.frame.invoke_bound_action(&address, arguments),
+            Invoker::Confirmed => m.frame.invoke_bound_action_confirmed(&address, arguments),
+            Invoker::Person => m.frame.invoke_bound_action_by_person(&address, arguments),
         }
         .map_err(|e| door_error(&e))?;
         // A following call sees the state this one left, not the last frame's.
@@ -3499,6 +3527,34 @@ pub fn desktop_set_watching(id: u64, watching: u32) -> Result<(), JsValue> {
             .as_ref()
             .ok_or_else(|| error("Desktop unavailable"))?;
         if desktop.here.borrow_mut().set_watching(watching) {
+            m.pending = true;
+            m.window.request_redraw();
+        }
+        Ok(())
+    })
+}
+
+/// What the person's profile says they are doing (`status`, empty for
+/// nothing) and how they share it (`automatic`, `manual` or `off`; anything
+/// else leaves it as it is): what they set on another of their devices.
+///
+/// # Errors
+///
+/// Rejects a mount without a desktop.
+#[wasm_bindgen]
+pub fn desktop_set_own_status(id: u64, status: &str, sharing: &str) -> Result<(), JsValue> {
+    with_mount(id, |m| {
+        let desktop = m
+            .desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?;
+        let mut here = desktop.here.borrow_mut();
+        let before = here.revision();
+        here.set_own_words(Some(status.to_owned()));
+        if let Some(sharing) = crate::shell::sharing_of(sharing) {
+            here.set_sharing(sharing);
+        }
+        if here.revision() != before {
             m.pending = true;
             m.window.request_redraw();
         }

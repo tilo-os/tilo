@@ -9,11 +9,11 @@
 //! they are in each time it changes, under the same banner the native
 //! shell shows; the person's own input takes their view back.
 //!
-//! The peek's message box talks to the person privately, as Chat does:
-//! the conversation with them is open while their peek is (`ui::person_chat`,
+//! The peek's message box talks to the person privately, in Chat's own
+//! conversation with them: it is open while their peek is (`ui::person_chat`,
 //! the room governor's private door), its last lines show above the box,
-//! and a message goes to the room the same way Chat's own
-//! `send-direct-message` sends one.
+//! and a message is sent by Chat's `send-direct-message`, which the page
+//! runs ([`OwnAsk`]), the one way a direct message goes.
 //!
 //! The overlay's code may come in its own module the first time the roster
 //! is pinned ([`crate::pinned_roster`]); following and the banner are here
@@ -81,11 +81,88 @@ struct Lane {
     failed: bool,
 }
 
-/// A message on its way, until the room accepts or refuses it.
+/// A message on its way, until Chat took or refused it.
 struct Sending {
     /// To whom, by name, to say so if it did not go.
     name: String,
-    reply: ui::person_chat::Pending<ui::person_chat::Conversation>,
+    /// The page's answer, by [`OwnAsk::id`].
+    id: u32,
+}
+
+/// What the person asked of Chat themselves, on a card or in a peek: the
+/// page finds Chat's conversation with `to` and hands `id` back to
+/// [`take_own_ask`], which is what lets Chat's private action run as the
+/// person's own act.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct OwnAsk {
+    pub id: u32,
+    /// The person (root key, hex).
+    pub to: String,
+    /// Chat's action on its conversation with them.
+    pub action: &'static str,
+    /// Its arguments.
+    #[serde(skip)]
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+thread_local! {
+    /// The last message id handed out, and the page's answers not taken yet.
+    static ANSWERS: std::cell::RefCell<(u32, std::collections::HashMap<u32, Result<(), String>>)> =
+        std::cell::RefCell::default();
+    /// The person's own asks the page has not run yet.
+    static OWN_ASKS: std::cell::RefCell<Vec<OwnAsk>> = std::cell::RefCell::default();
+}
+
+/// Keep the person's own ask of Chat's `action` on their conversation with
+/// `to`, for the page to run.
+pub(crate) fn ask_own(
+    to: &str,
+    action: &'static str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> OwnAsk {
+    let ask = OwnAsk {
+        id: next_id(),
+        to: to.to_owned(),
+        action,
+        arguments,
+    };
+    OWN_ASKS.with(|asks| {
+        let mut asks = asks.borrow_mut();
+        // A handful at most are ever in flight; an unrun one is not kept forever.
+        if asks.len() >= 16 {
+            asks.remove(0);
+        }
+        asks.push(ask.clone());
+    });
+    ask
+}
+
+/// The person's own ask `id`, once: none for an id they never made.
+pub(crate) fn take_own_ask(id: u32) -> Option<OwnAsk> {
+    OWN_ASKS.with(|asks| {
+        let mut asks = asks.borrow_mut();
+        let at = asks.iter().position(|ask| ask.id == id)?;
+        Some(asks.remove(at))
+    })
+}
+
+/// What came of the message `id`: Chat took it, or why not.
+pub(crate) fn answer(id: u32, result: Result<(), String>) {
+    ANSWERS.with(|answers| {
+        answers.borrow_mut().1.insert(id, result);
+    });
+}
+
+fn next_id() -> u32 {
+    ANSWERS.with(|answers| {
+        let mut answers = answers.borrow_mut();
+        answers.0 = answers.0.wrapping_add(1);
+        answers.0
+    })
+}
+
+fn take_answer(id: u32) -> Option<Result<(), String>> {
+    ANSWERS.with(|answers| answers.borrow_mut().1.remove(&id))
 }
 
 /// What following last brought forward.
@@ -236,22 +313,27 @@ impl PagePeople {
         )
     }
 
-    /// Send `text` to the person with roster id `to`, whose peek is open.
-    pub(super) fn send(&mut self, to: &str, text: &str) {
+    /// Send `text` to the person with roster id `to`, whose peek is open:
+    /// what the page sends by Chat's action, if it may go now.
+    pub(super) fn send(&mut self, to: &str, text: &str) -> Option<OwnAsk> {
         let Some(lane) = self.lane.as_ref().filter(|lane| lane.id == to) else {
             self.failed_send = Some((
                 to.to_owned(),
                 tilo_desktop::i18n::t("people-overlay-messages-unavailable"),
             ));
-            return;
+            return None;
         };
         if self.sending.is_some() {
-            return;
+            return None;
         }
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("text".to_owned(), text.into());
+        let ask = ask_own(&lane.key, "send-direct-message", arguments);
         self.sending = Some(Sending {
             name: lane.name.clone(),
-            reply: ui::person_chat::send(&lane.key, text),
+            id: ask.id,
         });
+        Some(ask)
     }
 
     /// A message that did not go since the last ask: to whom, and why.
@@ -441,7 +523,7 @@ impl PagePeople {
         let sent = match self
             .sending
             .as_ref()
-            .and_then(|sending| sending.reply.take())
+            .and_then(|sending| take_answer(sending.id))
         {
             Some(answer) => {
                 let sending = self.sending.take();
