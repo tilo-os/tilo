@@ -20,12 +20,22 @@ pub(crate) fn start(store: &Store) {
             let runtime = match records.load(tilo_environment::DEFAULT_RECORD) {
                 Ok(Some(environment)) => environment
                     .runtime_image(tilo_environment::host_arch())
-                    .ok(),
-                Ok(None) => images.current_runtime().ok().map(|(_, id)| id),
-                Err(_) => None,
+                    .map_err(|why| format!("the default environment names none: {why}")),
+                Ok(None) => images
+                    .current_runtime()
+                    .map(|(_, id)| id)
+                    .map_err(|why| format!("this device holds none: {why}")),
+                Err(error) => Err(format!("the default environment cannot be read: {error}")),
             };
-            let Some(runtime) = runtime else { return };
+            let runtime = match runtime {
+                Ok(runtime) => runtime,
+                Err(why) => {
+                    tracing::info!(%why, "ush: no default runtime to import ahead of its first use");
+                    return;
+                }
+            };
             if images.is_local(&runtime) {
+                tracing::info!(%runtime, "ush: the default runtime is in the user's store already");
                 return;
             }
             let started = std::time::Instant::now();
