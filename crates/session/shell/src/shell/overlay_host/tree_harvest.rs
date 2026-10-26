@@ -616,6 +616,53 @@ impl ShellOverlayHost {
         touched
     }
 
+    /// Set one window group's width from the window menu. Mirrors the same
+    /// value to the laid-out widget and the persisted tree; returns whether
+    /// the group was found.
+    pub fn set_group_width(
+        &mut self,
+        group_id: u64,
+        width: crate::shell::state::WindowWidth,
+    ) -> bool {
+        let ui_width = match width {
+            crate::shell::state::WindowWidth::Narrow => ui::widget::WindowWidth::Narrow,
+            crate::shell::state::WindowWidth::Normal => ui::widget::WindowWidth::Normal,
+            crate::shell::state::WindowWidth::Wide => ui::widget::WindowWidth::Wide,
+            crate::shell::state::WindowWidth::Fraction(permille) => {
+                ui::widget::WindowWidth::Fraction(permille)
+            }
+        };
+        let mut touched = false;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in &mut row.groups {
+                if g.id == group_id {
+                    g.set_width(ui_width);
+                    touched = true;
+                }
+            }
+        }
+        if !touched {
+            return false;
+        }
+        if let Some(chrome) = self.chrome.clone() {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            for ws in &mut tree.desktop.workspaces {
+                for strip in &mut ws.strips {
+                    for g in &mut strip.window_groups {
+                        if g.id == group_id {
+                            g.width = width;
+                        }
+                    }
+                }
+            }
+            tree.queue_save();
+        }
+        true
+    }
+
     /// Close the active tab of the focused group, through the same
     /// `TabBar::start_closing` a `✕` click runs. `false` when nothing is
     /// focused or the group has no tab left to close.
