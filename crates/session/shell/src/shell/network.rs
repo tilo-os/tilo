@@ -2690,6 +2690,19 @@ impl ShellNetwork {
             .try_send(NetCmd::SetWake(crate::network::actor::LoopWake(wake)));
     }
 
+    /// What a frame-tick step that found the tree held by another thread
+    /// runs once that thread released it: the loop wakes once and the step
+    /// looks again ([`WorkspaceTreeHandle::try_read_or_wake`]).
+    fn release_wake(&self) -> impl FnOnce() + Send + 'static {
+        // A reference count, not an allocation: built on every tick.
+        let wake = Arc::clone(&self.event_wake);
+        move || {
+            if let Some(wake) = wake.get() {
+                wake();
+            }
+        }
+    }
+
     /// Wake the compositor loop from any thread, once [`Self::set_wake`]
     /// has supplied the loop's wake; a no-op before that.
     pub(crate) fn loop_waker(&self) -> crate::session_runtime::Wake {
