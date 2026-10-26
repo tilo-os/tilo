@@ -2141,6 +2141,45 @@ mod owner_commit_tests {
         }
     }
 
+    /// The certified door re-verifies a caller on every status, retry and
+    /// effect barrier. A delegated caller's own recheck must still pass, and
+    /// the owner it derives must name the agent the person delegated to; a
+    /// changed delegation is refused, never silently re-owned.
+    #[test]
+    fn a_delegated_callers_own_reverification_keeps_the_agent_owner() {
+        let root = canonical_tempdir();
+        let f = owner_fixture(root.path());
+        let caller = delegated_owner_caller(&f, "mcp-7");
+        let current = effect_owner_caller(&f);
+        assert_eq!(
+            caller.reverified_owner(&current),
+            Some(caller.owner()),
+            "fresh verification of the same person and device keeps the owner"
+        );
+        assert_eq!(
+            caller.owner(),
+            InvocationOwner::AuthenticatedLocal {
+                root: f.owner.peer().authority().user_public_key,
+                device: f.owner.peer().authority().device_public_key,
+                agent: Some("mcp-7".into()),
+            }
+        );
+        // The same person and device, but the invocation admitted for another
+        // agent: its owner is another agent's, so this caller's recheck of
+        // itself still matches only its own delegation.
+        let elsewhere = delegated_owner_caller(&f, "mcp-8");
+        assert_ne!(elsewhere.owner(), caller.owner());
+        assert_eq!(
+            caller.reverified_owner(&elsewhere),
+            Some(caller.owner()),
+            "a re-verification only proves the person and device"
+        );
+        // Another person's broker verifies another root: never this caller.
+        let other_root = canonical_tempdir();
+        let other = owner_fixture(other_root.path());
+        assert_eq!(caller.reverified_owner(&effect_owner_caller(&other)), None);
+    }
+
     fn prepare_owner_effect(
         f: &OwnerFixture,
         caller: &VerifiedActionCaller,

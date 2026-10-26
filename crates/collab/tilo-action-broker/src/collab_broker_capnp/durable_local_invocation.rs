@@ -41,17 +41,7 @@ impl LocalCaller {
         Ok(caller)
     }
     fn owner_of(admitted: &AdmittedJoinIdentity) -> Result<InvocationOwner, String> {
-        let cert = admitted
-            .certificate
-            .as_ref()
-            .ok_or("durable local caller certificate missing")?;
-        let owner = InvocationOwner::AuthenticatedLocal {
-            root: cert.user_public_key,
-            device: cert.device_public_key,
-            agent: admitted.agent_id.clone(),
-        };
-        owner.validate()?;
-        Ok(owner)
+        admitted.invocation_owner()
     }
     pub(super) fn owner(&self) -> InvocationOwner {
         self.owner.clone()
