@@ -2424,7 +2424,8 @@ fn engine_surface_and_session_restore_keep_truthful_page_identity() {
         );
         assert_eq!(
             navigate.contract.execution,
-            ui::tilo_actions::ExecutionMode::Background { cancellable: false }
+            ui::tilo_actions::ExecutionMode::Background { cancellable: true },
+            "a caller can stop a navigation it no longer waits for"
         );
         assert!(navigate.contract.validate_declaration().is_empty());
         let settings = resources[0]

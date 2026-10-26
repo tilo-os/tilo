@@ -127,7 +127,8 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             );
             assert_eq!(
                 action.contract.execution,
-                ui::tilo_actions::ExecutionMode::Background { cancellable: false }
+                ui::tilo_actions::ExecutionMode::Background { cancellable: true },
+                "{id} may navigate or hold its tab, so its caller can always stop it"
             );
         }
         let (_, blank, _, _) = page_on("about:blank");
@@ -809,4 +810,48 @@ fn a_settled_page_result_nobody_waits_for_does_not_hold_the_tab() {
             .is_some_and(|operation| operation.invocation == running),
         "the running action keeps the slot"
     );
+}
+
+#[test]
+fn a_page_action_either_finishes_or_says_what_became_of_it() {
+    // Giving up on a page action frees the tab's slot and says that what the
+    // page did is unknown, whether the caller stopped waiting for it or the
+    // action ran out of time: neither claims the page acted or did not.
+    let mut widget = BrowserWidget::new_headless();
+    widget.current_uri = "https://site.test/form".into();
+    let cancelled = ui::tilo_actions::InvocationId::new();
+    widget
+        .start_page_operation(cancelled, PageRequest::Outline { frame: None })
+        .unwrap();
+    let answer = widget
+        .answer_a_cancelled_page_operation(cancelled, true)
+        .expect("a running page action is stopped when its caller gives up");
+    let ui::tilo_actions::InvocationUpdate::Failed { error, .. } = answer else {
+        panic!("a stopped page action answers as a failure");
+    };
+    assert_eq!(error.code, "browser.page.cancelled");
+    assert!(error.message.contains("unknown"), "{}", error.message);
+    assert!(widget.page_operation.is_none(), "the slot is freed");
+
+    // An invocation that runs nothing here is not answered twice.
+    assert!(
+        widget
+            .answer_a_cancelled_page_operation(cancelled, true)
+            .is_none(),
+        "nothing is left to stop"
+    );
+
+    // Running out of time says the same about what the page did.
+    let slow = ui::tilo_actions::InvocationId::new();
+    widget
+        .start_page_operation(slow, PageRequest::Outline { frame: None })
+        .unwrap();
+    let operation = widget.page_operation.take().unwrap();
+    let ui::tilo_actions::InvocationUpdate::Failed { error, .. } =
+        BrowserWidget::answer_a_timed_out_page_operation(operation)
+    else {
+        panic!("a page action that ran out of time answers as a failure");
+    };
+    assert_eq!(error.code, "browser.page.timeout");
+    assert!(error.message.contains("unknown"), "{}", error.message);
 }

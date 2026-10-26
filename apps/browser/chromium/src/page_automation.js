@@ -15,12 +15,12 @@ globalThis.__tiloPage ||= (() => {
   const MAX_LINES = 1200, MAX_CHARS = 100000, MAX_VISITED = 40000;
   const MAX_TEXT = 200, MAX_NAME = 120, MAX_VALUE = 200, MAX_OPTIONS = 30;
   const INPUT_ROLES = {button: 'button', submit: 'button', reset: 'button', image: 'button',
-    file: 'file', color: 'button', checkbox: 'checkbox', radio: 'radio', range: 'slider',
+    file: 'file', color: 'color', checkbox: 'checkbox', radio: 'radio', range: 'slider',
     number: 'spinbutton', search: 'searchbox'};
   const INTERACTIVE = new Set(['link', 'button', 'checkbox', 'radio', 'switch', 'textbox',
     'searchbox', 'combobox', 'listbox', 'option', 'slider', 'spinbutton', 'tab', 'menuitem',
-    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable', 'file', 'hint', 'draggable',
-    'canvas', 'hoverable']);
+    'menuitemcheckbox', 'menuitemradio', 'treeitem', 'clickable', 'file', 'color', 'hint',
+    'draggable', 'canvas', 'hoverable']);
   const CONTAINERS = new Set(['navigation', 'main', 'banner', 'contentinfo', 'complementary',
     'form', 'dialog', 'alertdialog', 'region', 'search', 'list', 'listitem', 'table', 'row',
     'cell', 'columnheader', 'rowheader', 'menu', 'menubar', 'tablist', 'tabpanel', 'tree',
@@ -34,7 +34,17 @@ globalThis.__tiloPage ||= (() => {
     'title', 'base', 'svg', 'object', 'embed']);
   const NOT_TEXT = new Set(['button', 'submit', 'reset', 'image', 'file', 'checkbox', 'radio',
     'hidden']);
-  const SET_VALUE = new Set(['date', 'time', 'datetime-local', 'month', 'week', 'color', 'range']);
+  const SET_VALUE = new Set(['date', 'time', 'datetime-local', 'month', 'week', 'range']);
+  // A colour a person picks is `#rrggbb`; the shorthand `#rgb` names the same
+  // colour, and a colour input holds whichever it was given as `#rrggbb`.
+  const HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+  // Colours named in words are read too, as the colour they name: an agent
+  // that says "navy" means the input's own `#000080`.
+  const NAMED_COLORS = {black: '#000000', silver: '#c0c0c0', gray: '#808080', grey: '#808080',
+    white: '#ffffff', maroon: '#800000', red: '#ff0000', purple: '#800080', fuchsia: '#ff00ff',
+    magenta: '#ff00ff', green: '#008000', lime: '#00ff00', olive: '#808000', yellow: '#ffff00',
+    navy: '#000080', blue: '#0000ff', teal: '#008080', aqua: '#00ffff', cyan: '#00ffff',
+    orange: '#ffa500', pink: '#ffc0cb', brown: '#a52a2a', gold: '#ffd700'};
 
   const ids = new WeakMap(), refs = new Map();
   let next = 0, doc = 0;
@@ -410,6 +420,12 @@ globalThis.__tiloPage ||= (() => {
   function details(element, kind) {
     const out = [], tag = element.localName;
     if (kind === 'heading') out.push(`level=${/^h[1-6]$/.test(tag) ? tag[1] : element.getAttribute('aria-level') || 2}`);
+    // A colour input's value is the colour it shows, not text it holds, so it
+    // is stated outright and filled by name like the other value controls.
+    if (kind === 'color' && tag === 'input') {
+      out.push('type=color');
+      out.push(`value=${quote(element.value || '#000000')}`);
+    }
     if (kind === 'textbox' || kind === 'searchbox' || kind === 'spinbutton' || kind === 'slider') {
       if (tag === 'input' || tag === 'textarea') {
         const input = tag === 'textarea' ? 'textarea' : type(element);
@@ -594,10 +610,16 @@ globalThis.__tiloPage ||= (() => {
   }
 
   function outline() {
-    const {lines, frames: listed} = outlineLines();
+    const {lines, frames: listed, cut} = outlineLines();
     setLastLines(lines);
     const frame = frameId();
-    return {ok: true, message: frame ? `Read ${lines.length} lines in frame ${frame}` : `Read ${lines.length} lines`,
+    const where = frame ? ` in frame ${frame}` : '';
+    // A read that stopped short says so in its answer, not only in its last
+    // line: an agent that reads the message and acts on it would otherwise
+    // believe it has seen the whole page, when what it was asked to check may
+    // be in the part it never saw.
+    return {ok: true, message: cut ? `Read ${lines.length} lines${where}, and stopped there: ${cut}`
+        : `Read ${lines.length} lines${where}`,
       outline: lines.join('\n'), data: {frames: listed}};
   }
 
@@ -972,8 +994,15 @@ globalThis.__tiloPage ||= (() => {
     if (document.body) visit(document.body, 0, {inside: false, pointer: false, visible: true});
     flush();
     prune();
-    if (truncated) lines.push('- text "… outline truncated; act on what is listed or scroll and read again"');
-    return {lines, truncated, frames: frames()};
+    // What stopped the read, so the reader knows whether more of the page is
+    // still there to reach and how to reach it.
+    const cap = chars >= MAX_CHARS && lines.length < MAX_LINES
+      ? `${MAX_CHARS} characters of outline` : `${MAX_LINES} outline lines`;
+    const cut = !truncated ? '' : `this read carries ${cap} and the page goes on past them: ` +
+      'read the page again once it has finished loading, or name an element by where it ' +
+      'is on the screen with read-page-element-at';
+    if (truncated) lines.push(`- text "… ${cut}"`);
+    return {lines, cut, frames: frames()};
   }
 
   function clip(rect) {
@@ -1017,6 +1046,7 @@ globalThis.__tiloPage ||= (() => {
   function locate(ref, crossOrigin) {
     const element = resolve(ref);
     enabled(element, ref);
+    chooserRefusal(ref, element, 'operating');
     // Clicking a submit button submits, so it needs the same consent.
     if ((element.localName === 'button' || element.localName === 'input') &&
         (element.type === 'submit' || element.type === 'image') && element.form)
@@ -1065,6 +1095,51 @@ globalThis.__tiloPage ||= (() => {
       data: {x: box.left + scrollX, y: box.top + scrollY, width: box.width, height: box.height}};
   }
 
+  // The colour `text` names, as the `#rrggbb` an input's value holds, or null
+  // when it names none.
+  function colorValue(text) {
+    const written = String(text ?? '').trim().toLowerCase();
+    if (HEX_COLOR.test(written)) {
+      // An input holds a colour in full: `#abc` is the colour `#aabbcc`.
+      const digits = written.slice(1);
+      if (digits.length === 3) return '#' + [...digits].map(digit => digit + digit).join('');
+      return written;
+    }
+    return NAMED_COLORS[written] ?? null;
+  }
+
+  // A colour input shows a colour and opens the platform's own picker when it
+  // is operated; neither a picker nor a typed word reaches the page's value,
+  // so the colour is set through the input's own setter and announced.
+  function fillColor(ref, element, text) {
+    if (element.disabled) throw failure('not_editable', `${ref} is disabled`);
+    const colour = colorValue(text);
+    if (!colour)
+      throw failure('invalid_color',
+        `${ref} is a colour input and ${quote(clean(text, MAX_VALUE))} is not a colour; give one as #rrggbb, such as #1d70b8`);
+    element.scrollIntoView({block: 'center', behavior: 'instant'});
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    set.call(element, colour);
+    element.dispatchEvent(new InputEvent('input', {bubbles: true, composed: true, inputType: 'insertText', data: colour}));
+    element.dispatchEvent(new Event('change', {bubbles: true}));
+    element.blur();
+    if (colorValue(element.value) !== colour)
+      throw failure('rejected',
+        `${ref} did not accept ${colour}; it holds ${quote(clean(element.value, MAX_VALUE))}`);
+    return {ok: true, message: `Filled ${summary(element)} with ${colour}`};
+  }
+
+  // A colour input's operation opens the platform's own colour picker, which
+  // the engine cannot see or close: the action would hold the tab until
+  // somebody closed a window that is not part of the page. A file input's
+  // chooser is held by the browser process instead, and answered by
+  // fill-page-files, so only the colour picker is refused here.
+  function chooserRefusal(ref, element, verb) {
+    if (element.localName !== 'input' || type(element) !== 'color') return;
+    throw failure('native_chooser',
+      `${ref} is a colour input, and ${verb} it opens the platform's colour picker, which no agent can see or use; set the colour with fill-page instead, giving #rrggbb such as #1d70b8`);
+  }
+
   function fill(ref, text, allowSecret) {
     const element = resolve(ref), tag = element.localName, kind = type(element);
     if (secret(element) && !allowSecret)
@@ -1072,6 +1147,9 @@ globalThis.__tiloPage ||= (() => {
     const field = tag === 'textarea' || (tag === 'input' && !NOT_TEXT.has(kind));
     if (kind === 'file')
       throw failure('not_editable', `${ref} (${summary(element)}) takes files, not text; choose them with fill-page-files`);
+    // A colour is set as one colour, not typed into it as text: the input
+    // takes no text and refuses anything but `#rrggbb`.
+    if (kind === 'color' && tag === 'input') return fillColor(ref, element, text);
     if (!field && !element.isContentEditable)
       throw failure('not_editable', `${ref} (${summary(element)}) is not a text field; click or select it instead`);
     if (element.disabled || element.readOnly) throw failure('not_editable', `${ref} is disabled or read-only`);
@@ -1222,6 +1300,7 @@ globalThis.__tiloPage ||= (() => {
   function focus(ref, key, crossOrigin) {
     const element = resolve(ref);
     enabled(element, ref);
+    chooserRefusal(ref, element, 'pressing a key on');
     // Enter in a form field submits it implicitly.
     if (key === 'Enter' && element.form) guardSubmission(element.form, null, crossOrigin);
     element.scrollIntoView({block: 'center', behavior: 'instant'});

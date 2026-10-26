@@ -582,6 +582,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     // Publish the lifecycle invalidation before terminal outcomes: a consumer
     // may admit recovery immediately after observing its owned completion.
     Event("renderer_terminated");
+    // The page action that was running has no document left to answer from.
+    if(page_automation_)page_automation_->RendererGone();
     if(navigation_owner_)NavigationOutcome(*navigation_owner_,browser_->GetMainFrame()->GetURL(),"Renderer terminated");
     for(const auto& command:pending_navigation_)if(command->GetString("op")=="scoped_navigation")NavigationOutcome(command->GetInt("request_id"),browser_->GetMainFrame()->GetURL(),"Renderer terminated");
     pending_navigation_.clear();navigation_owner_.reset();navigation_dispatched_=false;navigation_started_=false;navigation_busy_=false;navigation_aborting_=false;bootstrap_settled_=true;
@@ -1232,6 +1234,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(action=="console" || action=="network") agent_log_->Request(d);
       else { agent_log_->Activate();page_automation_->Request(d); }
     }
+    else if(op=="page_cancel") {if(page_automation_)page_automation_->Cancel();}
     else if(op=="paint_capture") paint_snapshot_->Capture(d);
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
@@ -2642,6 +2645,9 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id")return false;
     return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0;
   }
+  // An agent stops a page action it no longer waits for: the tab is freed
+  // rather than held by a request whose caller is gone.
+  if(op=="page_cancel") {CefDictionaryValue::KeyList keys;d->GetKeys(keys);return no_payload();}
   if(op=="popups") return type("enabled",VTYPE_BOOL);
   if(op=="page_clipboard") return no_payload();
   if(op=="clipboard_contents") {
