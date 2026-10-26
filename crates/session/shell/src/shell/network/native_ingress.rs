@@ -420,6 +420,20 @@ impl ShellNetwork {
         }
     }
 
+    /// Ask the host of `cluster_id`, a room whose records are sealed
+    /// channels, for the sealed writes it retains: a local app joined a
+    /// record this device holds none of (a record made on another device,
+    /// or before this session). They reach the broker as the host replays
+    /// them, which fans them out to the app and keeps them for its next
+    /// open. A room of any other kind is left alone.
+    pub(crate) fn request_sealed_history(&self, cluster_id: &str) {
+        if let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil())
+            && self.native_room_seals_records(room)
+        {
+            self.request_native_replay(room);
+        }
+    }
+
     /// Ask `room`'s host to replay what it retains, for app messages this
     /// device let go before what they waited for arrived.
     pub(super) fn request_native_replay(&self, room: RoomId) {

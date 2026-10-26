@@ -940,6 +940,7 @@ fn spawn_inner(
             membership.clone(),
             peer_sync.cloned(),
             channel_keys.clone(),
+            Some(Arc::clone(&channels)),
         )
     } else {
         tilo_action_broker::services::HostServices::default()

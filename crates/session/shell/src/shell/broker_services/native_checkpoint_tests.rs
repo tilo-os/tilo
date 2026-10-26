@@ -648,7 +648,7 @@ fn checkpoint_reader_services(
 ) -> tilo_action_broker::services::HostServices {
     // Only certificate admission is explicit: checkpoint storage, custody,
     // membership, policy and the local monotonic clock remain native.
-    let mut services = super::super::native_services(Some(tree), None, None);
+    let mut services = super::super::native_services(Some(tree), None, None, None);
     services.native_certificates = Some(std::sync::Arc::new(CheckpointReaderAuthority {
         native: NativeCertificates::default(),
         room: uuid::Uuid::parse_str(&room.to_string()).unwrap(),

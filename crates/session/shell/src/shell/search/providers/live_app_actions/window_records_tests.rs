@@ -81,6 +81,7 @@ impl Broker {
             Some(tree.clone()),
             Some(Arc::clone(host.net())),
             None,
+            None,
         );
         // The fixture device is enrolled through the broker's test-support
         // configuration; launcher admission and workspace policy stay the

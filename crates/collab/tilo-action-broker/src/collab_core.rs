@@ -8,8 +8,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use collab_types::{
-    ArtifactId, ChannelId, ChannelState, Ed25519PublicKey, EncryptionMetadata, OpId, SignedOp,
-    ValidationError, parse_redact_payload,
+    ArtifactId, ChannelId, ChannelState, Ed25519PublicKey, EncryptionMetadata, OpId, OpKind,
+    SignedOp, ValidationError, parse_redact_payload,
 };
 
 const AUDIT_LOG_RING_CAPACITY: usize = 256;
@@ -242,6 +242,64 @@ impl BrokerChannels {
             page,
             union_exhausted && memory_exhausted && durable_exhausted,
         )
+    }
+
+    /// Every sealed write of `artifact` this device holds, oldest first: the
+    /// content-key ciphertext admitted here this session and kept on disk
+    /// from earlier ones ([`Self::scrollback_page`]), the device's own
+    /// writes and those the room's host replayed or relayed. A redacted
+    /// write is left out: its marker opens to nothing.
+    pub fn sealed_writes(&mut self, artifact: ArtifactId) -> Vec<SignedOp> {
+        const PAGE: u16 = 256;
+        let mut writes: Vec<SignedOp> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut before = u64::MAX;
+        loop {
+            let (page, exhausted) = self.scrollback_page(artifact, before, PAGE);
+            let Some(oldest) = page.first().map(|op| op.seq) else {
+                break;
+            };
+            // Sequences are per author: the next page starts at the oldest
+            // sequence again, so another author's write of the same one is
+            // not skipped, and what this page already held is dropped.
+            let older: Vec<SignedOp> = page
+                .into_iter()
+                .filter(|op| seen.insert((op.author.0, op.seq)))
+                .collect();
+            if older.is_empty() {
+                break;
+            }
+            writes.splice(0..0, older);
+            if exhausted {
+                break;
+            }
+            before = oldest.saturating_add(1).min(before.saturating_sub(1));
+        }
+        let redacted = self.states.get(&artifact);
+        writes.retain(|op| {
+            super::collab_history::CollabHistoryStore::retains(op)
+                && op.kind != OpKind::Redaction
+                && !redacted.is_some_and(|state| state.is_redacted(OpId::from_op(op)))
+        });
+        writes
+    }
+
+    /// Whether this device holds any sealed write of `artifact`
+    /// ([`Self::sealed_writes`]), without reading them all.
+    pub fn holds_sealed_writes(&mut self, artifact: ArtifactId) -> bool {
+        let retained = super::collab_history::CollabHistoryStore::retains;
+        if self
+            .states
+            .get(&artifact)
+            .is_some_and(|state| state.op_log.iter().any(retained))
+        {
+            return true;
+        }
+        self.history.as_mut().is_some_and(|history| {
+            history
+                .page_before(artifact, u64::MAX, 1)
+                .is_ok_and(|(page, _)| page.iter().any(retained))
+        })
     }
 
     /// The records of trees ([`ui::record::RecordId::tree`]: a chain's

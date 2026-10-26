@@ -8349,9 +8349,20 @@ impl collab_service::Server for CapnpCollabService {
             // Refused, the handle and its hold drop here and withdraw again.
             state.retain_host_worker(hold_id, &route, &retained)?;
             state.ensure_channel(&ensured);
-            state
-                .publisher()
-                .local_route(&crate::route::CrdtRoute::from_channel_key(&ensured));
+            let joined = crate::route::CrdtRoute::from_channel_key(&ensured);
+            state.publisher().local_route(&joined);
+            let artifact = collab_types::document_artifact_id(
+                &joined.app_id,
+                &joined.cluster_id,
+                &joined.record_id,
+            );
+            if state
+                .broker_channels
+                .lock()
+                .is_ok_and(|mut held| !held.holds_sealed_writes(artifact))
+            {
+                state.publisher().sealed_history_wanted(&joined);
+            }
             results.get().set_handle(client);
             Ok(())
         })
