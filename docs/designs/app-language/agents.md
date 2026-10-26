@@ -102,8 +102,8 @@ parents, its children by kind with counts, its actions, and who else is on it.
 - **Pages** default to 10 rows. `more` continues the last result, and `find … | count` answers
   without rows.
 - **Tokens:**
-  - mail addresses and `@domain` on mail-address fields, and `person:jane` for an explicit
-    expansion through Jane's associations (`search.md` §2.2.1);
+  - each type's own shorthands, such as `@ycombinator.com` for a mail domain, and paths through
+    references such as `from.contact.org:~"YC"` (`search.md` §2.2.1);
   - `me`;
   - `is:unread`;
   - `-7d` and `today`;
