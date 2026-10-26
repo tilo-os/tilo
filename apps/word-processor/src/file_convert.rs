@@ -68,24 +68,36 @@ fn not_a_pdf(path: &Path) -> Result<(), String> {
 pub fn read_file(file: &str, from: Option<usize>) -> Result<serde_json::Value, String> {
     let path = absolute(file)?;
     not_a_pdf(&path)?;
-    let (format, text) = as_text(&path, &read_bounded(&path)?)?;
+    let bytes = read_bounded(&path)?;
+    if let Some(format) = picture_format(&bytes) {
+        return Err(format!(
+            "{} is a picture ({}), not text",
+            path.display(),
+            format.mime
+        ));
+    }
+    let (format, text) = as_text(&path, &bytes)?;
     Ok(page(&path, format, &text, from.unwrap_or(0)))
 }
 
 /// What the document kept as `content` in `store` says, read as
-/// [`read_file`] reads a file named `name`.
+/// [`read_file`] reads a file named `name`. Content that is a picture,
+/// whatever its name, answers as one ([`picture`]).
 pub fn read_content(
     store: &tilo_content::ContentStore,
     (content, name): (&str, &str),
     from: Option<usize>,
 ) -> Result<serde_json::Value, String> {
     let path = Path::new(name.trim());
-    not_a_pdf(path)?;
     let hash = ui::tilo_actions::content_hash(content.trim())
         .ok_or_else(|| format!("`{content}` is not a `tilo.content:<hash>` address"))?;
     let bytes = store
         .read(hash)
         .ok_or_else(|| format!("{name} is not on this device"))?;
+    if let Some(format) = picture_format(&bytes) {
+        return Ok(picture(name.trim(), hash, format, &bytes));
+    }
+    not_a_pdf(path)?;
     if bytes.len() > convert::MAX_DOCUMENT_BYTES {
         return Err(format!(
             "{name} is larger than {}",
@@ -94,6 +106,33 @@ pub fn read_content(
     }
     let (format, text) = as_text(path, &bytes)?;
     Ok(page(path, format, &text, from.unwrap_or(0)))
+}
+
+/// The raster picture format `bytes` start with: a scan or a photo, which
+/// has no text to read. An SVG is text and is read as such.
+fn picture_format(bytes: &[u8]) -> Option<tilo_content::ImageFormat> {
+    tilo_content::image_format(bytes).filter(|format| format.extension != "svg")
+}
+
+/// The answer for content at `hash` that is a picture: `format` `picture`,
+/// its address under `picture`, its type, size and weight. An agent's host
+/// takes it to show the picture to a model that sees.
+fn picture(
+    name: &str,
+    hash: &str,
+    format: tilo_content::ImageFormat,
+    bytes: &[u8],
+) -> serde_json::Value {
+    let size = tilo_content::image_size(bytes);
+    serde_json::json!({
+        "file": name,
+        "format": "picture",
+        "picture": format!("tilo.content:{hash}"),
+        "media_type": format.mime,
+        "bytes": bytes.len(),
+        "width": size.map(|(_, width, _)| width),
+        "height": size.map(|(_, _, height)| height),
+    })
 }
 
 /// What `bytes` of the file `path` names say, and whether as Markdown or
@@ -247,6 +286,40 @@ mod tests {
         assert_eq!(
             read_content(&store, (&gone, "Letter.docx"), None).unwrap_err(),
             "Letter.docx is not on this device"
+        );
+    }
+
+    /// A scan kept as content answers as a picture, whatever the name it is
+    /// read under says; a picture file is refused as not text.
+    #[test]
+    fn a_picture_kept_as_content_answers_as_a_picture() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+        png.extend(640_u32.to_be_bytes());
+        png.extend(480_u32.to_be_bytes());
+        png.extend([8, 2, 0, 0, 0]);
+        let store = tilo_content::ContentStore::memory();
+        let hash = store.put(&png).unwrap();
+        let address = format!("tilo.content:{hash}");
+        for name in ["passport.png", "passport.pdf", "scan of the passport"] {
+            let read = read_content(&store, (&address, name), None).unwrap();
+            assert_eq!(read["format"], "picture", "{read}");
+            assert_eq!(read["picture"], address.as_str());
+            assert_eq!(read["file"], name);
+            assert_eq!(read["media_type"], "image/png");
+            assert_eq!(
+                (read["width"].as_u64(), read["height"].as_u64()),
+                (Some(640), Some(480))
+            );
+            assert_eq!(read["bytes"].as_u64(), Some(png.len() as u64));
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("passport.png");
+        std::fs::write(&file, &png).unwrap();
+        let refused = read_file(&file.display().to_string(), None).unwrap_err();
+        assert!(
+            refused.ends_with("is a picture (image/png), not text"),
+            "{refused}"
         );
     }
 

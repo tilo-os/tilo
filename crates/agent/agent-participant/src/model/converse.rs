@@ -1051,7 +1051,7 @@ pub(crate) fn look_content_answer(
     };
     let given = given.trim();
     if !eyes.sees() {
-        return Seen::from("Not shown: this model is not shown pictures.".to_owned());
+        return Seen::from(format!("Not shown: {}.", crate::vision::NOT_SEEING));
     }
     if !eyes.was_shown(given) {
         return format!(

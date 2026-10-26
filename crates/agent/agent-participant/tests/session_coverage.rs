@@ -2823,3 +2823,7 @@ async fn a_plan_without_obligations_finishes_without_a_reminder() {
 /// Coordinated tasks: an agent per item of the checklist.
 #[path = "session_coverage/decompose.rs"]
 mod decompose;
+
+/// The room's pictures, read as content.
+#[path = "session_coverage/pictures.rs"]
+mod pictures;

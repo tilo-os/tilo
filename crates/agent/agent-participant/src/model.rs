@@ -33,6 +33,8 @@ use crate::vision::{Picture, Seen};
 
 mod converse;
 mod openai;
+#[cfg(test)]
+mod picture_read_tests;
 mod scripted;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -904,20 +906,43 @@ impl<'a> PlanningReads<'a> {
         }
     }
 
-    /// What a re-plan's first turn shows: the newest picture the task's
-    /// steps looked at, to a model that sees.
+    /// What a re-plan's first turn shows a model that sees: the newest
+    /// picture the task's steps looked at, then the pictures its steps read
+    /// since its last plan ([`PlanContext::read_pictures`]), the room's own
+    /// only where the agent may show them.
     fn newest_look(&mut self) -> Vec<Picture> {
-        let context = self.context;
-        let Some(newest) = context.pictures.last().filter(|_| self.sees) else {
+        if !self.sees {
             return Vec::new();
-        };
-        match self.picture(newest, true) {
-            Ok(picture) => vec![picture],
-            Err(why) => {
-                tracing::debug!(%why, "agent: a looked-at picture is not shown");
-                Vec::new()
+        }
+        let context = self.context;
+        let mut shown: Vec<(String, bool)> = context
+            .pictures
+            .last()
+            .map(|newest| (newest.clone(), true))
+            .into_iter()
+            .collect();
+        for address in &context.read_pictures {
+            let rendered = crate::vision::content_hash(address)
+                .is_some_and(|hash| self.rendered.contains(&hash));
+            if (rendered || context.room_pictures)
+                && !shown.iter().any(|(looked, _)| looked == address)
+            {
+                shown.push((address.clone(), rendered));
             }
         }
+        shown.truncate(crate::vision::MOST_PICTURES_PER_PLAN);
+        shown
+            .into_iter()
+            .filter_map(
+                |(address, rendered)| match self.picture(&address, rendered) {
+                    Ok(picture) => Some(picture),
+                    Err(why) => {
+                        tracing::debug!(%why, "agent: a looked-at picture is not shown");
+                        None
+                    }
+                },
+            )
+            .collect()
     }
 
     /// The picture at `address` as the model is shown it; `rendered` when
@@ -989,6 +1014,31 @@ impl PlanReads for PlanningReads<'_> {
         let (route, address, output) = self.run(id, arguments)?;
         let mut text = observation_within(&route.app_id, &address, &output, MOST_READ_CHARS)
             .unwrap_or_else(|| format!("{id} answered nothing"));
+        if let Some(value) = &output.value
+            && let Some(picture) = crate::vision::read_picture(value)
+        {
+            // Content read as text that is a picture is shown, as a look
+            // shows it, or refused saying why.
+            let name = crate::vision::read_picture_name(value, &picture);
+            let rendered = crate::vision::content_hash(&picture)
+                .is_some_and(|hash| self.rendered.contains(&hash));
+            let why = if !self.sees {
+                Some(crate::vision::NOT_SEEING)
+            } else if !rendered && !self.context.room_pictures {
+                Some(crate::vision::ROOM_WITHHELD)
+            } else {
+                None
+            };
+            if let Some(why) = why {
+                return Err(crate::vision::withheld(&name, why));
+            }
+            let looked = self.look(&picture)?;
+            text.push_str("\nShown as a picture.");
+            return Ok(Seen {
+                text,
+                pictures: looked.pictures,
+            });
+        }
         let mut pictures = Vec::new();
         if let Some(rendered) = rendered_picture(&output) {
             if let Some(hash) = crate::vision::content_hash(&rendered) {
@@ -1003,7 +1053,7 @@ impl PlanReads for PlanningReads<'_> {
                     Err(why) => Some(why),
                 }
             } else {
-                Some("this model is not shown pictures".to_owned())
+                Some(crate::vision::NOT_SEEING.to_owned())
             };
             if let Some(why) = withheld {
                 let _ = write!(text, "\n({rendered} picture not shown: {why})");
@@ -1053,9 +1103,9 @@ impl PlanReads for PlanningReads<'_> {
         }
         let rendered = self.rendered.contains(&hash);
         if !rendered && !self.context.room_pictures {
-            return Err(format!(
-                "{address} is a picture from the room, and this agent may not show the room's \
-                 pictures to its model; plan with what the request and the reads say of it"
+            return Err(crate::vision::withheld(
+                &address,
+                crate::vision::ROOM_WITHHELD,
             ));
         }
         let picture = crate::vision::prepare(&address, &bytes, rendered)?;
@@ -1085,6 +1135,10 @@ impl Planner for ModelPlanner {
 
     fn decomposes(&self) -> bool {
         self.decomposes
+    }
+
+    fn sees(&self) -> bool {
+        self.model.sees()
     }
 
     fn plan_reading(
