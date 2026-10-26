@@ -824,7 +824,7 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
         &["mount", "--ticket", &ticket],
         true,
     );
-    peer.wait_line("starting from persisted workspace");
+    peer.wait_line("Reconciled");
     peer.wait_line("Mounting QuickFS");
     assert_eq!(gate(&peer_gate, "status"), "partitioned\n");
     wait_for_process(&mut peer, || {
