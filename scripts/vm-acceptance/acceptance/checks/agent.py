@@ -2,8 +2,9 @@
 
 Inside the booted session, `tilo-runtime-mcp --connect` (no profile) must relay to the
 desktop's own agent socket: the person is asked in trusted chrome, an admitted client is an
-agent member of the workspace, and `tilo_list_apps` lists the desktop's live apps, not the
-empty catalogue of a second, standalone runtime. The headless proofs
+agent member of the workspace, and `tilo_ls` lists the desktop's running apps, not the
+empty catalogue of a second, standalone runtime. The door serves the path-addressed agent
+tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_status`), which answer in text. The headless proofs
 (`scripts/headless-examples/mcp-live-proof.py`, `agent-seats-proof.py`) cover the protocol
 against a compositor with no session around it; only a session has the door.
 
@@ -19,6 +20,7 @@ expected failures that say so (core.ExpectedFailure); once it is, they are ordin
 from __future__ import annotations
 
 import json
+import shlex
 import threading
 import time
 from pathlib import Path
@@ -36,6 +38,14 @@ DOOR = '"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo-session/agent.sock"'
 MARK = "ACC-MCP "
 # How long the person's prompt may take to appear after the client's initialize.
 PROMPT_S = 60
+# The tools the door serves.
+DOOR_TOOLS = ["tilo_do", "tilo_find", "tilo_ls", "tilo_read", "tilo_status"]
+# The client names itself so (clientInfo), and the door admits it as this agent.
+AGENT = "acceptance-agent"
+# Admission makes the agent an Observer of the room: it may read. Writing to Notes is
+# the person's grant, as the Agents tab gives it, taken back when the session is over.
+GRANT = {"op": "allow", "subject": f"agent:{AGENT}", "node": "app:so.tilo.notes",
+         "kinds": ["read", "undoable"], "answer": "allow", "id": "acceptance-agent-notes"}
 
 NO_DOOR = ("the session serves no agent door ($XDG_RUNTIME_DIR/tilo-session/agent.sock): this image "
            "predates the in-session agent door (fix/agent-door, 2d43ddb51e), so `tilo-runtime-mcp "
@@ -61,6 +71,13 @@ def tool_names(transcript: dict) -> list[str]:
         return sorted(t["name"] for t in transcript["tools_list"]["result"]["tools"])
     except (KeyError, TypeError):
         return []
+
+
+def text_of(reply) -> str:
+    try:
+        return "\n".join(b.get("text", "") for b in reply["result"]["content"])
+    except (KeyError, TypeError, AttributeError):
+        return ""
 
 
 def is_error(reply) -> bool | None:
@@ -103,13 +120,14 @@ def _answer_prompt(ctx, decision: str) -> str:
     return row
 
 
-def _run_client(ctx, scenario: str, decision: str) -> dict:
+def _run_client(ctx, scenario: str, decision: str, title: str = "") -> dict:
     ctx.vm.write_home_file(GUEST_CLIENT, CLIENT.read_bytes())
     box: dict = {}
+    env = f"ACC_MCP_TITLE={shlex.quote(title)} " if title else ""
 
     def run():
         try:
-            box["out"] = ctx.vm.exec(f'python3 "$HOME/{GUEST_CLIENT}" {scenario}', timeout=240)
+            box["out"] = ctx.vm.exec(f'{env}python3 "$HOME/{GUEST_CLIENT}" {scenario}', timeout=240)
         except VmError as exc:
             box["error"] = str(exc)
 
@@ -137,7 +155,22 @@ def _session(ctx) -> dict:
         ctx.reset()
         ctx.open_app("so.tilo.notes")
         ctx.settle(2.0)
-        ctx.facts["agent_session"] = _run_client(ctx, "session", "allow-once")
+        title = f"Acceptance agent note {int(time.time())}"
+        try:
+            granted = ctx.vm.raw(GRANT)
+        except VmError as exc:
+            granted = {"err": exc.reason()}
+        if isinstance(granted, dict) and granted.get("err"):
+            raise Unobservable(f"the person's grant of Notes to the agent was refused: {granted}")
+        try:
+            transcript = _run_client(ctx, "session", "allow-once", title)
+        finally:
+            try:
+                ctx.vm.raw({"op": "disallow", "id": GRANT["id"]})
+            except VmError:
+                pass  # a grant left behind names only this test's agent
+        transcript["title"] = title
+        ctx.facts["agent_session"] = transcript
     return ctx.facts["agent_session"]
 
 
@@ -151,35 +184,40 @@ def handshake(ctx, res):
     expect(init["result"].get("serverInfo"), f"initialize names no server: {init['result']}")
     names = tool_names(t)
     res.metrics["tools"] = names
-    expect("tilo_list_apps" in names, f"tools/list offers no tilo_list_apps: {names}")
     expect(not [n for n in names if n.startswith("computer")],
            f"the door offers pixel tools, which an agent door must not: {names}")
+    missing = [n for n in DOOR_TOOLS if n not in names]
+    expect(not missing, f"tools/list offers no {missing}: {names}")
 
 
-@check("M02", AREA, "The door lists the desktop's live apps (Notes is open), not an empty standalone runtime")
+@check("M02", AREA, "The door lists the desktop's running apps (Notes is open), not an empty standalone runtime")
 def live_apps(ctx, res):
     t = _session(ctx)
     reply = t.get("list_apps")
-    expect(is_error(reply) is False, f"tilo_list_apps was refused or unanswered: {str(reply)[:300]}")
-    apps = t.get("app_ids") or []
-    res.metrics["app_ids"] = apps
-    expect("so.tilo.notes" in apps, f"Notes is open on the desktop, but tilo_list_apps lists {apps}: "
-                                    "this is a second runtime, not the desktop")
+    expect(is_error(reply) is False, f"tilo_ls was refused or unanswered: {str(reply)[:300]}")
+    lines = (t.get("apps_text") or "").splitlines()
+    res.metrics["apps"] = lines[:12]
+    expect(any(line.startswith("notes ") and line.endswith("running") for line in lines),
+           f"Notes is open on the desktop, but tilo_ls does not list it running: {lines[:12]}: "
+           "this is a second runtime, not the desktop")
     started = sorted(set(t.get("daemons_after", [])) - set(t.get("daemons_before", [])))
     expect(not started, f"--connect started a standalone runtime daemon (pids {started}) beside the desktop")
 
 
-@check("M03", AREA, "An agent creates a Notes page through new-page and the page is there when read back "
+@check("M03", AREA, "An agent creates a Notes note through new-note and the note is there when read back "
                     "independently")
-def new_page(ctx, res):
+def new_note(ctx, res):
     t = _session(ctx)
-    expect(t.get("new_page_target"),
-           f"the directory offers no Notes new-page action: {str(t.get('query_new_page'))[:300]}")
-    reply = t.get("new_page")
-    expect(is_error(reply) is False, f"new-page was refused: {str(reply)[:300]}")
-    pages = t.get("created_pages") or []
-    res.metrics["created_pages"] = pages
-    expect(pages, f"new-page answered without the page it created: {str(reply)[:300]}")
+    title = t["title"]
+    params = text_of(t.get("new_note_params"))
+    expect(is_error(t.get("new_note_params")) is False and "title" in params,
+           f"Notes' new-note action names no title parameter: {str(t.get('new_note_params'))[:300]}")
+    reply = t.get("new_note")
+    expect(is_error(reply) is False and text_of(reply).startswith("ok"),
+           f"new-note was refused: {str(reply)[:300]}")
+    res.metrics["new_note"] = text_of(reply)[:200]
+    expect(title in text_of(t.get("found_note")),
+           f"tilo_find does not find the note {title!r}: {str(t.get('found_note'))[:300]}")
     # Read it back through the desktop's own control socket, not through the agent's reply.
     seen = ""
     try:
@@ -187,9 +225,8 @@ def new_page(ctx, res):
     except VmError as exc:
         res.metrics["read_unavailable"] = exc.reason()
         seen = json.dumps(ctx.vm.actions("notes"))
-    expect(any(p in seen for p in pages),
-           f"the created page {pages} is not in what Notes holds (read back: {seen[:300]!r})")
-    ctx.shot("M03-notes-new-page")
+    expect(title in seen, f"the created note {title!r} is not in what Notes holds (read back: {seen[:300]!r})")
+    ctx.shot("M03-notes-new-note")
 
 
 @check("M04", AREA, "Refusals reach the agent as errors: an unknown action is isError, a denied connection "
@@ -199,7 +236,7 @@ def refusals(ctx, res):
     refusal = t.get("refusal")
     expect(is_error(refusal) is True,
            f"an invocation of an action that does not exist was not reported as isError: {str(refusal)[:300]}")
-    from_tool = (refusal["result"]["content"][0].get("text") or "") if is_error(refusal) else ""
+    from_tool = text_of(refusal) if is_error(refusal) else ""
     expect(from_tool.strip(), "the refusal carries no reason")
     res.metrics["refusal"] = from_tool[:200]
 
