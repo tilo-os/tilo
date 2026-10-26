@@ -25,6 +25,7 @@
 //! [`HexEffect`]s it answers. The path a save writes back to stays on this
 //! device, in the view.
 
+mod clipboard;
 mod find;
 mod layout;
 mod paint;
@@ -985,7 +986,7 @@ impl Widget for HexView {
         if self.has_file {
             children.push(
                 AccessNode::new(Role::StaticText).with_name(
-                    "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F find, Ctrl+H replace, Ctrl+G go to offset, Ctrl+I show or hide the inspector, Ctrl+Z undo, Ctrl+Shift+Z redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
+                    "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F find, Ctrl+H replace, Ctrl+G go to offset, Ctrl+C copy, Ctrl+X cut, Ctrl+V paste, Ctrl+A select all, Ctrl+I show or hide the inspector, Ctrl+Z undo, Ctrl+Shift+Z redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
                 ).with_hashed_key("hex.keyboard-help"),
             );
             if self.geo.inspector_visible {
@@ -1258,6 +1259,15 @@ impl HexView {
             return false;
         }
         match c.as_str() {
+            "c" | "C" => {
+                self.copy_selection();
+            }
+            "x" | "X" => {
+                self.cut_selection();
+            }
+            "v" | "V" => {
+                self.paste_clipboard();
+            }
             "o" | "O" => self.invoke(&HexEffect::OpenFile { path: None }),
             "s" | "S" => self.invoke(&HexEffect::Save),
             "f" | "F" => self.open_panel(HexPanel::Search),
@@ -1484,6 +1494,53 @@ mod tests {
             "reconciliation preserves typing state"
         );
         assert_eq!(view.model.bytes(), &[0x12, 0x34]);
+    }
+
+    /// A view on `bytes`, with the grid in the hex column (`ascii` false) or
+    /// the ASCII one.
+    fn editing(bytes: &[u8], ascii: bool) -> HexView {
+        let mut view = HexView::empty();
+        view.present(&Rc::new(HexEditor {
+            name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
+            bytes: crate::buffer::ByteBuffer::of(bytes),
+            opened: 1,
+        }));
+        if ascii {
+            view.model.toggle_column();
+        }
+        view
+    }
+
+    /// A clipboard this test has to itself: the process clipboard is shared
+    /// with every test running beside it.
+    fn own_clipboard() -> ui::host::HostScope {
+        let (services, _recorder) = ui::host::HostServices::recording();
+        ui::host::enter(&services)
+    }
+
+    /// Copy takes the selection in the focus mode, and paste reads it back in
+    /// the same mode.
+    #[test]
+    fn copy_carries_the_selection_in_the_focus_mode() {
+        let _clipboard = own_clipboard();
+        let mut view = editing(b"PNGDATA", false);
+        view.model.move_to(0, false);
+        view.model.move_to(3, true);
+        assert!(view.copy_selection());
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("50 4e 47 44"));
+        view.model.toggle_column();
+        assert!(view.copy_selection(), "the same bytes as text");
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("PNGD"));
+    }
+
+    /// Nothing selected copies nothing and says why.
+    #[test]
+    fn copying_with_nothing_selected_refuses_and_leaves_the_clipboard_alone() {
+        let _clipboard = own_clipboard();
+        ui::clipboard_copy("untouched");
+        let mut view = editing(b"PNGDATA", false);
+        assert!(!view.copy_selection());
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("untouched"));
     }
 
     /// Find runs through the framework's `Findable` contract: hex and text
