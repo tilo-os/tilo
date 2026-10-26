@@ -25,7 +25,8 @@ for unit in "$repo"/os/usr/lib/systemd/system/*.service; do
   while read -r exe; do
     script="$repo/os/${exe#/}"
     [ -f "$script" ] || continue
-    if grep -v '^[[:space:]]*#' "$script" | grep -Eq '(^|[[:space:];|&(`$])bootc[[:space:]]'; then
+    # No -q: an early exit would SIGPIPE the first grep and fail the pipeline.
+    if grep -v '^[[:space:]]*#' "$script" | grep -E '(^|[[:space:];|&(`$])bootc[[:space:]]' >/dev/null; then
       bootc_units+=("${unit##*/}")
       break
     fi
@@ -51,10 +52,22 @@ else
 fi
 
 log_type=tilo_tpm2_measure_log_t
+# What systemd's tpm2_userspace_log_* does to the log: create it, flock it,
+# fstat it, fchmod its dirty marker on and off, write, read.
+writes_log() {
+  local perms perm
+  perms="$(sed 's/;.*//' "$policy" | sed -n "s/^(allow $1 $log_type (file (\([^)]*\))))$/\1/p")"
+  for perm in create open getattr setattr read write lock; do
+    case " $perms " in
+      *" $perm "*) ;;
+      *) echo "$1 lacks $perm on the TPM measurement log" >&2; return 1 ;;
+    esac
+  done
+}
 if rule "(filecon \"/run/log/systemd/tpm2-measure\\.log\" file (system_u object_r $log_type ((s0) (s0))))" \
   && rule "(typetransition init_t syslogd_var_run_t file \"tpm2-measure.log\" $log_type)" \
-  && sed 's/;.*//' "$policy" | grep -Eq "^\(allow init_t $log_type \(file \([^)]*\bwrite\b"; then
-  ok "systemd-tpm2-setup (init_t) can write the TPM measurement log, however it was created"
+  && writes_log init_t && writes_log systemd_pcrextend_t; then
+  ok "systemd-tpm2-setup (init_t) and systemd-pcrextend can do all they do to the TPM measurement log"
 else
   bad "tilo-base.cil does not give init_t the TPM measurement log; systemd-tpm2-setup.service fails"
 fi
