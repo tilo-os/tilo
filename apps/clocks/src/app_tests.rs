@@ -116,7 +116,7 @@ fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
         let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (width, 820)).unwrap();
         let harness = app.harness();
         harness.set_interaction_environment(ui::InteractionEnvironment::TOUCH);
-        if width < phone_width {
+        if width <= phone_width {
             harness
                 .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
                 .unwrap();
