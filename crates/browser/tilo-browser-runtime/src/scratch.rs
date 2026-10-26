@@ -27,8 +27,9 @@ struct Rename {
 
 impl tilo_actions::Action for Rename {
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
-        ui::doc::put_text_diffed(doc, &ui::automerge::ROOT, TITLE, &self.title);
-        Ok(())
+        ui::doc::put_text_diffed(doc, &ui::automerge::ROOT, TITLE, &self.title)
+            .map(drop)
+            .map_err(|error| tilo_actions::ActionError::Refused(error.to_string()))
     }
 }
 

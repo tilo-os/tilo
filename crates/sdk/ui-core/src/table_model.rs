@@ -7,6 +7,8 @@ use automerge::{
     AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
 
+use tilo_resource::text::TextSpliceError;
+
 /// A column's width before anyone resizes it.
 pub(crate) const DEFAULT_COL_W: f64 = 152.0;
 /// Columns never shrink below this when dragged.
@@ -145,28 +147,73 @@ pub fn cell_text(doc: &AutoCommit, t: &ObjId, r: usize, c: usize) -> String {
     }
 }
 
+/// Why a table edit wrote nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TableEditError {
+    /// The edit names a row, column or insertion point the table does not
+    /// have: another writer changed its shape since the edit was made.
+    OutOfRange { rows: usize, columns: usize },
+    /// The table's cells are not a map any more, so there is nowhere to put
+    /// a cell: another writer replaced the table while the edit was made.
+    NoCells,
+    /// The cell's text refused the splice (see [`TextSpliceError`]).
+    Text(TextSpliceError),
+}
+
+impl std::fmt::Display for TableEditError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OutOfRange { rows, columns } => write!(
+                f,
+                "the table has {rows} rows and {columns} columns; the edit reaches past it"
+            ),
+            Self::NoCells => f.write_str("the table's cells are gone"),
+            Self::Text(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for TableEditError {}
+
 /// Replace the whole content of cell `(row, col)`. Creates the backing
 /// `Text` if it does not exist yet.
-pub fn set_cell_text(doc: &mut AutoCommit, t: &ObjId, row: usize, col: usize, text: &str) {
+///
+/// The splice goes through [`crate::doc::splice_text_diffed`], which is the
+/// same character-coordinate, encoding-aware mutation plain text uses, and
+/// marks the characters it inserts with the author of the action applying now.
+///
+/// # Errors
+/// Returns [`TableEditError`] instead of reporting an edit it did not make:
+/// `(row, col)` is not a cell of the table, the cells are gone, or the cell's
+/// text refused the splice.
+pub fn set_cell_text(
+    doc: &mut AutoCommit,
+    t: &ObjId,
+    row: usize,
+    col: usize,
+    text: &str,
+) -> Result<(), TableEditError> {
     ensure(doc, t);
     let (Some(rid), Some(cid)) = (
         row_ids(doc, t).into_iter().nth(row),
         col_ids(doc, t).into_iter().nth(col),
     ) else {
-        return;
+        let (rows, columns) = dims(doc, t);
+        return Err(TableEditError::OutOfRange { rows, columns });
     };
     let Some(cells) = cells_map(doc, t) else {
-        return;
+        return Err(TableEditError::NoCells);
     };
     let key = cell_key(&rid, &cid);
     let obj = match child_obj(doc, &cells, &key, ObjType::Text) {
         Some(obj) => obj,
-        None => match doc.put_object(&cells, key.as_str(), ObjType::Text) {
-            Ok(obj) => obj,
-            Err(_) => return,
-        },
+        None => doc
+            .put_object(&cells, key.as_str(), ObjType::Text)
+            .map_err(|error| TableEditError::Text(TextSpliceError::Refused(error.to_string())))?,
     };
-    crate::doc::splice_text_diffed(doc, &obj, text);
+    crate::doc::splice_text_diffed(doc, &obj, text)
+        .map(drop)
+        .map_err(TableEditError::Text)
 }
 
 /// Insert a fresh empty row at display index `at` (clamped to `0..=rows`).
@@ -298,17 +345,169 @@ pub enum TableEdit {
 
 /// Apply `edit` to the table at `t`: what an owner's action does with a
 /// [`TableEdit`] the widget handed it.
-pub fn apply(doc: &mut AutoCommit, t: &ObjId, edit: &TableEdit) {
+///
+/// # Errors
+/// Returns [`TableEditError`] and writes nothing when the edit no longer fits
+/// the table (another writer removed the row or column it names) or the cell's
+/// text refused the splice. An owner submits the edit as an action, so a
+/// refusal is reported to whoever made it rather than looking like a change.
+pub fn apply(doc: &mut AutoCommit, t: &ObjId, edit: &TableEdit) -> Result<(), TableEditError> {
+    let (rows, columns) = dims(doc, t);
+    let out_of_range = TableEditError::OutOfRange { rows, columns };
     match edit {
         TableEdit::SetCell { row, column, text } => set_cell_text(doc, t, *row, *column, text),
-        TableEdit::InsertRow { at } => insert_row(doc, t, *at),
-        TableEdit::InsertColumn { at } => insert_column(doc, t, *at),
-        TableEdit::RemoveRow { at } => remove_row(doc, t, *at),
-        TableEdit::RemoveColumn { at } => remove_column(doc, t, *at),
+        TableEdit::InsertRow { at } => {
+            if *at > rows {
+                return Err(out_of_range);
+            }
+            insert_row(doc, t, *at);
+            Ok(())
+        }
+        TableEdit::InsertColumn { at } => {
+            if *at > columns {
+                return Err(out_of_range);
+            }
+            insert_column(doc, t, *at);
+            Ok(())
+        }
+        TableEdit::RemoveRow { at } => {
+            if *at >= rows {
+                return Err(out_of_range);
+            }
+            remove_row(doc, t, *at);
+            Ok(())
+        }
+        TableEdit::RemoveColumn { at } => {
+            if *at >= columns {
+                return Err(out_of_range);
+            }
+            remove_column(doc, t, *at);
+            Ok(())
+        }
         TableEdit::ResizeColumn { column, width } => {
-            if let Some(cid) = col_ids(doc, t).into_iter().nth(*column) {
-                set_col_width(doc, t, &cid, *width);
+            let Some(cid) = col_ids(doc, t).into_iter().nth(*column) else {
+                return Err(out_of_range);
+            };
+            set_col_width(doc, t, &cid, *width);
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::ROOT;
+
+    fn table() -> (AutoCommit, ObjId) {
+        let mut doc = AutoCommit::new();
+        let t = doc.put_object(&ROOT, "table", ObjType::Map).unwrap();
+        insert_row(&mut doc, &t, 0);
+        insert_column(&mut doc, &t, 0);
+        insert_column(&mut doc, &t, 1);
+        (doc, t)
+    }
+
+    /// A cell edit outside the table another writer left is refused rather
+    /// than reported as an edit that changed nothing.
+    #[test]
+    fn an_edit_outside_the_table_is_refused() {
+        let (mut doc, t) = table();
+        set_cell_text(&mut doc, &t, 0, 0, "kept").expect("the cell is in the table");
+        assert_eq!(
+            apply(
+                &mut doc,
+                &t,
+                &TableEdit::SetCell {
+                    row: 0,
+                    column: 4,
+                    text: "lost".into(),
+                },
+            ),
+            Err(TableEditError::OutOfRange {
+                rows: 1,
+                columns: 2
+            })
+        );
+        assert_eq!(
+            apply(&mut doc, &t, &TableEdit::RemoveRow { at: 1 }),
+            Err(TableEditError::OutOfRange {
+                rows: 1,
+                columns: 2
+            }),
+            "the row a concurrent writer removed is not removed twice"
+        );
+        assert_eq!(cell_text(&doc, &t, 0, 0), "kept", "nothing was written");
+        assert_eq!(dims(&doc, &t), (1, 2));
+    }
+
+    /// Cell text splices by character — the same character indexing plain
+    /// text uses — rather than by byte.
+    #[test]
+    fn a_cell_splices_unicode_by_character() {
+        let (mut doc, t) = table();
+        set_cell_text(&mut doc, &t, 0, 0, "naïve").expect("the cell is in the table");
+        set_cell_text(&mut doc, &t, 0, 0, "naïve café 🎨").expect("the cell is in the table");
+        set_cell_text(&mut doc, &t, 0, 0, "naïve Kaffee 🎨").expect("the cell is in the table");
+        assert_eq!(cell_text(&doc, &t, 0, 0), "naïve Kaffee 🎨");
+    }
+
+    /// A cell edit on an owner's action path marks what it typed with the
+    /// invoker's name, exactly as a resource's own text does.
+    #[test]
+    fn a_cell_edit_marks_its_author_on_the_action_path() {
+        use automerge::marks::Mark;
+
+        #[derive(Debug, serde::Serialize)]
+        struct TypeCell {
+            table: ObjId,
+            text: String,
+        }
+        impl tilo_actions::Action for TypeCell {
+            fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+                apply(
+                    doc,
+                    &self.table,
+                    &TableEdit::SetCell {
+                        row: 0,
+                        column: 0,
+                        text: self.text.clone(),
+                    },
+                )
+                .map_err(|error| tilo_actions::ActionError::Refused(error.to_string()))
             }
         }
+
+        let (mut doc, t) = table();
+        let action = TypeCell {
+            table: t.clone(),
+            text: "héllo".into(),
+        };
+        let encoded =
+            tilo_actions::EncodedAction::encode("tilo.table", &action).expect("it encodes");
+        let context = tilo_actions::ActionContext::for_resource("table", "tilo.table", "Table")
+            .with_invoker(tilo_actions::ActionInvoker::actor("alice"));
+        tilo_actions::apply_local_with_context(&mut doc, &action, encoded, None, context)
+            .expect("the action applies");
+
+        let cell = cell_obj(&doc, &t, 0, 0).expect("the cell has text");
+        let runs: Vec<(String, usize, usize)> = doc
+            .marks(&cell)
+            .unwrap()
+            .into_iter()
+            .filter(|mark: &Mark| mark.name() == "author")
+            .map(|mark| {
+                (
+                    mark.value().as_str().unwrap_or_default().to_owned(),
+                    mark.start,
+                    mark.end,
+                )
+            })
+            .collect();
+        assert_eq!(
+            runs,
+            vec![("alice".to_owned(), 0, 5)],
+            "the five characters alice typed are hers"
+        );
     }
 }
