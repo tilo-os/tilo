@@ -1587,6 +1587,13 @@ pub struct ShellNetwork {
     inbound_documents: Arc<Mutex<Vec<InboundDocument>>>,
     /// Wakes the broker's drain thread. An empty queue parks there.
     pub(crate) drain_wake: std::sync::Arc<crate::idle_wake::DrainPark>,
+    /// The sealed writes and replay ends rooms' host sessions carry, which
+    /// the network actor queues for the broker's drain without the frame
+    /// loop ([`crate::network::actor::native_ingress::ChannelQueue`]).
+    channel_queue: Arc<crate::network::actor::native_ingress::ChannelQueue>,
+    /// Opens waiting for a room's host to replay what it retains, by the
+    /// room's topic: each is told once the broker took what was replayed.
+    sealed_replays: Mutex<std::collections::HashMap<u64, Vec<tokio::sync::oneshot::Sender<()>>>>,
     /// Inbound channel governance pushed by [`Self::tick`], drained by the
     /// channel encryption service.
     inbound_channel_governance: Arc<Mutex<Vec<InboundChannelGovernance>>>,
@@ -2276,6 +2283,9 @@ impl ShellNetwork {
         );
 
         let readiness = tree.room_readiness().clone();
+        let drain_wake = std::sync::Arc::new(crate::idle_wake::DrainPark::default());
+        let channel_queue =
+            crate::network::actor::native_ingress::ChannelQueue::new(Arc::clone(&drain_wake));
         let network = Self {
             cmd_tx,
             tree,
@@ -2358,7 +2368,9 @@ impl ShellNetwork {
             record_content: record_content::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_documents: Arc::new(Mutex::new(Vec::new())),
-            drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
+            drain_wake,
+            channel_queue,
+            sealed_replays: Mutex::default(),
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
             wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
             person_artifacts: Mutex::default(),
@@ -8249,6 +8261,9 @@ pub(crate) fn shell_network_for_test(
         .map(|room| (room, ui::PresenceVisibility::WhereIAm))
         .collect();
     let readiness = tree.room_readiness().clone();
+    let drain_wake = std::sync::Arc::new(crate::idle_wake::DrainPark::default());
+    let channel_queue =
+        crate::network::actor::native_ingress::ChannelQueue::new(Arc::clone(&drain_wake));
     let net = ShellNetwork {
         cmd_tx,
         tree,
@@ -8343,7 +8358,9 @@ pub(crate) fn shell_network_for_test(
         record_content: record_content::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_documents: Arc::new(Mutex::new(Vec::new())),
-        drain_wake: std::sync::Arc::new(crate::idle_wake::DrainPark::default()),
+        drain_wake,
+        channel_queue,
+        sealed_replays: Mutex::default(),
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
         wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
         person_artifacts: Mutex::default(),

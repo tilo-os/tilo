@@ -464,13 +464,19 @@ impl DrainQueues {
         announced: &mut Announced,
     ) -> bool {
         self.drain_owner_views();
-        self.drain_presence(labels, announced)
+        // The sealed writes rooms' hosts sent, queued by the network actor,
+        // join the inbound documents drained below; the opens waiting for a
+        // host's replay are told once what it replayed was taken.
+        let replayed = self.net.take_channel_traffic();
+        let drained = self.drain_presence(labels, announced)
             && self.drain_documents(labels, announced)
             && self.drain_person_snapshot_requests()
             && self.drain_scrollback_requests()
             && self.drain_scrollback_responses()
             && self.drain_remote_actions()
-            && self.drain_record_content()
+            && self.drain_record_content();
+        self.net.sealed_replays_taken(&replayed);
+        drained
     }
 
     fn drain_owner_views(&self) {
@@ -907,6 +913,7 @@ fn spawn_inner(
                     let wake = std::sync::Arc::clone(&wake);
                     tilo_identity_host::policy_change::Watch::new(move || wake.poke())
                 };
+                queues.net.channel_drain_runs(true);
                 while !quit.load(Ordering::Relaxed) {
                     let mut governance_due = queues.pump_governance();
                     if !queues.drain_once(&mut labels, &mut announced) {
@@ -925,6 +932,7 @@ fn spawn_inner(
                     };
                     wake.wait(timeout);
                 }
+                queues.net.channel_drain_runs(false);
             })
             .ok()
     });

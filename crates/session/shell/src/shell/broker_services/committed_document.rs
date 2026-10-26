@@ -52,6 +52,33 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             room,
         ))
     }
+    /// A record of a room whose records are sealed channels that neither
+    /// this device's owner nor its broker holds anything of may have been
+    /// written on another device, or before this session: what the room's
+    /// host retains of it reaches this device only in the host's replay.
+    /// The Open waits for the broker to take that replay before it decides
+    /// the record is new.
+    fn await_sealed_history(
+        &self,
+        context: &NativeDocumentReadContext,
+    ) -> Option<tilo_action_broker::services::AwaitingHistory> {
+        let route = context.route();
+        let room = super::super::state::RoomId::parse(&route.cluster_id)?;
+        let network = self.network.as_ref()?;
+        self.sealed_writes.as_ref()?;
+        if !self.tree.read().seals_records(room)
+            || self.owner_holds(room, &route.app_id, &route.record_id)
+            || self.holds_sealed_writes(route)
+        {
+            return None;
+        }
+        let landed = network.await_sealed_replay(room);
+        Some(Box::pin(async move {
+            // A dropped sender is a network gone: the Open decides on what
+            // this device holds.
+            let _ = landed.await;
+        }))
+    }
     fn initialize_application(
         &self,
         context: &NativeDocumentReadContext,

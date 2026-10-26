@@ -74,7 +74,7 @@ mod workspace_checkpoints;
 mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
-    DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
+    AwaitingHistory, DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
     NativeDocumentReads, PreparedElsewhere, PreparingElsewhere, RecordRead,
 };
 use durable_local_invocation::DurableContext;
@@ -8349,20 +8349,9 @@ impl collab_service::Server for CapnpCollabService {
             // Refused, the handle and its hold drop here and withdraw again.
             state.retain_host_worker(hold_id, &route, &retained)?;
             state.ensure_channel(&ensured);
-            let joined = crate::route::CrdtRoute::from_channel_key(&ensured);
-            state.publisher().local_route(&joined);
-            let artifact = collab_types::document_artifact_id(
-                &joined.app_id,
-                &joined.cluster_id,
-                &joined.record_id,
-            );
-            if state
-                .broker_channels
-                .lock()
-                .is_ok_and(|mut held| !held.holds_sealed_writes(artifact))
-            {
-                state.publisher().sealed_history_wanted(&joined);
-            }
+            state
+                .publisher()
+                .local_route(&crate::route::CrdtRoute::from_channel_key(&ensured));
             results.get().set_handle(client);
             Ok(())
         })
@@ -9404,6 +9393,25 @@ impl channel_handle::Server for CapnpChannelHandle {
                 let reply = self
                     .await_committed_change(known_revision)
                     .await
+                    .map_err(capnp::Error::failed)?;
+                results
+                    .get()
+                    .set_reply(&reply.encode().map_err(|e| capnp::Error::failed(e.into()))?);
+                Ok(())
+            });
+        }
+        if let Some(waiting) = self.committed_history_wait(&request) {
+            // What decides whether the record is new is still on its way
+            // (the room's host's replay): awaited on this LocalSet, as a
+            // creation elsewhere is, then the Open is decided.
+            return Promise::from_future(async move {
+                waiting.await;
+                let prepared = match self.committed_creation_elsewhere(&request) {
+                    Some(preparing) => Some(preparing.await),
+                    None => None,
+                };
+                let reply = self
+                    .committed_document_dispatch_prepared(&request, prepared)
                     .map_err(capnp::Error::failed)?;
                 results
                     .get()

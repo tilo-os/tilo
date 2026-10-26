@@ -359,6 +359,10 @@ pub enum NetCmd {
     /// This device's own room host opened: join the rooms it hosts that
     /// wait for it.
     LocalHostReady,
+    /// Where this actor queues the channel traffic of rooms' host sessions
+    /// for the collaboration broker's drain ([`native_ingress::ChannelQueue`]),
+    /// while one runs; without one it goes to the frame loop.
+    ChannelQueue(Option<Arc<native_ingress::ChannelQueue>>),
     /// Ask a governed room's governor, on its room's native relay session.
     GovernorAction {
         ws: u64,
@@ -1296,6 +1300,9 @@ struct ActorState {
     native_media: super::native_media::Registry,
     native_enrollment: super::invite::enrollment_driver::Registry,
     native_routes: native_ingress::Routes,
+    /// Where the channel traffic of rooms' host sessions goes while the
+    /// collaboration broker's drain runs: straight to it.
+    channel_queue: Option<Arc<native_ingress::ChannelQueue>>,
     /// This device's room host, through which the native owner joins the
     /// rooms hosted here.
     local_host: Option<super::local_host::LocalHost>,
@@ -1762,6 +1769,7 @@ impl ActorState {
             }
             Some(NetCmd::NativeConnect(connect, https)) => self.native_connect(connect, https),
             Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
+            Some(NetCmd::ChannelQueue(queue)) => self.channel_queue = queue,
             Some(NetCmd::OwnDeviceHost(request)) => self.ask_own_device_host(*request),
             Some(NetCmd::GovernorAction { ws, room, request }) => {
                 self.governor_action(ws, room, request);
@@ -2931,6 +2939,17 @@ impl ActorState {
         {
             crate::shell::room_sync::synced(ws);
         }
+        // The room's host replayed what it retains: the sealed writes it
+        // replayed are queued for the broker ahead of this.
+        if self.native_routes.contains(ws)
+            && self
+                .host_sessions
+                .get(&(ws, peer))
+                .is_some_and(|runtime| runtime.native_scope.is_some())
+            && let Some(queue) = &self.channel_queue
+        {
+            queue.push(native_ingress::ChannelTraffic::Replayed(ws));
+        }
         self.request_native_refresh(ws);
         for request in self.room_governance.ready_for(ws, peer) {
             self.send_to_host(request, peer);
@@ -3963,6 +3982,22 @@ impl ActorState {
         });
         let event = self.admit_native_governance(ws, event).await;
         let mapped = match event {
+            // A sealed write in a room whose records are sealed channels:
+            // no owner admits it, so it goes straight to the broker, which
+            // checks it before any app sees it.
+            HostEvent::NativeInput(input)
+                if self.native_routes.contains(ws)
+                    && matches!(
+                        input.message(),
+                        NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some()
+                    )
+                    && self.channel_queue.is_some() =>
+            {
+                if let Some(queue) = &self.channel_queue {
+                    queue.push(native_ingress::ChannelTraffic::Sealed(input));
+                }
+                None
+            }
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
@@ -4884,6 +4919,7 @@ async fn run(
         native_media: super::native_media::Registry::default(),
         native_enrollment: super::invite::enrollment_driver::Registry::default(),
         native_routes: native_ingress::Routes::default(),
+        channel_queue: None,
         local_host,
         room_governance: room_governance::Waiting::default(),
         lanes,

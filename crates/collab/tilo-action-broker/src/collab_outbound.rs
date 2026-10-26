@@ -50,11 +50,6 @@ pub trait PeerPublishSink: Send + Sync {
     /// A local app joined this route, so peers' documents for it must be
     /// routable here, including the history this device dropped before.
     fn local_route(&self, _app_id: &str, _cluster_id: &str, _record_id: &str) {}
-
-    /// A local app joined this record and this device holds none of its
-    /// sealed writes: the room's host is asked for what it retains, which
-    /// reaches the app as it arrives and stays here for its next open.
-    fn sealed_history_wanted(&self, _app_id: &str, _cluster_id: &str, _record_id: &str) {}
 }
 
 /// The one place a local payload becomes a peer publish. Construct with
@@ -232,16 +227,6 @@ impl PeerPublisher {
             && !route.record_id.is_empty()
         {
             sink.local_route(&route.app_id, &route.cluster_id, &route.record_id);
-        }
-    }
-
-    /// Ask the room's host for the sealed writes of `route` it retains: a
-    /// local app joined it and this device holds none of them.
-    pub fn sealed_history_wanted(&self, route: &CrdtRoute) {
-        if let Some(sink) = self.sink.as_ref()
-            && !route.record_id.is_empty()
-        {
-            sink.sealed_history_wanted(&route.app_id, &route.cluster_id, &route.record_id);
         }
     }
 
