@@ -23,10 +23,28 @@ fn certificate(root: u8, device: u8) -> DeviceCert {
 }
 
 #[test]
-fn approved_run_cannot_exceed_its_starters_live_action_permission() {
+fn a_run_without_an_answer_for_its_issue_takes_only_what_its_person_may() {
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let (mut peer, starter, key, now) = policy_fixture(room);
     let requirement = approve_task(&starter);
+    // Nobody said what the issue's work may do yet, so the room's grants
+    // for the agent do not stand in for an answer no one gave it.
+    let unanswered = requirement.check_run(&peer, room, now).unwrap_err();
+    assert!(unanswered.contains("nobody has said"), "{unanswered}");
+    assert!(
+        !NativeTaskActionRequirement::awaits_confirmation(&unanswered),
+        "{unanswered}"
+    );
+
+    answer_issue(
+        &mut peer,
+        room,
+        &key,
+        now,
+        ISSUE,
+        "so.tilo.notes",
+        Answer::Allow,
+    );
     assert_exact_binding(&peer, room, now, &requirement);
     assert_independent_task_grants(&mut peer, room, &key, now, &requirement);
     assert_live_starter_revocation(&mut peer, room, &starter, &key, now, &requirement);
@@ -39,6 +57,15 @@ fn a_run_is_told_an_action_asks_first() {
     let room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     let (mut peer, starter, key, now) = policy_fixture(room);
     let requirement = approve_task(&starter);
+    answer_issue(
+        &mut peer,
+        room,
+        &key,
+        now,
+        ISSUE,
+        "so.tilo.notes",
+        Answer::Allow,
+    );
     let grant = |id: &str, answer| {
         Grant::new(
             id,
@@ -193,6 +220,67 @@ fn admitted_fixture(
 /// The issue whose run the fixtures check.
 const ISSUE: &str = "tasks.tracker/issues/1";
 
+/// The default answer of the work on an issue, as Tasks records it when a
+/// person starts a run: reading and undoable changes allowed within the
+/// room, reaching outside it asked first.
+fn answer_issue(
+    peer: &mut StatePeer,
+    room: &str,
+    key: &SigningKey,
+    now: std::time::SystemTime,
+    issue: &str,
+    app: &str,
+    answer: Answer,
+) {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    let grants = [
+        tilo_action_policy::ActionKind::Read,
+        tilo_action_policy::ActionKind::Undoable,
+        tilo_action_policy::ActionKind::Outside,
+    ]
+    .map(|kind| {
+        agent_answers::answer_grant(
+            room,
+            Subject::task(issue),
+            (&AnswerScope::app(app), kind),
+            if kind == tilo_action_policy::ActionKind::Outside {
+                Answer::Ask
+            } else {
+                answer
+            },
+            Subject::person("governor"),
+        )
+    });
+    peer.governance_mut()
+        .put_governed_grants(&grants, key, now)
+        .unwrap();
+}
+
+/// Answer [`answer_issue`] for one kind of action only, leaving the issue's
+/// answer for the kinds a grant for one node does not name.
+fn answer_issue_about(
+    peer: &mut StatePeer,
+    room: &str,
+    key: &SigningKey,
+    now: std::time::SystemTime,
+    issue: &str,
+    app: &str,
+    kind: tilo_action_policy::ActionKind,
+    answer: Answer,
+) {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    let grant = agent_answers::answer_grant(
+        room,
+        Subject::task(issue),
+        (&AnswerScope::app(app), kind),
+        answer,
+        Subject::person("governor"),
+    );
+    peer.governance_mut()
+        .put_governed_grants(&[grant], key, now)
+        .unwrap();
+}
+
 /// The requirement of an action the agent's run of [`ISSUE`] takes, the
 /// run approved by `starter`.
 fn approve_task(starter: &DeviceCert) -> NativeTaskActionRequirement {
@@ -331,8 +419,7 @@ fn assert_live_starter_revocation(
             key,
             now,
         )
-        .unwrap();
-    // Room write and the agent's own grant remain valid: only this exact
+        .unwrap(); // Room write and the agent's own grant remain valid: only this exact
     // operation is revoked from the person who consciously started the run.
     assert!(
         peer.permissions(starter.device_public_key, now)
@@ -357,6 +444,15 @@ fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
     let room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     let (mut peer, starter, key, now) = policy_fixture(room);
     let requirement = approve_task(&starter);
+    answer_issue(
+        &mut peer,
+        room,
+        &key,
+        now,
+        ISSUE,
+        "so.tilo.notes",
+        Answer::Allow,
+    );
     let awaits = |requirement: &NativeTaskActionRequirement, peer: &StatePeer| {
         let error = requirement.check_run(peer, room, now).unwrap_err();
         NativeTaskActionRequirement::awaits_confirmation(&error)
@@ -432,6 +528,15 @@ fn an_attended_action_asks_every_time_and_ordinary_kinds_follow_the_answers() {
     let room = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
     let (mut peer, starter, key, now) = policy_fixture(room);
     let requirement = approve_task(&starter);
+    answer_issue(
+        &mut peer,
+        room,
+        &key,
+        now,
+        ISSUE,
+        "so.tilo.notes",
+        Answer::Allow,
+    );
     let awaits = |requirement: &NativeTaskActionRequirement, peer: &StatePeer| {
         requirement
             .check_run(peer, room, now)
@@ -484,7 +589,7 @@ fn an_attended_action_asks_every_time_and_ordinary_kinds_follow_the_answers() {
 
 /// A task a person starts runs on their behalf: an agent admitted with the
 /// default presets, which grant it no changes of its own, takes the changes
-/// its starter may take, held to the answers the room keeps for it.
+/// its starter may take, held to the answers the issue keeps for it.
 #[test]
 fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
@@ -493,6 +598,15 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
         let (mut peer, starter, key, now) =
             admitted_fixture(room, collab_types::Role::Editor, Some(preset));
         let requirement = approve_task(&starter);
+        answer_issue(
+            &mut peer,
+            room,
+            &key,
+            now,
+            ISSUE,
+            "so.tilo.notes",
+            Answer::Allow,
+        );
         requirement
             .check_run(&peer, room, now)
             .unwrap_or_else(|error| panic!("{preset:?}: {error}"));
@@ -522,6 +636,17 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
                 now,
             )
             .unwrap();
+        // Answering the issue's work as the same node again replaces the
+        // answer that allowed it.
+        answer_issue(
+            &mut peer,
+            room,
+            &key,
+            now,
+            ISSUE,
+            "so.tilo.notes",
+            Answer::Deny,
+        );
         let denied = requirement.check_run(&peer, room, now).unwrap_err();
         assert!(denied.contains("not allowed"), "{denied}");
 
@@ -537,16 +662,32 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
     }
 }
 
-/// A grant naming the issue decides for its runs as the agent's own do: an
-/// outside action the agent's delegation asks about runs once the issue is
-/// allowed it in that app, in that issue's runs alone.
+/// An answer for the issue's work decides beside the agent's own grants, the
+/// lesser of the two: an outside action the agent's delegation asks about
+/// runs once the issue is answered for it, in that issue's runs alone.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one authority question answered step by step reads as one test"
+)]
 fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
     let room = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
     let (mut peer, starter, key, now) = admitted_fixture(
         room,
         collab_types::Role::Editor,
         Some(AgentPreset::Operator),
+    );
+    // The issue's answer asks about outside effects, so the starter's own
+    // grant is what lets the run reach outside the room.
+    answer_issue_about(
+        &mut peer,
+        room,
+        &key,
+        now,
+        ISSUE,
+        "so.tilo.notes",
+        tilo_action_policy::ActionKind::Outside,
+        Answer::Ask,
     );
     let notes = TreePath::room(room).app("so.tilo.notes");
     peer.governance_mut()
@@ -566,7 +707,6 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
     let mut outside = approve_task(&starter);
     outside.need.kind = tilo_action_policy::ActionKind::Outside;
     let asks = outside.check_run(&peer, room, now).unwrap_err();
-    assert!(asks.contains("agent's grants"), "{asks}");
     assert!(
         NativeTaskActionRequirement::awaits_confirmation(&asks),
         "{asks}"
@@ -585,17 +725,40 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
             now,
         )
         .unwrap();
+    answer_issue_about(
+        &mut peer,
+        room,
+        &key,
+        now,
+        ISSUE,
+        "so.tilo.notes",
+        tilo_action_policy::ActionKind::Outside,
+        Answer::Allow,
+    );
     outside.check_run(&peer, room, now).unwrap();
     let mut other = outside;
     other.binding.task_id = "tasks.tracker/issues/2".into();
     let asks = other.check_run(&peer, room, now).unwrap_err();
+    assert!(asks.contains("nobody has said"), "{asks}");
     assert!(
-        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        !NativeTaskActionRequirement::awaits_confirmation(&asks),
         "{asks}"
     );
 
     // "Allow for this issue" answers the one action, so an action whose
-    // contract confirms runs unasked too, in that issue's runs alone.
+    // contract confirms runs unasked too, in that issue's runs alone. The
+    // issue is answered for undoable changes here, as approve_task's run
+    // takes them.
+    answer_issue_about(
+        &mut peer,
+        room,
+        &key,
+        now,
+        ISSUE,
+        "so.tilo.notes",
+        tilo_action_policy::ActionKind::Undoable,
+        Answer::Allow,
+    );
     let mut purge = approve_task(&starter);
     purge.consequential = true;
     let asks = purge.check_run(&peer, room, now).unwrap_err();
@@ -624,12 +787,10 @@ fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
         )
         .unwrap();
     purge.check_run(&peer, room, now).unwrap();
-    purge.binding.task_id = "tasks.tracker/issues/2".into();
-    let asks = purge.check_run(&peer, room, now).unwrap_err();
-    assert!(
-        NativeTaskActionRequirement::awaits_confirmation(&asks),
-        "{asks}"
-    );
+    let mut unanswered = purge;
+    unanswered.binding.task_id = "tasks.tracker/issues/2".into();
+    let asks = unanswered.check_run(&peer, room, now).unwrap_err();
+    assert!(asks.contains("nobody has said"), "{asks}");
 }
 
 /// The starter's own rights bound the run, whatever the agent was admitted
@@ -658,6 +819,15 @@ fn a_run_never_exceeds_a_starter_who_may_not_change_the_note() {
         )
         .unwrap();
     let requirement = approve_task(&starter);
+    answer_issue(
+        &mut peer,
+        room,
+        &key,
+        now,
+        ISSUE,
+        "so.tilo.notes",
+        Answer::Allow,
+    );
     let refused = requirement.check_run(&peer, room, now).unwrap_err();
     assert!(refused.contains("starter"), "{refused}");
 

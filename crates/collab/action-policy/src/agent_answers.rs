@@ -124,6 +124,58 @@ pub fn is_answer(grant: &Grant) -> bool {
         && grant.id.as_str().starts_with(PREFIX)
 }
 
+/// The answers given about the work on one issue, in `grants`.
+#[derive(Clone, Debug, Default)]
+pub struct Answers<'g> {
+    subject: Option<Subject>,
+    grants: Vec<&'g Grant>,
+}
+
+impl<'g> Answers<'g> {
+    /// The answers naming `issue` (its address) among `grants`.
+    #[must_use]
+    pub fn of(grants: &'g [Grant], issue: &str) -> Self {
+        let subject = Subject::task(issue);
+        let answers = grants
+            .iter()
+            .filter(|grant| grant.subject == subject && is_answer(grant))
+            .collect();
+        Self {
+            subject: Some(subject),
+            grants: answers,
+        }
+    }
+
+    /// The issue these answers name.
+    #[must_use]
+    pub fn subject(&self) -> Option<&Subject> {
+        self.subject.as_ref()
+    }
+
+    /// Whether the work on the issue is answered for an action of `kind` at
+    /// `node`, as [`crate::decide`] reads an answer: an ancestor of `node`
+    /// answers for everything below it, and an action's own answer covers
+    /// the fields it writes.
+    #[must_use]
+    pub fn covers(&self, node: &TreePath, kind: ActionKind, cx: &crate::Context<'_>) -> bool {
+        self.grants.iter().any(|answer| {
+            answer.kinds.contains(kind)
+                && answer.is_live(cx)
+                && (answer.node.covers(node)
+                    || (answer.node == *node && writes_a_field(&answer.node)))
+        })
+    }
+}
+
+/// Whether `node` is an action's own node, which a change to a field it
+/// writes also lands on.
+fn writes_a_field(node: &TreePath) -> bool {
+    matches!(
+        node.segments().last(),
+        Some(crate::Segment::Name(crate::Level::Action, _))
+    )
+}
+
 /// The grant giving `agent` `answer` for actions of `kind` at `scope` in
 /// `room`, set by `granted_by`.
 #[must_use]

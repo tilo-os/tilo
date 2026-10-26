@@ -554,6 +554,59 @@ async fn notes_target(f: &Fixture) -> (channel_handle::Client, invocation_stream
 }
 fn grant_notes(f: &Fixture) {
     set_notes_permission(f, true);
+    answer_issue(f, Answer::Allow);
+}
+
+/// Answer for the issue's work, as Tasks records it when a person starts a
+/// run: reading and undoable changes allowed, reaching outside asked first.
+fn answer_issue(f: &Fixture, answer: Answer) {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    let room_id = room().to_string();
+    let given_by = Subject::person(hex::encode(f.native.certificate.user_public_key));
+    let answer_for = |kind| {
+        agent_answers::answer_grant(
+            &room_id,
+            Subject::Task(f.task.clone()),
+            (&AnswerScope::app("so.tilo.notes"), kind),
+            answer,
+            given_by.clone(),
+        )
+    };
+    for kind in [
+        tilo_action_policy::ActionKind::Undoable,
+        tilo_action_policy::ActionKind::Read,
+    ] {
+        let answered = answer_for(kind);
+        // Answering again replaces the answer it contradicts.
+        f.native
+            .spent_grants
+            .lock()
+            .unwrap()
+            .retain(|id| id != &answered.id);
+        put_unspent_grant(f, answered);
+    }
+}
+
+/// Answer [`answer_issue`] for the issue's undoable changes alone, which is
+/// what the issue's own grant names.
+fn answer_issue_undoable(f: &Fixture, answer: Answer) {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    let answered = agent_answers::answer_grant(
+        &room().to_string(),
+        Subject::Task(f.task.clone()),
+        (
+            &AnswerScope::app("so.tilo.notes"),
+            tilo_action_policy::ActionKind::Undoable,
+        ),
+        answer,
+        Subject::person(hex::encode(f.native.certificate.user_public_key)),
+    );
+    f.native
+        .spent_grants
+        .lock()
+        .unwrap()
+        .retain(|id| id != &answered.id);
+    put_unspent_grant(f, answered);
 }
 fn set_notes_permission(f: &Fixture, may_write: bool) {
     use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
@@ -593,6 +646,11 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
         .lock()
         .unwrap()
         .retain(|id| id != &grant.id);
+    put_unspent_grant(f, grant);
+}
+
+/// Write `grant` as governance, even one spent (revoked) before.
+fn put_unspent_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
     let now = std::time::SystemTime::now();
     let messages = f
         .native
@@ -718,22 +776,30 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
                     "append",
                 )
             };
-            for (id, resource, answer) in [
-                ("task-other-resource-only", "notes:other", Answer::Allow),
-                ("task-not-release", "notes:release", Answer::Deny),
-            ] {
-                put_grant(
-                    &f,
-                    Grant::new(
-                        id,
-                        Subject::Task(f.task.clone()),
-                        append(resource),
-                        KindSet::UNDOABLE,
-                        answer,
-                        Subject::person(hex::encode(f.native.certificate.user_public_key)),
-                    ),
-                );
-            }
+            // Answering one resource answers nothing else, and denying it
+            // stops the run there.
+            put_grant(
+                &f,
+                Grant::new(
+                    "issue-other-resource",
+                    Subject::Task(f.task.clone()),
+                    append("notes:other"),
+                    KindSet::UNDOABLE,
+                    Answer::Allow,
+                    Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                ),
+            );
+            put_grant(
+                &f,
+                Grant::new(
+                    "issue-not-release",
+                    Subject::Task(f.task.clone()),
+                    append("notes:release"),
+                    KindSet::UNDOABLE,
+                    Answer::Deny,
+                    Subject::person(hex::encode(f.native.certificate.user_public_key)),
+                ),
+            );
             assert!(invoke(&agent, &run, uuid::Uuid::new_v4()).await.is_err());
             assert!(
                 ordinary_invoke(&agent)
@@ -841,11 +907,73 @@ async fn native_live_owner_revocation_fences_new_and_retained_actions_with_stale
         .await;
 }
 
-/// The agent may append to the notes, but a grant naming the issue denies
-/// it at the same node: Deny wins, and the run may not.
+/// The person revokes `id` through the room's governance, as the shell's
+/// grant service does: the grant is removed and every later check sees it
+/// gone.
+fn revoke_grant(f: &Fixture, id: &str) {
+    let now = std::time::SystemTime::now();
+    let messages = f
+        .native
+        .owner
+        .with_current(room(), |view| {
+            let before = view.peer().clone();
+            let mut next = before.clone();
+            next.governance_mut().remove_governed_grants(
+                &[tilo_action_policy::GrantId::new(id)],
+                &f.native.key,
+                now,
+            )?;
+            next.publication_mut().durable_mutation_messages(
+                &before,
+                &f.native.key,
+                now,
+                view.generation().checked_add(1).unwrap(),
+            )
+        })
+        .unwrap();
+    for message in messages {
+        f.native
+            .owner
+            .receive(
+                room(),
+                tilo_peer_state::TransportOrigin::RetainedRelayDelta(
+                    f.native.key.verifying_key().to_bytes(),
+                ),
+                message,
+                now,
+            )
+            .unwrap();
+    }
+}
+
+/// A grant for the work on the issue, at the notes' `append`.
+fn undoable_grant(f: &Fixture, id: &str, answer: Answer) -> Grant {
+    use tilo_action_policy::KindSet;
+    Grant::new(
+        id,
+        Subject::Task(f.task.clone()),
+        tilo_actions::action_node(
+            &TreePath::room(room().to_string()),
+            "so.tilo.notes",
+            "document",
+            "notes:release",
+            None,
+            "append",
+        ),
+        KindSet::UNDOABLE,
+        answer,
+        Subject::person(hex::encode(f.native.certificate.user_public_key)),
+    )
+}
+
+/// Neither the agent's own grant nor the issue's answer stands alone: the
+/// lesser of the two decides. A grant naming the issue denies the append at
+/// the same node its answer allows, and the run may not act; letting the
+/// answer say Allow does not lift it, and granting the issue's work Allow
+/// does.
 #[tokio::test(flavor = "current_thread")]
 async fn a_native_run_is_held_to_its_issues_grants() {
-    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    use tilo_action_policy::Answer;
     tokio::task::LocalSet::new()
         .run_until(async {
             let f = Fixture::new();
@@ -854,24 +982,7 @@ async fn a_native_run_is_held_to_its_issues_grants() {
             let run = delivered(&agent).await;
             let (_target, _stream) = notes_target(&f).await;
             grant_notes(&f);
-            put_grant(
-                &f,
-                Grant::new(
-                    "task-no-append",
-                    Subject::Task(f.task.clone()),
-                    tilo_actions::action_node(
-                        &TreePath::room(room().to_string()),
-                        "so.tilo.notes",
-                        "document",
-                        "notes:release",
-                        None,
-                        "append",
-                    ),
-                    KindSet::UNDOABLE,
-                    Answer::Deny,
-                    Subject::person(hex::encode(f.native.certificate.user_public_key)),
-                ),
-            );
+            put_grant(&f, undoable_grant(&f, "task-no-append", Answer::Deny));
             assert!(
                 invoke(&agent, &run, uuid::Uuid::from_u128(8100))
                     .await
@@ -884,6 +995,23 @@ async fn a_native_run_is_held_to_its_issues_grants() {
                 0,
                 "the refused action never reached the app"
             );
+            answer_issue_undoable(&f, Answer::Allow);
+            // The issue's own grant at that node still denies it, so the
+            // run may not act however its issue is answered.
+            assert!(
+                invoke(&agent, &run, uuid::Uuid::from_u128(8101))
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not allowed")
+            );
+            assert_eq!(crate::collab_broker_capnp::unread_invocations(200), 0);
+            // The person replaces their answer for the issue: the deny it
+            // contradicts is revoked, not left standing beside it.
+            revoke_grant(&f, "task-no-append");
+            put_grant(&f, undoable_grant(&f, "task-yes-append", Answer::Allow));
+            let outcome = invoke(&agent, &run, uuid::Uuid::from_u128(8102)).await;
+            outcome.unwrap();
             drop(f);
         })
         .await;
@@ -945,6 +1073,7 @@ async fn a_started_run_acts_as_its_starter_and_deleted_targets_fail_closed() {
             let agent = f.channel(100, true);
             let run = delivered(&agent).await;
             let (target, stream) = notes_target(&f).await;
+            answer_issue(&f, Answer::Allow);
             let id = uuid::Uuid::from_u128(800);
             let first = invoke(&agent, &run, id).await.unwrap();
             assert!(matches!(

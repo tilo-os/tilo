@@ -175,6 +175,36 @@ fn provision_receipt_signer(
     .unwrap();
 }
 
+/// Answer for the issue's work, as Tasks records it when a person starts a
+/// run: reading and undoable changes allowed within the room, reaching
+/// outside it asked first.
+fn answer_issue(f: &Fixture, answer: tilo_action_policy::Answer) {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    let given_by =
+        tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key));
+    let grants = [
+        tilo_action_policy::ActionKind::Read,
+        tilo_action_policy::ActionKind::Undoable,
+        tilo_action_policy::ActionKind::Outside,
+    ]
+    .map(|kind| {
+        agent_answers::answer_grant(
+            &room().to_string(),
+            tilo_action_policy::Subject::Task(f.task.clone()),
+            (&AnswerScope::app(STORE), kind),
+            if kind == tilo_action_policy::ActionKind::Outside {
+                tilo_action_policy::Answer::Ask
+            } else {
+                answer
+            },
+            given_by.clone(),
+        )
+    });
+    for grant in grants {
+        put_grant(f, grant);
+    }
+}
+
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the test keeps its fixture and guards alive through its assertions"
@@ -189,6 +219,7 @@ async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() 
             for action in ["submit-report", "appeal"] {
                 for outcome in [0, 1, 2, 3] {
                     let f = Fixture::new();
+                    answer_issue(&f, tilo_action_policy::Answer::Allow);
                     put_grant(&f, tilo_action_policy::Grant::new(
                         "store-allow", tilo_action_policy::Subject::agent("scribe"),
                         tilo_action_policy::TreePath::room(room().to_string()).app(STORE),
@@ -290,6 +321,7 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
         for action in ["submit-report", "appeal"] {
             let (launch, mut launches) = tokio::sync::mpsc::unbounded_channel();
             let f = Fixture::with_launcher(Some(Arc::new(StoreLauncher(launch))));
+            answer_issue(&f, tilo_action_policy::Answer::Allow);
             put_grant(&f, tilo_action_policy::Grant::new(
                 "store-allow", tilo_action_policy::Subject::agent("scribe"),
                 tilo_action_policy::TreePath::room(room().to_string()).app(STORE),

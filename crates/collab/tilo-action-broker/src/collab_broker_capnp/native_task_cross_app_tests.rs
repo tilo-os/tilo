@@ -162,7 +162,9 @@ impl<R: Resource> Worker<R> {
 }
 
 fn permission(f: &Fixture, app: &str, allow: bool) {
+    use tilo_action_policy::agent_answers::AnswerScope;
     use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    let given_by = Subject::person(hex::encode(f.native.certificate.user_public_key));
     put_grant(
         f,
         Grant::new(
@@ -172,7 +174,23 @@ fn permission(f: &Fixture, app: &str, allow: bool) {
             TreePath::room(room().to_string()).app(app),
             KindSet::UNDOABLE,
             if allow { Answer::Allow } else { Answer::Deny },
-            Subject::person(hex::encode(f.native.certificate.user_public_key)),
+            given_by.clone(),
+        ),
+    );
+    // The work on the issue carries its own answer, and approving the run
+    // does not give it one: the person's answer for the issue is what the
+    // run follows.
+    put_grant(
+        f,
+        tilo_action_policy::agent_answers::answer_grant(
+            &room().to_string(),
+            Subject::Task(f.task.clone()),
+            (
+                &AnswerScope::app(app),
+                tilo_action_policy::ActionKind::Undoable,
+            ),
+            if allow { Answer::Allow } else { Answer::Deny },
+            given_by,
         ),
     );
 }

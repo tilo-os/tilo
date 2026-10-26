@@ -48,7 +48,9 @@ async fn append_target(f: &Fixture) -> (channel_handle::Client, invocation_strea
     (target, stream)
 }
 
-/// The person tells the agent Notes asks first.
+/// The person tells the agent Notes asks first: the issue's work is
+/// answered by the person who started it, and their own answer that Notes
+/// asks first bounds the run.
 fn ask_first_for_notes(f: &Fixture) {
     put_grant(f, asks_first_for_notes(f));
 }
@@ -56,15 +58,30 @@ fn ask_first_for_notes(f: &Fixture) {
 /// The grant [`ask_first_for_notes`] puts.
 fn asks_first_for_notes(f: &Fixture) -> tilo_action_policy::Grant {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
+    let person =
+        tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key));
+    let scope = (
+        &AnswerScope::app("so.tilo.notes"),
+        tilo_action_policy::ActionKind::Undoable,
+    );
+    // The issue answers what its work may do, so the answer that asks first
+    // is the agent's own, and the run holds the lesser of the two.
+    put_grant(
+        f,
+        agent_answers::answer_grant(
+            &room().to_string(),
+            tilo_action_policy::Subject::Task(f.task.clone()),
+            scope,
+            tilo_action_policy::Answer::Allow,
+            person.clone(),
+        ),
+    );
     agent_answers::grant(
         &room().to_string(),
         "scribe",
-        (
-            &AnswerScope::app("so.tilo.notes"),
-            tilo_action_policy::ActionKind::Undoable,
-        ),
+        scope,
         tilo_action_policy::Answer::Ask,
-        tilo_action_policy::Subject::person(hex::encode(f.native.certificate.user_public_key)),
+        person,
     )
 }
 

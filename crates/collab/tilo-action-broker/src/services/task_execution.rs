@@ -101,12 +101,19 @@ impl NativeTaskActionRequirement {
             return Err("this run has ended or was replaced".into());
         }
         let delegation = roles::agent_delegation(room, &run.agent, &run.starter);
-        let verdict = Authority::person(
-            delegation
-                .party(&policy.grants)
-                .also_as(tilo_action_policy::Subject::Task(run.issue.clone())),
-        )
-        .decide(&node, self.need.kind, &cx);
+        let issued = tilo_action_policy::Subject::Task(run.issue.clone());
+        let answers = tilo_action_policy::agent_answers::Answers::of(&policy.grants, &run.issue);
+        let party = delegation.party(&policy.grants).also_as(issued.clone());
+        // Nobody told the issue's work what it may do yet: it is answered
+        // for the person's decision to start it, and nothing else, so the
+        // room's grants for the agent do not stand in for an answer no one
+        // gave it.
+        let party = if answers.covers(&node, self.need.kind, &cx) {
+            party
+        } else {
+            party.unanswered_issue(issued)
+        };
+        let verdict = Authority::person(party).decide(&node, self.need.kind, &cx);
         let foreign = roles::foreign_device_bound();
         let starter = policy
             .person_on_device(&run.starter, false, &foreign)
@@ -190,6 +197,10 @@ fn agent_basis(verdict: &tilo_action_policy::Verdict<'_>) -> String {
         Some(tilo_action_policy::Basis::Grant(grant)) => format!(
             "the agent's grants in this workspace (grant {} on {})",
             grant.id, grant.node
+        ),
+        Some(tilo_action_policy::Basis::Unanswered) => format!(
+            "nobody has said what the work on this issue may do about {}",
+            verdict.node
         ),
         _ => format!(
             "the agent's grants in this workspace (no grant covers {})",

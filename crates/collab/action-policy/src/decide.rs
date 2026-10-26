@@ -9,6 +9,10 @@ pub enum Basis<'g> {
     Grant(&'g Grant),
     /// The party owns the room the node is in.
     Owner,
+    /// The work on an issue, running before anyone said what it may do: a
+    /// run is answered for the person's decision to start it, and nothing
+    /// else, so no grant naming the issue decides for it.
+    Unanswered,
     /// No live grant covers the node and kind.
     NoGrant,
 }
@@ -88,6 +92,9 @@ pub struct Party<'g> {
     /// room, a role's rule on comments) speaks for the role, not for a
     /// decision about them.
     pub held_off: Vec<&'g Grant>,
+    /// The issue whose work nobody answered for yet: its runs are answered
+    /// for the decision to start them alone.
+    pub unanswered: Option<Subject>,
 }
 
 impl<'g> Party<'g> {
@@ -98,6 +105,7 @@ impl<'g> Party<'g> {
             grants: grants.into_iter().collect(),
             owns: Vec::new(),
             held_off: Vec::new(),
+            unanswered: None,
         }
     }
 
@@ -136,6 +144,20 @@ impl<'g> Party<'g> {
         self
     }
 
+    /// The same party, whose work on `issue` nobody answered for yet: a run
+    /// is answered for the person's decision to start it and nothing else,
+    /// so no grant naming the issue decides for it.
+    ///
+    /// The caller must have looked for an answer first
+    /// ([`crate::agent_answers::Answers::covers`]); once the work is
+    /// unanswered, every question about it is refused whatever else the
+    /// person's grants say.
+    #[must_use]
+    pub fn unanswered_issue(mut self, issue: Subject) -> Self {
+        self.unanswered = Some(issue);
+        self
+    }
+
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
         if self.owns.iter().any(|owned| owned.covers(node)) {
@@ -150,6 +172,14 @@ impl<'g> Party<'g> {
             return Decision {
                 answer: Answer::Deny,
                 basis: Basis::Grant(deny),
+            };
+        }
+        if self.unanswered.is_some() {
+            // The caller looked for an answer and found none: no grant
+            // stands in for it, nor is asked for a lesser one beside it.
+            return Decision {
+                answer: Answer::Deny,
+                basis: Basis::Unanswered,
             };
         }
         decide(self.grants.iter().copied(), &self.subjects, node, kind, cx)
@@ -306,6 +336,11 @@ impl<'g> Verdict<'g> {
                 grant.node,
                 grant.answer,
                 grant.id
+            ),
+            Some(Basis::Unanswered) => format!(
+                "nobody has said what the work on this issue may do about {} on {}",
+                self.kind.phrase(),
+                self.node
             ),
             Some(Basis::NoGrant) | None => {
                 format!(
