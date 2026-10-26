@@ -39,7 +39,6 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::{Atom, Invoke};
-use ui::widget::toast::ToastKind;
 use ui::widget::{
     AppModel, Collaborative, Column, Element, ModalDialog, ModelPath, NavMode, NavShell,
     TaffyTreeExt, Text, Widget,
@@ -138,6 +137,16 @@ type UnitBacklog = std::collections::VecDeque<Vec<u8>>;
 
 /// Encoded units waiting for the decode worker before the backlog is
 /// dropped: two seconds of a 30 fps stream.
+/// How long a connection attempt is given before the page says it did not
+/// answer: a Tilo case waits for the owner's consent, and an SSH or VNC
+/// handshake waits on the network, but neither waits without end.
+const CONNECT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Remote, as the ledger and the waiting stack name it.
+fn owner() -> ui::attention::Owner {
+    ui::attention::Owner::new("so.tilo.remote", "Remote").with_icon(Icon::Globe)
+}
+
 const TILO_UNIT_BACKLOG: usize = 60;
 
 /// How long the session waits for an asked-for keyframe before asking
@@ -313,6 +322,11 @@ enum PendingConfirmation {
         id: ConnectionId,
         target: String,
     },
+    /// End the session open on `id`: its scrollback goes with it.
+    Disconnect {
+        id: ConnectionId,
+        target: String,
+    },
     Delete {
         id: ConnectionId,
         target: String,
@@ -332,6 +346,7 @@ impl PendingConfirmation {
     fn id(&self) -> ConnectionId {
         match self {
             Self::Connect { id, .. }
+            | Self::Disconnect { id, .. }
             | Self::Delete { id, .. }
             | Self::TrustSshHostKey { id, .. }
             | Self::ForgetSshHostKey { id, .. } => *id,
@@ -341,6 +356,7 @@ impl PendingConfirmation {
     fn target(&self) -> &str {
         match self {
             Self::Connect { target, .. }
+            | Self::Disconnect { target, .. }
             | Self::Delete { target, .. }
             | Self::TrustSshHostKey { target, .. }
             | Self::ForgetSshHostKey { target, .. } => target,
@@ -636,6 +652,10 @@ pub struct RemoteApp {
     /// many times; resource-operation completion must never settle an old
     /// invocation against a newer session for the same connection id.
     session_generation: u64,
+    /// The connect attempt in flight: when it started, and the job the
+    /// whole system sees while it runs.
+    connect_started: Option<ui::time::Instant>,
+    connect_job: Option<(ConnectionId, ui::jobs::Running)>,
     /// The session fills the window, without the rail.
     fullscreen: bool,
     /// Discoverable Tilo peers for the form's device picker.
@@ -702,6 +722,8 @@ impl RemoteApp {
             session: SharedSession::default(),
             session_for: None,
             session_generation: 0,
+            connect_started: None,
+            connect_job: None,
             fullscreen: false,
             tilo_devices,
             next_tilo_session_id: 1,
@@ -970,7 +992,7 @@ impl RemoteApp {
                 session.changed = true;
             }
             Action::ToggleFullscreen => self.set_fullscreen(!self.fullscreen),
-            Action::Disconnect => self.disconnect_session(),
+            Action::Disconnect => self.request_disconnect(),
         }
         if self.pending_confirmation.is_none() {
             self.dialog = None;
@@ -1121,8 +1143,10 @@ impl RemoteApp {
 
     /// An outcome worth a moment's notice (a revalidation that cancelled an
     /// action), in the window's bar. It holds no credential material.
+    /// Record what happened in the ledger: Remote's outcomes do not expire
+    /// and nothing of them takes the keyboard.
     fn notify(&mut self, message: impl Into<String>) {
-        self.shell.toast(message, ToastKind::Info);
+        ui::attention::publish(ui::attention::Notice::did(owner(), message));
     }
 
     fn request_connect(&mut self, id: ConnectionId) {
@@ -1209,6 +1233,12 @@ impl RemoteApp {
             .map_or_else(|| "this connection".to_owned(), |c| c.name.clone());
         let mut key = None;
         let (title, detail, primary, destructive) = match &pending {
+            PendingConfirmation::Disconnect { .. } => (
+                format!("Close the session to {name}?"),
+                "The live session ends and its scrollback goes with it. The saved connection stays.".to_owned(),
+                "Close session",
+                false,
+            ),
             PendingConfirmation::Delete { .. } => (
                 format!("Delete {name}?"),
                 "The saved connection is removed for everyone you share it with. The machine itself is not changed.".to_owned(),
@@ -1289,6 +1319,7 @@ impl RemoteApp {
                 // boundary, so an expired capability cannot race confirmation.
                 self.open_session(id);
             }
+            PendingConfirmation::Disconnect { .. } => self.disconnect_session(),
             PendingConfirmation::Delete { .. } => self.delete_connection(id),
             PendingConfirmation::TrustSshHostKey { observed, .. } => {
                 let current = self.ssh_host_key_issue(id);
@@ -1393,6 +1424,21 @@ impl RemoteApp {
         };
         self.session.borrow_mut().live = Some(live);
         self.screen = Screen::Session { id };
+        if readiness.can_connect() && !self.capture {
+            self.connect_started = Some(ui::time::now());
+            self.connect_job = Some((
+                id,
+                ui::jobs::start(
+                    ui::jobs::Spec::new(format!("Connecting to {}", self.target_name(id)))
+                        .subject(
+                            ui::jobs::Subject::new(owner(), self.target_name(id))
+                                .opens(id.to_string()),
+                        )
+                        .unit(ui::jobs::Unit::Steps)
+                        .phase("Connecting"),
+                ),
+            ));
+        }
     }
 
     fn disconnect_session(&mut self) {
@@ -1503,6 +1549,7 @@ impl RemoteApp {
     /// machine: a connection that came up marks it reachable, one that
     /// failed marks it unreachable. The observation stays on this device.
     fn pump_session(&mut self) {
+        self.expire_connect();
         let (changed, status) = {
             let mut session = self.session.borrow_mut();
             let changed = session.pump() || std::mem::take(&mut session.changed);
@@ -1854,15 +1901,15 @@ impl RemoteApp {
                         message: "Its owner is asked before the device shares a workspace."
                             .to_owned(),
                         error: false,
-                        action: None,
+                        action: Some(("Stop", Action::Disconnect)),
                     }
                 } else {
                     StatusModel {
                         icon,
                         title: format!("Connecting to {name}"),
-                        message: "Remote is reaching the machine and signing in.".to_owned(),
+                        message: "Remote is reaching the machine and signing in. This stops on its own after 45 seconds.".to_owned(),
                         error: false,
-                        action: None,
+                        action: Some(("Stop", Action::Disconnect)),
                     }
                 }
             }
@@ -3448,6 +3495,7 @@ fn sample_tilo_devices() -> Vec<TiloDevice> {
     ]
 }
 
+mod connect;
 mod window_bar;
 
 #[cfg(test)]

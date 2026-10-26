@@ -10,6 +10,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::num::u32_of_usize;
 
+use ui::fact::{Measure, Measured};
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{SpacingStep, TextRole};
@@ -610,6 +611,12 @@ fn log_line(line: &str) -> Element {
     })
 }
 
+/// A reading's wall-clock instant from the millisecond stamp the model
+/// stores, so a view can age it without the model naming `SystemTime`.
+fn as_of(unix_ms: Option<u64>) -> Option<ui::time::SystemTime> {
+    unix_ms.and_then(|ms| ui::time::UNIX_EPOCH.checked_add(ui::time::Duration::from_millis(ms)))
+}
+
 fn logs(c: &Container) -> Element {
     if let Some(error) = &c.logs_error {
         return note(&format!("Log output is unavailable: {error}"));
@@ -617,7 +624,31 @@ fn logs(c: &Container) -> Element {
     if c.logs.is_empty() {
         return note("The container hasn't written any log output.");
     }
-    output(c.logs.iter().map(String::as_str))
+    let now = ui::time::wall();
+    let fact = match as_of(c.logs_fetched_unix_ms) {
+        Some(at) => Measured::known(
+            Measure::new("Log lines"),
+            c.logs.len().to_string(),
+            "Podman logs",
+            at,
+            Some(ui::time::Duration::from_secs(60)),
+        ),
+        None => Measured::unknown(
+            Measure::new("Log lines"),
+            "this is a sample, not a reading from Podman",
+        ),
+    };
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(output(c.logs.iter().map(String::as_str)))
+            .push(Box::new(
+                Text::new(&fact.caption(now))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            )),
+    )
 }
 
 /// Output as the process wrote it, in a well: one entry per line, a line
@@ -690,13 +721,29 @@ fn stats(c: &Container) -> Element {
         bytes_tile("Read from disk", s.block_read_bytes),
         bytes_tile("Written to disk", s.block_write_bytes),
     ];
+    let now = ui::time::wall();
+    let fact = match as_of(s.fetched_unix_ms) {
+        Some(at) => Measured::known(
+            Measure::new("Container usage"),
+            "1 sample",
+            "Podman stats",
+            at,
+            Some(ui::time::Duration::from_secs(5)),
+        ),
+        None => Measured::unknown(Measure::new("Container usage"), "Podman returned no sample"),
+    };
     stack(vec![
         Section::titled(
             "Usage",
             vec![
                 usage("CPU", &cpu, s.cpu_percent),
-                usage("Memory", &memory, s.mem_fraction()),
+                usage("Memory (RSS)", &memory, s.mem_fraction()),
                 line("Processes", &s.pids.to_string()),
+                Box::new(
+                    Text::new(&fact.caption(now))
+                        .with_role(TextRole::Caption)
+                        .dimmed(),
+                ),
             ],
         ),
         Section::titled("Activity", vec![Box::new(StatGroup::new(tiles))]),

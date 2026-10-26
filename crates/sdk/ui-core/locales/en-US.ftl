@@ -3,6 +3,7 @@ tab-modified = Unsaved changes
 tab-search-in = Search in { $title }
 tab-held-by = { $name }’s window
 tab-controls-desktop = Controls your desktop
+tab-dev-build = Dev build · by { $installer }
 standalone-search-title = Search
 standalone-history-title = History
 standalone-history-close = Close history
@@ -666,6 +667,10 @@ widget-mention-shortcut = Shortcut
 widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = People to mention
+mention-notice-title = { $name } mentioned you in ‘{ $place }’
+mention-notice-channel = { $name } mentioned you in { $channel }
+mention-notice = { $name } mentioned you
+mention-notice-someone = Someone
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks
@@ -957,6 +962,7 @@ emoji-chooser-results = Matching emoji
 emoji-chooser-no-results = No emoji found
 emoji-chooser-arriving = More emoji are on their way
 emoji-chooser-add = Add emoji
+emoji-chooser-add-failed = Couldn't add that picture: { $reason }
 emoji-chooser-tones = Skin tones
 emoji-chooser-tone-hint = Pick a skin tone
 emoji-chooser-toned = { $name }, { $tone }
@@ -970,3 +976,82 @@ emoji-chooser-tone-dark = dark skin tone
 workspace-emoji-choose-title = Add an emoji
 workspace-emoji-choose-accept = Add
 workspace-emoji-image-files = Pictures
+# Why a picture chosen in the emoji picker was not added, after
+# emoji-chooser-add-failed's colon: short, it shares the picker's last line.
+workspace-emoji-loading = the picture tools are still loading
+workspace-emoji-not-a-picture = it isn't a PNG, JPEG or WebP
+workspace-emoji-too-detailed = it's too detailed for an emoji
+workspace-emoji-unavailable = this workspace's emoji aren't available
+workspace-emoji-not-allowed = you may not add emoji here
+# The conversation substrate: the delivery vocabulary and the attachment
+# ladder, shared by every app that draws a conversation.
+conversation-delivery-queued = Queued
+conversation-delivery-sending = Sending
+conversation-delivery-submitted = Submitted
+conversation-delivery-sent = Sent
+conversation-delivery-delivered = Delivered
+conversation-delivery-read = Read
+conversation-delivery-failed = Not sent
+conversation-delivery-uncertain = Status uncertain
+conversation-attachment-open = Open
+conversation-attachment-open-full-size = Open full size
+conversation-attachment-save = Save
+conversation-attachment-save-as = Save as…
+conversation-attachment-open-saved = Open saved copy
+conversation-attachment-saved = a copy on this device
+conversation-attachment-no-access = This file is not shared with you
+conversation-attachment-unavailable = This file is not on this device
+conversation-attachment-uploading = Uploading
+conversation-attachment-cancel-upload = Cancel upload
+conversation-attachment-upload-cancelled = Upload cancelled
+conversation-attachment-save-failed = Couldn’t save the file
+conversation-attachment-image = Image
+conversation-attachment-video = Video
+conversation-attachment-file = File
+conversation-draft = Draft
+conversation-draft-preview = Draft: {$text}
+conversation-unread = Unread message
+conversation-day-earlier = {$date}
+# Jobs: what is running. A job's row says what it is doing and how far.
+jobs-starting = Starting
+# $phase is what it is doing ("Downloading"), $done and $total are what it has
+# got through and how much there is, each in the job's own unit.
+jobs-phase-of = { $phase } { $done } of { $total }
+# $phase is what it is doing, $seen is how much it has seen where there is no
+# total to read.
+jobs-phase-seen = { $phase } { $seen }
+jobs-percent = { $percent }%
+jobs-bar-of = { $done } of { $total }
+jobs-failed = Couldn’t finish: { $reason }
+jobs-stopped = Stopped
+jobs-stop = Stop
+jobs-stopping = Stopping
+jobs-show-me = Show me
+jobs-read = Read
+# $count is how many jobs the band is not showing.
+jobs-more = { $count } more
+jobs-running-heading = In progress
+jobs-finished-heading = Finished
+jobs-none = Nothing is running
+jobs-none-message = Anything longer than a breath appears while it runs, and says how it ended.
+
+jobs-files-one = { $count } file
+jobs-files = { $count } files
+jobs-items-one = { $count } item
+jobs-items = { $count } items
+jobs-steps-one = { $count } step
+jobs-steps = { $count } steps
+
+# Needs you: what wants a person.
+attention-blocking = Now
+attention-waiting = Waiting
+attention-noted = Worth knowing
+attention-none = Nothing needs you
+attention-none-message = Anything that waits on your decision keeps waiting here.
+# $about is what it is about, $because is why it is waiting.
+attention-because = { $about }, { $because }
+attention-defer = Put aside for now
+attention-deferred-one = { $count } put aside
+attention-deferred = { $count } put aside
+attention-pill-one = { $count } waiting
+attention-pill = { $count } waiting

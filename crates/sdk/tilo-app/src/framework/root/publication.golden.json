@@ -29,7 +29,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -78,7 +77,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -114,7 +112,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -167,7 +164,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -277,7 +273,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -313,7 +308,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -349,7 +343,6 @@
           "mode": "none"
         },
         "retry": "idempotent",
-        "reversible": false,
         "execution": {
           "mode": "immediate"
         },
@@ -410,7 +403,6 @@
           "mode": "none"
         },
         "retry": "idempotent",
-        "reversible": false,
         "execution": {
           "mode": "immediate"
         },
@@ -452,7 +444,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -522,7 +513,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -574,7 +564,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -638,7 +627,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -690,7 +678,6 @@
           "mode": "none"
         },
         "retry": "idempotent",
-        "reversible": false,
         "execution": {
           "mode": "immediate"
         },
@@ -742,7 +729,6 @@
           "mode": "none"
         },
         "retry": "idempotent",
-        "reversible": false,
         "execution": {
           "mode": "immediate"
         },
@@ -800,7 +786,6 @@
           "mode": "none"
         },
         "retry": "idempotent",
-        "reversible": false,
         "execution": {
           "mode": "immediate"
         },
@@ -871,7 +856,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -974,7 +958,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1006,7 +989,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1038,7 +1020,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1070,7 +1051,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1112,7 +1092,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1144,7 +1123,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1176,7 +1154,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1208,7 +1185,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1250,7 +1226,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1282,7 +1257,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1314,7 +1288,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1346,7 +1319,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1388,7 +1360,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1420,7 +1391,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1452,7 +1422,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1493,7 +1462,6 @@
                   "mode": "none"
                 },
                 "retry": "at_most_once",
-                "reversible": true,
                 "execution": {
                   "mode": "immediate"
                 },
@@ -1525,7 +1493,6 @@
                   "mode": "none"
                 },
                 "retry": "at_most_once",
-                "reversible": true,
                 "execution": {
                   "mode": "immediate"
                 },
@@ -1557,7 +1524,6 @@
                   "mode": "none"
                 },
                 "retry": "at_most_once",
-                "reversible": true,
                 "execution": {
                   "mode": "immediate"
                 },

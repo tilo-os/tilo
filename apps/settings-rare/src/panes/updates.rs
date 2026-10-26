@@ -97,6 +97,10 @@ pub(crate) mod values {
 }
 
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
+/// The channels a device may follow (`tilo-update-channel`), in the order they are offered:
+/// Tilo's releases, or main's development images.
+const UPDATE_CHANNELS: &[&str] = &["stable", "dev"];
+const UPDATE_CHANNEL_HELPER: &str = "/usr/libexec/tilo-update-channel";
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const LONG_UPDATE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
@@ -122,6 +126,30 @@ fn schedule_shown(id: &str) -> String {
         "Weekly" => t("upd-schedule-weekly"),
         _ => t("upd-schedule-system"),
     }
+}
+
+fn channel_shown(id: &str) -> String {
+    match id {
+        "dev" => t("upd-channel-dev"),
+        _ => t("upd-channel-stable"),
+    }
+}
+
+fn channel_from_label(label: &str) -> String {
+    if label == "dev" || label == t("upd-channel-dev") {
+        "dev".into()
+    } else if label == "stable" || label == t("upd-channel-stable") {
+        "stable".into()
+    } else {
+        label.to_string()
+    }
+}
+
+/// The channel a device follows and the ones it may choose instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateChannels {
+    pub current: String,
+    pub available: Vec<String>,
 }
 
 fn schedule_from_label(label: &str) -> String {
@@ -379,6 +407,17 @@ pub trait UpdateControl: Send + Sync {
     fn set_schedule(&self, _schedule: &str) -> Result<(), String> {
         Err("update scheduling is unavailable on this machine".into())
     }
+    /// The channel this device follows and the ones it may follow; `None` when
+    /// it cannot say.
+    fn channels(&self) -> Option<UpdateChannels> {
+        None
+    }
+    /// # Errors
+    /// Returns an error if this machine has no channel to choose (the
+    /// default), or if the policy service refuses the requested channel.
+    fn set_channel(&self, _channel: &str) -> Result<(), String> {
+        Err("update channels are unavailable on this machine".into())
+    }
     fn allow_metered(&self) -> Option<bool> {
         None
     }
@@ -464,6 +503,8 @@ fn start_update_policy(action: &str) -> Result<(), String> {
             | "schedule-weekly"
             | "metered-allow"
             | "metered-avoid"
+            | "channel-dev"
+            | "channel-stable"
     ) {
         return Err("invalid update policy action".into());
     }
@@ -596,6 +637,35 @@ impl UpdateControl for RealUpdateControl {
             "Daily" => "schedule-daily",
             "Weekly" => "schedule-weekly",
             _ => return Err("unknown update schedule".into()),
+        })
+    }
+
+    fn channels(&self) -> Option<UpdateChannels> {
+        crate::device_read::off_ui_thread();
+        let read = |what: &str| {
+            run_bounded(UPDATE_CHANNEL_HELPER, &[what], CONTROL_TIMEOUT)
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        };
+        let available: Vec<String> = read("list")?
+            .lines()
+            .map(str::trim)
+            .filter(|channel| UPDATE_CHANNELS.contains(channel))
+            .map(str::to_string)
+            .collect();
+        let current = read("current")?.trim().to_string();
+        available
+            .contains(&current)
+            .then_some(UpdateChannels { current, available })
+    }
+
+    fn set_channel(&self, channel: &str) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
+        start_update_policy(match channel {
+            "dev" => "channel-dev",
+            "stable" => "channel-stable",
+            _ => return Err("unknown update channel".into()),
         })
     }
 
@@ -804,6 +874,7 @@ impl DeviceReaders {
             rollback_target,
             details,
             schedule: self.control.schedule(),
+            channels: self.control.channels(),
             allow_metered: self.control.allow_metered(),
             firmware_updates,
             firmware_history,
@@ -819,6 +890,7 @@ struct FirstRead {
     rollback_target: Result<Option<String>, String>,
     details: UpdateDetails,
     schedule: Option<String>,
+    channels: Option<UpdateChannels>,
     allow_metered: Option<bool>,
     firmware_updates: Result<Vec<os_actions::FirmwareUpdate>, String>,
     firmware_history: Result<Vec<os_actions::FirmwareHistoryEntry>, String>,
@@ -838,6 +910,7 @@ impl FirstRead {
             rollback_target: Err(error.to_string()),
             details: UpdateDetails::default(),
             schedule: None,
+            channels: None,
             allow_metered: None,
             firmware_updates: Err(error.to_string()),
             firmware_history: Err(error.to_string()),
@@ -890,6 +963,7 @@ pub struct UpdatesModel {
     /// it could not be read, and the switch says so instead of guessing.
     timer_enabled: Option<bool>,
     schedule: Option<String>,
+    channels: Option<UpdateChannels>,
     allow_metered: Option<bool>,
     /// What this machine can go back to, if anything, or why that could not
     /// be read.
@@ -972,6 +1046,7 @@ impl UpdatesModel {
             jobs: Vec::new(),
             timer_enabled: None,
             schedule: None,
+            channels: None,
             allow_metered: None,
             rollback_target: Ok(None),
             firmware_updates: Ok(Vec::new()),
@@ -1011,6 +1086,7 @@ impl UpdatesModel {
         self.rollback_target = read.rollback_target;
         self.details = read.details;
         self.schedule = read.schedule;
+        self.channels = read.channels;
         self.allow_metered = read.allow_metered;
         self.firmware_updates = read.firmware_updates;
         self.firmware_history = read.firmware_history;
@@ -1064,6 +1140,7 @@ impl UpdatesModel {
             rollback_target: control.rollback_target(),
             details: UpdateDetails::default(),
             schedule: control.schedule(),
+            channels: control.channels(),
             allow_metered: control.allow_metered(),
             firmware_updates: Err("fwupd is unavailable in this test".into()),
             firmware_history: Err("fwupd is unavailable in this test".into()),
@@ -1636,10 +1713,22 @@ impl UpdatesModel {
     /// What this device runs and the update settings it has: a setting
     /// the device cannot read has no row.
     fn detail_card(&self) -> SettingsSection {
-        let mut items = vec![
-            value_row(&t("upd-current-version"), &self.status.current_version),
-            value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
-        ];
+        let mut items = vec![value_row(
+            &t("upd-current-version"),
+            &self.status.current_version,
+        )];
+        items.push(match &self.channels {
+            Some(channels) if channels.available.len() > 1 => {
+                self.cx.row(t("upd-channel")).choice_effect(
+                    channels.available.iter().map(|id| channel_shown(id)),
+                    &LocalState::new(channel_shown(&channels.current)),
+                    effect(UpdatesEffect::SET_UPDATE_CHANNEL)
+                        .map(|shown: String| channel_from_label(&shown)),
+                )
+            }
+            Some(channels) => value_row(&t("upd-channel"), &channel_shown(&channels.current)),
+            None => value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
+        });
         if self.timer_enabled.is_some() {
             items.push(values::automatic_switch(&self.cx, self.prefs.auto));
         }
@@ -2322,6 +2411,64 @@ impl UpdatesModel {
         self.changed = true;
     }
 
+    fn set_channel(&mut self, requested: &str) {
+        let operation = UpdatesEffect::SET_UPDATE_CHANNEL.id;
+        let Some(channels) = self.channels.clone() else {
+            self.operation_failed(
+                operation,
+                "the update channel cannot be read on this device",
+            );
+            return;
+        };
+        let requested = channel_from_label(requested);
+        if requested == channels.current {
+            self.operation_succeeded(operation, "update channel was already selected");
+            return;
+        }
+        if !channels.available.contains(&requested) {
+            self.operation_failed(operation, "this device cannot follow that update channel");
+            return;
+        }
+        let control = Arc::clone(&self.control);
+        self.start(operation, move || {
+            let set = control.set_channel(&requested);
+            let channels = set.is_ok().then(|| control.channels()).flatten();
+            Box::new(move |model: &mut Self| model.channel_set(requested, set, channels))
+        });
+    }
+
+    fn channel_set(
+        &mut self,
+        requested: String,
+        set: Result<(), String>,
+        channels: Option<UpdateChannels>,
+    ) {
+        let operation = UpdatesEffect::SET_UPDATE_CHANNEL.id;
+        match set {
+            Ok(()) => {
+                self.channels = channels.or_else(|| {
+                    self.channels.take().map(|channels| UpdateChannels {
+                        current: requested,
+                        ..channels
+                    })
+                });
+                self.notice = None;
+                self.operation_succeeded(operation, "update channel changed");
+            }
+            Err(error) => {
+                self.notice = Some(t_args(
+                    "upd-notice-channel",
+                    &[("error", error.as_str().into())],
+                ));
+                self.operation_failed(
+                    operation,
+                    format!("Update channel could not be changed: {error}"),
+                );
+            }
+        }
+        self.changed = true;
+    }
+
     fn set_metered(&mut self, requested: bool) {
         let Some(current) = self.allow_metered else {
             self.operation_failed(
@@ -2466,6 +2613,13 @@ pub enum UpdatesEffect {
     /// Download updates on metered networks, or wait for another network.
     #[effect(job, idempotent)]
     SetMeteredUpdates { allowed: bool },
+    /// Choose which images this device updates to: Tilo's releases, or main's
+    /// development builds.
+    #[effect(job, idempotent)]
+    SetUpdateChannel {
+        #[param("Channel", choices = UPDATE_CHANNELS.iter().copied())]
+        channel: String,
+    },
 }
 
 impl UpdatesModel {
@@ -2496,6 +2650,7 @@ impl UpdatesModel {
             UpdatesEffect::SetAutomaticUpdates { on } => self.set_automatic(on),
             UpdatesEffect::SetUpdateSchedule { schedule } => self.set_schedule(&schedule),
             UpdatesEffect::SetMeteredUpdates { allowed } => self.set_metered(allowed),
+            UpdatesEffect::SetUpdateChannel { channel } => self.set_channel(&channel),
         }
     }
 
@@ -3088,6 +3243,53 @@ mod tests {
         }
     }
 
+    /// The channel a device follows is shown, chosen where the image offers a
+    /// choice, and the choice reaches the device's update policy once.
+    #[test]
+    fn the_update_channel_is_shown_and_chosen_where_the_device_offers_one() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let release = pane_with_control(Arc::new(
+            FakeControl::new(Some(true), None).following("stable", &["stable"]),
+        ));
+        let text = crate::widgets::announced_text(release.build_composition().as_ref());
+        assert!(text.contains(&t("upd-channel-stable")), "{text:#?}");
+        assert!(!text.contains(&t("upd-channel-dev")), "{text:#?}");
+
+        let control =
+            Arc::new(FakeControl::new(Some(true), None).following("dev", &["dev", "stable"]));
+        let mut pane = pane_with_control(control.clone());
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(text.contains(&t("upd-channel-dev")), "{text:#?}");
+        pane.run(
+            UpdatesEffect::SetUpdateChannel {
+                channel: "stable".into(),
+            },
+            None,
+        );
+        pane.poll();
+        settle(&mut pane, UpdatesModel::working);
+        pane.run(
+            UpdatesEffect::SetUpdateChannel {
+                channel: "stable".into(),
+            },
+            None,
+        );
+        pane.run(
+            UpdatesEffect::SetUpdateChannel {
+                channel: "nightly".into(),
+            },
+            None,
+        );
+        settle(&mut pane, UpdatesModel::working);
+        assert_eq!(
+            *control.channel_calls.lock().unwrap(),
+            vec!["stable".to_string()]
+        );
+        assert!(pane.notice().is_none());
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(text.contains(&t("upd-channel-stable")), "{text:#?}");
+    }
+
     /// Drive the host's polling until `pending` clears. The bound is a hang
     /// guard for a worker that never reports, not a performance budget.
     fn settle(pane: &mut UpdatesModel, pending: impl Fn(&UpdatesModel) -> bool) {
@@ -3239,6 +3441,8 @@ mod tests {
         refresh_fails: Mutex<bool>,
         check_calls: Mutex<u32>,
         gate_timed_out: std::sync::atomic::AtomicBool,
+        channels: Mutex<Option<UpdateChannels>>,
+        channel_calls: Mutex<Vec<String>>,
     }
 
     /// How long a gated fake waits for its release before giving up and
@@ -3262,7 +3466,20 @@ mod tests {
                 refresh_fails: Mutex::new(false),
                 check_calls: Mutex::new(0),
                 gate_timed_out: std::sync::atomic::AtomicBool::new(false),
+                channels: Mutex::new(None),
+                channel_calls: Mutex::new(Vec::new()),
             }
+        }
+        /// A device following `current` that may choose any of `available`.
+        fn following(self, current: &str, available: &[&str]) -> Self {
+            *self.channels.lock().unwrap() = Some(UpdateChannels {
+                current: current.into(),
+                available: available
+                    .iter()
+                    .map(|channel| (*channel).to_string())
+                    .collect(),
+            });
+            self
         }
         fn failing_set(mut self) -> Self {
             self.set_fails = true;
@@ -3330,6 +3547,19 @@ mod tests {
                 return Err("the boot loader would not take it".into());
             }
             *self.target.lock().unwrap() = None;
+            Ok(())
+        }
+
+        fn channels(&self) -> Option<UpdateChannels> {
+            crate::device_read::off_ui_thread();
+            self.channels.lock().unwrap().clone()
+        }
+        fn set_channel(&self, channel: &str) -> Result<(), String> {
+            crate::device_read::off_ui_thread();
+            self.channel_calls.lock().unwrap().push(channel.to_string());
+            if let Some(channels) = self.channels.lock().unwrap().as_mut() {
+                channels.current = channel.to_string();
+            }
             Ok(())
         }
 

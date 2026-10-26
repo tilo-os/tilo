@@ -380,6 +380,7 @@ impl ShellOverlayHost {
     /// Open "Join a workspace…" and ask the directories for what they list.
     pub(in crate::shell) fn open_directory(&mut self) {
         let request = self.directory_sheet.open();
+        tracing::info!("directory sheet opened: a link or code typed there joins");
         self.run_directory_request(request);
     }
 
@@ -474,6 +475,11 @@ impl ShellOverlayHost {
                 self.switch_to_room(room, workspace);
             }
             (PeerSyncRequest::Directory { .. } | PeerSyncRequest::JoinListed(_), Err(error)) => {
+                tracing::info!(
+                    %error,
+                    joining = matches!(request, PeerSyncRequest::JoinListed(_)),
+                    "directory sheet: the request was refused"
+                );
                 self.directory_sheet.failed(&error);
             }
             (
@@ -878,11 +884,15 @@ impl ShellOverlayHost {
         // The card's request is still being carried out: a second press
         // would mint or redeem twice.
         if self.peer_sync.in_flight(request) {
+            if matches!(request, PeerSyncRequest::AcceptInvite(_)) {
+                tracing::info!("join field: a join is still on its way; this one is not sent");
+            }
             return;
         }
         // Without a network there is nothing to send it to: say why, and
         // what the person can do, never the plumbing's own words.
         if !self.peer_sync.is_running() {
+            tracing::info!("join field: the network is not running; the request is not sent");
             self.peer_sync_overlay
                 .show_unavailable(self.peer_sync.unavailable_message(self.peer_sync_enabled));
             return;

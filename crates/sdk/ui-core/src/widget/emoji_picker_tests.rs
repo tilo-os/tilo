@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use winit::keyboard::ModifiersState;
 use super::*;
 use crate::emoji_catalogue::{EmojiCatalogue, EmojiInfo};
 use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
-use crate::workspace_emoji::{CustomEmoji, EmojiSource, WorkspaceEmoji};
+use crate::workspace_emoji::{Adding, CustomEmoji, EmojiSource, WorkspaceEmoji};
 
 /// A catalogue of two small groups. It names no emoji the reaction strip's
 /// tests name, so their tooltips read the same with or without it.
@@ -90,6 +90,7 @@ struct Source {
     emoji: Rc<WorkspaceEmoji>,
     manage: bool,
     chosen: Rc<Cell<usize>>,
+    added: Rc<RefCell<(u64, Option<Adding>)>>,
 }
 
 impl EmojiSource for Source {
@@ -111,18 +112,31 @@ impl EmojiSource for Source {
     fn choose_and_add(&self) {
         self.chosen.set(self.chosen.get() + 1);
     }
+    fn last_added(&self) -> (u64, Option<Adding>) {
+        self.added.borrow().clone()
+    }
 }
 
 /// A window whose workspace has `:party_parrot:` and `:pizza_cat:`.
 struct Window {
     scope: crate::wake::WakeScope,
     chosen: Rc<Cell<usize>>,
+    added: Rc<RefCell<(u64, Option<Adding>)>>,
+}
+
+impl Window {
+    /// The picture chosen last settled as `adding`.
+    fn settle(&self, adding: Adding) {
+        let mut added = self.added.borrow_mut();
+        *added = (added.0 + 1, Some(adding));
+    }
 }
 
 fn window(manage: bool) -> Window {
     emoji_catalogue::CATALOGUE.install(fake);
     let scope = crate::wake::WakeScope::new();
     let chosen = Rc::new(Cell::new(0));
+    let added = Rc::default();
     let emoji = WorkspaceEmoji::new(
         ["party_parrot", "pizza_cat"]
             .into_iter()
@@ -138,9 +152,14 @@ fn window(manage: bool) -> Window {
             emoji: Rc::new(emoji),
             manage,
             chosen: Rc::clone(&chosen),
+            added: Rc::clone(&added),
         }),
     );
-    Window { scope, chosen }
+    Window {
+        scope,
+        chosen,
+        added,
+    }
 }
 
 fn opened(theme: &Theme) -> EmojiPicker {
@@ -206,6 +225,60 @@ fn the_workspace_comes_first_then_the_recents_then_the_group() {
     assert_eq!(window.chosen.get(), 1);
     assert!(picker.is_open(), "adding an emoji is no pick");
     assert!(picker.take_events().is_empty());
+}
+
+fn redraw(picker: &mut EmojiPicker) {
+    picker.draw(
+        &mut Scene::new(),
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &Theme::dark(),
+        &PresenceCtx::default(),
+    );
+}
+
+/// What the picker's last line says.
+fn footer(picker: &EmojiPicker) -> String {
+    let dialog = picker.accessibility().expect("open");
+    let last = dialog.children.last().expect("a footer");
+    assert_eq!(last.role, Role::StaticText);
+    last.name.clone().unwrap_or_default()
+}
+
+#[test]
+fn a_picture_not_added_says_why_and_one_added_is_selected() {
+    let window = window(true);
+    let _in = window.scope.enter();
+    window.settle(Adding::Added("old".into()));
+    let mut picker = opened(&Theme::dark());
+    assert_eq!(
+        footer(&picker),
+        ":party_parrot:",
+        "what was added before it opened is not news"
+    );
+    press(&mut picker, &named_key(NamedKey::ArrowRight));
+    press(&mut picker, &named_key(NamedKey::ArrowRight));
+    press(&mut picker, &named_key(NamedKey::Enter));
+    window.settle(Adding::Failed("it isn't a PNG, JPEG or WebP".into()));
+    assert!(picker.needs_redraw());
+    redraw(&mut picker);
+    assert_eq!(
+        footer(&picker),
+        "Couldn't add that picture: it isn't a PNG, JPEG or WebP"
+    );
+    assert_eq!(picker.selected(), None, "the add tile stays highlighted");
+    window.settle(Adding::Added("pizza_cat".into()));
+    redraw(&mut picker);
+    assert_eq!(
+        picker.selected(),
+        Some(":pizza_cat:"),
+        "the new emoji is selected"
+    );
+    assert_eq!(footer(&picker), ":pizza_cat:");
+    window.settle(Adding::Failed("no".into()));
+    redraw(&mut picker);
+    press(&mut picker, &named_key(NamedKey::ArrowLeft));
+    assert_eq!(footer(&picker), ":pizza_cat:", "a key clears the line");
 }
 
 #[test]

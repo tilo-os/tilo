@@ -255,6 +255,7 @@ impl ShellNetwork {
             invitation,
         )
         .map_err(|_| "That invitation is damaged. Ask for a new link.")?;
+        tracing::info!(%room, %origin, "join link: asking the workspace's host about the invitation");
         let inspected = {
             let http = Arc::clone(&http);
             self.wait_on(async move {
@@ -309,6 +310,7 @@ impl ShellNetwork {
             progress,
         };
         self.hosted_sites.set_join(joining(JoinProgress::Joining));
+        tracing::info!(%room, "join link: the host named the workspace; redeeming the invitation");
         let via = Via::Https { http, door: None };
         self.accept_invitation_via(local, invitation, via)
             .inspect_err(|error| {

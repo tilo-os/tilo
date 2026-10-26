@@ -1,6 +1,7 @@
 shortcuts-runs = Recent runs
 shortcuts-runs-empty = Runs you start appear here.
 shortcuts-edit = Edit
+shortcuts-duplicate = Duplicate
 shortcuts-run = Run
 shortcuts-delete = Delete
 shortcuts-library-unavailable = Saved shortcuts are not available here
@@ -76,3 +77,5 @@ shortcuts-schedule-description = Once you save the shortcut, it runs every day a
 shortcuts-schedule-review = { $time } · this device’s local time
 shortcuts-schedule-missed-once = Missed runs execute once.
 shortcuts-schedule-missed-skip = Missed runs are skipped.
+
+shortcuts-no-matching-actions = No actions match this filter

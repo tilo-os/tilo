@@ -5,6 +5,58 @@ use ed25519_dalek::Signer as _;
 use tilo_actions::remote::Caller;
 use tilo_user_identity::DeviceCert;
 
+/// Why an admitted run may not go on.
+///
+/// The client sees the refusal; only what it can act on is said, so a
+/// changed custody (the room or device this run was admitted for is gone)
+/// and custody that could not be read (a disk or identity store that failed
+/// this once) are never the same answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::standalone) enum Refusal {
+    /// The run ended: a custody change this run was admitted for, or the
+    /// caller's own request to end it.
+    Ended,
+    /// This call could not be checked because the identity material could
+    /// not be read. Nothing changed; the run stays live and the call may be
+    /// retried.
+    Unavailable { reason: String },
+    /// The call came from a caller this run was not admitted for.
+    Stranger,
+}
+
+impl Refusal {
+    /// The message the client sees. It carries no custody material, only
+    /// what happened to the check.
+    pub(in crate::standalone) fn message(&self) -> String {
+        match self {
+            Self::Ended => "execution session ended".into(),
+            Self::Unavailable { reason } => format!(
+                "the caller's custody could not be verified, so this call was not run: {reason}; nothing changed, retry the call"
+            ),
+            Self::Stranger => "the caller may not invoke this action".into(),
+        }
+    }
+}
+
+impl From<Refusal> for tilo_actions::remote::ActionHostError {
+    /// The client sees what it can act on: an ended run stays ended, and a
+    /// check that could not be made names itself as retryable.
+    fn from(refusal: Refusal) -> Self {
+        match refusal {
+            Refusal::Unavailable { reason } => Self::Unavailable { reason },
+            Refusal::Ended | Refusal::Stranger => Self::NotPermitted,
+        }
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message())
+    }
+}
+
+impl std::error::Error for Refusal {}
+
 pub(in crate::standalone) struct SessionAdmission {
     caller: Caller,
     room: RoomId,
@@ -26,49 +78,45 @@ impl SessionAdmission {
         &self.presentation
     }
 
-    pub(in crate::standalone) fn check(&self, joined: &Joined) -> Result<(), String> {
+    pub(in crate::standalone) fn check(&self, joined: &Joined) -> Result<(), Refusal> {
         if !self.caller.execution_is_live() {
-            return Err("execution session ended".into());
+            return Err(Refusal::Ended);
         }
         self.check_original_custody(joined)
     }
 
-    fn check_original_custody(&self, joined: &Joined) -> Result<(), String> {
-        let result = (|| {
-            let (certificate, enrollment) = joined.mcp_material(self.room, self.own_room)?;
-            if certificate != self.certificate || enrollment != self.enrollment {
-                return Err("original room or device custody changed".into());
+    /// Compare the custody this run was admitted with to the room's now.
+    ///
+    /// Only a comparison that was actually made can end the run: material
+    /// that could not be read (a full disk, a busy identity store) says
+    /// nothing about custody, so that call is refused as retryable and the
+    /// run keeps its lease. Ending it there would kill the person's whole
+    /// agent session over one transient failure.
+    fn check_original_custody(&self, joined: &Joined) -> Result<(), Refusal> {
+        let (certificate, enrollment) = match joined.mcp_material(self.room, self.own_room) {
+            Ok(material) => material,
+            Err(reason) => {
+                tracing::warn!(
+                    room = %self.room,
+                    %reason,
+                    "an admitted run's custody could not be read; refusing this call, keeping the run"
+                );
+                return Err(Refusal::Unavailable { reason });
             }
-            Ok(())
-        })();
-        if result.is_err() {
+        };
+        if certificate != self.certificate || enrollment != self.enrollment {
+            tracing::warn!(
+                room = %self.room,
+                "an admitted run's room or device custody changed; ending the run"
+            );
             self.caller.retire_execution();
+            return Err(Refusal::Ended);
         }
-        result
+        Ok(())
     }
 }
 
 impl Joined {
-    pub(in crate::standalone) fn recheck_mcp_executions(&self, room: RoomId) -> Result<(), String> {
-        // Baselines come only from host-admitted sessions, never a presented
-        // certificate. Release the registry lock before material reads.
-        let admissions = self.executions.admissions(room)?;
-        self.recheck_admissions(&admissions)
-    }
-
-    fn recheck_admissions(&self, admissions: &[Arc<SessionAdmission>]) -> Result<(), String> {
-        let mut result = Ok(());
-        for admission in admissions {
-            // An execution may end normally after the snapshot. Its lifetime
-            // says nothing about the room's custody, so only the pinned
-            // material is compared; a retired run stays retired.
-            if let Err(error) = admission.check_original_custody(self) {
-                result = Err(error);
-            }
-        }
-        result
-    }
-
     fn mcp_material(
         &self,
         room: RoomId,
@@ -145,11 +193,32 @@ impl Joined {
             _registration: registration,
         });
         self.executions.attach(&admission)?;
-        admission.check(self)?;
+        admission.check(self).map_err(|refusal| refusal.message())?;
         Ok(admission)
     }
-}
 
-#[cfg(test)]
-#[path = "mcp_admission_tests.rs"]
-mod tests;
+    pub(in crate::standalone) fn recheck_mcp_executions(&self, room: RoomId) -> Result<(), String> {
+        // Baselines come only from host-admitted sessions, never a presented
+        // certificate. Release the registry lock before material reads.
+        let admissions = self.executions.admissions(room)?;
+        self.recheck_admissions(&admissions)
+    }
+
+    pub(super) fn recheck_admissions(
+        &self,
+        admissions: &[Arc<SessionAdmission>],
+    ) -> Result<(), String> {
+        let mut result = Ok(());
+        for admission in admissions {
+            // An execution may end normally after the snapshot. Its lifetime
+            // says nothing about the room's custody, so only the pinned
+            // material is compared; a retired run stays retired. Custody
+            // that could not be read is retried by the next pass, as the
+            // announced change stays pending.
+            if let Err(Refusal::Ended) = admission.check_original_custody(self) {
+                result = Err(Refusal::Ended.message());
+            }
+        }
+        result
+    }
+}

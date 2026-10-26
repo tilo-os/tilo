@@ -4,7 +4,7 @@
 //! from its popover. Each case drives the production `handle_event` over the
 //! rects the last paint left behind.
 
-use super::tests::{char_event, ctrl_mods, feed, measured_app_with_doc, paint_frame};
+use super::tests::{char_event, ctrl_mods, doc_workbook, feed, measured_app_with_doc, paint_frame};
 use super::*;
 use crate::model::FormatCategory;
 use automerge::AutoCommit;
@@ -357,4 +357,83 @@ fn a_comment_is_marked_on_its_cell_opens_from_it_and_names_its_author() {
     );
     assert_ne!(app.author_name("me"), "me", "the reader is not shown by id");
     assert_eq!(app.author_name(""), "Someone");
+}
+
+/// Right-clicking a cell selects it and opens the edit menu, and a structural
+/// row insert from that menu is one verb over the whole selected range.
+#[test]
+fn a_cell_right_click_opens_the_edit_menu_and_inserts_the_range_as_one_verb() {
+    let (mut app, mut doc, _tr, _theme) = painted();
+    let anchor = app.grid.cell_screen_rect(1, 2).center(); // B3
+    feed(
+        &mut app,
+        &mut doc,
+        &ui::synthetic_input::cursor_moved(anchor.x, anchor.y),
+        Modifiers::default(),
+    );
+    feed(
+        &mut app,
+        &mut doc,
+        &ui::synthetic_input::mouse_input(
+            ElementState::Pressed,
+            ui::winit::event::MouseButton::Right,
+        ),
+        Modifiers::default(),
+    );
+    assert!(app.cell_menu.is_open(), "a cell has a context menu");
+    assert_eq!(
+        app.cell_menu_target,
+        Some((1, 2)),
+        "the pressed cell is the target"
+    );
+    assert_eq!(app.grid.active(), (1, 2), "the pressed cell becomes active");
+
+    app.grid.select_range_public((1, 1), (1, 2)); // B2:B3, two rows
+    let before = doc_workbook(&doc)
+        .sheets
+        .values()
+        .next()
+        .map(|sheet| sheet.cells.rows().len())
+        .unwrap_or(0);
+    let mut edits = Edits::lend(&mut doc);
+    app.run_cell_menu_row(&mut edits, CellMenuRow::InsertRowsAbove);
+    drop(edits);
+    let after = doc_workbook(&doc)
+        .sheets
+        .values()
+        .next()
+        .map(|sheet| sheet.cells.rows().len())
+        .unwrap_or(0);
+    assert_eq!(
+        after,
+        before + 2,
+        "both selected rows are inserted by one verb"
+    );
+}
+
+/// Find is navigation over the whole workbook: revealing a match on another
+/// sheet switches to it, selects the cell, and says where it went.
+#[test]
+fn find_navigates_to_a_match_on_another_sheet() {
+    use ui::widget::{FindOptions, Findable};
+    let (mut app, _doc, _tr, _theme) = painted();
+    let found = app.find("Growth", FindOptions::default());
+    assert!(!found.is_empty(), "the sales header is findable");
+    let index = app
+        .find_matches
+        .iter()
+        .position(|found| found.sheet == 1)
+        .expect("a match on the second sheet");
+    app.reveal(index);
+    assert_eq!(app.active_sheet, 1, "find switched to the match's sheet");
+    assert_eq!(
+        app.grid.active(),
+        app.find_matches[index].addr,
+        "the match's cell is selected"
+    );
+    assert!(
+        app.status.starts_with("Match "),
+        "the status names the match and where it went: {}",
+        app.status
+    );
 }

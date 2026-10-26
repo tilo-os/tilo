@@ -14,7 +14,7 @@
 #                                             (tools/extensions/publish.sh)
 #
 # The images: T_INPUT_IMAGES, space-separated (registry.tilo.so/tilo/{tilo,tilo-ci,tilo-vm} by
-# :tag or @sha256:), else tilo:latest, tilo-vm:latest and tilo-vm:main-ci, skipping those not
+# :tag or @sha256:), else tilo:latest, tilo-vm:latest and tilo-vm:<arch>-ci, skipping those not
 # published. T_INPUT_EXPECTED_CONTENT_SHA256, a reviewed media-codecs content hash
 # (resolve.py content-sha256), binds one immutable image: only media-codecs is resolved, and
 # its content must match. T_INPUT_PUBLISH=false qualifies that image without promoting the
@@ -39,7 +39,7 @@ case ${1:-} in
     explicit=true
     if ((${#images[@]} == 0)); then
       explicit=false
-      images=(registry.tilo.so/tilo/tilo:latest registry.tilo.so/tilo/tilo-vm:latest registry.tilo.so/tilo/tilo-vm:main-ci)
+      images=(registry.tilo.so/tilo/tilo:latest registry.tilo.so/tilo/tilo-vm:latest "registry.tilo.so/tilo/tilo-vm:$arch-ci")
     fi
     if [[ $promote == false || -n $expected ]]; then
       [[ ${#images[@]} == 1 && ${images[0]} == *@sha256:* && $expected =~ ^[0-9a-f]{64}$ ]] \

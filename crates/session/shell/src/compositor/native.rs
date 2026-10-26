@@ -4,7 +4,7 @@
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
 use crate::shell::input_policy::{
-    is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch, winit_event_to_lock_key,
+    is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch,
 };
 use crate::shell::pointer_readiness::PressFacts;
 pub use crate::shell::session_policy::*;
@@ -5587,7 +5587,7 @@ fn execute_locked_action(
                 client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
             }
             client_input::consume_keyboard_while_captured(state, &event);
-            lock.handle_key(winit_event_to_lock_key(&event));
+            lock.handle_event(&event, &ctx.modifiers);
             None
         }
         // The loop routes it to the lock as it does a physical key.
@@ -11454,7 +11454,9 @@ pub fn run() {
                     if route == PriorityRoute::LockScreen {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
-                        let mut key = winit_event_to_lock_key(wev);
+                        // A key of the keyboard drawn for touch, when one
+                        // was pressed; every other event goes to the prompt.
+                        let mut key = None;
                         match wev {
                             WindowEvent::CursorMoved { position, .. } => {
                                 lock_pointer =
@@ -11494,7 +11496,7 @@ pub fn run() {
                                     )
                                 });
                                 if let Some(pressed) = pressed {
-                                    key = lock_keyboard.press(pressed);
+                                    key = Some(lock_keyboard.press(pressed));
                                 } else if let Some(transport) = lock_pointer.and_then(|point| {
                                     lock_screen::transport_at(
                                         &outputs,
@@ -11508,7 +11510,14 @@ pub fn run() {
                             }
                             _ => {}
                         }
-                        lock.handle_key(key);
+                        match key {
+                            Some(key) => {
+                                lock.handle_key(key);
+                            }
+                            None => {
+                                lock.handle_event(wev, &test_control_ctx.modifiers);
+                            }
+                        }
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
                     } else if route == PriorityRoute::PowerKey {
@@ -12872,15 +12881,26 @@ pub fn run() {
             .host_mut()
             .dictation_surface_mut()
             .needs_original_field();
-        // A shell password prompt takes the keyboard over any window: its
-        // field takes the input method even while an application keeps
-        // focus beneath.
-        let shell_field = (!session.is_locked()
-            && (state.client_input.keyboard_focus().is_none()
-                || frame_builder.host().shell_prompt_up())
-            && (!receipts_only || speech_field_needed))
-            .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
-            .flatten();
+        // Which field the seat's input method serves, and as what. While the
+        // session is locked that is the lock screen's own password field and
+        // nothing else — the one case a field must be served despite the
+        // session being locked, because a password in a composed script cannot
+        // be typed at all otherwise. `field_owner` is that decision, written
+        // and tested on its own.
+        let session_locked = session.is_locked();
+        let owner = crate::compositor::shell_text_input::field_owner(
+            session_locked,
+            state.client_input.keyboard_focus().is_some(),
+            session_locked.then(|| lock.ime_field()).flatten(),
+            frame_builder.host().shell_prompt_up(),
+            receipts_only,
+            speech_field_needed,
+            frame_builder.focused_ime_field(test_control_ctx.focus),
+            test_control_ctx.focus.map(u64::from),
+            frame_builder.host().palette_visible(),
+        );
+        let shell_field = owner.as_ref().map(|(field, _)| field.clone());
+        let owner_id = owner.map(|(_, id)| id);
         if shell_field.is_some() && shell_text_input.is_none() {
             match crate::compositor::shell_text_input::ShellTextInput::connect(&mut state) {
                 Ok(proxy) => shell_text_input = Some(proxy),
@@ -12890,15 +12910,7 @@ pub fn run() {
             }
         }
         if let Some(proxy) = shell_text_input.as_mut() {
-            let identity = if frame_builder.host().palette_visible() {
-                Some(crate::compositor::shell_text_input::NativeFieldId::Palette)
-            } else if frame_builder.host().shell_prompt_up() {
-                Some(crate::compositor::shell_text_input::NativeFieldId::Prompt)
-            } else {
-                test_control_ctx.focus.map(|node| {
-                    crate::compositor::shell_text_input::NativeFieldId::Widget(u64::from(node))
-                })
-            };
+            let identity = owner_id.clone();
             let typed = proxy.sync_for_field(&mut state, shell_field, identity);
             let keys = state.take_shell_field_keys();
             // Text carries the keyboard's modifiers; a virtual keyboard's key
@@ -12909,13 +12921,20 @@ pub fn run() {
                 .chain(keys.iter().map(|(event, modifiers)| (event, *modifiers)))
                 .collect::<Vec<_>>();
             for (event, modifiers) in &delivered {
-                frame_builder.dispatch_event(
-                    event,
-                    modifiers,
-                    &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
-                    &test_control_ctx.root_obj,
-                    &mut test_control_ctx.focus,
-                );
+                if session_locked {
+                    // While locked, the field that took the input method is the
+                    // lock screen's, so that is where its text goes — through
+                    // the same entry point every physical key uses.
+                    let _ = lock.handle_event(event, modifiers);
+                } else {
+                    frame_builder.dispatch_event(
+                        event,
+                        modifiers,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
+                        &test_control_ctx.root_obj,
+                        &mut test_control_ctx.focus,
+                    );
+                }
             }
             if !delivered.is_empty() {
                 injected_redraw_pending = true;
@@ -13408,6 +13427,7 @@ pub fn run() {
                     .collect::<Vec<_>>();
                 for room in rooms {
                     net.publish_hosted_legacy_windows(room, &tree_handle);
+                    net.follow_room_app_versions(room);
                 }
                 let generation = tree_handle.generation();
                 net.set_room_window_hosting(
@@ -14010,7 +14030,7 @@ pub fn run() {
         let keepalive_due = false;
         let lock_clock_due =
             lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh)
-                || (session.is_locked() && retained_lock.feedback_frame_due(iter_t0));
+                || (session.is_locked() && retained_lock.feedback_frame_due());
         if session.is_locked() {
             if iter_t0.saturating_duration_since(last_lock_media_poll) >= LOCK_MEDIA_REFRESH {
                 last_lock_media_poll = iter_t0;
@@ -14146,9 +14166,7 @@ pub fn run() {
                 pipe_ready,
                 (content_changed && !cadence_due)
                     || (!session.is_locked() && !display_dark && animating)
-                    || (session.is_locked()
-                        && !display_dark
-                        && retained_lock.feedback_frame_due(iter_t0)),
+                    || (session.is_locked() && !display_dark && retained_lock.feedback_frame_due()),
             );
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
@@ -15252,7 +15270,7 @@ pub fn run() {
                     // frame must be a cadence tick, not only the resting deadline.
                     || (session.is_locked()
                         && !session.is_blanked()
-                        && retained_lock.feedback_frame_due(park_now)),
+                        && retained_lock.feedback_frame_due()),
             );
         // Nothing changed on screen and no frame is waiting, here or behind
         // the presenter: the inputs handled so far are done without a frame.

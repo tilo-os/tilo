@@ -13,7 +13,7 @@ These pages cover specific development tasks when you need more detail.
 | Run the desktop in a window        | [Run a development desktop](run-desktop.md)                               |
 | Try my change in the complete OS   | [Use a development VM](dev-vms.md)                                        |
 | Work on an installed Linux session | [Develop a host session](host-session.md)                                 |
-| Work on a board or kernel          | [Hardware development](hardware.md)                                       |
+| Put my build on a device or board  | [Development devices](devices.md)                                         |
 | Fix a setup or build problem       | [Troubleshooting](troubleshooting.md)                                     |
 | Write an app of my own             | [App SDK guide](../developers/getting-started.md)                         |
 

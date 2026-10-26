@@ -752,6 +752,7 @@ impl ContainersApp {
                 if newc.logs.is_empty() {
                     newc.logs = old.logs;
                     newc.logs_error = old.logs_error;
+                    newc.logs_fetched_unix_ms = old.logs_fetched_unix_ms;
                 }
                 if newc.env.is_empty() {
                     newc.env = old.env;
@@ -791,9 +792,11 @@ impl ContainersApp {
                 Ok(logs) => {
                     c.logs = logs;
                     c.logs_error = None;
+                    c.logs_fetched_unix_ms = ui::time::try_unix_now_ms();
                 }
                 Err(error) => {
                     c.logs_error = Some(error);
+                    c.logs_fetched_unix_ms = None;
                 }
             }
             self.engine_changed();
@@ -1851,6 +1854,7 @@ impl ContainersApp {
                 } else {
                     Vec::new()
                 },
+                logs_fetched_unix_ms: None,
             }],
             ..Engine::default()
         }

@@ -14,6 +14,7 @@ pub(crate) const ADD_PRINTER: &str = "print-centre.add";
 pub(crate) const PRINT: &str = "print-centre.print";
 pub(crate) const REFRESH: &str = "print-centre.refresh";
 pub(crate) const CHECK_AGAIN: &str = "print-centre.diagnostics.refresh";
+pub(crate) const NEEDS_YOU: &str = "print-centre.needs";
 
 impl PrintCentre {
     /// The window bar's slots for the page shown now.
@@ -57,6 +58,11 @@ impl PrintCentre {
             }
             _ => {}
         }
+        if let Some(label) = ui::attention::pill() {
+            toolbar
+                .actions
+                .push(ToolbarAction::new(NEEDS_YOU, "bell", label).labelled());
+        }
         toolbar
     }
 
@@ -70,6 +76,7 @@ impl PrintCentre {
             Page::Device(name) => display_name(name),
             Page::Discovery => "Add a printer".to_owned(),
             Page::Print => "Print a document".to_owned(),
+            Page::Needs => "Needs you".to_owned(),
             Page::Scan if self.scan.result.is_some() => "Scanned document".to_owned(),
             Page::Scan => "Scan a document".to_owned(),
         })
@@ -101,6 +108,7 @@ fn command(event: &ToolbarEvent) -> Option<UiCommand> {
             ADD_PRINTER => UiCommand::Discover,
             PRINT => UiCommand::ChooseDocument,
             REFRESH | CHECK_AGAIN => UiCommand::Refresh,
+            NEEDS_YOU => UiCommand::Needs,
             _ => return None,
         },
         _ => return None,
@@ -155,11 +163,19 @@ mod tests {
     /// title or those actions of its own.
     #[test]
     fn the_window_bar_holds_the_way_back_the_page_and_its_actions() {
+        let _serial = crate::surface::serial();
         let mut app = super::super::tests::live_with_studio();
         app.harness().present_in_window_bar();
         app.settle();
 
-        assert_eq!(action_ids(&bar()), [PRINT, ADD_PRINTER, REFRESH]);
+        // What wants a person may already be waiting in this process, so the
+        // page's own actions come first and the count follows them.
+        let declared = bar();
+        let ids = action_ids(&declared);
+        assert!(
+            ids.starts_with(&[PRINT, ADD_PRINTER, REFRESH]),
+            "the page's actions, in order: {ids:?}"
+        );
         assert_eq!(bar().navigation, None, "the printers are where Back leads");
         assert_eq!(bar().location, None);
         let root = app.harness().inspection().root;
@@ -173,7 +189,11 @@ mod tests {
         refreshed(
             &mut app,
             "Refresh to ask again, as the printers' own refresh did",
-            |centre| !centre.notice.is_shown(),
+            |_| {
+                !ui::attention::items()
+                    .iter()
+                    .any(|item| item.title().contains("Printer"))
+            },
         );
 
         app.effect(&crate::resource::PrintCentreEffect::RunDiagnostics)
@@ -186,7 +206,12 @@ mod tests {
             Some("Device help")
         );
         assert!(help.navigation.is_some_and(|navigation| navigation.back));
-        assert_eq!(action_ids(&bar()), [CHECK_AGAIN]);
+        let help_bar = bar();
+        let help_ids = action_ids(&help_bar);
+        assert!(
+            help_ids.starts_with(&[CHECK_AGAIN]),
+            "the page's own action first: {help_ids:?}"
+        );
         let root = app.harness().inspection().root;
         for own in [CHECK_AGAIN, "print-centre.back"] {
             assert!(!drawn(&root, own), "device help draws no {own} of its own");

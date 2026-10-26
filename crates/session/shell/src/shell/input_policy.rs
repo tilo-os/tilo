@@ -2484,7 +2484,6 @@ pub fn step_active_window(tree: &WorkspaceTree, steps: i32) -> Option<(StripId, 
     let (group, tab) = *windows.get(idx)?;
     Some((strip.id, group, tab))
 }
-use crate::compositor::lock_controller::LockKey;
 /// Is `event` the remote-input kill switch, `Super+Esc`, on key *press*?
 /// The panic key for a shared session — stops whatever a guest is doing.
 /// Checked ahead of the client router and the shell's own Escape handling
@@ -2546,34 +2545,6 @@ pub fn lock_chord_matches(
     crate::shell::overlay_host::shortcut_chord_matches(&event.logical_key, modifiers, chord)
 }
 
-/// Map a live winit key event to the lock screen's normalised [`LockKey`]
-/// while locked. Non-press/unhandled keys become [`LockKey::Ignored`] —
-/// still swallowed (never routed to apps behind the overlay), but inert on
-/// the password buffer. The test-control path produces the same `LockKey`s so both drive one routing.
-pub fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
-    let WindowEvent::KeyboardInput { event, .. } = event else {
-        return LockKey::Ignored;
-    };
-    if event.state != ElementState::Pressed {
-        return LockKey::Ignored;
-    }
-    match &event.logical_key {
-        Key::Named(NamedKey::Enter) => LockKey::Submit,
-        Key::Named(NamedKey::Escape) => LockKey::Cancel,
-        Key::Named(NamedKey::Backspace) => LockKey::Backspace,
-        Key::Named(NamedKey::Space) => LockKey::Text(" ".to_string()),
-        Key::Character(s) => LockKey::Text(s.to_string()),
-        _ => {
-            // Some layouts deliver typed text on otherwise-Named keys.
-            match &event.text {
-                Some(t) if !t.is_empty() && !t.chars().all(char::is_control) => {
-                    LockKey::Text(t.to_string())
-                }
-                _ => LockKey::Ignored,
-            }
-        }
-    }
-}
 #[cfg(test)]
 mod lock_chord_tests {
     use super::*;
@@ -2742,34 +2713,5 @@ mod lock_chord_tests {
         escape_without_super_is_not_the_kill_switch();
         super_escape_release_is_not_the_kill_switch();
         super_escape_is_a_shell_chord_and_never_reaches_a_client();
-    }
-
-    #[test]
-    fn lock_keys_map_presses_to_submit_cancel_text_and_backspace() {
-        /// Enter and Escape on press are the explicit unlock action.
-        fn enter_and_escape_press_map_to_submit_and_cancel() {
-            let enter = keyboard_input_event(&Key::Named(NamedKey::Enter), true);
-            let escape = keyboard_input_event(&Key::Named(NamedKey::Escape), true);
-            assert_eq!(winit_event_to_lock_key(&enter), LockKey::Submit);
-            assert_eq!(winit_event_to_lock_key(&escape), LockKey::Cancel);
-        }
-
-        /// A plain character keypress feeds the password buffer as text — it doesn't itself unlock.
-        fn char_key_maps_to_text() {
-            let ev = keyboard_input_event(&Key::Character(SmolStr::new("a")), true);
-            assert_eq!(winit_event_to_lock_key(&ev), LockKey::Text("a".to_string()));
-        }
-
-        /// Backspace maps to a buffer edit; a key *release* is ignored (only presses type).
-        fn backspace_maps_and_release_is_ignored() {
-            let bs = keyboard_input_event(&Key::Named(NamedKey::Backspace), true);
-            assert_eq!(winit_event_to_lock_key(&bs), LockKey::Backspace);
-            let release = keyboard_input_event(&Key::Named(NamedKey::Enter), false);
-            assert_eq!(winit_event_to_lock_key(&release), LockKey::Ignored);
-        }
-
-        enter_and_escape_press_map_to_submit_and_cancel();
-        char_key_maps_to_text();
-        backspace_maps_and_release_is_ignored();
     }
 }

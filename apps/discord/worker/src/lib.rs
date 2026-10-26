@@ -47,10 +47,25 @@ pub struct Ctx {
     threads: Mutex<BTreeSet<String>>,
     /// Performs not answered yet, by request, with when they arrived.
     in_flight: Mutex<BTreeMap<u64, Instant>>,
+    /// The slash commands whose reply is still to say what came of them,
+    /// by interaction: the token to edit the reply with stays here, in
+    /// memory, for the fifteen minutes Discord keeps it.
+    interactions: Mutex<BTreeMap<String, Interaction>>,
     /// The host's audio for the voice connection, which holds the lock
     /// while it is up.
     pub audio: Arc<tokio::sync::Mutex<mpsc::Receiver<(String, Bytes)>>>,
 }
+
+/// What editing the reply to a slash command takes.
+#[derive(Clone, Debug)]
+pub struct Interaction {
+    pub application: String,
+    pub token: String,
+    at: Instant,
+}
+
+/// How long Discord honours an interaction's token.
+pub const INTERACTION_TOKEN_LIFE: Duration = Duration::from_secs(15 * 60);
 
 /// How often the host hears how far behind the worker is.
 const METRICS_EVERY: Duration = Duration::from_secs(5);
@@ -136,6 +151,32 @@ impl Ctx {
         }
     }
 
+    /// Keep what editing the reply to interaction `id` takes.
+    pub fn remember_interaction(&self, id: &str, application: &str, token: &str) {
+        if let Ok(mut held) = self.interactions.lock() {
+            // Discord's tokens last fifteen minutes; older ones are useless.
+            held.retain(|_, kept| kept.at.elapsed() < INTERACTION_TOKEN_LIFE);
+            held.insert(
+                id.to_owned(),
+                Interaction {
+                    application: application.to_owned(),
+                    token: token.to_owned(),
+                    at: Instant::now(),
+                },
+            );
+        }
+    }
+
+    /// Take what editing the reply to `id` takes, once: the reply says one
+    /// outcome.
+    pub fn take_interaction(&self, id: &str) -> Option<Interaction> {
+        self.interactions
+            .lock()
+            .ok()?
+            .remove(id)
+            .filter(|kept| kept.at.elapsed() < INTERACTION_TOKEN_LIFE)
+    }
+
     /// The bridged guild, once the gateway knows it.
     #[must_use]
     pub fn guild(&self) -> Option<String> {
@@ -189,6 +230,7 @@ where
         guild: Mutex::new(None),
         threads: Mutex::new(BTreeSet::new()),
         in_flight: Mutex::new(BTreeMap::new()),
+        interactions: Mutex::new(BTreeMap::new()),
         audio: Arc::new(tokio::sync::Mutex::new(audio_rx)),
     });
     let performer = Arc::new(Performer::new(Arc::clone(&ctx)));

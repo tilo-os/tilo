@@ -413,7 +413,5 @@ def person_identity_in_the_store(ctx, res):
         expect(not gone, f"MLS state files vanished across a compositor restart: {gone}")
         expect(identity_record(ctx, user) == record, "the identity record changed across a sign-in")
     finally:
-        print("HOLD: exploring", flush=True)
-        time.sleep(90 * 60)
         ctx.write("C02-sign-out.txt",
                   ctx.vm.root_exec(SIGN_OUT.replace("__USER__", shlex.quote(user)), timeout=120))

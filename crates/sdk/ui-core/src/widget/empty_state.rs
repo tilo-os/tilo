@@ -686,6 +686,13 @@ pub struct PaintedEmptyStates {
 }
 
 impl PaintedEmptyStates {
+    /// Whether the last draw painted no empty state: [`Self::describe`]
+    /// then returns the content's node as it is.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.painted.is_empty()
+    }
+
     /// Run `draw`, keeping the empty-state actions it paints in the space
     /// `transform` maps from: the content's own coordinates.
     pub fn draw(&mut self, transform: Affine, draw: impl FnOnce()) {

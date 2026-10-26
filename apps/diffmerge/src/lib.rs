@@ -36,6 +36,8 @@ pub mod app;
 mod chrome;
 pub mod diff_view;
 pub mod doc;
+pub mod folder;
+mod folder_view;
 pub mod highlight;
 pub mod i18n;
 pub mod merge_view;

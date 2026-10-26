@@ -229,6 +229,58 @@ pub fn desktop_room_action_answer(id: u64, request: u32, answer: &str) -> Result
     })
 }
 
+/// What came of a direct message the people overlay asked the page to send
+/// by Chat's action (`HostRequest::Send`, by `request`): `error` says why
+/// it did not go, none that Chat took it.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn desktop_message_answer(id: u64, request: u32, error: Option<String>) -> Result<(), JsValue> {
+    crate::shell::people::answer(request, error.map_or(Ok(()), Err));
+    with_mount(id, |m| {
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
+/// Run the person's own ask `request` of Chat (a `message` or `send` host
+/// request) on `resource`, Chat's conversation with them in `window`: as
+/// the person's own act, which Chat's private actions require. An id the
+/// person never asked, or a resource that is not their conversation with
+/// whom they asked, runs nothing.
+///
+/// # Errors
+///
+/// Rejects a closed mount, an unknown ask, and as `invoke_component_action`.
+#[wasm_bindgen]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen receives an optional JavaScript string only as an owned value"
+)]
+pub fn desktop_run_own_ask(
+    id: u64,
+    request: u32,
+    resource: &str,
+    window: Option<String>,
+) -> Result<String, JsValue> {
+    let ask = crate::shell::people::take_own_ask(request)
+        .ok_or_else(|| error("the person asked nothing by that id"))?;
+    if !resource.ends_with(&format!("chat.person:{}", ask.to)) {
+        return Err(error("that is not their conversation with this person"));
+    }
+    super::invoke_as(
+        id,
+        resource,
+        ask.action,
+        &ask.arguments,
+        window.as_deref(),
+        super::Invoker::Person,
+    )
+}
+
 /// The node applications the person asked to open since the last call (a
 /// JSON array of their ids): the page asks the node to open each, and its
 /// window arrives as a legacy window.

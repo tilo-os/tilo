@@ -513,7 +513,7 @@ impl Daemon {
         };
         // Recovering ends a lockout first: a locked-out TPM seals nothing.
         if let Some(recovery_key) = &recovery_key {
-            self.reset_lockout_with_recovery(&work, &record, &key, recovery_key);
+            self.reset_lockout_with_recovery(&work, account, &key, recovery_key);
         }
         let wrapper = if tpm_usable {
             Wrapper::tpm(work.tpm(), &key, new)?
@@ -584,7 +584,7 @@ impl Daemon {
         record.set_recovery_wrapper(Wrapper::recovery(&key, record.uid, recovery_key)?);
         self.store.save(&record)?;
         self.mirror(&work, &record);
-        if record.unlocks_system {
+        if self.accounts.is_admin(account)? {
             self.adopt_lockout(
                 &Opener::Recovery(recovery_key),
                 Some(&Opener::User {
@@ -615,15 +615,18 @@ impl Daemon {
     fn reset_lockout_with_recovery(
         &self,
         work: &Work,
-        record: &Record,
+        account: &Account,
         key: &UserKey,
         recovery: &RecoveryKey,
     ) {
-        if record.unlocks_system {
+        if self.accounts.is_admin(account).unwrap_or_else(|e| {
+            eprintln!("tilo-authd: {e:#}");
+            false
+        }) {
             self.adopt_lockout(
                 &Opener::Recovery(recovery),
                 Some(&Opener::User {
-                    uid: record.uid,
+                    uid: account.uid,
                     key,
                 }),
             );

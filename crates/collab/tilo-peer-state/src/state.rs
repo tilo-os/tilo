@@ -39,6 +39,8 @@ pub use facades::{
     PeerGovernance, PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox,
     PeerOutboxMut, PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
 };
+mod app_versions;
+pub use app_versions::InstalledApp;
 mod bot_members;
 pub(crate) mod certificate_renewal;
 mod delegates;
@@ -1314,6 +1316,15 @@ impl StatePeer {
         authorization_time: SystemTime,
     ) -> Result<Option<MemberAuthority>, String> {
         let member = self.permissions(*source, authorization_time)?;
+        // A change made with another version of the app than the room runs
+        // is held: its author's desktop switches to the room's version, and
+        // the same changes then name that version's surface.
+        if envelope.kind == collab_types::OpKind::Change
+            && let Some(running) = self.room_surface(app_id)
+            && envelope.surface != Some(running)
+        {
+            return Ok(None);
+        }
         let route = Route {
             app: app_id.into(),
             record: record.into(),

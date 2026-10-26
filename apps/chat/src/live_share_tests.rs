@@ -86,6 +86,7 @@ fn a_shared_window_is_a_live_message_only_its_sharer_ends() {
     for (action, arguments) in [
         ("stop-sharing", json!({})),
         ("share-open", json!({"open": false})),
+        ("set-share-access", json!({"access": "edit"})),
     ] {
         assert!(
             app.call_by(other.clone(), &message_item(&shared.id), action, arguments)
@@ -107,8 +108,34 @@ fn a_shared_window_is_a_live_message_only_its_sharer_ends() {
         .unwrap();
     assert!(!closed.share.unwrap().open, "its window was closed");
 
+    // Its sharer switches what the others may do in place, the share live.
+    app.call_on(
+        &message_item(&shared.id),
+        "set-share-access",
+        json!({"access": "edit"}),
+    )
+    .unwrap();
+    app.settle();
+    let switched = mounted_rows(&mut app, "c_chat")
+        .into_iter()
+        .find(|m| m.id == shared.id)
+        .unwrap()
+        .share
+        .unwrap();
+    assert_eq!(switched.access, ShareAccess::Edit);
+    assert!(!switched.ended, "switching keeps the share live");
+
     app.call_on(&message_item(&shared.id), "stop-sharing", json!({}))
         .unwrap();
+    assert!(
+        app.call_on(
+            &message_item(&shared.id),
+            "set-share-access",
+            json!({"access": "view"}),
+        )
+        .is_err(),
+        "an ended share is switched no more"
+    );
     app.call_on(
         &message_item(&shared.id),
         "share-open",
@@ -209,6 +236,31 @@ fn the_card_embeds_the_resource_its_desktop_draws_and_ends_as_a_neutral_card() {
             .is_some()
             || app.harness().a11y_node_named("Stop sharing").is_some()
     );
+
+    // The sharer switches what the others may do from the card, in place.
+    let switch = Hit::SwitchShare(shared.id.clone(), ShareAccess::Edit).semantic_id();
+    let edit_rect = app
+        .surface_mut::<ChatApp>()
+        .hits
+        .iter()
+        .find(|(_, hit)| hit.semantic_id() == switch)
+        .map(|(rect, _)| *rect)
+        .expect("the card offers Can edit to its sharer");
+    assert!(
+        found.contains(&Hit::SwitchShare(shared.id.clone(), ShareAccess::View).semantic_id()),
+        "and View only beside it"
+    );
+    app.harness()
+        .click_at(edit_rect.center().x, edit_rect.center().y);
+    app.settle();
+    let switched = mounted_rows(&mut app, "c_chat")
+        .into_iter()
+        .find(|m| m.id == shared.id)
+        .unwrap()
+        .share
+        .unwrap();
+    assert_eq!(switched.access, ShareAccess::Edit, "the press switched it");
+    assert!(!switched.ended);
 
     // A press on the live view itself opens it: the view draws, but the
     // card takes the press. Nothing serves opening here, so it says why.

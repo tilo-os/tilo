@@ -511,7 +511,7 @@ impl Shared {
         };
         let shared = self.clone();
         let fetched = Arc::clone(notify);
-        wasm_bindgen_futures::spawn_local(async move {
+        let mut fetch = Box::pin(async move {
             let loaded = ui::application::registry::load(id).await.is_some();
             // Code that arrives after the bound is registered all the same,
             // so opening the window again shows the app at once.
@@ -519,6 +519,14 @@ impl Shared {
                 shared.settle_load(id, loaded, &fetched);
             }
         });
+        // Polled once here, the page's loader starts fetching the module in
+        // this call: a spawned task first runs after the frame that asked
+        // for the app, so its fetch waited behind that frame's layout and
+        // paint. The task takes the fetch over from there.
+        let mut asked = std::task::Context::from_waker(std::task::Waker::noop());
+        if fetch.as_mut().poll(&mut asked).is_pending() {
+            wasm_bindgen_futures::spawn_local(fetch);
+        }
         // A fetch that never ends must not leave its windows holding their
         // place for ever: past the bound they say it could not be loaded.
         let shared = self.clone();
@@ -864,6 +872,8 @@ struct RoomActionQueue {
     next: u32,
     outbox: Vec<RoomActionRequest>,
     waiting: HashMap<u32, Box<dyn FnOnce(tilo_app::linked_accounts::ActionAnswer)>>,
+    /// Addresses to go to, leaving the page (a service's consent page).
+    opens: Vec<String>,
 }
 
 /// The desktop's door to the room's records, run by the room's host: the
@@ -881,6 +891,11 @@ impl PageRoomActions {
     /// The requests the page has to send, once.
     pub fn take_requests(&self) -> Vec<RoomActionRequest> {
         std::mem::take(&mut self.queue.borrow_mut().outbox)
+    }
+
+    /// The addresses the page is to go to, once.
+    pub fn take_opens(&self) -> Vec<String> {
+        std::mem::take(&mut self.queue.borrow_mut().opens)
     }
 
     pub fn answer(&self, id: u32, answer: tilo_app::linked_accounts::ActionAnswer) {
@@ -945,6 +960,13 @@ impl tilo_app::linked_accounts::RoomRecordActions for PageRoomActions {
             action: action.to_owned(),
             arguments,
         });
+    }
+
+    fn open(&self, url: &str) {
+        // Only a web address: the page leaves for it.
+        if url.starts_with("https://") || url.starts_with("http://") {
+            self.queue.borrow_mut().opens.push(url.to_owned());
+        }
     }
 }
 

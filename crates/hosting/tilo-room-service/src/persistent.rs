@@ -180,7 +180,7 @@ enum Answer {
     /// The room keeps as many requests left at its door as it takes.
     WaitListFull,
     /// No entry has the removal secret now; tell this address it left.
-    Unlisted(Option<WaitListMailbox>),
+    Unlisted(Option<WaitListMailbox>, Option<String>),
     /// Whether an entry had the confirmation secret.
     Confirmed(bool),
     Standing(WaitListStanding),
@@ -226,6 +226,8 @@ pub(crate) struct Shared {
     wait_list: bool,
     /// Where someone on the wait list asks to be taken off it.
     contact: Option<String>,
+    /// Signing in with Discord to link an account, when it is set up.
+    sign_in: Option<Arc<crate::discord_sign_in::SignIn>>,
 }
 
 impl Shared {
@@ -254,15 +256,33 @@ impl Shared {
         shared.invite_only = persistent.admission == crate::config::Admission::Invite;
         shared.wait_list = shared.invite_only && persistent.wait_list_max > 0;
         shared.contact.clone_from(&persistent.contact);
+        if let Some(sign_in) = &persistent.discord_sign_in {
+            shared.sign_in = Some(Arc::new(
+                crate::discord_sign_in::SignIn::new(sign_in.clone())
+                    .context("signing in with Discord")?,
+            ));
+        }
         if let (true, Some(mail), Some(door)) =
             (shared.wait_list, &persistent.mail, &persistent.web_entry)
         {
             let resend = crate::mail::Resend::new(mail).context("the door's mail")?;
-            shared.mail = Some(crate::mail::DoorMail::new(
+            // A configured directory that is missing or malformed stops the
+            // room rather than mailing words nobody chose.
+            let templates = match &mail.templates {
+                Some(dir) => crate::mail::Templates::load(dir)
+                    .with_context(|| format!("the door's mail templates in {}", dir.display()))?,
+                None => crate::mail::Templates::baked(),
+            };
+            // Every mail waits in the room's own state until the service
+            // takes it, so a restart or a failing service delays one.
+            shared.mail = Some(crate::mail::DoorMail::durable(
                 Arc::new(resend),
                 door,
                 &workspace_name(persistent),
-            ));
+                templates,
+                config.local,
+                &shared.dir.join("mail-outbox"),
+            )?);
         }
         Ok(shared)
     }
@@ -297,6 +317,7 @@ impl Shared {
             wait_list: false,
             contact: None,
             mail: None,
+            sign_in: None,
         })
     }
 
@@ -526,6 +547,26 @@ fn attachment_limits(command: &mut Command, persistent: &PersistentConfig) {
 }
 
 /// The child's command line.
+/// The room's bots, and what the Discord bridge among them needs.
+fn bots(command: &mut Command, persistent: &crate::config::PersistentConfig) {
+    if persistent.bots.is_empty() {
+        return;
+    }
+    for bot in &persistent.bots {
+        command.arg("--bot").arg(bot);
+    }
+    // The token only matters to the bridge bot; without bots the mounted
+    // file is left alone.
+    if let Some(token) = &persistent.discord_token_file {
+        command.arg("--discord-token-file").arg(token);
+    }
+    // What the room offers signing in with Discord through; the secret
+    // stays with this service.
+    if let Some(sign_in) = &persistent.discord_sign_in {
+        command.args(sign_in.relay_args());
+    }
+}
+
 fn child_command(config: &Config, dir: &Path) -> Result<Command> {
     let persistent = config
         .persistent
@@ -622,16 +663,7 @@ fn child_command(config: &Config, dir: &Path) -> Result<Command> {
         .arg(persistent.inactive_after_days.to_string());
     attachment_limits(&mut command, persistent);
     size_sessions(&mut command, config, persistent);
-    if !persistent.bots.is_empty() {
-        for bot in &persistent.bots {
-            command.arg("--bot").arg(bot);
-        }
-        // The token only matters to the bridge bot; without bots the
-        // mounted file is left alone.
-        if let Some(token) = &persistent.discord_token_file {
-            command.arg("--discord-token-file").arg(token);
-        }
-    }
+    bots(&mut command, persistent);
     // The moderation agent runs only with a key; the model is the
     // relay's default unless the operator names one.
     if let Some(key) = &persistent.moderation_key_file {
@@ -673,12 +705,38 @@ fn size_sessions(command: &mut Command, config: &Config, persistent: &Persistent
 
 impl Persistent {
     fn new(shared: Arc<Shared>) -> Arc<Self> {
-        Arc::new(Self {
+        let this = Arc::new(Self {
             shared,
             child: Mutex::new(None),
             waiters: std::sync::Mutex::default(),
             failure: std::sync::Mutex::default(),
-        })
+        });
+        if let Some(door) = &this.shared.mail {
+            let weak = Arc::downgrade(&this);
+            door.set_eligibility(Arc::new(move |removal| {
+                let weak = weak.clone();
+                Box::pin(async move {
+                    let this = weak.upgrade()?;
+                    let request = hex::encode(rand::random::<[u8; 32]>());
+                    match this
+                        .ask(
+                            format!("wl:{request}"),
+                            OperatorCommand::Standing {
+                                request,
+                                removal_sha256: removal,
+                            },
+                        )
+                        .await
+                    {
+                        Ok((Answer::Standing(standing), _, _)) => {
+                            Some(standing != WaitListStanding::Gone)
+                        }
+                        _ => None,
+                    }
+                })
+            }));
+        }
+        this
     }
 
     /// Opens the room's state and starts supervising its child.
@@ -809,6 +867,9 @@ impl Persistent {
             origin: origin.unwrap_or(started.origin),
             room,
         });
+        if let Some(door) = &self.shared.mail {
+            door.start();
+        }
         let result = self.observe(&mut lines).await;
         *self.child.lock().await = None;
         self.fail_waiters();
@@ -847,7 +908,7 @@ impl Persistent {
                     | RoomEvent::Standing { .. }
                     | RoomEvent::WaitListFailed { .. }
                     | RoomEvent::InviteMail { .. }),
-                ) => self.wait_list_event(event),
+                ) => self.wait_list_event(event).await,
                 Ok(RoomEvent::SpectatorCertified {
                     device_public_key,
                     certificate,
@@ -933,10 +994,17 @@ impl Persistent {
 
     /// What the room said about an entry on its wait list, other than
     /// keeping one.
-    fn wait_list_event(&self, event: RoomEvent) {
+    async fn wait_list_event(&self, event: RoomEvent) {
         match event {
-            RoomEvent::Unlisted { request, told } => {
-                self.settle(&format!("wl:{request}"), Ok(Answer::Unlisted(told)));
+            RoomEvent::Unlisted {
+                request,
+                told,
+                contact_sha256,
+            } => {
+                self.settle(
+                    &format!("wl:{request}"),
+                    Ok(Answer::Unlisted(told, contact_sha256)),
+                );
             }
             RoomEvent::Confirmed { request, confirmed } => {
                 self.settle(&format!("wl:{request}"), Ok(Answer::Confirmed(confirmed)));
@@ -948,7 +1016,25 @@ impl Persistent {
                 eprintln!("tilo-room-service: a wait-list request failed: {reason}");
                 self.settle(&format!("wl:{request}"), Err(reason));
             }
-            RoomEvent::InviteMail { to, link, removal } => self.mail_invite(&to, &link, &removal),
+            RoomEvent::InviteMail {
+                request,
+                to,
+                link,
+                removal,
+            } => {
+                let queued = self.mail_invite(&to, &link, &removal);
+                if let Some(child) = self.child.lock().await.as_mut() {
+                    let command = OperatorCommand::InviteMailQueued { request, queued };
+                    if child
+                        .stdin
+                        .write_all(command.to_line().as_bytes())
+                        .await
+                        .is_err()
+                    {
+                        eprintln!("tilo-room-service: could not acknowledge invitation enqueue");
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1027,6 +1113,40 @@ impl Persistent {
             waiters.remove(&key);
         }
         Err(JoinRefusal::Unavailable)
+    }
+
+    /// `GET /discord/callback`: trade what Discord's consent page came back
+    /// with for the account, hand it to the room, and say where the browser
+    /// goes on to: the web entry with the link token. `None` while signing
+    /// in with Discord is not set up.
+    pub async fn discord_callback(
+        &self,
+        query: &str,
+        web_entry: &str,
+    ) -> Option<std::result::Result<String, crate::discord_sign_in::Failed>> {
+        let sign_in = self.shared.sign_in.clone()?;
+        let authorized = match sign_in.callback(query).await {
+            Ok(authorized) => authorized,
+            Err(failed) => return Some(Err(failed)),
+        };
+        let told = {
+            let mut child = self.child.lock().await;
+            match child.as_mut() {
+                Some(child) => child
+                    .stdin
+                    .write_all(authorized.command.to_line().as_bytes())
+                    .await
+                    .is_ok(),
+                None => false,
+            }
+        };
+        if !told {
+            return Some(Err(crate::discord_sign_in::Failed::Discord));
+        }
+        Some(Ok(crate::discord_sign_in::back_to_tilo(
+            web_entry,
+            Some(&authorized.token),
+        )))
     }
 
     /// Whether a relay child is running and has announced itself.
@@ -1141,10 +1261,18 @@ impl Persistent {
                         contact: email.clone(),
                         language: language.to_owned(),
                     };
-                    door.send(
-                        "a confirmation link",
+                    if !door.send_for(
+                        crate::mail::Kind::Confirm,
                         door.confirm(&to, &hex::encode(confirm), &hex::encode(removal)),
-                    );
+                        &removal_digest(&removal),
+                    ) {
+                        // The room kept the entry, but nobody can confirm it:
+                        // say so rather than claim a mail went out.
+                        return Err(WaitRefusal::Unavailable);
+                    }
+                }
+                if !mail && mails.is_some_and(|door| !door.confirmation_kept(&email)) {
+                    return Err(WaitRefusal::Unavailable);
                 }
                 Ok(WaitListAnswer {
                     email,
@@ -1181,11 +1309,29 @@ impl Persistent {
                 }
             })
             .await?;
-        let Answer::Unlisted(told) = answer else {
+        let Answer::Unlisted(told, contact_sha256) = answer else {
             return Err(WaitRefusal::Unavailable);
         };
-        if let (Some(to), Some(door)) = (told, &self.shared.mail) {
-            door.send("word of a removal", door.removed(&to));
+        if let Some(door) = &self.shared.mail {
+            // Older operators supplied only the confirmed mailbox. Preserve
+            // cancellation by recipient while accepting the private digest
+            // for pending entries from current operators.
+            let contact_sha256 = contact_sha256.or_else(|| {
+                use sha2::Digest as _;
+                told.as_ref().map(|to| {
+                    hex::encode(sha2::Sha256::digest(
+                        tilo_relay_protocol::rooms::contact_key(&to.contact),
+                    ))
+                })
+            });
+            door.cancel(&removal_digest(&secret), contact_sha256.as_deref());
+            if let Some(to) = told
+                && !door.send(crate::mail::Kind::Removed, door.removed(&to))
+            {
+                // Removal already committed. A notification failure must not
+                // disclose whether this token belonged to a confirmed entry.
+                eprintln!("tilo-room-service: removal notification was not queued");
+            }
         }
         Ok(())
     }
@@ -1269,18 +1415,25 @@ impl Persistent {
     /// A member asked the room to mail their invitation `link` to an address
     /// on the wait list: mailed, if the door sends mail and the link is an
     /// invitation on it.
-    fn mail_invite(&self, to: &WaitListMailbox, link: &str, removal: &str) {
+    fn mail_invite(&self, to: &WaitListMailbox, link: &str, removal: &str) -> bool {
         let Some(door) = &self.shared.mail else {
             eprintln!(
                 "tilo-room-service: the room asked to mail an invitation, but the door sends no mail"
             );
-            return;
+            return false;
         };
         if !door.on_door(link) {
             eprintln!("tilo-room-service: an invitation to mail was not a link on this door");
-            return;
+            return false;
         }
-        door.send("an invitation", door.invite(to, link, removal));
+        let Some(secret) = hex32(removal) else {
+            return false;
+        };
+        door.send_for(
+            crate::mail::Kind::Invite,
+            door.invite(to, link, removal),
+            &removal_digest(&secret),
+        )
     }
 
     pub fn watching(&self) -> u32 {
@@ -1415,7 +1568,7 @@ impl Persistent {
             Answer::Certificate(_)
             | Answer::WaitListed { .. }
             | Answer::WaitListFull
-            | Answer::Unlisted(_)
+            | Answer::Unlisted(..)
             | Answer::Confirmed(_)
             | Answer::Standing(_) => {
                 unadmit();

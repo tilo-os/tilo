@@ -2651,6 +2651,11 @@ impl App {
             return false;
         }
         let _entry = self.enter_wake_scope();
+        // Components a widget replaced report their close here, as before a
+        // rebuild.
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         let mut remount = crate::widget::Remount::new(
             &mut self.layout.taffy,
             &self.theme,

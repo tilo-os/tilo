@@ -34,14 +34,15 @@ use crate::record::ShareAccess;
 #[derive(Default)]
 pub(crate) struct ShareGrants {
     door: Option<RemoteActions>,
-    /// Whether each of this person's shares was last asked to grant (true)
-    /// or take back (false), by message.
-    asked: HashMap<String, bool>,
+    /// What each of this person's shares last asked the room: to grant
+    /// what an access gives, or (`None`) to take it back, by message.
+    asked: HashMap<String, Option<ShareAccess>>,
     /// Asks still on their way, kept until they settle.
     calls: Vec<InvocationCall>,
-    /// Whether this person may change what a share shares anyway, by
-    /// message: asked once per share.
-    editable: HashMap<String, Editable>,
+    /// Whether this person may change what a share shares, by message,
+    /// with what the share gave when asked: asked again whenever the share
+    /// is switched or ends.
+    editable: HashMap<String, (Editable, Option<ShareAccess>)>,
 }
 
 enum Editable {
@@ -81,7 +82,7 @@ impl ShareGrants {
     /// Ask again whether this person may change what `message` shares: the
     /// share's grant may have reached the room since.
     pub(crate) fn ask_again(&mut self, message: &str) {
-        if matches!(self.editable.get(message), Some(Editable::Answered(_))) {
+        if matches!(self.editable.get(message), Some((Editable::Answered(_), _))) {
             self.editable.remove(message);
         }
     }
@@ -137,9 +138,11 @@ fn pending(call: &InvocationCall) -> bool {
 
 impl ChatApp {
     /// Ask the room to grant what each of this person's live shares gives
-    /// and take back what each ended one gave, once per change; and ask,
-    /// once per share of someone else's, whether this person may change
-    /// what it shares (on a view-only share: whether they may anyway).
+    /// and take back what each ended one gave, once per change (a share
+    /// switched in place included); and ask, of each share of someone
+    /// else's and again whenever it is switched or ends, whether this
+    /// person may change what it shares (on a view-only share: whether
+    /// they may anyway).
     pub(crate) fn follow_share_grants(&mut self) {
         let Ok(room) = ui::framework::reference::room() else {
             return;
@@ -165,52 +168,54 @@ impl ChatApp {
             let Some(node) = node else {
                 continue;
             };
+            // What the share gives now: its access while live, nothing once ended.
+            let now = live.then_some(access);
             if mine {
-                if grants.asked.get(&message) == Some(&live) {
+                if grants.asked.get(&message) == Some(&now) {
                     continue;
                 }
-                grants.asked.insert(message.clone(), live);
-                if live {
-                    let access = match access {
-                        ShareAccess::View => "view",
-                        ShareAccess::Edit => "edit",
-                    };
-                    grants.ask(
+                grants.asked.insert(message.clone(), now);
+                match now {
+                    // Asked again under the same share id when switched: the
+                    // room replaces what the share's grants give.
+                    Some(access) => grants.ask(
                         &room,
                         &node,
                         SHARE_NODE_ACTION,
-                        serde_json::json!({ "share": message, "access": access }),
-                    );
-                } else {
-                    grants.ask(
+                        serde_json::json!({ "share": message, "access": access.as_str() }),
+                    ),
+                    None => grants.ask(
                         &room,
                         &node,
                         UNSHARE_NODE_ACTION,
                         serde_json::json!({ "share": message }),
-                    );
+                    ),
                 }
             } else {
                 // Asked of every live share of someone else's: the answer
                 // also lets this person's window change an item shared to
-                // edit. Asked once more when a share that let them ends,
-                // so their window stops offering what the room takes back.
+                // edit. Asked again when the share is switched or ends, so
+                // their window offers exactly what the room keeps.
                 let ask = match grants.editable.get(&message) {
                     None => live,
-                    Some(Editable::Asking(call)) => {
+                    Some((Editable::Asking(call), asked)) => {
                         if let Some(may) = permits(call) {
+                            let asked = *asked;
                             grants
                                 .editable
-                                .insert(message.clone(), Editable::Answered(may));
+                                .insert(message.clone(), (Editable::Answered(may), asked));
                             changed = true;
                         }
                         false
                     }
-                    Some(Editable::Answered(may)) => *may && !live,
+                    Some((Editable::Answered(_), asked)) => *asked != now,
                 };
                 if ask {
                     let target = node_target(&room, &node.to_string(), NODE_PERMITS_ACTION);
                     let call = grants.door().invoke(target, InvokeArgument::None, None);
-                    grants.editable.insert(message, Editable::Asking(call));
+                    grants
+                        .editable
+                        .insert(message, (Editable::Asking(call), now));
                 }
             }
         }
@@ -225,7 +230,7 @@ impl ChatApp {
     pub(crate) fn can_already_edit(&self, message: &str) -> bool {
         matches!(
             self.live_shares.grants.editable.get(message),
-            Some(Editable::Answered(true))
+            Some((Editable::Answered(true), _))
         )
     }
 }

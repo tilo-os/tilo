@@ -8,7 +8,8 @@
 use serde::{Deserialize, Serialize};
 pub use tilo_action_policy::ActionKind;
 
-use crate::action::OperationKind;
+use crate::action::{OperationKind, undo_takes_back};
+use crate::context::ChangeKind;
 
 /// Whether an action can be invoked in the resource's current state.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -550,8 +551,6 @@ pub struct ActionContract {
     #[serde(default)]
     pub retry: RetryPolicy,
     #[serde(default)]
-    pub reversible: bool,
-    #[serde(default)]
     pub execution: ExecutionMode,
     #[serde(default)]
     pub result: ResultSpec,
@@ -645,7 +644,6 @@ impl Default for ActionContract {
             risk: RiskLevel::Low,
             confirmation: ConfirmationPolicy::None,
             retry: RetryPolicy::AtMostOnce,
-            reversible: false,
             execution: ExecutionMode::Immediate,
             result: ResultSpec::None,
             tags: Vec::new(),
@@ -788,12 +786,13 @@ impl ActionContract {
     }
 
     /// Whether the action, once taken, can be undone: the host's undo
-    /// reverts a document change, and an outside one declared with its
-    /// compensation ([`COMPENSATED_UNDO_TAG`]) is undone by queueing it.
-    /// One that also loses what Undo cannot bring back
-    /// ([`IRREVERSIBLE_TAG`]) cannot.
+    /// reverts an [`Undoable`](ActionKind::Undoable) change, and an outside
+    /// one declared with its compensation ([`COMPENSATED_UNDO_TAG`]) is
+    /// undone by queueing it. One that also loses what Undo cannot bring
+    /// back ([`IRREVERSIBLE_TAG`]) cannot.
     pub fn can_be_undone(&self) -> bool {
-        (self.reversible || self.tags.iter().any(|tag| tag == COMPENSATED_UNDO_TAG))
+        (self.kind == ActionKind::Undoable
+            || self.tags.iter().any(|tag| tag == COMPENSATED_UNDO_TAG))
             && !self.tags.iter().any(|tag| tag == IRREVERSIBLE_TAG)
     }
 
@@ -811,14 +810,56 @@ impl ActionContract {
     /// of any other risk, stay as declared. Every builder that changes the
     /// risk, the undo or the tags calls this, so the order they are called
     /// in never decides whether a person is asked.
+    ///
+    /// The kind is read through
+    /// [`settled_kind`](Self::settled_kind), so a deletion built before the
+    /// kind that makes it undoable still ends up asking nothing, and one a
+    /// declaration says reaches outside still asks.
     pub fn settle_confirmation(&mut self) {
         if self.risk != RiskLevel::Destructive {
             return;
         }
-        match (&self.confirmation, self.can_be_undone()) {
+        let undoable = undo_takes_back(
+            self.settled_kind(),
+            ChangeKind::Content,
+            self.tags.iter().any(|tag| tag == IRREVERSIBLE_TAG),
+        );
+        match (&self.confirmation, undoable) {
             (ConfirmationPolicy::Confirm, true) => self.confirmation = ConfirmationPolicy::None,
             (ConfirmationPolicy::None, false) => self.confirmation = ConfirmationPolicy::Confirm,
             _ => {}
+        }
+    }
+
+    /// The kind this contract says the action is, where [`kind`](Self::kind)
+    /// cannot say it alone: a change to its own document is undoable unless
+    /// it keeps something Undo cannot bring back ([`IRREVERSIBLE_TAG`]), or
+    /// unless it reaches outside and queues its compensation
+    /// ([`COMPENSATED_UNDO_TAG`]).
+    #[must_use]
+    pub fn settled_kind(&self) -> ActionKind {
+        let irreversible = self.tags.iter().any(|tag| tag == IRREVERSIBLE_TAG);
+        let undoable = self.kind == ActionKind::Undoable
+            || self.tags.iter().any(|tag| tag == COMPENSATED_UNDO_TAG);
+        if undoable && !irreversible {
+            return ActionKind::Undoable;
+        }
+        if self.kind == ActionKind::Undoable {
+            return ActionKind::Outside;
+        }
+        self.kind
+    }
+
+    /// The kind of a deletion, which has to say which it is: what its kind
+    /// settles to, less where Undo cannot take the change back at all.
+    #[must_use]
+    pub fn deletion_kind(&self) -> ActionKind {
+        let irreversible = self.tags.iter().any(|tag| tag == IRREVERSIBLE_TAG);
+        let kind = self.settled_kind();
+        if undo_takes_back(kind, ChangeKind::Content, irreversible) {
+            kind
+        } else {
+            ActionKind::Outside
         }
     }
 
@@ -1028,7 +1069,6 @@ mod tests {
         // contract learned it was a deletion and that Undo takes it back.
         let mut contract = ActionContract {
             risk: RiskLevel::Destructive,
-            reversible: true,
             ..ActionContract::default()
         };
         contract.settle_confirmation();
@@ -1044,8 +1084,11 @@ mod tests {
         compensated.settle_confirmation();
         assert_eq!(compensated.confirmation, ConfirmationPolicy::None);
 
-        // One Undo cannot take back still asks, with a click.
+        // One Undo cannot take back still asks, with a click: an effect
+        // reaches outside the state its resource owns, so nothing brings
+        // back what it did, and the declaration says as much by naming it.
         let mut irreversible = ActionContract {
+            kind: ActionKind::Outside,
             risk: RiskLevel::Destructive,
             ..ActionContract::default()
         };
@@ -1055,8 +1098,8 @@ mod tests {
         // Nor can it take back what the document change lost outside it (a
         // secret every device forgot), however the change itself reverts.
         let mut forgets = ActionContract {
+            kind: ActionKind::Outside,
             risk: RiskLevel::Destructive,
-            reversible: true,
             tags: vec![IRREVERSIBLE_TAG.to_owned()],
             ..ActionContract::default()
         };
@@ -1069,7 +1112,6 @@ mod tests {
 
         // A generic edit of an undoable record asks nothing for any value.
         let edit = ActionContract {
-            reversible: true,
             tags: vec![
                 ARGUMENT_RISK_TAG.to_owned(),
                 tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned(),
@@ -1084,30 +1126,34 @@ mod tests {
 
         // A typed phrase is refused on an undoable action, and when it names
         // nothing.
-        let phrase = |phrase: &str, reversible: bool| ActionContract {
+        let phrase = |phrase: &str, kind: ActionKind| ActionContract {
             risk: RiskLevel::Destructive,
-            reversible,
+            kind,
             confirmation: ConfirmationPolicy::Phrase {
                 phrase: phrase.into(),
             },
             ..ActionContract::default()
         };
         assert!(
-            phrase("Hacker News", true)
+            phrase("Hacker News", ActionKind::Undoable)
                 .validate_declaration()
                 .iter()
                 .any(|error| error.contains("Undo takes back"))
         );
         for generic in ["CONFIRM", "yes", "Delete"] {
             assert!(
-                phrase(generic, false)
+                phrase(generic, ActionKind::Outside)
                     .validate_declaration()
                     .iter()
                     .any(|error| error.contains("says nothing")),
                 "{generic}"
             );
         }
-        assert!(phrase("nvme0n1", false).validate_declaration().is_empty());
+        assert!(
+            phrase("nvme0n1", ActionKind::Outside)
+                .validate_declaration()
+                .is_empty()
+        );
         assert!(phrase_is_meaningful("Windows 11"));
         assert!(!phrase_is_meaningful(" confirm "));
     }

@@ -11,8 +11,8 @@ use super::{
     ActivityDeepLink, ActivityTree, ActivityView, BoundaryDirection, DetailAction,
     GroupNameRequest, HistoryEntry, HistoryEntryId, LensSelection, Period, RecordId, RecordStore,
     RoomActivityOutcome, RoomActivityPane, RoomScope, SystemTime, WorkSessionBoundary,
-    WorkspaceHistoryId, comparison_change_labels, detail_provenance, handled_outcome,
-    humanize_app_id, local_resume_snapshot, t, t_args,
+    WorkspaceHistoryId, comparison_change_labels, comparison_field_changes, detail_provenance,
+    handled_outcome, humanize_app_id, local_resume_snapshot, t, t_args,
 };
 
 fn millis(at: SystemTime) -> i64 {
@@ -639,6 +639,10 @@ impl RoomActivityPane {
             offers: self.offers(&detail),
             run,
             comparison,
+            changes: self
+                .comparison
+                .as_ref()
+                .map_or_else(Vec::new, comparison_field_changes),
             gone: false,
         }
     }

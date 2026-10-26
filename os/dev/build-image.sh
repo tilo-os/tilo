@@ -9,7 +9,9 @@
 #      toolchains, so its glibc is the image's), rootless, into
 #      os/output/compiled, with cargo's home, the build directory and sccache
 #      kept under os/output between builds. TILO_COMPILED=<dir> names a tree
-#      compiled already (t's os-compile-<arch>) and skips it.
+#      compiled already (t's os-compile-<arch>) and skips it; TILO_CHROMIUM_ENGINE=<dir>
+#      the browser's engine built apart (os-chromium-<arch>'s chromium-engine/), for a
+#      tree compiled without it.
 #   2. rootless `podman build` of the bootc container image from os/Containerfile
 #      (os/image/'s pieces in one file), given the compiled tree as the `compiled`
 #      build context: no image build compiles. The build context is the REPO ROOT;
@@ -364,8 +366,14 @@ else
     || die "the Tilo kernel $KERNEL_RPMS_REF is not authenticated for this build"
 fi
 fi # Production provenance; development inputs have independent pinned receipts.
-bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
-  || die "the frozen RPM snapshot does not match the current Containerfiles"
+if [ -n "${TILO_LAYER_TARGET:-}" ] && ! grep -Fq 'FROM ${RPMS_REF}' "${TILO_CONTAINERFILE:-}"; then
+  # One layer action whose piece installs nothing from the snapshot doesn't load it to compare
+  # its package set; the layers that install from it do (os/image/build-layer.sh).
+  :
+else
+  bash "$TILO_OS_DIR/dev/verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF" \
+    || die "the frozen RPM snapshot does not match the current Containerfiles"
+fi
 # The two static pre-flights below read the whole tree: every Containerfile, every
 # COPY source and the app store's manifests. One layer action (TILO_LAYER_TARGET) is
 # cached by what its own piece reads, not by that tree, so a result it kept would
@@ -626,7 +634,10 @@ compile_outside() {
 if [ "$TILO_SKIP_BUILD" != 1 ] && grep -q -- '--from=compiled' "${TILO_CONTAINERFILE:-$TILO_OS_DIR/Containerfile}"; then
   [ -n "${TILO_COMPILED:-}" ] || compile_outside
   [ -d "$TILO_COMPILED" ] || die "TILO_COMPILED=$TILO_COMPILED is not a directory"
-  _tilo_compiled_args=(--build-context "compiled=$(realpath "$TILO_COMPILED")")
+  # The browser's engine: TILO_CHROMIUM_ENGINE's chromium-engine/ where the compiled tree
+  # leaves it out (os/image/build-layer.sh gives os-chromium-<arch>'s), else the tree's own.
+  _tilo_compiled_args=(--build-context "compiled=$(realpath "$TILO_COMPILED")"
+    --build-context "chromium-engine=$(realpath "${TILO_CHROMIUM_ENGINE:-$TILO_COMPILED}")")
 fi
 
 # One layer action (os/image/build-layer.sh): this stage of this piece, over the

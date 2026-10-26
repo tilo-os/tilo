@@ -1403,3 +1403,97 @@ fn the_requests_name_and_commands_are_in_the_window_bar() {
     })
     .unwrap();
 }
+
+/// The history keeps the request that was sent, so replaying an entry brings
+/// its headers, body and parameters back — and never a credential's value.
+#[test]
+fn a_history_entry_keeps_the_whole_request_it_sent() {
+    let (mut a, mut doc) = demo();
+    // Give the builder's request something to lose: an address and a body.
+    a.submit(
+        Workspace::paths()
+            .request
+            .url
+            .replace("https://api.example.com/users?page=2".to_owned()),
+    );
+    a.submit(
+        Workspace::paths()
+            .request
+            .body
+            .replace("{\"name\":\"Ada\"}".to_owned()),
+    );
+    drain(&mut a, &mut doc);
+    let authored = record(&doc).request_shown();
+    assert!(!authored.body_text.is_empty(), "the request has a body");
+    submit(
+        &mut a,
+        &mut doc,
+        Workspace::RECORD_SENT.with(crate::resource::workspace::RecordSent {
+            method: authored.method.as_str().to_owned(),
+            url: authored.url.clone(),
+            status: 201,
+            duration_ms: 12,
+        }),
+    );
+
+    let entry = &record(&doc).history_shown()[0];
+    let replay = entry
+        .replay
+        .as_ref()
+        .expect("the entry keeps the request it sent");
+    assert_eq!(replay.url, authored.url);
+    assert_eq!(replay.method, authored.method);
+    assert_eq!(
+        replay.headers.len(),
+        authored.headers.len(),
+        "every header came along"
+    );
+    assert_eq!(replay.headers[0].key, authored.headers[0].key);
+    assert_eq!(replay.body, authored.body_text);
+    assert_eq!(replay.params.len(), authored.params.len());
+    assert_eq!(
+        replay.scheme,
+        authored.auth.label(),
+        "the scheme is public; the credential itself is not recorded"
+    );
+
+    // Replaying fills the builder with all of it, not just a method and URL.
+    resync(&mut a, &doc);
+    a.request = crate::seed::blank_request();
+    push(&a, Cmd::ReplayHistory(0));
+    drain(&mut a, &mut doc);
+    assert_eq!(a.request.method, authored.method);
+    assert_eq!(a.request.url, authored.url);
+    assert_eq!(a.request.headers.len(), authored.headers.len());
+    assert_eq!(a.request.body_text, authored.body_text);
+}
+
+/// Cancelling a request that is in flight stops waiting for it and says so,
+/// instead of leaving the app looking like it is still on its way.
+#[test]
+fn cancelling_a_request_in_flight_stops_waiting_for_it() {
+    let (mut a, mut doc) = demo();
+    a.sending = true;
+    let flag = std::sync::Arc::clone(&a.send_cancel);
+    a.cancel_send();
+    assert!(!a.sending, "the app is no longer waiting");
+    assert!(flag.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(
+        a.error.as_deref(),
+        Some("The request was cancelled."),
+        "the pane says what happened"
+    );
+    drain(&mut a, &mut doc);
+}
+
+/// Copying a response part with nothing to copy is a refusal with a reason,
+/// not a silent no-op; and a part that does not exist is refused by name.
+#[test]
+fn copying_part_of_a_response_that_is_not_there_is_refused() {
+    let mut a = ApiTesterApp::new_demo();
+    a.response = None;
+    a.error = None;
+    assert!(a.copy_body().is_err());
+    assert!(a.copy_headers().is_err());
+    assert!(a.error.is_some(), "the pane says why nothing was copied");
+}

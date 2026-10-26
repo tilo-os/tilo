@@ -29,6 +29,11 @@ pub struct Filter {
     /// Only the changes under this lens (an app, a resource, a work group,
     /// agent tasks), by its key; empty for everything.
     pub lens: String,
+    /// Find
+    ///
+    /// Only the changes whose words, person, app or outcome contain this
+    /// text; empty for everything.
+    pub query: String,
 }
 
 impl Filter {
@@ -46,6 +51,23 @@ impl Filter {
     /// Whether it narrows the history at all.
     pub fn narrows(&self) -> bool {
         self != &Self::default()
+    }
+
+    /// Whether a text find is on: the feed keeps reading past one page
+    /// while it is.
+    pub fn finding(&self) -> bool {
+        !self.query.trim().is_empty()
+    }
+
+    /// Whether `haystack`'s words contain the find, ignoring case.
+    pub fn matches(&self, haystacks: &[&str]) -> bool {
+        let query = self.query.trim().to_lowercase();
+        if query.is_empty() {
+            return true;
+        }
+        haystacks
+            .iter()
+            .any(|text| text.to_lowercase().contains(&query))
     }
 }
 

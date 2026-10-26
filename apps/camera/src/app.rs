@@ -45,7 +45,6 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::ActionEmitter;
-use ui::widget::toast::Transient;
 use ui::widget::{CropSelection, Image, ImageCropEditor, ImageFit, Popover, Widget};
 use winit::event::WindowEvent;
 
@@ -368,7 +367,7 @@ pub struct CameraApp {
     scanned: Option<ScannedCode>,
     scan_gen: (u32, u32),
     /// The result of the last action, shown for a notice's lifetime.
-    toast: Transient<String>,
+    toast: notice::Notice,
     /// What the person can do about the message up, when it asks them to
     /// act: kept with the message it belongs to, so a later message without
     /// one shows none.
@@ -544,7 +543,7 @@ impl CameraApp {
             scan_dismissed: false,
             scanned: None,
             scan_gen: (0, 0),
-            toast: Transient::new(),
+            toast: notice::Notice::new(),
             toast_action: None,
             copy: ui::CopyWatch::default(),
             last_mouse: Point::new(-1_000.0, -1_000.0),
@@ -658,7 +657,7 @@ impl CameraApp {
     pub fn push_camera_frame(&mut self, frame: FrameBuf) -> bool {
         if !valid_frame(&frame) {
             self.camera_issue = Some(CameraIssue::StartFailed);
-            self.toast.show("Camera sent an unsupported frame".into());
+            self.toast.fail("Camera sent an unsupported frame");
             self.dirty = true;
             return false;
         }
@@ -668,7 +667,7 @@ impl CameraApp {
             // at the theoretical counter boundary.
             self.camera_issue = Some(CameraIssue::StartFailed);
             self.toast
-                .show("Camera frame counter exhausted; restart Camera".into());
+                .show("Camera frame counter exhausted; restart Camera");
             self.dirty = true;
             return false;
         };
@@ -677,7 +676,7 @@ impl CameraApp {
         {
             // Keep the viewfinder alive but make worker loss visible; stopping
             // will then return the same honest failure to an agent.
-            self.toast.show(error);
+            self.toast.fail(error);
         }
         self.latest_frame = Some(frame);
         self.frame_gen = next_generation;
@@ -699,7 +698,7 @@ impl CameraApp {
     /// capture when someone changes their mind while the timer is visible.
     fn arm_or_cancel_timer(&mut self) -> Result<(), String> {
         if self.countdown.take().is_some() {
-            self.toast.show("Timer cancelled".into());
+            self.toast.warn("Timer cancelled");
             self.dirty = true;
             return Ok(());
         }
@@ -757,11 +756,11 @@ impl CameraApp {
         // photo timer unexpectedly begin recording.
         if self.mode != mode {
             self.toast
-                .show("Timer cancelled because capture mode changed".into());
+                .show("Timer cancelled because capture mode changed");
             return;
         }
         if let Err(error) = self.fire_shutter() {
-            self.toast.show(error);
+            self.toast.fail(error);
         }
         self.dirty = true;
     }
@@ -770,16 +769,15 @@ impl CameraApp {
     /// disk/live source can't record, so it says so instead of faking a clip.
     fn start_recording(&mut self) {
         if !self.feed_active() {
-            self.toast.show("Connect a camera to record".into());
+            self.toast.warn("Connect a camera to record");
             return;
         }
         if self.video_finalizing {
-            self.toast
-                .show_progress("Finalizing the previous video…".into());
+            self.toast.show_progress("Finalizing the previous video…");
             return;
         }
         if let Err(error) = self.worker.start_recording() {
-            self.toast.show(error);
+            self.toast.fail(error);
             return;
         }
         // Seed with the frame already on screen without converting/encoding
@@ -787,7 +785,7 @@ impl CameraApp {
         if let Some(fb) = &self.latest_frame
             && let Err(error) = self.worker.submit_recording_frame(fb.clone())
         {
-            self.toast.show(error);
+            self.toast.fail(error);
             return;
         }
         self.recording = Some(RecState {
@@ -829,7 +827,7 @@ impl CameraApp {
         if let Some(invocation) = invocation {
             self.pending_video = Some((invocation, generation));
         }
-        self.toast.show_progress("Finalizing video…".into());
+        self.toast.show_progress("Finalizing video…");
         Ok(())
     }
 
@@ -1191,7 +1189,7 @@ impl CameraApp {
     fn invoke_on(&mut self, row: &str, effect: &CameraEffect) {
         match &self.dispatcher {
             Some(dispatcher) => dispatcher.effect_on(row, effect),
-            None => self.toast.show("Camera is not open on a record".into()),
+            None => self.toast.show("Camera is not open on a record"),
         }
     }
 
@@ -1262,7 +1260,7 @@ impl CameraApp {
         submit: impl ui::framework::Submit<crate::record::Record>,
     ) {
         if let Err(error) = self.try_perform_action(doc, submit) {
-            self.toast.show(format!("Couldn't save change: {error}"));
+            self.toast.fail(format!("Couldn't save change: {error}"));
         }
     }
 
@@ -1443,10 +1441,10 @@ impl CameraApp {
                 .find(|scanner| scanner.device == *selected)
                 .map(|scanner| scanner.device.clone())
         }) else {
-            self.toast.show(if self.scanner_devices.is_empty() {
-                "Connect a document scanner to begin".into()
+            self.toast.warn(if self.scanner_devices.is_empty() {
+                "Connect a document scanner to begin"
             } else {
-                "Choose which scanner to use".into()
+                "Choose which scanner to use"
             });
             return;
         };
@@ -1474,7 +1472,7 @@ impl CameraApp {
                 if let Err(error) = spawn {
                     self.document_job = None;
                     self.document_job_kind = None;
-                    self.toast.show(format!("Could not start scanner: {error}"));
+                    self.toast.fail(format!("Could not start scanner: {error}"));
                 }
             }
         }
@@ -1547,7 +1545,7 @@ impl CameraApp {
         };
         page.rotate_clockwise();
         self.toast
-            .show("Page rotated; recognize text again when ready".into());
+            .show("Page rotated; recognize text again when ready");
     }
 
     fn recognize_document_page(&mut self) {
@@ -1595,11 +1593,11 @@ impl CameraApp {
         };
         let text = document.plain_text();
         if text.trim().is_empty() {
-            self.toast.show("No recognized text to copy".into());
+            self.toast.warn("No recognized text to copy");
             return;
         }
         ui::clipboard_copy(&text);
-        self.toast.show("Recognized text copied".into());
+        self.toast.show("Recognized text copied");
     }
 
     fn document_text_status(&self) -> String {
@@ -1643,8 +1641,7 @@ impl CameraApp {
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.document_job = None;
                 self.document_job_kind = None;
-                self.toast
-                    .show("Document processing stopped unexpectedly".into());
+                self.toast.show("Document processing stopped unexpectedly");
                 if let Some(invocation) = self.pending_document_job.take() {
                     self.settle(
                         invocation,
@@ -1696,7 +1693,7 @@ impl CameraApp {
             DocumentJobResult::Recognize {
                 result: Err(error), ..
             } => {
-                self.toast.show(error.user_message().into());
+                self.toast.fail(error.user_message());
                 terminal_error = Some(("camera.document_ocr_failed", error.user_message().into()));
             }
         }
@@ -1743,8 +1740,8 @@ impl CameraApp {
                 .ok_or("The selected page is no longer available")
                 .and_then(|page| page.set_normalized_crop(selection))
             {
-                Ok(()) => "Crop applied; recognize text again when ready".into(),
-                Err(error) => error.into(),
+                Ok(()) => "Crop applied; recognize text again when ready".to_string(),
+                Err(error) => error.to_string(),
             },
         );
         self.cancel_document_crop();
@@ -1808,13 +1805,13 @@ impl CameraApp {
 
     fn apply_shutter(&mut self, _doc: &mut ui::widget::Edits<'_>, _root: &ObjId) {
         if let Err(error) = self.arm_or_cancel_timer() {
-            self.toast.show(error);
+            self.toast.fail(error);
         }
     }
 
     fn open_recent_capture(&mut self) {
         let Some(capture) = self.captures.first() else {
-            self.toast.show("Take a capture before opening it".into());
+            self.toast.fail("Take a capture before opening it");
             return;
         };
         let media_id = capture.media_id.clone().or_else(|| {
@@ -1825,17 +1822,17 @@ impl CameraApp {
         });
         let Some(media_id) = media_id else {
             self.toast
-                .show("Latest capture is not available as portable media".into());
+                .show("Latest capture is not available as portable media");
             return;
         };
         let Some(hash) = media_id.strip_prefix(crate::media::MEDIA_PREFIX) else {
             self.toast
-                .show("Latest capture has an invalid portable media identity".into());
+                .show("Latest capture has an invalid portable media identity");
             return;
         };
         if crate::media::read(&self.content, &media_id).is_none() {
             self.toast
-                .show("Latest capture bytes are unavailable on this device".into());
+                .show("Latest capture bytes are unavailable on this device");
             return;
         }
         let (_, destination) = crate::actions::capture_destination(capture.is_video());
@@ -1866,12 +1863,12 @@ impl CameraApp {
     fn open_photos(&mut self) {
         let Some(handoff) = self.photos_browse.as_mut() else {
             self.toast
-                .show("Photos is unavailable in this Camera session".into());
+                .show("Photos is unavailable in this Camera session");
             return;
         };
         match handoff.emit(()) {
-            Ok(()) => self.toast.show("Opening Photos…".into()),
-            Err(error) => self.toast.show(format!("Couldn't open Photos: {error}")),
+            Ok(()) => self.toast.info("Opening Photos…"),
+            Err(error) => self.toast.fail(format!("Couldn't open Photos: {error}")),
         }
     }
 
@@ -2061,7 +2058,7 @@ impl CameraApp {
                 if let Some(invocation) = invocation {
                     self.pending_capture = Some((invocation, generation));
                 }
-                self.toast.show_progress("Saving photo…".into());
+                self.toast.show_progress("Saving photo…");
                 Ok(())
             }
         }
@@ -2253,7 +2250,7 @@ impl CameraApp {
                 notice::NoticeAction::RefreshCameras,
             );
         } else {
-            self.toast.show("Refreshing camera".into());
+            self.toast.info("Refreshing camera");
         }
     }
 
@@ -2262,7 +2259,7 @@ impl CameraApp {
         // handler, just as scanned URLs use the OS handler. It is deliberately
         // an external effect, never a fabricated in-app permission grant.
         ui::widget::open_external_url("settings://privacy/camera");
-        self.toast.show("Opening camera privacy settings".into());
+        self.toast.info("Opening camera privacy settings");
     }
 
     fn open_camera_chooser(&mut self) {
@@ -2277,7 +2274,7 @@ impl CameraApp {
             self.chooser.set_viewport(self.rect);
             self.chooser.open_at(self.chooser_anchor, selected);
         } else {
-            self.toast.show("Only one camera is available".into());
+            self.toast.warn("Only one camera is available");
         }
     }
 
@@ -2286,7 +2283,7 @@ impl CameraApp {
         // to select: a stale /dev/video node must not become a pretend lens.
         if !self.available_camera_devices().iter().any(|d| d == device) {
             self.chooser.close();
-            self.toast.show("That camera is no longer available".into());
+            self.toast.fail("That camera is no longer available");
             return;
         }
         self.selected_camera = Some(device.to_string());
@@ -2297,7 +2294,7 @@ impl CameraApp {
             self.cam_config = None;
         }
         self.camera_issue = None;
-        self.toast.show(format!("Selected {device}"));
+        self.toast.info(format!("Selected {device}"));
     }
 
     /// Ask for an image with the file chooser and scan the code in it, as
@@ -2307,7 +2304,7 @@ impl CameraApp {
             return Err("An image picker is already open".into());
         };
         self.toast
-            .show("Choose an image containing a QR code or barcode".into());
+            .show("Choose an image containing a QR code or barcode");
         let request = ui::portal::PickRequest::open("Scan a code from an image", "Scan").filter(
             ui::portal::FileFilter::new("Images")
                 .mimetype("image/png")
@@ -2319,7 +2316,7 @@ impl CameraApp {
             drop(open);
             app.dirty = true;
             let Some(file) = chosen else {
-                app.toast.show("Image scan cancelled".into());
+                app.toast.show("Image scan cancelled");
                 return Err("Image scan cancelled".into());
             };
             app.scan_image_bytes(file.bytes)?;
@@ -2334,7 +2331,7 @@ impl CameraApp {
         self.scan_dismissed = false;
         let Some(generation) = self.scan_generation.checked_add(1) else {
             let error = "Code scan counter exhausted; restart Camera".to_owned();
-            self.toast.show(error.clone());
+            self.toast.fail(error.clone());
             return Err(error);
         };
         let id = format!("portal:{generation}");
@@ -2344,12 +2341,12 @@ impl CameraApp {
             source: crate::worker::ScanSource::Bytes(bytes),
             record_history: true,
         }) {
-            self.toast.show(error.clone());
+            self.toast.fail(error.clone());
             return Err(error);
         }
         self.scan_generation = generation;
         self.pending_scan = Some((id, generation));
-        self.toast.show_progress("Scanning image…".into());
+        self.toast.show_progress("Scanning image…");
         Ok(())
     }
 
@@ -2361,7 +2358,7 @@ impl CameraApp {
         match (label, &s.kind) {
             ("Call", CodeKind::Contact { phone, .. }) => {
                 ui::widget::open_external_url(&format!("tel:{phone}"));
-                self.toast.show(format!("Calling {phone}"));
+                self.toast.info(format!("Calling {phone}"));
             }
             ("Open link" | "Open map" | "Write email" | "Call", kind) => {
                 ui::widget::open_external_url(&s.raw);
@@ -2377,20 +2374,20 @@ impl CameraApp {
                     } else {
                         "Could not copy the Wi-Fi password"
                     }
-                    .into(),
+                    .to_string(),
                 );
             }
             ("Copy network name", CodeKind::Wifi { ssid, .. }) => {
                 ui::clipboard_copy(ssid);
-                self.toast.show("Network name copied".into());
+                self.toast.show("Network name copied");
             }
             ("Copy link" | "Copy contact" | "Copy text", _) => {
                 ui::clipboard_copy(&s.raw);
-                self.toast.show("Copied".into());
+                self.toast.show("Copied");
             }
             (_, kind) => {
                 ui::clipboard_copy(&kind.summary(&s.raw));
-                self.toast.show("Copied".into());
+                self.toast.show("Copied");
             }
         }
     }
@@ -2625,7 +2622,7 @@ impl CameraApp {
                         if let Some(path) = &saved.local_path {
                             crate::files::remove(path);
                         }
-                        self.toast.show(format!("Save failed: {error}"));
+                        self.toast.fail(format!("Save failed: {error}"));
                         if let Some(invocation) = terminal {
                             self.settle(invocation, Err(("camera.register_refused", error, false)));
                         }
@@ -2646,7 +2643,7 @@ impl CameraApp {
                     }
                 }
                 Err(error) => {
-                    self.toast.show(format!("Save failed: {error}"));
+                    self.toast.fail(format!("Save failed: {error}"));
                     if let Some(invocation) = terminal {
                         self.settle(invocation, Err(("camera.save_failed", error, true)));
                     }
@@ -2694,7 +2691,7 @@ impl CameraApp {
                         if let Some(path) = &saved.local_path {
                             crate::files::remove(path);
                         }
-                        self.toast.show(format!("Save failed: {error}"));
+                        self.toast.fail(format!("Save failed: {error}"));
                         if let Some(invocation) = terminal {
                             self.settle(invocation, Err(("camera.register_refused", error, false)));
                         }
@@ -2715,7 +2712,7 @@ impl CameraApp {
                     }
                 }
                 Err(error) => {
-                    self.toast.show(format!("Save failed: {error}"));
+                    self.toast.fail(format!("Save failed: {error}"));
                     if let Some(invocation) = terminal {
                         self.settle(invocation, Err(("camera.video_failed", error, true)));
                     }
@@ -2778,7 +2775,7 @@ impl CameraApp {
                 }
                 Ok(None) => {
                     self.scanned = None;
-                    self.toast.show("No code found in that photo".into());
+                    self.toast.warn("No code found in that photo");
                     terminal_error = Some((
                         "camera.code_not_found",
                         "No QR code or barcode was found in that image".to_owned(),
@@ -2787,7 +2784,7 @@ impl CameraApp {
                 }
                 Err(error) => {
                     self.scanned = None;
-                    self.toast.show(format!("Scan failed: {error}"));
+                    self.toast.fail(format!("Scan failed: {error}"));
                     terminal_error = Some(("camera.scan_failed", error, true));
                 }
             }
@@ -2856,13 +2853,13 @@ impl Widget for CameraApp {
         self.poll_thumbnail_results();
         self.poll_scan_results(state);
         if self.copy.failed() {
-            self.toast.show("Could not copy the Wi-Fi password".into());
+            self.toast.fail("Could not copy the Wi-Fi password");
         }
         for capture in std::mem::take(&mut self.sample_captures) {
             if let Err(error) = self
                 .try_perform_action(state, crate::record::Record::REGISTER_CAPTURE.with(capture))
             {
-                self.toast.show(format!("Save failed: {error}"));
+                self.toast.fail(format!("Save failed: {error}"));
             }
         }
     }

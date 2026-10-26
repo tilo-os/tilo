@@ -3,6 +3,8 @@
 chat-contacts-section = Contacts
 chat-channels-title = Channels
 chat-person-chat-private = Private conversation
+# A message's author or a member, opening their profile card.
+chat-person-card = { $name }, profile
 chat-person-chat-placeholder = Write a private message
 chat-person-chat-unavailable = Private conversation unavailable. Choose someone in this workspace.
 chat-person-chat-empty = Write a message before sending.
@@ -82,6 +84,13 @@ chat-call-voice-unavailable = Voice unavailable
 
 # An attachment the reader has no access to: the card says why it cannot open.
 chat-attachment-no-access = You don't have access to this file
+chat-attachment-close = Close
+chat-attachment-loading = Loading the picture…
+chat-attachment-save-title = Save the attachment
+chat-attachment-save-accept = Save
+chat-attachment-save-failed = Couldn't save the file
+chat-attachment-not-on-device = This file isn't on this device
+chat-attachment-saved = Saved a copy
 chat-call-unavailable = Unavailable
 
 # Effects on the Chat root that start a call in the active workspace (Home's
@@ -125,7 +134,7 @@ chat-model-continue = Continue
 chat-model-author = Assistant
 chat-model-attribution = { $model } (model output, requested by { $person })
 chat-bot-attribution = { $name } (bot: { $bot })
-chat-via-attribution = { $name } (via { $service })
+chat-via-attribution = { $name }, from { $service }
 chat-bridge-name = { $service } bridge
 chat-bot-name = Bot
 chat-thread-start = Thread start
@@ -279,7 +288,6 @@ chat-sheet-category = Category
 chat-sheet-no-category = None
 chat-sheet-topic = Topic
 chat-sheet-topic-placeholder = What this channel is for (optional)
-chat-mention-alert = { $name } mentioned you in #{ $channel }
 
 # What kind of thing a message row is, for assistive technology and the
 # feedback picker ("Message in Chat").
@@ -454,7 +462,12 @@ chat-menu-edit-message = Edit message
 chat-menu-pin-message = Pin message
 chat-menu-unpin-message = Unpin message
 chat-menu-delete-message = Delete message
+chat-menu-copy-text = Copy text
+chat-message-more = More
+chat-message-bar-delete-now = Delete message now
+chat-message-bar-remove-now = Remove message now
 chat-menu-report-message = Report message
 chat-menu-report-sender = Report sender
 chat-menu-ban = Ban from the room
 chat-menu-volume = Volume
+chat-attach-share = Share a file

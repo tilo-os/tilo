@@ -179,6 +179,7 @@ pub mod remote_capture;
 pub mod remote_use;
 pub mod render;
 pub mod room_activity;
+pub(crate) mod room_app_versions;
 pub mod room_records;
 pub(crate) mod room_sync;
 pub(crate) mod room_task_import;

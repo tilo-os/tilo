@@ -79,6 +79,17 @@ tube-subscribed = Subscribed
 ## Watch page
 tube-video-missing = This video isn't available
 tube-resolution = Resolution
+tube-quality-now = Quality, playing { $quality }
+tube-playback-speed = Playback speed
+tube-speed-value = { $rate }×
+tube-captions = Captions
+tube-captions-named = Captions, { $why }
+tube-captions-off = Off
+tube-captions-automatic = { $track } (auto-generated)
+tube-captions-loading = loading…
+tube-captions-not-offered = not offered by this video
+tube-captions-unavailable = could not be loaded
+tube-resume-at = Resume at { $time }
 tube-skip-segment = Skip { $segment }
 tube-like = Like
 tube-like-count = Like, { $likes }

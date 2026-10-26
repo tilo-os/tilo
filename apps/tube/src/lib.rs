@@ -37,6 +37,7 @@ pub mod actions;
 pub mod api;
 pub mod app;
 pub mod backend;
+pub mod captions;
 pub mod history;
 pub mod i18n;
 pub mod images;

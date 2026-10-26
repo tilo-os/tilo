@@ -1,0 +1,110 @@
+#!/usr/bin/bash
+# Which signed image this device's updates follow: its channel's, or for a while a developer's
+# build of one commit pinned in its place.
+#
+#   tilo-update-channel list          the channels this device can follow, one per line
+#   tilo-update-channel current       the one it follows: the update policy's choice, else its
+#                                     image's own (dev for a dev image, stable otherwise)
+#   tilo-update-channel ref [NAME]    the reference channel NAME (default: current) follows here;
+#                                     nothing when the image follows the origin it was installed
+#                                     with (a release image on stable)
+#   tilo-update-channel next          the reference the next update follows: the pinned build
+#                                     while the channel has published nothing since it was
+#                                     pinned, else the channel's (dropping the pin); nothing
+#                                     when updates follow the installed origin
+#   tilo-update-channel pin REF       follow REF, a dev image of this device, until the channel
+#                                     moves on (as root; `tilo device deploy` does this)
+#   tilo-update-channel unpin         follow the channel again
+#
+# The channels: stable, Tilo's releases (signed with the release key); dev, main's newest dev
+# image for this device, registry.tilo.so/tilo/tilo-vm:<target>-ci, signed with the development
+# key, which only a dev image's own policy accepts (os/scripts/finalize-dev-image.py), so a
+# release image follows stable only. <target> is the board of a board image (its hardware
+# profile), else the architecture. docs/development/devices.md describes the whole path.
+set -euo pipefail
+
+POLICY="${TILO_UPDATE_POLICY:-/var/lib/tilo/update-policy}"
+ROOT="${TILO_UPDATE_CHANNEL_ROOT:-}"
+POLICY_SET="${TILO_UPDATE_POLICY_SET:-/usr/libexec/tilo-update-policy-set}"
+DEV_REPOSITORY=registry.tilo.so/tilo/tilo-vm
+
+die() { printf 'tilo-update-channel: %s\n' "$*" >&2; exit 1; }
+policy() {  # $1 = key
+  [ -r "$POLICY" ] || return 0
+  sed -n "s/^$1=//p" "$POLICY" | tail -n 1
+}
+flavour() { cat "$ROOT/usr/lib/tilo/image-flavour" 2>/dev/null || echo release; }
+board() {
+  local profile="$ROOT/usr/lib/tilo/hardware-profile.json"
+  [ -r "$profile" ] || return 0
+  sed -n 's/^[[:space:]]*"id"[[:space:]]*:[[:space:]]*"\([a-z0-9-]*\)".*/\1/p' "$profile" | head -n 1
+}
+target() {
+  local id
+  id="$(board)"
+  printf '%s' "${id:-${TILO_UPDATE_CHANNEL_ARCH:-$(uname -m)}}"
+}
+list() {
+  [ "$(flavour)" = dev ] && echo dev
+  echo stable
+}
+current() {
+  local chosen
+  chosen="$(policy channel)"
+  if [ -n "$chosen" ] && list | grep -Fqx "$chosen"; then
+    printf '%s\n' "$chosen"
+  elif [ "$(flavour)" = dev ]; then
+    echo dev
+  else
+    echo stable
+  fi
+}
+ref() {  # $1 = channel
+  list | grep -Fqx "$1" || die "this device cannot follow $1"
+  case "$1:$(flavour)" in
+    dev:*) printf '%s:%s-ci\n' "$DEV_REPOSITORY" "$(target)" ;;
+    # A release image keeps the origin it was installed with; a board's successor is chosen by
+    # tilo-board-successor from there.
+    stable:release) ;;
+    # From a dev image, the release series of the same device; the release image it installs
+    # follows its own origin from then on.
+    stable:*)
+      if [ -n "$(board)" ]; then
+        printf 'code.tilo.so/tilo/tilo:%s-latest\n' "$(board)"
+      else
+        echo registry.tilo.so/tilo/tilo:latest
+      fi ;;
+  esac
+}
+digest() {  # $1 = reference; the manifest digest it names now
+  skopeo inspect --raw "docker://$1" | sha256sum | sed 's/^\([0-9a-f]*\).*/sha256:\1/'
+}
+
+case "${1-}" in
+  list) list ;;
+  current) current ;;
+  ref) ref "${2:-$(current)}" ;;
+  next)
+    channel="$(ref "$(current)")"
+    pin="$(policy pin)"
+    if [ -n "$pin" ] && [ -n "$channel" ]; then
+      # A channel that cannot be read now has not moved on as far as anyone knows.
+      if ! now="$(digest "$channel" 2>/dev/null)" || [ "$now" = "$(policy pin-base)" ]; then
+        printf '%s\n' "$pin"
+        exit 0
+      fi
+      "$POLICY_SET" unpin
+    fi
+    [ -z "$channel" ] || printf '%s\n' "$channel"
+    ;;
+  pin)
+    pin="${2:?usage: tilo-update-channel pin REF}"
+    [ "$(current)" = dev ] || die "only a device on the dev channel follows a pinned build"
+    [[ $pin =~ ^registry\.tilo\.so/tilo/tilo-vm(-ref)?:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] \
+      || die "not a dev image reference: $pin"
+    base="$(digest "$(ref dev)")" || die "cannot read $(ref dev)"
+    "$POLICY_SET" pin "$pin" "$base"
+    ;;
+  unpin) "$POLICY_SET" unpin ;;
+  *) die 'usage: tilo-update-channel list|current|ref [NAME]|next|pin REF|unpin' ;;
+esac

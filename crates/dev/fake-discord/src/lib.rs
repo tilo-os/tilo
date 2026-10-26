@@ -166,6 +166,32 @@ struct Gateway {
     intents: Option<u64>,
 }
 
+/// The bot's standing over the guild's emoji: Create Expressions (upload,
+/// and rename or delete what it uploaded), Manage Expressions (any emoji),
+/// and the guild's emoji slots, as its boost level gives them.
+#[derive(Debug)]
+struct Expressions {
+    create: bool,
+    manage: bool,
+    slots: usize,
+}
+
+impl Default for Expressions {
+    fn default() -> Self {
+        Self {
+            create: true,
+            manage: false,
+            slots: EMOJI_SLOTS,
+        }
+    }
+}
+
+/// The bot's own role, which Discord makes when the bot joins.
+const BOT_ROLE: &str = "1200";
+
+/// The emoji slots of a guild without boosts.
+pub const EMOJI_SLOTS: usize = 50;
+
 #[derive(Default)]
 struct State {
     token: String,
@@ -179,6 +205,9 @@ struct State {
     bans: Vec<String>,
     /// The guild's custom emoji, as Discord's emoji objects.
     emojis: Vec<Value>,
+    /// What the bot's role may do with the guild's emoji, and how many
+    /// the guild holds.
+    expressions: Expressions,
     bot_reactions: Vec<(String, String)>,
     audit: Vec<Value>,
     cdn: HashMap<String, (String, Vec<u8>)>,
@@ -187,6 +216,17 @@ struct State {
     windows: Vec<Window>,
     commands: Value,
     interaction_replies: Vec<Value>,
+    /// Edits of interaction replies (`PATCH .../messages/@original`), as
+    /// `{"interaction", "edit"}`.
+    interaction_edits: Vec<Value>,
+    /// Who is signed in to Discord in the browser: the account the consent
+    /// page authorizes.
+    oauth_user: Option<User>,
+    /// Authorization codes the consent page handed out, each to its
+    /// account and redirect address, good once.
+    oauth_codes: HashMap<String, (User, String)>,
+    /// Access tokens the token endpoint issued, by token.
+    oauth_tokens: HashMap<String, User>,
     last_id: u64,
     gateway: Gateway,
     voice: voice::Voice,
@@ -494,8 +534,13 @@ impl FakeDiscord {
         at_ms: u64,
     ) -> String {
         let id = self.post_written(channel, &User::new(webhook, name), content, at_ms);
-        let mut state = self.shared.lock();
-        if let Some(message) = state.messages.iter_mut().find(|m| m["id"] == id.as_str()) {
+        if let Some(message) = self
+            .shared
+            .lock()
+            .messages
+            .iter_mut()
+            .find(|m| m["id"] == id.as_str())
+        {
             message["webhook_id"] = json!(webhook);
             message["author"]["bot"] = json!(true);
         }
@@ -646,6 +691,48 @@ impl FakeDiscord {
         self.shared.lock().emojis.clone()
     }
 
+    /// Whether the bot's role holds Create Expressions and Manage
+    /// Expressions, and how many emoji the guild has room for. A change to
+    /// the role's permissions dispatches `GUILD_ROLE_UPDATE`, as granting
+    /// or revoking them in the server's settings does.
+    pub fn set_expressions(&self, create: bool, manage: bool, slots: usize) {
+        const CREATE: u64 = 1 << 43;
+        const MANAGE: u64 = 1 << 30;
+        let mut state = self.shared.lock();
+        let before = (state.expressions.create, state.expressions.manage);
+        state.expressions = Expressions {
+            create,
+            manage,
+            slots,
+        };
+        if before == (create, manage) {
+            return;
+        }
+        let Some(role) = state.roles.iter_mut().find(|role| role["id"] == BOT_ROLE) else {
+            return;
+        };
+        let held: u64 = role["permissions"]
+            .as_str()
+            .and_then(|bits| bits.parse().ok())
+            .unwrap_or_default();
+        let held = (held & !(CREATE | MANAGE))
+            | if create { CREATE } else { 0 }
+            | if manage { MANAGE } else { 0 };
+        role["permissions"] = json!(held.to_string());
+        let update = json!({"guild_id": GUILD, "role": role.clone()});
+        state.dispatch("GUILD_ROLE_UPDATE", update);
+    }
+
+    /// The picture uploaded for emoji `id`.
+    #[must_use]
+    pub fn emoji_picture(&self, id: &str) -> Option<Vec<u8>> {
+        self.shared
+            .lock()
+            .cdn
+            .get(&format!("emojis/{id}"))
+            .map(|(_, bytes)| bytes.clone())
+    }
+
     /// A user starts a thread on `message` in `parent`; returns the thread
     /// id, which is the message's id as on Discord.
     pub fn start_thread(&self, parent: &str, message: &str, name: &str) -> String {
@@ -657,15 +744,11 @@ impl FakeDiscord {
         message.to_owned()
     }
 
-    /// `user` runs `/name` (with `code` for `/link`); returns the
-    /// interaction id.
-    pub fn slash(&self, user: &User, name: &str, code: Option<&str>) -> String {
+    /// `user` runs `/name`; returns the interaction id.
+    pub fn slash(&self, user: &User, name: &str) -> String {
         let mut state = self.shared.lock();
         let id = state.snowflake();
-        let options: Vec<Value> = code
-            .map(|code| json!({"type": 3, "name": "code", "value": code}))
-            .into_iter()
-            .collect();
+        let options: Vec<Value> = Vec::new();
         state.dispatch(
             "INTERACTION_CREATE",
             json!({
@@ -924,6 +1007,19 @@ impl FakeDiscord {
     #[must_use]
     pub fn interaction_replies(&self) -> Vec<Value> {
         self.shared.lock().interaction_replies.clone()
+    }
+
+    /// The bot's edits of its interaction replies, oldest first, as
+    /// `{"interaction", "edit"}`.
+    #[must_use]
+    pub fn interaction_edits(&self) -> Vec<Value> {
+        self.shared.lock().interaction_edits.clone()
+    }
+
+    /// Sign `user` in to Discord: the consent page (`/oauth2/authorize`)
+    /// authorizes their account.
+    pub fn sign_in(&self, user: User) {
+        self.shared.lock().oauth_user = Some(user);
     }
 
     /// The guild's registered slash commands.

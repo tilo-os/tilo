@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, mpsc};
 
-use super::change_watch::{ChangeWatch, watch_changes};
+use super::change_watch::{ChangeWatch, watch_changes, watch_presence};
 
 /// A value read from files and kept current by a worker. See the module
 /// docs. Cloning shares the value and its worker.
@@ -194,28 +194,48 @@ impl Watches {
     fn arm(&mut self) -> std::io::Result<()> {
         let mut failed = None;
         for (target, armed) in self.directories.iter().zip(self.armed.iter_mut()) {
-            let Some(through) = nearest_existing(target) else {
-                continue;
-            };
-            if armed.as_ref().is_some_and(|(held, _)| *held == through) {
-                continue;
-            }
-            let changed = self.changed.clone();
-            let watched_target = target.clone();
-            let whole = through == *target;
-            // An ancestor reports only the entry on the way to the target.
-            let names = move |path: &Path| whole || watched_target.starts_with(path);
-            match watch_changes(&through, names, move || {
-                let _ = changed.send(());
-            }) {
-                Ok(watch) => *armed = Some((through, watch)),
-                Err(error) => {
-                    failed.get_or_insert(error);
+            // A directory on the way can appear between finding the nearest one and the
+            // watch on it taking effect, and that watch never reports it; look again once
+            // the watch is in place and move nearer until nothing nearer exists.
+            while let Some(through) = nearest_existing(target) {
+                if armed.as_ref().is_some_and(|(held, _)| *held == through) {
+                    break;
+                }
+                match watch_through(target, &through, &self.changed) {
+                    Ok(watch) => *armed = Some((through, watch)),
+                    Err(error) => {
+                        failed.get_or_insert(error);
+                        break;
+                    }
                 }
             }
         }
         failed.map_or(Ok(()), Err)
     }
+}
+
+/// A watch on `through`, `target` itself or the nearest of its ancestors that exists, that
+/// sends on `changed` when the target's files change or the entry on the way to it appears,
+/// goes or is renamed.
+fn watch_through(
+    target: &Path,
+    through: &Path,
+    changed: &mpsc::Sender<()>,
+) -> std::io::Result<ChangeWatch> {
+    let changed = changed.clone();
+    let notify = move || {
+        let _ = changed.send(());
+    };
+    if through == target {
+        return watch_changes(through, |_| true, notify);
+    }
+    // An ancestor reports only the entry on the way to the target, and only whether it exists.
+    let watched_target = target.to_path_buf();
+    watch_presence(
+        through,
+        move |path: &Path| watched_target.starts_with(path),
+        notify,
+    )
 }
 
 /// `path` or its nearest ancestor that exists as a directory.
@@ -271,7 +291,11 @@ mod tests {
             within(|| *watched.get() == "two"),
             "the change was not read"
         );
-        assert!(told.load(Ordering::Acquire) >= 1, "no listener was told");
+        // The value is kept before the listeners are told, on the same worker.
+        assert!(
+            within(|| told.load(Ordering::Acquire) >= 1),
+            "no listener was told"
+        );
     }
 
     #[test]

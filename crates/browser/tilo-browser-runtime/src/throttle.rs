@@ -73,6 +73,14 @@ impl PublicationSchedule {
         self.due
     }
 
+    /// The end of the window the last delivery opened, while it is open
+    /// at `now`.
+    pub(crate) fn window_end(&self, now: Instant) -> Option<Instant> {
+        self.last
+            .and_then(|last| last.checked_add(self.window))
+            .filter(|&end| now < end)
+    }
+
     /// Hold a change until `at`, as if [`Self::defer`] had.
     pub(crate) fn hold(&mut self, at: Instant) {
         self.due = Some(at);

@@ -49,7 +49,13 @@ pub struct FollowBanner {
     shown: Option<RosterRow>,
     chip: Rect,
     stop: Rect,
+    /// What the banner says as painted ("Following Ada", "Stopped
+    /// following"), and its Stop's words while following.
+    said: (String, String),
 }
+
+/// The semantic action target of the banner's Stop.
+pub const STOP_TARGET: &str = "follow:stop";
 
 impl FollowBanner {
     /// Following `row` began.
@@ -93,6 +99,32 @@ impl FollowBanner {
     #[must_use]
     pub fn stop_rect(&self) -> Rect {
         self.stop
+    }
+
+    /// The banner for assistive technology, while it is up: a polite
+    /// status saying whose view this follows (or that it stopped), with
+    /// its Stop ([`STOP_TARGET`]) while following.
+    #[must_use]
+    pub fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+        if self.chip.is_zero_area() || self.said.0.is_empty() {
+            return None;
+        }
+        let mut node = AccessNode::new(Role::Group)
+            .with_hashed_key("follow-banner")
+            .with_name(self.said.0.clone())
+            .with_live(Politeness::Polite)
+            .with_bounds(self.chip);
+        if !self.stop.is_zero_area() {
+            node = node.with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_name(self.said.1.clone())
+                    .with_action_target(STOP_TARGET)
+                    .with_bounds(self.stop)
+                    .with_state(AccessState::new().focusable(true)),
+            ]);
+        }
+        Some(node)
     }
 
     #[must_use]
@@ -173,6 +205,7 @@ impl FollowBanner {
         let (chip, stop) = rects(text, theme, (&label, &stop_label), place, is_following);
         self.chip = chip;
         self.stop = if is_following { stop } else { Rect::ZERO };
+        self.said = (label.clone(), stop_label.clone());
         // The bar comes down from the top bar it hangs under.
         let pose = Appear::pose(
             f64::from(openness),
