@@ -298,6 +298,12 @@ class ShellMemoryMap(unittest.TestCase):
         self.assertEqual(list(parts), ["heap_arenas", "gpu_memfd", "thread_stacks", "malloc_in_use", "malloc_free"])
         self.assertEqual((parts["heap_arenas"], parts["gpu_memfd"], parts["malloc_free"]), (80.0, 72.5, 39.1))
 
+    def test_a_failure_says_how_much_is_heap_in_use_free_and_by_kind(self):
+        text = resources.describe_shell_parts(shell_report())
+        self.assertTrue(text.startswith("heap in use "), text)
+        self.assertIn("heap free 39.1 MiB", text)
+        self.assertIn("heap_arenas 80.0 MiB, gpu_memfd 72.5 MiB", text)
+
     def test_records_are_valid_kpis_in_one_unit(self):
         ctx = Recorder()
         resources.record_shell_parts(ctx, shell_report(), "after_close")
