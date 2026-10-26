@@ -162,6 +162,8 @@ mod perf_scroll;
 
 #[path = "desktop_pan_frame.rs"]
 mod desktop_pan_frame;
+#[path = "typing_frame_work.rs"]
+mod typing_frame_work;
 
 #[path = "perf_interaction.rs"]
 mod perf_interaction;
