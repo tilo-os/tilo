@@ -20397,6 +20397,7 @@ dependencies = [
  "cosmic-text",
  "durable-store",
  "ed25519-dalek 3.0.0",
+ "emoji",
  "fluent",
  "fnv",
  "form_urlencoded",

@@ -192,9 +192,9 @@ fn the_tooltip_names_who_reacted_you_first() {
             .expect("a pill names who reacted")
             .1
     };
-    assert_eq!(tip(0), "Ada and Bo reacted with 🎉");
-    assert_eq!(tip(1), "You, Ada and 4 others reacted with 🙌");
-    assert_eq!(tip(2), "You reacted with 🔥");
+    assert_eq!(tip(0), "Ada and Bo reacted with party popper");
+    assert_eq!(tip(1), "You, Ada and 4 others reacted with raising hands");
+    assert_eq!(tip(2), "You reacted with fire");
     let add = laid.add_rect().expect("add");
     assert_eq!(
         laid.tooltip_at(add.center(), &names).map(|(_, tip)| tip),
@@ -346,7 +346,7 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
         "Enter toggles the pill the keyboard is on"
     );
     let tip = widget.tooltip_target_at(second).map(|(_, tip)| tip);
-    assert_eq!(tip.as_deref(), Some("Bo reacted with 🎉"));
+    assert_eq!(tip.as_deref(), Some("Bo reacted with party popper"));
 }
 
 #[test]
