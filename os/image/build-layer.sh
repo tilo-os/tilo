@@ -27,6 +27,7 @@
 #   builder/<target>/oci         the OS builder;  tools/<target>/oci  the side builds
 #   compiled/                    the compiled tree (os/image/compile.sh); a release's in
 #                                compiled-release/
+#   chromium/                    the browser's engine, for a compiled tree without it
 #   layers/<layer>/              the fragment of the layers that layer action added; a
 #                                release's own layers in release-layers/<layer>/, a board
 #                                release's in board-layers/<board>/<layer>/
@@ -245,6 +246,11 @@ cmd_layer() {
     case $entry in
       compiled)
         export TILO_COMPILED=$os/$compiled
+        # A compile that keeps its build directory leaves the browser's engine to its own
+        # check (os-chromium-ARCH), which this action needs then.
+        if [[ ! -d $TILO_COMPILED/chromium-engine && -d $os/chromium/chromium-engine ]]; then
+          export TILO_CHROMIUM_ENGINE=$os/chromium
+        fi
         continue ;;
       *:*) what=${entry%%:*} stage=${entry#*:} ;;
     esac
