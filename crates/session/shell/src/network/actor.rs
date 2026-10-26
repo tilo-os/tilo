@@ -828,6 +828,10 @@ struct HeldSurfaceUnits {
     writing: bool,
     /// Tells a write's completion from one for a stream since restarted.
     generation: u64,
+    /// The viewer's route failed to open or broke: until it is up again, a
+    /// window streamed to the whole workspace also sends its units to the
+    /// viewer on gossip.
+    unreachable: bool,
 }
 
 enum HostEvent {
@@ -2204,15 +2208,28 @@ impl ActorState {
         // not open) never holds up the healthy ones. Its units wait for its
         // route instead, in their order.
         let mut targets = Vec::new();
+        // Held for a viewer whose route is opening: on its way, not missed.
+        let mut on_the_way = 0usize;
         for peer in peers {
-            let held = self.held_surface_units.contains_key(&(ws, key.1, peer));
+            let held = (ws, key.1, peer);
             match self.live_surface_route(peer) {
-                Some(connection) if !held => targets.push((peer, connection)),
-                _ => self.hold_surface_unit((ws, key.1, peer), &msg),
+                Some(connection) if !self.held_surface_units.contains_key(&held) => {
+                    targets.push((peer, connection));
+                }
+                _ => {
+                    self.hold_surface_unit(held, &msg);
+                    if self
+                        .held_surface_units
+                        .get(&held)
+                        .is_some_and(|held| !held.unreachable)
+                    {
+                        on_the_way = on_the_way.saturating_add(1);
+                    }
+                }
             }
         }
         if targets.is_empty() {
-            if !targeted {
+            if !targeted && (workspace_peer_count == 0 || on_the_way < workspace_peer_count) {
                 publish(
                     &self.topics,
                     &self.host_sessions,
@@ -2251,7 +2268,7 @@ impl ActorState {
                     generation,
                     msg,
                     outcomes,
-                    all_delivered: sent == workspace_peer_count,
+                    all_delivered: sent.saturating_add(on_the_way) == workspace_peer_count,
                 })
                 .await;
         });
@@ -2287,6 +2304,7 @@ impl ActorState {
                 },
                 writing: false,
                 generation,
+                unreachable: false,
             })
             .backlog
             .push(msg.clone());
@@ -2351,9 +2369,7 @@ impl ActorState {
         });
         let Some(connection) = connection else {
             for key in keys {
-                if let Some(held) = self.held_surface_units.get_mut(&key) {
-                    held.backlog.lose_references();
-                }
+                self.surface_route_lost(key);
             }
             return;
         };
@@ -2364,8 +2380,38 @@ impl ActorState {
         }
         self.surface_connections.insert(peer, connection);
         for key in keys {
+            if let Some(held) = self.held_surface_units.get_mut(&key) {
+                held.unreachable = false;
+            }
             self.write_held_surface_unit(key);
         }
+    }
+
+    /// `key`'s viewer could not be reached on its route. What was held for
+    /// it goes on gossip when the window streams to the whole workspace;
+    /// otherwise the frames, which reference what is lost, go. The stream's
+    /// start stays held, and the viewer's next unit opens a route again.
+    fn surface_route_lost(&mut self, key: (WorkspaceId, SurfaceId, EndpointId)) {
+        let targeted = self.surface_fanout_viewers.contains_key(&(key.0, key.1));
+        let Some(held) = self.held_surface_units.get_mut(&key) else {
+            return;
+        };
+        held.unreachable = true;
+        if !targeted {
+            while let Some(msg) = held.backlog.pop() {
+                publish(
+                    &self.topics,
+                    &self.host_sessions,
+                    &mut self.lanes,
+                    key.0,
+                    &msg,
+                    false,
+                    true,
+                    false,
+                );
+            }
+        }
+        held.backlog.lose_references();
     }
 
     /// Write the next unit held for `key`'s viewer on its open route, one at
@@ -2424,10 +2470,8 @@ impl ActorState {
         }
         held.writing = false;
         if !delivered {
-            // The route broke: what is left references the lost unit. The
-            // viewer's next unit opens a route again.
-            held.backlog.lose_references();
             self.surface_connections.remove(&key.2);
+            self.surface_route_lost(key);
             return;
         }
         self.write_held_surface_unit(key);
