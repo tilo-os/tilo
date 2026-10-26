@@ -9,7 +9,7 @@
 //! which the governor admits within that namespace and republishes.
 use super::{NetCmd, ShellNetwork, room_topic_id};
 use crate::shell::state::{RoomId, Strip, TileContent};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
@@ -34,6 +34,10 @@ struct Room {
     /// personal was last looked at: while they hold, there is nothing of
     /// this device's to take out of it.
     personal_heads: Option<Vec<automerge::ChangeHash>>,
+    /// Retained layout requests this device has already applied and not yet
+    /// seen leave the admitted document. Applying one again is harmless, so
+    /// an unadmitted change is retried rather than lost.
+    retained: BTreeSet<String>,
 }
 
 /// What a look at a room last found nothing to do for. The outcome is a
@@ -166,6 +170,10 @@ impl ShellNetwork {
             self.keep_out_of_personal_room(owner, room, governed_here, tree, now);
             return;
         }
+        // Retained requests for this device's windows are room state, not a
+        // write into someone else's namespace: drain, claim and apply each
+        // once, in the same change that publishes the result.
+        self.apply_retained_layout_requests(&owner, room, tree, governed_here, now);
         let (salt, windows) = windows_to_publish(&tree.read(), room, governed_here);
         if salt == 0 {
             return;
@@ -207,11 +215,161 @@ impl ShellNetwork {
             }
             Ok(Some(Plan::Claim)) => self.claim_namespace(room, salt, now),
             Ok(Some(Plan::Publish(changes))) if governed_here => {
-                self.admit_own_topology(owner, room, changes, now);
+                let _ = self.admit_own_topology(owner, room, changes, now);
             }
             Ok(Some(Plan::Publish(changes))) => self.send_topology(room, changes, now),
             Ok(None) => {}
             Err(error) => tracing::debug!(%room, %error, "hosted legacy windows not published"),
+        }
+    }
+
+    /// Apply the retained requests addressed to this device's windows: read
+    /// them from the admitted document, admit each against the exact revision
+    /// its requester saw, reduce it in this device's own workspace, and record
+    /// the applied id in this device's namespace under the same change that
+    /// publishes the rearranged entries. A request this device already
+    /// recorded is never applied twice, and a restart reads the record back
+    /// from the room.
+    fn apply_retained_layout_requests(
+        &self,
+        owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
+        room: RoomId,
+        tree: &crate::shell::state::WorkspaceTreeHandle,
+        governed_here: bool,
+        now: Instant,
+    ) {
+        use tilo_desktop_model::commands::{BoundCommand, admit, apply_command};
+        use tilo_desktop_model::projection::{EmptyStrips, project_owned_contents};
+        use tilo_desktop_model::room_layout::{claim, pending};
+
+        let opened = owner
+            .with_current(room, |view| {
+                Ok(view
+                    .peer()
+                    .admitted_room()
+                    .cloned()
+                    .map(|admitted| (admitted, view.device().device_public_key)))
+            })
+            .ok()
+            .flatten();
+        let Some((admitted, device)) = opened else {
+            return;
+        };
+        let (salt, share_floor) = {
+            let tree = tree.read();
+            (tree.local_salt(), tree.room_share_floor.get(&room).copied())
+        };
+        if salt == 0 {
+            return;
+        }
+        let wanted = pending(&admitted, salt);
+        if wanted.is_empty() {
+            if let Ok(mut rooms) = self.hosted_topology.rooms.lock() {
+                if let Some(state) = rooms.get_mut(&room) {
+                    state.retained.clear();
+                }
+            }
+            return;
+        }
+        let fresh: Vec<_> = {
+            let Ok(rooms) = self.hosted_topology.rooms.lock() else {
+                return;
+            };
+            let held = rooms.get(&room).map(|state| &state.retained);
+            wanted
+                .into_iter()
+                .filter(|request| held.is_none_or(|held| !held.contains(&request.id)))
+                .collect()
+        };
+        if fresh.is_empty() {
+            return;
+        }
+        let mut doc = admitted;
+        let heads = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(device.to_vec()));
+        let mut claimed = Vec::new();
+        {
+            let mut tree = tree.write();
+            let Some(workspace) = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room() == room)
+            else {
+                return;
+            };
+            for request in &fresh {
+                let Ok(bound) = serde_json::from_slice::<BoundCommand>(&request.command) else {
+                    continue;
+                };
+                let owned = |id| tilo_desktop_model::peer_salt_of(id) == salt;
+                let Ok(command) = admit(workspace, &bound.source, &mut doc, &bound.command, owned)
+                else {
+                    // The window moved on since the request was made. Keep
+                    // it retained, not silently dropped: a later look may
+                    // still be able to apply it.
+                    continue;
+                };
+                match apply_command(
+                    workspace,
+                    &command,
+                    &mut || Err("a rearranged window mints no identity".into()),
+                    &mut |_, _| Err("a rearranged window creates no record".into()),
+                ) {
+                    Ok(()) => {
+                        if claim(&mut doc, salt, request).unwrap_or(false) {
+                            claimed.push(request.id.clone());
+                        }
+                    }
+                    Err(error) => {
+                        tracing::debug!(%room, request = %request.id, %error, "retained layout request refused");
+                    }
+                }
+            }
+            if claimed.is_empty() {
+                return;
+            }
+            let strips = if governed_here {
+                workspace.strips.clone()
+            } else {
+                own_legacy_windows(&workspace.strips, salt)
+            };
+            if let Err(error) =
+                project_owned_contents(&mut doc, &strips, salt, share_floor, EmptyStrips::Skip)
+            {
+                tracing::debug!(%room, %error, "retained layout projection refused");
+                return;
+            }
+            doc.commit();
+            tree.queue_save();
+        }
+        let changes = doc
+            .get_changes(&heads)
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect::<Vec<_>>();
+        if changes.is_empty() {
+            return;
+        }
+        if governed_here {
+            // A retained request's result is not the periodic topology
+            // resend: publish it now rather than losing it to the cadence.
+            if let Ok(mut rooms) = self.hosted_topology.rooms.lock() {
+                rooms.entry(room).or_default().sent_at = None;
+            }
+            if !self.admit_own_topology(owner.clone(), room, changes, now) {
+                // The room's publication cadence held it; the request is
+                // still pending, so the next look applies it again.
+                return;
+            }
+        } else if let Ok(mut rooms) = self.hosted_topology.rooms.lock() {
+            let state = rooms.entry(room).or_default();
+            state.pending.extend(changes);
+            state.settled = None;
+        }
+        if let Ok(mut rooms) = self.hosted_topology.rooms.lock() {
+            let held = &mut rooms.entry(room).or_default().retained;
+            held.extend(claimed);
         }
     }
 
@@ -282,7 +440,9 @@ impl ShellNetwork {
             }))
         });
         match changes {
-            Ok(Some(changes)) => self.admit_own_topology(owner, room, changes, now),
+            Ok(Some(changes)) => {
+                let _ = self.admit_own_topology(owner, room, changes, now);
+            }
             Ok(None) => {}
             Err(error) => tracing::debug!(%room, %error, "own windows not taken out"),
         }
@@ -361,9 +521,9 @@ impl ShellNetwork {
         room: RoomId,
         changes: Vec<Vec<u8>>,
         now: Instant,
-    ) {
+    ) -> bool {
         if !self.due_to_send(room, now) {
-            return;
+            return false;
         }
         match self.runtime.as_ref() {
             Some(runtime) => {
@@ -371,6 +531,7 @@ impl ShellNetwork {
             }
             None => admit_own_topology(&owner, room, changes),
         }
+        true
     }
 
     fn send_topology(&self, room: RoomId, changes: Vec<Vec<u8>>, now: Instant) {
@@ -878,6 +1039,201 @@ mod tests {
             .flat_map(|group| &group.tabs)
             .count();
         assert_eq!(shown, 3, "all three stay on this device");
+    }
+
+    /// A retained request for this device's window is applied once, claimed
+    /// in this device's own namespace, and never applied again: not on the
+    /// next look, and not after a restart that reads the room back.
+    #[test]
+    fn a_retained_layout_request_is_applied_and_claimed_exactly_once() {
+        use crate::shell::state::{StripId, WorkspaceTree};
+        use automerge::ReadDoc as _;
+        use ed25519_dalek::SigningKey;
+        use tilo_desktop_model::commands::{
+            BoundCommand, CommandSource, DesktopCommand, TabLocation,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let salt = 0x0042;
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.set_peer_salt(salt);
+        tree.persist_path = Some(directory.path().join("state.json"));
+        let workspace = tree.desktop.active;
+        let placeholder = |label: &str| TileContent::AppPlaceholder {
+            kind: crate::shell::state::AppKind::Other("so.tilo.notes".into()),
+            label: label.into(),
+        };
+        let room = {
+            let ws = tree
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|ws| ws.id == workspace)
+                .unwrap();
+            ws.strips = vec![Strip {
+                id: StripId(own(1)),
+                name: "Workspace".into(),
+                window_groups: vec![WindowGroup {
+                    id: own(2),
+                    tabs: vec![
+                        tab(own(3), placeholder("First")),
+                        tab(own(4), placeholder("Second")),
+                    ],
+                    active_tab: own(3),
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                }],
+            }];
+            ws.room()
+        };
+        let tree = tree.shared();
+        let owner = crate::shell::native_workspace_owner::open(tree.clone()).unwrap();
+        let key = SigningKey::from_bytes(&[71; 32]);
+        let device = tilo_joined_room::testing::certificate(
+            &SigningKey::from_bytes(&[72; 32]),
+            &key,
+            "Desktop",
+        );
+        let seed = tilo_peer_state::workspace_seed(
+            &room.to_string(),
+            &device,
+            std::slice::from_ref(&device),
+            "Garden",
+            salt,
+        )
+        .unwrap();
+        owner
+            .create_governed(
+                room,
+                workspace.raw(),
+                &device,
+                &key,
+                seed,
+                std::time::SystemTime::now(),
+            )
+            .unwrap();
+        let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
+        network.publish_hosted_legacy_windows(room, &tree);
+
+        let request = |doc: &mut automerge::AutoCommit| {
+            let bound = BoundCommand {
+                source: CommandSource {
+                    room: room.to_string(),
+                    heads: doc.get_heads().into_iter().map(|head| head.0).collect(),
+                },
+                command: DesktopCommand::ReorderTab {
+                    location: TabLocation {
+                        strip: own(1),
+                        group: own(2),
+                        tab: own(4),
+                    },
+                    before: Some(own(3)),
+                },
+            };
+            tilo_desktop_model::projection::LayoutRequest {
+                id: "retained-reorder".into(),
+                from: hex::encode(device.user_public_key),
+                to_salt: salt,
+                at: 1,
+                command: serde_json::to_vec(&bound).unwrap(),
+            }
+        };
+        let mut doc = owner
+            .with_current(room, |view| {
+                Ok(view.peer().admitted_room().unwrap().clone())
+            })
+            .unwrap();
+        let heads = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(device.device_public_key.to_vec()));
+        let retained = request(&mut doc);
+        tilo_desktop_model::room_layout::request(&mut doc, &retained).unwrap();
+        doc.commit();
+        let changes = doc
+            .get_changes(&heads)
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        owner
+            .receive(
+                room,
+                tilo_peer_state::TransportOrigin::RelayDelta(device.device_public_key),
+                crate::network::NeighbourMsg::SyncResp {
+                    changes,
+                    room: room.to_string(),
+                },
+                std::time::SystemTime::now(),
+            )
+            .unwrap();
+
+        let order = |tree: &crate::shell::state::WorkspaceTreeHandle| {
+            tree.read()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|ws| ws.room() == room)
+                .unwrap()
+                .strips[0]
+                .window_groups[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(order(&tree), [own(3), own(4)]);
+
+        network.apply_retained_layout_requests(
+            &owner,
+            room,
+            &tree,
+            true,
+            std::time::Instant::now(),
+        );
+        assert_eq!(order(&tree), [own(4), own(3)], "the request moved the tab");
+        let applied = owner
+            .with_current(room, |view| {
+                let doc = view.peer().admitted_room().unwrap();
+                Ok(tilo_desktop_model::room_layout::pending(doc, salt).len())
+            })
+            .unwrap();
+        assert_eq!(applied, 0, "the room no longer holds it pending");
+        let marks = owner
+            .with_current(room, |view| {
+                Ok(view
+                    .peer()
+                    .admitted_room()
+                    .unwrap()
+                    .get(automerge::ROOT, "layout_applied_v1")
+                    .unwrap()
+                    .is_some())
+            })
+            .unwrap();
+        assert!(marks, "the owner recorded its claim in the room");
+
+        // Applying the same look again must not move it a second time (the
+        // mark excludes it), and a restarted owner that reads the room back
+        // must not either.
+        network.apply_retained_layout_requests(
+            &owner,
+            room,
+            &tree,
+            true,
+            std::time::Instant::now(),
+        );
+        assert_eq!(order(&tree), [own(4), own(3)]);
+        drop(network);
+        drop(owner);
+        let reopened = crate::shell::native_workspace_owner::open(tree.clone()).unwrap();
+        let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
+        network.apply_retained_layout_requests(
+            &reopened,
+            room,
+            &tree,
+            true,
+            std::time::Instant::now(),
+        );
+        assert_eq!(order(&tree), [own(4), own(3)], "a restart applies it once");
     }
 
     #[test]

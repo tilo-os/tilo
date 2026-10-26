@@ -64,7 +64,7 @@ fn layout(room: RoomId, strips: Vec<Strip>) -> SharedDesktop {
             ..DesktopTree::default()
         },
         records: Vec::new(),
-        authors: Default::default(),
+        authors: std::collections::BTreeMap::default(),
     }
 }
 
@@ -73,9 +73,12 @@ fn room() -> RoomId {
 }
 
 fn titles(desktop: &SharedDesktop) -> Vec<String> {
-    desktop.tree.workspaces[0]
-        .strips
-        .iter()
+    desktop
+        .tree
+        .workspaces
+        .first()
+        .into_iter()
+        .flat_map(|workspace| &workspace.strips)
         .flat_map(|strip| strip.window_groups.iter())
         .flat_map(|group| group.tabs.iter())
         .map(|tab| tab.title.clone())
@@ -84,13 +87,13 @@ fn titles(desktop: &SharedDesktop) -> Vec<String> {
 
 /// A page's copy of the room, its own writes published onto `room_doc` the
 /// way a peer's batch reaches it.
-fn fork(room_doc: &AutoCommit) -> AutoCommit {
+fn fork(room_doc: &mut AutoCommit) -> AutoCommit {
     AutoCommit::load(&room_doc.save()).unwrap()
 }
 
-fn publish(room_doc: &mut AutoCommit, page: &AutoCommit, since: Vec<automerge::ChangeHash>) {
+fn publish(room_doc: &mut AutoCommit, page: &mut AutoCommit, since: &[automerge::ChangeHash]) {
     room_doc
-        .load_incoming(&page.save_after(&since))
+        .load_incoming(&page.save_after(since))
         .expect("the room takes the page's change");
 }
 
@@ -109,14 +112,14 @@ fn two_devices_windows_merge_and_each_keeps_its_owner() {
     .unwrap();
     room_doc.commit();
 
-    let mut ben = fork(&room_doc);
+    let mut ben = fork(&mut room_doc);
     let since = ben.get_heads();
     let mut ben_layout = room_layout::read(&ben, None).expect("the room's layout");
     ben_layout.tree.workspaces[0]
         .strips
         .push(strip_of(BEN, 1, "Chat"));
     room_layout::write(&mut ben, &ben_layout, BEN, Some("ben")).unwrap();
-    publish(&mut room_doc, &ben, since);
+    publish(&mut room_doc, &mut ben, &since);
 
     let read = room_layout::read(&room_doc, None).unwrap();
     assert_eq!(titles(&read), ["Notes", "Chat"]);
@@ -146,28 +149,28 @@ fn a_page_writing_an_old_layout_keeps_the_others_windows() {
     .unwrap();
     room_doc.commit();
     // Ada's page before Ben opened his window.
-    let mut ada = fork(&room_doc);
+    let mut ada = fork(&mut room_doc);
 
-    let mut ben = fork(&room_doc);
+    let mut ben = fork(&mut room_doc);
     let since = ben.get_heads();
     let mut ben_layout = room_layout::read(&ben, None).unwrap();
     ben_layout.tree.workspaces[0]
         .strips
         .push(strip_of(BEN, 1, "Chat"));
     room_layout::write(&mut ben, &ben_layout, BEN, Some("ben")).unwrap();
-    publish(&mut room_doc, &ben, since);
+    publish(&mut room_doc, &mut ben, &since);
 
     // Ada closes her window, having seen only her own.
     let ada_since = ada.get_heads();
     let mut ada_layout = room_layout::read(&ada, None).unwrap();
     ada_layout.tree.workspaces[0].strips.clear();
     assert!(room_layout::write(&mut ada, &ada_layout, ADA, Some("ada")).unwrap());
-    publish(&mut room_doc, &ada, ada_since);
+    publish(&mut room_doc, &mut ada, &ada_since);
 
     let read = room_layout::read(&room_doc, None).unwrap();
     assert_eq!(titles(&read), ["Chat"], "Ben's window survived Ada's write");
     assert!(
-        read.authors.get(&tab_id(ADA, 1)).is_none(),
+        !read.authors.contains_key(&tab_id(ADA, 1)),
         "Ada's window is gone, not left as a ghost"
     );
 }
@@ -197,7 +200,7 @@ fn the_layout_reads_as_it_stood_at_any_heads() {
     let then = room_layout::read(&doc, Some(&first)).expect("a layout at those heads");
     assert_eq!(titles(&then), ["Notes"]);
     assert!(
-        then.authors.get(&tab_id(ADA, 2)).is_none(),
+        !then.authors.contains_key(&tab_id(ADA, 2)),
         "the second window was not there yet"
     );
     assert_eq!(
