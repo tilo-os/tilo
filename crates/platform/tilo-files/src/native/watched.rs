@@ -194,35 +194,48 @@ impl Watches {
     fn arm(&mut self) -> std::io::Result<()> {
         let mut failed = None;
         for (target, armed) in self.directories.iter().zip(self.armed.iter_mut()) {
-            let Some(through) = nearest_existing(target) else {
-                continue;
-            };
-            if armed.as_ref().is_some_and(|(held, _)| *held == through) {
-                continue;
-            }
-            let changed = self.changed.clone();
-            let watched_target = target.clone();
-            let whole = through == *target;
-            // An ancestor reports only the entry on the way to the target.
-            let names = move |path: &Path| whole || watched_target.starts_with(path);
-            let notify = move || {
-                let _ = changed.send(());
-            };
-            // An ancestor matters only when the entry on the way appears, goes or is renamed.
-            let watched = if whole {
-                watch_changes(&through, names, notify)
-            } else {
-                watch_presence(&through, names, notify)
-            };
-            match watched {
-                Ok(watch) => *armed = Some((through, watch)),
-                Err(error) => {
-                    failed.get_or_insert(error);
+            // A directory on the way can appear between finding the nearest one and the
+            // watch on it taking effect, and that watch never reports it; look again once
+            // the watch is in place and move nearer until nothing nearer exists.
+            while let Some(through) = nearest_existing(target) {
+                if armed.as_ref().is_some_and(|(held, _)| *held == through) {
+                    break;
+                }
+                match watch_through(target, &through, &self.changed) {
+                    Ok(watch) => *armed = Some((through, watch)),
+                    Err(error) => {
+                        failed.get_or_insert(error);
+                        break;
+                    }
                 }
             }
         }
         failed.map_or(Ok(()), Err)
     }
+}
+
+/// A watch on `through`, `target` itself or the nearest of its ancestors that exists, that
+/// sends on `changed` when the target's files change or the entry on the way to it appears,
+/// goes or is renamed.
+fn watch_through(
+    target: &Path,
+    through: &Path,
+    changed: &mpsc::Sender<()>,
+) -> std::io::Result<ChangeWatch> {
+    let changed = changed.clone();
+    let notify = move || {
+        let _ = changed.send(());
+    };
+    if through == target {
+        return watch_changes(through, |_| true, notify);
+    }
+    // An ancestor reports only the entry on the way to the target, and only whether it exists.
+    let watched_target = target.to_path_buf();
+    watch_presence(
+        through,
+        move |path: &Path| watched_target.starts_with(path),
+        notify,
+    )
 }
 
 /// `path` or its nearest ancestor that exists as a directory.
