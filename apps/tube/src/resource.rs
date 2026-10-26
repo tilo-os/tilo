@@ -313,6 +313,11 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
         self.follow_palette_query(query.text());
     }
 
+    /// `YouTube` is still answering what the platform search asked.
+    fn search_pending(&self) -> bool {
+        self.suggestions_pending()
+    }
+
     /// The videos, creators, playlists and watch history shown here, and a
     /// `YouTube` search for what was typed.
     fn search_entries(&self) -> Vec<SearchEntry> {
