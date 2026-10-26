@@ -29,8 +29,8 @@ git-confirm-discard = Verwerfen
 git-confirm-switch-title = Zu { $name } wechseln?
 git-confirm-switch-body = Das Arbeitsverzeichnis ist sauber; es wechselt nur der Branch.
 git-confirm-switch-dirty-body = Du hast nicht festgeschriebene Änderungen. Lege sie in den Stash und wechsle, oder nimm sie mit; eine Änderung, die überschrieben würde, lehnt beides ab.
-git-switch-stash = In den Stash legen und wechseln
-git-switch-carry = Wechseln und Änderungen mitnehmen
+git-switch-stash = Stash und wechseln
+git-switch-carry = Änderungen behalten
 git-switch-go = Wechseln
 git-cancel = Abbrechen
 

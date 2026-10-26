@@ -41,8 +41,8 @@ use ui::tilo_resource::Invoke;
 use ui::tokens::TextRole;
 use ui::widget::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar};
 use ui::widget::{
-    Banner, ButtonFace, ControlSize, EmptyState, EmptyStateContent, ModalAction, ModalHit,
-    ModalLayout, ModalSpec, SidebarDrawer, TextInput, TextInputKind, Widget,
+    Banner, ButtonFace, ControlSize, EmptyState, EmptyStateContent, ModalAction, ModalSpec,
+    SidebarDrawer, TextInput, TextInputKind, Widget,
 };
 
 use crate::changes::{self, ChangesHit};
@@ -236,6 +236,12 @@ enum Hit {
     ResolveConflict(crate::repo::ConflictSide),
     /// The conflicted file's own sentence: what keeping each side costs.
     ConflictNote,
+    /// The question a confirmation sheet asks, and the sentence under it
+    /// saying what answering costs.
+    ConfirmQuestion,
+    /// One answer on that sheet, by index: Cancel first, then the choices in
+    /// the order the sheet offers them.
+    ConfirmAnswer(usize),
     Panel(PanelHit),
     OpenPath,
     /// Choose the repository's folder with the system's file chooser.
@@ -372,10 +378,13 @@ pub struct GitClientApp {
     /// succeeded looked like work that had not happened.
     notice: Option<String>,
 
-    /// A destructive step waiting for confirmation, and where its sheet was
-    /// laid out last.
+    /// A question waiting for its answer: a destructive step, or a switch
+    /// that has to say what becomes of uncommitted work.
     confirm: Option<Confirm>,
-    confirm_layout: Option<ModalLayout>,
+    /// The sheet asking it, which owns its own hover, keyboard focus and
+    /// activation, so the question answers to Tab and Enter like every other
+    /// question in the system rather than only to the pointer.
+    confirm_sheet: ui::widget::ModalSheet,
 
     /// The list column of the Changes and History screens: docked beside the
     /// content when the window is wide, a floating drawer when it is narrow.
@@ -531,7 +540,7 @@ impl GitClientApp {
             conflict_cost: None,
             notice: None,
             confirm: None,
-            confirm_layout: None,
+            confirm_sheet: ui::widget::ModalSheet::new(),
             // Both lists are content the person reads: the overview width,
             // docked or as a drawer, so a row reads the same in both.
             // The diff beside them keeps the content minimum plus a rail's
@@ -734,6 +743,13 @@ impl GitClientApp {
             if self.selected_commit >= self.model.commits.len() {
                 self.selected_commit = 0;
             }
+            // A branch the person deleted is no longer under the keyboard:
+            // keep the selection on a branch, not past the end of the list.
+            let local = self.model.branches.iter().filter(|b| !b.is_remote).count();
+            self.branch_selection = self
+                .branch_selection
+                .map(|index| index.min(local.saturating_sub(1)))
+                .filter(|_| local > 0);
             self.diff_scroll = 0.0;
         }
     }
@@ -1769,6 +1785,15 @@ impl GitClientApp {
         self.screen = screen;
         self.set_focus(None);
         self.confirm = None;
+        // The branches page opens on its first local branch, as History
+        // opens on its first commit: otherwise the first arrow lands on the
+        // second branch and Enter checks that one out.
+        if screen == Screen::Panels && self.branch_selection.is_none() {
+            let local = self.model.branches.iter().filter(|b| !b.is_remote).count();
+            if local > 0 {
+                self.branch_selection = Some(0);
+            }
+        }
     }
 
     /// Do what `hit` names: the one path pointer presses, keys and
@@ -1817,7 +1842,10 @@ impl GitClientApp {
             }
             Hit::ResolveConflict(side) => self.resolve_conflict(side),
             // The note is read, never pressed.
-            Hit::ConflictNote => {}
+            Hit::ConflictNote | Hit::ConfirmQuestion => {}
+            // The sheet's answers, reached by a press or by assistive
+            // technology activating the button it names.
+            Hit::ConfirmAnswer(index) => self.answer_confirm(index),
             Hit::Panel(panel) => self.activate_panel(panel),
             Hit::OpenPath => self.set_focus(Some(Field::Open)),
             Hit::OpenRepository => self.open_repo_from_input(),
@@ -1928,30 +1956,39 @@ impl GitClientApp {
         }
     }
 
-    /// A press while the confirmation sheet is up: its buttons, its close
-    /// control and its scrim; nothing under it.
-    fn confirm_press(&mut self, pos: Point) {
-        let Some(layout) = &self.confirm_layout else {
-            return;
+    /// Answer the sheet with its action `index`: Cancel (0) puts the
+    /// question away, and the rest are its own answers in the order it
+    /// offered them.
+    fn answer_confirm(&mut self, index: usize) {
+        let choice = match index {
+            0 => None,
+            index => self.confirm.as_ref().and_then(|confirm| {
+                confirm
+                    .choices()
+                    .get(index.saturating_sub(1))
+                    .map(|face| face.choice)
+            }),
         };
-        match layout.hit(pos) {
-            Some(ModalHit::Action(0) | ModalHit::Close) => self.confirm = None,
-            Some(ModalHit::Action(index)) => {
-                // Action 0 is Cancel; the rest are the sheet's own answers,
-                // in the order it offered them.
-                let choice = self.confirm.as_ref().and_then(|confirm| {
-                    confirm
-                        .choices()
-                        .get(index.saturating_sub(1))
-                        .map(|f| f.choice)
-                });
+        self.confirm_sheet.reset();
+        match choice {
+            // `perform_confirmed` takes the question; leaving it standing
+            // where no answer was found puts it away instead of asking
+            // forever.
+            Some(choice) => self.perform_confirmed(choice),
+            None => self.confirm = None,
+        }
+    }
+
+    /// A press, a key or an assistive activation while the sheet is up: the
+    /// sheet's own answers, its close control and its scrim; nothing under
+    /// it.
+    fn answer_sheet(&mut self, response: ui::widget::SheetResponse) {
+        match response {
+            ui::widget::SheetResponse::Action(index) => self.answer_confirm(index),
+            ui::widget::SheetResponse::Dismiss => {
                 self.confirm = None;
-                if let Some(choice) = choice {
-                    self.perform_confirmed(choice);
-                }
+                self.confirm_sheet.reset();
             }
-            Some(ModalHit::Scrim) if layout.dismiss_on_scrim => self.confirm = None,
-            _ => {}
         }
     }
 
@@ -2335,6 +2372,46 @@ impl GitClientApp {
                     ));
                     continue;
                 }
+                // The question and what answering costs, read out as one
+                // sentence: a reader hears what it is deciding about.
+                Hit::ConfirmQuestion => {
+                    let Some(confirm) = &self.confirm else {
+                        continue;
+                    };
+                    let text = format!("{} {}", confirm.title(), confirm.body());
+                    out.push((
+                        "git.confirm.question".into(),
+                        rect,
+                        AccessNode::new(Role::StaticText)
+                            .with_name(&text)
+                            .with_value(&text)
+                            .with_bounds(rect),
+                        None,
+                    ));
+                    continue;
+                }
+                Hit::ConfirmAnswer(index) => {
+                    let Some(confirm) = &self.confirm else {
+                        continue;
+                    };
+                    let name = match *index {
+                        0 => t("git-cancel"),
+                        index => match confirm.choices().get(index.saturating_sub(1)) {
+                            Some(face) => face.label.clone(),
+                            None => continue,
+                        },
+                    };
+                    out.push((
+                        format!("git.confirm:{index}"),
+                        rect,
+                        AccessNode::new(Role::Button)
+                            .with_name(&name)
+                            .with_state(AccessState::new().focusable(true))
+                            .with_bounds(rect),
+                        Some(Hit::ConfirmAnswer(*index)),
+                    ));
+                    continue;
+                }
                 Hit::ResolveConflict(side) => {
                     let (target, name) = match side {
                         crate::repo::ConflictSide::Ours => {
@@ -2629,9 +2706,8 @@ impl Widget for GitClientApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        use ui::widget::modal_dialog;
         let Some(confirm) = &self.confirm else {
-            self.confirm_layout = None;
+            self.confirm_sheet.reset();
             return;
         };
         let window = presence.viewport.get().unwrap_or(self.rect);
@@ -2639,43 +2715,66 @@ impl Widget for GitClientApp {
         let body = confirm.body();
         let choices = confirm.choices();
         let cancel = t("git-cancel");
-        let hovered = |index: usize| {
-            self.confirm_layout
-                .as_ref()
-                .and_then(|layout| layout.actions.get(index).copied())
-                .zip(self.pointer)
-                .is_some_and(|(rect, p)| rect.contains(p))
-        };
-        let mut actions = vec![ModalAction::secondary(&cancel).hovered(hovered(0))];
-        actions.extend(choices.iter().enumerate().map(|(index, face)| {
-            let action = if face.danger {
+        let mut actions = vec![ModalAction::secondary(&cancel)];
+        actions.extend(choices.iter().map(|face| {
+            if face.danger {
                 ModalAction::danger(&face.label)
             } else {
                 ModalAction::primary(&face.label)
-            };
-            action.hovered(hovered(index.saturating_add(1)))
+            }
         }));
-        let style = theme.text(TextRole::Body);
-        let spec = ModalSpec::new(&title).actions(&actions);
-        let width = modal_dialog::body_width(window, spec.max_width, theme);
-        let (_, body_h) = text.measure_style(&body, Some(ui::num::f32_of_f64(width)), &style);
-        let spec = spec.body_height(f64::from(body_h)).dismiss_on_scrim(true);
-        let layout = modal_dialog::layout(window, &spec, text, theme);
-        modal_dialog::paint_backdrop(scene, transform, text, theme, &layout, &spec);
-        let (_, dim) = modal_dialog::ink(theme);
-        text.draw_style(
-            scene,
-            &body,
-            dim,
-            transform.pre_translate(vello::kurbo::Vec2::new(layout.body.x0, layout.body.y0)),
-            Some(ui::num::f32_of_f64(layout.body.width())),
-            &style,
-        );
-        modal_dialog::paint_actions(scene, transform, text, theme, &layout, &spec);
-        self.confirm_layout = Some(layout);
+        let spec = ModalSpec::new(&title)
+            .actions(&actions)
+            .dismiss_on_scrim(true);
+        self.confirm_sheet
+            .paint_message(scene, transform, text, theme, window, &spec, &body);
+        // While the question is up it is the whole of what a person can act
+        // on: the picture under the scrim is context, and a press there only
+        // dismisses. So the accessibility tree holds the question and its
+        // answers, and not the page they were asked about.
+        let Some(layout) = self.confirm_sheet.layout() else {
+            return;
+        };
+        let mut reached = vec![Target {
+            rect: Rect::new(
+                layout.title.x0,
+                layout.title.y0,
+                layout.body.x1,
+                layout.body.y1,
+            ),
+            hit: Hit::ConfirmQuestion,
+        }];
+        for index in 0..layout.actions.len() {
+            let rect = layout.actions[index];
+            if rect.area() > 0.0 {
+                reached.push(Target {
+                    rect,
+                    hit: Hit::ConfirmAnswer(index),
+                });
+            }
+        }
+        self.semantic = reached;
+        self.targets.clear();
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        // A question holds the window while it asks: it takes the pointer,
+        // the keyboard (Tab moves between its answers, Enter takes the one
+        // under focus) and the scrim's dismissal, and the page behind it
+        // takes nothing.
+        if self.confirm.is_some() {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.pointer = Some(Point::new(
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
+                ));
+            }
+            if let Some(response) = self.confirm_sheet.handle(event, ctx.scale_factor) {
+                self.answer_sheet(response);
+            }
+            *ctx.handled = true;
+            return;
+        }
         let mut input = InputEventCtx {
             event,
             scale_factor: ctx.scale_factor,
@@ -2915,10 +3014,6 @@ impl GitClientApp {
         let Some(pos) = self.pointer else {
             return;
         };
-        if self.confirm.is_some() {
-            self.confirm_press(pos);
-            return;
-        }
         if self.scroll_bar_press(pos) {
             self.set_focus(None);
             return;
@@ -2999,14 +3094,8 @@ impl GitClientApp {
             return;
         }
 
-        // The confirmation sheet holds the keyboard: Escape cancels it.
-        if self.confirm.is_some() {
-            if matches!(&ev.logical_key, Key::Named(NamedKey::Escape)) {
-                self.confirm = None;
-            }
-            *handled = true;
-            return;
-        }
+        // A question holds the keyboard through the sheet it is asked on,
+        // which `handle_event` routes before any of this runs.
 
         // A focused text field takes the keys, except Enter (submit) and Escape
         // (blur) which the app intercepts. Text editing — cursor, selection,
@@ -3677,6 +3766,14 @@ impl GitClientApp {
             // The file a merge left conflicted, open, so the capture shows
             // the choice it waits on and what each side costs.
             Some("conflict") => self.test_select_conflicted_file(),
+            // The question a dirty tree asks before it changes branch: the
+            // capture of the decision itself, not of what it is about.
+            Some("switch") => {
+                self.confirm = Some(Confirm::SwitchBranch {
+                    name: "wgpu-pipeline".to_owned(),
+                    dirty: true,
+                });
+            }
             // The narrow window's list column, revealed over its scrim
             // rather than the closed default a fresh narrow window opens to.
             Some("narrow") => self.drawer.snap(true),
