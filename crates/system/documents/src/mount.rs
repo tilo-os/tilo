@@ -915,11 +915,13 @@ mod tests {
         let at = tempfile::tempdir().unwrap();
         match mount(documents.clone(), &at.path().join("documents")) {
             Ok(mounted) => Some((at, mounted)),
-            Err(error) if std::env::var_os("TILO_REQUIRE_FUSE").is_none() => {
-                eprintln!("skipping: FUSE is unavailable here ({error})");
+            Err(error) => {
+                tilo_test_env::capability_unavailable(
+                    tilo_test_env::Capability::Fuse,
+                    format_args!("mounting the documents tree failed: {error}"),
+                );
                 None
             }
-            Err(error) => panic!("TILO_REQUIRE_FUSE is set and mounting failed: {error}"),
         }
     }
 

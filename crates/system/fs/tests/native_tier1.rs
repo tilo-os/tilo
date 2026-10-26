@@ -43,17 +43,15 @@ const TIMEOUT: Duration = Duration::from_secs(180);
 /// this account, never to root or to the author's uid.
 const LOCAL_OWNER: (u32, u32) = (4242, 4242);
 
-fn required() -> bool {
-    std::env::var("TILO_REQUIRE_FANOTIFY").is_ok_and(|v| v == "1")
-}
-
 /// The two store volumes, or `None` (after saying why) when this machine
 /// cannot run Tier 1.
 fn stores(test: &str) -> Option<(PathBuf, PathBuf)> {
     let skip = |why: String| {
-        assert!(!required(), "{test}: TILO_REQUIRE_FANOTIFY=1 but {why}");
-        eprintln!(
-            "skipping {test}: {why} (set TILO_FS_NATIVE_STORES=/a:/b to two dedicated Btrfs volumes and run as root)"
+        tilo_test_env::capability_unavailable(
+            tilo_test_env::Capability::Fanotify,
+            format_args!(
+                "{test}: {why} (set TILO_FS_NATIVE_STORES=/a:/b to two dedicated Btrfs volumes and run as root)"
+            ),
         );
         None
     };

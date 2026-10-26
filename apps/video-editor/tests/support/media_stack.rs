@@ -81,10 +81,9 @@ fn h264_encoder() -> Option<(&'static str, &'static str, &'static str)> {
 }
 
 fn require_media(problem: &str) -> bool {
-    assert!(
-        std::env::var_os("TILO_REQUIRE_MEDIA").is_none_or(|value| value != "1"),
-        "TILO_REQUIRE_MEDIA=1 but the media stack is incomplete: {problem}"
+    tilo_test_env::capability_unavailable(
+        tilo_test_env::Capability::Media,
+        format_args!("{problem}"),
     );
-    eprintln!("footage not checked ({problem}); set TILO_REQUIRE_MEDIA=1 to make this a failure");
     false
 }

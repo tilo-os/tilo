@@ -125,11 +125,15 @@ impl ServerFixture {
                 .filter(|value| !value.is_empty())
         };
         let Some(url) = var("URL") else {
-            assert!(
-                std::env::var("TILO_REQUIRE_CLOUD_SERVERS").as_deref() != Ok("1")
-                    || prefix.starts_with("TILO_LIVE"),
-                "{prefix}_URL is required on this lane"
-            );
+            // `TILO_LIVE_*` credentials are optional even on a lane that
+            // promises the conformance servers: the nightly sign-in checks
+            // name those separately.
+            if !prefix.starts_with("TILO_LIVE") {
+                tilo_test_env::capability_unavailable(
+                    tilo_test_env::Capability::CloudServers,
+                    format_args!("{prefix}_URL is required on this lane"),
+                );
+            }
             return None;
         };
         let user = var("USER").unwrap_or_default();

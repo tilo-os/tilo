@@ -62,6 +62,13 @@ pub enum Capability {
     /// `ip` and `nft`, in user and network namespaces of the test's own
     /// (`unshare --user --map-root-user --net`).
     NetworkTunnel,
+    /// A usable `PDFium` dynamic library (`TILO_PDFIUM_LIB` or one of the
+    /// well-known install paths). Some distributions ship a library with a
+    /// different ABI; that is not this capability.
+    Pdfium,
+    /// The live `WebDAV`/Nextcloud servers a storage conformance lane names
+    /// through its credential and URL variables.
+    CloudServers,
 }
 
 impl Capability {
@@ -83,6 +90,8 @@ impl Capability {
             Self::Swtpm => "TILO_REQUIRE_SWTPM",
             Self::KernelKeyring => "TILO_REQUIRE_KEYRING",
             Self::NetworkTunnel => "TILO_REQUIRE_TUN",
+            Self::Pdfium => "TILO_REQUIRE_PDFIUM",
+            Self::CloudServers => "TILO_REQUIRE_CLOUD_SERVERS",
         }
     }
 
@@ -111,6 +120,8 @@ impl fmt::Display for Capability {
             Self::Swtpm => "an emulated TPM",
             Self::KernelKeyring => "the kernel keyring",
             Self::NetworkTunnel => "TUN devices with ip and nft",
+            Self::Pdfium => "PDFium",
+            Self::CloudServers => "live cloud servers",
         })
     }
 }
@@ -398,6 +409,24 @@ mod tests {
             message,
             "TILO_REQUIRE_FUSE is set but FUSE is unavailable: \
              cannot mount the fixture: no /dev/fuse"
+        );
+    }
+
+    #[test]
+    fn pdfium_and_live_cloud_servers_are_lane_capabilities_too() {
+        let mut env = ScopedEnv::new();
+        env.remove("TILO_REQUIRE_PDFIUM");
+        env.remove("TILO_REQUIRE_CLOUD_SERVERS");
+        assert!(!Capability::Pdfium.required());
+        assert!(!Capability::CloudServers.required());
+        env.set("TILO_REQUIRE_PDFIUM", "1");
+        env.set("TILO_REQUIRE_CLOUD_SERVERS", "1");
+        assert!(Capability::Pdfium.required());
+        assert!(Capability::CloudServers.required());
+        assert_eq!(Capability::Pdfium.variable(), "TILO_REQUIRE_PDFIUM");
+        assert_eq!(
+            Capability::CloudServers.variable(),
+            "TILO_REQUIRE_CLOUD_SERVERS"
         );
     }
 

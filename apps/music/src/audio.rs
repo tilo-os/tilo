@@ -3258,12 +3258,11 @@ mod tests {
     #[test]
     #[serial_test::serial(audio_backend)]
     fn real_sink_renders_audio_and_is_not_fakesink() {
-        if std::env::var_os("TILO_REQUIRE_AUDIO").is_none_or(|value| value != "1") {
-            eprintln!(
-                "real audio output not checked: set TILO_REQUIRE_AUDIO=1 where a sound server runs"
-            );
-            return;
-        }
+        tilo_test_env::require_capability!(
+            Audio,
+            tilo_test_env::Capability::Audio.required(),
+            "real audio output is checked only on a lane with a sound server"
+        );
         assert!(gstreamer::init().is_ok(), "gstreamer initialises");
         // The decode graph playbin needs for a local WAV, plus the real sink.
         let need = [
