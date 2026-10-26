@@ -194,6 +194,12 @@ no node orders governance for the others.
 - **An identity never splits in two.** Because deciding takes half the
   shares, two sides of a conflict can't both decide. Shares decide, not
   devices.
+- **A device that signs both sides gives itself away.** An honest device
+  never signs two conflicting requests, so one that does has a key in
+  someone else's hands. Neither request stands, and every node can see
+  which device it was. Until a request removing it passes, signed by half
+  of the other shares, the identity makes no further identity changes;
+  everything else keeps working.
 
 The scenario this must hold up to: a person has three devices and one is
 stolen unlocked. The thief can't remove another of their devices alone,
