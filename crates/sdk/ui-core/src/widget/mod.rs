@@ -3167,6 +3167,8 @@ pub use autocomplete::{
 };
 pub mod mention_picker;
 pub use mention_picker::{MentionCandidate, MentionQuery};
+pub mod text_completion;
+pub use text_completion::{EmojiQuery, TextCompletion};
 mod number_input;
 pub use number_input::{NumberInput, NumberStepperFace, StepperPart};
 pub mod marks;
