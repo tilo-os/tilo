@@ -163,6 +163,10 @@ fn press_bar(app: &mut PhotosApp, name: &str) -> bool {
     true
 }
 
+#[allow(
+    clippy::float_cmp,
+    reason = "the surface must show exactly the factor the gesture answered, and a reset is exactly 1.0"
+)]
 #[test]
 fn the_open_photograph_can_be_presented_slid_and_zoomed() {
     eprintln!("phase presenting_is_the_window_and_the_slide_show_advances_the_set");
