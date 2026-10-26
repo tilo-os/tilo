@@ -27,6 +27,8 @@ pub mod peer_window_merge;
 pub mod portable_state;
 #[path = "projection.rs"]
 pub mod projection;
+#[path = "room_layout.rs"]
+pub mod room_layout;
 #[path = "room_schema.rs"]
 pub mod room_schema;
 #[path = "topology.rs"]

@@ -26,6 +26,7 @@ pub mod ownership;
 pub mod partition;
 pub mod projection;
 pub mod receipt;
+pub mod room_layout;
 pub mod serde_ids;
 pub mod service_member;
 pub mod shared_record;
