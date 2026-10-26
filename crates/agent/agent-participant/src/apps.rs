@@ -480,8 +480,12 @@ impl Replica {
         {
             let doc = ui::tilo_resource::Doc::load(&bytes)
                 .map_err(|error| AppError::Merge(error.to_string()))?;
-            kind.read(&doc)
-                .map_err(|error| AppError::Merge(error.to_string()))?;
+            // A record kept before the app changed its storage is brought up
+            // to the app's version when its view opens, as in a window.
+            if ui::tilo_resource::evolution::stored_version(&doc) >= kind.version() {
+                kind.read(&doc)
+                    .map_err(|error| AppError::Merge(error.to_string()))?;
+            }
         }
         let opening = AttachedView::opening(definition, room, checkout, bytes)
             .for_invoker(&invoker)
