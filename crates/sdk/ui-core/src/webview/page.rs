@@ -228,6 +228,13 @@ impl PageRequest {
         match self {
             Self::Outline => "Read the page".to_string(),
             Self::Click { element } => format!("Clicked element {element}"),
+            Self::Hover {
+                element: Some(element),
+                ..
+            } => format!("Moved the pointer over element {element}"),
+            Self::Hover { element: None, .. } => "Moved the pointer".to_string(),
+            Self::Drag { .. } => "Dragged on the page".to_string(),
+            Self::Path { .. } => "Drew on the page".to_string(),
             Self::Fill { element, .. } => format!("Filled element {element}"),
             Self::Select { element, values } => {
                 format!("Chose {} on element {element}", values.join(", "))
