@@ -1726,14 +1726,16 @@ enum, hidden test callback, or agent-only implementation. CI runs
 validates the concrete surface before publishing it.
 
 Every `ActionSpec` carries an `ActionContract`. Defaults are deliberately
-conservative (write permission, at-most-once, immediate, live-only). State the
-facts that let a caller plan safely:
+conservative (a change to the document, at-most-once, immediate, live-only).
+State the facts that let a caller plan safely:
 
 - `availability`: keep a temporarily impossible action discoverable with a
   stable code and useful reason; the door checks it again immediately before
   execution.
-- `permission`: `read`, `comment`, `write`, `invite`, or `admin`; the broker
-  uses this exact value for both discovery and invocation.
+- `kind`: what the action is able to do — `ActionKind::Read`, `Undoable` or
+  `Outside`, which the framework derives from the code; the broker decides it
+  against the caller's grants at both discovery and invocation. An action
+  declares no permission of its own.
 - `risk` and `confirmation`: privileged and sensitive actions, and
   destructive ones Undo cannot take back, require a confirmation policy.
   A destructive action Undo takes back (`ActionKind::Undoable`, or a
@@ -1827,8 +1829,9 @@ let archive = cx.effect_button("Archive", &MailEffect::Archive { conversation: i
 ```
 
 Each variant is a published `Effect` action with typed parameters; its options
-(`job`, `cancellable`, `returns`, `destructive`, `permission = "read"`) are its
-contract. The framework publishes the vocabulary beside the resource's
+(`job`, `cancellable`, `returns`, `destructive`) are its contract. It declares
+no permission: the framework derives the action's kind and the room's grants
+decide it at each door. The framework publishes the vocabulary beside the resource's
 actions, with the availability the handler reports now (`EffectStatus`), and
 routes the palette, agents, scripts and bound controls to the handler as a
 typed value. A job reports progress through its `Progress`, finishes on the UI
@@ -1890,7 +1893,7 @@ Non-mutating retained controls are projected into that catalogue automatically
 from the semantic tree, so focus and safe navigation remain driveable while an
 app is being developed. Effectful generic activation, set-value, toggles, and
 sliders are deliberately not exported: without a domain contract they could
-bypass the real action's permission, risk, and confirmation. Give every
+bypass the real action's grants, risk, and confirmation. Give every
 projected control a stable ID and a localized accessible name. Every effectful
 control must instead converge on a domain action with durable resource
 identity, typed parameters, collaboration semantics, and a useful verb such as

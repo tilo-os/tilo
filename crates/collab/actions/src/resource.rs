@@ -1986,7 +1986,7 @@ impl ActionSpec {
     /// builds passes through `wrap`, which re-encodes it as the action of the
     /// resource that contains this one (a rich-text edit becomes the note's
     /// edit of its body, registered under `wrapped_type`). Parameters,
-    /// permission, risk and confirmation stay this action's. A builder's
+    /// kind, field, risk and confirmation stay this action's. A builder's
     /// refusal passes through unchanged. An effect or view operation is
     /// returned as it is: it writes nothing to wrap.
     #[must_use]
