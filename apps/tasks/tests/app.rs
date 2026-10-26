@@ -2,6 +2,7 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::indexing_slicing,
+    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -507,33 +508,160 @@ fn semantic_nodes(snapshot: &serde_json::Value) -> Vec<(serde_json::Value, [f64;
 }
 
 #[test]
-fn the_places_tree_names_what_it_lists_and_the_heading_is_drawn_where_it_is() {
+fn the_sidebar_names_what_it_narrows_and_the_bar_names_the_place() {
     let mut app = open();
+    app.harness().present_in_window_bar();
     let snapshot: serde_json::Value =
         serde_json::from_str(&app.harness().inspection_json().expect("inspection")).expect("json");
     let nodes = semantic_nodes(&snapshot);
     let drawn = |at: &[f64; 4]| at[2] > 0.0 && at[3] > 0.0;
 
-    // The places tree is named for what it lists, apart from the app's
-    // title the heading and the window's tab carry, and keeps one identity.
+    // The sidebar is named for what it narrows, apart from the app's title
+    // the heading and the window's tab carry, and keeps one identity.
     let trees: Vec<_> = nodes.iter().filter(|(n, _)| n["role"] == "Tree").collect();
     assert_eq!(trees.len(), 1, "one tree: {trees:?}");
     let (tree, at) = trees[0];
-    assert_eq!(tree["name"], "Task views");
-    assert_eq!(tree["semantic_key"], "tasks.places");
+    assert_eq!(tree["name"], "Filters");
+    assert_eq!(tree["semantic_key"], "tasks.filters");
     assert!(drawn(at), "the tree is drawn: {at:?}");
 
-    // The page's heading is in the tree, at the rect it is drawn at. It
-    // shares its name with the place it heads ("Issues"), so assistive
-    // technology tells the two apart by role.
+    // Where the window is, the bar says: the place, since no issue is open,
+    // and nothing in the content titles it a second time.
+    let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+    assert_eq!(
+        bar.location.map(|location| location.label).as_deref(),
+        Some("Issues")
+    );
     let headings: Vec<_> = nodes
         .iter()
         .filter(|(n, _)| n["role"].get("Heading").is_some())
         .collect();
     assert!(
-        headings
+        !headings
             .iter()
             .any(|(n, at)| n["name"] == "Issues" && drawn(at)),
-        "the heading \"Issues\" is in the tree where it is drawn: {headings:?}"
+        "the place is the bar's location, not a heading of the list's: {headings:?}"
     );
+}
+
+/// The sidebar narrows the list to what a person is looking for — their own
+/// issues, the ones nobody took, an agent's, and a label's — and the board
+/// follows the same choice.
+#[test]
+fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
+    let mut app = open();
+    for (title, assignee, label) in [
+        ("Write the launch notes", Some("person:ada"), Some("launch")),
+        ("Record the demo", None, None),
+        ("Tidy the onboarding docs", Some("agent:claude"), None),
+    ] {
+        app.call("create", json!({ "title": title, "assignee": assignee }))
+            .expect("create");
+        if let Some(label) = label {
+            let issue = app
+                .state()
+                .issues
+                .iter()
+                .find(|(_, issue)| issue.title == title)
+                .map(|(id, _)| id.clone())
+                .expect("the issue just made");
+            app.call("add-label", json!({ "issue": issue, "label": label }))
+                .expect("label it");
+        }
+    }
+    let rows = |app: &mut TestApp<App>| -> Vec<String> {
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&app.harness().inspection_json().expect("inspection"))
+                .expect("json");
+        let nodes = semantic_nodes(&snapshot);
+        nodes
+            .iter()
+            .filter_map(|(node, _)| {
+                // The list's rows read as references (`#2 Record the demo`);
+                // the sidebar's rows are its filters, which have no number.
+                let name = node["name"].as_str().unwrap_or_default();
+                (name.starts_with('#')).then(|| name.to_owned())
+            })
+            .collect()
+    };
+
+    // Everything, to begin with.
+    assert_eq!(rows(&mut app).len(), 3, "every issue shows");
+
+    // Mine: the person reading, whose issues are their own.
+    choose(&mut app, "Mine");
+    let shown = rows(&mut app);
+    assert_eq!(shown.len(), 1, "and nothing assigned to anyone else");
+    assert!(
+        shown
+            .iter()
+            .any(|row| row.contains("Write the launch notes")),
+        "my own issue shows: {shown:?}"
+    );
+
+    // Nobody's: the issue without an assignee.
+    choose(&mut app, "Nobody's");
+    let shown = rows(&mut app);
+    assert_eq!(shown.len(), 1, "one issue is unassigned: {shown:?}");
+    assert!(shown[0].contains("Record the demo"), "{shown:?}");
+
+    // An agent's: the one handed to the room's agent.
+    choose(&mut app, "An agent's");
+    let shown = rows(&mut app);
+    assert_eq!(shown.len(), 1, "one issue is an agent's: {shown:?}");
+    assert!(shown[0].contains("Tidy the onboarding docs"), "{shown:?}");
+
+    // A label: the issues carrying it.
+    choose(&mut app, "launch");
+    let shown = rows(&mut app);
+    assert_eq!(shown.len(), 1, "one issue carries the label: {shown:?}");
+
+    // The board follows the same choice: the agent's issue is the only card
+    // in a lane.
+    choose(&mut app, "An agent's");
+    press_view(&mut app, "Board");
+    let harness = app.harness();
+    assert!(
+        harness
+            .a11y_node_named("#3 Tidy the onboarding docs")
+            .is_some(),
+        "the agent's issue is a card on the board"
+    );
+    assert!(
+        harness.a11y_node_named("#2 Record the demo").is_none(),
+        "and nobody else's issue is drawn beside it"
+    );
+
+    // Back to the list and everything in it.
+    press_view(&mut app, "Issues");
+    choose(&mut app, "All issues");
+    assert_eq!(rows(&mut app).len(), 3, "every issue shows again");
+}
+
+/// Press the window bar's view `name`, as a press on it does.
+fn press_view(app: &mut TestApp<App>, name: &str) {
+    let harness = app.harness();
+    let bar = ui::window_toolbar::declared().expect("the window declares its views");
+    let views = bar.views.expect("the window declares its views");
+    let view = views
+        .choices
+        .iter()
+        .find(|view| view.label == name)
+        .expect("the bar offers the view");
+    harness.press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+        id: view.id.clone(),
+    });
+    let _ = harness.poll_frame();
+}
+
+/// Choose the sidebar's `name` row, as a press on it does.
+fn choose(app: &mut TestApp<App>, name: &str) {
+    let harness = app.harness();
+    let node = harness
+        .a11y_node_named(name)
+        .unwrap_or_else(|| panic!("the sidebar offers {name:?}"));
+    harness
+        .perform_a11y_action(node, &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("{name} is chosen: {error}"));
+    let _ = harness.poll_frame();
 }
