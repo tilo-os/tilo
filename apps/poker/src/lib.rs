@@ -20,6 +20,7 @@ pub mod card;
 pub mod cards;
 pub mod game;
 pub mod locales;
+mod sample;
 pub mod view;
 
 use ui::prelude::*;
@@ -37,8 +38,25 @@ impl ResourceApp for App {
         Some(&crate::locales::CATALOG)
     }
 
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (900, 760)
+    }
+
     fn label(table: &Table) -> String {
         view::location(table)
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        sample::SCENARIOS
+    }
+
+    /// A capture cannot play twelve seconds into a turn, so the scenario
+    /// stages the table it reached as the record's start.
+    fn fixture(fixture: &mut ui::framework::Fixture<Table>) {
+        let Some(scenario) = fixture.scenario() else {
+            return;
+        };
+        fixture.start(sample::table(scenario, fixture.person()));
     }
 
     fn view(cx: &mut ViewCx<Table>) -> Element {

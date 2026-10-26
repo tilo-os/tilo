@@ -3,14 +3,21 @@
 //! the moves open to them now. The hand is the window bar's location; the
 //! table draws no title row of its own.
 
+use std::rc::Rc;
+
 use ui::framework::People;
 use ui::i18n::I18nManager;
 use ui::prelude::*;
+use ui::time::{Duration, Instant};
 use ui::tokens::Rhythm;
 use ui::widget::{ButtonRole, Container, Surface, SurfaceLevel, TextStack};
 
 use crate::card::{CardSize, CardView, Showing};
 use crate::game::{self, BIG_BLIND, InHand, Street, Table};
+
+/// A move waiting on a grace counts its caption down in whole seconds, and
+/// looks again at each.
+const COUNT_MS: u64 = 1_000;
 
 /// The seats along the top of the table, then along the bottom, so the
 /// order runs clockwise.
@@ -44,7 +51,7 @@ pub fn table(cx: &mut ViewCx<Table>, table: &Table) -> Element {
         board(table),
         bottom,
         status(table, &people, me),
-        controls(cx, table, me),
+        controls(cx, table, &people, me),
     ] {
         column = column.push(part);
     }
@@ -160,8 +167,10 @@ fn seat_view(
     };
     let name = people.name(player);
     let you = me == Some(player);
+    // Your own seat says so: the name is for the others at the table, and in
+    // a room of one it is only an id.
     let title = if you {
-        fmt("poker-seat-you", &[("name", name.as_str().into())])
+        plain("poker-seat-you")
     } else {
         name.clone()
     };
@@ -374,7 +383,7 @@ fn waiting(table: &Table, people: &People, me: Option<&str>) -> String {
 }
 
 /// The moves open to this participant now.
-fn controls(cx: &ViewCx<Table>, table: &Table, me: Option<&str>) -> Element {
+fn controls(cx: &ViewCx<Table>, table: &Table, people: &People, me: Option<&str>) -> Element {
     let mut row = Row::new()
         .with_rhythm(Rhythm::Sibling)
         .with_align_items(ui::taffy::AlignItems::Center);
@@ -397,77 +406,255 @@ fn controls(cx: &ViewCx<Table>, table: &Table, me: Option<&str>) -> Element {
         }
         return Box::new(row);
     }
-    let my_turn = hand.street.in_play() && hand.actor().is_some_and(|p| p.player == me);
-    if my_turn {
-        let call = hand.to_call(me);
-        row = row.push(Box::new(
-            cx.button("poker-action-fold", Table::FOLD.invoke()),
-        ));
-        let call_label = if call > 0 {
-            fmt("poker-action-call", &[("amount", call.into())])
-        } else {
-            plain("poker-action-check")
-        };
-        row = row.push(Box::new(cx.button(call_label, Table::CALL.invoke())));
-        if let Some((least, most)) = hand.raise_range(me) {
-            #[allow(clippy::cast_precision_loss, reason = "chip counts are small")]
-            let (least, most) = (least as f64, most as f64);
-            let form = cx.form::<game::table::Raise>();
-            let slider = cx.control(
-                |amount: &LocalState<f64>| {
-                    if amount.get() < least {
-                        amount.set(least);
-                    }
-                    Slider::from_state(amount)
-                        .range(least, most)
-                        .step(f64::from(u32::try_from(BIG_BLIND).unwrap_or(10)))
-                        .shows_value()
-                        .with_id("raise-amount")
-                        .with_accessible_name(&plain("poker-action-raise-amount"))
-                },
-                form.paths().to,
-            );
-            let label = if hand.current_bet > 0 {
-                "poker-action-raise"
-            } else {
-                "poker-action-bet"
-            };
-            row = row.push(Box::new(slider));
-            row = row.push(Box::new(cx.button(label, form.submit())));
-        }
-        row = row.push(Box::new(
-            cx.button("poker-action-all-in", Table::ALL_IN.invoke()),
-        ));
-        return Box::new(row);
+    if hand.street.in_play() && hand.actor().is_some_and(|p| p.player == me) {
+        return turn(cx, hand, me);
     }
     if !hand.street.in_play() {
-        if table.ready().len() >= 2 {
-            // The dealer deals; anyone may once the table has waited a while.
-            let deal = cx.button("poker-action-deal", Table::DEAL.invoke());
-            let deal = if table.dealer() == Some(me) {
-                deal.role(ButtonRole::Primary)
-            } else {
-                deal
-            };
-            row = row.push(Box::new(deal));
+        for part in [
+            deal_control(cx, table, me),
+            zero_chips(cx, table, me),
+            show_cards(cx, hand, me),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            row = row.push(part);
         }
-        if table.players.get(me).is_some_and(|p| p.chips == 0) {
-            row = row.push(Box::new(
-                cx.button("poker-action-rebuy", Table::REBUY.invoke()),
-            ));
-        }
-        if hand.street == Street::Done && hand.players.iter().any(|p| p.player == me && !p.shown) {
-            row = row.push(Box::new(
-                cx.button("poker-action-show", Table::SHOW.invoke()),
-            ));
-        }
-    } else if hand.actor().is_some() {
-        row = row.push(Box::new(
-            cx.button("poker-action-skip", Table::SKIP.invoke()),
-        ));
+    } else if let Some(skip) = skip_control(cx, table, people) {
+        row = row.push(skip);
     }
     row = row.push(Box::new(
         cx.button("poker-action-leave", Table::LEAVE.invoke()),
     ));
     Box::new(row)
+}
+
+/// The moves open on this participant's turn.
+fn turn(cx: &ViewCx<Table>, hand: &game::Hand, me: &str) -> Element {
+    let mut row = Row::new()
+        .with_rhythm(Rhythm::Sibling)
+        .with_align_items(ui::taffy::AlignItems::Center)
+        .push(Box::new(
+            cx.button("poker-action-fold", Table::FOLD.invoke()),
+        ));
+    let call = hand.to_call(me);
+    let call_label = if call > 0 {
+        fmt("poker-action-call", &[("amount", call.into())])
+    } else {
+        plain("poker-action-check")
+    };
+    row = row.push(Box::new(cx.button(call_label, Table::CALL.invoke())));
+    if let Some((least, most)) = hand.raise_range(me) {
+        #[allow(clippy::cast_precision_loss, reason = "chip counts are small")]
+        let (least, most) = (least as f64, most as f64);
+        let form = cx.form::<game::table::Raise>();
+        let slider = cx.control(
+            |amount: &LocalState<f64>| {
+                if amount.get() < least {
+                    amount.set(least);
+                }
+                Slider::from_state(amount)
+                    .range(least, most)
+                    .step(f64::from(u32::try_from(BIG_BLIND).unwrap_or(10)))
+                    .shows_value()
+                    .with_id("raise-amount")
+                    .with_accessible_name(&plain("poker-action-raise-amount"))
+            },
+            form.paths().to,
+        );
+        let label = if hand.current_bet > 0 {
+            "poker-action-raise"
+        } else {
+            "poker-action-bet"
+        };
+        row = row.push(Box::new(slider));
+        row = row.push(Box::new(cx.button(label, form.submit())));
+    }
+    row = row.push(Box::new(
+        cx.button("poker-action-all-in", Table::ALL_IN.invoke()),
+    ));
+    Box::new(row)
+}
+
+/// Between hands: the deal. The dealer deals at once, and anyone else once
+/// the table has waited a while, so their button says how long that is
+/// instead of refusing behind a button that looks ready.
+fn deal_control(cx: &ViewCx<Table>, table: &Table, me: &str) -> Option<Element> {
+    if table.ready().len() < 2 {
+        return None;
+    }
+    let dealer = table.dealer();
+    let button = cx.button("poker-action-deal", Table::DEAL.invoke());
+    if dealer == Some(me) {
+        return Some(Box::new(button.role(ButtonRole::Primary)));
+    }
+    let opens = table.deal_opens_ms()?;
+    let phrase: Rc<Phrase> =
+        Rc::new(move |seconds: u64| fmt("poker-deal-wait", &[("seconds", seconds.into())]));
+    Some(grace(opens, &phrase, Box::new(button)))
+}
+
+/// A player with no chips buys back in.
+fn zero_chips(cx: &ViewCx<Table>, table: &Table, me: &str) -> Option<Element> {
+    table
+        .players
+        .get(me)
+        .is_some_and(|p| p.chips == 0)
+        .then(|| Box::new(cx.button("poker-action-rebuy", Table::REBUY.invoke())) as Element)
+}
+
+/// Whoever was in the hand may show their cards once it is over.
+fn show_cards(cx: &ViewCx<Table>, hand: &game::Hand, me: &str) -> Option<Element> {
+    (hand.street == Street::Done && hand.players.iter().any(|p| p.player == me && !p.shown))
+        .then(|| Box::new(cx.button("poker-action-show", Table::SHOW.invoke())) as Element)
+}
+
+/// The fold for a player who has taken too long, from [`game::TURN_MS`] into
+/// their turn: the caption counts to then, naming the player it would fold.
+fn skip_control(cx: &ViewCx<Table>, table: &Table, people: &People) -> Option<Element> {
+    let actor = table.hand.actor()?;
+    let opens = table.skip_opens_ms()?;
+    let name = people.name(&actor.player);
+    let phrase: Rc<Phrase> = Rc::new(move |seconds: u64| {
+        fmt(
+            "poker-skip-wait",
+            &[("name", name.clone().into()), ("seconds", seconds.into())],
+        )
+    });
+    Some(grace(
+        opens,
+        &phrase,
+        Box::new(cx.button("poker-action-skip", Table::SKIP.invoke())),
+    ))
+}
+
+/// A move the table's own rule opens after a grace (a slow player may be
+/// folded for after [`game::TURN_MS`], a hand dealt for after
+/// [`game::DEAL_GRACE_MS`]): the button waits disabled while its caption
+/// counts the seconds down and reads as nothing once the move is open. The
+/// table keeps the rule, and the caption says why the button is not acting
+/// yet.
+fn grace(opens_ms: i64, phrase: &Rc<Phrase>, button: Box<Button>) -> Element {
+    let seconds = LocalState::new(seconds_left(opens_ms, ui::time::unix_now_ms_i64()));
+    let open = LocalState::new(seconds.with(|left| *left == 0));
+    let shown = {
+        let phrase = Rc::clone(phrase);
+        // An open move has nothing to explain: the caption leaves the row.
+        Text::from_state(&seconds, move |left| {
+            if *left == 0 {
+                String::new()
+            } else {
+                phrase(*left)
+            }
+        })
+        .with_role(TextRole::Caption)
+        .dimmed()
+    };
+    let waiting = Row::new()
+        .with_rhythm(Rhythm::Related)
+        .with_align_items(ui::taffy::AlignItems::Center)
+        .push(Box::new(shown))
+        .push(Box::new(button.enabled_from(&open)));
+    Box::new(Grace {
+        opens_ms,
+        seconds,
+        open,
+        content: Box::new(waiting),
+    })
+}
+
+/// How a move waiting on a grace reads with `seconds` left.
+type Phrase = dyn Fn(u64) -> String;
+
+/// The whole seconds a grace opens in at `now_ms`: 0 once it is open, and 1
+/// through its last second. Both instants are milliseconds since the Unix
+/// epoch, the clock the table's own rule reads, so the countdown and the
+/// action it counts down to agree.
+fn seconds_left(opens_ms: i64, now_ms: i64) -> u64 {
+    let left = opens_ms.saturating_sub(now_ms);
+    if left <= 0 {
+        return 0;
+    }
+    u64::try_from(left).unwrap_or(u64::MAX).div_ceil(1_000)
+}
+
+/// A control behind a grace, counting down to the instant the table accepts
+/// it.
+struct Grace {
+    /// When the move opens, in milliseconds since the Unix epoch, as the
+    /// table recorded it.
+    opens_ms: i64,
+    /// The whole seconds left, as the caption reads them.
+    seconds: LocalState<u64>,
+    /// Whether the move is open, which the button follows.
+    open: LocalState<bool>,
+    content: Element,
+}
+
+impl Grace {
+    /// Follow the clock: the caption's seconds, and whether the move is open.
+    /// Whether either changed, which is what a frame is owed for.
+    fn look(&self) -> bool {
+        let seconds = seconds_left(self.opens_ms, ui::time::unix_now_ms_i64());
+        let stale = self.seconds.with(|shown| *shown != seconds);
+        let opened = seconds == 0 && self.open.with(|open| !open);
+        if stale {
+            self.seconds.set(seconds);
+        }
+        if opened {
+            self.open.set(true);
+        }
+        stale || opened
+    }
+}
+
+impl ui::widget::Decorator for Grace {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.content.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.content.as_mut()
+    }
+
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        self.look();
+        self.content.sync(state, path);
+    }
+
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let looked = self.look();
+        self.content.update(state, path) || looked
+    }
+
+    /// The grace opened, or a second of it passed: the countdown moved.
+    fn serve_deadline(&mut self, now: Instant) -> bool {
+        let looked = self.look();
+        self.content.serve_deadline(now) || looked
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let children = Widget::next_wake_deadline(self.inner());
+        if ui::time::wall_frozen() {
+            // A capture's clock stands still: its one frame shows the count
+            // as it is, and nothing waits for a second that never comes.
+            return children;
+        }
+        let left = self.opens_ms.saturating_sub(ui::time::unix_now_ms_i64());
+        if left <= 0 {
+            return children;
+        }
+        let left = u64::try_from(left).unwrap_or(u64::MAX);
+        // Look again when the next whole second starts, and once more at the
+        // instant the move opens.
+        let wait = left.min(COUNT_MS);
+        let due = ui::time::now().checked_add(Duration::from_millis(wait))?;
+        Some(children.map_or(due, |child| child.min(due)))
+    }
+
+    fn name(&self) -> &'static str {
+        "PokerGrace"
+    }
 }

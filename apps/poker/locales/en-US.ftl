@@ -8,7 +8,7 @@ poker-chips = { $chips } chips
 
 poker-seat-open = Seat { $seat }
 poker-seat-open-detail = Open
-poker-seat-you = { $name } (you)
+poker-seat-you = You
 poker-seat-your-turn = Your turn
 poker-seat-their-turn = Thinking
 poker-seat-dealer = Dealer
@@ -49,7 +49,7 @@ poker-action-all-in = All in
 poker-action-deal = Deal next hand
 poker-action-rebuy = Buy back in
 poker-action-show = Show my cards
-poker-action-skip = Fold for the player taking too long
+poker-action-skip = Fold for the slow player
 poker-action-leave = Leave the table
 
 ## Status
@@ -61,6 +61,9 @@ poker-status-need-players = Waiting for a second player to sit down
 poker-status-you-deal = Deal the next hand when everyone is ready
 poker-status-waiting-dealer = Waiting for { $name } to deal
 poker-status-table-full = Every seat is taken
+## A move the table's own rule opens after a grace, counting down to it
+poker-skip-wait = Fold for { $name } in { $seconds }s
+poker-deal-wait = Anyone may deal in { $seconds }s
 poker-won-uncontested = { $name } wins { $amount }
 poker-won-with = { $name } wins { $amount } with { $hand }
 
