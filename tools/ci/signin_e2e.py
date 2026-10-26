@@ -269,26 +269,6 @@ def quote(value: str) -> str:
 # check hot-plugs it; without the port the loop only waits.
 SHELL_SCRIPT = f"""#!/usr/bin/bash
 # signin-e2e check, this throwaway disk only: a root shell on {SHELL_PORT}.
-# Who runs chcon on this system: its parent and arguments, for the evidence.
-if command -v auditctl >/dev/null 2>&1; then
-  auditctl -a always,exit -F arch=b64 -S execve -F path=/usr/bin/chcon -k chcon \
-    && echo 'tilo-e2e-shell: chcon audit rule installed' \
-    || echo 'tilo-e2e-shell: the chcon audit rule could not be installed'
-elif mountpoint -q /usr/bin/chcon; then
-  echo 'tilo-e2e-shell: chcon calls are already traced by a wrapper'
-elif [ -x /etc/tilo-e2e-chcon ]; then
-  # The bind of the real binary joins /usr's shared peer group: unless it is made private
-  # first, the wrapper mounted over /usr/bin/chcon propagates onto it and chcon.real execs
-  # the wrapper forever.
-  mkdir -p /run/tilo-e2e && touch /run/tilo-e2e/chcon.real \
-    && mount --bind /usr/bin/chcon /run/tilo-e2e/chcon.real \
-    && mount --make-private /run/tilo-e2e/chcon.real \
-    && mount --bind /etc/tilo-e2e-chcon /usr/bin/chcon \
-    && echo 'tilo-e2e-shell: no auditctl; chcon calls are traced by a wrapper' \
-    || echo 'tilo-e2e-shell: no auditctl, and the chcon wrapper could not be mounted'
-else
-  echo 'tilo-e2e-shell: this image has no auditctl'
-fi
 echo 'tilo-e2e-shell: waiting for {SHELL_PORT}'
 while :; do
   if [ -e /dev/virtio-ports/{SHELL_PORT} ]; then
@@ -296,26 +276,6 @@ while :; do
   fi
   sleep 1
 done
-"""
-CHCON_TRACE = r"""#!/usr/bin/bash
-# signin-e2e check, this throwaway disk only: say who runs chcon, then run it.
-if [ -n "${TILO_E2E_CHCON_TRACED:-}" ]; then
-  echo 'tilo-e2e-chcon: /run/tilo-e2e/chcon.real is this wrapper, not chcon' \
-    | systemd-cat -t tilo-e2e-chcon -p err
-  exit 127
-fi
-export TILO_E2E_CHCON_TRACED=1
-{
-  printf 'chcon pid=%s ctx=%s args=%s\n' "$$" "$(tr -d '\0' </proc/self/attr/current 2>/dev/null)" "$*"
-  gp=$(awk '{print $4}' /proc/$PPID/stat 2>/dev/null)
-  printf 'parent pid=%s exe=%s ctx=%s cmd=%s\n' "$PPID" "$(readlink /proc/$PPID/exe)" \
-    "$(tr -d '\0' </proc/$PPID/attr/current 2>/dev/null)" "$(tr '\0' ' ' </proc/$PPID/cmdline)"
-  printf 'grandparent pid=%s exe=%s cmd=%s\n' "$gp" "$(readlink /proc/$gp/exe 2>/dev/null)" \
-    "$(tr '\0' ' ' </proc/$gp/cmdline 2>/dev/null)"
-  printf 'cgroup=%s\n' "$(cat /proc/$$/cgroup)"
-  for arg in "$@"; do [ -e "$arg" ] && ls -Zd -- "$arg"; done
-} 2>&1 | systemd-cat -t tilo-e2e-chcon
-exec /run/tilo-e2e/chcon.real "$@"
 """
 SHELL_UNIT = """[Unit]
 Description=signin-e2e check: root shell on a hot-plugged virtio-serial port (this test disk only)
@@ -604,10 +564,6 @@ test -d "$etc/systemd/system"
 cat > "$etc/tilo-e2e-shell" <<'E2E_SCRIPT'
 {SHELL_SCRIPT}E2E_SCRIPT
 chmod 0755 "$etc/tilo-e2e-shell"
-cat > "$etc/tilo-e2e-chcon" <<'E2E_CHCON'
-{CHCON_TRACE}E2E_CHCON
-chmod 0755 "$etc/tilo-e2e-chcon"
-chcon system_u:object_r:bin_t:s0 "$etc/tilo-e2e-chcon"
 cat > "$etc/systemd/system/tilo-e2e-shell.service" <<'E2E_UNIT'
 {SHELL_UNIT}E2E_UNIT
 mkdir -p "$etc/systemd/system/multi-user.target.wants"
@@ -721,9 +677,6 @@ cryptsetup close e2e-target
         "failed": "systemctl --failed --no-pager --plain --no-legend; "
                   "systemctl status --no-pager tilo-authd.socket tilo-authd.service greetd | tail -n 60",
         "sessions": "loginctl list-sessions --no-pager",
-        "chcon": "{ journalctl -b -u tilo-e2e-shell -o cat | grep -i 'audit\\|chcon'; "
-                 "journalctl -b --no-pager -o short-monotonic -t tilo-e2e-chcon; "
-                 "ausearch -k chcon -i 2>/dev/null; } | tail -n 200",
         "initrd": "journalctl -b --no-pager -o short-monotonic | grep -E "
                   "'tilo-root-discover|tilo-boot-signin|tilo-auth|systemd-cryptsetup|plymouth' "
                   "| head -n 300",
