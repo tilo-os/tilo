@@ -196,13 +196,14 @@ pub(in crate::participant) struct Coordinator {
     pub(super) read: Option<String>,
     /// The records the items made and acted on, the content they produced
     /// (with the app of the step that made each) and the latest step's
-    /// output that produced content: what each new item's agent starts
-    /// with, so it acts on the records the items before it made.
+    /// output that produced content, with whether it only handed on what
+    /// it was given: what each new item's agent starts with, so it acts on
+    /// the records the items before it made.
     pub(in crate::participant) made: Vec<DocumentRoute>,
     pub(in crate::participant) touched: Vec<DocumentRoute>,
     pub(super) produced: Vec<String>,
     pub(super) produced_by: Vec<String>,
-    pub(super) last: Option<ActionOutput>,
+    pub(super) last: Option<(ActionOutput, bool)>,
     pub(super) performed: usize,
     /// What the running item's agent last said in reply.
     pub(super) reply: Option<String>,
@@ -878,8 +879,8 @@ impl Coordinator {
             }
             self.produced.clone_from(&running.produced);
             self.produced_by.clone_from(&running.produced_by);
-            if running.last.is_some() {
-                self.last.clone_from(&running.last);
+            if let Some(last) = &running.last {
+                self.last = Some((last.clone(), running.last_handed_on));
             }
             self.performed = self.performed.saturating_add(running.performed);
         }

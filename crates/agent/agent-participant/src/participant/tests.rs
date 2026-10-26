@@ -169,6 +169,40 @@ fn a_carried_step_is_given_what_the_latest_step_that_made_content_made() {
     );
 }
 
+/// An import answering with the source it was named is marked as handing
+/// that source on; an export, or an import carried what it imports, made
+/// what it answers with.
+#[test]
+fn an_import_hands_on_the_source_it_was_named() {
+    let docx = "a".repeat(64);
+    let mut running = Running::new("t1".into(), String::new(), Vec::new(), Vec::new());
+    let import = invoke_with(
+        "so.tilo.word-processor",
+        "word-processor.document",
+        "import-docx-content",
+        serde_json::json!({"content": format!("tilo.content:{docx}"), "name": "details.docx"}),
+    );
+    running.answered(&import, exported(&docx));
+    assert!(running.last_handed_on);
+    let bare = invoke_with(
+        "so.tilo.pdf-viewer",
+        "pdf.document",
+        "import-pdf-content",
+        serde_json::json!({"content": docx}),
+    );
+    assert!(super::running::hands_on(&bare, &exported(&docx)));
+
+    running.answered(
+        &invoke("so.tilo.canvas", "canvas.artwork", "export"),
+        exported("abc"),
+    );
+    assert!(!running.last_handed_on);
+    assert!(!super::running::hands_on(
+        &invoke("so.tilo.pdf-viewer", "pdf.document", "import-pdf-content"),
+        &exported(&docx)
+    ));
+}
+
 /// A repair is told each step that ran by its action and arguments,
 /// briefly.
 #[test]

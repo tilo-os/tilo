@@ -15,6 +15,7 @@ use super::{
     CHAT, RelayRoom, SHEETS, ana_said, answered_model_endpoint, chat_parts_text, last_turn,
     message_text, offered, plan_call, post_in_chat, posts, wait_for,
 };
+use crate::common::pdf;
 
 /// Every message of the planning request `body`, as one text.
 fn request_text(body: &str) -> String {
@@ -910,4 +911,112 @@ async fn a_news_turn_that_lists_the_items_again_adds_no_duplicates() {
     answer.send(reply_only("c3", "Done.")).unwrap();
     assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
     Box::pin(room.close()).await;
+}
+
+/// An item's agent has the room's content as one agent has it: after an
+/// item imported a document the room keeps, the next item imports the PDF
+/// the room keeps by its address and reads its text, rather than being
+/// handed the document the item before it imported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_item_s_agent_imports_a_pdf_the_room_keeps_and_reads_it() {
+    const WRITER: &str = "so.tilo.word-processor";
+    const PDF: &str = "so.tilo.pdf-viewer";
+    let content = tilo_content::ContentStore::memory();
+    let details = content
+        .put(b"# Details\n\nSofia Moreira, Data Analyst\n")
+        .unwrap();
+    let payslips = content
+        .put(&pdf(&["Payslip September net pay 2140.55"]))
+        .unwrap();
+    let (url, sent, answer) = answered_model_endpoint();
+    let mut room = Box::pin(RelayRoom::granting_with(
+        &url,
+        &[CHAT, WRITER, PDF],
+        content,
+    ))
+    .await;
+    room.ana.0.decompose(true);
+    let task = room
+        .ana
+        .1
+        .message(&format!(
+            "Open Sofia's details tilo.content:{details} in the Word Processor, then read her \
+             payslips, the PDF tilo.content:{payslips}"
+        ))
+        .unwrap();
+    room.next_request(&sent, "the coordinator's list").await;
+    answer
+        .send(plan_call(
+            "c1",
+            &serde_json::json!({"steps": [], "obligations": [
+                {"text": "open the details", "apps": [WRITER]},
+                {"text": "read the payslips", "apps": [PDF], "after": [1]}]}),
+        ))
+        .unwrap();
+
+    let first = room.next_request(&sent, "item 1's agent").await;
+    answer
+        .send(plan_call(
+            "i1",
+            &serde_json::json!({"steps": [{"operation": offered(&first, "import-docx-content"),
+                "arguments": {"content": format!("tilo.content:{details}"),
+                    "name": "details.md"}}]}),
+        ))
+        .unwrap();
+
+    let second = past_check(&mut room, &sent, &answer, "item 2's agent").await;
+    assert!(
+        last_turn(&second).contains("1. open the details (done)"),
+        "{}",
+        last_turn(&second)
+    );
+    // The details' record offers its read-text too: the PDF's is the one
+    // on the resource that imports the PDF.
+    let import = offered(&second, "import-pdf-content");
+    let read = import.replace("#import-pdf-content", "#read-text");
+    answer
+        .send(plan_call(
+            "i2",
+            &serde_json::json!({"steps": [
+                {"operation": import, "arguments": {
+                    "content": format!("tilo.content:{payslips}"), "name": "payslips.pdf"}},
+                {"operation": read, "arguments": {}}]}),
+        ))
+        .unwrap();
+
+    let check = last_turn(&past_check(&mut room, &sent, &answer, "the coordinator's check").await);
+    assert!(
+        check.contains("2. read the payslips (done)") && check.contains("net pay 2140.55"),
+        "the PDF was imported and read: {check}"
+    );
+    answer
+        .send(plan_call(
+            "c2",
+            &serde_json::json!({"steps": [], "reply": "Read."}),
+        ))
+        .unwrap();
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(room.close()).await;
+}
+
+/// The next planning request, once the running item's agent was answered
+/// with nothing more to do if it is first asked to check what its steps
+/// wrote.
+async fn past_check(
+    room: &mut RelayRoom,
+    sent: &std::sync::mpsc::Receiver<String>,
+    answer: &std::sync::mpsc::Sender<serde_json::Value>,
+    what: &str,
+) -> String {
+    let next = room.next_request(sent, what).await;
+    if !last_turn(&next).contains("what they wrote may still be wrong") {
+        return next;
+    }
+    answer
+        .send(plan_call(
+            "check",
+            &serde_json::json!({"steps": [], "reply": "It is done."}),
+        ))
+        .unwrap();
+    room.next_request(sent, what).await
 }
