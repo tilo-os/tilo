@@ -216,13 +216,12 @@ fn open_with(others: usize) -> Step {
 fn an_app_arriving_rebuilds_only_its_window() {
     for others in [1, 6] {
         let cost = open_with(others);
-        // The app itself is laid out under its window's node, and what it
-        // replaces of its own widgets after arriving too. The one rebuild
-        // left is the window's own new width when its app arrives, which
-        // the row still lays out by building its tree again.
+        // A bound component arriving in its window rebuilds the tree once
+        // (its callbacks name the tile's nodes), and the window's own new
+        // width once more: never once per window open.
         assert!(
-            cost.rebuilt <= 1,
-            "an app arriving in its window beside {others} others rebuilt the desktop's layout tree more than for the window's width: {cost:?}"
+            cost.rebuilt <= 2,
+            "an app arriving in its window beside {others} others rebuilt the desktop's layout tree more than for its component and the window's width: {cost:?}"
         );
     }
 }
