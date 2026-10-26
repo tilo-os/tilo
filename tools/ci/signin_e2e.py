@@ -499,21 +499,43 @@ class Run:
 
     def live_shell(self) -> Shell:
         """The live installer's tty2 recovery tools: option 5 is a root shell. Its first command
-        starts the loop that serves a shell on the hot-plugged port."""
+        starts the loop that serves a shell on the hot-plugged port. The menu is an idle unit
+        that hangs up its tty when it starts, so each step waits for its prompt on screen:
+        keys typed before then are flushed."""
         c = self.cycle
         c.hotplug_shell()
         c.keys("ctrl-alt-f2")
-        time.sleep(4)
+        self.wait_tty_text("live-recovery-menu", "Choice:", 180)
         c.type("5")
         c.keys("ret")
-        time.sleep(3)
+        self.wait_tty_text("live-recovery-shell", "Type exit to return", 60)
+        time.sleep(1)
         c.type(f"setsid -f sh -c 'while :; do test -e /dev/virtio-ports/{SHELL_PORT} && bash -c "
                f"\"exec <>/dev/virtio-ports/{SHELL_PORT} >&0 2>&0; exec bash\"; sleep 1; done' "
                "</dev/null >/dev/null 2>&1")
         c.keys("ret")
         time.sleep(2)
+        try:
+            sh = Shell(c.shell_socket, 120)
+        except Failed:
+            path, text = c.screen("live-recovery-no-shell")
+            c.keep_screen("live-recovery-no-shell", path, text)
+            raise
         c.keys("ctrl-alt-f1")
-        return Shell(c.shell_socket, 120)
+        return sh
+
+    def wait_tty_text(self, name: str, wanted: str, limit: float) -> None:
+        c = self.cycle
+        deadline = time.monotonic() + limit
+        path, text = None, ""
+        while time.monotonic() < deadline:
+            path, text = c.screen(name)
+            if wanted.lower() in text.lower():
+                return
+            time.sleep(3)
+        c.keep_screen(name, path, text)
+        raise Failed(f"the live installer's tty2 never showed {wanted!r} "
+                     f"(read: {' '.join(text.split())[:200]})")
 
     def prepare_target(self, sh: Shell) -> None:
         code, dev = sh.run(f"lsblk -lnpo NAME,PARTTYPE /dev/vdb | awk 'tolower($2)==\"{TILO_ROOT_TYPE}\" {{print $1}}'")
@@ -1122,6 +1144,7 @@ cryptsetup close e2e-target
             self.cycle.keep_screen(f"boot-sign-in-wrong-{attempt}", path, text)
             found = re.search(r"(\d+)\s+tr(?:y|ies)\s+left", text, re.I)
             notes.append({"screen": self.classify(text), "tries_left": int(found.group(1)) if found else None,
+                          "already_tried": "already tried" in text.lower(),
                           "text": " ".join(text.split())[:200]})
         self.cycle.type(self.account)
         self.cycle.keys("ret")
@@ -1135,7 +1158,11 @@ cryptsetup close e2e-target
         self.wait_session(180)
         after = self.lockout()
         evidence = {"notes": notes, "lockout_before": before, "lockout_after": after}
-        reported = all(n["tries_left"] is not None for n in notes)
+        # The repeat may be refused before it reaches the TPM ("You already tried that
+        # password"); either way it must not cost a second try, which the counter shows.
+        first, repeat = notes
+        reported = first["tries_left"] is not None and (
+            repeat["already_tried"] or repeat["tries_left"] == first["tries_left"])
         if before is None:
             self.item("4", "failed", "no lockout counter was read before the wrong entries", **evidence)
         else:
@@ -1146,7 +1173,8 @@ cryptsetup close e2e-target
                             recovery_interval_s=interval)
             problems = []
             if not reported:
-                problems.append("the screen did not say how many tries are left "
+                problems.append("the first wrong entry did not say how many tries are left, or the "
+                                "repeat neither kept that count nor said it was already tried "
                                 f"(read: {[n['text'] for n in notes]})")
             if delta != 1:
                 if delta == 0 and interval and elapsed >= interval:
@@ -1157,8 +1185,10 @@ cryptsetup close e2e-target
             if problems:
                 self.item("4", "failed", "; ".join(problems), **evidence)
             else:
-                self.item("4", "passed", f"tries left shown ({notes[0]['tries_left']}, then "
-                          f"{notes[1]['tries_left']}); the same wrong entry twice cost one TPM try",
+                again = ("refused as already tried" if repeat["already_tried"]
+                         else f"{repeat['tries_left']} tries left again")
+                self.item("4", "passed", f"{first['tries_left']} tries left after the first wrong "
+                          f"entry, the repeat {again}; the same wrong entry twice cost one TPM try",
                           **evidence)
         self.pam_surfaces()
         self.power_off(label)
