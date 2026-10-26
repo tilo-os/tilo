@@ -1927,16 +1927,32 @@ impl VerifiedActionCaller {
     /// `agent`: it acts for the person with the delegation a device gives
     /// its agents.
     fn delegated_to(mut self, agent: &str) -> Self {
-        self.delegated = Some(agent.to_owned());
+        self.delegated = Some(agent.strip_prefix("agent:").unwrap_or(agent).to_owned());
         self.native_projection_verified = false;
         self.admitted = self.admitted.delegated_to(self.delegated.as_deref());
         self
     }
 
+    /// Who durably owns what this caller invokes.
+    ///
+    /// A plain certified person is owned as [`InvocationOwner::Certified`].
+    /// A session the person's own device handed to an agent (an MCP client,
+    /// [`Self::delegated_to`]) is owned exactly as the local door owns the
+    /// same admitted identity ([`durable_local_invocation::LocalCaller::owner_of`]):
+    /// [`InvocationOwner::AuthenticatedLocal`] naming that agent, so the
+    /// durable owner, the receipt actor and every later validation agree on
+    /// who acted. Keeping only `Certified` here dropped the delegation, and
+    /// the agent's own terminal update then looked like a stranger's.
     fn owner(&self) -> InvocationOwner {
-        InvocationOwner::Certified {
-            root: self.admitted.verified.user_public_key,
-            device: self.admitted.verified.device_public_key,
+        let root = self.admitted.verified.user_public_key;
+        let device = self.admitted.verified.device_public_key;
+        match &self.delegated {
+            Some(agent) => InvocationOwner::AuthenticatedLocal {
+                root,
+                device,
+                agent: Some(agent.clone()),
+            },
+            None => InvocationOwner::Certified { root, device },
         }
     }
 }
