@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget};
 use tilo_search::{Document, Matching, Page, SearchIndex};
-use ui::search::index_publication::IndexEntry;
+use ui::search::index_publication::{IndexEntry, field_weight};
 
 use crate::shell::certified_action_session::ActionSessionSource;
 use crate::shell::chrome_state::{Chrome, ChromeState};
@@ -107,7 +107,7 @@ fn text_index(entries: &[IndexedEntry]) -> SearchIndex {
             .entry
             .searchable()
             .fold(Document::new(at as u64), |document, (text, weight)| {
-                document.field(text, weight.field_weight())
+                document.field(text, field_weight(weight))
             })
     }));
     if let Err(error) = index.commit() {

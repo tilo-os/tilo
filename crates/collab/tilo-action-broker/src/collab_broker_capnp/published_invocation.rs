@@ -3,11 +3,11 @@ use super::{
     AdmittedJoinIdentity, Arc, CapnpBrokerState, CrdtRoute, PrivateWorkerRegistration,
     PublishedAction, VerifiedActionCaller, Weak,
 };
-use tilo_action_policy::roles;
-use ui::invocation_scope::{
+use runtime_collab::invocation_custody::{
     PublishedInvocationAuthorizer, PublishedInvocationLease, PublishedInvocationRequest,
     PublishedInvocationSpec,
 };
+use tilo_action_policy::roles;
 
 #[derive(Clone)]
 pub(super) enum InvocationCaller {

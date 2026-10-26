@@ -1140,7 +1140,7 @@ impl std::fmt::Display for ParticipantId {
 #[serde(default)]
 pub struct ActionInvoker {
     /// Authenticated principal, the same string the host admitted
-    /// (`PublishedInvocationRequest::actor` in ui-core).
+    /// (`runtime_collab::invocation_custody::PublishedInvocationRequest::actor`).
     pub actor: String,
     #[serde(skip_serializing_if = "is_person")]
     pub kind: ActorKind,

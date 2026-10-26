@@ -75,6 +75,12 @@ pub mod collab_capnp {
 
 pub mod approved_checks;
 pub mod external_moderation;
+/// Original invocation custody a host promises an application worker, and
+/// the worker's check that a delivery is the one the host retained.
+pub mod invocation_custody;
+/// The search entries an app publishes to the session's persistent index,
+/// and the bounds both ends hold them to.
+pub mod search_index;
 pub mod write_attribution;
 /// The host distinguishes local UI intent from continuation of a published action.
 /// A published id is resolved only against broker-retained original custody.
@@ -1575,8 +1581,8 @@ impl ChannelHandle {
 
     /// Change this application's entries in the session's persistent
     /// search index. `delta_json` is an encoded
-    /// `ui::search::index_publication::IndexDelta`; the broker binds it to
-    /// this channel's certified route and never relays it to peers.
+    /// [`crate::search_index::IndexDelta`]; the broker binds it to this channel's
+    /// certified route and never relays it to peers.
     ///
     /// # Errors
     ///

@@ -6412,7 +6412,7 @@ impl CapnpBrokerState {
             owner,
             network_evidence: durable.and_then(DurableContext::network),
             original: OriginalInvocationData::capture(
-                ui::invocation_scope::PublishedInvocationRequest {
+                runtime_collab::invocation_custody::PublishedInvocationRequest {
                     wire_id: id,
                     invocation,
                     address: tilo_actions::ActionAddress {
@@ -12262,7 +12262,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(bytes) => bytes,
             Err(error) => return Promise::err(error),
         };
-        if delta.len() > crate::services::MAX_SEARCH_INDEX_DELTA_BYTES {
+        if !crate::services::search_index_delta_fits(delta.len()) {
             return Promise::err(capnp::Error::failed(
                 "publishSearchIndex delta exceeds its bound".into(),
             ));
