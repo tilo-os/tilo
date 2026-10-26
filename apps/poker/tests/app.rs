@@ -355,3 +355,215 @@ fn the_window_bar_names_the_table_and_the_window_draws_no_title() {
         "the blinds stand with the pot"
     );
 }
+
+/// A table with `ada` (whose window this is) and `grace` seated, a hand
+/// dealt, and the turn brought to whoever is not `ada`.
+fn waiting_on_grace() -> TestApp<App> {
+    let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
+    take_a_seat(&mut app);
+    let grace = ui::tilo_actions::ActionInvoker::actor("grace");
+    app.call_by(
+        grace,
+        "so.tilo.poker.table",
+        "sit",
+        ui::serde_json::json!({ "seat": 2 }),
+    )
+    .expect("grace sits down");
+    let dealer = app.state().dealer().map(str::to_owned).expect("a dealer");
+    let dealer = ui::tilo_actions::ActionInvoker::actor(&dealer);
+    app.call_by(
+        dealer,
+        "so.tilo.poker.table",
+        "deal",
+        ui::serde_json::json!({}),
+    )
+    .expect("the hand is dealt");
+    // Whoever the button put first acts first: pass the turn until it is
+    // Grace's, so the person watching is the one offered the fold.
+    for _ in 0..2 {
+        let Some(actor) = app.state().hand.actor().map(|p| p.player.clone()) else {
+            break;
+        };
+        if actor != "ada" {
+            break;
+        }
+        let ada = ui::tilo_actions::ActionInvoker::actor("ada");
+        app.call_by(
+            ada,
+            "so.tilo.poker.table",
+            "call",
+            ui::serde_json::json!({}),
+        )
+        .expect("the turn is passed");
+    }
+    assert_eq!(
+        app.state().hand.actor().map(|p| p.player.as_str()),
+        Some("grace"),
+        "Grace is to act, and the window is Ada's"
+    );
+    app.settle();
+    app
+}
+
+/// The button called `name`, and whether it can act.
+fn button(app: &mut TestApp<App>, name: &str) -> (ui::accesskit::NodeId, bool) {
+    let harness = app.harness();
+    let id = harness
+        .a11y_node_named(name)
+        .unwrap_or_else(|| panic!("the window offers {name:?}"));
+    let (_, node) = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(node_id, _)| *node_id == id)
+        .expect("the button is in the tree");
+    (id, !node.is_disabled())
+}
+
+/// Run `frame` at `offset` into the turn that began at `since_ms`: the wall
+/// clock the countdown and the table's rule both read, and the frame clock
+/// the host wakes on.
+fn into_turn(
+    since_ms: i64,
+    start: ui::time::Instant,
+    offset: ui::time::Duration,
+    frame: impl FnOnce(),
+) {
+    let since = u64::try_from(since_ms).unwrap_or(0);
+    let wall = ui::time::UNIX_EPOCH + ui::time::Duration::from_millis(since) + offset;
+    ui::time::testing::with_wall(wall, || {
+        ui::time::testing::with_monotonic_time(start + offset, frame);
+    });
+}
+
+/// The fold for a slow player is not refused for thirty seconds behind a
+/// button that looks ready: it waits disabled, says how many seconds are
+/// left, and opens when the table's rule does.
+#[test]
+fn folding_for_a_slow_player_counts_down_and_opens() {
+    use ui::time::{Duration, Instant};
+
+    let mut app = waiting_on_grace();
+    let since = app.state().hand.since_ms;
+    let start = Instant::now();
+    assert!(
+        app.harness()
+            .a11y_node_named("Fold for grace in 30s")
+            .is_some(),
+        "the caption says why the fold is not offered yet"
+    );
+    let (_, open) = button(&mut app, "Fold for the slow player");
+    assert!(!open, "the fold is not open yet");
+
+    // Nineteen seconds of the turn gone: the caption has counted down.
+    into_turn(since, start, Duration::from_secs(19), || {
+        let _ = app.harness().poll_frame();
+    });
+    assert!(
+        app.harness()
+            .a11y_node_named("Fold for grace in 11s")
+            .is_some(),
+        "the countdown follows the clock"
+    );
+    let (_, open) = button(&mut app, "Fold for the slow player");
+    assert!(!open, "still closed at 11 seconds left");
+
+    // The table's own instant passed: the button acts, and the caption is
+    // gone because there is nothing left to explain.
+    let mut id = None;
+    into_turn(since, start, Duration::from_secs(31), || {
+        let _ = app.harness().poll_frame();
+        let (button, open) = button(&mut app, "Fold for the slow player");
+        assert!(open, "the fold is open once the player took too long");
+        id = Some(button);
+    });
+    assert!(
+        app.harness()
+            .a11y_node_named("Fold for grace in 0s")
+            .is_none(),
+        "an open move says nothing about waiting"
+    );
+    let id = id.expect("the fold is offered");
+    into_turn(since, start, Duration::from_secs(31), || {
+        app.harness()
+            .perform_a11y_action(id, &ui::a11y::Action::Activate)
+            .expect("the fold acts");
+        let _ = app.harness().poll_frame();
+    });
+    let folded = app
+        .state()
+        .hand
+        .players
+        .iter()
+        .find(|p| p.player == "grace")
+        .is_some_and(|p| p.folded);
+    assert!(folded, "the slow player's hand is folded");
+}
+
+/// A hand may be dealt by anyone but the dealer only once the table has
+/// waited: the button waits with the count, instead of refusing.
+#[test]
+fn dealing_is_offered_with_the_graces_count() {
+    use ui::time::Instant;
+
+    let start = Instant::now();
+    ui::time::testing::with_monotonic_time(start, || {
+        let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
+        take_a_seat(&mut app);
+        let grace = ui::tilo_actions::ActionInvoker::actor("grace");
+        app.call_by(
+            grace,
+            "so.tilo.poker.table",
+            "sit",
+            ui::serde_json::json!({ "seat": 2 }),
+        )
+        .expect("grace sits down");
+        let dealer = app.state().dealer().map(str::to_owned).expect("a dealer");
+        let dealer = ui::tilo_actions::ActionInvoker::actor(&dealer);
+        app.call_by(
+            dealer,
+            "so.tilo.poker.table",
+            "deal",
+            ui::serde_json::json!({}),
+        )
+        .expect("the hand is dealt");
+        app.settle();
+        // The visible player folds, so the hand is over and the table waits
+        // for a deal again.
+        for _ in 0..8 {
+            let Some(actor) = app.state().hand.actor().map(|p| p.player.clone()) else {
+                break;
+            };
+            let who = ui::tilo_actions::ActionInvoker::actor(&actor);
+            let verb = if actor == "ada" { "fold" } else { "call" };
+            app.call_by(who, "so.tilo.poker.table", verb, ui::serde_json::json!({}))
+                .expect("the turn is taken");
+            if !app.state().hand.street.in_play() {
+                break;
+            }
+        }
+        assert!(!app.state().hand.street.in_play(), "the hand is over");
+
+        // The dealer's own button acts at once; the other player's waits.
+        let dealer = app.state().dealer().map(str::to_owned).expect("a dealer");
+        if dealer == "ada" {
+            let (_, open) = button(&mut app, "Deal next hand");
+            assert!(open, "the dealer deals at once");
+            return;
+        }
+        let (_, open) = button(&mut app, "Deal next hand");
+        assert!(!open, "the other player waits out the grace");
+        assert!(
+            app.harness()
+                .a11y_node_named("Anyone may deal in 15s")
+                .is_some(),
+            "the button says how long the wait is"
+        );
+
+        let since = app.state().hand.since_ms;
+        into_turn(since, start, ui::time::Duration::from_secs(16), || {
+            let _ = app.harness().poll_frame();
+            let (_, open) = button(&mut app, "Deal next hand");
+            assert!(open, "anyone may deal once the table has waited");
+        });
+    });
+}
