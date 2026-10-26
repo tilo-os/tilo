@@ -632,7 +632,9 @@ impl ChatApp {
         }
         // A draft is made in the person's own record the first time its
         // composer is written in.
+        let ensure = ui::tilo_resource::profiling::Phase::start("chat.composer.ensure_draft");
         self.focused_composer_mut().ensure_draft(doc);
+        ensure.end();
         self.focused_composer_mut()
             .handle(event, scale, modifiers, doc);
         // A pasted picture is shared as one, like a chosen file.

@@ -1459,3 +1459,95 @@ fn a_keystroke_in_a_long_channel_describes_chat_once_and_patches_the_composer_al
     }
     frame.close_components();
 }
+
+/// What a keystroke into the composer of a long channel costs before its
+/// frame: the event handled, the draft written. Timing is reported, the
+/// scopes it ran with it.
+#[test]
+fn a_keystroke_in_the_composer_of_a_long_channel_handled() {
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-composer-keystroke");
+    let chain = crate::testing::chain();
+    for index in 0..300 {
+        frame
+            .call_on(
+                &chain,
+                "post",
+                serde_json::json!({"channel": "c_chat", "text": format!("Message {index}, long enough to wrap onto a second line")}),
+            )
+            .unwrap();
+    }
+    let inspection = frame.inspection();
+    let composer = semantic_target_rect(&inspection.root, "chat.composer")
+        .unwrap()
+        .center();
+    frame.click_at(composer.x, composer.y);
+    frame.type_text("ab");
+    frame.set_coalesce_input_frames(true);
+    for _ in 0..8 {
+        if !frame.poll_frame().unwrap() {
+            break;
+        }
+    }
+    let mut handled = Vec::new();
+    let mut report = String::new();
+    for key in "hello there".chars() {
+        let (elapsed, scopes) = ui::tilo_resource::profiling::observe(|| {
+            let started = ui::time::Instant::now();
+            frame.key(&key.to_string());
+            started.elapsed()
+        });
+        handled.push(elapsed);
+        let mut scopes: Vec<_> = scopes
+            .iter()
+            .map(|sample| (sample.phase, sample.calls, sample.elapsed_ns / 1000))
+            .collect();
+        scopes.sort_by_key(|(_, _, us)| std::cmp::Reverse(*us));
+        report.push_str(&format!(
+            "key {key:?}: handled in {elapsed:?}; scopes (name, calls, us): {scopes:?}\n"
+        ));
+        for _ in 0..8 {
+            if !frame.poll_frame().unwrap() {
+                break;
+            }
+        }
+    }
+    handled.sort();
+    for index in 0..3 {
+        let rebuilt = frame.rebuilt_frames();
+        frame
+            .call_on(
+                &chain,
+                "post",
+                serde_json::json!({"channel": "c_chat", "text": format!("Arrived {index}")}),
+            )
+            .unwrap();
+        let (elapsed, scopes) = ui::tilo_resource::profiling::observe(|| {
+            let started = ui::time::Instant::now();
+            for _ in 0..8 {
+                if !frame.poll_frame().unwrap() {
+                    break;
+                }
+            }
+            started.elapsed()
+        });
+        let mut scopes: Vec<_> = scopes
+            .iter()
+            .map(|sample| (sample.phase, sample.calls, sample.elapsed_ns / 1000))
+            .collect();
+        scopes.sort_by_key(|(_, _, us)| std::cmp::Reverse(*us));
+        assert_eq!(
+            frame.rebuilt_frames(),
+            rebuilt,
+            "a new message rebuilds no layout tree"
+        );
+        report.push_str(&format!(
+            "message {index}: frames in {elapsed:?}; scopes: {scopes:?}\n"
+        ));
+    }
+    frame.close_components();
+    eprintln!(
+        "{report}composer keystroke handled: p50 {:?}, max {:?}",
+        handled[handled.len() / 2],
+        handled[handled.len() - 1]
+    );
+}
