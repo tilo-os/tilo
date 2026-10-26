@@ -24,14 +24,19 @@
 #   outputs  the slot's outputs
 #   gl       virgl: auto, on or off
 #
-# The report and the performance records land in /target/vm-acceptance/report.
+# vm-acceptance runs the suite in t's shards (t.toml `shards`, run.py SHARDS):
+# each shard t gives this job in T_SHARDS (all of them when it gives none) in a
+# VM of its own, with its report and performance records in
+# /target/vm-acceptance/<shard>/report, and a `t-shard: <shard> passed|failed`
+# line for t. vm-acceptance-cohort runs the whole suite in one VM, so its swaps
+# are imported once, into /target/vm-acceptance/report.
 set -euo pipefail
 
 mode=${1:-}
 [[ -z $mode || $mode == cohort ]] || { echo "usage: vm-acceptance.sh [cohort]" >&2; exit 2; }
 arch=x86_64
 work=/var/tmp/vm-acceptance
-report=${CARGO_TARGET_DIR:-/target}/vm-acceptance/report
+reports=${CARGO_TARGET_DIR:-/target}/vm-acceptance
 gate=/target/publish/os-dev-disk/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 cohort=/target/vm-cohort
@@ -40,17 +45,11 @@ run_user=acceptance
 # Where the time goes, phase by phase, for the log.
 phase() { echo "vm-acceptance: $1 at ${SECONDS}s"; }
 
-# The guest's userspace is the builder image: what it lacks to run a libvirt guest
-# comes from dnf. The disk is installed already and tilo-vm built, so nothing here
-# images a disk or compiles.
-missing=()
-for p in libvirt-daemon-driver-qemu libvirt-client passt qemu-kvm qemu-img edk2-ovmf \
-  ipxe-roms-qemu openssh-clients rsync python3-pillow binutils jq socat sudo systemd \
-  shadow-utils util-linux git python3; do
-  rpm -q "$p" >/dev/null 2>&1 || missing+=("$p")
-done
-((${#missing[@]} == 0)) \
-  || dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y "${missing[@]}"
+# The guest's userspace is the builder image with the check's setup layer over it
+# (tools/ci/packages/vm-acceptance.txt); without that layer the packages come from
+# dnf. The disk is installed already and tilo-vm built, so nothing here images a
+# disk or compiles.
+bash tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt
 command -v virsh qemu-system-x86_64 qemu-img passt ssh sudo >/dev/null
 python3 -c 'import PIL'
 phase 'tools ready'
@@ -61,8 +60,8 @@ python3 os/dev/probe-kvm.py "$arch" || {
   exit 1
 }
 
-rm -rf "$work" "$report"
-mkdir -p "$work" "$report"
+rm -rf "$work" "$reports"
+mkdir -p "$work" "$reports"
 
 target=$(git rev-parse HEAD)
 disk=$gate/disk.qcow2
@@ -154,30 +153,61 @@ install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config" "/home/$run_u
 # The micro-VM's /dev has no /dev/stdin to install from.
 printf 'max_core = 0\n' > "/home/$run_user/.config/libvirt/qemu.conf"
 chown "$run_user:" "/home/$run_user/.config/libvirt/qemu.conf"
-chown -R "$run_user:" "$work" "$report" "$src/target"
+chown -R "$run_user:" "$work" "$reports" "$src/target"
 keep=$(env | sed -n 's/^\(RUSTC_WRAPPER\|SCCACHE_[A-Z0-9_]*\|CARGO_[A-Z0-9_]*\|RUSTUP_HOME\|TILO_[A-Z0-9_]*\)=.*/\1/p' \
   | grep -vx CARGO_TARGET_DIR | paste -sd, -)
 as_user() { sudo -n -u "$run_user" -H --preserve-env="$keep" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
 as_user virsh --connect qemu:///session capabilities | grep -q "<domain type='kvm'"
 
-args=(--disk "$disk" --commit "$commit" --outputs "$outputs" --out "$report"
-      --tilo-vm /usr/local/bin/tilo-vm --records "$report/records.jsonl" --runner t)
+args=(--disk "$disk" --commit "$commit" --outputs "$outputs"
+      --tilo-vm /usr/local/bin/tilo-vm --runner t)
 [[ -z $swap ]] || args+=(--swap "$swap" --swap-from "$src" --swap-ref "$target")
 args+=("${artifact_args[@]}")
 [[ -z $only ]] || args+=(--only "$only")
 [[ $gl != on ]] || args+=(--gl)
 phase 'VM host ready'
-status=0
 cd "$src"
-as_user env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
-  python3 scripts/vm-acceptance/run.py "${args[@]}" || status=$?
-phase 'scenarios done'
-[[ ! -f $report/report.md ]] || cat "$report/report.md"
-# A failed check keeps no outputs, so its text evidence (tracebacks, boot gate,
-# memory maps, shell runtime excerpts) is printed here, bounded by report.py.
-if [[ -s $report/failure-evidence.txt ]]; then
-  echo "## Evidence of the failed checks"
-  cat "$report/failure-evidence.txt"
+
+# One part of the suite (a shard, or all of it) in a VM of its own, its report printed.
+part() {
+  local report=$1
+  shift
+  local status=0
+  as_user mkdir -p "$report"
+  as_user env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
+    python3 scripts/vm-acceptance/run.py "${args[@]}" --out "$report" \
+    --records "$report/records.jsonl" "$@" || status=$?
+  [[ ! -f $report/report.md ]] || cat "$report/report.md"
+  # A failed check keeps no outputs, so its text evidence (tracebacks, boot gate,
+  # memory maps, shell runtime excerpts) is printed here, bounded by report.py.
+  if [[ -s $report/failure-evidence.txt ]]; then
+    echo "## Evidence of the failed checks"
+    cat "$report/failure-evidence.txt"
+  fi
+  [[ ! -f $report/report.json ]] || jq -r '"score: \([.results[] | select(.status == "pass")] | length)/\(.results | length) checks pass (\(.overall))"' "$report/report.json"
+  return "$status"
+}
+
+status=0
+if [[ $mode == cohort ]]; then
+  part "$reports/report" || status=$?
+  phase 'scenarios done'
+  exit "$status"
 fi
-[[ ! -f $report/report.json ]] || jq -r '"score: \([.results[] | select(.status == "pass")] | length)/\(.results | length) checks pass (\(.overall))"' "$report/report.json"
+shards=${T_SHARDS:-$(python3 -c '
+import importlib.util
+spec = importlib.util.spec_from_file_location("run", "scripts/vm-acceptance/run.py")
+run = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(run)
+print(" ".join(run.SHARDS))')}
+for shard in $shards; do
+  if part "$reports/$shard/report" --shard "$shard"; then
+    phase "shard $shard passed"
+    echo "t-shard: $shard passed"
+  else
+    status=1
+    phase "shard $shard failed"
+    echo "t-shard: $shard failed"
+  fi
+done
 exit "$status"
