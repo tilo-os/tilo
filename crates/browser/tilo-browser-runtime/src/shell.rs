@@ -1572,10 +1572,11 @@ impl BrowserShell {
     fn take_link_offer(&mut self) -> bool {
         // The card opens under the own avatar, which the bar knows once it
         // drew it, and asks in the person's name, once the room knows it.
-        if self.rect.is_zero_area()
-            || self.bar.own_avatar_rect().is_zero_area()
-            || self.chrome.here.borrow().own_label().is_none()
-        {
+        if !link_offer_ready(
+            self.rect,
+            self.bar.own_avatar_rect(),
+            self.chrome.here.borrow().own_label(),
+        ) {
             return false;
         }
         let Some(token) = self.offers.link_offer.take() else {
@@ -2590,6 +2591,16 @@ impl Widget for BrowserShell {
     }
 }
 
+/// Whether a link offer the page arrived with can open the card: the bar
+/// is drawn (the card opens under the own avatar) and the room named the
+/// person, since the card asks "Link Discord @name to <you>?" in their own
+/// name and must never ask it of "Guest".
+fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> bool {
+    !page.is_zero_area()
+        && !own_avatar.is_zero_area()
+        && own_name.is_some_and(|name| !name.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2632,6 +2643,22 @@ mod tests {
             layout_shared: true,
             members: None,
         }
+    }
+
+    /// The confirm a `/link` button opens asks in the person's own name:
+    /// it waits for the room to name them rather than ask it of "Guest".
+    #[test]
+    fn a_link_offer_waits_for_the_persons_own_name() {
+        let page = Rect::new(0.0, 0.0, 1440.0, 900.0);
+        let avatar = Rect::new(1380.0, 4.0, 1404.0, 28.0);
+        assert!(!link_offer_ready(page, avatar, None), "not named yet");
+        assert!(!link_offer_ready(page, avatar, Some("  ")));
+        assert!(
+            !link_offer_ready(page, Rect::ZERO, Some("Quinn Davis")),
+            "no bar yet"
+        );
+        assert!(!link_offer_ready(Rect::ZERO, avatar, Some("Quinn Davis")));
+        assert!(link_offer_ready(page, avatar, Some("Quinn Davis")));
     }
 
     #[test]
