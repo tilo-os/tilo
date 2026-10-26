@@ -116,7 +116,7 @@ fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
         let harness = app.harness();
         harness.set_interaction_environment(ui::InteractionEnvironment::TOUCH);
         if width < 400 {
-            // allow-breakpoint: the test varies the window width to prove both layouts
+            // allow-breakpoint: test varies width
             harness
                 .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
                 .unwrap();
