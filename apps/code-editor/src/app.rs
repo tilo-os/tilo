@@ -992,7 +992,22 @@ impl CodeApp {
         self.dispatch = Some(dispatcher);
         self.live_state = Some(state);
         self.live = live;
+        self.editor.set_text_zoom(settings.get().editor_zoom);
         self.settings = Some(settings);
+    }
+
+    /// Change the editor's text size one step, store it for this person, and
+    /// answer the factor the code now shows. The window bar says the level
+    /// through the host's content-zoom indicator, as for any content that
+    /// zooms itself.
+    pub(crate) fn zoom_editor_text(&mut self, step: ui::content_zoom::ZoomStep) -> f32 {
+        let factor = self.editor.text_zoom();
+        let next = step.apply(factor);
+        self.editor.set_text_zoom(next);
+        if let Some(settings) = &self.settings {
+            let _ = settings.update(|stored| stored.editor_zoom = self.editor.text_zoom());
+        }
+        self.editor.text_zoom()
     }
 
     pub(crate) fn set_highlight_waker(&mut self, wake: ui::WakeHandle) {
@@ -2241,10 +2256,21 @@ impl ui::semantic_document_read::SemanticReaders for CodeApp {
     }
 }
 
+/// The editor's text zooms by itself: Ctrl+Plus, Ctrl+Minus, Ctrl+0, a
+/// Ctrl+scroll or a pinch change the code and its line numbers, not the
+/// window's chrome. The chosen size is kept in the person's preferences, so
+/// it follows them to the next window and device.
+impl ui::content_zoom::ContentZoom for CodeApp {
+    fn zoom_content(&mut self, step: ui::content_zoom::ZoomStep) -> Option<f32> {
+        Some(self.zoom_editor_text(step))
+    }
+}
+
 impl Widget for CodeApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
         dyn ui::widget::Continuable,
+        dyn ui::content_zoom::ContentZoom,
         dyn ui::widget::Findable,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::semantic_document_read::SemanticReaders
@@ -2310,6 +2336,9 @@ impl Widget for CodeApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
+        if let Some(settings) = &self.settings {
+            self.editor.set_text_zoom(settings.get().editor_zoom);
+        }
         if !self.seeded {
             self.seed_terminal();
         }
@@ -2664,7 +2693,7 @@ impl Widget for CodeApp {
         }
         Some(
             AccessNode::new(Role::Document)
-                .with_name(format!("Code — {}", self.session.project.name))
+                .with_name(format!("Code: {}", self.session.project.name))
                 .with_description(
                     "Code editor. Use the file tree, file header, editor document, and bottom panel to navigate the project.",
                 )
