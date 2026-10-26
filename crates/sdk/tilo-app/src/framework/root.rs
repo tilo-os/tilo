@@ -783,7 +783,13 @@ impl ResourceRoot {
     fn publication(&self) -> tilo_actions::Resource {
         let _profile = tilo_resource::profiling::Phase::start("framework.publication");
         let state = self.typed.state();
-        let tree = self.shared_document_tree(&*state).to_resource();
+        let mut tree = self.shared_document_tree(&*state).to_resource();
+        if let Some(reason) = self.typed.unreadable() {
+            // Read out of the last state that did read: the record publishes
+            // why its document actions do not apply, never that state as the
+            // one it holds.
+            tilo_resource::withhold_document_actions(&mut tree, &reason);
+        }
         self.decorate_publication(&*state, tree, Decoration::Tree)
     }
 
@@ -802,7 +808,18 @@ impl ResourceRoot {
         let state = self.typed.state();
         let version = (self.version(), ui_core::i18n::I18nManager::revision());
         let epoch = self.typed.cache_epoch(&*state);
-        let resource = if let Some(epoch) = &epoch {
+        let resource = if let Some(reason) = &self.typed.unreadable() {
+            // The state is the last that read, not what the document holds,
+            // so even the fields bound controls were bound to are no longer
+            // offered: every document action says why it does not apply.
+            let mut head = self
+                .typed
+                .head(self.dispatch.resource_id(), &self.label, &*state);
+            tilo_resource::withhold_document_actions(&mut head, reason);
+            head.actions
+                .retain(|spec| spec.id != tilo_resource::FIELD_EDIT);
+            Rc::new(head)
+        } else if let Some(epoch) = &epoch {
             self.live_head(&*state, epoch)
         } else {
             let _profile = tilo_resource::profiling::Phase::start("framework.resource_head");
@@ -875,7 +892,7 @@ impl ResourceRoot {
             mark_document_jobs(&mut resource);
         }
         if let Some(unreadable) = &key.unreadable {
-            withhold_document_actions(&mut resource, unreadable);
+            tilo_resource::withhold_document_actions(&mut resource, unreadable);
         }
         let base = Rc::new(BindingBase {
             key,
@@ -955,7 +972,7 @@ impl ResourceRoot {
             mark_document_jobs(&mut overlay);
         }
         if let Some(unreadable) = &base.key.unreadable {
-            withhold_document_actions(&mut overlay, unreadable);
+            tilo_resource::withhold_document_actions(&mut overlay, unreadable);
         }
         overlay.actions
     }
@@ -973,6 +990,16 @@ impl ResourceRoot {
         };
         let base = self.binding_base(&head);
         let overlay = self.binding_overlay(&base);
+        // Read while the document did not: the fields these edits were bound
+        // to are of the last state that read, not what it holds now.
+        let overlay = if self.typed.unreadable().is_some() {
+            overlay
+                .into_iter()
+                .filter(|spec| spec.id != tilo_resource::FIELD_EDIT)
+                .collect()
+        } else {
+            overlay
+        };
         self.action_bindings
             .update_shared(Rc::clone(&base.resource), overlay);
         head
@@ -991,7 +1018,12 @@ impl ResourceRoot {
             // withdrawing the new resource tree using the previous frame's
             // handler table. The next live revision replaces this cache.
             self.pin_nested_views(&*current);
-            return self.publication_of(&*current);
+            let reason = self.typed.unreadable();
+            let mut tree = self.publication_of(&*current);
+            if let Some(reason) = reason {
+                tilo_resource::withhold_document_actions(&mut tree, &reason);
+            }
+            return tree;
         }
         self.publication()
     }
@@ -1072,10 +1104,14 @@ impl ResourceRoot {
             mark_document_jobs(&mut resource);
         }
         if let Some(unreadable) = self.typed.unreadable() {
-            withhold_document_actions(&mut resource, &unreadable);
+            tilo_resource::withhold_document_actions(&mut resource, &unreadable);
         }
         if children {
+            // A record a view asked for and could not open is published
+            // with its declared actions unavailable for why: nothing is
+            // shown of it, so nothing but those is answered.
             resource.children.extend(self.storage.record_resources());
+            resource.children.extend(self.storage.unavailable_records());
         }
         resource
     }
@@ -1291,22 +1327,6 @@ fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource
         children: Vec::new(),
         actions: actions.clone(),
         views: views.clone(),
-    }
-}
-
-/// Every document action of `resource` and its children, unavailable for
-/// `reason`: the record does not read as the resource.
-fn withhold_document_actions(resource: &mut tilo_actions::Resource, reason: &str) {
-    for spec in &mut resource.actions {
-        if spec.kind == tilo_actions::OperationKind::Document {
-            spec.contract.availability = tilo_actions::Availability::Unavailable {
-                code: "unreadable".into(),
-                reason: reason.to_owned(),
-            };
-        }
-    }
-    for child in &mut resource.children {
-        withhold_document_actions(child, reason);
     }
 }
 
@@ -3636,7 +3656,7 @@ impl Unopened {
         for decl in declarations {
             resource = resource.with_action(tilo_resource::declaration_spec(decl));
         }
-        withhold_document_actions(&mut resource, reason);
+        tilo_resource::withhold_document_actions(&mut resource, reason);
         Self {
             title,
             icon,

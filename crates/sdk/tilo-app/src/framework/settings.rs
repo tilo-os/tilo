@@ -329,6 +329,15 @@ impl ViewStorage {
             .collect()
     }
 
+    /// The person's records a view asked for and could not open, as they
+    /// are published: their declared actions, unavailable for why.
+    pub(crate) fn unavailable_records(&self) -> Vec<tilo_actions::Resource> {
+        self.person
+            .as_ref()
+            .map(super::person::PersonState::unavailable)
+            .unwrap_or_default()
+    }
+
     pub(crate) fn record_resources(&self) -> Vec<tilo_actions::Resource> {
         let mut resources = self
             .person
