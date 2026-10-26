@@ -72,6 +72,46 @@ impl WordProcessorWidget {
         Some((char_to_byte(text, s), char_to_byte(text, e)))
     }
 
+    /// Move the caret one page on, or one page back, to the same place on
+    /// that sheet: the column it stands at, on the sheet above or below.
+    /// `extend` grows the selection instead of moving the caret alone.
+    pub(super) fn move_page(&mut self, forward: bool, extend: bool) {
+        let page = self.caret_page();
+        let target = if forward {
+            page + 1
+        } else {
+            page.saturating_sub(1)
+        };
+        if target == page || target >= self.pages.max(1) {
+            return;
+        }
+        // The same column, on the target sheet's first line: the page's own
+        // top, inside its text band.
+        let column = self.caret_screen_x();
+        let Some(top) = self
+            .laid
+            .iter()
+            .filter(|laid| laid.page == target)
+            .map(|laid| laid.y_top)
+            .reduce(f64::min)
+        else {
+            return;
+        };
+        let Some(column) = column else { return };
+        self.caret_from_pointer(Point::new(column, top + 1.0), extend);
+        self.lifecycle.dirty = true;
+    }
+
+    /// Where the caret draws this frame, on screen: its line's origin plus the
+    /// shaped layout's own caret geometry.
+    fn caret_screen_x(&self) -> Option<f64> {
+        let caret = &self.inner.caret;
+        let laid = self.laid.iter().find(|laid| laid.id == caret.block)?;
+        let (_, layout) = self.layout_cache.get(&laid.id)?;
+        let (x, _, _) = layout.caret_geometry(laid.caret_byte(caret.offset));
+        Some(laid.text_x + f64::from(x))
+    }
+
     pub(super) fn extend_or_clear(&mut self, shift: bool) {
         if shift {
             self.inner.set_anchor();

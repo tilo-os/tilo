@@ -872,7 +872,43 @@ impl WordProcessorWidget {
                 left += f64::from(w) + s4;
             }
         }
+        // Where the caret is: which page of how many. Every peer says its
+        // position; this is the one app that paginates, so it says the page.
+        let page = self.page_readout();
+        let (w, h) = tr.measure_style(&page, None, &style);
+        if left + f64::from(w) <= right {
+            tr.draw_style(
+                scene,
+                &page,
+                theme.tokens.colors.text_primary,
+                transform * Affine::translate((left, cy - f64::from(h) / 2.0)),
+                None,
+                &style,
+            );
+            left += f64::from(w) + s4;
+        }
         let _ = left;
+    }
+
+    /// The page the caret stands on, of how many the document has.
+    pub(super) fn page_readout(&self) -> String {
+        t_args(
+            "status-page",
+            &[
+                arg("page", num::i64_of_usize(self.caret_page() + 1)),
+                arg("pages", num::i64_of_usize(self.pages.max(1))),
+            ],
+        )
+    }
+
+    /// The page index the caret stands on, from the last laid pass: the page
+    /// its block was laid onto.
+    pub(super) fn caret_page(&self) -> usize {
+        let caret = &self.inner.caret;
+        self.laid
+            .iter()
+            .find(|laid| laid.id == caret.block)
+            .map_or(0, |laid| laid.page)
     }
 
     /// The live value of the layout mode in use, or nothing at rest.
