@@ -3382,7 +3382,17 @@ impl ChromeState {
             1 => focused.saturating_add(1).min(count.saturating_sub(1)),
             _ => focused,
         };
-        self.focus_strip_index(next)
+        let changed = self.focus_strip_index(next);
+        if !changed && dir != 0 {
+            // As with the workspaces: a step past the end says so instead
+            // of looking like a chord that reached nothing.
+            self.acknowledge(crate::shell::i18n::t(if dir < 0 {
+                "strip-first-reached"
+            } else {
+                "strip-last-reached"
+            }));
+        }
+        changed
     }
 
     /// Focus `strip` of the active workspace. `false` when it is already
@@ -3618,6 +3628,15 @@ impl ChromeState {
         tracing::info!(target: "tilo::shortcut", dir, changed, "workspace switch");
         if changed {
             self.bump();
+        } else if dir != 0 {
+            // Nothing moved. Say where the person already is, so "I am at
+            // the end" cannot read as "the chord did not register" — and on
+            // a one-workspace desktop, as "this key is broken".
+            self.acknowledge(crate::shell::i18n::t(if dir < 0 {
+                "workspace-first-reached"
+            } else {
+                "workspace-last-reached"
+            }));
         }
         changed
     }
@@ -5097,14 +5116,54 @@ mod active_tab_tests {
             assert!(st.switch_strip(-1));
             assert_eq!(st.strip_focus().1, 1);
 
-            // Clamps rather than wrapping, matching workspace switching.
+            // Clamps rather than wrapping, matching workspace switching —
+            // and a step past the end says where the person is instead of
+            // looking like a chord that reached nothing.
             while st.switch_strip(-1) {}
             assert_eq!(st.strip_focus().1, 0);
             assert!(!st.switch_strip(-1), "focus wrapped past the first strip");
+            assert_eq!(
+                st.acknowledger
+                    .current(std::time::Instant::now())
+                    .map(|ack| ack.text().to_string()),
+                Some(crate::shell::i18n::t("strip-first-reached")),
+                "the refused step says it is the first strip"
+            );
 
             while st.switch_strip(1) {}
             assert_eq!(st.strip_focus().1, count - 1);
             assert!(!st.switch_strip(1), "focus wrapped past the last strip");
+            assert_eq!(
+                st.acknowledger
+                    .current(std::time::Instant::now())
+                    .map(|ack| ack.text().to_string()),
+                Some(crate::shell::i18n::t("strip-last-reached"))
+            );
+        }
+
+        /// A workspace step past either end is answered, not swallowed: the
+        /// person cannot otherwise tell "I am at the end" from "the chord
+        /// did not register", and on one workspace the chord is a permanent
+        /// no-op.
+        fn stepping_past_the_workspace_list_says_where_the_person_is() {
+            let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
+            let mut st = cell.borrow_mut();
+            while st.switch_workspace(-1) {}
+            assert!(!st.switch_workspace(-1));
+            assert_eq!(
+                st.acknowledger
+                    .current(std::time::Instant::now())
+                    .map(|ack| ack.text().to_string()),
+                Some(crate::shell::i18n::t("workspace-first-reached"))
+            );
+            while st.switch_workspace(1) {}
+            assert!(!st.switch_workspace(1));
+            assert_eq!(
+                st.acknowledger
+                    .current(std::time::Instant::now())
+                    .map(|ack| ack.text().to_string()),
+                Some(crate::shell::i18n::t("workspace-last-reached"))
+            );
         }
 
         fn focusing_a_strip_by_index_selects_that_strip() {
@@ -5135,6 +5194,7 @@ mod active_tab_tests {
         no_active_returns_none_instead_of_first_group();
         without_active_strip_returns_none_not_first_strip();
         switching_strips_moves_focus_and_clamps_at_the_ends();
+        stepping_past_the_workspace_list_says_where_the_person_is();
         focusing_a_strip_by_index_selects_that_strip();
     }
 
