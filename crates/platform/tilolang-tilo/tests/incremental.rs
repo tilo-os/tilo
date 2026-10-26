@@ -169,6 +169,17 @@ fn search_follows_a_peer_and_matches_a_full_index() {
     let delta = index.update(&ada.host);
     assert_eq!(delta.upserted.len(), 2, "{delta:?}");
     assert_eq!(indexed(&index), all_hits(&ada, &meta, &root));
+
+    // A peer removes one item and moves another: one hit gone, none read again.
+    let ids = item_ids(&ada, &meta, &root);
+    remove(&mut grace, &meta, &root, &ids[1]);
+    let moved = plan_move_first(&grace, &meta, &root, &ids[3]);
+    grace.apply(&moved);
+    ada.sync_with(&mut grace);
+    let delta = index.update(&ada.host);
+    assert!(delta.upserted.is_empty(), "{delta:?}");
+    assert_eq!(delta.removed.len(), 1, "{delta:?}");
+    assert_eq!(indexed(&index), all_hits(&ada, &meta, &root));
 }
 
 struct Refusing;
@@ -252,6 +263,13 @@ fn publication_rebuilds_the_changed_item_and_matches_publishing_anew() {
         })
         .unwrap();
     ada.apply(&moved);
+    published.update(&ada.host, &planner);
+    assert_eq!(
+        shape(&published.trees()[&root]),
+        published_anew(&ada, &meta, &root)
+    );
+
+    remove(&mut ada, &meta, &root, &ids[1]);
     published.update(&ada.host, &planner);
     assert_eq!(
         shape(&published.trees()[&root]),

@@ -708,6 +708,20 @@ impl TiloStore {
             .first_text(&inner.mirror, (&app, &ty), at)
     }
 
+    /// Where the item `item` is in the collection `field` of `at`, as its listing has it: found
+    /// by its order key, not by walking the listing.
+    #[must_use]
+    pub fn position(&self, at: &ResourceRef, field: &str, item: &str) -> Option<usize> {
+        let spec = FieldSpec {
+            id: field.to_owned(),
+            kind: tilolang_runtime::meta::FieldKind::Collection,
+        };
+        // Listed once, then kept up to date by the changes.
+        Store::listing(self, at, &spec).ok()?;
+        let inner = self.inner.borrow();
+        inner.cache.borrow().position(&at.id_string(), field, item)
+    }
+
     /// Create the resource `id` as one committed change: how a per-room singleton gets the same
     /// id on every replica.
     ///
