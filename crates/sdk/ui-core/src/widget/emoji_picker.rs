@@ -44,6 +44,7 @@ use crate::widget::{
     ControlSize, EventCtx, ModelPath, ScrollRegion, SearchField, SegmentedFace, SegmentedStyle,
     TaffyTreeExt, ToggleGroup, Widget,
 };
+use crate::workspace_emoji::Adding;
 
 /// Matches listed for a query at most.
 const SEARCH_RESULTS: usize = 96;
@@ -138,9 +139,15 @@ pub struct EmojiPicker {
     geometry: Geometry,
     scroll: ScrollRegion,
     theme: Theme,
-    /// What the grid was built from: the catalogue's arrival and the
-    /// workspace's emoji.
-    built_from: (u64, u64),
+    /// What the grid was built from: the catalogue's arrival, the
+    /// workspace's emoji and the last picture added to them.
+    built_from: (u64, u64, u64),
+    /// Why the last picture chosen with "Add emoji" was not added, in
+    /// place of the footer's name until the person does something else.
+    notice: Option<String>,
+    /// The count of pictures added ([`crate::workspace_emoji::EmojiSource::last_added`])
+    /// last shown.
+    shown_added: u64,
     cursor: Point,
     dirty: bool,
 }
@@ -173,7 +180,9 @@ impl EmojiPicker {
             geometry: Geometry::default(),
             scroll: ScrollRegion::vertical().with_overlaid_bars(),
             theme: Theme::dark(),
-            built_from: (u64::MAX, u64::MAX),
+            built_from: (u64::MAX, u64::MAX, u64::MAX),
+            notice: None,
+            shown_added: 0,
             cursor: Point::ZERO,
             dirty: true,
         };
@@ -318,6 +327,15 @@ impl EmojiPicker {
         self.group
     }
 
+    /// Why the last picture chosen with "Add emoji" was not added, and
+    /// where the picker says so: for a host that names the picker's parts
+    /// to assistive technology itself.
+    #[must_use]
+    pub fn notice(&self) -> Option<(&str, Rect)> {
+        let notice = self.notice.as_deref().filter(|_| self.open)?;
+        Some((notice, self.on_screen(self.geometry.footer)))
+    }
+
     /// Where group tab `index` is on screen.
     #[must_use]
     pub fn tab_rect(&self, index: usize) -> Option<Rect> {
@@ -339,21 +357,60 @@ impl EmojiPicker {
         self.press = None;
         self.hover = None;
         self.events.clear();
+        self.notice = None;
         self.scroll.set_offset(Vec2::ZERO);
         self.rebuild();
+        // What was added before it opened is not news.
+        self.shown_added = self.built_from.2;
     }
 
     fn on_screen(&self, rect: Rect) -> Rect {
         rect + self.rect.origin().to_vec2()
     }
 
-    /// What the grid is built from now: moves when the catalogue arrives
-    /// or the workspace's emoji change.
-    fn sources() -> (u64, u64) {
+    /// What the grid is built from now: moves when the catalogue arrives,
+    /// the workspace's emoji change or a picture chosen to add settled.
+    fn sources() -> (u64, u64, u64) {
+        let source = crate::workspace_emoji::current();
         (
             emoji_catalogue::CATALOGUE.generation(),
-            crate::workspace_emoji::current().map_or(0, |source| source.revision()),
+            source.as_ref().map_or(0, |source| source.revision()),
+            source.map_or(0, |source| source.last_added().0),
         )
+    }
+
+    /// Show what became of a picture chosen to add since the grid was
+    /// built: the new emoji selected, or why it was not added.
+    fn show_added(&mut self) {
+        let Some((_, Some(adding))) =
+            crate::workspace_emoji::current().map(|source| source.last_added())
+        else {
+            return;
+        };
+        match adding {
+            Adding::Added(name) => {
+                let written = format!(":{name}:");
+                if let Some(at) = self
+                    .items
+                    .iter()
+                    .position(|item| *item == Item::Emoji(written.clone()))
+                {
+                    self.selected = at;
+                    self.scroll_selected_into_view();
+                }
+                self.notice = None;
+            }
+            Adding::Failed(reason) => {
+                if let Some(at) = self.items.iter().position(|item| *item == Item::AddCustom) {
+                    self.selected = at;
+                }
+                self.notice = Some(crate::i18n::widget_format(
+                    "emoji-chooser-add-failed",
+                    &[("reason", reason.as_str().into())],
+                ));
+            }
+        }
+        self.dirty = true;
     }
 
     fn rebuild(&mut self) {
@@ -717,6 +774,7 @@ impl EmojiPicker {
     }
 
     fn key(&mut self, key: &Key, shift: bool) -> bool {
+        self.notice = None;
         if let Some(tones) = self.tones.as_mut() {
             let last = tones.forms.len().saturating_sub(1);
             match key {
@@ -767,6 +825,7 @@ impl EmojiPicker {
         let now = crate::time::now();
         match (state, button) {
             (ElementState::Pressed, MouseButton::Left) => {
+                self.notice = None;
                 if hit == Hit::Outside {
                     // A popover around an unframed picker closes it itself.
                     if self.framed {
@@ -827,6 +886,22 @@ impl EmojiPicker {
     }
 
     fn paint_footer(&self, ctx: &mut PaintCtx<'_>, footer: Rect) {
+        if let Some(notice) = &self.notice {
+            // Wrapped: a reason may take a second line, which the footer's
+            // margin holds.
+            let style = ctx.theme.text(TextRole::Caption);
+            let width = f32_of_f64(footer.width());
+            let (_, h) = ctx.text.measure_style(notice, Some(width), &style);
+            let color = ctx.theme.tokens.colors.semantic.danger;
+            ctx.text(
+                notice,
+                &style,
+                color,
+                Point::new(footer.x0, footer.center().y - f64::from(h) / 2.0),
+                Some(width),
+            );
+            return;
+        }
         let announced = self
             .tones
             .as_ref()
@@ -834,7 +909,10 @@ impl EmojiPicker {
             .map(String::as_str)
             .or_else(|| self.selected());
         let name = match announced {
-            Some(text) => emoji_catalogue::emoji_name(text),
+            // A workspace emoji's name as text: written `:name:`, the line
+            // would draw its picture a second time.
+            Some(text) => tilo_resource::custom_emoji_name(text)
+                .map_or_else(|| emoji_catalogue::emoji_name(text), str::to_owned),
             None if self.items.get(self.selected) == Some(&Item::AddCustom) => {
                 crate::i18n::widget_format("emoji-chooser-add", &[])
             }
@@ -1164,7 +1242,14 @@ impl EmojiPicker {
                     .with_children(buttons),
             );
         }
-        if !self.items.is_empty() {
+        if let Some(notice) = &self.notice {
+            dialog.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(notice.clone())
+                    .with_bounds(self.on_screen(self.geometry.footer))
+                    .with_live(Politeness::Assertive),
+            );
+        } else if !self.items.is_empty() {
             dialog.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.item_name(self.selected))
@@ -1268,6 +1353,10 @@ impl Widget for EmojiPicker {
             let selected = self.selected;
             self.rebuild();
             self.selected = selected.min(self.items.len().saturating_sub(1));
+            if self.built_from.2 != self.shown_added {
+                self.shown_added = self.built_from.2;
+                self.show_added();
+            }
         } else if theme_changed || self.geometry.size != self.size(theme) {
             self.layout();
         }

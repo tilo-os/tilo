@@ -945,7 +945,9 @@ fn no_apps_and_an_unreachable_session_are_told_apart() {
         );
         let (text, failed) = tool(&agent(&empty), "tilo_do", json!({"path": "notes#open"})).await;
         assert!(
-            failed && text == "no app notes: running none; installed none",
+            failed
+                && text
+                    == "no app notes; name a running app by its id or last part, e.g. <app_id>. Running none; installed none",
             "{text}"
         );
 

@@ -621,15 +621,18 @@ impl Gateway {
                 }
             }
             "INTERACTION_CREATE" => {
+                // The token the reply's button carries; only its check is
+                // reported.
+                let token = link_token();
                 if let Some(emit) = self
                     .guild
                     .as_ref()
                     .filter(|_| self.ours(data))
-                    .and_then(|g| g.command(data))
+                    .and_then(|g| g.command(data, Some(token.as_str()).filter(|t| !t.is_empty())))
                 {
                     let name = emit.payload["name"].as_str().unwrap_or_default().to_owned();
                     self.emit(emit);
-                    self.answer_interaction(data, &name);
+                    self.answer_interaction(data, &name, &token);
                 }
             }
             _ => {}
@@ -813,9 +816,8 @@ impl Gateway {
         let rest = Arc::clone(&self.ctx.rest);
         tokio::spawn(async move {
             let commands = json!([
-                {"name": "link", "type": 1, "description": "Link your Discord account to your Tilo account",
-                 "options": [{"type": 3, "name": "code", "description": "The code Tilo shows you", "required": true}]},
-                {"name": "unlink", "type": 1, "description": "Unlink your Discord account from Tilo"},
+                {"name": "link", "type": 1, "description": "Link your Discord account to your Tilo account, so you show as yourself on both sides"},
+                {"name": "unlink", "type": 1, "description": "Unlink your Discord account from your Tilo account"},
             ]);
             let _ = rest
                 .call(
@@ -834,35 +836,128 @@ impl Gateway {
         });
     }
 
-    /// Answer a slash command ephemerally. Whether a link succeeds is the
-    /// bridge's decision, made later, so the answer only confirms receipt.
-    fn answer_interaction(&self, data: &Value, name: &str) {
+    /// Answer a slash command ephemerally. `/link` answers with a button
+    /// that opens Tilo with `token`, where the person says yes; the bridge
+    /// edits the reply once they did, and it says the link expired when
+    /// nobody did in time. `/unlink` is deferred until the bridge says what
+    /// came of it. No reply promises an outcome it does not know.
+    fn answer_interaction(&self, data: &Value, name: &str, token: &str) {
         if self.ctx.config.read_only {
             return;
         }
-        let (Some(id), Some(token)) = (data["id"].as_str(), data["token"].as_str()) else {
+        let (Some(id), Some(interaction_token), Some(application)) = (
+            data["id"].as_str(),
+            data["token"].as_str(),
+            data["application_id"].as_str(),
+        ) else {
             return;
         };
-        let content = if name == "link" {
-            "Got it. If the code is right and has not expired, your Discord account is linked to your Tilo account in a moment."
+        let body = if name == "link" {
+            match &self.ctx.config.link_url {
+                Some(entry) => {
+                    self.ctx
+                        .remember_interaction(id, application, interaction_token);
+                    json!({"type": 4, "data": {
+                        "flags": 64,
+                        "content": "Link this Discord account to your Tilo account, so what you write shows as you on both sides. The button works for 10 minutes and only for you.",
+                        "components": [{"type": 1, "components": [{
+                            "type": 2, "style": 5, "label": "Link in Tilo",
+                            "url": link_url(entry, token),
+                        }]}],
+                    }})
+                }
+                None => json!({"type": 4, "data": {
+                    "flags": 64,
+                    "content": "Linking isn't set up for this server: its Tilo host serves no web entry to link in.",
+                }}),
+            }
         } else {
-            "Got it. Your Discord account will be unlinked from your Tilo account in a moment."
+            self.ctx
+                .remember_interaction(id, application, interaction_token);
+            json!({"type": 5, "data": {"flags": 64}})
         };
-        let path = format!("/interactions/{}/{}/callback", segment(id), segment(token));
+        let path = format!(
+            "/interactions/{}/{}/callback",
+            segment(id),
+            segment(interaction_token)
+        );
         let rest = Arc::clone(&self.ctx.rest);
+        let ctx = Arc::clone(&self.ctx);
+        let (id, expires) = (id.to_owned(), name == "link");
         tokio::spawn(async move {
             let _ = rest
                 .call(
                     Method::POST,
                     &path,
                     &[],
-                    Body::Json(json!({"type": 4, "data": {"content": content, "flags": 64}})),
+                    Body::Json(body),
                     Auth::InPath,
                     None,
                 )
                 .await;
+            if !expires {
+                return;
+            }
+            // Unused, the button runs out with its offer.
+            tokio::time::sleep(LINK_TTL).await;
+            if let Some(kept) = ctx.take_interaction(&id) {
+                let _ = edit_reply(&rest, &kept, EXPIRED_REPLY).await;
+            }
         });
     }
+}
+
+/// How long a `/link` button works ([`discord_wire::event::LINK_TTL_MS`]).
+const LINK_TTL: Duration = Duration::from_millis(discord_wire::event::LINK_TTL_MS.unsigned_abs());
+
+/// What an unused `/link` reply says once its button ran out.
+pub const EXPIRED_REPLY: &str = "That link expired. Run /link again to get a new one.";
+
+/// A fresh one-time link token: 256 random bits in hex. Without the
+/// operating system's randomness it is empty, and no link is offered.
+#[must_use]
+pub fn link_token() -> String {
+    let mut bytes = [0u8; 32];
+    if getrandom::fill(&mut bytes).is_err() {
+        return String::new();
+    }
+    bytes.iter().fold(String::with_capacity(64), |mut hex, b| {
+        let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{b:02x}"));
+        hex
+    })
+}
+
+/// The address the `/link` button opens: the room's web entry, with the
+/// token where the page takes link secrets from (and moves them out of the
+/// address bar before anything else runs).
+#[must_use]
+pub fn link_url(entry: &str, token: &str) -> String {
+    let entry = entry.split('#').next().unwrap_or(entry);
+    format!("{entry}#?link={token}")
+}
+
+/// Edit the reply `kept` names to `content`, its button gone.
+///
+/// # Errors
+/// Discord refused it or could not be reached.
+pub async fn edit_reply(
+    rest: &crate::rest::Rest,
+    kept: &crate::Interaction,
+    content: &str,
+) -> Result<Value, RestError> {
+    rest.call(
+        Method::PATCH,
+        &format!(
+            "/webhooks/{}/{}/messages/@original",
+            segment(&kept.application),
+            segment(&kept.token)
+        ),
+        &[],
+        Body::Json(json!({"content": content, "components": []})),
+        Auth::InPath,
+        None,
+    )
+    .await
 }
 
 /// Open a WebSocket to `url`, over TLS for `wss`, within [`CONNECT_TIMEOUT`].

@@ -127,8 +127,8 @@ impl ShortcutLibraryServices for Library {
     fn keymap(&self) -> settings_store::hardware::ShortcutConfig {
         settings_store::hardware::ShortcutConfig::default()
     }
-    fn store(&self, _: &ShortcutLibraryRequest<'_>) -> Result<(), String> {
-        Err("this test stores no shortcut".into())
+    fn store(&self, _: ShortcutLibraryRequest) -> crate::services::ShortcutStore {
+        Box::pin(async { Err("this test stores no shortcut".into()) })
     }
     fn runtime(&self) -> Result<tokio::runtime::Handle, String> {
         Err("this test runs no shortcut".into())

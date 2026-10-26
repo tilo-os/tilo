@@ -293,7 +293,6 @@ pub(crate) fn resource() -> Resource {
         ],
         ActionContract {
             risk: RiskLevel::Low,
-            reversible: true,
             ..json_contract(ActionKind::Undoable, RetryPolicy::AtMostOnce)
         },
         |args| Command::Restore {

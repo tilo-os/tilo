@@ -28,7 +28,87 @@ pub(super) struct DesktopControlChip {
     pressed: Option<(u64, Rect)>,
 }
 
+/// The bar's "Dev build · by …" mark: the windows running a developer's own
+/// build of their app, which the room they are in runs, by who installed
+/// it there. Only a label: what the build is, the room says.
+#[derive(Debug, Default)]
+pub(super) struct DevBuildChip {
+    installers: std::collections::HashMap<u64, String>,
+    painted: Option<Rect>,
+}
+
 impl TabBar {
+    /// Mark `id` as running a developer's build installed by `installer`,
+    /// or clear the mark. `true` when that changed what the bar shows.
+    pub fn set_dev_build(&mut self, id: u64, installer: Option<String>) -> bool {
+        match installer {
+            Some(name) => self.dev_build.installers.insert(id, name.clone()) != Some(name),
+            None => self.dev_build.installers.remove(&id).is_some(),
+        }
+    }
+
+    /// Where the "Dev build · by …" mark of the window in front stands,
+    /// with its label: after the "Controls your desktop" chip when that
+    /// shows. `None` when the window in front runs no developer's build, its
+    /// app put slots in the row, a tab is being dragged, or the run is too
+    /// short for it.
+    pub fn dev_build_chip(&self, tr: &mut TextRenderer, theme: &Theme) -> Option<(Rect, String)> {
+        let installer = self.dev_build.installers.get(&self.active_id)?;
+        if self.active_slots().is_some()
+            || self.pending_drag.is_some()
+            || self.tab_rects.len() != self.tabs.len()
+        {
+            return None;
+        }
+        let label = crate::i18n!("tab-dev-build", "installer" => installer.as_str());
+        let tab_row = self.tab_row();
+        let x0 = match self.desktop_control_chip(tr, theme) {
+            Some((control, _)) => control.x1 + TOOLBAR_LEAD_GAP,
+            None => self.status_chips_start() + TOOLBAR_LEAD_GAP,
+        };
+        let limit = self.tab_row_limit(tab_row);
+        let width =
+            ChipFace::intrinsic_width(&label, ChipLead::Glyph(Icon::Code), false, tr, theme);
+        let height = ChipFace::height(theme);
+        (x0 + width <= limit).then(|| {
+            (
+                Rect::from_origin_size(
+                    Point::new(x0, tab_row.center().y - height / 2.0),
+                    (width, height),
+                ),
+                label,
+            )
+        })
+    }
+
+    /// Paint the mark where it stands.
+    pub(super) fn draw_dev_build_chip(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.dev_build.painted = None;
+        if let Some((rect, label)) = self.dev_build_chip(tr, theme) {
+            ChipFace::new(rect, &label)
+                .lead(ChipLead::Glyph(Icon::Code))
+                .paint(scene, transform, tr, theme);
+            self.dev_build.painted = Some(rect);
+        }
+    }
+
+    /// The mark as an assistive technology reads it.
+    pub(super) fn dev_build_access(&self) -> Option<AccessNode> {
+        let rect = self.dev_build.painted?;
+        let installer = self.dev_build.installers.get(&self.active_id)?;
+        Some(
+            AccessNode::new(crate::a11y::Role::Label)
+                .with_name(crate::i18n!("tab-dev-build", "installer" => installer.as_str()))
+                .with_bounds(rect),
+        )
+    }
+
     /// Mark `id` as a window whose app may control the desktop, or clear
     /// the mark. `true` when that changed what the bar shows.
     pub fn set_desktop_control(&mut self, id: u64, on: bool) -> bool {

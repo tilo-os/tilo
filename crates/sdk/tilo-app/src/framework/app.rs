@@ -653,7 +653,12 @@ pub(crate) fn build_root<A: ResourceApp>(
     let published = tilo_resource::publish::<A::Resource>(app.kind, &label, reader.state());
     let live = Live::new(reader);
     let alive = Rc::new(());
-    let dispatch = Dispatcher::new(app.id, app.kind, read_only, me.as_deref());
+    let dispatch = Dispatcher::new(app.id, app.kind, read_only, me.as_deref()).on_record(
+        run.launched
+            .record
+            .as_ref()
+            .map_or("", |record| record.route()),
+    );
     let dispatch = if permissions.is_none() {
         dispatch.past()
     } else {

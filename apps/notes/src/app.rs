@@ -53,6 +53,11 @@ thread_local! {
     static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
+/// What the window's bar was last declared with: the note shown (its title
+/// and anchor), whether the page tree is open, and whether New note is
+/// offered.
+type DeclaredBar = (Option<(String, String)>, bool, bool);
+
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
 /// The test id of the note header's "Note actions" button.
@@ -364,7 +369,9 @@ pub struct NotesApp {
     header_in_bar: bool,
     /// The note title and sidebar state the bar's slots were last declared
     /// with.
-    declared_bar: Option<(Option<(String, String)>, bool)>,
+    declared_bar: Option<DeclaredBar>,
+    /// Whether the headers offer New note: the person may make one.
+    offers_new_note: bool,
     /// Cached taffy node IDs. Filled in `build_layout`, used by
     /// `apply_layout` and `handle_event`. The columns' nodes exist only while
     /// the shell shows them (a closed drawer shows no page tree).
@@ -733,6 +740,7 @@ impl NotesApp {
             header,
             header_in_bar: false,
             declared_bar: None,
+            offers_new_note: true,
             shell_node: None,
             sidebar_node: None,
             shortcuts_return_to_tree: false,

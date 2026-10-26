@@ -25,6 +25,11 @@ use crate::actions::VideoEditorEffect;
 /// The bar actions, by the published action each runs.
 pub(crate) const SPLIT: &str = "video.split";
 pub(crate) const SIDE_BY_SIDE: &str = "video.side-by-side";
+/// Undo and redo are the editor's own (the host is asked), so they have no
+/// published action to run; the bar's menu carries them while the transport
+/// strip is too narrow to.
+pub(crate) const UNDO: &str = "video.undo";
+pub(crate) const REDO: &str = "video.redo";
 pub(crate) const EXPORT: &str = "video.export";
 pub(crate) const INSPECTOR: &str = "video.inspector";
 pub(crate) const IMPORT: &str = "video.import";
@@ -64,6 +69,12 @@ impl VideoEditorApp {
                     },
                 )
                 .on(inspector_open),
+                ToolbarAction::new(UNDO, "undo-2", "Undo")
+                    .in_menu()
+                    .enabled(self.undo.can(ui::UndoRequest::Undo)),
+                ToolbarAction::new(REDO, "redo-2", "Redo")
+                    .in_menu()
+                    .enabled(self.undo.can(ui::UndoRequest::Redo)),
                 ToolbarAction::new(IMPORT, "folder-open", "Import media").in_menu(),
             ],
             ..WindowToolbar::default()

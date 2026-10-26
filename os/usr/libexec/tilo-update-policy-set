@@ -8,11 +8,17 @@ dropin=$dropin_dir/50-tilo-schedule.conf
 
 schedule=system
 metered=avoid
+channel=
+pin=
+pin_base=
 if [ -r "$state_file" ]; then
     while IFS='=' read -r key value; do
         case "$key:$value" in
             schedule:system|schedule:daily|schedule:weekly) schedule=$value ;;
             metered:allow|metered:avoid) metered=$value ;;
+            channel:dev|channel:stable) channel=$value ;;
+            pin:registry.tilo.so/tilo/tilo-vm:*|pin:registry.tilo.so/tilo/tilo-vm-ref:*) pin=$value ;;
+            pin-base:sha256:*) pin_base=$value ;;
         esac
     done < "$state_file"
 fi
@@ -23,13 +29,30 @@ case "${1-}" in
     schedule-weekly) schedule=weekly ;;
     metered-allow) metered=allow ;;
     metered-avoid) metered=avoid ;;
+    # A channel the image cannot follow is refused; choosing one ends a pinned build.
+    channel-dev|channel-stable)
+        /usr/libexec/tilo-update-channel list | grep -qx "${1#channel-}" \
+            || { echo "this device cannot follow the ${1#channel-} channel" >&2; exit 2; }
+        channel=${1#channel-} pin= pin_base= ;;
+    # A developer's build in the channel's place until the channel moves on from PIN_BASE, the
+    # digest it named when pinned (tilo-update-channel pin, as root).
+    pin)
+        case "${2-}:${3-}" in
+            registry.tilo.so/tilo/tilo-vm:*:sha256:*|registry.tilo.so/tilo/tilo-vm-ref:*:sha256:*) pin=$2 pin_base=$3 ;;
+            *) echo "usage: $0 pin REF sha256:DIGEST" >&2; exit 2 ;;
+        esac ;;
+    unpin) pin= pin_base= ;;
     *) echo "unsupported update-policy action" >&2; exit 2 ;;
 esac
 
 install -d -m 0755 "$state_dir"
 tmp=$(mktemp "$state_dir/.update-policy.XXXXXX")
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
-printf 'schedule=%s\nmetered=%s\n' "$schedule" "$metered" > "$tmp"
+{
+    printf 'schedule=%s\nmetered=%s\n' "$schedule" "$metered"
+    [ -z "$channel" ] || printf 'channel=%s\n' "$channel"
+    [ -z "$pin" ] || printf 'pin=%s\npin-base=%s\n' "$pin" "$pin_base"
+} > "$tmp"
 chmod 0644 "$tmp"
 mv -f "$tmp" "$state_file"
 trap - EXIT HUP INT TERM

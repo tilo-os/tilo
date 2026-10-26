@@ -32,6 +32,19 @@ pub enum Origin {
     /// refusal is reported to the app and logged, never put over the window
     /// as if the person had been refused.
     App,
+    /// A person's pick that the app asks them to confirm before it goes
+    /// ahead (Delete in a message's menu), though the action's contract
+    /// asks nothing: the host asks as it asks for any confirmation, with
+    /// the same rule that Shift skips it for what Undo takes back.
+    PersonConfirming,
+}
+
+impl Origin {
+    /// Whether a person asked for it, so a refusal is said over the window.
+    #[must_use]
+    pub fn is_persons(self) -> bool {
+        matches!(self, Self::Person | Self::PersonConfirming)
+    }
 }
 
 /// Say, while the host drains it, who asked for the invocation a queue is

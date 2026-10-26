@@ -386,11 +386,14 @@ fn the_open_page_is_kept_across_docked_push_and_docked() {
     assert_eq!(g.stack, Vec::<NavPane>::new());
 }
 
-/// A live resize across the docking threshold moves the columns from where
-/// they stood instead of jumping: narrowing, the page slides from beside the
-/// sidebar to fill the window; widening, the sidebar slides back in.
+/// A resize across the docking threshold lands in the layout its new rect
+/// asks for, on the frame that rect is laid out in: narrowing, the content
+/// fills the window; widening, the sidebar is docked beside it. Nothing is
+/// carried over from the layout the window had at its old size, so the frame
+/// a window narrowed to a phone's width draws is the frame a window opened at
+/// that width draws (`--responsive-matrix` compares the two).
 #[test]
-fn a_resize_across_the_threshold_moves_the_columns_from_where_they_stood() {
+fn a_resize_across_the_threshold_lands_in_the_layout_its_rect_asks_for() {
     let shell = NavShell::new()
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0)
@@ -402,40 +405,32 @@ fn a_resize_across_the_threshold_moves_the_columns_from_where_they_stood() {
     let point = docked.content_column.center();
     h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
     h.dispatch_to_root(&crate::synthetic_input::mouse_press());
-    let docked_x = geometry(&h).content_column.x0;
-    assert!(docked_x > 0.0);
+    assert!(geometry(&h).content_column.x0 > 0.0);
 
     // Narrower than the sidebar beside the page's minimum.
     h.relayout_at((400, 700)).expect("narrow");
     let g = geometry(&h);
     assert_eq!(g.sidebar, SidebarPlacement::Screen);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-    assert!(
-        g.content_column.x0 > docked_x / 2.0 && g.content_column.x0 <= docked_x + 0.5,
-        "the page sets out from where it stood beside the sidebar: {} vs {docked_x}",
-        g.content_column.x0
+    assert_eq!(
+        (g.content_column.x0, g.content_column.width()),
+        (0.0, 400.0),
+        "the page fills the window on the frame the window narrowed, not a slide later"
     );
-    assert!(h.root::<NavShell>().needs_animation_frame(), "and slides");
-    settle(&mut h, 400, 700);
-    assert_eq!(geometry(&h).content_column.x0, 0.0, "to fill the window");
+    assert_eq!(g.size_class, crate::tokens::Breakpoint::Compact);
 
-    // Wider again: the sidebar the person was not looking at slides in.
+    // Wider again: the sidebar is docked beside the content at once.
     h.relayout_at((1280, 700)).expect("wide");
     let g = geometry(&h);
     assert_eq!(g.sidebar, SidebarPlacement::Docked);
-    assert!(
-        g.sidebar_column.width() < docked.sidebar_column.width(),
-        "the sidebar slides in rather than appearing"
-    );
-    assert!(h.root::<NavShell>().needs_animation_frame());
-    settle(&mut h, 1280, 700);
-    assert_eq!(geometry(&h).sidebar_column, docked.sidebar_column);
+    assert_eq!(g.sidebar_column, docked.sidebar_column);
+    assert_eq!(g.content_column, docked.content_column);
 }
 
-/// Under reduced motion nothing slides across a layout switch: the page
-/// stands in its new place at once and fades in there.
+/// Under reduced motion nothing slides across a layout switch either: the
+/// page stands in its new place at once.
 #[test]
-fn under_reduced_motion_a_layout_switch_fades_instead_of_sliding() {
+fn under_reduced_motion_a_resize_switched_layout_stands_at_once() {
     let shell = NavShell::new()
         .sidebar(Probe::boxed("sidebar").0)
         .content(Probe::boxed("content").0);
@@ -450,11 +445,40 @@ fn under_reduced_motion_a_layout_switch_fades_instead_of_sliding() {
     let shell = h.root::<NavShell>();
     assert_eq!(shell.geometry().content_column.x0, 0.0, "no slide");
     assert!(
-        shell.switch_fade.progress(crate::time::now()) < 1.0,
-        "the page fades in"
+        !shell.switch_columns.contains(&true),
+        "and no column it has to fade in"
     );
-    assert!(shell.switch_columns[Column::Content.index()]);
-    assert!(shell.needs_animation_frame());
+    assert_eq!(
+        shell.switch_fade.progress(crate::time::now()),
+        1.0,
+        "the layout is there, not arriving"
+    );
+}
+
+/// The class a shell shows is the rect's, held through the hysteresis band so
+/// a window resting on a threshold does not flutter.
+#[test]
+fn the_shell_reports_the_size_class_of_the_rect_it_laid_out_in() {
+    let theme = Theme::dark();
+    let m = theme.tokens.metrics;
+    let (compact, _wide) = crate::tokens::Breakpoint::thresholds(&m);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "small positive widths"
+    )]
+    let px = |w: f64| w.round() as u32;
+    let mut h = harness(files_shell(), 1280, 700, theme);
+    settle(&mut h, 1280, 700);
+    assert_eq!(geometry(&h).size_class, crate::tokens::Breakpoint::Wide);
+    settle(&mut h, px(compact), 700);
+    assert_eq!(
+        geometry(&h).size_class,
+        crate::tokens::Breakpoint::Medium,
+        "a window narrowed to the compact threshold keeps one column beside a docked sidebar"
+    );
+    settle(&mut h, 390, 700);
+    assert_eq!(geometry(&h).size_class, crate::tokens::Breakpoint::Compact);
 }
 
 /// Keyboard focus survives a switch to one column at a time: a person

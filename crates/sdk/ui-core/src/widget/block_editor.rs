@@ -10545,10 +10545,13 @@ impl Widget for BlockEditor {
         self.dirty || self.visual_formula_focus.is_some() || self.handles_need_frame()
     }
 
+    /// What [`Self::is_layout_dirty`] reads, and a pending structure change.
+    /// `dirty` is not in it: that is paint (a caret, a selection, a menu),
+    /// which no line's size follows.
     fn layout_needs_measure(&self) -> bool {
         self.structure_dirty
             || self.restack
-            || self.dirty
+            || self.table_relayout
             || self
                 .blocks
                 .iter()

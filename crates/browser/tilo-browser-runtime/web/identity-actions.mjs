@@ -26,6 +26,11 @@
  * - `set-photo` / `reset-photo`: the picture others see beside the name,
  *   chosen from an image file (`profile-photos.mjs`), or back to initials.
  *   Kept in the profile with the name, so it follows the person too.
+ * - `set-linked`: the accounts elsewhere a room linked to the person, as
+ *   its host answered (`{accounts, keep: true}`), or as the kept profile
+ *   says (`{photoFrom, linked, keep: false}`). The profile names them, and
+ *   wears an account's picture (Discord's avatar) until the person uploads
+ *   their own; unlinking takes the account's picture away again.
  * - `pair-device`: let another device of the person in. Shows a sheet
  *   with a link, and its QR code, that opens this workspace there as a new
  *   device of this person. Each link names a fresh invite (`pairing.mjs`):
@@ -50,6 +55,9 @@ export const RECOVERY = Object.freeze({id: 'save-recovery-key', title: 'Save a r
   subtitle: 'To your password manager, or as a file', source: 'identity'});
 export const SIGN_IN = Object.freeze({id: 'sign-in-passkey', title: 'Sign in with a passkey',
   subtitle: 'Be the person you kept on another browser', source: 'identity'});
+/** Not offered: the desktop's own card asks it, to keep the person's status. */
+export const STATUS_ID = 'set-status';
+export const LINKED_ID = 'set-linked';
 export const NAME = Object.freeze({id: 'set-name', title: 'Set your name',
   subtitle: 'How others see you in this workspace', source: 'identity'});
 export const PHOTO = Object.freeze({id: 'set-photo', title: 'Change your picture',
@@ -169,11 +177,44 @@ export function createIdentityActions({
     ...(identity.kept ? [RECOVERY] : unkept()), ...(pairing ? [PAIR] : [])];
   // Keep the profile (name and picture) on every host; a refusal throws,
   // an unreachable host is only reported.
+  // What the person says they are doing and how they share it, as their
+  // profile keeps it beside their name and picture.
+  let said = {status: '', sharing: ''};
+  // Their linked accounts as the profile names them, and the service whose
+  // account their picture is (`photoFrom`; null for one they uploaded).
+  // `known` once the kept profile said so: before, an uploaded picture
+  // could be taken for none.
+  let links = {photoFrom: null, linked: [], known: false};
+  let waitingAccounts = null;
   const keepProfile = async (displayName, photo, what) => {
-    const results = await Promise.allSettled(hosts().map(origin => profile({origin, identity, displayName, photo})));
+    const results = await Promise.allSettled(hosts().map(origin => profile({origin, identity, displayName, photo, ...said,
+      photoFrom: photo ? links.photoFrom : null, linked: links.linked})));
     const refused = results.find(result => result.status === 'rejected' && result.reason?.code === 'publish-refused');
     for (const result of results) if (result.status === 'rejected' && result !== refused) onError(result.reason);
     if (refused) throw new IdentityError(`${what}-refused`, `This ${what} was not kept: ${refused.reason.message}`);
+  };
+  // The room's host said which accounts are linked (`[{service, handle,
+  // picture?}]`): the profile names them, and wears an account's picture
+  // unless the person uploaded their own; an unlinked account's goes.
+  const keepLinked = async accounts => {
+    const linked = accounts.filter(a => typeof a?.service === 'string' && typeof a?.handle === 'string')
+      .map(({service, handle}) => ({service, handle}));
+    const current = photos?.current() ?? null;
+    let photo = current;
+    let photoFrom = links.photoFrom;
+    if (!current || photoFrom) {
+      const pictured = accounts.find(a => typeof a?.picture === 'string' && a.picture.startsWith('data:image/'));
+      photo = pictured?.picture ?? null;
+      photoFrom = pictured ? pictured.service : null;
+    }
+    const same = photo === current && photoFrom === links.photoFrom
+      && JSON.stringify(linked) === JSON.stringify(links.linked);
+    links = {photoFrom, linked, known: true};
+    const named = fitDisplayName(name() ?? '');
+    if (same || !named) return;
+    await keepProfile(named, photo, 'picture');
+    if (photo !== current) photos?.show(photo);
+    refresh();
   };
   const refresh = () => mount?.setHostActions(actions());
   // Each moment offers once per page: `moment` defaults to the action.
@@ -311,9 +352,30 @@ export function createIdentityActions({
           if (id === PHOTO.id && !url) return;
           const named = fitDisplayName(name() ?? '');
           if (!named) throw new IdentityError('malformed', 'Choose a name first');
+          // A picture they chose is theirs: no linked account's replaces it.
+          links = {...links, photoFrom: null};
           await keepProfile(named, url, 'picture');
           photos.show(url);
           refresh();
+        } else if (id === LINKED_ID) {
+          if (!value?.keep) {
+            // What their kept profile says, from any of their devices.
+            links = {photoFrom: typeof value?.photoFrom === 'string' ? value.photoFrom : null,
+              linked: Array.isArray(value?.linked) ? value.linked : [], known: true};
+            if (!waitingAccounts) return;
+          }
+          const accounts = value?.keep ? value.accounts : waitingAccounts;
+          if (!links.known) { waitingAccounts = accounts; return; }
+          waitingAccounts = null;
+          await keepLinked(Array.isArray(accounts) ? accounts : []);
+        } else if (id === STATUS_ID) {
+          // From the desktop: what they said (kept now, for their other
+          // devices), or what their profile already holds (`keep: false`).
+          const next = {status: String(value?.status ?? ''), sharing: String(value?.sharing ?? '')};
+          if (next.status === said.status && next.sharing === said.sharing) return;
+          said = next;
+          const named = fitDisplayName(name() ?? '');
+          if (value?.keep && named) await keepProfile(named, photos?.current() ?? null, 'status');
         } else if (id === PAIR.id && pairing) {
           const invite = invites.open();
           const link = pairing.link(invite.id);
@@ -346,11 +408,12 @@ export function createIdentityActions({
  * it is the newest name any of the person's devices chose, so it is applied
  * here (`apply(name)`). Without one, a device holding the root (`identity`)
  * publishes the name it chose here (`chosen`), if any, to every origin.
- * Resolves to the name applied, or `null`.
+ * `onKept(profile)` hears a kept profile, `onNone()` that the hosts answered
+ * and keep none. Resolves to the name applied, or `null`.
  */
 export async function syncProfile({
   userPublicKey, origins, identity = null, chosen = null, apply, find = fetchProfile, publish = publishProfile,
-  onKept = () => {}, onError = error => console.warn('identity:', error),
+  onKept = () => {}, onNone = () => {}, onError = error => console.warn('identity:', error),
 }) {
   if (!userPublicKey) return null;
   const unique = [...new Set(origins)];
@@ -361,6 +424,9 @@ export async function syncProfile({
     if (kept.display_name !== chosen) apply(kept.display_name);
     return kept.display_name;
   }
+  // Their hosts answered and keep none: nothing kept to keep apart from
+  // what this device publishes (a linked account's picture, say).
+  if (kept === null) onNone();
   if (chosen && identity?.userPublicKey === userPublicKey && identity.sign && !identity.locked) {
     const results = await Promise.allSettled(unique.map(origin => publish({origin, identity, displayName: chosen})));
     for (const result of results) if (result.status === 'rejected') onError(result.reason);

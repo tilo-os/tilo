@@ -209,6 +209,12 @@ impl Widget for Stack {
             .map(|c| c.take_structure_dirty())
             .fold(false, |acc, d| acc || d)
     }
+
+    /// A stack adds no structure of its own: a layer's change carried out
+    /// in place stays in place.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        crate::widget::StructureChange::of_children(self.children_mut())
+    }
 }
 
 impl crate::presence::capability::PublishesPresence for Stack {

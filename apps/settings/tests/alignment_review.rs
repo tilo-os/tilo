@@ -162,10 +162,7 @@ fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
 
     // Case `rows_grow_with_large_text`.
     // 1800 px is above the scaled breakpoint, so the sidebar stays docked.
-    let large = config
-        .app()
-        .with_category(Category::Appearance)
-        .with_width_hint(1800.0);
+    let large = config.app().with_category(Category::Appearance);
     let large = lay_out_scaled(large, (1800.0, 900.0), 2.0);
     let rows: Vec<_> = crate::support::nav_rows(&*large)
         .into_iter()
@@ -299,10 +296,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
 
         // A narrow window is a maximum, not a fixed width: the chooser stays
         // inside its row and the window.
-        let narrow = config
-            .app()
-            .with_category(Category::RegionFormats)
-            .with_width_hint(NARROW.0);
+        let narrow = config.app().with_category(Category::RegionFormats);
         let narrow = lay_out(narrow, NARROW);
         let control = by_test_id(&*narrow, "region.currency");
         let (row, _) = row_of_control(&*narrow, "region.currency");
@@ -329,10 +323,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             ("region.first_day", "First day of week"),
         ];
         let phone = (320.0, 844.0);
-        let app = config
-            .app()
-            .with_category(Category::RegionFormats)
-            .with_width_hint(phone.0);
+        let app = config.app().with_category(Category::RegionFormats);
         let app = lay_out(app, phone);
         for (id, _label) in rows {
             let control = by_test_id(&*app, id);
@@ -350,10 +341,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         // A page wide enough for the chooser and a label (beside the docked
         // category list): every row sits inline.
         let medium = (900.0, 820.0);
-        let app = config
-            .app()
-            .with_category(Category::RegionFormats)
-            .with_width_hint(medium.0);
+        let app = config.app().with_category(Category::RegionFormats);
         let app = lay_out(app, medium);
         for (id, _label) in rows {
             let control = by_test_id(&*app, id);
@@ -376,10 +364,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
     // where the breakpoint and the sidebar width have grown with the type.
     {
         let config = crate::support::ScratchConfig::new();
-        let one_x = config
-            .app()
-            .with_category(Category::Appearance)
-            .with_width_hint(900.0);
+        let one_x = config.app().with_category(Category::Appearance);
         let one_x = lay_out(one_x, (900.0, 900.0));
         assert!(!one_x.is_narrow(), "900 px docks the sidebar at 1×");
         assert!(
@@ -387,10 +372,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             "1×: the docked sidebar lists its categories"
         );
 
-        let two_x = config
-            .app()
-            .with_category(Category::Appearance)
-            .with_width_hint(900.0);
+        let two_x = config.app().with_category(Category::Appearance);
         let two_x = lay_out_scaled(two_x, (900.0, 900.0), 2.0);
         assert!(
             two_x.is_narrow(),
@@ -417,10 +399,7 @@ fn pane_sections_stack_on_the_s6_step_and_never_touch() {
         (Category::Users, WIDE),
         (Category::RegionFormats, NARROW),
     ] {
-        let app = config
-            .app()
-            .with_category(category)
-            .with_width_hint(viewport.0);
+        let app = config.app().with_category(category);
         let app = lay_out(app, viewport);
         // Top-level sections only: a section nested inside another is that
         // section's own content, not a sibling.

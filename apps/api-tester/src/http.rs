@@ -160,12 +160,24 @@ pub fn build_outgoing(req: &Request, env_vars: &HashMap<String, String>) -> Outg
 /// The shared client. In a page, requests to sites that do not allow the
 /// page to read their responses go through the host's fetch proxy when it
 /// offers one.
+/// The longest one request may take, from sending it to the last byte of its
+/// body. A server that never answers is a failure with a reason, not an app
+/// that waits forever with its only primary action disabled.
+pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often a request in flight looks at its cancellation flag.
+const CANCEL_SLICE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Why a request stopped before the server answered.
+pub const CANCELLED: &str = "The request was cancelled.";
+
 fn client() -> Result<&'static tilo_net::Client, String> {
     static CLIENT: OnceLock<Result<tilo_net::Client, String>> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
             tilo_net::Client::builder()
                 .user_agent("tilo-api-tester/0.1")
+                .timeout(REQUEST_TIMEOUT)
                 .fetch_proxy(tilo_net::proxy::ProxyUse::CrossOrigin)
                 .build()
                 .map_err(|e| e.to_string())
@@ -174,9 +186,58 @@ fn client() -> Result<&'static tilo_net::Client, String> {
         .map_err(Clone::clone)
 }
 
-/// Perform the request and collect the response. The caller runs it on the
+/// Perform the request and collect the response, giving up when
+/// `cancelled` is set (the person pressed Cancel, or the app is closing) or
+/// when the request outlives [`REQUEST_TIMEOUT`]. The caller runs it on the
 /// app runtime so the UI stays responsive.
-pub async fn send(out: &Outgoing) -> Result<ResponseData, String> {
+pub async fn send(
+    out: &Outgoing,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> Result<ResponseData, String> {
+    let request = send_once(out);
+    let watch = watch_for_cancel(cancelled);
+    match race(request, watch).await {
+        Ok(response) => response,
+        Err(Cancelled) => Err(CANCELLED.to_owned()),
+    }
+}
+
+/// Wait in slices, reporting as soon as `cancelled` is set.
+async fn watch_for_cancel(cancelled: &std::sync::atomic::AtomicBool) -> Cancelled {
+    loop {
+        ui::rt::sleep(CANCEL_SLICE).await;
+        if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Cancelled;
+        }
+    }
+}
+
+/// A request that was cancelled.
+struct Cancelled;
+
+/// Which of two futures finished first, dropping the other. Written out
+/// rather than pulled in: the toolkit has no `select` of its own, and this
+/// app needs exactly one.
+async fn race<T>(
+    work: impl std::future::Future<Output = T>,
+    stop: impl std::future::Future<Output = Cancelled>,
+) -> Result<T, Cancelled> {
+    let mut work = std::pin::pin!(work);
+    let mut stop = std::pin::pin!(stop);
+    std::future::poll_fn(move |cx| {
+        if let std::task::Poll::Ready(value) = work.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Ok(value));
+        }
+        if let std::task::Poll::Ready(stop) = stop.as_mut().poll(cx) {
+            return std::task::Poll::Ready(Err(stop));
+        }
+        std::task::Poll::Pending
+    })
+    .await
+}
+
+/// Perform the request and collect the response.
+async fn send_once(out: &Outgoing) -> Result<ResponseData, String> {
     let client = client()?;
     let method = tilo_net::Method::from_bytes(out.method.as_bytes())
         .map_err(|e| format!("invalid method: {e}"))?;

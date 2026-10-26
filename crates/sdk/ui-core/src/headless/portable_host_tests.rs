@@ -740,8 +740,22 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
         "the editor's focused line owns keyboard focus"
     );
 
-    frame.type_text("x");
+    // The press edits the line; its release changes nothing measured.
+    let x = keys::parse_key("x");
+    frame.send_host_event(&crate::synthetic_input::key_input(
+        &x,
+        ElementState::Pressed,
+    ));
     let typed = frame.last_relayout();
+    frame.send_host_event(&crate::synthetic_input::key_input(
+        &x,
+        ElementState::Released,
+    ));
+    assert!(
+        !frame.last_relayout().measured,
+        "the key's release measures nothing: {:?}",
+        frame.last_relayout()
+    );
     assert!(
         !typed.rebuilt,
         "a character edit keeps the composed tree: {typed:?}"
@@ -771,16 +785,24 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
     // the composed tree (its node ids, focus) survives. The retained
     // geometry check compares the result with a fresh composition.
     let rebuilt_before = frame.rebuilt_frames();
-    frame.key("Enter");
+    let enter = keys::parse_key("Enter");
+    frame.send_host_event(&crate::synthetic_input::key_input(
+        &enter,
+        ElementState::Pressed,
+    ));
+    let split = frame.last_relayout();
+    frame.send_host_event(&crate::synthetic_input::key_input(
+        &enter,
+        ElementState::Released,
+    ));
     assert_eq!(
         frame.rebuilt_frames(),
         rebuilt_before,
         "inserting a block keeps the composition"
     );
     assert!(
-        frame.last_relayout().measured,
-        "inserting a block re-solves sizes: {:?}",
-        frame.last_relayout()
+        split.measured,
+        "inserting a block re-solves sizes: {split:?}"
     );
     assert_eq!(
         frame.layout_node_ids(),

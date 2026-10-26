@@ -72,6 +72,21 @@ impl<T: Copy> Deferred<T> {
         })
     }
 
+    /// Wake `waker` once the code is in or this fetch failed: for work
+    /// polled once a frame that found the code missing, so it is polled
+    /// again then rather than on whatever frame comes next.
+    pub fn wake_on_arrival(&self, waker: Waker) {
+        if self.value.get().is_some() {
+            waker.wake();
+            return;
+        }
+        self.waiters.lock_recover().push(waker);
+        // The code may have arrived between the check and the registration.
+        if self.value.get().is_some() {
+            self.wake_waiters();
+        }
+    }
+
     fn wake_waiters(&self) {
         let waiters = std::mem::take(&mut *self.waiters.lock_recover());
         for waiter in waiters {
@@ -175,5 +190,32 @@ mod tests {
         assert!(arriving.as_mut().poll(&mut cx).is_pending());
         WAITED.install(9);
         assert_eq!(arriving.as_mut().poll(&mut cx), Poll::Ready(Some(9)));
+    }
+
+    static ARRIVING: Deferred<u32> = Deferred::new();
+
+    struct Count(AtomicUsize);
+
+    impl std::task::Wake for Count {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn work_that_found_the_code_missing_is_woken_once_it_arrives() {
+        ARRIVING.defer(load_waited);
+        let woken = std::sync::Arc::new(Count(AtomicUsize::new(0)));
+        assert_eq!(ARRIVING.get(), None);
+        ARRIVING.wake_on_arrival(std::task::Waker::from(std::sync::Arc::clone(&woken)));
+        assert_eq!(woken.0.load(Ordering::SeqCst), 0, "nothing arrived yet");
+        ARRIVING.install(3);
+        assert_eq!(woken.0.load(Ordering::SeqCst), 1);
+        ARRIVING.wake_on_arrival(std::task::Waker::from(std::sync::Arc::clone(&woken)));
+        assert_eq!(
+            woken.0.load(Ordering::SeqCst),
+            2,
+            "code already in wakes at once"
+        );
     }
 }

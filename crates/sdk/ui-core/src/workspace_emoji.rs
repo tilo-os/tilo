@@ -175,6 +175,24 @@ pub trait EmojiSource {
     /// it, as the picker's "Add emoji" does. The host's chooser answers
     /// later; the emoji arrives with the record's next change.
     fn choose_and_add(&self);
+
+    /// What became of the last picture chosen with [`Self::choose_and_add`],
+    /// once it was added or refused, with a count that moves each time one
+    /// is: the picker shows the new emoji, or why it was not added. `(0,
+    /// None)` until one was.
+    fn last_added(&self) -> (u64, Option<Adding>) {
+        (0, None)
+    }
+}
+
+/// What became of a picture chosen to add as an emoji
+/// ([`EmojiSource::last_added`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Adding {
+    /// It is the emoji of this name now.
+    Added(String),
+    /// It was not added: why, for the person.
+    Failed(String),
 }
 
 /// A picture made one a workspace emoji keeps ([`make_small`]).
@@ -211,16 +229,24 @@ pub fn make_small(image: &[u8]) -> Small {
     Small::TooLarge
 }
 
+/// Wake `window` once the image tools [`make_small`] waits for are in:
+/// a picture it answered [`Small::Pending`] for is made small then, on
+/// the frame that wake brings, and not only when something else changes.
+pub fn wake_when_tools_are_in(window: &WakeHandle) {
+    crate::image_decoders::wake_when_in(window.clone());
+}
+
 impl Small {
     /// Why it was not made small, for the person; `None` when it was.
     #[must_use]
     pub fn refusal(&self) -> Option<String> {
-        match self {
-            Self::Ready(_) => None,
-            Self::Pending => Some("the picture tools are still loading; try again".into()),
-            Self::NotAPicture => Some("that is not a PNG, JPEG or WebP picture".into()),
-            Self::TooLarge => Some("that picture is too detailed for an emoji".into()),
-        }
+        let key = match self {
+            Self::Ready(_) => return None,
+            Self::Pending => "workspace-emoji-loading",
+            Self::NotAPicture => "workspace-emoji-not-a-picture",
+            Self::TooLarge => "workspace-emoji-too-detailed",
+        };
+        Some(crate::i18n::widget_format(key, &[]))
     }
 }
 

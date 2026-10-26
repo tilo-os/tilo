@@ -7,8 +7,9 @@
 #
 #   live-update-check.sh MIRROR IMAGE PROBE_PATH PROBE_TEXT
 #
-# MIRROR (host:port/repository) serves IMAGE, a tag of the dev image repository this VM follows,
-# whose policy admits it; it is configured as that repository's mirror, as a site mirror would be.
+# MIRROR (host:port/repository) serves IMAGE, an unsigned tag of the dev image repository this VM
+# follows, which the policy is told to admit by that tag alone; it is configured as that
+# repository's mirror, as a site mirror would be.
 # Test tooling, not part of the image: os/dev/vm.sh with-tests copies it into the guest.
 set -euo pipefail
 mirror=${1:?usage: live-update-check.sh MIRROR IMAGE PROBE_PATH PROBE_TEXT}
@@ -26,6 +27,15 @@ location = "$repository"
 location = "$mirror"
 insecure = true
 CONF
+# The dev channel takes only images main signed; this test image is unsigned, so the policy
+# admits exactly its tag, the most specific scope, and nothing else.
+python3 - "$image" <<'PY'
+import json, sys
+path = '/etc/containers/policy.json'
+policy = json.load(open(path))
+policy['transports']['docker'][sys.argv[1]] = [{'type': 'insecureAcceptAnything'}]
+json.dump(policy, open(path, 'w'), indent=2)
+PY
 
 # bootc's composefs backend mounts the ESP read-only and then cannot stage over it; writable
 # until the next boot, as tilo-vm leaves it.
@@ -34,8 +44,8 @@ bootc switch "$image" || fail "bootc did not stage $image"
 bootc status --format json | grep -q '"staged": *{' || fail 'bootc reports no staged deployment'
 
 rc=0
-tilo-extension live:system || rc=$?
-state=$(tilo-extension live:status)
+/usr/libexec/tilo-extension live:system || rc=$?
+state=$(/usr/libexec/tilo-extension live:status)
 printf 'live:system exited %s; state: %s\n' "$rc" "$state"
 flag() { grep -Eq "\"$1\": *$2" <<< "$state"; }
 if ((rc == 0)) && flag applied '"system"' && flag failed false; then

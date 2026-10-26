@@ -34,7 +34,6 @@
 
 use crate::categories::Category;
 use crate::sidebar;
-use ui::tokens::Metrics;
 use ui::widget::NavMode;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
@@ -58,9 +57,6 @@ pub struct SettingsApp {
     /// content unless a test asks for the list. Applied when the shell is
     /// created.
     narrow_screen: NavPane,
-    /// Seed width hint so the very first offscreen frame resolves the correct
-    /// wide/narrow layout. `None` lets the shell decide from its own rect.
-    width_hint: Option<f32>,
     /// The pane asked for, taken in at the next sync: the open effect (and,
     /// outside a host, a sidebar row) writes it, so the shell is rebuilt
     /// between frames, never under an event being dispatched. Selection
@@ -185,7 +181,6 @@ impl SettingsApp {
             structure_dirty: false,
             cx,
             narrow_screen: NavPane::Content,
-            width_hint: None,
             sidebar_selection: ui::LocalState::new(None),
             staged_filter: String::new(),
             setting_request: ui::LocalState::new(None),
@@ -221,14 +216,6 @@ impl SettingsApp {
     #[must_use]
     pub fn with_category(mut self, category: Category) -> Self {
         self.selected = category;
-        self
-    }
-
-    /// Seed the responsive layout with a known width before the first frame,
-    /// so a first layout resolves the wide or narrow layout at once.
-    #[must_use]
-    pub fn with_width_hint(mut self, width: f32) -> Self {
-        self.width_hint = Some(width);
         self
     }
 
@@ -309,23 +296,15 @@ impl SettingsApp {
         }
     }
 
-    /// The narrowest window the shell docks the list in: the list at its
-    /// minimum beside a settings page's (`NavShell`, `ContentKind::Page`).
-    fn dock_width() -> f32 {
-        let m = Metrics::BASE;
-        m.panel_min_width + ui::widget::ContentKind::Page.min_width(&m)
-    }
-
-    /// Whether the current frame resolves to the narrow (phone) layout.
+    /// Whether the current frame resolves to the narrow (phone) layout: the
+    /// layout the shell derived from the rect it was last laid out in
+    /// ([`ui::tokens::Breakpoint`]). Nothing seeds it — not a launch option,
+    /// not a scenario, not the host — so a window narrowed to a phone's width
+    /// answers from that width on the very frame it is laid out in.
     pub fn is_narrow(&self) -> bool {
-        match &self.shell {
-            Some(shell) if shell.geometry().content_column.width() > 0.0 => {
-                !shell.geometry().stack.is_empty()
-            }
-            _ => self
-                .width_hint
-                .is_some_and(|w| w < Self::dock_width() * self.shell_text_scale),
-        }
+        self.shell
+            .as_ref()
+            .is_some_and(|shell| !shell.geometry().stack.is_empty())
     }
 
     /// Whether the sidebar / list is currently shown (always when wide, or the
@@ -1819,6 +1798,63 @@ mod tests {
         }
     }
 
+    /// The frame a window narrowed to a phone's width draws is the frame a
+    /// window opened at that width draws — the same picture, pixel for pixel.
+    ///
+    /// This is the responsive matrix's phone frame against `--viewport
+    /// 390x844`: the matrix builds the app once, at its default viewport, and
+    /// then resizes that same app to each preset. A surface that remembered
+    /// the width it was built at — a seeded breakpoint, a layout chosen once —
+    /// would draw its desktop layout clipped at 390 px here, which is not
+    /// "responsive design is broken"; it is "Settings is glitchy". The
+    /// breakpoint comes from the rect the shell is laid out in, every pass, so
+    /// narrowing is a layout and never a memory.
+    #[test]
+    fn a_narrowed_window_draws_the_frame_a_phone_opens_at() {
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        // `--responsive-matrix`: built wide, then the same app resized.
+        let mut narrowed = layout_at(
+            config.app().with_category(Category::Appearance),
+            1280.0,
+            800.0,
+        );
+        assert!(!narrowed.is_narrow(), "the wide frame came first");
+        Framed::harness_mut(&mut narrowed)
+            .resize(ui::headless::viewport((390, 844)))
+            .expect("the phone pass lays out");
+        assert!(narrowed.is_narrow(), "the narrowed window is narrow");
+        let narrowed_frame = Framed::harness(&narrowed).render_rgba();
+
+        // `--viewport 390x844 --shots`: built at the phone's size.
+        let opened = layout_at_with_theme(
+            config.app().with_category(Category::Appearance),
+            390.0,
+            844.0,
+            &ui::Theme::dark(),
+        );
+        assert!(opened.is_narrow(), "the opened window is narrow");
+        let opened_frame = Framed::harness(&opened).render_rgba();
+
+        assert_eq!(
+            narrowed_frame.len(),
+            opened_frame.len(),
+            "both frames are 390x844"
+        );
+        let differing = narrowed_frame
+            .chunks_exact(4)
+            .zip(opened_frame.chunks_exact(4))
+            .filter(|(narrowed, opened)| narrowed != opened)
+            .count();
+        assert_eq!(
+            differing, 0,
+            "a window narrowed to a phone's width draws what a window opened at it draws"
+        );
+        // And the layout underneath, not just the pixels: the same screen
+        // with the same control on it.
+        assert_eq!(narrowed.back_button_rect(), opened.back_button_rect());
+        assert_eq!(narrowed.sidebar_open(), opened.sidebar_open());
+    }
+
     /// The responsive shell docks the sidebar when wide. A collapse to the
     /// narrow (phone) layout keeps the selected category's CONTENT on screen —
     /// it never defaults to the category list, which is a back-tap away.
@@ -1836,7 +1872,7 @@ mod tests {
             ),
             (
                 "narrow collapse keeps the content",
-                |c| c.app().with_width_hint(440.0),
+                |c| c.app(),
                 (440.0, 820.0),
                 Some(true),
                 Some(false),
@@ -1844,11 +1880,7 @@ mod tests {
             ),
             (
                 "narrow content shot drills into content",
-                |c| {
-                    c.app()
-                        .with_category(Category::RegionFormats)
-                        .with_width_hint(440.0)
-                },
+                |c| c.app().with_category(Category::RegionFormats),
                 (440.0, 820.0),
                 Some(true),
                 Some(false),
@@ -1862,7 +1894,7 @@ mod tests {
         assert_responsive_layouts(vec![
             (
                 "narrow list shot shows the standalone list",
-                |c| c.app().with_width_hint(440.0).with_category_list(),
+                |c| c.app().with_category_list(),
                 (440.0, 820.0),
                 Some(true),
                 Some(true),
@@ -1878,11 +1910,7 @@ mod tests {
             ),
             (
                 "narrow accounts lays out",
-                |c| {
-                    c.app()
-                        .with_category(Category::ExternalAccounts)
-                        .with_width_hint(440.0)
-                },
+                |c| c.app().with_category(Category::ExternalAccounts),
                 (440.0, 820.0),
                 None,
                 None,
@@ -1908,7 +1936,7 @@ mod tests {
             let config = crate::prefs::test_env::ScratchConfig::new();
 
             let selected = Category::RegionFormats;
-            let app = config.app().with_category(selected).with_width_hint(440.0);
+            let app = config.app().with_category(selected);
             let app = layout_at(app, 440.0, 820.0);
 
             let mut heading = None;
@@ -1935,7 +1963,7 @@ mod tests {
             let config = crate::prefs::test_env::ScratchConfig::new();
 
             let selected = Category::RegionFormats;
-            let app = config.app().with_category(selected).with_width_hint(390.0);
+            let app = config.app().with_category(selected);
             let app =
                 layout_at_with_theme(app, 390.0, 844.0, &ui::Theme::dark().with_text_scale(1.5));
 
@@ -1951,7 +1979,7 @@ mod tests {
 
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let app = config.app().with_width_hint(1800.0);
+            let app = config.app();
             let app =
                 layout_at_with_theme(app, 1800.0, 900.0, &ui::Theme::dark().with_text_scale(2.0));
             assert!(
@@ -1968,7 +1996,7 @@ mod tests {
                 (sidebar.width() - sidebar::width_for_text_scale(2.0)).abs() < 0.5,
                 "sidebar tracks the same scale as its custom-painted rows: {sidebar:?}"
             );
-            let compact = config.app().with_width_hint(900.0);
+            let compact = config.app();
             let compact = layout_at_with_theme(
                 compact,
                 900.0,
@@ -1984,7 +2012,7 @@ mod tests {
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
             // Start on the list screen — the reachable back-tap state.
-            let app = config.app().with_width_hint(440.0).with_category_list();
+            let app = config.app().with_category_list();
             let mut app = layout_at(app, 440.0, 820.0);
             assert!(app.sidebar_open(), "starts on the list screen");
             app.select(Category::Users);

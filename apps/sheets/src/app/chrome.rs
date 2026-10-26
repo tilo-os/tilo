@@ -223,6 +223,41 @@ impl SheetsApp {
             self.metrics = metrics;
             self.relayout();
         }
+        // Does the find band have room for its replace row (two localised
+        // buttons and a field)? Measured here, where the renderer is, from
+        // the window's width whether or not the band is open — the answer
+        // must be ready before Ctrl+F opens it.
+        let band = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + 1.0);
+        self.find_replace_roomy = Self::find_replace_roomy(band, tr, theme);
+    }
+
+    /// Whether a find band of `rect` can hold the replace row's two buttons
+    /// and a usable field, matching the toolkit's own row layout.
+    fn find_replace_roomy(rect: Rect, tr: &mut TextRenderer, theme: &Theme) -> bool {
+        let gutter = f64::from(theme.tokens.spacing.s3);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let x0 = rect.x0 + gutter;
+        let mut right = rect.x1 - gutter;
+        // The toolkit's labels are pseudo-expanded when that stress locale is
+        // on; measuring the plain words would claim room the painted buttons
+        // do not have, so budget for the expansion.
+        let pseudo = if ui::i18n::I18nManager::pseudo_locale() == ui::i18n::PseudoLocale::Off {
+            1.0
+        } else {
+            2.0
+        };
+        for label in [Self::find_replace_label_all(), Self::find_replace_label()] {
+            let width = pseudo
+                * ButtonFace::new(Rect::ZERO, label)
+                    .control_size(ControlSize::Regular)
+                    .intrinsic_width(tr, theme)
+                + 2.0 * gutter;
+            right -= width + pad;
+        }
+        // A field narrower than a few small controls is not a place someone
+        // can read or type a replacement; below that the host search keeps it.
+        let field_min = 3.0 * ControlSize::Small.height(theme);
+        right - x0 >= field_min
     }
 
     /// Lay out the bars, the grid and the sheet tabs inside the window.
@@ -232,20 +267,31 @@ impl SheetsApp {
         // The formula bar leads: the commands are the window bar's.
         self.formula_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.formula_h());
         self.tabs_rect = Rect::new(r.x0, r.y1 - m.tabs_h(), r.x1, r.y1);
-        // The annotation dock stands between the grid and the tabs, so the
-        // grid gives up the height instead of a card covering its cells.
-        let (dock_h, dock_cards, dock_w) = self.dock_layout(Rect::new(
+        // Find is a band under the formula bar, at the top of the content it
+        // searches: the grid gives it height rather than losing its first
+        // row under an overlay.
+        let find_h = if self.find_open {
+            self.find.height(&self.chrome_theme)
+        } else {
+            0.0
+        };
+        self.find_rect = Rect::new(
             r.x0,
             self.formula_rect.y1,
             r.x1,
-            self.tabs_rect.y0,
-        ));
+            self.formula_rect.y1 + find_h,
+        );
+        let content_top = self.find_rect.y1;
+        // The annotation dock stands between the grid and the tabs, so the
+        // grid gives up the height instead of a card covering its cells.
+        let (dock_h, dock_cards, dock_w) =
+            self.dock_layout(Rect::new(r.x0, content_top, r.x1, self.tabs_rect.y0));
         self.dock_cards = dock_cards;
         self.dock_rect = Rect::new(r.x0, self.tabs_rect.y0 - dock_h, r.x1, self.tabs_rect.y0);
         self.dock_scroll
             .set_viewport(self.dock_rect, &self.chrome_theme);
         self.dock_scroll.set_content_size(dock_w, dock_h);
-        self.grid_rect = Rect::new(r.x0, self.formula_rect.y1, r.x1, self.dock_rect.y0);
+        self.grid_rect = Rect::new(r.x0, content_top, r.x1, self.dock_rect.y0);
         self.grid.rect = self.grid_rect;
 
         // Formula bar: name box, fx, field, all on one centre line at one

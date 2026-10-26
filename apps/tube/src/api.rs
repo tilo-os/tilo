@@ -69,7 +69,20 @@ pub enum Request {
     /// resolved URL comes back as [`Update::StreamResolved`]; the actual decode +
     /// audio out happens in the watch page's media-engine-backed `VideoPlayer`,
     /// not here.
-    PlayVideo(String),
+    PlayVideo {
+        id: String,
+        /// The quality the person chose (`"720p"`, `"auto"`): the stream
+        /// resolved is no larger than it.
+        quality: String,
+    },
+    /// Fetch the caption tracks `id` offers, and then the track the person
+    /// chose, if there is one.
+    Captions {
+        id: String,
+        /// The language code of the track to download, or `None` to fetch
+        /// only the list of tracks the video offers.
+        language: Option<String>,
+    },
 }
 
 /// The worker's end of the result queue. Every result it posts wakes the
@@ -166,6 +179,16 @@ pub enum Update {
         has_audio: bool,
         /// Short quality label for the status log (e.g. `360p`).
         quality: String,
+    },
+    /// The caption tracks a video offers, and the lines of one of them when
+    /// the person chose it. `lines` is `None` when only the list was asked
+    /// for; `failure` says why a chosen track could not be read.
+    Captions {
+        video: String,
+        tracks: Vec<crate::captions::CaptionTrack>,
+        language: Option<String>,
+        lines: Option<Vec<crate::captions::CaptionCue>>,
+        failure: Option<String>,
     },
     /// No source gave a playable stream for a watch id: the page says so
     /// rather than showing its still poster as if it were about to play.
@@ -530,7 +553,7 @@ fn published_text(item: &serde_json::Value, views: u64, duration: u32) -> String
 /// The best progressive stream (picture and sound in one file, which the
 /// media engine plays from one URL) in an Invidious video answer: its URL and
 /// quality label.
-fn muxed_stream(detail: &serde_json::Value) -> Option<(String, String)> {
+fn muxed_stream(detail: &serde_json::Value, wanted: Option<u32>) -> Option<(String, String)> {
     let streams = detail.get("formatStreams")?.as_array()?;
     let itag = |stream: &serde_json::Value| {
         stream
@@ -543,11 +566,46 @@ fn muxed_stream(detail: &serde_json::Value) -> Option<(String, String)> {
             .unwrap_or(0)
     };
     // 22 is 720p, 18 is 360p; either is H.264 and AAC in MP4, which every
-    // browser and GStreamer plays.
+    // browser and GStreamer plays. The height the person chose caps this
+    // first, so a smaller choice is what is fetched rather than a preference
+    // nothing reads.
+    let height_of = |stream: &serde_json::Value| {
+        stream
+            .get("resolution")
+            .or_else(|| stream.get("qualityLabel"))
+            .and_then(|label| label.as_str())
+            .and_then(|label| {
+                label
+                    .trim_end_matches('p')
+                    .split('x')
+                    .next_back()
+                    .and_then(|height| height.parse::<u32>().ok())
+            })
+            .unwrap_or(0)
+    };
+    let cap = wanted.unwrap_or(u32::MAX);
+    let under = streams.iter().filter(|stream| height_of(stream) <= cap);
+    let mut candidates: Vec<&serde_json::Value> = under.collect();
+    if candidates.is_empty() {
+        // Nothing that small: the smallest the source has, rather than
+        // nothing at all.
+        if let Some(smallest) = streams.iter().min_by_key(|stream| height_of(stream).max(1)) {
+            candidates.push(smallest);
+        }
+    }
     [22, 18]
         .into_iter()
-        .find_map(|wanted| streams.iter().find(|stream| itag(stream) == wanted))
-        .or_else(|| streams.first())
+        .find_map(|wanted| {
+            candidates
+                .iter()
+                .copied()
+                .find(|stream| itag(stream) == wanted)
+        })
+        .or_else(|| {
+            candidates
+                .into_iter()
+                .max_by_key(|stream| height_of(stream))
+        })
         .and_then(|stream| {
             let url = stream.get("url")?.as_str()?.to_string();
             let quality = stream
@@ -871,12 +929,39 @@ impl Worker {
                             let _ = up_tx.send(Update::ChannelPage { channel, uploads });
                         }
                     }
-                    Request::PlayVideo(id) => {
+                    Request::Captions { id, language } => {
+                        let (tracks, lines, failure) = ui::rt::block_on(fetch_captions(
+                            youtube.as_ref(),
+                            client.as_ref(),
+                            &id,
+                            language.as_deref(),
+                        ))
+                        .unwrap_or_else(|error| {
+                            (
+                                Vec::new(),
+                                None,
+                                Some(format!("the caption worker stopped: {error}")),
+                            )
+                        });
+                        let _ = up_tx.send(Update::Captions {
+                            video: id,
+                            tracks,
+                            language,
+                            lines,
+                            failure,
+                        });
+                    }
+                    Request::PlayVideo { id, quality } => {
                         // Resolve a real, fully-rangeable stream URL for the
                         // watch page's media engine. Proxy-first (Invidious
                         // `local=true`, which serves whole-file byte ranges),
                         // falling back to the live backend's direct URL.
-                        match resolve_stream_url(live.as_deref(), youtube.as_ref(), &id) {
+                        match resolve_stream_url(
+                            live.as_deref(),
+                            youtube.as_ref(),
+                            &id,
+                            crate::util::quality_height(&quality),
+                        ) {
                             Ok((url, has_audio, quality)) => {
                                 let _ = up_tx.send(Update::Note(format!(
                                     "stream: {quality} {} [{}]",
@@ -957,6 +1042,7 @@ fn resolve_stream_url(
     live: Option<&dyn YtBackend>,
     youtube: Option<&crate::innertube::InnerTube>,
     id: &str,
+    wanted: Option<u32>,
 ) -> Result<(String, bool, String), Option<String>> {
     // Primary: yt-dlp resolves a full, non-SABR-gated googlevideo URL (via the
     // `android_vr` client) that streams the WHOLE video+audio without the
@@ -964,7 +1050,7 @@ fn resolve_stream_url(
     // play the full length and seek. (Proven with `--probe-engine`: full
     // duration, buffered to 100%.)
     if let Some(b) = live
-        && let Ok(src) = b.resolve_playback_source(id)
+        && let Ok(src) = b.resolve_playback_source(id, wanted)
         && !src.url.is_empty()
     {
         return Ok((src.url, src.has_audio, src.quality));
@@ -973,7 +1059,7 @@ fn resolve_stream_url(
     // which serves every byte range.
     let mut said = None;
     if let Some(youtube) = youtube
-        && let Ok(answer) = ui::rt::block_on(youtube.stream(id))
+        && let Ok(answer) = ui::rt::block_on(youtube.stream(id, wanted))
     {
         match answer {
             Ok(stream) => return Ok((stream.url, true, stream.quality)),
@@ -983,13 +1069,114 @@ fn resolve_stream_url(
     // Fallback: a fully-rangeable Invidious `local=true` proxy. The public
     // instance network has largely collapsed, so this is a last resort for when
     // yt-dlp is unavailable.
-    let proxied = ui::rt::block_on(crate::backend::proxy::resolve_rangeable(id))
+    let proxied = ui::rt::block_on(crate::backend::proxy::resolve_rangeable(id, wanted))
         .ok()
         .flatten();
     if let Some(r) = proxied {
         return Ok((r.url, r.has_audio, r.quality));
     }
     Err(said)
+}
+
+/// The caption tracks `id` offers, and the lines of `language` if one was
+/// asked for: `(tracks, lines, why-not)`. A video with no captions is not a
+/// failure — it simply offers none, and the page says so.
+async fn fetch_captions(
+    youtube: Option<&crate::innertube::InnerTube>,
+    client: Option<&tilo_net::Client>,
+    id: &str,
+    language: Option<&str>,
+) -> (
+    Vec<crate::captions::CaptionTrack>,
+    Option<Vec<crate::captions::CaptionCue>>,
+    Option<String>,
+) {
+    let mut tracks = match youtube {
+        Some(youtube) => youtube.caption_tracks(id).await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    if tracks.is_empty()
+        && let Some(client) = client
+        && let Ok(answer) = invidious_json(client, &format!("/api/v1/captions/{id}"), &[]).await
+    {
+        tracks = caption_tracks_of(&answer);
+    }
+    let Some(language) = language else {
+        return (tracks, None, None);
+    };
+    let Some(track) = tracks.iter().find(|track| track.language == language) else {
+        return (tracks, None, None);
+    };
+    let Some(client) = client else {
+        return (tracks, None, None);
+    };
+    match fetch_timed_text(client, &track.url).await {
+        Ok(lines) if !lines.is_empty() => (tracks, Some(lines), None),
+        Ok(_) => (tracks, None, Some("the caption track was empty".into())),
+        Err(error) => (tracks, None, Some(format!("{error:#}"))),
+    }
+}
+
+/// The caption tracks an Invidious video answer lists: `/api/v1/captions/{id}`
+/// names each one's label, language and the URL that serves its WebVTT.
+fn caption_tracks_of(answer: &serde_json::Value) -> Vec<crate::captions::CaptionTrack> {
+    answer
+        .get("captions")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|track| {
+            let language = track
+                .get("language_code")
+                .or_else(|| track.get("languageCode"))
+                .and_then(serde_json::Value::as_str)?
+                .to_string();
+            let url = track.get("url").and_then(serde_json::Value::as_str)?;
+            Some(crate::captions::CaptionTrack {
+                label: track
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(&language)
+                    .to_string(),
+                automatic: track
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|kind| kind == "asr")
+                    || track
+                        .get("automatic")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                url: url.to_string(),
+                language,
+            })
+        })
+        .collect()
+}
+
+/// A caption track's WebVTT text. The URL arrives relative to the instance
+/// that listed it (Invidious), so it is resolved against the instance that
+/// answers for it, exactly as the listing did.
+async fn fetch_timed_text(
+    client: &tilo_net::Client,
+    url: &str,
+) -> anyhow::Result<Vec<crate::captions::CaptionCue>> {
+    let url = if url.starts_with("http") {
+        url.to_string()
+    } else {
+        let Some(base) = tilo_invidious::health::ranked().into_iter().next() else {
+            anyhow::bail!("no caption source is configured");
+        };
+        format!("{}{}", base.trim_end_matches('/'), url)
+    };
+    let text = client
+        .get(&url)
+        .timeout(INVIDIOUS_TIMEOUT)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    Ok(crate::captions::parse_vtt(&text))
 }
 
 /// Construct the live rustypipe backend when the `live` feature is on and it
@@ -1313,7 +1500,18 @@ async fn answer(
         Request::PlaylistPage(id) => {
             post(Update::Note(format!("playlist {id}: unavailable here")));
         }
-        Request::PlayVideo(id) => post(play(client, youtube, id).await),
+        Request::Captions { id, language } => {
+            let (tracks, lines, failure) =
+                fetch_captions(Some(youtube), Some(client), &id, language.as_deref()).await;
+            post(Update::Captions {
+                video: id,
+                tracks,
+                language,
+                lines,
+                failure,
+            });
+        }
+        Request::PlayVideo { id, quality } => post(play(client, youtube, id, &quality).await),
     }
 }
 
@@ -1323,13 +1521,15 @@ async fn play(
     client: &tilo_net::Client,
     youtube: &crate::innertube::InnerTube,
     id: String,
+    quality: &str,
 ) -> Update {
+    let wanted = crate::util::quality_height(quality);
     let mut said = None;
-    let stream = match youtube.stream(&id).await {
+    let stream = match youtube.stream(&id, wanted).await {
         Ok(stream) => Some((stream.url, stream.quality)),
         Err(error) => {
             said = crate::innertube::refusal(&error);
-            invidious_stream(client, &id).await
+            invidious_stream(client, &id, wanted).await
         }
     };
     match stream {
@@ -1466,13 +1666,17 @@ async fn invidious_popular(client: &tilo_net::Client) -> Result<Vec<Video>, Invi
 
 /// A playable stream for `id`: the progressive stream an instance's video
 /// answer names, else one an instance's media proxy serves.
-async fn invidious_stream(client: &tilo_net::Client, id: &str) -> Option<(String, String)> {
+async fn invidious_stream(
+    client: &tilo_net::Client,
+    id: &str,
+    wanted: Option<u32>,
+) -> Option<(String, String)> {
     if let Ok(detail) = invidious_json(client, &format!("/api/v1/videos/{id}"), &[]).await
-        && let Some(stream) = muxed_stream(&detail)
+        && let Some(stream) = muxed_stream(&detail, wanted)
     {
         return Some(stream);
     }
-    let resolved = crate::backend::proxy::resolve_rangeable(id).await?;
+    let resolved = crate::backend::proxy::resolve_rangeable(id, wanted).await?;
     Some((resolved.url, resolved.quality))
 }
 
@@ -1885,7 +2089,7 @@ mod tests {
                 {"itag": "22", "url": "https://media.example/22", "qualityLabel": "720p"},
             ]});
             assert_eq!(
-                muxed_stream(&detail),
+                muxed_stream(&detail, None),
                 Some(("https://media.example/22".into(), "720p".into()))
             );
         }
@@ -1894,14 +2098,52 @@ mod tests {
                 {"itag": 43, "url": "https://media.example/43", "quality": "medium"},
             ]});
             assert_eq!(
-                muxed_stream(&detail),
+                muxed_stream(&detail, None),
                 Some(("https://media.example/43".into(), "medium".into()))
             );
             assert_eq!(
-                muxed_stream(&serde_json::json!({"formatStreams": []})),
+                muxed_stream(&serde_json::json!({"formatStreams": []}), None),
                 None
             );
-            assert_eq!(muxed_stream(&serde_json::json!({})), None);
+            assert_eq!(muxed_stream(&serde_json::json!({}), None), None);
         }
+    }
+
+    #[test]
+    fn a_chosen_smaller_quality_is_the_stream_that_is_named() {
+        let detail = serde_json::json!({"formatStreams": [
+            {"itag": "18", "url": "https://media.example/18", "qualityLabel": "360p", "resolution": "640x360"},
+            {"itag": "22", "url": "https://media.example/22", "qualityLabel": "720p", "resolution": "1280x720"},
+        ]});
+        assert_eq!(
+            muxed_stream(&detail, Some(480)),
+            Some(("https://media.example/18".into(), "360p".into())),
+            "asking for 480p on a metered connection must not fetch 720p"
+        );
+        assert_eq!(
+            muxed_stream(&detail, Some(1080)),
+            Some(("https://media.example/22".into(), "720p".into())),
+            "a size the source does not have gets the best it does"
+        );
+        // Nothing at or under the cap: the smallest the source has, rather
+        // than nothing at all.
+        assert_eq!(
+            muxed_stream(&detail, Some(240)),
+            Some(("https://media.example/18".into(), "360p".into()))
+        );
+    }
+
+    #[test]
+    fn caption_tracks_name_their_languages_and_machine_transcripts() {
+        let answer = serde_json::json!({"captions": [
+            {"label": "English", "language_code": "en", "url": "/api/v1/captions/x?label=English"},
+            {"label": "Deutsch (automatisch)", "language_code": "de", "url": "/api/v1/captions/x?label=de", "kind": "asr"},
+        ]});
+        let tracks = caption_tracks_of(&answer);
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].language, "en");
+        assert!(!tracks[0].automatic);
+        assert_eq!(tracks[1].label, "Deutsch (automatisch)");
+        assert!(tracks[1].automatic, "a machine transcript says so");
     }
 }

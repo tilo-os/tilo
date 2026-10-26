@@ -51,10 +51,17 @@ impl FrameHarness {
         if self.node_map.is_empty() {
             return false;
         }
+        let mut relaid = Vec::new();
         if self
             .layout_maps
-            .still_live(&|visit| self.visit_layout_roots(visit))
+            .still_live(&|visit| self.visit_layout_roots(visit), &mut relaid)
         {
+            let removed =
+                crate::retained_widgets::let_go_under(&relaid, &mut self.taffy, &mut self.node_map);
+            self.bindings.forget(&removed);
+            if self.focused.is_some_and(|node| removed.contains(&node)) {
+                self.focused = None;
+            }
             return false;
         }
         self.discard_layout_tree();
@@ -109,6 +116,13 @@ impl FrameHarness {
     /// asserting on a structural change compare this across the input.
     pub fn rebuilt_frames(&self) -> u64 {
         self.relayout_frames.saturating_sub(self.retained_frames)
+    }
+
+    /// Layout nodes built since construction: every node of each tree a
+    /// frame rebuilt, and each node a change carried out in place mounted.
+    /// What a change cost the layout, whichever way it went.
+    pub fn layout_nodes_built(&self) -> u64 {
+        self.layout_nodes_built
     }
 
     /// Every taffy node of the current composition, sorted. Equal across two

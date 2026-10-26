@@ -43,6 +43,14 @@ pub fn checkout_root() -> PathBuf {
     PathBuf::from(env!("TILO_CHECKOUT_FONT_ROOT"))
 }
 
+/// `TILO_FONT_CATALOG`: the catalog to read instead of the compiled-in
+/// checkout path, for a binary built somewhere else and run here. Without it
+/// such a run silently sets every frame in the host's faces, which looks
+/// almost right and is wrong in a way that only shows up in the review of a
+/// screenshot. The toolkit reads it into `HostPaths::font_catalog`, which is
+/// where a reader takes it from.
+pub const OVERRIDE_ENV: &str = "TILO_FONT_CATALOG";
+
 /// The installed catalog when the system has one, otherwise the checkout's
 /// (a development or test run outside the image). `None` when neither
 /// exists. Only the location is resolved here; readers verify what they use.
@@ -51,6 +59,35 @@ pub fn locate() -> Option<PathBuf> {
     [PathBuf::from(INSTALLED_ROOT), checkout_root()]
         .into_iter()
         .find(|root| root.join("manifest.toml").is_file())
+}
+
+/// The first root holding a catalog *this build* pins, checked without reading
+/// a font: a root whose manifest is not the one compiled in is passed over, so
+/// an older image under a newer checkout is not mistaken for the product's.
+#[must_use]
+pub fn find_root(roots: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    roots.into_iter().find(|root| {
+        std::fs::read_to_string(root.join("manifest.toml"))
+            .is_ok_and(|manifest| manifest == MANIFEST)
+    })
+}
+
+/// The catalogs prepared into a font artifact cache
+/// (`tools/font-catalog.py`), newest-named first is irrelevant: they are named
+/// by what they were prepared from, so any of them is a candidate and
+/// [`find_root`] says which ones this build can read.
+#[must_use]
+pub fn prepared_catalogs(cache: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(cache.join("catalogs")) else {
+        return Vec::new();
+    };
+    let mut roots: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    roots.sort();
+    roots
 }
 
 #[derive(Debug, thiserror::Error)]

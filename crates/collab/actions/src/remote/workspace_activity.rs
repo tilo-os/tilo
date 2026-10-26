@@ -575,6 +575,22 @@ pub enum Comparison {
     Unavailable,
 }
 
+/// One field a run of changes changed, with what it held either side of it.
+///
+/// [`Comparison::Changes`] says a field changed; this says what it changed
+/// from and to, which is the question "compare before and after" is asked
+/// for.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FieldChange {
+    /// The field's name as the person reads it ("Title").
+    pub field: String,
+    /// What it held before; empty when it was not there.
+    pub before: String,
+    /// What it holds after; empty when it was removed.
+    pub after: String,
+}
+
 /// What a run of changes did.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -593,6 +609,9 @@ pub struct Detail {
     pub run: Option<Run>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comparison: Option<Comparison>,
+    /// The fields the run changed, with what they held either side: empty
+    /// when the host could not read both states.
+    pub changes: Vec<FieldChange>,
     /// The run is no longer in the history (an undo or a filter moved it).
     pub gone: bool,
 }

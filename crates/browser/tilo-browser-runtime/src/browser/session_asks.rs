@@ -25,6 +25,11 @@ impl Asks {
             permitted: std::sync::Arc::default(),
         }
     }
+
+    /// The peer replicating the room, if the page has one.
+    pub(super) fn peer(&self) -> Option<u32> {
+        self.peer
+    }
 }
 
 impl Desktop {

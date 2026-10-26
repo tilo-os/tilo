@@ -865,6 +865,9 @@ fn spawn_inner(
     let record_content = peer_sync
         .filter(|_| config.is_none())
         .map(crate::shell::record_content::session_record_content);
+    if let Some(content) = &record_content {
+        crate::shell::room_app_versions::fetch_through(content);
+    }
     let drain_thread = peer_sync.and_then(|net| {
         let queues = DrainQueues {
             presence_inbound: net.inbound_app_presence_handle(),

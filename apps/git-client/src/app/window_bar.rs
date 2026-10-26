@@ -22,6 +22,10 @@ pub(crate) const UNIFIED: &str = "git.diff-layout.unified";
 pub(crate) const SPLIT: &str = "git.diff-layout.split";
 /// The bar's menu item that turns syntax highlighting on and off.
 pub(crate) const SYNTAX: &str = "git.syntax-highlight";
+/// The bar's menu item that shows or hides whitespace.
+pub(crate) const WHITESPACE: &str = "git.show-whitespace";
+/// The bar's menu item that wraps long lines or stops wrapping them.
+pub(crate) const WRAP: &str = "git.wrap-lines";
 /// The bar's menu item that opens another repository.
 pub(crate) const OPEN: &str = "git.choose-repository";
 
@@ -66,6 +70,14 @@ impl GitClientApp {
                     .in_menu(),
                 ToolbarAction::new(SYNTAX, "code", t("git-syntax-name"))
                     .on(self.settings.syntax_highlight)
+                    .in_menu(),
+                // The two controls that make an unreadable diff readable sit
+                // beside the layout, not behind them in the palette.
+                ToolbarAction::new(WHITESPACE, "ruler", t("git-whitespace-name"))
+                    .on(self.diff_preference(|settings| settings.show_whitespace))
+                    .in_menu(),
+                ToolbarAction::new(WRAP, "arrow-up-down", t("git-wrap-name"))
+                    .on(self.diff_preference(|settings| settings.wrap_lines))
                     .in_menu(),
             ]);
         }
@@ -182,6 +194,22 @@ impl GitClientApp {
                     Self::toggle_syntax_highlight,
                 );
             }
+            WHITESPACE => self.dispatch_or(&GitClientEffect::ShowWhitespace, |app| {
+                let before = app.settings.show_whitespace;
+                if let Err(error) = app.change_preferences(|settings| {
+                    settings.show_whitespace = !before;
+                }) {
+                    app.last_error = Some(error);
+                }
+            }),
+            WRAP => self.dispatch_or(&GitClientEffect::WrapLines, |app| {
+                let before = app.settings.wrap_lines;
+                if let Err(error) = app.change_preferences(|settings| {
+                    settings.wrap_lines = !before;
+                }) {
+                    app.last_error = Some(error);
+                }
+            }),
             _ => {}
         }
     }
@@ -200,6 +228,14 @@ impl GitClientApp {
     /// while a transfer runs.
     fn can_run_remote(&self) -> bool {
         self.mode != RunMode::Past && self.remote_job.is_none()
+    }
+
+    /// A diff preference as stored, which a press may have changed since the
+    /// last sync.
+    fn diff_preference(&self, of: impl Fn(&crate::settings::Settings) -> bool) -> bool {
+        self.preferences
+            .as_ref()
+            .map_or_else(|| of(&self.settings), |preferences| of(&preferences.get()))
     }
 
     /// The diff layout as stored, which a press may have changed since the

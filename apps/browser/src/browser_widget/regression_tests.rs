@@ -502,17 +502,44 @@ fn a_question_the_page_asks_is_answered_from_its_dialog() {
             click,
             BrowserOperation::Page(PageRequest::Click {
                 element: "d1e5".into(),
+                frame: None,
             }),
         )
         .unwrap();
     ask(9, PageDialogKind::Prompt);
     let (tree, node) = tests::layout_keeping_tree(&mut widget, 1000.0, 700.0, &theme);
-    let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+    // The click happened; the page only asks before it goes on. So the action
+    // succeeds, and its answer carries the question for the agent to answer.
+    let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
         widget.poll_invocation(click)
     else {
-        panic!("the action the question stopped answers at once");
+        panic!("the action the question stopped answers at once, as what it did");
     };
-    assert_eq!(error.code, "browser.page.question");
+    let value = output
+        .value
+        .expect("the answer carries the question it opened");
+    assert!(
+        value["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("Clicked element d1e5")),
+        "it says what it did: {value}"
+    );
+    assert!(
+        value["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("accept-page-dialog")),
+        "and names the action that answers it: {value}"
+    );
+    assert_eq!(value["dialog"]["kind"], "prompt");
+    assert_eq!(value["dialog"]["message"], "Name the list");
+    assert_eq!(value["dialog"]["default_text"], "Groceries");
+    assert_eq!(value["provenance"], "web-content");
+    assert!(
+        value["outline"]
+            .as_str()
+            .is_some_and(|line| line.starts_with("- dialog prompt \"Name the list\"")),
+        "the outline names the question: {value}"
+    );
     assert!(
         widget
             .published()
@@ -625,6 +652,7 @@ fn a_page_action_while_the_page_waits_on_its_question_answers_at_once() {
     let click = |element: &str| {
         BrowserOperation::Page(PageRequest::Click {
             element: element.into(),
+            frame: None,
         })
     };
 
@@ -639,6 +667,24 @@ fn a_page_action_while_the_page_waits_on_its_question_answers_at_once() {
     assert!(
         !error.retryable,
         "trying again changes nothing until it is answered"
+    );
+    assert!(
+        error
+            .message
+            .contains("waiting on its confirm dialog \"Empty the basket?\""),
+        "the refusal quotes the question: {}",
+        error.message
+    );
+    assert!(
+        error.message.contains("accept-page-dialog")
+            && error.message.contains("dismiss-page-dialog"),
+        "and says how to answer it, naming the actions that exist: {}",
+        error.message
+    );
+    assert_eq!(
+        error.details.as_ref().map(|details| &details["kind"]),
+        Some(&serde_json::json!("confirm")),
+        "with the question as a value"
     );
     assert_eq!(sent(), 0, "nothing is sent to a page that runs nothing");
 
@@ -657,5 +703,218 @@ fn a_page_action_while_the_page_waits_on_its_question_answers_at_once() {
     assert!(
         widget.poll_invocation(next).is_none(),
         "answered, the page takes the action"
+    );
+}
+
+/// The pages the person saved are what the address bar suggests too:
+/// typing what a bookmark says recalls it, marked as a saved page.
+#[test]
+fn typing_in_the_address_bar_suggests_saved_pages() {
+    let mut w = BrowserWidget::new_headless();
+    w.present_state(&tests::bookmarked(&[(
+        "https://reports.example.test/annual",
+        "Annual report",
+    )]));
+    let (doc, root) = tests::synced(&mut w);
+    let mut tree = TaffyTree::new();
+    w.build_layout(
+        &mut tree,
+        &Theme::dark(),
+        &mut std::collections::HashMap::default(),
+    );
+    assert!(w.focus_address_input());
+    w.address.set("annual".into());
+    w.sync(&doc, &root);
+    let rows = w.suggestions.items().to_vec();
+    let saved = rows
+        .iter()
+        .find(|row| row.kind == omnibox::RowKind::Bookmark)
+        .unwrap_or_else(|| panic!("the saved page is suggested: {rows:?}"));
+    assert_eq!(saved.title, "Annual report");
+    assert_eq!(saved.detail, "reports.example.test/annual");
+    assert_eq!(saved.url, "https://reports.example.test/annual");
+    // Choosing it opens the page it names.
+    assert_eq!(
+        row_destination(saved, &w.settings.search_engine),
+        "https://reports.example.test/annual"
+    );
+
+    // A bookmark saved in the person's own library is suggested as well.
+    let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
+    let personal = app
+        .person::<crate::personal_bookmarks::PersonalBookmarks>()
+        .expect("a test profile keeps person records");
+    personal
+        .invoke(
+            &crate::personal_bookmarks::PersonalBookmarks::ADD_BOOKMARK.with((
+                "https://person.example.test/notes".to_owned(),
+                "Notes of the year".to_owned(),
+            )),
+        )
+        .unwrap();
+    let mut own = BrowserWidget::new_headless();
+    own.attach_personal_bookmarks(personal);
+    let (doc, root) = tests::synced(&mut own);
+    let mut tree = TaffyTree::new();
+    own.build_layout(
+        &mut tree,
+        &Theme::dark(),
+        &mut std::collections::HashMap::default(),
+    );
+    assert!(own.focus_address_input());
+    own.address.set("notes".into());
+    own.sync(&doc, &root);
+    let rows = own.suggestions.items().to_vec();
+    assert!(
+        rows.iter().any(|row| row.kind == omnibox::RowKind::Bookmark
+            && row.url == "https://person.example.test/notes"),
+        "the person's own bookmark is suggested: {rows:?}"
+    );
+}
+
+/// The Library's history rows forget one page each, through the same
+/// `forget` verb that clears all of them: the rest stay.
+#[test]
+fn a_history_row_forgets_only_its_own_page() {
+    let (_app, record) = tests::person_history();
+    for (url, title) in [
+        ("https://one.test/", "One"),
+        ("https://two.test/", "Two"),
+        ("https://three.test/", "Three"),
+    ] {
+        record
+            .invoke(&crate::history::BrowsingHistory::VISIT.with(
+                crate::history::browsing_history::Visit {
+                    url: url.into(),
+                    title: title.into(),
+                    at: 10,
+                },
+            ))
+            .unwrap();
+    }
+    let mut w = BrowserWidget::new_headless();
+    w.attach_history(record.clone());
+    w.show_library = true;
+    w.library_section = LibrarySection::History;
+    let (doc, root) = tests::synced(&mut w);
+    architecture_tests::compose(&mut w);
+
+    let forgotten = "https://two.test/";
+    let id = history_resource_id(forgotten);
+    // The row still opens its page, and now offers its own removal.
+    architecture_tests::assert_action_binding(&w, &format!("{id}.open"), &id, "open");
+    architecture_tests::assert_action_binding(&w, &format!("{id}.forget"), &id, "forget-visit");
+
+    // What its press runs is the row's own published action.
+    let page = w.resource_by_id(&id).expect("the history page is a row");
+    let forget = page
+        .actions
+        .iter()
+        .find(|action| action.id == "forget-visit")
+        .expect("the row offers forgetting it");
+    let encoded = forget.build_json(&serde_json::Map::new()).unwrap();
+    assert!(
+        matches!(
+            w.admit(
+                ui::tilo_actions::InvocationId::new(),
+                tests::effect_operation(&encoded.payload),
+            )
+            .map(Some)
+            .unwrap(),
+            Some(ui::framework::Effected::Done(_))
+        ),
+        "forgetting one page answers at once"
+    );
+    w.sync(&doc, &root);
+
+    let shown: Vec<&str> = w
+        .history
+        .entries()
+        .iter()
+        .map(|entry| entry.url.as_str())
+        .collect();
+    assert!(
+        !shown.contains(&forgotten),
+        "the forgotten page is gone from the list: {shown:?}"
+    );
+    for kept in ["https://one.test/", "https://three.test/"] {
+        assert!(shown.contains(&kept), "{kept} stays: {shown:?}");
+    }
+    assert!(
+        record.with(|history| !history.visits.contains_key(forgotten)
+            && history.visits.contains_key("https://one.test/")
+            && history.visits.contains_key("https://three.test/")),
+        "the record forgets exactly that page"
+    );
+
+    // The list the person sees agrees: one row gone, the others there.
+    architecture_tests::compose(&mut w);
+    assert!(
+        w.find_rect(&format!("{id}.open")).is_none(),
+        "no row is left for the forgotten page"
+    );
+    for kept in ["https://one.test/", "https://three.test/"] {
+        assert!(
+            w.find_rect(&format!("{}.open", history_resource_id(kept)))
+                .is_some(),
+            "{kept} keeps its row"
+        );
+    }
+}
+
+/// Answering the page's question says what answering did and what to do
+/// next, so an agent that never read the question still knows the page goes
+/// on: the answer is the action's output, not a bare acknowledgement.
+#[test]
+fn answering_a_pages_question_says_what_happens_next() {
+    use ui::webview::{PageDialog, PageDialogKind};
+    let engine = std::sync::Arc::new(Asking(std::sync::Mutex::new(Vec::new()), TestEngine::new()));
+    let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+    let theme = Theme::dark();
+    tests::layout_keeping_tree(&mut widget, 1000.0, 700.0, &theme);
+    let ask = |id, kind| {
+        engine
+            .0
+            .lock()
+            .unwrap()
+            .push(WebViewEvent::PageDialog(PageDialog {
+                id,
+                kind,
+                origin: "https://forms.example".into(),
+                message: "Security code".into(),
+                default_text: "0000".into(),
+            }));
+    };
+    let answer =
+        |dialog: u32, accept: bool, text: Option<&str>| BrowserOperation::AnswerPageDialog {
+            dialog,
+            accept,
+            text: text.map(str::to_string),
+        };
+
+    ask(21, PageDialogKind::Prompt);
+    tests::layout_keeping_tree(&mut widget, 1000.0, 700.0, &theme);
+    let done = widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            answer(21, true, Some("7391")),
+        )
+        .unwrap();
+    let ui::framework::Effected::Done(output) = done else {
+        panic!("answering the question answers at once");
+    };
+    let message = output
+        .value
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        message.contains("Answered the page's prompt dialog: OK with \"7391\""),
+        "it says what answering took: {message}"
+    );
+    assert!(
+        message.contains("read-page"),
+        "and what to do next: {message}"
     );
 }

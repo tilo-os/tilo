@@ -479,7 +479,12 @@ mod tests {
         ))
         .unwrap();
         assert!(cfg.retired_workspaces.is_some());
-        assert!(!toml::to_string(&cfg).unwrap().contains("workspace"));
+        // `[services] workspace_replication` is a different key and stays.
+        let written = toml::to_string(&cfg).unwrap();
+        let table: toml::Table = toml::from_str(&written).unwrap();
+        assert!(!table.contains_key("workspace"), "{written}");
+        let reread: RelayConfig = toml::from_str(&written).unwrap();
+        assert!(reread.retired_workspaces.is_none());
     }
 
     #[test]

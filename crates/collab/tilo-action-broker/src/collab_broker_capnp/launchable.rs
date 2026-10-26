@@ -932,6 +932,9 @@ mod tests {
         let (state, room) = broker(&workspace);
         let mut edits = surface(5, &room);
         let mut field_edit = action("field-edit", tilo_actions::ConfirmationPolicy::None);
+        // A loud collection's item is not Undo's to put back, so removing one
+        // asks: the app publishes this edit reaching outside.
+        field_edit.contract.kind = tilo_actions::ActionKind::Outside;
         field_edit.contract.tags = vec![
             tilo_actions::ARGUMENT_RISK_TAG.to_owned(),
             tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned(),

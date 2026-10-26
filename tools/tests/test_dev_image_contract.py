@@ -162,13 +162,16 @@ class DevImageContractTests(unittest.TestCase):
 class FinalizeDevImageTests(unittest.TestCase):
     finalize = load("finalize_dev_image_under_test", REPO / "os/scripts/finalize-dev-image.py")
 
-    def test_dev_policy_admits_only_the_dev_repository_on_a_clean_base(self):
+    def test_dev_policy_admits_only_signed_dev_images_on_a_clean_base(self):
         with self.subTest(phase='dev policy admits only the dev repository'):
             production = json.loads((REPO / "os/etc/containers/policy.json").read_text())
             before = json.dumps(production["transports"]["docker"]["registry.tilo.so/tilo/tilo"], sort_keys=True)
             dev = self.finalize.dev_policy(json.loads(json.dumps(production)))
             docker = dev["transports"]["docker"]
-            self.assertEqual(docker["registry.tilo.so/tilo/tilo-vm"], [{"type": "insecureAcceptAnything"}])
+            for repository in ("registry.tilo.so/tilo/tilo-vm", "registry.tilo.so/tilo/tilo-vm-ref"):
+                self.assertEqual(docker[repository], [{
+                    "type": "sigstoreSigned", "keyPath": "/usr/share/tilo/cosign-dev.pub",
+                    "signedIdentity": {"type": "matchRepository"}}])
             self.assertEqual(json.dumps(docker["registry.tilo.so/tilo/tilo"], sort_keys=True), before)
             self.assertEqual(dev["default"], production["default"])
         with self.subTest(phase='a base that already admits dev images is refused'):

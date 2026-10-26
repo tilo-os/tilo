@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # One action of the OS image (os/image/layers.toml), as t runs it.
 #
-#   build-layer.sh assets                        the checksum-pinned external assets, into
-#                                                os/external-assets/cache (no root)
 #   build-layer.sh base ARCH OUT                 the pinned base as the registry serves it,
 #                                                into OUT/oci (no root)
 #   build-layer.sh image NAME ARCH OUT           an image action's targets (the OS builder,
@@ -27,6 +25,7 @@
 #   builder/<target>/oci         the OS builder;  tools/<target>/oci  the side builds
 #   compiled/                    the compiled tree (os/image/compile.sh); a release's in
 #                                compiled-release/
+#   chromium/                    the browser's engine, for a compiled tree without it
 #   layers/<layer>/              the fragment of the layers that layer action added; a
 #                                release's own layers in release-layers/<layer>/, a board
 #                                release's in board-layers/<board>/<layer>/
@@ -102,23 +101,65 @@ guest_devices() {
 }
 
 # The frozen RPM snapshot, as os-image.sh resolves it: the published one for this package
-# set, else this run's image-rpms-ARCH, unsigned.
+# set, else this run's image-rpms-ARCH, unsigned. Loaded only for an action that installs
+# from it (rpms_read=1); one that doesn't, such as the binaries' and the derived state's, is
+# given only its name and the clock it sets (RPMS_CREATED), read from the archive, rather than
+# gigabytes of packages to unpack into its storage.
+rpms_read=1
 rpms_snapshot() {
   local built=/target/publish/rpms/$arch status=0 id
+  RPMS_CREATED=
   bash os/dev/resolve-rpm-snapshot.sh --exists || status=$?
   case $status in
     0) RPMS_REF=$(bash os/dev/resolve-rpm-snapshot.sh) ;;
     1)
       [[ -f $built/image.oci.tar ]] || die "no published RPM snapshot for this package set and no image-rpms-$arch in this run"
       [[ $(archive_digest "$built/image.oci.tar") == "$(cat "$built/digest")" ]] || die "$built/image.oci.tar is not the build"
-      id=$(podman pull -q "oci-archive:$built/image.oci.tar")
       RPMS_REF=localhost/tilo-rpms:$(bash os/dev/resolve-rpm-snapshot.sh --tag)-$arch
-      podman tag "$id" "$RPMS_REF"
+      if [[ $rpms_read == 1 ]]; then
+        id=$(podman pull -q "oci-archive:$built/image.oci.tar")
+        podman tag "$id" "$RPMS_REF"
+      else
+        RPMS_CREATED=$(archive_created "$built/image.oci.tar")
+      fi
       export TILO_RPMS_TRUST=unsigned
       printf 'no published RPM snapshot for this package set: installing from image-rpms-%s, unsigned\n' "$arch" ;;
     *) die 'could not ask the registry for the published RPM snapshot' ;;
   esac
   export RPMS_REF
+}
+
+# The creation time of the single image in the OCI archive $1, as seconds (what
+# os/dev/image-epoch.sh reads of a loaded image: its configuration's `created`).
+archive_created() {
+  python3 -I - "$1" <<'PY'
+import datetime, json, sys, tarfile
+with tarfile.open(sys.argv[1]) as t:
+    names = {m.name.removeprefix("./"): m for m in t}
+    blob = lambda d: json.load(t.extractfile(names["blobs/sha256/" + d.split(":", 1)[1]]))
+    doc = json.load(t.extractfile(names["index.json"]))
+    while "config" not in doc:
+        doc = blob(doc["manifests"][0]["digest"])
+    created = blob(doc["config"]["digest"])["created"]
+print(int(datetime.datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()))
+PY
+}
+
+# Whether layer NAME's piece, given the stages it is given as images, installs from the RPM
+# snapshot: its Containerfile, with the helpers it builds, names the snapshot's stage.
+reads_rpms() {
+  python3 -I - "$1" <<'PY'
+import sys
+sys.path.insert(0, "tools/ci/os")
+import pieces
+name = sys.argv[1]
+layer = pieces.layer(name)
+given = {g.split(":", 1)[1] for g in layer.get("given", []) if g != "compiled"}
+if not layer.get("scratch"):
+    given.add(pieces.parent(name))
+refs = pieces.references(pieces.containerfile(name, given))
+sys.exit(0 if refs & {"rpms", "${RPMS_REF}"} else 1)
+PY
 }
 
 # Everything build-image.sh needs that the run decides: the pins, the clock, the keys.
@@ -128,7 +169,12 @@ build_env() {
   rpms_snapshot
   # One clock for every layer: the newest of the base's and the snapshot's creation, never
   # the commit's, so builds of different commits make the same bytes of the same inputs.
-  SOURCE_DATE_EPOCH=$(bash os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")
+  if [[ -n $RPMS_CREATED ]]; then
+    SOURCE_DATE_EPOCH=$(bash os/dev/image-epoch.sh "$BASE_REF")
+    if (( RPMS_CREATED > SOURCE_DATE_EPOCH )); then SOURCE_DATE_EPOCH=$RPMS_CREATED; fi
+  else
+    SOURCE_DATE_EPOCH=$(bash os/dev/image-epoch.sh "$BASE_REF" "$RPMS_REF")
+  fi
   TILO_GENERATION=$(TILO_ALLOW_EMPTY_SERIES=1 bash os/dev/next-generation.sh)
   export SOURCE_DATE_EPOCH TILO_GENERATION
   export TILO_IMAGE_ONLY=1 TILO_WITH_BROWSER=${TILO_WITH_BROWSER:-1} TILO_OUTPUT=$scratch/os-output TMPDIR=/var/tmp
@@ -157,12 +203,13 @@ load() {
   podman pull -q "oci:$1"
 }
 
-# The image of the fragments' layers, loaded; its id. Composed into scratch, which is the
-# step's own disk, then loaded into podman's storage on the same disk.
+# The image of the fragments' layers, loaded; its id. A view of them in scratch, its blobs
+# links to the fragments' own (on the step's read-only outputs disk, which a copy would
+# duplicate onto the step's own), loaded into podman's storage.
 load_composition() {
   local dir
   dir=$(mktemp -d "$scratch/compose.XXXXXX")
-  python3 -I tools/ci/os/oci_layers.py compose "$dir" "$@" >&2
+  python3 -I tools/ci/os/oci_layers.py view "$dir" "$@" >&2
   load "$dir/oci"
 }
 
@@ -183,6 +230,32 @@ fragments_through() {
   fragment_dir "$1"
 }
 
+# A layer over others is dated as they are: by the clock the layer below it was built with (its
+# org.tilo.source-date-epoch label), not by one read again from this run's RPM snapshot. The
+# snapshot is dated when it was resolved, and t serves the layers below by their keys, which a
+# snapshot built again under the same key with a later date doesn't change: a layer dated anew
+# then stamped its packages' install times after those of the layers it builds on, and the
+# image's checks (tilo-verify-rpm-files) found no package installed at its clock. So every layer
+# of an image takes the clock of the bottom one, which read it from the snapshot it installed.
+below_dated() {
+  local epoch
+  epoch=$(python3 -I - "$below" <<'PY'
+import sys
+sys.path.insert(0, "tools/ci/os")
+import oci_layers
+labels = oci_layers.image_of_layout(sys.argv[1])[1].get("config", {}).get("Labels") or {}
+print(labels.get("org.tilo.source-date-epoch", ""))
+PY
+) || die "could not read the clock of the layers below"
+  [[ -z $epoch ]] && return 0
+  [[ $epoch =~ ^[1-9][0-9]*$ ]] || die "the layers below carry no clock but '$epoch'"
+  if [[ $epoch != "$SOURCE_DATE_EPOCH" ]]; then
+    printf 'dated %s as the layers below it (SOURCE_DATE_EPOCH=%s), not %s from this run'"'"'s snapshot\n' \
+      "$name" "$epoch" "$SOURCE_DATE_EPOCH"
+  fi
+  export SOURCE_DATE_EPOCH=$epoch
+}
+
 # Build TARGET of NAME's Containerfile through build-image.sh, given GIVEN (stage names) as
 # images; tagged $image.
 build_target() {
@@ -191,10 +264,6 @@ build_target() {
   python3 -I tools/ci/os/pieces.py containerfile "$name" --given "$given" > "$file"
   TILO_IMAGE=$image TILO_LAYER_TARGET=$target TILO_CONTAINERFILE=$file \
     TILO_LAYER_ARGS="${layer_args[*]}" bash os/dev/build-image.sh
-}
-
-cmd_assets() {
-  bash os/dev/cache-github-assets.sh
 }
 
 cmd_base() {
@@ -237,6 +306,7 @@ cmd_layer() {
   target=$(layer_field "$name" target)
   piece=$(layer_field "$name" piece)
   guest_devices
+  reads_rpms "$name" || rpms_read=0
   build_env
   if board_layer "$name"; then board_env; fi
   phase load-given
@@ -245,6 +315,11 @@ cmd_layer() {
     case $entry in
       compiled)
         export TILO_COMPILED=$os/$compiled
+        # A compile that keeps its build directory leaves the browser's engine to its own
+        # check (os-chromium-ARCH), which this action needs then.
+        if [[ ! -d $TILO_COMPILED/chromium-engine && -d $os/chromium/chromium-engine ]]; then
+          export TILO_CHROMIUM_ENGINE=$os/chromium
+        fi
         continue ;;
       *:*) what=${entry%%:*} stage=${entry#*:} ;;
     esac
@@ -268,7 +343,7 @@ cmd_layer() {
     mapfile -t frags < <(fragments_below "$name")
     below=$scratch/below
     rm -rf "$below"
-    python3 -I tools/ci/os/oci_layers.py compose "$below" "${frags[@]}"
+    python3 -I tools/ci/os/oci_layers.py view "$below" "${frags[@]}"
     id=$(load "$below/oci")
     if [[ $parent == '${BASE_REF}' ]]; then
       podman tag "$id" localhost/tilo-base:pinned
@@ -281,6 +356,7 @@ cmd_layer() {
     fi
     layer_args+=(--build-arg BASE_REF=localhost/tilo-base:pinned)
     below=$below/oci
+    below_dated
   else
     # The helper stages FROM ${BASE_REF} build on the base as its layout has it.
     id=$(load "$os/base/oci")
@@ -292,8 +368,7 @@ cmd_layer() {
   build_target "$name" "$target" "$given"
   phase push
   built=$scratch/built
-  rm -rf "$built"
-  podman push -q --compression-format gzip --force-compression "$image" "oci:$built:tilo"
+  python3 -I tools/ci/os/oci_layers.py export "$image" "$below" "$built"
   phase take
   # Its key, kept with its layers: the digest of every file its piece reads.
   inputs=$scratch/inputs.json
@@ -301,6 +376,7 @@ cmd_layer() {
   python3 -I tools/ci/os/oci_layers.py inputs "${globs[@]}" > "$inputs"
   rm -rf "$out"
   python3 -I tools/ci/os/oci_layers.py take "$below" "$built" "$out" "$name" "$inputs"
+  rm -rf "$built"
   # Stages the actions above read beside the layers (the binaries' packing for the derived
   # state), from the same build's cache.
   phase also
@@ -336,10 +412,9 @@ if [[ -n $board ]]; then
     os/image/layers.toml "$board" || die "$board is not among release_boards in os/image/layers.toml"
 fi
 case ${1:-} in
-  assets) cmd_assets ;;
   base) arch=${2:?} out=${3:?} os=${TILO_OS_ROOT:-/target/os}/$arch; cmd_base ;;
   image) arch=${3:?} out=${4:?} os=${TILO_OS_ROOT:-/target/os}/$arch; cmd_image "${2:?}" ;;
   layer) arch=${3:?} out=${4:?} os=${TILO_OS_ROOT:-/target/os}/$arch; [[ $(uname -m) == "$arch" ]] || die "the $arch layers build natively"; cmd_layer "${2:?}" ;;
   compose) arch=${2:?} out=${3:?} os=${TILO_OS_ROOT:-/target/os}/$arch; cmd_compose ;;
-  *) die "usage: build-layer.sh assets | base ARCH OUT | image NAME ARCH OUT | layer NAME ARCH OUT | compose ARCH OUT" ;;
+  *) die "usage: build-layer.sh base ARCH OUT | image NAME ARCH OUT | layer NAME ARCH OUT | compose ARCH OUT" ;;
 esac

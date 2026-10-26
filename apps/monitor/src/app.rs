@@ -2215,7 +2215,7 @@ mod tests {
         harness.relayout();
         assert!(!harness.root::<MonitorApp>().expanded.contains(&tilo_fs));
 
-        click(&mut harness, "Memory");
+        click(&mut harness, "Memory in use");
         assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
     }
 

@@ -37,6 +37,7 @@ use crate::shell::state::{
 
 mod adopted_fields;
 mod channels;
+mod edit_latency;
 mod failover;
 mod history_across_admission;
 mod home_relay;
@@ -897,10 +898,17 @@ impl Device {
     /// Where this device stands on the note's channel in `room`, as the
     /// identity service answers the notes app, refusals included.
     pub(crate) fn note_access(&self, room: RoomId) -> ChannelAccess {
+        self.record_access(room, NOTE_RECORD)
+    }
+
+    /// Where this device stands on the channel of the notes app's `record`
+    /// in `room`, as the identity service answers the app, refusals
+    /// included.
+    pub(crate) fn record_access(&self, room: RoomId, record: &str) -> ChannelAccess {
         let Some((channels, _)) = self.channels.as_ref() else {
             return ChannelAccess::Unavailable;
         };
-        let route = collab_types::ChannelRoute::new(NOTES, NOTE_RECORD);
+        let route = collab_types::ChannelRoute::new(NOTES, record);
         channels.access_record(room, &route).0
     }
 

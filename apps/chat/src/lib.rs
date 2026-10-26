@@ -49,6 +49,7 @@
 mod agent_conversation_surface;
 pub mod agent_stream;
 pub mod app;
+mod attachment_view;
 pub mod body;
 pub mod call;
 mod channel_sheet;
@@ -71,7 +72,6 @@ mod live_share;
 mod live_share_panel;
 mod local_voice;
 pub mod mention;
-mod mention_alerts;
 pub mod messages;
 pub mod model;
 mod moderation;
@@ -92,6 +92,7 @@ pub mod resource;
 mod share_grants;
 mod shared_resources;
 mod sidebar;
+mod timeline;
 pub mod transcript;
 mod window_bar;
 

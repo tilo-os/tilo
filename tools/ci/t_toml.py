@@ -492,6 +492,35 @@ CARGO_CHECKS: dict[str, dict] = {
         "packages": lambda packages, root: {"imager"},
         "inputs": ["crates/dev/workspace-unify/Cargo.toml"],
     },
+    # The browser desktop's wasm modules (tools/ci/publish/web-desktop-bundle.sh wasm): what wasm32
+    # compiles for it and the generator its build checks, without the crates' web/ pages, which
+    # web-desktop-bundle takes from the tree. A change to the pages alone compiles nothing.
+    "web-desktop-wasm": {
+        "packages": lambda packages, root: {"tilo-web-desktop", "tilo-browser-compute"},
+        "dev": False,
+        "target": "wasm32-unknown-unknown",
+        "unread": ["crates/browser/tilo-browser-runtime/web", "crates/browser/tilo-browser-compute/web"],
+        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/web-desktop-bundle.sh", "tools/font-catalog.py",
+                   "tools/web/generate_web_desktop.py", "tools/web/crate_source.py", "tools/web/wasm-split/**",
+                   "apps/*/tilo-app.toml", "apps/*/Cargo.toml", "apps/*/search/*.ftl",
+                   "crates/agent/agent-participant/Cargo.toml", "crates/agent/agent-participant/src/web_apps.rs",
+                   "crates/session/desktop-search/src/catalog.rs"],
+    },
+    # The room service image's programs (tools/ci/publish/room-service-binaries.sh), which the
+    # browser end-to-end checks run too: what the release build compiles, without the room
+    # service's scripts, pages, image files and dashboards, which its build doesn't read, so a
+    # change to an end-to-end script doesn't build them again.
+    "room-service-binaries": {
+        "packages": lambda packages, root: {"tilo-relay", "tilo-room-service", "discord-worker"},
+        "dev": False,
+        "target": "x86_64-unknown-linux-gnu",
+        "features": ["tilo-relay/agents"],
+        "unread": [f"crates/hosting/tilo-room-service/{name}"
+                   for name in ("README.md", "container", "dev", "grafana", "web")],
+        "inputs": ["tools/ci/publish/lib.sh", "tools/ci/publish/room-service-binaries.sh", ".cargo/**", "apps/*/surface.toml",
+                   "apps/*/tilo-app.toml", "apps/*.rs", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py",
+                   "tools/test-assets.py", "tools/test-assets-build.rs"],
+    },
     # The compiled helpers the micro-VM checks' scripts run, built for them.
     "vm-test-binaries": {
         "packages": lambda packages, root: {"tilo-image-policy-check", "tilo-crypto", "tilo-esp-write",
@@ -519,12 +548,40 @@ CARGO_CHECKS: dict[str, dict] = {
 }
 
 
-def resolved_dirs(names: set[str], target: str, dev: bool, root: Path = ROOT) -> set[str]:
+def all_but(directory: str, names: list[str]) -> list[str]:
+    """Globs for every file under `directory` but those under its entries `names`: a name's
+    every proper prefix followed by any other character, and the name followed by more of one."""
+    if any("/" in name or not re.fullmatch(r"[A-Za-z0-9_.-]+", name) for name in names):
+        raise ValueError(f"{directory}: only top-level entries of plain names can be left out: {names}")
+    tree: dict = {}
+    for name in names:
+        node = tree
+        for char in name:
+            node = node.setdefault(char, {})
+        node[""] = {}
+    globs: list[str] = []
+
+    def walk(prefix: str, node: dict) -> None:
+        if prefix and "" not in node:
+            globs.append(f"{directory}/{prefix}")
+        if "" in node:
+            globs.append(f"{directory}/{prefix}[!/]*")
+        others = sorted(char for char in node if char)
+        if others:
+            globs.append(f"{directory}/{prefix}[!{''.join(others)}]*")
+        for char in others:
+            walk(prefix + char, node[char])
+
+    walk("", tree)
+    return globs
+
+
+def resolved_dirs(names: set[str], target: str, dev: bool, root: Path = ROOT, features: list[str] = ()) -> set[str]:
     """The directories of the local packages cargo builds for `names` on `target` with their
-    default features, and with `dev` their own dev-dependencies: what `cargo tree` resolves, so
-    optional dependencies nothing turns on and other platforms' are left out."""
+    default features and `features`, and with `dev` their own dev-dependencies: what `cargo tree`
+    resolves, so optional dependencies nothing turns on and other platforms' are left out."""
     command = ["cargo", "tree", "--locked", "--target", target, "--edges", "normal,build" + (",dev" if dev else ""),
-               "--prefix", "none", "--format", "{p}"]
+               "--prefix", "none", "--format", "{p}", *(f"--features={feature}" for feature in features)]
     for name in sorted(names):
         command += ["--package", name]
     output = subprocess.check_output(command, cwd=root, text=True)
@@ -811,7 +868,7 @@ def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict
     tested = spec.get("tested", names if dev else set())
     target = spec.get("target")
     if target:
-        dirs = resolved_dirs(names, target, dev, root)
+        dirs = resolved_dirs(names, target, dev, root, spec.get("features", []))
         by_dir = {Path(p["manifest_path"]).resolve().parent.relative_to(root.resolve()).as_posix(): name
                   for name, p in packages.items()}
         reach = {by_dir[directory] for directory in dirs if directory in by_dir}
@@ -823,7 +880,15 @@ def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict
             reads |= {glob(path) for path in reader.inputs} if reader.package in tested else compiled_reads(reader)
     if target:
         reads = {path for path in reads if not any(path.startswith(directory + "/") for directory in dirs)}
-        inputs = [*spec["inputs"], "Cargo.toml", "Cargo.lock", *sorted(f"{directory}/**" for directory in dirs)]
+        unread = spec.get("unread", [])
+        stray = sorted(path for path in unread if not any(path.startswith(directory + "/") for directory in dirs))
+        if stray:
+            raise ValueError(f"{name}: unread {', '.join(stray)} lies in no package it builds")
+        package_globs = []
+        for directory in sorted(dirs, key=lambda directory: f"{directory}/**"):
+            left_out = [path.removeprefix(directory + "/") for path in unread if path.startswith(directory + "/")]
+            package_globs += all_but(directory, left_out) if left_out else [f"{directory}/**"]
+        inputs = [*spec["inputs"], "Cargo.toml", "Cargo.lock", *package_globs]
         inputs = list(dict.fromkeys([*inputs, *sorted(reads - set(inputs))]))
         return f"inputs = {array(inputs)}\n"
     if spec.get("drop_covered"):

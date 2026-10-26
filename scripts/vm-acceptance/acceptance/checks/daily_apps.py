@@ -467,7 +467,10 @@ def _fullscreen(ctx, res, app: DailyApp, sid, gid) -> None:
             return None
         last["f"] = f
         r, b = f["rect"], f["buffer"]
-        spans = r["w"] >= drect[2] * 0.95 and r["h"] >= drect[3] * 0.9
+        # A lone tile already spans most of its output (1856 of 1920 px): full screen
+        # is larger than the tile it left as well.
+        spans = (r["w"] >= drect[2] * 0.95 and r["h"] >= drect[3] * 0.9
+                 and (r["w"] > tile[2] + SCALE_SLACK_PX or r["h"] > tile[3] + SCALE_SLACK_PX))
         redrawn = abs(b["w"] / r["w"] - b["h"] / r["h"]) < 0.05 and b["w"] >= r["w"] - SCALE_SLACK_PX
         return (spans and redrawn) or None
 
@@ -484,9 +487,13 @@ def _fullscreen(ctx, res, app: DailyApp, sid, gid) -> None:
     ctx.vm.key("super+f")
     ctx.wait_state(lambda s: not _fullscreen_state(s, gid), 5, f"{app.name} restored after Super+F")
 
+    full = f.get("rect") or {"w": drect[2], "h": drect[3]}
+
     def back_in_tile():
+        # Smaller than full screen again, by more than rounding.
         f = _frame(ctx, sid)
-        return f if f and f.get("rect") and f["rect"]["w"] < drect[2] * 0.95 else None
+        r = f and f.get("rect")
+        return f if r and (r["w"] < full["w"] - SCALE_SLACK_PX or r["h"] < full["h"] - SCALE_SLACK_PX) else None
 
     restored = wait_until(back_in_tile, SCALE_SETTLE_S, 0.5)
     res.metrics["restored_rect"] = restored["rect"] if restored else None

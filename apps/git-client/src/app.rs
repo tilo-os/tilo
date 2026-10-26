@@ -12,6 +12,8 @@
 //! window ground. Presses are routed through the targets the last paint
 //! recorded.
 
+mod commits;
+mod keys;
 mod window_bar;
 
 use std::collections::HashMap;
@@ -125,6 +127,32 @@ enum Confirm {
     DiscardHunk(usize),
     /// Delete a local branch.
     DeleteBranch(String),
+    /// Switch to a branch while the working tree holds uncommitted work:
+    /// the person chooses what becomes of it.
+    SwitchBranch {
+        name: String,
+        /// Whether there is uncommitted work at all (a clean tree switches
+        /// without asking).
+        dirty: bool,
+    },
+}
+
+/// One answer to a confirmation sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConfirmChoice {
+    Discard,
+    DeleteBranch,
+    /// Switch, taking the uncommitted work along.
+    SwitchCarrying,
+    /// Switch, parking the uncommitted work on the stash first.
+    SwitchStashing,
+}
+
+/// How an answer reads: its label, and whether it destroys something.
+struct ChoiceFace {
+    choice: ConfirmChoice,
+    label: String,
+    danger: bool,
 }
 
 impl Confirm {
@@ -137,6 +165,9 @@ impl Confirm {
             Confirm::DeleteBranch(name) => {
                 t_args("git-confirm-delete-branch-title", &[("name", name.into())])
             }
+            Confirm::SwitchBranch { name, .. } => {
+                t_args("git-confirm-switch-title", &[("name", name.into())])
+            }
         }
     }
 
@@ -147,14 +178,43 @@ impl Confirm {
             }
             Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => "git-confirm-discard-body",
             Confirm::DeleteBranch(_) => "git-confirm-delete-branch-body",
+            Confirm::SwitchBranch { dirty: true, .. } => "git-confirm-switch-dirty-body",
+            Confirm::SwitchBranch { dirty: false, .. } => "git-confirm-switch-body",
         })
     }
 
-    fn action(&self) -> String {
-        t(match self {
-            Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => "git-confirm-discard",
-            Confirm::DeleteBranch(_) => "git-delete-branch",
-        })
+    /// The answers this sheet offers, in reading order after Cancel.
+    fn choices(&self) -> Vec<ChoiceFace> {
+        match self {
+            Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => vec![ChoiceFace {
+                choice: ConfirmChoice::Discard,
+                label: t("git-confirm-discard"),
+                danger: true,
+            }],
+            Confirm::DeleteBranch(_) => vec![ChoiceFace {
+                choice: ConfirmChoice::DeleteBranch,
+                label: t("git-delete-branch"),
+                danger: true,
+            }],
+            Confirm::SwitchBranch { dirty, .. } if *dirty => vec![
+                ChoiceFace {
+                    choice: ConfirmChoice::SwitchStashing,
+                    label: t("git-switch-stash"),
+                    danger: false,
+                },
+                ChoiceFace {
+                    choice: ConfirmChoice::SwitchCarrying,
+                    label: t("git-switch-carry"),
+                    danger: false,
+                },
+            ],
+            // A clean tree has nothing to decide: Cancel, or go.
+            Confirm::SwitchBranch { .. } => vec![ChoiceFace {
+                choice: ConfirmChoice::SwitchCarrying,
+                label: t("git-switch-go"),
+                danger: false,
+            }],
+        }
     }
 }
 
@@ -168,6 +228,12 @@ enum Hit {
     Diff(DiffHit),
     /// A commit row, by index.
     Commit(usize),
+    /// A changed file of the selected commit, by index: opens its diff.
+    CommitFile(usize),
+    /// The way back from a commit file's diff to the commit itself.
+    BackToCommit,
+    /// Keep one side of a conflicted file.
+    ResolveConflict(crate::repo::ConflictSide),
     Panel(PanelHit),
     OpenPath,
     /// Choose the repository's folder with the system's file chooser.
@@ -280,6 +346,25 @@ pub struct GitClientApp {
 
     // --- Branches screen state ---
     panels_scroll: f64,
+
+    /// The changed files of the commits whose detail has been opened, by
+    /// commit id. Read on demand: walking the history for every commit's
+    /// tree diff up front costs a second on a real repository.
+    commit_files: HashMap<String, Vec<FileChange>>,
+    /// The commit diff on screen: the commit and the file whose changes the
+    /// detail column shows instead of the commit's own page.
+    commit_diff: Option<(String, String)>,
+    /// The commit diffs shown so far, by commit and path.
+    commit_diffs: HashMap<(String, String), crate::model::FileDiff>,
+    /// Which file of the selected commit is under the keyboard, and whether
+    /// the keyboard is in the file list or the commit list.
+    file_selection: Option<usize>,
+    /// Which local branch of the branches page is under the keyboard.
+    branch_selection: Option<usize>,
+    /// What the last action did, said once: a branch switched, a stash made,
+    /// a push sent. Only failures used to be reported, so work that
+    /// succeeded looked like work that had not happened.
+    notice: Option<String>,
 
     /// A destructive step waiting for confirmation, and where its sheet was
     /// laid out last.
@@ -432,6 +517,12 @@ impl GitClientApp {
             history_scroll: 0.0,
             detail_scroll: 0.0,
             panels_scroll: 0.0,
+            commit_files: HashMap::new(),
+            commit_diff: None,
+            commit_diffs: HashMap::new(),
+            file_selection: None,
+            branch_selection: None,
+            notice: None,
             confirm: None,
             confirm_layout: None,
             // Both lists are content the person reads: the overview width,
@@ -550,6 +641,74 @@ impl GitClientApp {
     pub fn test_last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
     }
+    /// What the last action did, as the banner says it.
+    #[doc(hidden)]
+    pub fn test_notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+    /// The branch whose switch is waiting for an answer, if any.
+    #[doc(hidden)]
+    pub fn test_pending_switch(&self) -> Option<&str> {
+        match &self.confirm {
+            Some(Confirm::SwitchBranch { name, .. }) => Some(name.as_str()),
+            _ => None,
+        }
+    }
+    /// Answer the pending switch the way its sheet's buttons do.
+    #[doc(hidden)]
+    pub fn test_answer_switch(&mut self, plan: crate::repo::CheckoutPlan) {
+        let choice = match plan {
+            crate::repo::CheckoutPlan::Carry => ConfirmChoice::SwitchCarrying,
+            crate::repo::CheckoutPlan::Stash => ConfirmChoice::SwitchStashing,
+        };
+        self.perform_confirmed(choice);
+    }
+    /// Show commit `index` and read its changed files, as opening History does.
+    #[doc(hidden)]
+    pub fn test_commit_files(&mut self, index: usize) -> Vec<String> {
+        self.select_commit(index);
+        let Some(commit) = self.model.commits.get(index) else {
+            return Vec::new();
+        };
+        let id = commit.id.clone();
+        self.load_commit_files(&id);
+        self.commit_files
+            .get(&id)
+            .map(|files| files.iter().map(|file| file.path.clone()).collect())
+            .unwrap_or_default()
+    }
+    /// Open the diff of file `index` in the selected commit.
+    #[doc(hidden)]
+    pub fn test_open_commit_file(&mut self, index: usize) {
+        self.open_commit_file(index);
+    }
+    /// The commit diff on screen, as `(commit, file)`.
+    #[doc(hidden)]
+    pub fn test_commit_diff(&self) -> Option<(String, String)> {
+        self.commit_diff.clone()
+    }
+    /// Select the first conflicted file, as choosing its row does.
+    #[doc(hidden)]
+    pub fn test_select_conflicted_file(&mut self) {
+        for area in [
+            crate::model::ChangeArea::Unstaged,
+            crate::model::ChangeArea::Staged,
+            crate::model::ChangeArea::Untracked,
+        ] {
+            let found = change_list(&self.model, area)
+                .iter()
+                .position(|file| file.kind == crate::model::ChangeKind::Conflicted);
+            if let Some(index) = found {
+                self.selected_change = Some((area, index));
+                return;
+            }
+        }
+    }
+    /// Keep one side of the selected conflicted file, as `o` and `t` do.
+    #[doc(hidden)]
+    pub fn test_resolve_conflict(&mut self, side: crate::repo::ConflictSide) {
+        self.resolve_conflict(side);
+    }
 
     /// Re-read the live repository into the model after a mutation, so the
     /// UI reflects the *actual* on-disk state (proving the op took effect).
@@ -578,12 +737,17 @@ impl GitClientApp {
         match result {
             Ok(()) => {
                 self.last_error = None;
+                self.notice = None;
                 self.reload();
             }
-            Err(e) => {
-                self.last_error = Some(e.to_string());
-            }
+            Err(e) => self.report_error(&e),
         }
+    }
+
+    /// Report a failed action, in place of any notice.
+    fn report_error(&mut self, error: &anyhow::Error) {
+        self.notice = None;
+        self.last_error = Some(error.to_string());
     }
 
     /// The repo path for actions; `None` means sample-backed (no real repo).
@@ -1077,7 +1241,16 @@ impl GitClientApp {
         }
         let Some(path) = self.repo() else { return };
         let res = match action {
-            BranchAction::Checkout(name) => crate::repo::checkout_branch(&path, &name),
+            // Switching branches with work in the tree asks first: the work
+            // either comes along or is parked, and the person decides which.
+            BranchAction::Checkout(name) => {
+                let dirty = self.model.change_count() > 0;
+                if dirty {
+                    self.confirm = Some(Confirm::SwitchBranch { name, dirty });
+                    return;
+                }
+                crate::repo::checkout_branch(&path, &name)
+            }
             BranchAction::Delete(name) => crate::repo::delete_branch(&path, &name),
             BranchAction::StashApply(i) => crate::repo::stash_apply(&path, i),
         };
@@ -1311,6 +1484,8 @@ impl GitClientApp {
             (BannerKind::Info, job.label.clone(), false)
         } else if let Some(error) = &self.last_error {
             (BannerKind::Error, error.clone(), true)
+        } else if let Some(notice) = &self.notice {
+            (BannerKind::Success, notice.clone(), true)
         } else {
             return body;
         };
@@ -1342,6 +1517,15 @@ impl GitClientApp {
 
     /// The selected file's diff, or one sentence when there is none.
     fn paint_diff(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
+        let body = if self.selected_conflict().is_some() {
+            let (below, hits) = Self::paint_conflict_actions(ctx, body, self.pointer);
+            for (rect, hit) in hits {
+                self.push_target(rect, hit);
+            }
+            below
+        } else {
+            body
+        };
         let key = self.current_diff_key();
         let Some(diff) = key.as_ref().and_then(|k| self.diffs.get(k)) else {
             let title = t(if self.model.change_count() == 0 {
@@ -1386,29 +1570,6 @@ impl GitClientApp {
         });
     }
 
-    /// The selected commit.
-    fn paint_detail(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
-        let Some(commit) = self.model.commits.get(self.selected_commit) else {
-            EmptyState::paint(
-                ctx,
-                body,
-                &EmptyStateContent::new(&t("git-no-commits")),
-                Point::new(f64::MIN, f64::MIN),
-            );
-            return;
-        };
-        let height = history::paint_detail(ctx, body, commit, self.detail_scroll);
-        let max_y = height - body.height();
-        self.detail_scroll = self.detail_scroll.clamp(0.0, max_y.max(0.0));
-        self.scroll_regions.push(ScrollRegion {
-            rect: body,
-            scroller: Scroller::Detail,
-            max_y,
-            max_x: 0.0,
-            ground: ctx.theme.tokens.colors.surfaces.content,
-        });
-    }
-
     /// The branches page.
     fn paint_panels(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx, body: Rect) {
         let out = panels::paint(
@@ -1420,6 +1581,7 @@ impl GitClientApp {
                 pointer: self.pointer,
                 can_create: self.repo_path.is_some(),
                 branch_name: self.branch_input.value(),
+                selected: self.branch_selection,
                 worktree_fields: [
                     self.worktree_branch_input.value(),
                     self.worktree_path_input.value(),
@@ -1622,16 +1784,28 @@ impl GitClientApp {
                     self.drawer.close();
                 }
             }
-            Hit::DismissError => self.last_error = None,
+            Hit::DismissError => {
+                self.last_error = None;
+                self.notice = None;
+            }
             Hit::Change(change) => self.activate_change(change, in_drawer),
             Hit::Diff(diff) => self.activate_diff(diff),
             Hit::Commit(index) => {
-                self.selected_commit = index;
-                self.detail_scroll = 0.0;
+                self.select_commit(index);
                 if in_drawer {
                     self.drawer.close();
                 }
             }
+            Hit::CommitFile(index) => {
+                self.file_selection = Some(index);
+                self.open_commit_file(index);
+            }
+            Hit::BackToCommit => {
+                self.commit_diff = None;
+                self.diff_scroll = 0.0;
+                self.diff_hscroll = 0.0;
+            }
+            Hit::ResolveConflict(side) => self.resolve_conflict(side),
             Hit::Panel(panel) => self.activate_panel(panel),
             Hit::OpenPath => self.set_focus(Some(Field::Open)),
             Hit::OpenRepository => self.open_repo_from_input(),
@@ -1700,15 +1874,45 @@ impl GitClientApp {
         }
     }
 
-    /// Carry out the confirmed destructive step.
-    fn perform_confirmed(&mut self) {
-        match self.confirm.take() {
-            Some(Confirm::DiscardFile { area, index, .. }) => self.discard_file(area, index),
-            Some(Confirm::DiscardHunk(hunk)) => self.discard_hunk(hunk),
-            Some(Confirm::DeleteBranch(name)) => {
+    /// Carry out the answer `choice` to the open confirmation sheet.
+    fn perform_confirmed(&mut self, choice: ConfirmChoice) {
+        match (self.confirm.take(), choice) {
+            (Some(Confirm::DiscardFile { area, index, .. }), ConfirmChoice::Discard) => {
+                self.discard_file(area, index);
+            }
+            (Some(Confirm::DiscardHunk(hunk)), ConfirmChoice::Discard) => {
+                self.discard_hunk(hunk);
+            }
+            (Some(Confirm::DeleteBranch(name)), ConfirmChoice::DeleteBranch) => {
                 self.apply_branch_action(BranchAction::Delete(name));
             }
-            None => {}
+            (Some(Confirm::SwitchBranch { name, .. }), ConfirmChoice::SwitchCarrying) => {
+                self.switch_branch(&name, crate::repo::CheckoutPlan::Carry);
+            }
+            (Some(Confirm::SwitchBranch { name, .. }), ConfirmChoice::SwitchStashing) => {
+                self.switch_branch(&name, crate::repo::CheckoutPlan::Stash);
+            }
+            _ => {}
+        }
+    }
+
+    /// Switch to `name`, deciding what happens to uncommitted work through
+    /// `plan`, and say what became of it.
+    fn switch_branch(&mut self, name: &str, plan: crate::repo::CheckoutPlan) {
+        let Some(path) = self.repo() else { return };
+        match crate::repo::checkout_branch_planned(&path, name, plan) {
+            Ok(stash) => {
+                self.last_error = None;
+                self.notice = Some(match stash {
+                    Some(stash) => t_args(
+                        "git-switched-stashed",
+                        &[("name", name.into()), ("stash", stash.into())],
+                    ),
+                    None => t_args("git-switched", &[("name", name.into())]),
+                });
+                self.reload();
+            }
+            Err(error) => self.report_error(&error),
         }
     }
 
@@ -1720,7 +1924,20 @@ impl GitClientApp {
         };
         match layout.hit(pos) {
             Some(ModalHit::Action(0) | ModalHit::Close) => self.confirm = None,
-            Some(ModalHit::Action(_)) => self.perform_confirmed(),
+            Some(ModalHit::Action(index)) => {
+                // Action 0 is Cancel; the rest are the sheet's own answers,
+                // in the order it offered them.
+                let choice = self.confirm.as_ref().and_then(|confirm| {
+                    confirm
+                        .choices()
+                        .get(index.saturating_sub(1))
+                        .map(|f| f.choice)
+                });
+                self.confirm = None;
+                if let Some(choice) = choice {
+                    self.perform_confirmed(choice);
+                }
+            }
             Some(ModalHit::Scrim) if layout.dismiss_on_scrim => self.confirm = None,
             _ => {}
         }
@@ -2056,6 +2273,55 @@ impl GitClientApp {
                             .with_bounds(rect),
                     )
                 }
+                Hit::CommitFile(index) => {
+                    let commit_id = self
+                        .model
+                        .commits
+                        .get(self.selected_commit)
+                        .map(|commit| commit.id.clone())
+                        .unwrap_or_default();
+                    let Some(file) = self
+                        .commit_files
+                        .get(&commit_id)
+                        .and_then(|files| files.get(*index))
+                    else {
+                        continue;
+                    };
+                    (
+                        format!("git.commit-file:{index}"),
+                        rect,
+                        AccessNode::new(Role::ListItem)
+                            .with_name(t_args(
+                                "git-commit-file-name",
+                                &[
+                                    ("file", file.path.as_str().into()),
+                                    ("kind", file.kind.label().into()),
+                                ],
+                            ))
+                            .with_description(t("git-show-commit-file"))
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(self.file_selection == Some(*index)),
+                            )
+                            .with_bounds(rect),
+                    )
+                }
+                Hit::BackToCommit => {
+                    button("git.back-to-commit".into(), rect, t("git-back-to-commit"))
+                }
+                Hit::ResolveConflict(side) => {
+                    let (target, name) = match side {
+                        crate::repo::ConflictSide::Ours => {
+                            ("git.conflict.ours".to_string(), t("git-conflict-take-ours"))
+                        }
+                        crate::repo::ConflictSide::Theirs => (
+                            "git.conflict.theirs".to_string(),
+                            t("git-conflict-take-theirs"),
+                        ),
+                    };
+                    button(target, rect, name)
+                }
                 Hit::Panel(PanelHit::WorktreeInfo(index)) => {
                     let Some(worktree) = self.model.worktrees.get(*index) else {
                         continue;
@@ -2346,7 +2612,7 @@ impl Widget for GitClientApp {
         let window = presence.viewport.get().unwrap_or(self.rect);
         let title = confirm.title();
         let body = confirm.body();
-        let action = confirm.action();
+        let choices = confirm.choices();
         let cancel = t("git-cancel");
         let hovered = |index: usize| {
             self.confirm_layout
@@ -2355,10 +2621,15 @@ impl Widget for GitClientApp {
                 .zip(self.pointer)
                 .is_some_and(|(rect, p)| rect.contains(p))
         };
-        let actions = [
-            ModalAction::secondary(&cancel).hovered(hovered(0)),
-            ModalAction::danger(&action).hovered(hovered(1)),
-        ];
+        let mut actions = vec![ModalAction::secondary(&cancel).hovered(hovered(0))];
+        actions.extend(choices.iter().enumerate().map(|(index, face)| {
+            let action = if face.danger {
+                ModalAction::danger(&face.label)
+            } else {
+                ModalAction::primary(&face.label)
+            };
+            action.hovered(hovered(index.saturating_add(1)))
+        }));
         let style = theme.text(TextRole::Body);
         let spec = ModalSpec::new(&title).actions(&actions);
         let width = modal_dialog::body_width(window, spec.max_width, theme);
@@ -2789,36 +3060,18 @@ impl GitClientApp {
                 *handled = true;
                 return;
             }
+            if self.handle_action_key(s.as_str(), modifiers, &ev.logical_key) {
+                *handled = true;
+                return;
+            }
         }
 
         if self.navigate_list(&ev.logical_key) {
             *handled = true;
+            return;
         }
-    }
-
-    /// Arrow keys move the selection in the active list. Returns whether
-    /// `key` did.
-    fn navigate_list(&mut self, key: &Key) -> bool {
-        let step = match key {
-            Key::Named(NamedKey::ArrowDown) => 1,
-            Key::Named(NamedKey::ArrowUp) => -1,
-            _ => return false,
-        };
-        match self.screen {
-            Screen::History => {
-                self.selected_commit = if step > 0 {
-                    (self.selected_commit + 1).min(self.model.commits.len().saturating_sub(1))
-                } else {
-                    self.selected_commit.saturating_sub(1)
-                };
-                self.detail_scroll = 0.0;
-                true
-            }
-            Screen::Changes => {
-                self.select_next_change(step);
-                true
-            }
-            Screen::Panels => false,
+        if self.navigate_panels(&ev.logical_key) {
+            *handled = true;
         }
     }
 
