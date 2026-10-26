@@ -1588,6 +1588,17 @@ fn a_new_message_leaves_the_window_at_rest() {
             misses <= 1,
             "the post rediscovers the bound components once, where the record changed: {report}"
         );
+        // The channel's chain moves once for the post: every publication the
+        // post asks for after that carries the node published then, not the
+        // whole channel again.
+        let republished = scopes
+            .iter()
+            .find(|(phase, ..)| *phase == "framework.record_republished")
+            .map_or(0, |(_, calls, _)| *calls);
+        assert!(
+            republished <= 1,
+            "the post publishes the channel's messages once: {report}"
+        );
         assert!(
             frames.len() <= 2,
             "a new message is drawn in a frame or two, then the window rests: {report}"
