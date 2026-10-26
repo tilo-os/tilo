@@ -114,6 +114,7 @@ fn picked(picture: bool) -> (Doc, Submission) {
 /// The rows `submission`'s channel shows for it.
 fn rows(doc: &Doc, submission: &Submission) -> Vec<crate::model::Message> {
     crate::projection::read(doc)
+        .expect("a chat record")
         .message_rows(
             &crate::messages::Messages::default(),
             &submission.destination.channel,
@@ -205,7 +206,7 @@ fn members_react_to_a_report_as_to_any_message() {
 #[test]
 fn a_bot_reading_the_room_reads_the_report_as_its_message() {
     let (doc, submission) = picked(true);
-    let chat = crate::projection::read(&doc);
+    let chat = crate::projection::read(&doc).expect("a chat record");
     let message = crate::feedback::message_id(&submission.id);
     let none = crate::messages::Messages::default();
     let read = crate::effects::read_room(&chat, &none, Some(&message), None);

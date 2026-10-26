@@ -114,7 +114,8 @@ fn report_of(id: &Id, report: &crate::record::FeedbackReport) -> Result<Report, 
 /// # Errors
 /// Refuses a report whose submission is corrupt or filed under another id.
 pub fn report(doc: &Doc, id: &str) -> Result<Option<Report>, ActionError> {
-    let chat = crate::projection::read(doc);
+    let chat = crate::projection::try_read(doc)
+        .map_err(|error| ActionError::Refused(format!("the chat record does not read: {error}")))?;
     let id = Id::from_raw(id);
     chat.feedback
         .get(&id)
@@ -127,7 +128,8 @@ pub fn report(doc: &Doc, id: &str) -> Result<Option<Report>, ActionError> {
 /// # Errors
 /// Refuses corrupt report metadata.
 pub fn reports(doc: &Doc) -> Result<Vec<Report>, ActionError> {
-    let chat = crate::projection::read(doc);
+    let chat = crate::projection::try_read(doc)
+        .map_err(|error| ActionError::Refused(format!("the chat record does not read: {error}")))?;
     chat.feedback
         .iter()
         .map(|(id, report)| report_of(id, report))
@@ -249,7 +251,9 @@ mod tests {
     /// What `channel` of the chat in `doc` shows: the reports filed in it
     /// among its messages.
     fn messages(doc: &Doc, channel: &str) -> Vec<crate::model::Message> {
-        crate::projection::read(doc).message_rows(&crate::messages::Messages::default(), channel)
+        crate::projection::read(doc)
+            .expect("a chat record")
+            .message_rows(&crate::messages::Messages::default(), channel)
     }
 
     fn seeded() -> (Doc, Submission) {

@@ -98,6 +98,7 @@ pub(crate) fn messages_in(records: &ui::record::RecordStore, channel: &str) -> V
             &ui::record::RecordId::package_primary(),
             crate::projection::read,
         )
+        .flatten()
         .unwrap_or_default();
     chat.message_rows(&stored_messages(records), channel)
 }
@@ -153,12 +154,16 @@ pub(crate) fn message_item(id: &str) -> String {
 
 /// The channels, in sidebar order.
 pub(crate) fn channels(doc: &AutoCommit) -> Vec<Channel> {
-    crate::projection::read(doc).channel_rows()
+    crate::projection::read(doc)
+        .expect("a chat record")
+        .channel_rows()
 }
 
 /// The people in the room.
 pub(crate) fn users(doc: &AutoCommit) -> Vec<User> {
-    crate::projection::read(doc).user_rows()
+    crate::projection::read(doc)
+        .expect("a chat record")
+        .user_rows()
 }
 
 /// How many top-level messages `channel` has.
@@ -167,7 +172,9 @@ pub(crate) fn top_level(doc: &Room, channel: &str) -> usize {
 }
 
 pub(crate) fn read_mark(doc: &AutoCommit, channel: &str, user: &str) -> crate::parts::ReadMark {
-    crate::projection::read(doc).read_mark(channel, user)
+    crate::projection::read(doc)
+        .expect("a chat record")
+        .read_mark(channel, user)
 }
 
 pub(crate) fn draft_text(doc: &AutoCommit, key: &str) -> String {

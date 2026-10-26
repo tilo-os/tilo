@@ -59,13 +59,14 @@ fn project(
         .clone()
         .fork_at(heads)
         .map_err(|_| SemanticReadError::Malformed)?;
-    if !crate::projection::read(&document)
-        .channel_rows()
-        .iter()
-        .any(|channel| {
-            channel.id == request.channel && channel.kind != crate::model::ChannelKind::Voice
-        })
-    {
+    // A document that does not read as a chat holds no channel to read from:
+    // the request is as unsatisfiable as one naming a channel it lacks.
+    let Some(chat) = crate::projection::read(&document) else {
+        return Err(SemanticReadError::Malformed);
+    };
+    if !chat.channel_rows().iter().any(|channel| {
+        channel.id == request.channel && channel.kind != crate::model::ChannelKind::Voice
+    }) {
         return Err(SemanticReadError::InvalidRequest);
     }
     Ok(ReadPage {
