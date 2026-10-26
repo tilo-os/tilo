@@ -495,7 +495,9 @@ impl CollaborationLaunchpad {
         let context = tilo_actions::ActionContext::for_app("tilo.desktop", action.choice.path());
         match state.apply(&mut self.actions, LAUNCHPAD_ACTION_TYPE, &action, context) {
             Ok(()) => {
-                tracing::info!(card = action.choice.path(), "launchpad card activated");
+                // The compositor's session log keeps this target
+                // (tilo_startup_metrics::INPUT_ROUTE_TARGET).
+                tracing::info!(target: "tilo::input_route", card = action.choice.path(), "launchpad card activated");
                 true
             }
             Err(error) => {
