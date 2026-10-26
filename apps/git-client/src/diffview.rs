@@ -72,8 +72,12 @@ pub struct DiffInput<'a> {
 /// What one paint produced.
 pub struct DiffDraw {
     pub targets: Vec<(Rect, DiffHit)>,
-    /// The scrolling rows' viewport, under the file header.
+    /// The scrolling rows' viewport, under the file header (and under the
+    /// sentence saying two columns did not fit, where that is said).
     pub viewport: Rect,
+    /// The layout the rows were actually drawn in: side by side as asked, or
+    /// one column where the pane could not give each side a line of code.
+    pub layout: DiffLayout,
     /// Height of all rows, for clamping the vertical scroll.
     pub content_height: f64,
     /// How far the code may scroll sideways before its longest line ends
@@ -225,6 +229,10 @@ fn wrap_lines(diff: &FileDiff, cols: usize) -> Vec<Vec<Range<usize>>> {
 }
 
 /// How many monospace cells of code fit beside the gutter in `width`.
+/// The fewest columns of code a side-by-side pair must give each side. Below
+/// this the two columns are fragments of lines, and one column reads better.
+const MIN_SPLIT_COLUMNS: usize = 40;
+
 fn code_columns(width: f64, layout: DiffLayout, m: &Metrics) -> usize {
     let room = match layout {
         DiffLayout::Unified => width - m.unified_gutter() - m.pad,
@@ -327,6 +335,31 @@ fn pair_rows(lines: &[DiffLine]) -> Vec<Row> {
     rows
 }
 
+/// Say that the two columns asked for did not fit, at the top of the rows,
+/// and return the viewport they start below.
+fn one_column_note(ctx: &mut PaintCtx<'_>, viewport: Rect, m: &Metrics) -> Rect {
+    let style = ctx.theme.text(TextRole::Caption);
+    let note = t("git-split-needs-width");
+    // The sentence is about the window it is read in, so it wraps to the
+    // pane rather than running off it.
+    let room = ui::num::f32_of_f64((viewport.width() - 2.0 * m.pad).max(0.0));
+    let (_, line_h) = ctx.text.measure_style(&note, Some(room), &style);
+    ctx.text(
+        &note,
+        &style,
+        ctx.theme.text_dim,
+        Point::new(viewport.x0 + m.pad, viewport.y0 + m.pad),
+        Some(room),
+    );
+    let below = viewport.y0 + f64::from(line_h) + 2.0 * m.pad;
+    Rect::new(
+        viewport.x0,
+        below.min(viewport.y1),
+        viewport.x1,
+        viewport.y1,
+    )
+}
+
 pub fn paint(ctx: &mut PaintCtx<'_>, pane: Rect, input: &DiffInput<'_>) -> DiffDraw {
     let m = Metrics::measure(ctx.text, ctx.theme, input.diff);
     let mut targets = Vec::new();
@@ -346,18 +379,29 @@ pub fn paint(ctx: &mut PaintCtx<'_>, pane: Rect, input: &DiffInput<'_>) -> DiffD
         0.0,
         ctx.theme.tokens.colors.surfaces.content,
     );
-    let viewport = Rect::new(pane.x0, header.y1, pane.x1, pane.y1.max(header.y1));
+    let mut viewport = Rect::new(pane.x0, header.y1, pane.x1, pane.y1.max(header.y1));
 
     if paint_empty(ctx, viewport, input.diff) {
         return DiffDraw {
             targets,
             viewport,
+            layout: input.settings.diff_layout,
             content_height: 0.0,
             max_hscroll: 0.0,
         };
     }
 
-    let layout = input.settings.diff_layout;
+    // Two columns need a line of code each. Where the pane cannot give them
+    // one, one column is what can be read — and the view says so rather than
+    // quietly drawing something other than what was asked for.
+    let narrowed = input.settings.diff_layout == DiffLayout::SideBySide
+        && code_columns(viewport.width(), DiffLayout::SideBySide, &m) < MIN_SPLIT_COLUMNS;
+    let layout = if narrowed {
+        viewport = one_column_note(ctx, viewport, &m);
+        DiffLayout::Unified
+    } else {
+        input.settings.diff_layout
+    };
     let cols = code_columns(viewport.width(), layout, &m);
     let wrapping = input.settings.wrap_lines;
     let wrapped = wrap_lines(input.diff, if wrapping { cols } else { usize::MAX });
@@ -414,6 +458,7 @@ pub fn paint(ctx: &mut PaintCtx<'_>, pane: Rect, input: &DiffInput<'_>) -> DiffD
     DiffDraw {
         targets,
         viewport,
+        layout,
         content_height,
         max_hscroll,
     }
@@ -965,6 +1010,43 @@ mod tests {
                 assert!(a.intersect(*b).area() <= 0.0, "{a:?} overlaps {b:?}");
             }
         }
+    }
+
+    /// Side by side needs a line of code each. Where the pane cannot give it
+    /// one the rows are one column, with a sentence saying why: a person who
+    /// asked for two columns gets either two or an explanation, never two
+    /// columns of fragments.
+    #[test]
+    fn two_columns_fold_into_one_when_the_pane_is_too_narrow() {
+        let diff = sample_diff();
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        let narrow = paint(
+            &mut ctx,
+            Rect::new(0.0, 0.0, 390.0, 600.0),
+            &DiffInput {
+                diff: &diff,
+                scroll: 0.0,
+                hscroll: 0.0,
+                settings: Settings {
+                    diff_layout: DiffLayout::SideBySide,
+                    ..Settings::default()
+                },
+                staged: false,
+                can_discard: true,
+                actions: true,
+                pointer: None,
+            },
+        );
+        assert_eq!(
+            narrow.layout,
+            DiffLayout::Unified,
+            "390 px cannot hold two columns of code"
+        );
+        let wide = draw(&diff, 1400.0, DiffLayout::SideBySide, false, true);
+        assert_eq!(wide.layout, DiffLayout::SideBySide, "1400 px can");
     }
 
     /// A view that offers no actions draws none: the file's toggle and
