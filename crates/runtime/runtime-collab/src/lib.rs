@@ -261,11 +261,22 @@ impl CertifiedJoinIdentity {
 /// if the connection fails to establish.
 #[cfg(feature = "client")]
 pub fn try_connect() -> Result<CollabClient, NotAvailable> {
-    let client: CollabServiceClient = runtime_portal::connect_service("collab")?.bootstrap();
+    try_connect_until_closed().map(|(client, _)| client)
+}
+
+/// [`try_connect`], with what resolves once the broker connection has ended.
+///
+/// # Errors
+/// As [`try_connect`].
+#[cfg(feature = "client")]
+pub fn try_connect_until_closed()
+-> Result<(CollabClient, runtime_portal::ConnectionEnd), NotAvailable> {
+    let (client, end): (CollabServiceClient, _) =
+        runtime_portal::connect_service("collab")?.bootstrap_until_closed();
     let client = CollabClient::from_raw(client);
     #[cfg(unix)]
     let client = client.with_descriptors(runtime_portal::service_descriptors("collab")?);
-    Ok(client)
+    Ok((client, end))
 }
 
 /// Where a connection's calls hand the broker descriptors, if it can.
