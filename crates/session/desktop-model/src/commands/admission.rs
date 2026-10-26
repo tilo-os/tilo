@@ -1,15 +1,31 @@
-//! The topology-namespace checks every owner runs before it reduces a
-//! command: an open resolved to the exact tab a person would make, and every
-//! strip, group and tab a command names kept inside the owner's namespace.
+//! The room, freshness and topology-namespace checks every owner runs before
+//! it reduces a command: an open resolved to the exact tab a person would
+//! make, every strip, group and tab kept inside the owner's namespace, and
+//! the command bound to the source revision the requester actually saw.
+//!
+//! Authority is the host's: a browser asks [`super::may_command`], a native
+//! owner decides by the id namespace it writes. This module only decides
+//! what every host must decide alike, before any mutation.
+
+use automerge::AutoCommit;
 
 use super::placement::{OpenContext, open_app_placement};
-use super::{DesktopCommand, TabLocation, TabPlacement};
+use super::{CommandSource, DesktopCommand, TabLocation, TabPlacement};
+use crate::ids::RoomId;
+use crate::projection::{
+    ROOM_CONTENTS_KEY, ROOM_CONTENTS_OWNERS_KEY, ROOM_DESKTOP_COUNTER_KEY, ROOM_ID_KEY,
+    ROOM_NAME_KEY, ROOM_OWNER_KEY,
+};
 use crate::workspace::Workspace;
 
 /// `command` with [`DesktopCommand::OpenApp`] resolved to the
 /// [`DesktopCommand::OpenTab`] a person would make, placed in the owner's own
 /// turn inside the strips `owned` accepts. Every other command is returned
 /// unchanged; the owner checks and applies that exact command.
+///
+/// # Errors
+///
+/// Returns a description when no owned strip can receive an opened app.
 pub fn resolve_open_app(
     workspace: &Workspace,
     command: DesktopCommand,
@@ -105,6 +121,126 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         | DesktopCommand::GrantAppAction { .. }
         | DesktopCommand::RevokeAppAction { .. } => Ok(()),
     }
+}
+
+/// Admit `command` from `source` against `workspace` and the room document
+/// `room` it was read from, returning the exact command to apply: every host
+/// runs this before it mutates anything.
+///
+/// The source room must be `workspace`'s canonical room, and every named
+/// strip, group and tab must exist in that workspace and be `owned` by this
+/// host. A command that is not placement-independent must still describe the
+/// current desktop topology at its source: heads that advanced only for
+/// receipts or enrollment still admit it, a changed strip, group, tab or
+/// counter does not.
+///
+/// # Errors
+///
+/// Returns a description when the room, source revision or target namespace
+/// is not the owner's to apply.
+pub fn admit(
+    workspace: &Workspace,
+    source: &CommandSource,
+    room: &mut AutoCommit,
+    command: &DesktopCommand,
+    owned: impl Fn(u64) -> bool,
+) -> Result<DesktopCommand, String> {
+    let source_room = RoomId::parse(&source.room)
+        .filter(|room| room.to_string() == source.room)
+        .ok_or_else(|| "desktop source does not name a canonical room".to_owned())?;
+    if source_room != workspace.room() {
+        return Err("desktop source room does not match the target workspace".into());
+    }
+    let placement_independent = command.is_placement_independent();
+    if !placement_independent
+        && (source.heads.is_empty()
+            || (sorted(&head_bytes(room.get_heads())) != sorted(&source.heads)
+                && !source_matches(room, &source.heads)?))
+    {
+        return Err("desktop source revision is stale".into());
+    }
+    // The host owns ids; the source room owns which of them this command may
+    // name. A target from another workspace is never this room's to change.
+    let in_owned_workspace = |id: u64| in_workspace(workspace, id) && owned(id);
+    let resolved = resolve_open_app(workspace, command.clone(), in_owned_workspace)?;
+    check_owned(&resolved, in_owned_workspace)?;
+    Ok(resolved)
+}
+
+/// Room heads also advance for receipts, enrollment and document durability.
+/// Those changes must not invalidate a gesture against an unchanged desktop.
+/// Compare the topology-bearing fields at the source heads with the room's
+/// current ones, without rebinding the command or weakening the caller and
+/// target checks.
+///
+/// # Errors
+///
+/// Returns a description when the document cannot be read at `heads`.
+fn source_matches(room: &AutoCommit, heads: &[[u8; 32]]) -> Result<bool, String> {
+    use automerge::ReadDoc;
+    let heads = heads
+        .iter()
+        .copied()
+        .map(automerge::ChangeHash)
+        .collect::<Vec<_>>();
+    if heads.is_empty()
+        || heads
+            .iter()
+            .any(|head| room.get_change_by_hash(head).is_none())
+    {
+        return Ok(false);
+    }
+    for key in [
+        ROOM_ID_KEY,
+        ROOM_OWNER_KEY,
+        ROOM_NAME_KEY,
+        ROOM_CONTENTS_KEY,
+        ROOM_CONTENTS_OWNERS_KEY,
+        // Also prevents an old launch from being reused after its tab closes.
+        ROOM_DESKTOP_COUNTER_KEY,
+    ] {
+        let previous = room
+            .get_all_at(automerge::ROOT, key, &heads)
+            .map_err(|e| e.to_string())?;
+        let current = room
+            .get_all(automerge::ROOT, key)
+            .map_err(|e| e.to_string())?;
+        if previous != current {
+            return Ok(false);
+        }
+        for (value, object) in current {
+            if matches!(value, automerge::Value::Object(_))
+                && room
+                    .hydrate(&object, Some(&heads))
+                    .map_err(|e| e.to_string())?
+                    != room.hydrate(&object, None).map_err(|e| e.to_string())?
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn head_bytes(heads: Vec<automerge::ChangeHash>) -> Vec<[u8; 32]> {
+    heads.into_iter().map(|head| head.0).collect()
+}
+
+fn sorted(heads: &[[u8; 32]]) -> Vec<[u8; 32]> {
+    let mut heads = heads.to_vec();
+    heads.sort_unstable();
+    heads
+}
+
+/// Whether `id` names a strip, group or tab of `workspace`.
+fn in_workspace(workspace: &Workspace, id: u64) -> bool {
+    workspace.strips.iter().any(|strip| {
+        strip.id.0 == id
+            || strip
+                .window_groups
+                .iter()
+                .any(|group| group.id == id || group.tabs.iter().any(|tab| tab.id == id))
+    })
 }
 
 /// The next counter an owner mints from in namespace `salt`: past both the
