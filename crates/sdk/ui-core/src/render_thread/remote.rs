@@ -185,12 +185,26 @@ impl Session {
             .recv::<ServiceMessage>()
             .map_err(|error| format!("render service: {error}"))?;
         let ServiceMessage::Welcome {
-            limits, font_roots, ..
+            limits,
+            font_roots,
+            renderer,
+            ..
         } = welcome.message
         else {
             return Err("the render service did not welcome this app".to_owned());
         };
         tilo_startup_metrics::mark("remote-render-connect-done");
+        // The window's adapter line, as a window drawing on its own device
+        // logs it (`gpu::report_adapter`): GPU health and the startup gate
+        // read which device drew this window, here the service's.
+        crate::diag!(
+            "{} window adapter {:?} type={} backend={} driver={:?} via=render-service",
+            crate::gpu::ADAPTER_LINE_PREFIX,
+            renderer.name,
+            renderer.device_type,
+            renderer.backend,
+            renderer.driver
+        );
         Ok(Self {
             channel: Arc::new(channel),
             ring,
