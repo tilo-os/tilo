@@ -1824,6 +1824,20 @@ commit on `ux-qol-pass` off `3203631d96`; the finding ids are Volume I's.
 `3fadc09937` (chat), `a880927811` (photos), `68eadab54c` (video-player), and tube's, in flight.
 Each is code motion along a seam that already existed, named in the new module's doc comment.
 
+## 7.5 Four commit messages are wrong, and stay wrong
+
+Recorded because a reader of `git log` deserves the correction, and because main only takes
+fast-forward pushes, so the messages cannot be rewritten:
+
+- **`b0e554597b`** is titled as the breakpoint-lexer fix and also carries these two volumes, the
+  `ux-fixer` agent definition and three app manifests — one `git add -A` too many. The message
+  describes maybe a fifth of the commit.
+- **`2e174974ef`** is titled `refactor(files)` and replaces Files' notices with the attention stack
+  and the ledger. That is behaviour, not a refactor.
+- **`27aafcdc70 feat(ux)`** and **`6041e34e55 feat(apps)`** use scopes that name no crate and no app.
+
+Everything else in the range is conventionally correct and its body says why.
+
 ## 7.4 What is still open
 
 - `SHELL-01`, the blocker: no input method on the lock screen. In flight, and the only finding
