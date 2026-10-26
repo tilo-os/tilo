@@ -318,8 +318,8 @@ impl Drop for InstalledSettings {
 /// The active workspace's room as a session leaves it once the room is
 /// placed on this device: its own host governs it, the native owner entered
 /// it, and the person governing it is the one returned. What every app
-/// launch and invitation in one-host needs, which a room no host holds
-/// (one on this device only) does not offer. The room stays held while the
+/// launch and invitation in one-host needs, which a room still waiting to be
+/// placed does not offer yet. The room stays held while the
 /// returned guard lives.
 #[cfg(any(test, feature = "test-support"))]
 pub struct OwnHostedRoom {
