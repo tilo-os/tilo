@@ -688,6 +688,22 @@ impl Drop for Passt {
 mod tests {
     use super::*;
 
+    /// The guest's root copies every change up in full, so what a step changed is all in its
+    /// upper directory: a moved directory or a chmod under `redirect_dir` or `metacopy` would live in
+    /// overlay xattrs, and a layer made of the upper directory would lose it.
+    #[test]
+    fn the_guest_root_overlay_copies_changes_up_in_full() {
+        let mount = INIT
+            .lines()
+            .skip_while(|l| !l.contains("mount -t overlay"))
+            .take(3)
+            .collect::<String>();
+        assert!(
+            mount.contains("redirect_dir=off") && mount.contains("metacopy=off"),
+            "{mount}"
+        );
+    }
+
     fn spec() -> VmSpec {
         VmSpec {
             guest: Guest {
