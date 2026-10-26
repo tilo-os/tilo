@@ -1909,10 +1909,21 @@ impl ActorState {
                 }
             }
             Some(NetCmd::NativeReplay { ws }) => {
-                if let Some(session) = native_ingress::native_session(&self.host_sessions, ws)
-                    && let Err(error) = session.resubscribe()
-                {
-                    tracing::debug!(ws, %error, "joined room replay not asked: not connected");
+                // What the host sends until its `Ready` is its retained
+                // replay, this device's own writes included: marked so, as
+                // its first replay is, and not taken for live echoes.
+                let runtime = self
+                    .host_sessions
+                    .iter()
+                    .find(|((topic, _), runtime)| *topic == ws && runtime.native_scope.is_some())
+                    .map(|(_, runtime)| runtime);
+                if let Some(runtime) = runtime {
+                    runtime
+                        .replaying
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    if let Err(error) = runtime.session.resubscribe() {
+                        tracing::debug!(ws, %error, "joined room replay not asked: not connected");
+                    }
                 }
             }
             Some(NetCmd::PublishLive { ws, frame }) => {

@@ -61,12 +61,13 @@ impl Device {
         socket: &Path,
     ) -> crate::shell::collab_broker::BrokerHandle {
         self.serve_through_broker();
-        let broker = crate::shell::collab_broker::spawn_native_owner_harness_with_reads(
+        let broker = crate::shell::collab_broker::spawn_device_harness(
             socket.to_path_buf(),
             self.tree.clone(),
             vec![self.cert().device_public_key],
             self.net(),
             None,
+            self.channel_store(),
         )
         .expect("bind the collaboration service");
         *self.endpoint_keys.lock().expect("endpoint keys") = Some(broker.endpoint_channel_keys());

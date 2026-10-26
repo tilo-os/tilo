@@ -515,19 +515,25 @@ impl Device {
     /// This device's channel state, opened from its directory, as its
     /// session opens it: under its secret store's key while it has one.
     fn open_channels(&self, net: &Arc<ShellNetwork>) -> ChannelKeyAccess {
-        let mut vault = [0x5A; 32];
-        vault[..2].copy_from_slice(&self.salt.to_le_bytes());
         crate::shell::collab_broker::channel_key_access(
-            self.secret_store.then(|| ChannelEncryptionConfig {
-                root: self.dir.join("channels"),
-                vault: channel_crypto::VaultKey::new(vault),
-                device_key: self.key(),
-            }),
+            self.channel_store(),
             self.tree.clone(),
             Some(Arc::clone(net)),
             Arc::new(Mutex::new(BrokerChannels::default())),
         )
         .expect("the device's channel state opens")
+    }
+
+    /// Where this device keeps its channel state, under its secret
+    /// store's key, while it has one.
+    pub(crate) fn channel_store(&self) -> Option<ChannelEncryptionConfig> {
+        let mut vault = [0x5A; 32];
+        vault[..2].copy_from_slice(&self.salt.to_le_bytes());
+        self.secret_store.then(|| ChannelEncryptionConfig {
+            root: self.dir.join("channels"),
+            vault: channel_crypto::VaultKey::new(vault),
+            device_key: self.key(),
+        })
     }
 
     pub(crate) fn tree(&self) -> &WorkspaceTreeHandle {
