@@ -93,11 +93,41 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         Ok(committed)
     }
     fn requires_room(&self, room: &str) -> bool {
-        // Every held room's app records are native documents, whether this
-        // device commits them or the room's host does: a sealed room's records
-        // are the ones a cold app has to read through the host.
         super::super::state::RoomId::parse(room)
-            .is_some_and(|room| self.tree.read().holds_room(room))
+            .is_some_and(|room| self.tree.read().commits_native_documents(room))
+    }
+    /// A room this device commits answers every read. A sealed room answers
+    /// the records it already holds, which a cold app has no other way to
+    /// load: its own channel only carries what is written while it is open.
+    /// A record the sealed room does not hold yet is new, and the app makes
+    /// it on its own channel.
+    fn record_read(
+        &self,
+        room: &str,
+        app: &str,
+        record: &str,
+    ) -> tilo_action_broker::services::RecordRead {
+        use tilo_action_broker::services::RecordRead;
+        let Some(room) = super::super::state::RoomId::parse(room) else {
+            return RecordRead::Own;
+        };
+        {
+            let tree = self.tree.read();
+            if tree.commits_native_documents(room) {
+                return RecordRead::Committed;
+            }
+            if !tree.seals_records(room) {
+                return RecordRead::Own;
+            }
+        }
+        let held = self.opened_owner("").is_ok_and(|owner| {
+            owner.with_current(room, |view| Ok(view.peer().holds_document(app, record))) == Ok(true)
+        });
+        if held {
+            RecordRead::Sealed
+        } else {
+            RecordRead::Own
+        }
     }
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
         context.revalidate()?;
