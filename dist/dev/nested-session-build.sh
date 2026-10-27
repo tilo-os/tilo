@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Build everything dist/dev/nested-session.sh runs, into one directory: the
 # host programs (shell, launcher, installer, packager, runtime-bundle tool,
-# model gateway, the ush supervisor, tilo-control, the native-room governor
-# fixture), the workspace host and room service a local site runs
+# model gateway, the ush supervisor and tilo-control), the workspace host and room service a local site runs
 # (nested-pair.sh), the thin apps, the shared runtime library they link and
 # its engines, the Rust standard library that runtime was linked against, the
 # env-runtime image Terminal's environments start from, and a dbus-daemon for
@@ -84,7 +83,7 @@ build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
     cargo build --locked --timings "${args[@]}" \
-        -p shell --bin shell --example packaged_native_governor --features shell/dev-overrides \
+        -p shell --bin shell --features shell/dev-overrides \
         -p launcher --bin tilo-launcher --features launcher/dev-overrides \
         -p install --bin tilo-install \
         -p tilo-app-package-cli --bin tilo-app-package \
@@ -158,9 +157,8 @@ unset MAKEFLAGS
 
 # --- Stage ----------------------------------------------------------------------
 rm -rf "$out"
-mkdir -p "$out/bin/examples" "$out/thin-app"
+mkdir -p "$out/bin" "$out/thin-app"
 for name in "${host_bins[@]}" "${site_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
-cp -p "$target/$host_profile/examples/packaged_native_governor" "$out/bin/examples/"
 cp -rp "$timings" "$out/timings"
 cp -p "$target/thin-app/libruntime_dylib.so" "$target/thin-app/runtime-engines" "$out/thin-app/"
 while IFS= read -r file; do
