@@ -2191,6 +2191,7 @@ chmod 755 "$TMPDIR/chat-fixture-chromium"
 unprivileged='target.x86_64-unknown-linux-gnu.runner=["unshare","--user","--map-user=65534","--map-group=65534","--","bash","tools/with-test-environment.sh"]'
 CHROME=$TMPDIR/chat-fixture-chromium cargo run --locked --config "$unprivileged" -p tilo-agent-participant --example mounted-resource -- "$web/chat/bundle" --voice
 CHROME=$TMPDIR/chat-fixture-chromium cargo run --locked --config "$unprivileged" -p tilo-agent-participant --example mounted-resource -- "$web/chat/bundle" --encrypted-restart
+CHROME=$TMPDIR/chat-fixture-chromium cargo run --locked --config "$unprivileged" -p tilo-agent-participant --example mounted-resource -- "$web/chat/bundle" --scrollback
 (cd "$web/calculator/bundle" && python3 -m http.server 7878 --bind 127.0.0.1) &
 server=$!
 trap 'kill $server 2>/dev/null || true' EXIT
