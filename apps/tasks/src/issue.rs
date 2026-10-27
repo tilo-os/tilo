@@ -9,7 +9,7 @@
 
 use crate::model::{
     Issue, Message, MessageKind, ModelChoice, Run, RunPhase, Status, Tracker, agent_assignee,
-    issue_resource, person_assignee, tracker,
+    issue_resource, money, person_assignee, tracker,
 };
 use tilo_agent_models::OfferedModels;
 use tilo_rich_text::RichTextFieldViews;
@@ -220,12 +220,12 @@ fn plan(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         if let Some(due) = &planned.due {
             facts.push(Fact::text(tr_with("tasks-fact-due", &[("date", due)])));
         }
-        if let (Some(budget), spent) = (planned.cost_budget, planned.spend.unwrap_or_default()) {
+        if let Some(budget) = planned.cost_budget {
             facts.push(Fact::text(tr_with(
                 "tasks-fact-cost",
                 &[
-                    ("spent", &spent.to_string()),
-                    ("budget", &budget.to_string()),
+                    ("spent", &money(planned.spend.unwrap_or_default())),
+                    ("budget", &money(budget)),
                 ],
             )));
         }
@@ -572,6 +572,10 @@ struct RunView {
     /// Whether a person paused the run: it takes no new step until they let
     /// it go on.
     paused: bool,
+    /// Why it stopped, when the pause named a reason: the limit it reached.
+    reason: Option<String>,
+    /// What the run spent, as one line a person reads.
+    spend: Option<String>,
     question: Option<String>,
 }
 
@@ -580,6 +584,13 @@ fn run_view(issue: &Issue) -> RunView {
         agent: issue.assigned_agent().map(str::to_owned),
         phase: issue.run.as_ref().map(Run::shown_phase),
         paused: issue.run.as_ref().is_some_and(|run| run.paused.is_some()),
+        reason: issue
+            .run
+            .as_ref()
+            .and_then(|run| run.paused.as_ref())
+            .map(|paused| paused.reason.clone())
+            .filter(|reason| !reason.is_empty()),
+        spend: issue.run.as_ref().and_then(spend_line),
         question: issue
             .run
             .as_ref()
@@ -594,6 +605,40 @@ fn run_view(issue: &Issue) -> RunView {
                     .to_owned()
             }),
     }
+}
+
+/// What a run spent, on which model and on which device, as one line a
+/// person reads. A run that priced nothing — one on a local model — says
+/// what it used and that it cost no money rather than showing `0.00`.
+fn spend_line(run: &Run) -> Option<String> {
+    let spend = run.spend.as_ref()?;
+    if spend.steps_taken == 0 {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if !spend.currency.is_empty() {
+        parts.push(tr_with(
+            "tasks-run-spent",
+            &[
+                ("cost", &money(spend.cost())),
+                ("currency", &spend.currency),
+            ],
+        ));
+    } else {
+        parts.push(tr("tasks-run-spent-nothing"));
+    }
+    parts.push(tr_with(
+        "tasks-run-used",
+        &[("tokens", &ui::format::count(spend.tokens()))],
+    ));
+    let step = spend.steps.last()?;
+    if !step.model.is_empty() {
+        parts.push(tr_with("tasks-run-model", &[("model", &step.model)]));
+    }
+    if !step.device.is_empty() {
+        parts.push(tr_with("tasks-run-device", &[("device", &step.device)]));
+    }
+    Some(parts.join(". "))
 }
 
 /// The agent's run: start it, stop it, answer what it asks.
@@ -632,6 +677,18 @@ fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 ("phase", phase.into()),
             ],
         ))));
+        if let Some(reason) = &view.reason {
+            column = column.push(Box::new(
+                Banner::warning(reason.clone()).with_id("tasks-run-stopped-at-budget"),
+            ));
+        }
+        if let Some(spend) = &view.spend {
+            column = column.push(Box::new(
+                Text::new(spend)
+                    .with_id("tasks-run-spend")
+                    .with_role(TextRole::Caption),
+            ));
+        }
         if let Some(action) = &view.question {
             column = column.push(Box::new(
                 Banner::warning(ui::i18n::I18nManager::format(
