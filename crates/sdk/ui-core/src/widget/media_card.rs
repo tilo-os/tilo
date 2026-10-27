@@ -1062,6 +1062,28 @@ impl MediaCard {
         self
     }
 
+    /// Publish activation as a zero-argument effect, as
+    /// [`Button::on_effect`](crate::widget::Button::on_effect) does: the
+    /// closure keeps working and the card is discoverable and agent-driveable.
+    #[must_use]
+    pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
+        let label = self.title.clone().unwrap_or_default();
+        self.activation
+            .set_native(tilo_actions::OperationKind::Effect, &label, Box::new(f));
+        self
+    }
+
+    /// Publish activation as a transient view action (opening what the card
+    /// stands for), as [`Button::on_view`](crate::widget::Button::on_view)
+    /// does.
+    #[must_use]
+    pub fn on_view(mut self, f: impl FnMut() + 'static) -> Self {
+        let label = self.title.clone().unwrap_or_default();
+        self.activation
+            .set_native(tilo_actions::OperationKind::View, &label, Box::new(f));
+        self
+    }
+
     #[must_use]
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
@@ -1146,6 +1168,8 @@ impl crate::widget::ReservedShape for MediaCard {
 impl Widget for MediaCard {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations,
         dyn crate::widget::ReservedShape
     );
 
@@ -1354,6 +1378,27 @@ impl Widget for MediaCard {
 }
 
 activation_controls!(MediaCard, activation);
+
+impl crate::widget::ResourceOperations for MediaCard {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.activation.native_handlers()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.activation.start_native(op)
+    }
+}
+
+impl crate::resources::PublishesResources for MediaCard {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.activation.native_resources()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Grid geometry
