@@ -33,6 +33,7 @@ impl NotesApp {
                 &title,
             ))),
             NotesEffect::ImportMarkdownFile => Ok(Self::choose_markdown(cx)),
+            NotesEffect::ImportNotionExport => Ok(Self::choose_notion_export(cx)),
             NotesEffect::ImportMarkdownContent { title, body } => {
                 let title = title.trim();
                 let fallback = ui::i18n!("notes-imported-untitled");
@@ -260,6 +261,34 @@ impl NotesApp {
             ui::i18n!("notes-resource-link-open-failed")
         })?;
         Ok(Effected::done())
+    }
+
+    /// Add every page of the Notion export the person chooses, as one
+    /// action: one undo takes the whole import back.
+    fn choose_notion_export(cx: &mut Cx) -> Effected {
+        let request = PickRequest::open(
+            &ui::i18n!("notes-notion-import-title"),
+            &ui::i18n!("notes-import-accept"),
+        )
+        .filter(FileFilter::new(&ui::i18n!("notes-notion-files")).glob("*.zip"))
+        .filter(FileFilter::new(&ui::i18n!("notes-notion-json-files")).glob("*.json"))
+        .thread_name("notes-import-notion");
+        cx.choose_file(request, |app: &mut Self, chosen, cx| {
+            let Some(file) = chosen else {
+                return Ok(Effected::done());
+            };
+            let pages = crate::notion::pages(&file.bytes)?;
+            let imported = pages.len();
+            cx.submit(crate::notion::import_action(&pages));
+            app.notify(
+                ui::i18n::I18nManager::format(
+                    "notes-notion-imported",
+                    &[("pages", ui::i18n::ArgValue::from(imported.to_string()))],
+                ),
+                ui::widget::toast::ToastKind::Success,
+            );
+            Ok(Effected::done())
+        })
     }
 
     fn choose_markdown(cx: &mut Cx) -> Effected {

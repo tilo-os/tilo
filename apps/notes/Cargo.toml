@@ -58,6 +58,10 @@ tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Content addressing everywhere; the device store where the launcher hands
 # one over.
 tilo-content = { path = "../../crates/system/content", features = ["dir"] }
+# A Notion export is a zip of pages, read with the same bounded reader the
+# document codecs use: a page's pictures come out of the archive, not from
+# the disk the export was unpacked on.
+bounded-zip = { version = "0.1.0", path = "../../crates/doc/bounded-zip" }
 automerge.workspace = true
 base64.workspace = true
 tilo-automerge.workspace = true
@@ -76,6 +80,8 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
+# Builds the export archives the Notion importer is tested against.
+zip.workspace = true
 # Decides the changes Notes makes against its committed surface, as receivers do.
 collab-types = { path = "../../crates/collab/collab-types" }
 tempfile.workspace = true
