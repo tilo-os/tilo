@@ -276,6 +276,11 @@ impl Widget for ShellOverlayHost {
         // would otherwise put the dragged tab back where it came from.
         self.harvest_pending_group_topology();
         let ws_swapped = self.resync_workspace_content();
+        // The kept workspaces' woken apps, but not on the tick that switches:
+        // the next one does them, and the switch's own frame stays cheap.
+        if !ws_swapped {
+            self.parked_workspaces.service_woken(doc, path);
+        }
         self.follow_brought_forward();
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Before children update, so a promotion/restore this frame shows.

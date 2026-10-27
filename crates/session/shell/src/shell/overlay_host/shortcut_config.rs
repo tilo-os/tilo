@@ -24,7 +24,7 @@ impl ShellOverlayHost {
             return;
         }
         let mut config = self.shortcut_config.clone();
-        if let Err(error) = config.set(action, chord) {
+        if let Err(error) = config.set(action, chord.clone()) {
             self.shortcut_rebind_message = Some(match error {
                 settings_store::hardware::ShortcutConfigError::Conflict(other) => t_args(
                     "guide-rebind-in-use",
@@ -51,13 +51,13 @@ impl ShellOverlayHost {
             });
             return;
         }
-        match if self.desktop_controls.is_explicit() {
-            config
-                .validate()
-                .map_err(|error| std::io::Error::other(format!("{error:?}")))
-        } else {
-            config.save()
-        } {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("shortcut".into(), action.id().into());
+        arguments.insert(
+            "chord".into(),
+            crate::shell::keyboard_shortcuts::canonical_chord_text(&chord).into(),
+        );
+        match self.keep_shortcuts(&config, "rebind", &arguments) {
             Ok(()) => {
                 self.shortcut_config = config;
                 self.refresh_nested_shortcuts();
@@ -68,6 +68,29 @@ impl ShellOverlayHost {
                 self.shortcut_rebind_message = Some(t("guide-rebind-save-failed"));
             }
         }
+    }
+
+    /// Keep `config`, which the person's change made of the table, through
+    /// the `shortcuts` section's `action` with `arguments`: the change is
+    /// theirs, checked and recorded there like one made in Settings. A host
+    /// with explicit desktop controls follows no settings file and only
+    /// checks it.
+    pub(super) fn keep_shortcuts(
+        &self,
+        config: &settings_store::hardware::ShortcutConfig,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        if self.desktop_controls.is_explicit() {
+            return config.validate().map_err(|error| error.to_string());
+        }
+        crate::shell::settings_records::change(
+            &crate::shell::settings_records::address("settings.shortcuts", action),
+            arguments,
+            true,
+            &settings_store::InvokingAction::action(format!("shortcuts.{action}")),
+        )
+        .map_err(|error| format!("{error:?}"))
     }
 
     /// Replace the effective shortcut table after Settings has accepted a
@@ -162,13 +185,12 @@ impl ShellOverlayHost {
             });
             return;
         }
-        match if self.desktop_controls.is_explicit() {
-            candidate
-                .validate()
-                .map_err(|error| std::io::Error::other(format!("{error:?}")))
-        } else {
-            candidate.save()
-        } {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert(
+            "shortcuts".into(),
+            serde_json::json!([first.id(), second.id()]),
+        );
+        match self.keep_shortcuts(&candidate, "reset", &arguments) {
             Ok(()) => {
                 self.shortcut_config = candidate;
                 self.refresh_nested_shortcuts();

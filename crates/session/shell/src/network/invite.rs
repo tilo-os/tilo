@@ -452,6 +452,13 @@ pub fn accept_invite_into(
     Ok((local, room))
 }
 
+/// A workspace of its own for a caller that mints an invitation to show or
+/// redeem without one: a room this device never holds.
+#[cfg(test)]
+pub(crate) fn test_workspace(id: u64) -> Workspace {
+    Workspace::new(WorkspaceId(id), format!("ws-{id}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

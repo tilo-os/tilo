@@ -284,20 +284,25 @@ impl ShellOverlayHost {
     /// The session source for the workspace, and those of its agent
     /// `members` that are admitted (certified under their own key) and hold
     /// a live task subscription, so a queued task reaches them.
-    /// Ask agents the work the chrome handed them (a notification), each
-    /// as an issue in its workspace's Tasks. Whether one was asked.
+    /// Ask agents the work the chrome handed them (a notification, a query
+    /// from search), each as an issue in its workspace's Tasks, and open the
+    /// issue's page when the ask says so. An agent that is not running is
+    /// started, as the ask-agent chord starts it; the issue waits in the
+    /// tracker until it takes it. Whether one was asked.
     pub(super) fn pump_agent_asks(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
         let asks = chrome.borrow_mut().take_agent_asks();
         let mut asked = false;
+        let mut starts = Vec::new();
         for ask in asks {
             let Some(broker) = self.shortcut_triggers.broker() else {
                 break;
             };
-            let source = ActionSessionSource::new(broker);
             let room = ask.room.to_string();
+            let live = askable(&broker, &room, &ask.agent);
+            let source = ActionSessionSource::new(broker);
             let Some(identity_revision) = source.identity_revision(&room) else {
                 continue;
             };
@@ -308,18 +313,44 @@ impl ShellOverlayHost {
                 agent: ask.agent,
                 identity_revision,
             };
-            if self
-                .agent_actions
-                .entry(owner.clone())
-                .or_default()
-                .open_and_ask(source, &owner, (&ask.title, &ask.body))
-            {
+            let actions = self.agent_actions.entry(owner.clone()).or_default();
+            if !live && actions.start_once(Instant::now()) {
+                starts.push((ask.room, owner.agent.clone()));
+            }
+            if actions.open_and_ask(source, &owner, (&ask.title, &ask.body), ask.show) {
                 asked = true;
             } else {
-                tracing::warn!(agent = %owner.agent, "a notification could not be handed to the agent");
+                tracing::warn!(agent = %owner.agent, "work could not be handed to the agent");
             }
         }
+        for (room, agent) in starts {
+            self.start_agent_for(&room, &agent);
+        }
         asked
+    }
+
+    /// Start `agent` in the workspace of `room`, for work asked of it while
+    /// it was not running. Only someone who may administer the workspace
+    /// starts its agents; for anyone else the work waits for it.
+    fn start_agent_for(&self, room: &crate::shell::state::RoomId, agent: &str) {
+        let Some(workspace) = self.chrome.as_ref().and_then(|chrome| {
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room() == *room)
+                .cloned()
+        }) else {
+            return;
+        };
+        match crate::shell::launcher::launch_workspace_agent(agent, &workspace) {
+            Ok(_) => tracing::info!(%agent, "started the agent to take the work asked of it"),
+            Err(error) => {
+                tracing::info!(%agent, error = %error.user_message(), "the agent asked for work could not be started");
+            }
+        }
     }
 
     fn live_agents(

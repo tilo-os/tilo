@@ -105,6 +105,7 @@ fn picked(picture: bool) -> (Doc, Submission) {
                 frames: vec![8_000, 40_000, 9_000, 52_000],
                 budget: 16_000,
             }),
+            recording: None,
         },
     };
     apply_as(&mut doc, "visitor:one", submit_feedback(&submission)).unwrap();

@@ -1259,8 +1259,42 @@ pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
     }
 }
 
+/// The window's search finds in the source. The editor is drawn by the app
+/// rather than being a widget in its tree, so the offer the bar looks for is
+/// made here, over the editor: until it was, `Findable` existed and nothing
+/// could reach it, and Ctrl+F opened the platform search over a file it could
+/// not read (`APP-typst-01`).
+impl ui::widget::Findable for TypstApp {
+    fn find(
+        &mut self,
+        query: &str,
+        options: ui::widget::FindOptions,
+    ) -> Vec<ui::widget::FindMatch> {
+        let found = ui::widget::Findable::find(&mut self.editor, query, options);
+        self.dirty = true;
+        found
+    }
+
+    fn reveal(&mut self, index: usize) {
+        ui::widget::Findable::reveal(&mut self.editor, index);
+        self.dirty = true;
+    }
+
+    fn content_revision(&self) -> u64 {
+        ui::widget::Findable::content_revision(&self.editor)
+    }
+
+    fn clear_find(&mut self) {
+        ui::widget::Findable::clear_find(&mut self.editor);
+        self.dirty = true;
+    }
+}
+
 impl Widget for TypstApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::Findable,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         for child in self.children_mut() {

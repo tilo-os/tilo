@@ -220,7 +220,9 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(family["tool"], "nextest")
                 self.assertEqual(family["wrapper"], ["bash", "tools/ci/t-nextest.sh"])
                 self.assertIn("tools/ci/ci_test_timings.py", family["inputs"])
-                self.assertIn("docs/measurements/test-timings.json", family["inputs"])
+                # The job only records; the baseline is read by a comparison, so editing it
+                # must not re-key every test job.
+                self.assertNotIn("docs/measurements/test-timings.json", family["inputs"])
 
     def test_the_wrapper_asks_libtest_for_its_events_and_records_them(self):
         wrapper = (ROOT / "tools/ci/t-nextest.sh").read_text(encoding="utf-8")

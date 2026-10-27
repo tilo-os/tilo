@@ -12904,7 +12904,7 @@ pub fn run() {
                 fields_withheld: receipts_only && !speech_field_needed,
             },
             frame_builder.focused_ime_field(test_control_ctx.focus),
-            test_control_ctx.focus.map(u64::from),
+            frame_builder.native_field_identity(test_control_ctx.focus),
         );
         let shell_field = owner.as_ref().map(|(field, _)| *field);
         let owner_id = owner.map(|(_, id)| id);

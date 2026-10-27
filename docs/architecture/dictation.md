@@ -60,9 +60,11 @@ is for the trusted local speech service; it is not an unprivileged socket operat
   produces no edit. Nothing enters clipboard history or emoji recents.
 - The target includes Wayland field and surface object identities, the field's
   committed edit revision, and the input-method owner. Enable/disable, surrounding
-  text, change-cause, content-type and changed caret geometry invalidate it.
-  Identical caret updates and empty commits keep the target. No surrounding-text
-  strings are retained.
+  text, change-cause and changed content-type invalidate it. Foreign fields also
+  invalidate on changed caret geometry. The native field proxy has its own owner
+  identity and keyed text/selection stamp, so its caret moving with layout,
+  reflow or a window resize keeps the original consent. Identical caret updates
+  and empty commits keep the target. No surrounding-text strings are retained.
 - Any keyboard-focus change immediately drops the draft, even away and back
   before the next recognition result. Changing input-method ownership does too.
 - The native service tick checks liveness and drives the owned worker actor.
@@ -117,9 +119,9 @@ real Notes component through its shared rich-text field and owning action
 dispatcher: selected-range replacement preserves the surrounding text, one
 system undo restores the selection's prior text, and redo reapplies the result.
 This does not prove microphone capture or universal app/accessibility routing.
-The native host now supplies a layout-generation-bearing widget identity or
-the palette's keyboard ownership to that bridge. An owner change cancels the
-session immediately and resets its text-input enable cycle, including switches
+The native host now supplies a focused-widget identity, which survives layout
+rebuilds of the same widget, or the palette's keyboard ownership to that
+bridge. An owner change cancels the session immediately and resets its text-input enable cycle, including switches
 between two fields with identical caret geometry. A wire journey proves that
 late results from the old session cannot reach the successor and that a fresh
 session can commit there. While a dictation target exists, the native service tick

@@ -95,6 +95,13 @@ Each adapter reads what a benchmark already prints and emits records through
   guests' p99 join and chat delivery, the host's peak resident memory and its
   CPU during the hold. A run in which a guest failed or did not join is not a
   measurement and fails the adapter.
+- `room-degraded RUN_JSON...`: the three runs of
+  `room_capacity.py degraded` (one file per run, each holding the bench's
+  report), as `hosting.room.<kpi>.g<guests>.<kind>` — `plain` for the
+  reference run with nothing else on the machine, `throttled` for the run at
+  the declared capacity under stolen CPU and a slower link, `capped` for the
+  run past the room's guest cap. A run that failed or did not join is not a
+  measurement and fails the adapter.
 - `browser-qualification REPORT_JSON`: the browser runtime qualification's
   report (`scripts/perf/browser_qualification.mjs`). Each sample list becomes
   one `browser.*` KPI (`BROWSER_KPIS`): every load, open, activation, demo
@@ -599,6 +606,41 @@ def room_load(reports: list[dict[str, Any]], env: dict[str, Any]) -> list[record
             for kpi, (unit, read) in ROOM_LOAD_KPIS.items()]
 
 
+def room_degraded(runs: list[dict[str, Any]], env: dict[str, Any]) -> list[record.Record]:
+    """Records for the degraded probe's runs, one series per kind of run.
+
+    The three runs are not samples of one thing — one had nothing else on the
+    machine, one at the declared capacity, one past the cap — so each is its
+    own KPI at n=1, and the service level is the probe's verdict
+    (`room_capacity.py summarize --degraded`) rather than these numbers.
+    """
+    records: list[record.Record] = []
+    for run in runs:
+        report = run.get("report")
+        if not report:
+            raise ValueError(f"{run.get('name', 'a run')} has no report: {run.get('stopped') or run.get('exit')}")
+        guests = int(report["config"]["guests"])
+        failures = {**report.get("failures", {}), **report.get("spectators", {}).get("failures", {})}
+        if failures or int(report["joined"]) != guests or int(report["chat_rx"]) == 0:
+            raise ValueError(f"{run['name']}: {report['joined']} of {guests} guests joined, "
+                             f"{report['chat_rx']} chat changes delivered, failures {failures}")
+        # The degraded run is the one series a budget holds to the service level, so it is
+        # named for what makes it harder (`throttled`), not for the plan's label.
+        kind = "throttled" if run["kind"] == "degraded" else run["kind"]
+        meta = {**env.get("meta", {}), "guests": str(guests), "runs": "1", "kind": kind,
+                "room": run["name"], "rooms": str(report["config"]["rooms"]),
+                "host_threads": str(report["config"].get("host_threads") or "all"),
+                "machine_cores": str(report["host"]["machine_cores"])}
+        if "degraded" in run:
+            meta["stolen_cpu_percent"] = str(run["degraded"]["stolen_cpu_percent"])
+            meta["throttled_kbit_s"] = str(min(run["degraded"]["throttled_kbit_s"]))
+        base = {name: value for name, value in env.items() if name != "meta"}
+        for kpi, (unit, read) in ROOM_LOAD_KPIS.items():
+            records.append(record.from_samples(f"{kpi}.g{guests}.{kind}", unit, [read(report)],
+                                               meta=meta, **base))
+    return records
+
+
 # The browser runtime qualification's report samples (scripts/perf/browser_qualification.mjs)
 # and the KPI each becomes, with its unit.
 BROWSER_KPIS = {
@@ -773,6 +815,9 @@ def main(argv: list[str] | None = None) -> int:
     rooms = commands.add_parser("room-load", help="records from tilo-room-load bench reports")
     rooms.add_argument("--env-json", required=True, type=Path)
     rooms.add_argument("reports", nargs="+", type=Path)
+    degraded = commands.add_parser("room-degraded", help="records from the degraded room probe's runs")
+    degraded.add_argument("--env-json", required=True, type=Path)
+    degraded.add_argument("runs", nargs="+", type=Path)
     browser = commands.add_parser("browser-qualification",
                                   help="records from scripts/perf/browser_qualification.mjs's report")
     browser.add_argument("--env-json", required=True, type=Path)
@@ -796,6 +841,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{item.kpi}: p50 ${item.p50:.6f}, max ${item.max:.6f} "
                           f"({item.meta['collaborators_per_vm']} collaborators per VM, "
                           f"bound by {item.meta['binding']})", file=sys.stderr)
+        elif args.command == "room-degraded":
+            records = room_degraded([json.loads(path.read_text(encoding="utf-8")) for path in args.runs], env)
         elif args.command == "room-load":
             records = room_load([json.loads(path.read_text(encoding="utf-8")) for path in args.reports], env)
         elif args.command == "fs-gate":

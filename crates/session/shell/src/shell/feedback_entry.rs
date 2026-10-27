@@ -202,6 +202,7 @@ mod tests {
             app: "so.tilo.notes".into(),
             name: "Notes".into(),
             control: None,
+            record: None,
         }
     }
 

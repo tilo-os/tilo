@@ -4,7 +4,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 builder="$repo_root/dist/rpm/build-rpm.sh"
-work=$(mktemp -d)
+work=$(realpath "$(mktemp -d)")
 trap 'rm -rf -- "$work"' EXIT
 
 # Exercise the real lookup without compiling or entering the staging path:
@@ -36,14 +36,10 @@ grep -Fqx "missing $override_dir/shell — run without --no-cargo" <<<"$output"
 
 # Keep this check build-free: the regression happens after a successful Cargo
 # build, and the packaging script's contract is visible in its target lookup.
-grep -Fqx 'target_dir=${CARGO_TARGET_DIR:-$repo_root/target}' \
-    <(sed -n '1,85p' "$builder")
-grep -Fqx '[[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir' \
-    <(sed -n '1,85p' "$builder")
-grep -Fqx 'target_dir=$(realpath -m "$target_dir")' \
-    <(sed -n '1,85p' "$builder")
-grep -Fqx 'rel=${TILO_BIN_DIR:-$target_dir/release}' \
-    <(sed -n '1,85p' "$builder")
+grep -Fqx 'target_dir=${CARGO_TARGET_DIR:-$repo_root/target}' "$builder"
+grep -Fqx '[[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir' "$builder"
+grep -Fqx 'target_dir=$(realpath -m "$target_dir")' "$builder"
+grep -Fqx 'rel=${TILO_BIN_DIR:-$target_dir/release}' "$builder"
 if grep -Fq 'rel=${TILO_BIN_DIR:-$repo_root/target/release}' "$builder"; then
     echo "RPM builder still ignores CARGO_TARGET_DIR" >&2
     exit 1

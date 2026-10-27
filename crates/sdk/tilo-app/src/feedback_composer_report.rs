@@ -10,11 +10,13 @@ use std::task::{Context, Poll, Waker};
 use crate::feedback::report::{
     Exposure, ModelText, Redaction, ReportReview, model_prompt, model_proposals,
 };
-use crate::feedback::{Composer, ModelCheck, ReportWords};
+use crate::feedback::{Composer, ModelCheck, RecordingScope, ReportWords};
 use crate::models::{CompletionFuture, Content, Message, ModelRequest, Models, Role, ToolChoice};
 use crate::prelude::*;
 
-use super::{FeedbackDraft, FeedbackEffect, Presentation, group};
+use super::{
+    FeedbackDraft, FeedbackEffect, Presentation, group, recording_included, recording_offer,
+};
 
 /// What the sheet shows of the review; built again whenever it changes.
 #[derive(Clone, Debug, PartialEq)]
@@ -23,6 +25,7 @@ pub(super) struct ReviewShown {
     check: ModelCheck,
     sent: bool,
     picture: Option<Vec<u8>>,
+    recording: Option<RecordingScope>,
 }
 
 impl ReviewShown {
@@ -38,6 +41,9 @@ impl ReviewShown {
             picture: composer
                 .report_picture()
                 .map(|picture| picture.png().to_vec()),
+            recording: composer
+                .report_recording()
+                .map(crate::feedback::Recorded::scope),
         })
     }
 }
@@ -60,6 +66,7 @@ pub(super) fn words(
     draft: &FeedbackDraft,
     presentation: &Presentation,
     picks: usize,
+    recording: bool,
 ) -> ReportWords {
     ReportWords {
         summary: draft.issue.clone(),
@@ -70,6 +77,7 @@ pub(super) fn words(
             .map(LocalState::get)
             .collect(),
         slow: draft.slow,
+        recording,
     }
 }
 
@@ -112,6 +120,7 @@ pub(super) fn sheet(
         .push(Box::new(
             cx.checkbox("feedback-slow", FeedbackDraft::paths().slow),
         ))
+        .push(recording_offer(cx, &presentation.offer))
         .push(Box::new(cx.effect_button(
             "feedback-report-check",
             &FeedbackEffect::Review,
@@ -159,6 +168,9 @@ fn outgoing(cx: &ViewCx<FeedbackDraft>, shown: Option<&ReviewShown>) -> Element 
             .with_arg("value", review.feedback.plain())
             .with_id("feedback-preview"),
     ));
+    if let Some(scope) = &shown.recording {
+        part = part.push(recording_included(scope));
+    }
     if !review.redactions.is_empty() {
         part = part.push(Box::new(
             Text::new("feedback-report-hidden").with_role(TextRole::Subheading),

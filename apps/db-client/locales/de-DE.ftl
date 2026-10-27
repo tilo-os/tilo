@@ -4,6 +4,7 @@ db-run-query = Abfrage ausführen
 db-cancel-query = Abfrage abbrechen
 db-copy-row = Zeile kopieren
 db-copy-result = Ergebnis kopieren
+db-export-csv = Als CSV exportieren
 db-view-switcher = Ansicht
 
 ## Tabs

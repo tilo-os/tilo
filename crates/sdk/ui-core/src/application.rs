@@ -1626,6 +1626,12 @@ impl AppComponent {
     pub fn record(&self) -> &RecordCheckout {
         self.context.record()
     }
+    /// The content store this component reads its record's content from: the
+    /// host's store joined to the lane this window keeps, so what the window
+    /// asks for is its own to ask.
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        self.context.content().cloned()
+    }
     /// # Errors
     /// A component can be mounted once and a closed lifetime cannot be reopened.
     pub fn mount(

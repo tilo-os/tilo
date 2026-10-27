@@ -29,6 +29,17 @@ pub enum BackupError {
     InvalidSnapshot(String),
     Integrity(String),
     Json(serde_json::Error),
+    /// The person stopped the job. Whatever it was writing was removed, so
+    /// the repository holds exactly what it held before.
+    Stopped,
+}
+
+impl BackupError {
+    /// Whether the person stopped the job, rather than it failing.
+    #[must_use]
+    pub const fn is_stopped(&self) -> bool {
+        matches!(self, Self::Stopped)
+    }
 }
 
 impl fmt::Display for BackupError {
@@ -40,6 +51,7 @@ impl fmt::Display for BackupError {
             | Self::InvalidSnapshot(s)
             | Self::Integrity(s) => f.write_str(s),
             Self::Json(e) => write!(f, "invalid backup metadata: {e}"),
+            Self::Stopped => f.write_str("Stopped before it finished."),
         }
     }
 }
@@ -59,6 +71,42 @@ impl From<serde_json::Error> for BackupError {
 }
 
 pub type Result<T> = std::result::Result<T, BackupError>;
+
+/// Asked between units of work whether the person stopped the job.
+///
+/// A stopped job removes whatever it was writing: a snapshot never appears in
+/// the repository half-copied, and a restore never publishes a partly filled
+/// folder. [`Stop::never`] is a job no one can stop.
+#[derive(Clone, Copy, Default)]
+pub struct Stop<'a>(Option<&'a dyn Fn() -> bool>);
+
+impl<'a> Stop<'a> {
+    /// A job that runs to the end whatever the person presses.
+    #[must_use]
+    pub const fn never() -> Self {
+        Self(None)
+    }
+
+    /// A job that ends when `asked` answers yes.
+    #[must_use]
+    pub fn on(asked: &'a dyn Fn() -> bool) -> Self {
+        Self(Some(asked))
+    }
+
+    /// Whether the person stopped the job.
+    #[must_use]
+    pub fn is_stopped(&self) -> bool {
+        self.0.is_some_and(|asked| asked())
+    }
+
+    /// The error a stopped job ends with, or `Ok` when it is still wanted.
+    fn checkpoint(&self) -> Result<()> {
+        if self.is_stopped() {
+            return Err(BackupError::Stopped);
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -97,6 +145,10 @@ pub struct Progress {
     pub files: u64,
     pub bytes: u64,
     pub current: PathBuf,
+    /// How many files the job has to do in all, where it knows the whole
+    /// extent: a verification reads a stored manifest, a backup only knows
+    /// what it has copied so far.
+    pub of: Option<u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -141,13 +193,18 @@ pub fn validate_paths(source: &Path, destination: &Path) -> Result<(PathBuf, Pat
 
 /// Create a checksummed snapshot and report progress after each copied file.
 ///
+/// `stop` is asked between files: a stopped job removes its staging directory,
+/// so the repository never holds a snapshot it could not finish.
+///
 /// # Errors
 ///
-/// Returns an error when the paths are unsafe, a source entry cannot be read
-/// or represented safely, or the snapshot data or manifest cannot be written.
+/// Returns [`BackupError::Stopped`] when the person stopped it, and otherwise
+/// an error when the paths are unsafe, a source entry cannot be read or
+/// represented safely, or the snapshot data or manifest cannot be written.
 pub fn create_snapshot(
     source: &Path,
     destination: &Path,
+    stop: Stop<'_>,
     mut on_progress: impl FnMut(&Progress),
 ) -> Result<BackupManifest> {
     let (source, destination) = validate_paths(source, destination)?;
@@ -173,7 +230,7 @@ pub fn create_snapshot(
     let data = stage.join("data");
     fs::create_dir(&data)?;
 
-    let result = build_snapshot(&source, &data, &id, now, &mut on_progress)
+    let result = build_snapshot(&source, &data, &id, now, stop, &mut on_progress)
         .and_then(|manifest| finish_snapshot(&stage, &final_path, &manifest).map(|()| manifest));
     if result.is_err() {
         let _ = fs::remove_dir_all(&stage);
@@ -186,6 +243,7 @@ fn build_snapshot(
     data: &Path,
     id: &str,
     now: u64,
+    stop: Stop<'_>,
     on_progress: &mut impl FnMut(&Progress),
 ) -> Result<BackupManifest> {
     let mut entries = Vec::new();
@@ -195,6 +253,7 @@ fn build_snapshot(
         .min_depth(1)
         .sort_by_file_name()
     {
+        stop.checkpoint()?;
         let item = item.map_err(|e| BackupError::Io(io::Error::other(e)))?;
         let relative = item.path().strip_prefix(source).map_err(|_| {
             BackupError::InvalidSource("A source entry escaped the selected folder".into())
@@ -307,19 +366,24 @@ type Period = fn(u64) -> i64;
 /// hold a snapshot, the newest one in it (UTC), and always the newest
 /// snapshot of all, so a policy of zeros never empties the repository.
 pub fn retained(manifests: &[BackupManifest], policy: &RetentionPolicy) -> BTreeSet<String> {
-    let mut newest_first: Vec<&BackupManifest> = manifests.iter().collect();
+    let stored: Vec<(String, u64)> = manifests
+        .iter()
+        .map(|manifest| (manifest.id.clone(), manifest.created_unix_seconds))
+        .collect();
+    retained_of(&stored, policy)
+}
+
+/// The same answer for snapshots known only by id and the second they were
+/// taken, which is what the surface holds: the retention page can say which
+/// snapshots a policy would remove before a backup removes them.
+pub fn retained_of(stored: &[(String, u64)], policy: &RetentionPolicy) -> BTreeSet<String> {
+    let mut newest_first: Vec<&(String, u64)> = stored.iter().collect();
     // Two snapshots of one second are told apart by their id's suffix, the
     // later one longer or greater.
-    newest_first.sort_by_key(|manifest| {
-        std::cmp::Reverse((
-            manifest.created_unix_seconds,
-            manifest.id.len(),
-            manifest.id.clone(),
-        ))
-    });
+    newest_first.sort_by_key(|(id, created)| std::cmp::Reverse((*created, id.len(), id.clone())));
     let mut keep = BTreeSet::new();
-    if let Some(newest) = newest_first.first() {
-        keep.insert(newest.id.clone());
+    if let Some((newest, _)) = newest_first.first() {
+        keep.insert(newest.clone());
     }
     let periods: [(u32, Period); 4] = [
         (policy.hourly, |secs| (secs / 3_600) as i64),
@@ -331,12 +395,12 @@ pub fn retained(manifests: &[BackupManifest], policy: &RetentionPolicy) -> BTree
     ];
     for (count, period) in periods {
         let mut seen = BTreeSet::new();
-        for manifest in &newest_first {
+        for (id, created) in &newest_first {
             if seen.len() >= count as usize {
                 break;
             }
-            if seen.insert(period(manifest.created_unix_seconds)) {
-                keep.insert(manifest.id.clone());
+            if seen.insert(period(*created)) {
+                keep.insert(id.clone());
             }
         }
     }
@@ -390,19 +454,37 @@ pub fn prune_snapshots(destination: &Path, policy: &RetentionPolicy) -> Result<V
     Ok(removed)
 }
 
-/// Verify the metadata, structure, sizes, and checksums of a stored snapshot.
+/// Verify the metadata, structure, sizes, and checksums of a stored snapshot,
+/// reporting how many of its files have been checked.
 ///
 /// # Errors
 ///
-/// Returns an error when the snapshot identifier or manifest is invalid, its
-/// contents cannot be read, or any stored entry fails integrity validation.
-pub fn verify_snapshot(destination: &Path, id: &str) -> Result<Verification> {
+/// Returns [`BackupError::Stopped`] when the person stopped it, and otherwise
+/// an error when the snapshot identifier or manifest is invalid, its contents
+/// cannot be read, or any stored entry fails integrity validation.
+pub fn verify_snapshot(
+    destination: &Path,
+    id: &str,
+    stop: Stop<'_>,
+    mut on_progress: impl FnMut(&Progress),
+) -> Result<Verification> {
     validate_id(id)?;
     let root = repository_path(destination).join(SNAPSHOTS_DIR).join(id);
     reject_symlink(&root, "Snapshot")?;
     let manifest = read_manifest(&root)?;
     let mut result = Verification::default();
+    let files_in_all = manifest
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, EntryKind::File))
+        .count() as u64;
+    let mut progress = Progress {
+        of: Some(files_in_all),
+        ..Progress::default()
+    };
+    on_progress(&progress);
     for entry in &manifest.entries {
+        stop.checkpoint()?;
         validate_relative(&entry.path)?;
         ensure_no_symlink_ancestors(&root.join("data"), &entry.path)?;
         let path = root.join("data").join(&entry.path);
@@ -422,6 +504,10 @@ pub fn verify_snapshot(destination: &Path, id: &str) -> Result<Verification> {
                 }
                 result.files = result.files.saturating_add(1);
                 result.bytes = result.bytes.saturating_add(size);
+                progress.files = result.files;
+                progress.bytes = result.bytes;
+                progress.current.clone_from(&entry.path);
+                on_progress(&progress);
             }
             _ => {}
         }
@@ -435,6 +521,7 @@ pub fn restore_snapshot(
     id: &str,
     restore_to: &Path,
     overwrite: bool,
+    stop: Stop<'_>,
     mut on_progress: impl FnMut(&Progress),
 ) -> Result<Verification> {
     validate_id(id)?;
@@ -444,7 +531,7 @@ pub fn restore_snapshot(
     let repo = repository_path(destination).canonicalize()?;
     let restore_to = prepare_restore_target(restore_to, &repo, overwrite)?;
     let stage = create_restore_stage(&restore_to)?;
-    let result = restore_into_stage(&root, &manifest, &stage, &mut on_progress);
+    let result = restore_into_stage(&root, &manifest, &stage, stop, &mut on_progress);
     match result {
         Ok(verification) => match publish_restored_snapshot(&stage, &restore_to, overwrite) {
             Ok(()) => Ok(verification),
@@ -519,10 +606,21 @@ fn restore_into_stage(
     root: &Path,
     manifest: &BackupManifest,
     stage: &Path,
+    stop: Stop<'_>,
     on_progress: &mut impl FnMut(&Progress),
 ) -> Result<Verification> {
-    let mut progress = Progress::default();
+    let files_in_all = manifest
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, EntryKind::File))
+        .count() as u64;
+    let mut progress = Progress {
+        of: Some(files_in_all),
+        ..Progress::default()
+    };
+    on_progress(&progress);
     for entry in &manifest.entries {
+        stop.checkpoint()?;
         validate_relative(&entry.path)?;
         ensure_no_symlink_ancestors(stage, &entry.path)?;
         ensure_no_symlink_ancestors(&root.join("data"), &entry.path)?;
@@ -919,10 +1017,17 @@ mod tests {
         let collision = format!("report.tilo-restore-{}", std::process::id());
         fs::write(source.join(&collision), b"first file").unwrap();
         fs::write(source.join("report.txt"), b"second file").unwrap();
-        let manifest = create_snapshot(&source, &destination, |_| {}).unwrap();
+        let manifest = create_snapshot(&source, &destination, Stop::never(), |_| {}).unwrap();
 
-        let result =
-            restore_snapshot(&destination, &manifest.id, &restored, false, |_| {}).unwrap();
+        let result = restore_snapshot(
+            &destination,
+            &manifest.id,
+            &restored,
+            false,
+            Stop::never(),
+            |_| {},
+        )
+        .unwrap();
 
         assert_eq!(result.files, 2);
         assert_eq!(fs::read(restored.join(collision)).unwrap(), b"first file");
@@ -941,7 +1046,10 @@ mod tests {
         fs::write(source.join("hello.txt"), b"hello backup").unwrap();
         fs::write(source.join("notes/today.txt"), b"ship it").unwrap();
         let mut updates = Vec::new();
-        let manifest = create_snapshot(&source, &destination, |p| updates.push(p.clone())).unwrap();
+        let manifest = create_snapshot(&source, &destination, Stop::never(), |p| {
+            updates.push(p.clone());
+        })
+        .unwrap();
         assert_eq!(manifest.files, 2);
         assert_eq!(updates.last().unwrap().files, 2);
         assert_eq!(
@@ -949,13 +1057,22 @@ mod tests {
             vec![manifest.clone()]
         );
         assert_eq!(
-            verify_snapshot(&destination, &manifest.id).unwrap().files,
+            verify_snapshot(&destination, &manifest.id, Stop::never(), |_| {})
+                .unwrap()
+                .files,
             2
         );
 
         let restored = temp.path().join("restored");
-        let result =
-            restore_snapshot(&destination, &manifest.id, &restored, false, |_| {}).unwrap();
+        let result = restore_snapshot(
+            &destination,
+            &manifest.id,
+            &restored,
+            false,
+            Stop::never(),
+            |_| {},
+        )
+        .unwrap();
         assert_eq!(result.files, 2);
         assert_eq!(
             fs::read(restored.join("hello.txt")).unwrap(),
@@ -997,18 +1114,28 @@ mod tests {
         let destination = temp.path().join("destination");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("important"), b"original").unwrap();
-        let manifest = create_snapshot(&source, &destination, |_| {}).unwrap();
+        let manifest = create_snapshot(&source, &destination, Stop::never(), |_| {}).unwrap();
         let stored = repository_path(&destination)
             .join(SNAPSHOTS_DIR)
             .join(&manifest.id)
             .join("data/important");
         fs::write(stored, b"tampered").unwrap();
         assert!(matches!(
-            verify_snapshot(&destination, &manifest.id),
+            verify_snapshot(&destination, &manifest.id, Stop::never(), |_| {}),
             Err(BackupError::Integrity(_))
         ));
         let restored = temp.path().join("restored");
-        assert!(restore_snapshot(&destination, &manifest.id, &restored, false, |_| {}).is_err());
+        assert!(
+            restore_snapshot(
+                &destination,
+                &manifest.id,
+                &restored,
+                false,
+                Stop::never(),
+                |_| {}
+            )
+            .is_err()
+        );
         assert!(!restored.join("important").exists());
         assert!(
             !restored.exists(),
@@ -1023,11 +1150,18 @@ mod tests {
         let destination = temp.path().join("destination");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("important"), b"original").unwrap();
-        let manifest = create_snapshot(&source, &destination, |_| {}).unwrap();
+        let manifest = create_snapshot(&source, &destination, Stop::never(), |_| {}).unwrap();
         let inside_repo = repository_path(&destination).join("recovery");
 
         assert!(matches!(
-            restore_snapshot(&destination, &manifest.id, &inside_repo, false, |_| {}),
+            restore_snapshot(
+                &destination,
+                &manifest.id,
+                &inside_repo,
+                false,
+                Stop::never(),
+                |_| {}
+            ),
             Err(BackupError::UnsafeDestination(_))
         ));
         assert!(
@@ -1046,9 +1180,16 @@ mod tests {
         fs::create_dir_all(&restored).unwrap();
         fs::write(source.join("file"), b"new").unwrap();
         fs::write(restored.join("file"), b"existing").unwrap();
-        let manifest = create_snapshot(&source, &destination, |_| {}).unwrap();
+        let manifest = create_snapshot(&source, &destination, Stop::never(), |_| {}).unwrap();
         assert!(matches!(
-            restore_snapshot(&destination, &manifest.id, &restored, false, |_| {}),
+            restore_snapshot(
+                &destination,
+                &manifest.id,
+                &restored,
+                false,
+                Stop::never(),
+                |_| {}
+            ),
             Err(BackupError::UnsafeDestination(_))
         ));
         assert_eq!(fs::read(restored.join("file")).unwrap(), b"existing");
@@ -1099,7 +1240,7 @@ mod tests {
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("secret"), b"must not be copied").unwrap();
         std::os::unix::fs::symlink(&outside, source.join("outside-link")).unwrap();
-        let manifest = create_snapshot(&source, &destination, |_| {}).unwrap();
+        let manifest = create_snapshot(&source, &destination, Stop::never(), |_| {}).unwrap();
         assert_eq!(manifest.files, 0, "the link target was not traversed");
         let entry = manifest
             .entries
@@ -1108,7 +1249,15 @@ mod tests {
             .unwrap();
         assert_eq!(entry.kind, EntryKind::Symlink);
         let restored = temp.path().join("restored");
-        restore_snapshot(&destination, &manifest.id, &restored, false, |_| {}).unwrap();
+        restore_snapshot(
+            &destination,
+            &manifest.id,
+            &restored,
+            false,
+            Stop::never(),
+            |_| {},
+        )
+        .unwrap();
         assert_eq!(
             fs::read_link(restored.join("outside-link")).unwrap(),
             outside
@@ -1127,9 +1276,17 @@ mod tests {
         fs::write(source.join("folder/file"), b"safe").unwrap();
         fs::create_dir_all(&restore).unwrap();
         fs::create_dir_all(&outside).unwrap();
-        let manifest = create_snapshot(&source, &destination, |_| {}).unwrap();
+        let manifest = create_snapshot(&source, &destination, Stop::never(), |_| {}).unwrap();
         std::os::unix::fs::symlink(&outside, restore.join("folder")).unwrap();
-        restore_snapshot(&destination, &manifest.id, &restore, true, |_| {}).unwrap();
+        restore_snapshot(
+            &destination,
+            &manifest.id,
+            &restore,
+            true,
+            Stop::never(),
+            |_| {},
+        )
+        .unwrap();
         assert!(!outside.join("file").exists());
         assert_eq!(fs::read(restore.join("folder/file")).unwrap(), b"safe");
     }
@@ -1146,9 +1303,92 @@ mod tests {
         fs::create_dir_all(&elsewhere).unwrap();
         std::os::unix::fs::symlink(&elsewhere, repository_path(&destination)).unwrap();
         assert!(matches!(
-            create_snapshot(&source, &destination, |_| {}),
+            create_snapshot(&source, &destination, Stop::never(), |_| {}),
             Err(BackupError::UnsafeDestination(_))
         ));
         assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
+    }
+
+    /// Stopping a backup leaves the repository exactly as it was: no
+    /// snapshot, and no staging directory either, so a stopped job can never
+    /// look like a finished one.
+    #[test]
+    fn a_stopped_backup_leaves_no_snapshot_behind() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(&source).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(source.join(name), b"contents").unwrap();
+        }
+        let copied = std::cell::Cell::new(0_u64);
+        let asked = || copied.get() >= 1;
+        let result = create_snapshot(&source, &destination, Stop::on(&asked), |step| {
+            copied.set(step.files);
+        });
+        assert!(matches!(result, Err(BackupError::Stopped)), "{result:?}");
+        assert!(list_snapshots(&destination).unwrap().is_empty());
+        let staging: Vec<_> = fs::read_dir(repository_path(&destination).join(SNAPSHOTS_DIR))
+            .unwrap()
+            .map(|entry| entry.expect("a staging entry"))
+            .collect();
+        assert!(
+            staging.is_empty(),
+            "a stopped snapshot keeps no staging folder"
+        );
+    }
+
+    /// A verification knows how many files the snapshot holds, so it reports
+    /// how far through it is rather than a phase with no number.
+    #[test]
+    fn verification_reports_every_file_it_checks() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(&source).unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(source.join(name), b"contents").unwrap();
+        }
+        let manifest = create_snapshot(&source, &destination, Stop::never(), |_| {}).unwrap();
+        let mut updates = Vec::new();
+        verify_snapshot(&destination, &manifest.id, Stop::never(), |step| {
+            updates.push((step.files, step.of));
+        })
+        .unwrap();
+        assert_eq!(updates.first().map(|(_, of)| *of), Some(Some(3)));
+        assert_eq!(
+            updates.iter().map(|(files, _)| *files).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+    }
+
+    /// The retention page's preview answers with the same rule the pruner
+    /// uses, so what it names is what a backup would remove.
+    #[test]
+    fn the_preview_keeps_what_pruning_keeps() {
+        const HOUR: u64 = 3_600;
+        const DAY: u64 = 24 * HOUR;
+        let manifests = [
+            manifest_at("newest", 2 * DAY + 10 * HOUR + 100),
+            // The same hour as `newest`: one hourly snapshot is kept.
+            manifest_at("earlier", 2 * DAY + 10 * HOUR + 50),
+            // The day before: two dailies are kept, so this stays.
+            manifest_at("yesterday", DAY + 9 * HOUR),
+        ];
+        let policy = RetentionPolicy {
+            hourly: 1,
+            daily: 2,
+            weekly: 0,
+            monthly: 0,
+        };
+        let stored: Vec<(String, u64)> = manifests
+            .iter()
+            .map(|manifest| (manifest.id.clone(), manifest.created_unix_seconds))
+            .collect();
+        assert_eq!(retained_of(&stored, &policy), retained(&manifests, &policy));
+        assert_eq!(
+            retained(&manifests, &policy),
+            BTreeSet::from(["newest".to_owned(), "yesterday".to_owned()])
+        );
     }
 }

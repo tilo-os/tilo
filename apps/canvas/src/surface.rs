@@ -1725,8 +1725,16 @@ impl CanvasSurface {
             ("?", false, _, false) | ("/", false, true, false) => {
                 return crate::panels::files::window_key(&self.tools, "?", modifiers);
             }
-            ("+" | "=", _, _, false) => self.zoom_by(ZOOM_STEP, None),
-            ("-" | "_", _, _, false) => self.zoom_by(1.0 / ZOOM_STEP, None),
+            // The zoom keys: `=`/`+` and `-`/`_` (a keyboard reports `+` and
+            // `_` as Shift), and the command-key chord on its own. Alt and a
+            // chord carrying Shift along with the command key are somebody
+            // else's, and are left alone (`APP-canvas-01`).
+            ("=" | "+", false, _, false) | ("+" | "=", true, false, false) => {
+                self.zoom_by(ZOOM_STEP, None);
+            }
+            ("-" | "_", false, _, false) | ("-" | "_", true, false, false) => {
+                self.zoom_by(1.0 / ZOOM_STEP, None);
+            }
             ("0", true, _, false) | ("!" | "1", false, true, false) => self.zoom_to_fit(),
             ("1", true, _, false) | ("0" | ")", false, true, false) => {
                 self.zoom_motion = None;
@@ -3600,6 +3608,30 @@ mod tests {
             item: peers::SELECTION_ITEM.to_owned(),
             start,
             end,
+        }
+    }
+
+    /// A chord the rest of the system reserves is not a zoom here: the
+    /// command key rides only on its own, and Alt never zooms (`APP-canvas-01`).
+    #[test]
+    fn only_the_zoom_keys_zoom() {
+        for (keys, zooms) in [
+            ("=", true),
+            ("Shift+=", true),
+            ("-", true),
+            ("Ctrl+=", true),
+            ("Ctrl+-", true),
+            ("Ctrl+Shift+=", false),
+            ("Alt+=", false),
+            ("Ctrl+Alt+=", false),
+        ] {
+            let mut surface = surface_with_marks();
+            let before = surface.zoom();
+            for (key, modifiers) in parse(keys) {
+                surface.key(&key, None, modifiers);
+            }
+            let moved = (surface.zoom() - before).abs() > 1e-9;
+            assert_eq!(moved, zooms, "{keys} zooming is {moved}, expected {zooms}");
         }
     }
 

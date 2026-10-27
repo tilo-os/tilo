@@ -516,6 +516,8 @@ format-weekday-name = { $weekday ->
     }
 # A day this year in a list: "Jun 30".
 format-month-day = { $day }. { $month }
+# A day this year and a time of day: "30. Juni 14:05".
+format-month-day-time = { $day }. { $month } { $time }
 # A day in another year in a list: "Jun 30, 2025".
 format-month-day-year = { $day }. { $month } { $year }
 # The "Long" date style: "30 Jun 2026".
