@@ -25,7 +25,7 @@ import json
 import re
 import time
 
-from .. import core
+from .. import core, session_unit
 from ..core import CheckFailed, Unobservable, check, expect
 from ..vm import VmError, wait_until
 from .basics import _settings
@@ -126,6 +126,16 @@ def keyboard_diagnosis(ctx) -> str:
             if node else "the profile keyboard is not registered")
     except VmError as exc:
         found["udev"] = {"unreadable": exc.reason()}
+    # What libinput (its own stderr, in the session unit's journal) and logind (whose
+    # TakeDevice opens every input node for the compositor) said lately: a device either
+    # refuses is never added, and neither reaches the compositor's own log.
+    try:
+        found["journal"] = ctx.vm.root_exec(
+            f"journalctl --since -2min --no-pager -o cat -u {session_unit.unit(ctx.vm.slot)} "
+            "-u systemd-logind.service | grep -aiE 'libinput|evdev|event[0-9]|device|seat|048d' "
+            "| tail -n 30 | cut -c1-300 || true", timeout=60).splitlines()
+    except VmError as exc:
+        found["journal"] = [f"unreadable: {exc.reason()}"]
     if ctx.current is not None:
         ctx.write(f"{ctx.current.id}-keyboards.json", json.dumps(found, indent=1))
     compositor = found["compositor"] if isinstance(found["compositor"], dict) else {}
@@ -133,7 +143,8 @@ def keyboard_diagnosis(ctx) -> str:
     seen = KEYBOARD_ID["name"] in names
     return (f"the compositor {'has' if seen else 'has not'} opened the profile keyboard "
             f"{KEYBOARD_ID['name']!r} (its devices: {names}; it last typed from "
-            f"{compositor.get('active_keyboard')!r}); udev: {found['udev']}")
+            f"{compositor.get('active_keyboard')!r}); journal: {found['journal'][-6:]}; "
+            f"udev: {found['udev']}")
 
 
 # -- what the guest kernel and udev say --------------------------------------------------------
