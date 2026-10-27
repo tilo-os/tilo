@@ -64,6 +64,10 @@ mod without_runner {
 #[cfg(all(not(feature = "native"), not(target_family = "wasm")))]
 pub use without_runner::{run, run_or_exit};
 
+/// A wasm build publishes no `render`, so it answers no request with one.
+#[cfg(target_family = "wasm")]
+pub(crate) const RENDER_TYPE: &str = "tilo.app.render";
+
 #[cfg(not(target_family = "wasm"))]
 pub(crate) const RENDER_TYPE: &str = "tilo.app.render";
 
