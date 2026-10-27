@@ -275,6 +275,7 @@ fn run_shortcut(host: &AgentHost, shortcut: &Shortcut, inputs: Map<String, Value
             inputs,
             caused_by: None,
             parent: None,
+            chain: Vec::new(),
         },
     ))
 }

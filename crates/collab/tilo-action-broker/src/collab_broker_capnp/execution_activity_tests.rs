@@ -1069,6 +1069,7 @@ async fn shortcut_step_observes_once_per_change() {
                     inputs: serde_json::Map::new(),
                     caused_by: None,
                     parent: None,
+                    chain: Vec::new(),
                 },
             )
             .await

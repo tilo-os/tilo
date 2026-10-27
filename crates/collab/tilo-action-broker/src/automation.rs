@@ -795,6 +795,32 @@ impl RunningRuns {
             })
             .unwrap_or_default()
     }
+
+    /// The shortcuts already running in `room` above a run that is not
+    /// registered yet: every run going in the room that is not `own`, plus
+    /// the shortcut the run is being started for.
+    ///
+    /// The steps of such a run are stamped with the run that owns them
+    /// (`parent`), so the run a step belongs to is the container the newest
+    /// registrations nest in, and the runs going inside it are the ones above
+    /// it. Two shortcuts that call each other are therefore one run inside the
+    /// other, which the interpreter refuses before it starts them; two runs a
+    /// person started side by side are not, and neither is one going in
+    /// another room.
+    #[must_use]
+    pub fn above(&self, room: &str, parent: Option<&str>, own: &str) -> Vec<String> {
+        let Ok(running) = self.running.lock() else {
+            return Vec::new();
+        };
+        let mut above: Vec<String> = running
+            .iter()
+            .filter(|run| run.room == room)
+            .filter(|run| parent.is_some_and(|parent| parent == run.run.0.to_string()))
+            .map(|run| run.shortcut.clone())
+            .collect();
+        above.push(own.to_owned());
+        above
+    }
 }
 
 /// What stopping says it stopped, for whoever asked: one entry per run it
