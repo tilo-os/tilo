@@ -8,12 +8,12 @@ use ui::framework::testing::TestApp;
 use ui::portal::PortalOutcome;
 
 /// A project folder with a source file and a folder in it.
-fn project_folder() -> tempfile::TempDir {
-    let folder = tempfile::tempdir().unwrap();
-    std::fs::create_dir(folder.path().join("src")).unwrap();
-    std::fs::write(folder.path().join("Cargo.toml"), "[package]\n").unwrap();
-    std::fs::write(folder.path().join("src/main.rs"), "fn main() {}\n").unwrap();
-    folder
+fn project_folder() -> std::io::Result<tempfile::TempDir> {
+    let folder = tempfile::tempdir()?;
+    std::fs::create_dir(folder.path().join("src"))?;
+    std::fs::write(folder.path().join("Cargo.toml"), "[package]\n")?;
+    std::fs::write(folder.path().join("src/main.rs"), "fn main() {}\n")?;
+    Ok(folder)
 }
 
 /// Click the sidebar's Open folder, shown while no project is open, where
@@ -26,8 +26,10 @@ fn click_open_folder(app: &mut TestApp<CodeEditorShell>) {
         .find(|(_, node)| {
             node.role() == ui::accesskit::Role::Button && node.label() == Some("Open folder")
         })
-        .and_then(|(_, node)| node.bounds())
-        .expect("the sidebar offers Open folder");
+        .and_then(|(_, node)| node.bounds());
+    let Some(bounds) = bounds else {
+        panic!("the sidebar offers Open folder");
+    };
     harness.click_at(
         f64::midpoint(bounds.x0, bounds.x1),
         f64::midpoint(bounds.y0, bounds.y1),
@@ -45,7 +47,7 @@ fn open_folder_picks_a_folder_and_shows_its_tree() {
     ui::i18n::I18nManager::init("en-US");
     let (services, recorder) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
-    let folder = project_folder();
+    let folder = project_folder().unwrap();
     recorder.respond_to_pick(PortalOutcome::Opened(folder.path().to_path_buf()));
 
     let mut app = TestApp::<CodeEditorShell>::new().unwrap();
