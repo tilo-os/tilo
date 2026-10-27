@@ -1,0 +1,3 @@
+[ratchets.closure_control]
+"apps/settings-core/src/settings_app.rs" = 1
+"apps/settings-core/src/sidebar.rs" = 1
