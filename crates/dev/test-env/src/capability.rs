@@ -62,6 +62,9 @@ pub enum Capability {
     /// `ip` and `nft`, in user and network namespaces of the test's own
     /// (`unshare --user --map-root-user --net`).
     NetworkTunnel,
+    /// Flatpak's own tools, which sign, serve and install a real repository:
+    /// `flatpak`, `ostree` and `gpg`.
+    Flatpak,
 }
 
 impl Capability {
@@ -83,6 +86,7 @@ impl Capability {
             Self::Swtpm => "TILO_REQUIRE_SWTPM",
             Self::KernelKeyring => "TILO_REQUIRE_KEYRING",
             Self::NetworkTunnel => "TILO_REQUIRE_TUN",
+            Self::Flatpak => "TILO_REQUIRE_FLATPAK",
         }
     }
 
@@ -111,6 +115,7 @@ impl fmt::Display for Capability {
             Self::Swtpm => "an emulated TPM",
             Self::KernelKeyring => "the kernel keyring",
             Self::NetworkTunnel => "TUN devices with ip and nft",
+            Self::Flatpak => "Flatpak's tools",
         })
     }
 }

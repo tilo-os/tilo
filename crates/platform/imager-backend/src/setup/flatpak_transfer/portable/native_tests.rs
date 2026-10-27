@@ -767,6 +767,18 @@ fn assert_undeployed(home: &Path) {
 }
 #[test]
 fn real_signed_offline_target_restores_and_rejects_invalid_authority() {
+    tilo_test_env::require_capability!(
+        Flatpak,
+        [
+            "/usr/bin/flatpak",
+            "/usr/bin/ostree",
+            "/usr/bin/gpg",
+            "/usr/bin/gpgconf"
+        ]
+        .iter()
+        .all(|tool| Path::new(tool).is_file()),
+        "the fixture signs, serves and installs a real Flatpak repository"
+    );
     // Root cannot own a production user installation. Re-exec only this test
     // under an unrelated unprivileged UID; every fixture is created by that owner.
     // SAFETY: geteuid has no preconditions and only reads current credentials.
