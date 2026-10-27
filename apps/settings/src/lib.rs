@@ -39,15 +39,16 @@ pub mod panes;
 
 #[cfg(not(test))]
 mod shell;
-#[cfg(not(test))]
-pub use shell::SettingsShell;
 
-/// The resource Settings presents, and the app over it.
+/// The resource Settings presents, and the app over it. The app is named at
+/// the root too, so what Settings mounts is visible where it is declared.
 #[cfg(not(test))]
 pub mod resource {
     pub use crate::shell::SettingsShell;
     pub use settings_core::resource::*;
 }
+#[cfg(not(test))]
+pub use shell::SettingsShell;
 
 /// Bring the parts of Settings together: its own, the panes people open
 /// often and the panes people rarely open. Every entry point does this
@@ -67,6 +68,5 @@ pub fn enable_provider_administration() {
 /// The app as every host mounts it.
 #[cfg(not(test))]
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    install();
-    ui::built_in_definition!(SettingsShell)
+    shell::definition()
 }

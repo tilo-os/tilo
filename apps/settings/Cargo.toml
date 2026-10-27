@@ -36,6 +36,9 @@ runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-settings-engine/thi
 # both come from the Settings engine library in a release.
 settings-core = { path = "../settings-core" }
 settings-rare = { path = "../settings-rare" }
+# The app over that resource: the core shell, with every part of Settings
+# brought together before it opens.
+app = { package = "settings-core", path = "../settings-core" }
 # Shared platform layout data keeps Settings independent of the OSK app.
 tilo-keyboard-map = { version = "0.1.0", path = "../../crates/platform/tilo-keyboard-map" }
 # The outlines the keyboard preview draws.
