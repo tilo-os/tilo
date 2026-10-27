@@ -41,6 +41,46 @@ impl WorkspaceTree {
             .any(|share| share.tab == tab)
     }
 
+    /// The windows this device shared with a room that its workspace here
+    /// no longer shows (closed, or moved to another workspace), at `now_ms`:
+    /// shares that outlived their window, by room. A room with no workspace
+    /// here is left out: leaving a workspace ends its shares on the way out,
+    /// as the network releases the room.
+    pub fn outlived_window_shares(&self, now_ms: u64) -> Vec<(RoomId, WindowShare)> {
+        let local_salt = self.local_salt();
+        if local_salt == 0 {
+            return Vec::new();
+        }
+        let mut outlived = Vec::new();
+        for &room in self.window_shares.keys() {
+            let Some(workspace) = self.desktop.workspaces.iter().find(|w| w.room() == room) else {
+                continue;
+            };
+            for share in self.shared_windows(room, now_ms) {
+                let shown = workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .any(|tab| tab.id == share.tab);
+                if peer_salt_of(share.tab) == local_salt && !shown {
+                    outlived.push((room, share.clone()));
+                }
+            }
+        }
+        outlived
+    }
+
+    /// The windows this device shared with `room` that still last at
+    /// `now_ms`: the ones it hosts.
+    pub fn own_window_shares(&self, room: RoomId, now_ms: u64) -> Vec<WindowShare> {
+        let local_salt = self.local_salt();
+        self.shared_windows(room, now_ms)
+            .filter(|share| local_salt != 0 && peer_salt_of(share.tab) == local_salt)
+            .cloned()
+            .collect()
+    }
+
     /// Hold `shares` as the windows shared with `room`.
     pub(super) fn take_window_shares(
         &mut self,

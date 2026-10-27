@@ -116,6 +116,8 @@ impl ShellDriver {
         "workspace-menu",
         "window-menu",
         "tab-rename",
+        "window-share-menu",
+        "window-shared",
         "profile-card",
         "dictation-consent",
         "dictation-listening",
