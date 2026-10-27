@@ -48,23 +48,16 @@ mod window_menu_scene;
 const FRAME_MS: u64 = 16;
 
 /// The places an app-search scene's Files window keeps among its Favorites,
-/// pinned by its `add-bookmark`.
+/// pinned by its `add-bookmark`. The fixture's Files has no home of its own
+/// to resolve the standard folders against, so they are named by path.
 const FILES_SEED: &[(&str, &str, &str)] = &[
     (
         "files.folder",
         "add-bookmark",
-        r#"{"place":"xdg:documents"}"#,
+        r#"{"place":"/srv/Projects"}"#,
     ),
-    (
-        "files.folder",
-        "add-bookmark",
-        r#"{"place":"xdg:downloads"}"#,
-    ),
-    (
-        "files.folder",
-        "add-bookmark",
-        r#"{"place":"xdg:pictures"}"#,
-    ),
+    ("files.folder", "add-bookmark", r#"{"place":"/srv/Photos"}"#),
+    ("files.folder", "add-bookmark", r#"{"place":"/srv/Shared"}"#),
 ];
 
 /// The notes an app-search scene's notebook holds, made by its `new-note`.
@@ -2056,7 +2049,7 @@ impl ShellDriver {
                 self.scene_app_search(AppKind::FileExplorer, "Files", "", FILES_SEED);
             }
             "app_search_files_query" => {
-                self.scene_app_search(AppKind::FileExplorer, "Files", "doc", FILES_SEED);
+                self.scene_app_search(AppKind::FileExplorer, "Files", "pro", FILES_SEED);
             }
             "app_search_code" => {
                 self.scene_app_search(AppKind::Other("Editor".into()), "Editor", "", CODE_SEED);

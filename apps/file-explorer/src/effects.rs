@@ -44,7 +44,6 @@ pub enum FilesEffect {
     /// Clear selection.
     #[effect(view, returns)]
     #[effect(icon = "x")]
-    #[effect(tag = SELECTION)]
     ClearSelection,
     /// Selected entries.
     ///

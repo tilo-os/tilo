@@ -375,6 +375,7 @@ capnp = [
 "capnp:collab.capnp:ExportedAction.actionLabel" = "@4 :Text"
 "capnp:collab.capnp:ExportedAction.contractJson" = "@9 :Text"
 "capnp:collab.capnp:ExportedAction.description" = "@5 :Text"
+"capnp:collab.capnp:ExportedAction.icon" = "@13 :Text"
 "capnp:collab.capnp:ExportedAction.input" = "@6 :ActionInput"
 "capnp:collab.capnp:ExportedAction.keywords" = "@12 :List(Text)"
 "capnp:collab.capnp:ExportedAction.operationKind" = "@7 :Text"
