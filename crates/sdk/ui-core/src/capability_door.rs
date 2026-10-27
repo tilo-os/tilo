@@ -28,7 +28,7 @@
 //! use tilo_ui::capability_door::{Capability, Door};
 //!
 //! let door = Door::grantable(Capability::FIREWALL, "Tilo needs your permission to change firewall rules");
-//! let shown: Option<&str> = door.control(|| Some("the Apply button"));
+//! let shown: Option<&str> = door.control(|| "the Apply button");
 //! assert!(shown.is_none(), "a grantable verb draws no inert control");
 //! let grant = door.grant_words().expect("the grant step names itself");
 //! assert!(grant.contains("permission"));
