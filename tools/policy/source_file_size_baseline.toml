@@ -46,7 +46,7 @@
 "apps/video-editor/src/app.rs" = 9000
 "apps/video-editor/src/app/tests.rs" = 11000
 "apps/video-editor/src/model.rs" = 5000
-"apps/word-processor/src/widget/tests.rs" = 9000
+"apps/word-processor/src/widget/tests.rs" = 8500
 "crates/agent/local-model-service/src/lib.rs" = 3500
 "crates/agent/model-gateway/src/service.rs" = 4000
 "crates/browser/tilo-browser-peer/src/session.rs" = 4000
