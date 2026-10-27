@@ -694,8 +694,9 @@ impl PostgresEngine {
                     truncation,
                 })
             }
-            Err(error) => Err(format!(
-                "Only one SQL statement at a time is supported: {error}"
+            Err(error) => Err(crate::i18n::t_args(
+                "db-one-statement",
+                &[("error", crate::i18n::text(&error.to_string()))],
             )),
         }
     }
